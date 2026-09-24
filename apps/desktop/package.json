@@ -1,6 +1,6 @@
 {
   "name": "@pistachio/desktop",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "productName": "Pistachio",
   "private": true,
   "type": "module",
