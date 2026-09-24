@@ -1,0 +1,14 @@
+/**
+ * The desktop's stylesheet is the reset plus the shell's own two files
+ * (docs/web-browser-design.md §3.3). The `--color-*: initial` line has to come
+ * before the tokens it clears the defaults for, and the fonts are bundled here
+ * because the renderer's CSP (index.html) admits nothing off the disk.
+ */
+@import "tailwindcss";
+@theme static { --color-*: initial; }
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@pistachio/shell-ui/theme.css";
+@import "@pistachio/shell-ui/shell.css";
+
+@source "../../../../../packages/browser-client/src";

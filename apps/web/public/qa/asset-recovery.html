@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DOM asset recovery check</title>
+<style>
+body{font:18px system-ui;background:#f4f7f5;color:#183f2d;margin:24px}h1{font-size:30px}input,button{font:inherit;padding:8px}article{background:white;border:1px solid #bdd1c4;border-radius:12px;padding:20px;margin:16px 0;min-height:220px}img{display:block;width:80px;height:80px;margin:12px 0}#feed{height:440px;overflow:auto;outline:1px solid #bdd1c4;padding:12px}output{display:block;margin:12px 0}label{display:block;margin:12px 0}
+@font-face{font-family:Unavailable;src:url(/qa/intentionally-missing.woff2)}.fallback{font-family:Unavailable,system-ui}
+</style>
+<h1>DOM asset recovery check</h1>
+<p>This diagnostic intentionally includes unavailable images and a font. It does not submit or save text.</p>
+<label>Local draft <input aria-label="Local draft" placeholder="Type while scrolling"></label>
+<button id="next">Next posts</button>
+<output id="progress">0 images loaded</output>
+<div id="feed" tabindex="0" aria-label="Diagnostic feed"></div>
+<script>
+let loaded=0, position=0;
+const feed=document.querySelector('#feed');
+for(let i=0;i<24;i++){
+  const article=document.createElement('article');
+  article.innerHTML=`<h2>Post ${i+1}</h2><p class="fallback">Text remains readable with a fallback font.</p><img loading="lazy" width="80" height="80" alt="${i%4===3?'Intentionally unavailable image':'Pistachio logo'}" src="${i%4===3?'/qa/intentionally-missing.png':'/logos/pistachio-mark.svg'}?post=${i}">`;
+  article.querySelector('img').addEventListener('load',()=>{document.querySelector('#progress').textContent=`${++loaded} images loaded`;});
+  feed.append(article);
+}
+document.querySelector('#next').addEventListener('click',()=>{position=(position+1)%24;feed.children[position].scrollIntoView({block:'start'});});
+</script>
+</html>

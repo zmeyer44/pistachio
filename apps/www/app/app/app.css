@@ -1,0 +1,736 @@
+@import "@pistachio/web-account/credential-capture.css";
+
+/*
+ * The signed-in dashboard's foundation: Vercel's Geist system.
+ *
+ * The marketing site keeps its warm brand palette; signed in, the surface is
+ * Geist (vercel.com/geist) — monochrome first, colour only where it carries
+ * meaning, a 1px alpha border doing the work a heavy shadow would elsewhere.
+ * Both themes are implicit: there is no switcher, and neither is an
+ * afterthought.
+ *
+ * The dashboard's own token VALUES live in app/globals.css, the entry the
+ * marketing site shares, so `bg-gray-100` and `text-heading-14` are real
+ * utilities the sidebar can use. What lives here is (a) the dark ramp, scoped
+ * to `.pa` so the marketing pages can never follow it, (b) the component layer
+ * every dashboard page is written against, and (c) the sidebar's push
+ * animation.
+ *
+ * THE SHELL IS NOT HERE. It is a site of its own now (`apps/web`,
+ * docs/web-browser-design.md §15), with the desktop's stylesheet and none of
+ * this one's. What the two sites still share is the front door, which brings
+ * its own self-contained skin — `@source` below is what generates the account
+ * package's utilities, and `auth.css` is the skin itself.
+ */
+
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "@pistachio/web-account/auth.css";
+@source "../../../../packages/web-account/src";
+
+
+.pa {
+  /* Spacing. Within a group 2–4, between groups 6–8, section turns 8–12. */
+  --pa-1: 4px;
+  --pa-2: 8px;
+  --pa-3: 12px;
+  --pa-4: 16px;
+  --pa-6: 24px;
+  --pa-8: 32px;
+  --pa-10: 40px;
+  --pa-12: 48px;
+  --pa-16: 64px;
+
+  /* Geist radii. 6px is the control radius, 8px the container radius. */
+  --pa-radius: 6px;
+  --pa-radius-sm: 4px;
+  --pa-radius-lg: 8px;
+
+  color-scheme: light;
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  font-family: var(--font-geist);
+  font-feature-settings: "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Geist's dark ramp. Declared on `.pa` rather than :root: Tailwind resolves
+ * `var(--color-gray-100)` at the use site, so every utility inside the
+ * dashboard follows this while the cream marketing pages never see it.
+ */
+@media (prefers-color-scheme: dark) {
+  .pa {
+    /* Dark inverts which of the two is recessed: the panel lifts to #0a0a0a
+       and the rail behind it drops to black. */
+    --color-background-100: oklch(0.145 0 0);
+    --color-background-200: oklch(0 0 0);
+
+    --color-gray-100: oklch(0.245 0.006 260);
+    --color-gray-200: oklch(0.275 0.006 260);
+    --color-gray-300: oklch(0.305 0.006 260);
+    --color-gray-400: oklch(0.34 0.006 260);
+    --color-gray-500: oklch(0.43 0.006 260);
+    --color-gray-600: oklch(0.52 0.006 260);
+    --color-gray-700: oklch(0.63 0.006 260);
+    --color-gray-800: oklch(0.72 0.006 260);
+    --color-gray-900: oklch(0.82 0.006 260);
+    --color-gray-1000: oklch(0.95 0.004 260);
+
+    --color-alpha-100: oklch(1 0 0 / 0.055);
+    --color-alpha-200: oklch(1 0 0 / 0.085);
+    --color-alpha-300: oklch(1 0 0 / 0.115);
+    --color-alpha-400: oklch(1 0 0 / 0.1);
+    --color-alpha-500: oklch(1 0 0 / 0.22);
+    --color-alpha-600: oklch(1 0 0 / 0.28);
+    --color-alpha-700: oklch(1 0 0 / 0.48);
+    --color-alpha-800: oklch(1 0 0 / 0.58);
+    --color-alpha-900: oklch(1 0 0 / 0.76);
+    --color-alpha-1000: oklch(1 0 0 / 0.93);
+
+    --color-blue-100: oklch(0.28 0.055 255);
+    --color-blue-400: oklch(0.4 0.1 255);
+    --color-blue-700: oklch(0.69 0.17 255);
+    --color-blue-900: oklch(0.78 0.13 255);
+    --color-blue-1000: oklch(0.92 0.04 255);
+
+    --color-red-100: oklch(0.27 0.05 22);
+    --color-red-400: oklch(0.4 0.1 22);
+    --color-red-700: oklch(0.68 0.2 22);
+    --color-red-900: oklch(0.78 0.15 22);
+    --color-red-1000: oklch(0.92 0.045 22);
+
+    --color-amber-100: oklch(0.28 0.05 80);
+    --color-amber-400: oklch(0.42 0.1 80);
+    --color-amber-700: oklch(0.78 0.16 80);
+    --color-amber-900: oklch(0.83 0.12 80);
+    --color-amber-1000: oklch(0.94 0.04 80);
+
+    --color-green-100: oklch(0.27 0.045 146);
+    --color-green-400: oklch(0.4 0.09 146);
+    --color-green-700: oklch(0.68 0.16 146);
+    --color-green-900: oklch(0.79 0.12 146);
+    --color-green-1000: oklch(0.93 0.04 146);
+
+    --shadow-border: 0 0 0 1px oklch(1 0 0 / 0.1);
+    --shadow-small: 0 0 0 1px oklch(1 0 0 / 0.1), 0 2px 3px oklch(0 0 0 / 0.2);
+    --shadow-menu: 0 0 0 1px oklch(1 0 0 / 0.11), 0 8px 18px oklch(0 0 0 / 0.34);
+    --shadow-modal: 0 0 0 1px oklch(1 0 0 / 0.12), 0 16px 48px oklch(0 0 0 / 0.5);
+
+    color-scheme: dark;
+  }
+
+  .pa .pa-check > input:checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 4.8 8.5 9.5 3.8' fill='none' stroke='%230a0a0a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+}
+
+/* ------------------------------- type roles ------------------------------- *
+ * Geist's roles, under the names the pages already use. Peers share role,
+ * size, weight and line-height, so a value never competes with the value
+ * beside it.                                                                 */
+
+.pa-display { font-size: 32px; line-height: 40px; letter-spacing: -0.03em; font-weight: 600; }
+.pa-title { font-size: 24px; line-height: 32px; letter-spacing: -0.03em; font-weight: 600; }
+.pa-heading-20 { font-size: 20px; line-height: 26px; letter-spacing: -0.02em; font-weight: 600; }
+.pa-heading-16 { font-size: 16px; line-height: 24px; letter-spacing: -0.02em; font-weight: 600; }
+.pa-lede { font-size: 14px; line-height: 20px; color: var(--color-gray-900); max-width: 64ch; }
+.pa-body { font-size: 14px; line-height: 20px; max-width: 68ch; }
+.pa-label { font-size: 14px; line-height: 20px; }
+.pa-caption { font-size: 13px; line-height: 18px; color: var(--color-gray-900); }
+.pa-metadata {
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--color-gray-900);
+  font-variant-numeric: tabular-nums;
+}
+.pa-mono { font-family: var(--font-geist-mono); font-variant-numeric: tabular-nums; }
+.pa-num { font-variant-numeric: tabular-nums; }
+
+/* --------------------------------- shell --------------------------------- *
+ * Vercel's dashboard frame: a recessed rail on background-200, the page on
+ * background-100, one hairline between them.                                 */
+
+.pa-skip {
+  position: absolute;
+  left: -9999px;
+  top: var(--pa-2);
+  padding: var(--pa-2) var(--pa-3);
+  background: var(--color-background-100);
+  border-radius: var(--pa-radius);
+  box-shadow: var(--shadow-small);
+  z-index: 20;
+}
+.pa-skip:focus { left: var(--pa-2); }
+
+.pa-shell {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--color-background-100);
+}
+
+.pa-side {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  border-right: 1px solid var(--color-alpha-400);
+  background: var(--color-background-200);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* AFTER `.pa-side`, deliberately. Both rules are one class deep, so the later
+   one wins: written above the base rule (where it used to live) the narrow
+   layout lost every declaration it shares with it, and the rail kept its
+   sticky full-height column on a phone — pushing every page below the fold. */
+@media (max-width: 900px) {
+  .pa-shell { grid-template-columns: minmax(0, 1fr); }
+  .pa-side { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--color-alpha-400); }
+}
+
+.pa-main { padding: var(--pa-8) var(--pa-8) var(--pa-16); min-width: 0; }
+.pa-page { max-width: 1080px; display: flex; flex-direction: column; gap: var(--pa-8); }
+.pa-intro { display: flex; flex-direction: column; gap: var(--pa-2); }
+.pa-section { display: flex; flex-direction: column; gap: var(--pa-4); }
+.pa-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--pa-4); }
+
+/* ---------------------------- the nav push ------------------------------- *
+ * The rail's menus PUSH rather than swap: choosing a group slides its menu in
+ * from the right over the one that opened it, and the back control slides the
+ * parent back in from the left. Same timings and curve as the desktop app's
+ * settings rail. The push is opaque — the incoming panel carries the rail's
+ * own background — so the two label sets are never legible at once.          */
+
+@keyframes pa-menu-in-fwd { from { transform: translateX(100%); } }
+@keyframes pa-menu-in-back { from { transform: translateX(-100%); } }
+@keyframes pa-menu-out-fwd { to { transform: translateX(-26%); } }
+@keyframes pa-menu-out-back { to { transform: translateX(26%); } }
+@keyframes pa-menu-fade-out { to { opacity: 0; } }
+@keyframes pa-menu-fade-in { from { opacity: 0; } }
+
+.pa-menu-in-fwd,
+.pa-menu-in-back,
+.pa-menu-out-fwd,
+.pa-menu-out-back {
+  --pa-push: 300ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+.pa-menu-in-fwd { animation: pa-menu-in-fwd var(--pa-push); }
+.pa-menu-in-back { animation: pa-menu-in-back var(--pa-push); }
+.pa-menu-out-fwd { animation: pa-menu-out-fwd var(--pa-push), pa-menu-fade-out 160ms linear both; }
+.pa-menu-out-back { animation: pa-menu-out-back var(--pa-push), pa-menu-fade-out 160ms linear both; }
+
+/* Reduced motion drops the travel but keeps a transition rather than a cut.
+   The two fades are SEQUENCED so old and new labels are never legible on top
+   of each other — the same constraint the push solves by occluding. */
+@media (prefers-reduced-motion: reduce) {
+  .pa-menu-in-fwd,
+  .pa-menu-in-back { animation: pa-menu-fade-in 160ms linear 100ms both; }
+  .pa-menu-out-fwd,
+  .pa-menu-out-back { animation: pa-menu-fade-out 100ms linear both; }
+}
+
+/* --------------------------------- menus --------------------------------- */
+
+.pa-pop { animation: pa-pop-in 120ms cubic-bezier(0.2, 0.8, 0.3, 1) both; transform-origin: top; }
+@keyframes pa-pop-in { from { opacity: 0; transform: translateY(-2px) scale(0.98); } }
+
+/* A menu that flipped above its trigger (no room below) grows from the edge it
+   is anchored to, so it still reads as coming out of the button. */
+.pa-pop[data-side="top"] { animation-name: pa-pop-in-up; transform-origin: bottom; }
+@keyframes pa-pop-in-up { from { opacity: 0; transform: translateY(2px) scale(0.98); } }
+
+/* Matches the desktop app's utility of the same name, which the rail's menus
+   already ask for. */
+.scroll-thin { scrollbar-width: thin; scrollbar-color: var(--color-gray-500) transparent; }
+
+/* --------------------------------- tables -------------------------------- *
+ * Evidence gets full width. Text left, numbers right, one row-label column
+ * wide enough to hold a label on one line.                                   */
+
+.pa-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-alpha-400);
+  border-radius: var(--pa-radius-lg);
+  background: var(--color-background-100);
+}
+.pa-table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 20px; }
+.pa-table caption {
+  text-align: left;
+  color: var(--color-gray-900);
+  font-size: 13px;
+  line-height: 18px;
+  padding: var(--pa-3) var(--pa-4);
+  border-bottom: 1px solid var(--color-alpha-400);
+}
+.pa-table th, .pa-table td {
+  text-align: left;
+  padding: 10px var(--pa-4);
+  border-bottom: 1px solid var(--color-alpha-400);
+  vertical-align: middle;
+}
+.pa-table thead th {
+  font-weight: 500;
+  color: var(--color-gray-900);
+  font-size: 13px;
+  line-height: 16px;
+  background: var(--color-background-200);
+  white-space: nowrap;
+}
+.pa-table td.pa-n, .pa-table th.pa-n { text-align: right; font-variant-numeric: tabular-nums; }
+.pa-table tbody tr:last-child td, .pa-table tbody tr:last-child th { border-bottom: 0; }
+.pa-table tbody tr:hover td, .pa-table tbody tr:hover th { background: var(--color-alpha-100); }
+.pa-table a { color: inherit; text-decoration: none; }
+.pa-table a:hover { text-decoration: underline; }
+
+/* -------------------------------- controls ------------------------------- *
+ * Geist's button: 32px tall, 6px corners, a 1px alpha border carried by the
+ * shadow so the control keeps its box without a painted edge.                */
+
+/* The PIN ceremony under "stay unlocked". `.pa-pin` brings its own skin from
+   the account package, so only the block around it belongs here. */
+.pa-pinchoice {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 360px;
+  margin-top: 4px;
+}
+
+.pa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--pa-2);
+  height: 32px;
+  padding: 0 var(--pa-3);
+  border-radius: var(--pa-radius);
+  border: 0;
+  box-shadow: var(--shadow-border);
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 150ms, color 150ms, box-shadow 150ms;
+}
+.pa-btn:hover:not(:disabled) { background: var(--color-gray-100); }
+.pa-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pa-btn[data-variant="primary"] {
+  background: var(--color-gray-1000);
+  color: var(--color-background-100);
+  box-shadow: none;
+}
+.pa-btn[data-variant="primary"]:hover:not(:disabled) { background: var(--color-gray-900); }
+.pa-btn[data-variant="quiet"] { box-shadow: none; background: transparent; color: var(--color-gray-900); }
+.pa-btn[data-variant="quiet"]:hover:not(:disabled) { background: var(--color-alpha-100); color: var(--color-gray-1000); }
+.pa-btn[data-variant="alert"] { color: var(--color-red-900); }
+.pa-btn[data-variant="alert"]:hover:not(:disabled) { background: var(--color-red-100); }
+
+.pa-field { display: flex; flex-direction: column; gap: 6px; }
+.pa-field > label { font-size: 14px; line-height: 20px; font-weight: 500; }
+.pa-field > .pa-help { font-size: 13px; line-height: 18px; color: var(--color-gray-900); }
+.pa-input, .pa-textarea {
+  width: 100%;
+  padding: 9px var(--pa-3);
+  border: 1px solid var(--color-alpha-400);
+  border-radius: var(--pa-radius);
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+.pa-input:hover:not(:focus), .pa-textarea:hover:not(:focus) { border-color: var(--color-alpha-500); }
+.pa-textarea { resize: vertical; min-height: 76px; }
+.pa-input::placeholder, .pa-textarea::placeholder { color: var(--color-gray-700); opacity: 1; }
+select.pa-input { appearance: none; padding-right: var(--pa-8); }
+
+.pa-check { display: flex; align-items: flex-start; gap: var(--pa-2); cursor: pointer; }
+.pa-check > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pa-check > span > .pa-help { font-size: 13px; line-height: 18px; color: var(--color-gray-900); max-width: 64ch; }
+.pa-check > input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  flex: none;
+  border: 1px solid var(--color-alpha-500);
+  border-radius: var(--pa-radius-sm);
+  background: var(--color-background-100) no-repeat center;
+  cursor: pointer;
+  transition: background-color 150ms, border-color 150ms;
+}
+.pa-check > input:hover:not(:checked) { border-color: var(--color-gray-700); }
+/* Checked is the ink swatch with the tick knocked out of it. The tick ships as
+   a background image rather than a pseudo-element, which an appearance:none
+   input does not carry reliably in every engine — so the mark is stated twice,
+   once per theme, instead of inheriting a colour it cannot see. */
+.pa-check > input:checked {
+  background-color: var(--color-gray-1000);
+  border-color: var(--color-gray-1000);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 4.8 8.5 9.5 3.8' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 12px 12px;
+}
+
+:where(.pa) :is(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-blue-700);
+  outline-offset: 1px;
+  border-radius: var(--pa-radius-sm);
+}
+
+/* ---------------------------------- note --------------------------------- *
+ * Geist's Note: a bounded block, tinted only when the tone means something.  */
+
+.pa-note {
+  display: block;
+  padding: 10px var(--pa-3);
+  border: 1px solid var(--color-alpha-400);
+  border-radius: var(--pa-radius-lg);
+  background: var(--color-background-200);
+  color: var(--color-gray-900);
+  font-size: 14px;
+  line-height: 20px;
+  max-width: 68ch;
+}
+.pa-note[data-tone="alert"] {
+  border-color: var(--color-amber-400);
+  background: var(--color-amber-100);
+  color: var(--color-amber-1000);
+}
+.pa-note-detail {
+  margin-top: var(--pa-2);
+  font-size: 12px;
+  line-height: 16px;
+}
+.pa-note-detail > summary {
+  cursor: pointer;
+  width: fit-content;
+  opacity: 0.8;
+}
+.pa-note-detail > code {
+  display: block;
+  margin-top: var(--pa-1);
+  font-family: var(--font-geist-mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
+}
+
+.pa-empty {
+  padding: var(--pa-8) var(--pa-4);
+  border: 1px dashed var(--color-alpha-400);
+  border-radius: var(--pa-radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pa-2);
+  align-items: flex-start;
+}
+.pa-empty > .pa-body { color: var(--color-gray-900); max-width: 60ch; }
+
+/* A list of facts: term on the left, value on the right, hairlines between. */
+.pa-facts { display: flex; flex-direction: column; border: 1px solid var(--color-alpha-400); border-radius: var(--pa-radius-lg); }
+.pa-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: var(--pa-4); padding: 10px var(--pa-4); border-bottom: 1px solid var(--color-alpha-400); }
+.pa-facts > div:last-child { border-bottom: 0; }
+.pa-facts dt { font-size: 14px; line-height: 20px; color: var(--color-gray-1000); }
+.pa-facts dd { margin: 0; font-size: 14px; line-height: 20px; color: var(--color-gray-900); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+
+/* How much of a ceiling is used: a hairline track with a filled span. */
+.pa-meter { display: block; width: 100%; height: 6px; border-radius: 3px; background: var(--color-alpha-200); overflow: hidden; }
+.pa-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--color-green-700); transition: width 240ms ease; }
+.pa-meter[data-tone="warn"] > span { background: var(--color-amber-700); }
+.pa-meter[data-tone="alert"] > span { background: var(--color-red-700); }
+
+.pa-status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-gray-900); }
+.pa-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-gray-700); flex: none; }
+.pa-dot[data-tone="good"] { background: var(--color-green-700); }
+.pa-dot[data-tone="alert"] { background: var(--color-amber-700); }
+
+/* ------------------------------- artifacts ------------------------------- *
+ * The library is an archive of made things, not another settings table. A
+ * disciplined card grid gives each page an identity while preserving the
+ * dashboard's monochrome, hairline-boundary language.                         */
+
+.pa-artifact-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 220px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-alpha-400);
+  border-radius: var(--pa-radius);
+  color: var(--color-gray-700);
+  background: var(--color-background-100);
+}
+.pa-artifact-search:focus-within { border-color: var(--color-blue-700); box-shadow: 0 0 0 1px var(--color-blue-700); }
+.pa-artifact-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--color-gray-1000); font: inherit; font-size: 13px; }
+.pa-artifact-search input::placeholder { color: var(--color-gray-700); }
+
+.pa-artifact-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--pa-3); }
+.pa-artifact-card {
+  min-height: 210px;
+  padding: var(--pa-4);
+  border: 1px solid var(--color-alpha-400);
+  border-radius: var(--pa-radius-lg);
+  background: var(--color-background-100);
+  color: inherit;
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--pa-6);
+  transition: border-color 150ms, transform 150ms, box-shadow 150ms;
+}
+.pa-artifact-card:hover { border-color: var(--color-alpha-600); box-shadow: var(--shadow-small); transform: translateY(-1px); }
+.pa-artifact-card-top, .pa-artifact-card-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--pa-3); }
+.pa-artifact-glyph { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--color-gray-1000); color: var(--color-background-100); font-size: 14px; font-weight: 600; }
+.pa-artifact-privacy { display: inline-flex; align-items: center; gap: 5px; color: var(--color-gray-800); font-size: 12px; }
+.pa-artifact-privacy[data-public] { color: var(--color-green-900); }
+.pa-artifact-card-copy { display: flex; flex: 1; flex-direction: column; justify-content: flex-end; gap: 5px; }
+.pa-artifact-card-copy strong { font-size: 16px; line-height: 22px; letter-spacing: -0.02em; }
+.pa-artifact-card-copy > span { color: var(--color-gray-900); font-size: 13px; line-height: 18px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.pa-artifact-card-foot { padding-top: var(--pa-3); border-top: 1px solid var(--color-alpha-400); color: var(--color-gray-800); font-size: 12px; }
+
+.pa-artifact-page { display: flex; min-height: calc(100dvh - var(--pa-16)); flex-direction: column; gap: var(--pa-4); }
+.pa-artifact-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--pa-6); }
+.pa-artifact-identity { display: flex; min-width: 0; flex-direction: column; gap: var(--pa-3); }
+.pa-artifact-identity h1 { font-size: 20px; line-height: 26px; letter-spacing: -0.025em; font-weight: 600; }
+.pa-artifact-identity p { color: var(--color-gray-800); font-size: 12px; line-height: 18px; }
+.pa-artifact-back { display: inline-flex; width: fit-content; align-items: center; gap: 6px; color: var(--color-gray-900); font-size: 13px; text-decoration: none; }
+.pa-artifact-back:hover { color: var(--color-gray-1000); }
+.pa-artifact-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--pa-2); }
+.pa-artifact-actions a.pa-btn { color: var(--color-gray-1000); text-decoration: none; }
+.pa-artifact-disclosure { display: flex; align-items: flex-start; gap: 9px; padding: 10px var(--pa-3); border: 1px solid var(--color-alpha-400); border-radius: var(--pa-radius-lg); background: var(--color-background-200); color: var(--color-gray-800); }
+.pa-artifact-disclosure[data-public] { border-color: var(--color-green-400); background: var(--color-green-100); color: var(--color-green-1000); }
+.pa-artifact-disclosure > svg { flex: none; margin-top: 2px; }
+.pa-artifact-disclosure > div { display: flex; flex-direction: column; gap: 1px; }
+.pa-artifact-disclosure strong { color: var(--color-gray-1000); font-size: 13px; line-height: 18px; }
+.pa-artifact-disclosure[data-public] strong { color: inherit; }
+.pa-artifact-disclosure span { font-size: 12px; line-height: 17px; }
+.pa-artifact-stage { flex: 1; min-height: 560px; overflow: hidden; border: 1px solid var(--color-alpha-400); border-radius: var(--pa-radius-lg); background: white; box-shadow: var(--shadow-small); }
+.pa-artifact-stage iframe { display: block; width: 100%; height: 100%; min-height: 560px; border: 0; background: white; }
+
+/* A note shared with this account, being edited (docs/notes.md §9): the
+   markdown on the left, the same renderer that draws it everywhere else on
+   the right, so what is being typed and what a reader sees stay one thing. */
+.pa-shared-split { display: grid; flex: 1; min-height: 560px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--pa-3); }
+.pa-shared-compose { display: flex; min-width: 0; flex-direction: column; gap: var(--pa-2); }
+.pa-shared-title {
+  border: 1px solid var(--color-alpha-400);
+  border-radius: var(--pa-radius-lg);
+  background: var(--color-background-100);
+  padding: 10px var(--pa-3);
+  color: var(--color-gray-1000);
+  font: inherit;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  outline: 0;
+}
+.pa-shared-markdown {
+  flex: 1;
+  min-height: 480px;
+  resize: vertical;
+  border: 1px solid var(--color-alpha-400);
+  border-radius: var(--pa-radius-lg);
+  background: var(--color-background-100);
+  padding: var(--pa-3);
+  color: var(--color-gray-1000);
+  font-family: var(--font-geist-mono, ui-monospace, monospace);
+  font-size: 13px;
+  line-height: 20px;
+  outline: 0;
+}
+.pa-shared-title:focus, .pa-shared-markdown:focus { border-color: var(--color-blue-700); box-shadow: 0 0 0 1px var(--color-blue-700); }
+.pa-shared-save { display: inline-flex; align-items: center; gap: 5px; color: var(--color-gray-800); font-size: 12px; }
+.pa-shared-save[data-tone="alert"] { color: var(--color-red-900); }
+.pa-spin { animation: pa-spin 900ms linear infinite; }
+@keyframes pa-spin { to { transform: rotate(360deg); } }
+
+/* Who an owned note is shared with, read-only here: sharing is managed from
+   the Mac, and this page says so rather than offering a control that is not. */
+.pa-note-people { display: flex; flex-direction: column; gap: 6px; }
+.pa-note-person { display: flex; align-items: center; justify-content: space-between; gap: var(--pa-3); padding: 7px 0; border-bottom: 1px solid var(--color-alpha-400); font-size: 13px; }
+.pa-note-person:last-child { border-bottom: 0; }
+.pa-note-person span:last-child { color: var(--color-gray-800); font-size: 12px; }
+
+@media (max-width: 760px) {
+  .pa-row, .pa-artifact-toolbar { align-items: stretch; flex-direction: column; }
+  .pa-artifact-search { width: 100%; }
+  .pa-artifact-actions { justify-content: flex-start; }
+  .pa-artifact-page { min-height: 0; }
+  .pa-shared-split { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pa-spin { animation: none; }
+}
+
+/* Motion only for state change, and never for people who asked for less. The
+   rail's push is exempt: it has its own reduced-motion form above, a sequenced
+   fade rather than a cut, and clamping it here would collapse that back into
+   the flash of two legible label sets the sequencing exists to prevent. */
+@media (prefers-reduced-motion: reduce) {
+  .pa *:not([class*="pa-menu-"]),
+  .pa *::before,
+  .pa *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ------------------------------- the run chat ----------------------------- *
+ * A run reads as the conversation it is, so its page takes the whole frame:
+ * the header at the top, the thread scrolling inside it, the composer pinned
+ * under it. It is the one dashboard page that opts out of .pa-main's padding
+ * and out of page-level scroll — a composer that scrolls away is a composer
+ * you have to hunt for.
+ *
+ * The pieces below are the desktop console's, ported class for class
+ * (desktop/src/renderer/src/styles.css, "Conversational browser agent"), so
+ * the same conversation looks the same on either device.                     */
+
+.pa-main:has(> .pa-chat) {
+  padding: 0;
+  height: 100dvh;
+  overflow: hidden;
+}
+.pa-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Under 900px the rail sits ABOVE the page rather than beside it, so a
+   full-viewport chat would push it off the top. The thread keeps its own
+   scroll; it just does not claim the whole screen. */
+@media (max-width: 900px) {
+  .pa-main:has(> .pa-chat) { height: auto; }
+  .pa-chat { height: 78dvh; }
+  /* Watching is a full-window activity: a screencast squeezed into three
+     quarters of a phone, under the rail, is not one anyone can use. */
+  .pa-chat[data-watching] { height: 100dvh; }
+}
+
+/* The thread is quieter than the page around it: messages carry the
+   hierarchy, while tools and specialists sit on one recessed rail. The edge
+   masks come from the same scroll-state attributes shadcn's headless
+   MessageScroller sets. */
+.agent-thread::before,
+.agent-thread::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  left: 0;
+  height: 20px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.agent-thread::before {
+  top: 0;
+  background: linear-gradient(var(--color-background-100), transparent);
+}
+.agent-thread::after {
+  bottom: 0;
+  background: linear-gradient(transparent, var(--color-background-100));
+}
+.agent-thread[data-scrollable~="start"]::before,
+.agent-thread[data-scrollable~="end"]::after { opacity: 1; }
+
+.agent-composer { transition: border-color 140ms ease, box-shadow 140ms ease; }
+
+/* The composer is one control made of several: the box carries the focus ring
+   for the whole thing (`focus-within`), so the textarea inside must not draw a
+   second one on top of it. Same for the clarification card's fields, which
+   style their own focus. The `.pa` is load-bearing — the dashboard's blanket
+   `:focus-visible` outline is (0,2,0), which a bare element selector loses
+   to. */
+.pa .agent-composer textarea:focus-visible,
+.pa .agent-ask :is(input, textarea):focus-visible { outline: none; }
+
+/* ------------------------------ the activity fold ------------------------- *
+ * A summary row of fixed height, and a body that grows and shrinks on a
+ * transition rather than snapping.
+ *
+ * Deliberately not `<details>`: that element renders its body only while open,
+ * so a collapse is a cut no transition can smooth — and this fold's open state
+ * used to be driven by the run, which meant the box slammed shut the moment
+ * the last tool in a turn finished. The 0fr→1fr grid row is the one way to
+ * transition to and from a height nobody measured.                            */
+
+.agent-fold-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.agent-fold[data-open] .agent-fold-body { grid-template-rows: 1fr; }
+.agent-fold-body > * { min-height: 0; overflow: hidden; }
+.agent-fold-chevron { transition: transform 200ms cubic-bezier(0.32, 0.72, 0, 1); }
+.agent-fold[data-open] .agent-fold-chevron { transform: rotate(180deg); }
+
+/* --------------------------------- skeletons ------------------------------ *
+ * The shape of a conversation before its events land. A thread that opens on
+ * its own furniture — a turn where a turn will be, a fold where a fold will be
+ * — settles into the real thing instead of replacing itself.                  */
+
+.pa-skeleton {
+  display: block;
+  border-radius: var(--pa-radius-sm);
+  background:
+    linear-gradient(90deg, var(--color-alpha-100) 24%, var(--color-alpha-300) 38%, var(--color-alpha-100) 56%)
+    0 0 / 300% 100%;
+  animation: pa-skeleton 1.5s ease-in-out infinite;
+}
+@keyframes pa-skeleton { from { background-position: 150% 0; } to { background-position: -150% 0; } }
+
+
+.agent-shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--color-gray-700) 20%,
+    var(--color-gray-1000) 46%,
+    var(--color-gray-700) 72%
+  );
+  background-size: 220% 100%;
+  color: transparent;
+  background-clip: text;
+  animation: agent-shimmer 2.2s linear infinite;
+}
+.agent-thinking-dots { display: inline-flex; gap: 2px; }
+.agent-thinking-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-gray-700);
+  animation: agent-dot 1.1s ease-in-out infinite;
+}
+.agent-thinking-dots i:nth-child(2) { animation-delay: 120ms; }
+.agent-thinking-dots i:nth-child(3) { animation-delay: 240ms; }
+@keyframes agent-shimmer { to { background-position: -220% 0; } }
+@keyframes agent-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-2px); opacity: 1; }
+}
+/* The blanket clamp above already stops these for anyone who asked for less
+   motion; the shimmer also has to give its text back its colour, which a
+   duration of nothing cannot do. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-shimmer {
+    background: none;
+    color: var(--color-gray-700);
+    animation: none;
+  }
+  .agent-thinking-dots i { animation: none; opacity: 0.6; }
+  /* A near-zero duration would freeze the sweep at whatever position it
+     started on, which for a gradient this wide can be its lightest point —
+     a placeholder you cannot see is not a placeholder. */
+  .pa-skeleton { animation: none; background: var(--color-alpha-200); }
+}

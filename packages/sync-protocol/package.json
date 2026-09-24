@@ -1,0 +1,29 @@
+{
+  "name": "@pistachio/sync-protocol",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Sync wire contract: cookie identity, HLC, sealed records, device tokens, key wrappers, hub frames.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.4.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

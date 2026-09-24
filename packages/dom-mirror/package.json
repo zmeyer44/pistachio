@@ -1,0 +1,31 @@
+{
+  "name": "@pistachio/dom-mirror",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The live DOM mirror: the protocol a cloud tab's document travels over, the recorder that runs inside the cloud page, the renderer that rebuilds it in the person's browser, and the asset rewriting between them.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./protocol": "./src/protocol.ts",
+    "./recorder": "./src/recorder.ts",
+    "./renderer": "./src/renderer.ts",
+    "./rewrite": "./src/rewrite.ts",
+    "./assets": "./src/assets.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src test --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pistachio/live-view": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

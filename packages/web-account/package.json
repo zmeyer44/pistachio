@@ -1,0 +1,39 @@
+{
+  "name": "@pistachio/web-account",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The account layer both web apps sign in with: the device, its keys, the control client, the workspace records, the gate and its skin.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./auth.css": "./src/auth.css",
+    "./*": "./src/*",
+    "./credential-capture": "./src/credential-capture.tsx",
+    "./control": "./src/control.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src test --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pistachio/live-view": "workspace:*",
+    "@pistachio/notes": "workspace:*",
+    "@pistachio/protocol": "workspace:*",
+    "@pistachio/sync-engine": "workspace:*",
+    "@pistachio/sync-protocol": "workspace:*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

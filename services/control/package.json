@@ -1,0 +1,48 @@
+{
+  "name": "@pistachio/control",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Control plane: accounts (BetterAuth), devices, key wrappers, session hub, egress credentials, hosted runs, channels.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0",
+    "dev": "tsx watch src/dev-server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@pistachio/egress-policy": "workspace:*",
+    "@pistachio/notifications": "workspace:*",
+    "@pistachio/protocol": "workspace:*",
+    "@pistachio/runtime": "workspace:*",
+    "@pistachio/sync-hub": "workspace:*",
+    "@pistachio/sync-protocol": "workspace:*",
+    "better-auth": "1.7.1",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.7.0",
+    "postgres": "^3.4.0",
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@pistachio/sync-engine": "workspace:*",
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.0",
+    "drizzle-kit": "^0.31.0",
+    "eslint": "^9.39.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,867 @@
+/*
+ * The front door, in both web apps (docs/web-browser-design.md §15).
+ *
+ * The layout is one layout; the material is chosen by `data-skin` on the root
+ * (see `GateSkin` in `./gate.tsx`). The default — `site` — is the marketing
+ * site's room: cream, green, Inter, light only. `shell` is the browser app's,
+ * where the door has to hand off to the first-run walkthrough without a change
+ * of world.
+ *
+ * So the skin is HERE, in plain CSS beside the components it dresses, rather
+ * than in either app's Tailwind entry: `apps/web` never loads the marketing
+ * tokens (§15), and a gate that borrowed one app's would be a different gate
+ * on each site.
+ *
+ * Everything is scoped under `.pa-auth` and, in the `site` dress, every value
+ * is written out rather than inherited — which is also what lets these rules
+ * sit inside the dashboard's `.pa` subtree without its dark ramp reaching
+ * them. The `shell` dress is the deliberate opposite: it reads the shell's own
+ * tokens, because the whole point is that retheming the browser rethemes its
+ * door too. Both are unlayered on purpose: unlayered CSS outranks anything in
+ * a Tailwind layer, so neither app's utilities can undress the door.
+ */
+
+.pa-auth {
+  --pa-auth-green: #004d26;
+  --pa-auth-ink: #204d36;
+  --pa-auth-cream: #f9f4eb;
+  --pa-auth-paper: #fbf9f4;
+  --pa-auth-tile: #eee8dd;
+  --pa-auth-warn: #a03c00;
+
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  color-scheme: light;
+  background: var(--pa-auth-cream);
+  color: var(--pa-auth-green);
+  font-family: var(--font-inter, Inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  font-feature-settings: normal;
+  -webkit-font-smoothing: antialiased;
+}
+
+.pa-auth :is(a, button, input):focus-visible {
+  outline: 2px solid var(--pa-auth-green);
+  outline-offset: 2px;
+}
+
+/* --------------------------------- masthead ------------------------------- */
+
+.pa-auth-masthead {
+  display: flex;
+  flex-shrink: 0;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+}
+
+.pa-auth-brand {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+
+/* The mark is painted, not drawn: a mask filled with the current colour, the
+   way the site renders every brand mark. */
+.pa-auth-mark {
+  display: block;
+  height: 26px;
+  aspect-ratio: 22 / 23;
+  background-color: currentColor;
+  -webkit-mask: url("/logos/pistachio-mark.svg") center / contain no-repeat;
+  mask: url("/logos/pistachio-mark.svg") center / contain no-repeat;
+}
+
+.pa-auth-wordmark {
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--pa-auth-green);
+}
+
+.pa-auth-early {
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  font-weight: 500;
+  color: var(--pa-auth-ink);
+  text-decoration: none;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.pa-auth-early:hover {
+  background: var(--pa-auth-tile);
+  color: var(--pa-auth-green);
+}
+
+/* ---------------------------------- stage --------------------------------- */
+
+.pa-auth-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  max-width: 1512px;
+  margin-inline: auto;
+  padding: 16px;
+}
+
+.pa-auth-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 16px;
+}
+
+@media (width >= 1200px) {
+  .pa-auth-masthead {
+    padding-inline: 24px;
+  }
+  .pa-auth-body {
+    padding: 24px;
+  }
+  .pa-auth-stage {
+    padding: 96px 0;
+  }
+}
+
+.pa-auth-photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pa-auth-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 440px;
+  padding: 22px;
+  background: var(--pa-auth-cream);
+}
+
+.pa-auth-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pa-auth-title {
+  font-size: 24px;
+  line-height: 33.6px;
+  letter-spacing: -0.48px;
+  font-weight: 400;
+  color: var(--pa-auth-green);
+}
+
+.pa-auth-lede,
+.pa-auth-switch {
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: var(--pa-auth-ink);
+}
+
+/* ---------------------------------- form ---------------------------------- */
+
+.pa-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pa-auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pa-auth-label {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: -0.24px;
+  color: var(--pa-auth-ink);
+}
+
+.pa-auth-input {
+  height: 48px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding-inline: 12px;
+  background: var(--pa-auth-paper);
+  box-shadow: inset 0 0 0 1px var(--pa-auth-green);
+  font: inherit;
+  font-size: 16px;
+  line-height: 22px;
+  letter-spacing: -0.32px;
+  color: var(--pa-auth-green);
+  outline: none;
+}
+
+.pa-auth-input::placeholder {
+  color: var(--pa-auth-green);
+  opacity: 1;
+}
+
+.pa-auth-help,
+.pa-auth-remember-note {
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: -0.2px;
+  color: var(--pa-auth-ink);
+}
+
+.pa-auth-remember {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.pa-auth-check {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  cursor: pointer;
+  appearance: none;
+  border-radius: 4px;
+  background: var(--pa-auth-paper);
+  box-shadow: inset 0 0 0 1px var(--pa-auth-green);
+}
+
+.pa-auth-check:checked {
+  background: var(--pa-auth-green) url("/img/check.svg") center / 12px 12px no-repeat;
+}
+
+.pa-auth-remember-text {
+  min-width: 0;
+}
+
+.pa-auth-remember-title {
+  display: block;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: var(--pa-auth-green);
+}
+
+.pa-auth-remember-note {
+  display: block;
+}
+
+.pa-auth-alert {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: -0.24px;
+  color: var(--pa-auth-warn);
+}
+
+.pa-auth-whoami {
+  width: fit-content;
+  border-radius: 40px;
+  padding: 4px 10px;
+  background: var(--pa-auth-paper);
+  box-shadow: inset 0 0 0 1px var(--pa-auth-green);
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: -0.24px;
+  color: var(--pa-auth-green);
+}
+
+/* The site's primary button at `size="lg"`, written out: the gate is the one
+   place both apps show it, and neither ships the marketing button. */
+.pa-auth-submit {
+  display: inline-flex;
+  height: 48px;
+  width: 100%;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 6px;
+  padding-inline: 24px;
+  background: var(--pa-auth-green);
+  color: var(--pa-auth-cream);
+  font: inherit;
+  font-size: 16px;
+  line-height: 22px;
+  letter-spacing: -0.32px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.pa-auth-submit:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--pa-auth-green) 90%, transparent);
+}
+
+.pa-auth-submit:disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.pa-auth-submit svg {
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.pa-auth-textbutton {
+  border: 0;
+  background: none;
+  padding: 0;
+  border-radius: 2px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  font-weight: 500;
+  color: var(--pa-auth-green);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.pa-auth-textbutton:hover {
+  color: var(--pa-auth-ink);
+}
+
+/* --------------------------------- loading -------------------------------- */
+
+.pa-auth-wait {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: -0.28px;
+  color: var(--pa-auth-ink);
+}
+
+/* ---------------------------------- the PIN -------------------------------- */
+
+/*
+ * Six circles that always fit on one line.
+ *
+ * `flex: 1 1 0` with `aspect-ratio: 1` is what makes that a guarantee rather
+ * than a hope: each slot takes an equal share of whatever width the card has
+ * and is as tall as it is wide, so they shrink together on a phone and stop
+ * growing at a chunky, quarter-ish `max-width` on a desktop. No breakpoint can
+ * put the sixth one on a second row, because there is no width at which the
+ * row is allowed to be wider than its container.
+ */
+
+/* The PIN screens have no card: the ask, the circles, and the ground. A column
+   narrow enough to read and wide enough for six circles at their full size. */
+.pa-auth-bare {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  max-width: 420px;
+  margin-inline: auto;
+  padding: 48px 8px 96px;
+  text-align: center;
+}
+
+.pa-auth-bare .pa-auth-head {
+  align-items: center;
+  gap: 8px;
+}
+
+.pa-auth-bare .pa-auth-lede {
+  max-width: 34ch;
+}
+
+/* The block under the keypad. It is one flex item now rather than three, so it
+   carries the column's own gap internally and the spacing is unchanged — what
+   changed is that it no longer leaves a hole behind when it is hidden. */
+.pa-auth-tail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+}
+
+/* Everything but the ring gets out of the way before it turns — on the ring's
+   own curve, so the screen leaves as one object rather than in pieces. The
+   values are the JS constants (`SETTLE`, the wrap's own length) written out;
+   there is no shared place for a curve that is half in a keyframe and half in
+   a transition. */
+.pa-auth-bare[data-leaving] > :not(.pa-pin-stage) {
+  opacity: 0;
+  /* Still laid out, so nothing below the keypad moves; just not there to be
+     seen or hit. */
+  pointer-events: none;
+  transition: opacity 420ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* A wrong PIN, before it is nearly the last one: the warm colour without the
+   filled block the alert brings. */
+.pa-auth-pinwarn {
+  max-width: 38ch;
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: -0.24px;
+  color: var(--pa-auth-warn);
+}
+
+.pa-auth-pinnote {
+  max-width: 38ch;
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: -0.24px;
+  color: var(--pa-auth-ink);
+}
+
+/* The stage does not move; the orbit spins; the row lifts. Three elements
+   because the wrap needs three independent transforms, and composing them onto
+   one would mean rebuilding the whole string on every keyframe. */
+.pa-pin-stage {
+  width: 100%;
+}
+
+.pa-pin-orbit {
+  width: 100%;
+  /* The row's box is this box, and the finished ring is centred on it, so a
+     rotation here is a rotation about the ring's own centre. */
+  transform-origin: 50% 50%;
+}
+
+.pa-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(6px, 1.8vw, 12px);
+  width: 100%;
+}
+
+.pa-pin-slot {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 56px;
+  aspect-ratio: 1;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: var(--pa-auth-paper);
+  box-shadow: inset 0 0 0 1px var(--pa-auth-green);
+  font: inherit;
+  font-size: clamp(15px, 4.2vw, 20px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+  color: var(--pa-auth-green);
+  outline: none;
+  caret-color: transparent;
+  transition: background-color 150ms ease, box-shadow 150ms ease, color 150ms ease;
+}
+
+/* A slot with a digit in it reads as done. The placeholder is one space, which
+   draws nothing and exists only so `:placeholder-shown` can tell empty from
+   filled without the component having to say so in a class. */
+.pa-pin-slot:not(:placeholder-shown) {
+  background: var(--pa-auth-green);
+  color: var(--pa-auth-cream);
+}
+
+/* The ring IS the focus indicator on a circle; the door's generic outline
+   would only draw a second, squarer one around it. */
+.pa-pin-slot:is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--pa-auth-green);
+}
+
+.pa-pin[data-wrong] .pa-pin-slot {
+  background: var(--pa-auth-paper);
+  box-shadow: inset 0 0 0 1px var(--pa-auth-warn);
+  color: var(--pa-auth-warn);
+}
+
+/* While the wrap runs, everything that moves gets its own compositor layer.
+   These are `<input>`s with a ring and a glyph in them: without the promotion
+   each frame is a repaint of six of those plus the group, and the animation
+   grains even though nothing about it is expensive. `will-change` is scoped to
+   the attribute rather than left on, because a permanent layer per circle
+   costs memory for the entire time the keypad is only being typed into. */
+.pa-pin[data-wrapping],
+.pa-pin[data-wrapping] .pa-pin-slot,
+.pa-pin-orbit:has(.pa-pin[data-wrapping]) {
+  will-change: transform, opacity;
+}
+
+.pa-pin[data-wrapping] .pa-pin-slot {
+  pointer-events: none;
+  /* Nothing about a slot changes during the wrap, so a transition left armed
+     here can only fire on a stray recalc and fight the transform. */
+  transition: none;
+}
+
+/* The masthead goes too, a beat later, so what is left spinning at the end is
+   six circles on the ground the desktop is about to be on. */
+.pa-auth:has(.pa-auth-bare[data-leaving]) .pa-auth-masthead {
+  opacity: 0;
+  transition: opacity 520ms cubic-bezier(0.32, 0.72, 0, 1) 240ms;
+}
+
+/* ────────────────────────── the browser app's dress ────────────────────────
+ *
+ * `apps/web` is the browser and nothing else, so this door opens directly onto
+ * the shell — and, for a new account, onto the first-run walkthrough, whose
+ * every step floats on the theme's own gradient (§14). The layout above is
+ * unchanged: masthead, one card in the middle, title, lede, form. Only the
+ * material is, and all of it comes from
+ * `@pistachio/shell-ui/theme.css` rather than being written out, so the door
+ * follows the browser's ramp instead of drifting from it.
+ *
+ * `apps/www` never sets the attribute, so its front door is untouched by
+ * everything below.
+ */
+
+.pa-auth[data-skin="shell"] {
+  /* The pane the app's layout hands it, not the viewport: the shell's ground
+     is `overflow: hidden`, and a door claiming `100vh` inside it would push
+     its own foot past the clip. */
+  min-height: 0;
+  height: 100%;
+  background-color: var(--color-background-200);
+  /* The wizard's two blooms, in the theme's own accents. */
+  background-image:
+    radial-gradient(60% 55% at 85% 10%, color-mix(in srgb, var(--theme-accent-3) 30%, transparent), transparent 70%),
+    radial-gradient(55% 60% at 10% 90%, color-mix(in srgb, var(--theme-accent-2) 28%, transparent), transparent 70%);
+  color: var(--color-gray-1000);
+  font-family: var(--font-sans);
+}
+
+/* The gate renders before the shell has read its settings, so in practice this
+   is the light ramp; the rule is here so a door that ever does open in a dark
+   window brings its form controls with it. */
+:root[data-color-scheme="dark"] .pa-auth[data-skin="shell"] {
+  color-scheme: dark;
+}
+
+.pa-auth[data-skin="shell"] :is(a, button, input):focus-visible {
+  outline-color: var(--color-blue-700);
+}
+
+/* ---------------------------- masthead, quieter --------------------------- */
+
+.pa-auth[data-skin="shell"] .pa-auth-masthead {
+  padding: 14px 16px;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-brand {
+  color: var(--color-gray-1000);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-mark {
+  height: 22px;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-wordmark {
+  font-size: 15px;
+  letter-spacing: -0.02em;
+  color: var(--color-gray-1000);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-early {
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 16px;
+  letter-spacing: normal;
+  color: var(--color-gray-900);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-early:hover {
+  background: var(--color-alpha-100);
+  color: var(--color-gray-1000);
+}
+
+/* ------------------------------- the window ------------------------------- */
+
+/* The card scrolls, not the tab, for the same reason the root is `100%`. */
+.pa-auth[data-skin="shell"] .pa-auth-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-stage {
+  padding: 8px 16px 56px;
+}
+
+@media (width >= 1200px) {
+  .pa-auth[data-skin="shell"] .pa-auth-stage {
+    padding: 16px 0 72px;
+  }
+}
+
+/* Flat: a hairline and a fill, not an elevation. Nothing on this page is
+   floating over anything — the card IS the page's one surface — so a modal's
+   shadow would be describing a stack that is not there. */
+.pa-auth[data-skin="shell"] .pa-auth-card {
+  gap: 20px;
+  max-width: 440px;
+  border-radius: 16px;
+  padding: 28px;
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-border);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-head {
+  gap: 6px;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-title {
+  font-size: 24px;
+  line-height: 32px;
+  letter-spacing: -0.03em;
+  font-weight: 600;
+  color: var(--color-gray-1000);
+}
+
+.pa-auth[data-skin="shell"] :is(.pa-auth-lede, .pa-auth-switch, .pa-auth-wait) {
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: normal;
+  color: var(--color-gray-900);
+}
+
+/* ---------------------------------- form ---------------------------------- */
+
+.pa-auth[data-skin="shell"] .pa-auth-form {
+  gap: 14px;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-label {
+  font-size: 13px;
+  line-height: 16px;
+  letter-spacing: normal;
+  color: var(--color-gray-1000);
+}
+
+/* Geist Input at `md`: a hairline ring rather than a border, thickened on
+   hover and doubled on focus. */
+.pa-auth[data-skin="shell"] .pa-auth-input {
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-border);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: normal;
+  color: var(--color-gray-1000);
+  transition: box-shadow 150ms ease;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-input:hover {
+  box-shadow: 0 0 0 1px var(--color-gray-500);
+}
+
+/* The ring IS the focus indicator here, so the outline the door draws on
+   everything else would only double it. */
+.pa-auth[data-skin="shell"] .pa-auth-input:is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--color-gray-1000), 0 0 0 4px var(--color-alpha-200);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-input::placeholder {
+  color: var(--color-gray-700);
+}
+
+.pa-auth[data-skin="shell"] :is(.pa-auth-help, .pa-auth-remember-note) {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: normal;
+  color: var(--color-gray-700);
+}
+
+/* The one trade-off on the page, in a well of its own so it reads as a single
+   thing to decide rather than a stray line of prose. */
+/* One boundary per grouping: the fill is the grouping, so no ring on top. */
+.pa-auth[data-skin="shell"] .pa-auth-remember {
+  position: relative;
+  border-radius: var(--radius-md);
+  padding: 10px;
+  background: var(--color-gray-100);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-check {
+  border-radius: var(--radius-xs);
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-border);
+  transition: background-color 150ms ease;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-check:checked {
+  background: var(--color-gray-1000);
+  box-shadow: none;
+}
+
+/* Masked, so the tick is the card's own colour whichever end of the ramp the
+   fill under it came from. Sits over the box; the box is what takes the
+   click. */
+.pa-auth[data-skin="shell"] .pa-auth-tick {
+  position: absolute;
+  top: 12px;
+  left: 10px;
+  width: 16px;
+  height: 16px;
+  opacity: 0;
+  pointer-events: none;
+  background-color: var(--color-gray-100);
+  -webkit-mask: url("/img/check.svg") center / 12px 12px no-repeat;
+  mask: url("/img/check.svg") center / 12px 12px no-repeat;
+  transition: opacity 120ms ease;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-check:checked ~ .pa-auth-tick {
+  opacity: 1;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-remember-title {
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: normal;
+  font-weight: 500;
+  color: var(--color-gray-1000);
+}
+
+/* The wizard's stage notice, which is where the reader last saw a failure. */
+.pa-auth[data-skin="shell"] .pa-auth-alert {
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  background: var(--color-red-100);
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: normal;
+  color: var(--color-red-1000);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-whoami {
+  background: var(--color-background-200);
+  box-shadow: var(--shadow-border);
+  letter-spacing: normal;
+  color: var(--color-gray-900);
+}
+
+/* Geist Button, `default` at `lg` — the same shape and weight the walkthrough
+   moves forward with. */
+.pa-auth[data-skin="shell"] .pa-auth-submit {
+  height: 48px;
+  border-radius: var(--radius-sm);
+  padding-inline: 20px;
+  background: var(--color-gray-1000);
+  color: var(--color-background-100);
+  font-size: 16px;
+  line-height: 20px;
+  letter-spacing: normal;
+  font-weight: 500;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-submit:hover:not(:disabled) {
+  background: var(--color-gray-900);
+}
+
+/* Geist says a disabled button is a filled shape that is plainly not the
+   primary one, rather than the primary one at half strength. */
+.pa-auth[data-skin="shell"] .pa-auth-submit:disabled {
+  opacity: 1;
+  background: var(--color-gray-100);
+  color: var(--color-gray-700);
+  box-shadow: var(--shadow-border);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-textbutton {
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: normal;
+  color: var(--color-gray-1000);
+  text-decoration-color: var(--color-gray-500);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-textbutton:hover {
+  color: var(--color-gray-900);
+  text-decoration-color: currentColor;
+}
+
+/* ------------------------------ the PIN, shelled -------------------------- */
+
+.pa-auth[data-skin="shell"] .pa-auth-pinnote {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: normal;
+  color: var(--color-gray-700);
+}
+
+.pa-auth[data-skin="shell"] .pa-auth-pinwarn {
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: normal;
+  color: var(--color-red-900);
+}
+
+/* No card here, so the title carries the screen rather than sitting inside
+   something: the walkthrough's own headline weight, one step down. */
+.pa-auth[data-skin="shell"] .pa-auth-bare .pa-auth-title {
+  font-size: 30px;
+  line-height: 36px;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+}
+
+.pa-auth[data-skin="shell"] .pa-pin-slot {
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-border);
+  color: var(--color-gray-1000);
+  font-weight: 500;
+}
+
+.pa-auth[data-skin="shell"] .pa-pin-slot:not(:placeholder-shown) {
+  background: var(--color-gray-1000);
+  box-shadow: none;
+  color: var(--color-background-100);
+}
+
+.pa-auth[data-skin="shell"] .pa-pin-slot:is(:focus, :focus-visible) {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--color-gray-1000), 0 0 0 4px var(--color-alpha-200);
+}
+
+.pa-auth[data-skin="shell"] .pa-pin[data-wrong] .pa-pin-slot {
+  background: var(--color-red-100);
+  box-shadow: 0 0 0 1px var(--color-red-700);
+  color: var(--color-red-1000);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pa-auth *,
+  .pa-auth *::before,
+  .pa-auth *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,169 @@
+/**
+ * The shell's design tokens (docs/web-browser-design.md §3.3). Imported by the
+ * desktop after its own `@theme static { --color-*: initial; }` reset and by
+ * the web app after its own tokens — never the reset, which would wipe them.
+ */
+/* ── Geist foundation ────────────────────────────────────────────────────────
+   Tokens follow Vercel's Geist system (vercel.com/geist): a 10-step scale per
+   hue where 100–300 are backgrounds, 400–600 borders, 700–800 high-contrast
+   fills, and 900–1000 text. Values are Geist's published light-mode oklch
+   values. The chrome is light throughout: background-100 is the panel face,
+   background-200 the recessed strip behind it. */
+@theme static {
+  --color-background-100: oklch(1 0 0);
+  --color-background-200: oklch(0.984 0 0);
+
+  --color-gray-100: oklch(0.961 0 0);
+  --color-gray-200: oklch(0.94 0 0);
+  --color-gray-300: oklch(0.925 0 0);
+  --color-gray-400: oklch(0.937 0 0);
+  --color-gray-500: oklch(0.836 0 0);
+  --color-gray-600: oklch(0.732 0 0);
+  --color-gray-700: oklch(0.65 0 0);
+  --color-gray-800: oklch(0.59 0 0);
+  --color-gray-900: oklch(0.42 0 0);
+  --color-gray-1000: oklch(0.205 0 0);
+
+  --color-alpha-100: oklch(0 0 0 / 0.05);
+  --color-alpha-200: oklch(0 0 0 / 0.081);
+  --color-alpha-300: oklch(0 0 0 / 0.1);
+  --color-alpha-400: oklch(0 0 0 / 0.08);
+  --color-alpha-500: oklch(0 0 0 / 0.21);
+  --color-alpha-600: oklch(0 0 0 / 0.24);
+  --color-alpha-700: oklch(0 0 0 / 0.44);
+  --color-alpha-800: oklch(0 0 0 / 0.51);
+  --color-alpha-900: oklch(0 0 0 / 0.7);
+  --color-alpha-1000: oklch(0 0 0 / 0.91);
+
+  --color-blue-100: oklch(97.32% 0.0141 251.56);
+  --color-blue-400: oklch(91.58% 0.0473 245.116);
+  --color-blue-700: oklch(57.61% 0.2508 258.23);
+  --color-blue-900: oklch(53.18% 0.2399 256.99);
+  --color-blue-1000: oklch(26.67% 0.1099 254.34);
+
+  --color-red-100: oklch(96.5% 0.0223 13.09);
+  --color-red-400: oklch(91.51% 0.0471 19.8);
+  --color-red-700: oklch(62.56% 0.2524 23.03);
+  --color-red-900: oklch(54.99% 0.232 25.29);
+  --color-red-1000: oklch(24.8% 0.1041 18.86);
+
+  --color-amber-100: oklch(97.48% 0.0331 85.79);
+  --color-amber-400: oklch(91.02% 0.1322 88.25);
+  --color-amber-700: oklch(81.87% 0.1969 76.46);
+  --color-amber-900: oklch(52.79% 0.1496 54.65);
+  --color-amber-1000: oklch(30.83% 0.099 45.48);
+
+  --color-green-100: oklch(97.59% 0.0289 145.42);
+  --color-green-400: oklch(91.49% 0.0976 146.24);
+  --color-green-700: oklch(64.58% 0.1746 147.27);
+  --color-green-900: oklch(51.75% 0.1453 147.65);
+  --color-green-1000: oklch(29.15% 0.1197 147.38);
+
+  --color-white: #fff;
+  --color-black: #000;
+  --color-transparent: transparent;
+
+  /* Semantic aliases (shadcn naming, Geist values). */
+  --color-background: var(--color-background-100);
+  --color-foreground: var(--color-gray-1000);
+  --color-muted: var(--color-gray-100);
+  --color-muted-foreground: var(--color-gray-900);
+  --color-border: var(--color-alpha-400);
+  --color-ring: var(--color-blue-700);
+  --color-primary: var(--color-gray-1000);
+  --color-primary-foreground: var(--color-background-100);
+
+  --font-sans: "Geist Variable", Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", "SFMono-Regular", Consolas, monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Geist materials: a 1px alpha border as a shadow, and the two elevations. */
+  --shadow-border: 0 0 0 1px oklch(0 0 0 / 0.08);
+  --shadow-small: 0 0 0 1px oklch(0 0 0 / 0.08), 0 2px 2px oklch(0 0 0 / 0.04);
+  --shadow-menu: 0 0 0 1px oklch(0 0 0 / 0.08), 0 4px 8px -4px oklch(0 0 0 / 0.04), 0 8px 12px oklch(0 0 0 / 0.08);
+  --shadow-modal: 0 0 0 1px oklch(0 0 0 / 0.08), 0 8px 24px oklch(0 0 0 / 0.08), 0 16px 48px oklch(0 0 0 / 0.12);
+
+  --animate-overlay-in: overlay-in 140ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  --animate-backdrop-in: backdrop-in 140ms ease-out both;
+  --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
+  /* The report's preview panel, timed from the page it is modelled on: 300ms on the standard curve,
+     in and out, for the panel beside the page and for the scrim; the sheet comes up on a spring
+     (stiffness 550, damping 45, from rest) baked into a linear() easing, and leaves on the curve. */
+  --ease-panel: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-sheet-spring: linear(0, 0.0237, 0.0818, 0.1594, 0.2459, 0.3343, 0.42, 0.5003, 0.5735, 0.6389, 0.6966, 0.7467, 0.7899, 0.8267, 0.8577, 0.8838, 0.9056, 0.9236, 0.9385, 0.9507, 0.9606, 0.9687, 0.9752, 0.9805, 0.9847, 0.9881, 0.9907, 0.9928, 0.9945, 0.9958, 0.9968, 0.9976, 0.9982, 0.9987, 0.999, 0.9993, 0.9995, 0.9997, 0.9998, 0.9999, 1);
+  --animate-panel-in: panel-in 300ms var(--ease-panel) both;
+  --animate-panel-out: panel-out 300ms var(--ease-panel) both;
+  --animate-sheet-in: sheet-in 400ms var(--ease-sheet-spring) both;
+  --animate-sheet-out: sheet-out 300ms var(--ease-panel) both;
+  --animate-scrim-in: backdrop-in 300ms var(--ease-panel) both;
+  --animate-scrim-out: backdrop-out 300ms var(--ease-panel) both;
+}
+
+/* Appearance settings override the two background tokens inline. Everything
+   else changes here as a coherent dark palette, rather than inverting each
+   component independently. */
+:root {
+  --theme-accent: #88c999;
+  --theme-accent-2: #67bfb4;
+  --theme-accent-3: #98b9ef;
+  --theme-window-gradient: none;
+  --theme-glass-gradient: none;
+  --theme-texture-opacity: 0;
+  --theme-surface-opacity: 0.78;
+  --theme-surface-opacity-percent: 78%;
+  --theme-glass-tint-opacity-percent: 25%;
+}
+
+:root[data-color-scheme="dark"] {
+  --color-gray-100: oklch(0.245 0.006 260);
+  --color-gray-200: oklch(0.275 0.006 260);
+  --color-gray-300: oklch(0.305 0.006 260);
+  --color-gray-400: oklch(0.34 0.006 260);
+  --color-gray-500: oklch(0.43 0.006 260);
+  --color-gray-600: oklch(0.52 0.006 260);
+  --color-gray-700: oklch(0.63 0.006 260);
+  --color-gray-800: oklch(0.72 0.006 260);
+  --color-gray-900: oklch(0.82 0.006 260);
+  --color-gray-1000: oklch(0.95 0.004 260);
+
+  --color-alpha-100: oklch(1 0 0 / 0.055);
+  --color-alpha-200: oklch(1 0 0 / 0.085);
+  --color-alpha-300: oklch(1 0 0 / 0.115);
+  --color-alpha-400: oklch(1 0 0 / 0.1);
+  --color-alpha-500: oklch(1 0 0 / 0.22);
+  --color-alpha-600: oklch(1 0 0 / 0.28);
+  --color-alpha-700: oklch(1 0 0 / 0.48);
+  --color-alpha-800: oklch(1 0 0 / 0.58);
+  --color-alpha-900: oklch(1 0 0 / 0.76);
+  --color-alpha-1000: oklch(1 0 0 / 0.93);
+
+  --color-blue-100: oklch(0.28 0.055 255);
+  --color-blue-400: oklch(0.4 0.1 255);
+  --color-blue-700: oklch(0.69 0.17 255);
+  --color-blue-900: oklch(0.78 0.13 255);
+  --color-blue-1000: oklch(0.92 0.04 255);
+  --color-red-100: oklch(0.27 0.05 22);
+  --color-red-400: oklch(0.4 0.1 22);
+  --color-red-700: oklch(0.68 0.2 22);
+  --color-red-900: oklch(0.78 0.15 22);
+  --color-red-1000: oklch(0.92 0.045 22);
+  --color-amber-100: oklch(0.28 0.05 80);
+  --color-amber-400: oklch(0.42 0.1 80);
+  --color-amber-700: oklch(0.78 0.16 80);
+  --color-amber-900: oklch(0.83 0.12 80);
+  --color-amber-1000: oklch(0.94 0.04 80);
+  --color-green-100: oklch(0.27 0.045 146);
+  --color-green-400: oklch(0.4 0.09 146);
+  --color-green-700: oklch(0.68 0.16 146);
+  --color-green-900: oklch(0.79 0.12 146);
+  --color-green-1000: oklch(0.93 0.04 146);
+
+  --shadow-border: 0 0 0 1px oklch(1 0 0 / 0.1);
+  --shadow-small: 0 0 0 1px oklch(1 0 0 / 0.1), 0 2px 3px oklch(0 0 0 / 0.2);
+  --shadow-menu: 0 0 0 1px oklch(1 0 0 / 0.11), 0 8px 18px oklch(0 0 0 / 0.34);
+  --shadow-modal: 0 0 0 1px oklch(1 0 0 / 0.12), 0 16px 48px oklch(0 0 0 / 0.5);
+}

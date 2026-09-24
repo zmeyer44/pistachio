@@ -1,0 +1,29 @@
+import { _electron as electron, expect } from '@playwright/test';
+import { mkdtemp, writeFile, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createServer } from 'node:http';
+const dir=resolve('../../docs/qa/2026-09-09/organization/extra/reorder');
+await mkdir(dir,{recursive:true});
+const server=createServer((req,res)=>{const name=decodeURIComponent(req.url.slice(1))||'Travel planning';res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(`<html><head><title>${name}</title></head><body style="font:18px system-ui;max-width:720px;margin:60px auto"><h1>${name}</h1><p>Plan a weekend away. Compare destinations, save useful pages, and organize your research.</p><nav><a href="/Museums">Museums</a> · <a href="/Hotels">Hotels</a> · <a href="/Restaurants">Restaurants</a></nav><p><label>Travel notes <textarea placeholder="Write your plans here"></textarea></label></p></body></html>`)});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));
+const origin=`http://127.0.0.1:${server.address().port}`;
+const profile=await mkdtemp(join(tmpdir(),'pistachio-organization-qa-'));
+await writeFile(join(profile,'settings.json'),JSON.stringify({general:{homeUrl:origin+'/'},layout:{mode:'sidebar',sidebar:'pinned'}}));
+let app,shell; const results=[];let seq=0;
+async function launch(){app=await electron.launch({args:['.'],cwd:process.cwd(),executablePath:resolve('node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),env:{...process.env,PISTACHIO_E2E:'1',PISTACHIO_USER_DATA:profile}});await expect.poll(()=>app.windows().some(p=>p.url().includes('index.html')&&!p.url().includes('#'))).toBe(true);shell=app.windows().find(p=>p.url().includes('index.html')&&!p.url().includes('#'));await shell.waitForLoadState('domcontentloaded');shell.setDefaultTimeout(5000);await expect(shell.getByTestId('new-tab-button')).toBeVisible();}
+const state=()=>shell.evaluate(()=>window.pistachio.getSnapshot());
+async function shot(name){
+const f=`${String(++seq).padStart(2,'0')}-${name}.png`;
+const capture=await app.evaluate(async({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0];const frame=await w.capturePage();const size=frame.getSize();const views=await Promise.all(w.contentView.children.filter(c=>'webContents' in c&&'getVisible' in c&&c.getVisible()).map(async c=>{try{return await Promise.race([(async()=>({bounds:c.getBounds(),png:(await c.webContents.capturePage()).toPNG().toString('base64')}))(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('capture timeout')),1500))]);}catch{return null;}}));return{frame:frame.toPNG().toString('base64'),...size,scale:size.width/w.getContentSize()[0],views}});
+const data=await shell.evaluate(async c=>{const decode=p=>new Promise((r,j)=>{let im=new Image();im.onload=()=>r(im);im.onerror=j;im.src='data:image/png;base64,'+p});let canvas=document.createElement('canvas');canvas.width=c.width;canvas.height=c.height;let ctx=canvas.getContext('2d');ctx.drawImage(await decode(c.frame),0,0);for(const v of c.views.filter(Boolean))ctx.drawImage(await decode(v.png),Math.round(v.bounds.x*c.scale),Math.round(v.bounds.y*c.scale));return canvas.toDataURL('image/png').split(',')[1]},capture);await writeFile(join(dir,f),Buffer.from(data,'base64'));return f;}
+async function step(name,fn){try{const detail=await fn();results.push({name,ok:true,detail,screenshot:await shot(name).catch(e=>'Capture unavailable: '+String(e))});}catch(e){results.push({name,ok:false,error:String(e),screenshot:await shot(name+'-failure').catch(e=>'Capture unavailable: '+String(e)),dom:await shell.locator('body').innerText()});await shell.keyboard.press('Escape').catch(()=>{});}await writeFile(join(dir,'results.json'),JSON.stringify({profile,origin,results},null,2));console.log(JSON.stringify(results.at(-1)));}
+async function menu(row,name){await row.click({button:'right'});await shell.getByRole('menuitem',{name,exact:true}).click();}
+async function newTab(name){await shell.getByTestId('new-tab-button').click();await shell.getByTestId('address-input').fill(origin+'/'+name);await shell.getByTestId('address-input').press('Enter');await expect.poll(async()=>{const s=await state();return s.tabs.find(t=>t.id===s.activeTabId)?.url}).toBe(origin+'/'+name);}
+const settle=()=>shell.getByTestId('sidebar-tab-list').evaluate(async list=>{await Promise.all(list.getAnimations({subtree:true}).map(a=>a.finished.catch(()=>{})))});
+try{
+await launch();
+await step('tabs-ready-to-reorder',async()=>{await newTab('Museums');await newTab('Hotels');await newTab('Restaurants');await expect.poll(async()=>(await state()).tabs.every(t=>!t.loading)).toBe(true);await settle();return state()});
+await step('drag-last-tab-before-first',async()=>{const rows=shell.getByTestId('human-tab');const from=await rows.last().boundingBox();const to=await rows.first().boundingBox();await shell.mouse.move(from.x+from.width/2,from.y+from.height/2);await shell.mouse.down();await shell.mouse.move(from.x+from.width/2,from.y+from.height/2+8,{steps:2});await shell.mouse.move(to.x+to.width/2,to.y+3,{steps:12});await shell.mouse.up();await settle();await expect(rows.first()).toContainText('Restaurants');return {state:await state(),visibleOrder:await rows.allTextContents()}});
+await step('drag-tab-into-pinned',async()=>{const row=shell.getByTestId('human-tab').first();const from=await row.boundingBox();const to=await shell.getByTestId('new-tab-button').boundingBox();await shell.mouse.move(from.x+from.width/2,from.y+from.height/2);await shell.mouse.down();await shell.mouse.move(from.x+from.width/2,from.y+from.height/2+8,{steps:2});await shell.mouse.move(to.x+40,to.y+4,{steps:12});await shell.mouse.up();await settle();await expect(shell.getByTestId('pinned-tab')).toHaveCount(1);return state()});
+}finally{if(app)await app.close();server.close();}

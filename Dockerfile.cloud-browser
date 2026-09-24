@@ -1,0 +1,16 @@
+FROM node:22-bookworm
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+
+RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+
+WORKDIR /app
+COPY . .
+RUN pnpm install --filter @pistachio/cloud-browser... --frozen-lockfile
+RUN pnpm --filter @pistachio/cloud-browser exec playwright-core install --with-deps chromium
+
+ENV NODE_ENV=production
+EXPOSE 8791
+
+CMD ["pnpm", "--filter", "@pistachio/cloud-browser", "start"]

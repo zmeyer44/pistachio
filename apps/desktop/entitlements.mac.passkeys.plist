@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened runtime requirements for Electron/Chromium. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- Browser features: getUserMedia, Read Aloud, downloads. -->
+  <key>com.apple.security.device.camera</key>
+  <true/>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <!-- Touch ID passkeys (app.configureWebAuthn). codesign does not expand $(AppIdentifierPrefix), so the Team ID is spelled out; must match DEFAULT_WEBAUTHN_ACCESS_GROUP in src/main/index.ts. -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>PHSRT54C87.run.pistachio.desktop.webauthn</string>
+  </array>
+</dict>
+</plist>

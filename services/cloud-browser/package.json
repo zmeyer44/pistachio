@@ -1,0 +1,54 @@
+{
+  "name": "@pistachio/cloud-browser",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Cloud browser runner: Playwright Chromium as a sync device, the hosted agent loop, and the live-view stream.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0",
+    "dev": "tsx watch src/dev-server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.0",
+    "@pistachio/adapters": "workspace:*",
+    "@pistachio/agent-runtime": "workspace:*",
+    "@pistachio/dom-mirror": "workspace:*",
+    "@pistachio/egress-policy": "workspace:*",
+    "@pistachio/evidence": "workspace:*",
+    "@pistachio/live-view": "workspace:*",
+    "@pistachio/notes": "workspace:*",
+    "@pistachio/policy": "workspace:*",
+    "@pistachio/protocol": "workspace:*",
+    "@pistachio/runtime": "workspace:*",
+    "@pistachio/shell-contracts": "workspace:*",
+    "@pistachio/smart-find": "workspace:*",
+    "@pistachio/sync-engine": "workspace:*",
+    "@pistachio/sync-protocol": "workspace:*",
+    "ai": "^7.0.107",
+    "hono": "^4.7.0",
+    "playwright-core": "^1.62.1",
+    "undici": "7.29.0",
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.0",
+    "eslint": "^9.39.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

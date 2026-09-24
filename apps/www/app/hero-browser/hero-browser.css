@@ -1,0 +1,155 @@
+/*
+ * The hero's browser, dressed as the desktop is (docs/web-browser-design.md
+ * §3.3): the shell's own tokens and layers over Tailwind, the same entry
+ * `apps/web` uses — plus what a window sitting on a wallpaper needs, which
+ * neither the desktop (AppKit blurs for it) nor the web app (a tab is the
+ * whole screen) has to say in CSS.
+ *
+ * This route renders inside an <iframe> in the landing page's hero
+ * (components/hero-desktop.tsx). The marketing stylesheet still loads first
+ * through the root layout; everything here is scoped under `.hero-browser`
+ * or overrides the document's own ground on purpose.
+ *
+ * `source(none)` and the named `@source`s: this stylesheet must generate the
+ * utilities the SHELL uses, and only those. Without `source(none)` Tailwind
+ * would scan the whole site again from here, doubling the marketing site's
+ * utilities into a stylesheet only this frame loads.
+ */
+
+@import "tailwindcss" source(none);
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@pistachio/shell-ui/theme.css";
+@import "@pistachio/shell-ui/shell.css";
+@import "@pistachio/web-account/auth.css";
+@source "../../components/hero-browser";
+@source "../../../../packages/web-account/src";
+
+html,
+body {
+  height: 100%;
+}
+
+/*
+ * The wallpaper. The hero paints the same image behind the window and, once
+ * the frame has loaded, sizes and offsets this copy to line up with it — so
+ * the chrome's backdrop blur has the right pixels under it and the window
+ * reads as sitting on the desk rather than on a patch of its own. Until then
+ * (and when the route is opened on its own) it covers the frame, centred.
+ */
+body {
+  margin: 0;
+  overflow: hidden;
+  background-color: #dfe5d8;
+  background-image: url("/img/hero-wallpaper-pistachio.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  color: var(--color-gray-1000);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11";
+}
+
+/* The shell fills the frame; nothing inside scrolls the document. */
+.hero-browser {
+  position: relative;
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+}
+.hero-browser > * {
+  height: 100%;
+}
+
+/*
+ * Glass. On the Mac the shell leaves its grounds transparent and AppKit
+ * blurs the desktop behind the window; in a browser tab the grounds are
+ * opaque because there is nothing behind them. Here there is: the wallpaper
+ * above. So the grounds go clear as they do on the Mac, and the one blur
+ * AppKit would do is done once, on the chrome container, over the wallpaper.
+ * Every rule names both the plain and the desktop-glass state (ThemeRuntime
+ * turns the latter on for Mac visitors) so the frame looks the same on any
+ * platform.
+ */
+.hero-browser .theme-window,
+.hero-browser .chrome-layout-ground,
+.hero-browser .browser-surface,
+.hero-browser .chrome-panel-surface,
+:root[data-desktop-glass="on"] .hero-browser .theme-window,
+:root[data-desktop-glass="on"] .hero-browser .chrome-layout-ground,
+:root[data-desktop-glass="on"] .hero-browser .browser-surface,
+:root[data-desktop-glass="on"] .hero-browser .chrome-panel-surface {
+  background-color: transparent;
+  background-image: none;
+}
+.hero-browser .chrome-strip,
+.hero-browser .chrome-sidebar,
+:root[data-desktop-glass="on"] .hero-browser .chrome-strip,
+:root[data-desktop-glass="on"] .hero-browser .chrome-sidebar {
+  background-color: transparent;
+  background-image: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.hero-browser .chrome-container,
+:root[data-desktop-glass="on"] .hero-browser .chrome-container {
+  background-color: color-mix(in srgb, var(--color-background-200) 64%, transparent);
+  background-image: var(--theme-glass-gradient);
+  -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  backdrop-filter: blur(40px) saturate(1.5);
+}
+
+/* The page card's own ground: a pane is opaque, whatever sits under the chrome. */
+.hero-browser .demo-page {
+  background: #fff;
+}
+
+/* A pane keeps the page's own scrolling; the page never scrolls the frame. */
+.hero-browser .demo-page * {
+  overscroll-behavior: contain;
+}
+
+/*
+ * The demo's moving pictures (components/hero-browser/pages.tsx): a video
+ * "playing" gently pans its artwork with a creeping
+ * playhead; a clip being read aloud is a breathing waveform.
+ */
+.hero-browser .demo-video {
+  container-type: inline-size;
+}
+.hero-browser .demo-video-drift {
+  animation: demo-video-drift 12s ease-in-out infinite alternate;
+}
+@keyframes demo-video-drift {
+  from { transform: scale(1); }
+  to { transform: scale(1.04); }
+}
+.hero-browser .demo-video-playhead {
+  width: 22%;
+  animation: demo-video-playhead 60s linear infinite;
+}
+@keyframes demo-video-playhead {
+  to { width: 100%; }
+}
+.hero-browser .demo-wave {
+  animation: demo-wave 900ms ease-in-out infinite alternate;
+}
+@keyframes demo-wave {
+  to { transform: scaleY(0.35); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-browser .demo-video-drift,
+  .hero-browser .demo-video-playhead,
+  .hero-browser .demo-wave {
+    animation: none;
+  }
+}
+
+/*
+ * Next's dev overlay (the "N Issues" badge) mounts itself in every document,
+ * this frame included, where it would sit on the preview's sidebar. The
+ * landing page keeps its own; the preview never shows one.
+ */
+nextjs-portal {
+  display: none !important;
+}

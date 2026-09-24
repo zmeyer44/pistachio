@@ -1,0 +1,62 @@
+appId: run.pistachio.desktop
+productName: Pistachio
+copyright: Copyright © 2026 Pistachio
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+  - "!**/*.map"
+  # Workspace dependency caches can change while checks run. Including them
+  # can invalidate ASAR offsets between the file scan and archive write.
+  - "!**/.turbo/**"
+extraResources:
+  - from: build
+    to: icons
+    filter:
+      - "icon*.png"
+asar: true
+npmRebuild: false
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: entitlements.mac.plist
+  entitlementsInherit: entitlements.mac.plist
+  # entitlements / provisioningProfile are overridden by scripts/dist-mac.mjs when
+  # build/embedded.provisionprofile exists (enables Touch ID passkeys).
+  # Notarization runs when APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID are set.
+  notarize: true
+  extendInfo:
+    NSCameraUsageDescription: Pistachio needs camera access for sites that request it.
+    NSMicrophoneUsageDescription: Pistachio needs microphone access for sites that request it.
+dmg:
+  sign: true
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  # background.tiff pairs build/dmg-background.png with its @2x for retina;
+  # regenerate via `tiffutil -cathidpicheck dmg-background.png dmg-background@2x.png -out background.tiff`.
+  background: build/background.tiff
+  window:
+    width: 660
+    height: 400
+  iconSize: 128
+  contents:
+    - x: 165
+      y: 155
+      type: file
+    - x: 495
+      y: 155
+      type: link
+      path: /Applications
+# electron-updater reads latest-mac.yml from here (docs/releasing.md); the
+# zip and its blockmap must be uploaded alongside the DMG.
+publish:
+  provider: generic
+  url: https://pub-68b47b2a682a4b2f8b6bb9a2df285ec5.r2.dev/releases

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+<title>Pistachio DEV — Cryo</title>
+<defs>
+<filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="12" stdDeviation="12" flood-opacity=".32"/></filter>
+<clipPath id="tile"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+<linearGradient id="surface" x1="100" y1="100" x2="924" y2="924" gradientUnits="userSpaceOnUse"><stop stop-color="#0a2841"/><stop offset="1" stop-color="#050e1b"/></linearGradient>
+<pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse"><path d="M64 0H0V64" stroke="#44d9ff" stroke-opacity=".08" stroke-width="2"/></pattern>
+<linearGradient id="mark" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#dbfaff"/><stop offset=".5" stop-color="#7eeaff"/><stop offset="1" stop-color="#30c5fa"/></linearGradient>
+</defs>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#surface)" filter="url(#shadow)"/>
+<g clip-path="url(#tile)">
+<rect x="100" y="100" width="824" height="824" fill="url(#grid)"/>
+<rect x="152" y="152" width="720" height="720" rx="136" stroke="#43c9f2" stroke-opacity=".25" stroke-width="3"/>
+<g stroke="#35b9e9" stroke-width="6" stroke-linejoin="round">
+<path d="M124 380H184L248 444H308 M124 504H226L268 546H310 M124 650H218L268 600 M900 350H836L762 424H708 M900 500H814L762 552H708 M900 668H814L764 618"/>
+</g>
+<g fill="#08182b" stroke="#6adeff" stroke-width="5"><circle cx="184" cy="380" r="8"/><circle cx="226" cy="504" r="8"/><circle cx="814" cy="500" r="8"/><circle cx="836" cy="350" r="8"/></g>
+<g transform="translate(200 145) scale(5.2)"><path d="M115.10 51.50A13.5 13.5 0 0 1 115.10 65.00L93.40 102.60A13.5 13.5 0 0 1 81.71 109.35L38.29 109.35A13.5 13.5 0 0 1 26.60 102.60L4.90 65.00A13.5 13.5 0 0 1 4.90 51.50L27.47 12.40A3.5 3.5 0 0 1 33.53 12.40L56.54 52.25A4 4 0 0 0 63.46 52.25L86.47 12.40A3.5 3.5 0 0 1 92.53 12.40Z" transform="translate(1.2 1.8)" stroke="#008dcb" stroke-width="2" fill="#008dcb"/><path d="M115.10 51.50A13.5 13.5 0 0 1 115.10 65.00L93.40 102.60A13.5 13.5 0 0 1 81.71 109.35L38.29 109.35A13.5 13.5 0 0 1 26.60 102.60L4.90 65.00A13.5 13.5 0 0 1 4.90 51.50L27.47 12.40A3.5 3.5 0 0 1 33.53 12.40L56.54 52.25A4 4 0 0 0 63.46 52.25L86.47 12.40A3.5 3.5 0 0 1 92.53 12.40Z" fill="url(#mark)"/></g>
+<path d="M324 792L288 819L324 846 M700 792L736 819L700 846" stroke="#56dcff" stroke-width="10" stroke-linecap="square"/>
+<g transform="translate(401 775) scale(1.4)" fill="none" stroke="#a4efff" stroke-width="7" stroke-linejoin="miter" stroke-linecap="square"><path d="M0 0H20L36 14V46L20 60H0Z M60 0H98 M60 0V60H98 M60 30H89 M118 0L138 60L158 0"/></g>
+<path d="M398 180H450 M466 180H494 M510 180H522" stroke="#4fdbff" stroke-width="7"/>
+<circle cx="650" cy="180" r="7" fill="#6de8ff"/>
+</g>
+<rect x="102" y="102" width="820" height="820" rx="183" stroke="#66dcff" stroke-opacity=".3" stroke-width="3"/>
+</svg>

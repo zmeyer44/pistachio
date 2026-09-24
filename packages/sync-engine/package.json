@@ -1,0 +1,29 @@
+{
+  "name": "@pistachio/sync-engine",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Client-side E2EE session sync engine: conflict resolution, tombstones, origin leases, offline queue.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "@pistachio/sync-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "eslint": "^9.39.1",
+    "fast-check": "^4.1.0",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

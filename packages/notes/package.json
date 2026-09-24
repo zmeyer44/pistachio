@@ -1,0 +1,27 @@
+{
+  "name": "@pistachio/notes",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "A note's markdown as one self-contained HTML document, plus its plain text and word count (docs/notes.md §2).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "markdown-it": "^15.0.2",
+    "markdown-it-task-lists": "^2.1.1"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

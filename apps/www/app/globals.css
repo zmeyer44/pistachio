@@ -1,0 +1,383 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ *
+ * Design tokens extracted from listenlabs.ai (Framer build).
+ * Breakpoints mirror the source: phone < 810, tablet 810–1199, desktop >= 1200.
+ * ------------------------------------------------------------------ */
+@theme {
+  --breakpoint-tab: 810px;
+  --breakpoint-desk: 1200px;
+
+  /*
+   * The desktop app's palette, on the site: white grounds, Geist's near-black
+   * for text, and the icon's own green (#52a862, apps/www/app/icon.svg and
+   * the shell's home-page mark) as the one accent — buttons, rings, links,
+   * the badge. Green is an accent and never body text: at 16px it reads at
+   * 3:1 on white, so copy is set in `ink` and `sage` and green is kept for
+   * surfaces and large or interactive things.
+   */
+  --color-green: #52a862;
+  --color-ink: #1a1a1a;
+  --color-cream: #ffffff;
+  --color-paper: #fafafa;
+  --color-tile: #f2f2f2;
+  --color-track: #e6e6e6;
+  --color-sage: #6b6b6b;
+  --color-field: #e8f4ec;
+  --color-slate: #3f8f4f;
+  /* Secondary text on a `green` ground: 5:1 there, where `sage` is 1.9:1. */
+  --color-moss: #0f2e16;
+
+  --font-sans:
+    var(--font-inter), "Inter", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Type ramp. Tracking is -2% up to 32px and -4% from 40px up. */
+  --text-10: 10px;
+  --text-10--line-height: 14px;
+  --text-10--letter-spacing: -0.2px;
+
+  --text-12: 12px;
+  --text-12--line-height: 16px;
+  --text-12--letter-spacing: -0.24px;
+
+  --text-14: 14px;
+  --text-14--line-height: 20px;
+  --text-14--letter-spacing: -0.28px;
+
+  --text-16: 16px;
+  --text-16--line-height: 22px;
+  --text-16--letter-spacing: -0.32px;
+
+  --text-20: 20px;
+  --text-20--line-height: 28px;
+  --text-20--letter-spacing: -0.4px;
+
+  --text-24: 24px;
+  --text-24--line-height: 33.6px;
+  --text-24--letter-spacing: -0.48px;
+
+  --text-28: 28px;
+  --text-28--line-height: 33.6px;
+  --text-28--letter-spacing: -0.56px;
+
+  --text-32: 32px;
+  --text-32--line-height: 38.4px;
+  --text-32--letter-spacing: -0.64px;
+
+  --text-40: 40px;
+  --text-40--line-height: 48px;
+  --text-40--letter-spacing: -1.6px;
+
+  --text-48: 48px;
+  --text-48--line-height: 57.6px;
+  --text-48--letter-spacing: -1.92px;
+
+  --text-88: 88px;
+  --text-88--line-height: 105.6px;
+  --text-88--letter-spacing: -3.52px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Geist, for the signed-in dashboard.
+ *
+ * Vercel's system (vercel.com/geist): a 10-step scale per hue where
+ * 100–300 are backgrounds, 400–600 borders, 700–800 high-contrast fills,
+ * and 900–1000 text. These are the published light-mode values.
+ *
+ * They sit here, in the one Tailwind entry, so `bg-gray-100` and
+ * `text-heading-14` exist as real utilities — but nothing on the
+ * marketing site references a `gray-*`, `alpha-*` or `background-*`
+ * token, so the two palettes never meet. The dashboard's dark ramp is
+ * declared inside `.pa` in app/app/app.css rather than at :root, which
+ * is what keeps the marketing pages light-only.
+ * ------------------------------------------------------------------ */
+@theme {
+  --color-background-100: oklch(1 0 0);
+  --color-background-200: oklch(0.984 0 0);
+
+  --color-gray-100: oklch(0.961 0 0);
+  --color-gray-200: oklch(0.94 0 0);
+  --color-gray-300: oklch(0.925 0 0);
+  --color-gray-400: oklch(0.937 0 0);
+  --color-gray-500: oklch(0.836 0 0);
+  --color-gray-600: oklch(0.732 0 0);
+  --color-gray-700: oklch(0.65 0 0);
+  --color-gray-800: oklch(0.59 0 0);
+  --color-gray-900: oklch(0.42 0 0);
+  --color-gray-1000: oklch(0.205 0 0);
+
+  --color-alpha-100: oklch(0 0 0 / 0.05);
+  --color-alpha-200: oklch(0 0 0 / 0.081);
+  --color-alpha-300: oklch(0 0 0 / 0.1);
+  --color-alpha-400: oklch(0 0 0 / 0.08);
+  --color-alpha-500: oklch(0 0 0 / 0.21);
+  --color-alpha-600: oklch(0 0 0 / 0.24);
+  --color-alpha-700: oklch(0 0 0 / 0.44);
+  --color-alpha-800: oklch(0 0 0 / 0.51);
+  --color-alpha-900: oklch(0 0 0 / 0.7);
+  --color-alpha-1000: oklch(0 0 0 / 0.91);
+
+  --color-blue-100: oklch(97.32% 0.0141 251.56);
+  --color-blue-400: oklch(91.58% 0.0473 245.116);
+  --color-blue-700: oklch(57.61% 0.2508 258.23);
+  --color-blue-900: oklch(53.18% 0.2399 256.99);
+  --color-blue-1000: oklch(26.67% 0.1099 254.34);
+
+  --color-red-100: oklch(96.5% 0.0223 13.09);
+  --color-red-400: oklch(91.51% 0.0471 19.8);
+  --color-red-700: oklch(62.56% 0.2524 23.03);
+  --color-red-900: oklch(54.99% 0.232 25.29);
+  --color-red-1000: oklch(24.8% 0.1041 18.86);
+
+  --color-amber-100: oklch(97.48% 0.0331 85.79);
+  --color-amber-400: oklch(91.02% 0.1322 88.25);
+  --color-amber-700: oklch(81.87% 0.1969 76.46);
+  --color-amber-900: oklch(52.79% 0.1496 54.65);
+  --color-amber-1000: oklch(30.83% 0.099 45.48);
+
+  --color-green-100: oklch(97.59% 0.0289 145.42);
+  --color-green-400: oklch(91.49% 0.0976 146.24);
+  --color-green-700: oklch(64.58% 0.1746 147.27);
+  --color-green-900: oklch(51.75% 0.1453 147.65);
+  --color-green-1000: oklch(29.15% 0.1197 147.38);
+
+  --color-ring: var(--color-blue-700);
+
+  --font-geist: "Geist Variable", Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-geist-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Geist materials: a 1px alpha border as a shadow, and the elevations. */
+  --shadow-border: 0 0 0 1px oklch(0 0 0 / 0.08);
+  --shadow-small: 0 0 0 1px oklch(0 0 0 / 0.08), 0 2px 2px oklch(0 0 0 / 0.04);
+  --shadow-menu: 0 0 0 1px oklch(0 0 0 / 0.08), 0 4px 8px -4px oklch(0 0 0 / 0.04), 0 8px 12px oklch(0 0 0 / 0.08);
+  --shadow-modal: 0 0 0 1px oklch(0 0 0 / 0.08), 0 8px 24px oklch(0 0 0 / 0.08), 0 16px 48px oklch(0 0 0 / 0.12);
+}
+
+/* Geist type roles. Peers share role, size, weight and line-height. */
+@utility text-label-12 { font-size: 12px; line-height: 16px; font-weight: 400; }
+@utility text-label-13 { font-size: 13px; line-height: 16px; font-weight: 400; }
+@utility text-label-14 { font-size: 14px; line-height: 20px; font-weight: 400; }
+@utility text-copy-13 { font-size: 13px; line-height: 18px; font-weight: 400; }
+@utility text-copy-14 { font-size: 14px; line-height: 20px; font-weight: 400; }
+@utility text-heading-14 { font-size: 14px; line-height: 20px; font-weight: 600; letter-spacing: -0.01em; }
+@utility text-heading-16 { font-size: 16px; line-height: 24px; font-weight: 600; letter-spacing: -0.02em; }
+@utility text-heading-20 { font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: -0.02em; }
+@utility text-heading-24 { font-size: 24px; line-height: 32px; font-weight: 600; letter-spacing: -0.03em; }
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: var(--color-cream);
+    color: var(--color-green);
+    font-family: var(--font-sans);
+    font-weight: 400;
+    overflow-x: clip;
+  }
+
+  /* Framer balances every text block; without this, lines wrap wider. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  p {
+    text-wrap: balance;
+  }
+
+  /* The hero's sketched sites set body copy the way the real sites do. */
+  .demo-page p {
+    text-wrap: pretty;
+  }
+
+  /* The shell turns synthesis off; sketched sites need their italics. */
+  .demo-page {
+    font-synthesis: style;
+  }
+
+  ::selection {
+    background-color: var(--color-field);
+    color: var(--color-ink);
+  }
+
+  input::placeholder {
+    color: var(--color-sage);
+    opacity: 1;
+  }
+}
+
+@layer components {
+  /*
+   * Page shell: content is capped at 1512px with 16px gutters below 1200px
+   * and 24px gutters at and above it — matching the source exactly.
+   */
+  .shell {
+    width: 100%;
+    max-width: 1512px;
+    margin-inline: auto;
+    padding-inline: 16px;
+  }
+
+  @media (width >= 1200px) {
+    .shell {
+      padding-inline: 24px;
+    }
+  }
+
+  /*
+   * The source renders the hero headline inside an <svg><foreignObject> so the
+   * two lines always scale to exactly fill their column. Natural width of the
+   * longest line at 88px is 991.52px, giving a font-size of width * 0.088752.
+   * Below 1200px the headline spans the full content width; at and above it,
+   * it spans 75% of it.
+   */
+  .hero-headline {
+    --headline-width: calc(100vw - 32px);
+    font-size: calc(var(--headline-width) * 0.088752);
+    line-height: 1;
+    letter-spacing: -0.04em;
+    white-space: nowrap;
+  }
+
+  @media (width >= 1200px) {
+    .hero-headline {
+      --headline-width: calc((min(100vw, 1512px) - 48px) * 0.75);
+    }
+  }
+
+  /*
+   * Brand marks ship as SVG masks painted with a solid colour, exactly how the
+   * source renders them. Sizing comes from the intrinsic aspect ratio.
+   */
+  .brandmark {
+    display: block;
+    background-color: currentColor;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+  }
+
+  /* Blue duotone treatment used on the research-partner portraits. */
+  .duotone {
+    position: relative;
+    background-color: var(--color-green);
+    isolation: isolate;
+  }
+
+  .duotone > img {
+    mix-blend-mode: screen;
+    filter: contrast(1.45) grayscale(1);
+  }
+
+  .duotone::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-color: var(--color-paper);
+    mix-blend-mode: multiply;
+    pointer-events: none;
+  }
+}
+
+@layer components {
+  /*
+   * The hero's desk (components/hero-desktop.tsx): the wallpaper, with the
+   * window centred on it and the same gutter all round. The window's slot is
+   * capped at the shell's design width; below that the frame scales down.
+   */
+  .hero-desk {
+    padding: clamp(20px, 6vw, 88px) clamp(16px, 6vw, 132px);
+    background-color: #e4ebe0;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
+  .hero-window-slot {
+    width: 100%;
+    max-width: 1200px;
+  }
+}
+
+/*
+ * The download card's dock (components/dock-launch.tsx): one 6s loop — the
+ * arrow drops in, Pistachio pops into the gap, bounces twice like a
+ * launching app, its dot lights, it rests, and the loop starts over.
+ */
+.dock-arrow,
+.dock-icon,
+.dock-dot {
+  transform-box: fill-box;
+  animation-duration: 6s;
+  animation-iteration-count: infinite;
+}
+.dock-arrow {
+  animation-name: dock-arrow;
+  animation-timing-function: cubic-bezier(0.5, 0, 0.75, 0);
+}
+.dock-icon {
+  transform-origin: 50% 100%;
+  animation-name: dock-icon;
+  animation-timing-function: ease-out;
+}
+.dock-dot {
+  transform-origin: center;
+  animation-name: dock-dot;
+}
+@keyframes dock-arrow {
+  0% { opacity: 0; transform: translateY(-14px); }
+  8% { opacity: 1; transform: translateY(0); }
+  20% { opacity: 1; transform: translateY(40px); }
+  24%, 100% { opacity: 0; transform: translateY(48px); }
+}
+@keyframes dock-icon {
+  0%, 20% { opacity: 0; transform: scale(0.2); }
+  27% { opacity: 1; transform: scale(1.12); }
+  32% { transform: scale(1); }
+  39% { transform: translateY(-22px); animation-timing-function: ease-in; }
+  46% { transform: translateY(0); animation-timing-function: ease-out; }
+  52% { transform: translateY(-12px); animation-timing-function: ease-in; }
+  58% { transform: translateY(0); }
+  90% { opacity: 1; transform: translateY(0) scale(1); }
+  97%, 100% { opacity: 0; transform: scale(0.6); }
+}
+@keyframes dock-dot {
+  0%, 56% { opacity: 0; transform: scale(0); }
+  62%, 90% { opacity: 1; transform: scale(1); }
+  96%, 100% { opacity: 0; transform: scale(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dock-arrow { animation: none; opacity: 0; }
+  .dock-icon,
+  .dock-dot { animation: none; opacity: 1; transform: none; }
+}
+
+@layer utilities {
+  @keyframes fade-cycle {
+    0%,
+    42% {
+      opacity: 1;
+    }
+    50%,
+    92% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [class*="animate-"] {
+      animation: none !important;
+    }
+  }
+}

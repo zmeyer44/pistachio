@@ -1,0 +1,48 @@
+{
+  "name": "@pistachio/agent-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The browser agent loop, thread context, tool views, and the BrowserBackend contract shared by desktop and cloud executors.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./memory": "./src/views/memory.ts",
+    "./address-intent": "./src/address-intent.ts",
+    "./address-intent-contract": "./src/address-intent-contract.ts",
+    "./turn-route": "./src/turn-route.ts",
+    "./turn-route-contract": "./src/turn-route-contract.ts",
+    "./tab-tidy": "./src/tab-tidy.ts",
+    "./tab-tidy-contract": "./src/tab-tidy-contract.ts",
+    "./onboarding": "./src/onboarding-intake.ts",
+    "./reminders": "./src/views/reminders.ts",
+    "./artifacts": "./src/views/artifacts.ts",
+    "./bookmarks": "./src/views/bookmarks.ts",
+    "./notes": "./src/views/notes.ts",
+    "./integrations": "./src/integrations/index.ts",
+    "./testing": "./src/testing/browser-backend-contract.ts",
+    "./watchtower": "./src/views/watchtower.ts",
+    "./watchtower-rerank": "./src/watchtower-rerank.ts",
+    "./watchtower-filter": "./src/watchtower-filter.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "@pistachio/protocol": "workspace:*",
+    "ai": "^7.0.107",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,1 @@
+import {defineConfig} from "@playwright/test"; export default defineConfig({testDir:".", testMatch:"*.spec.ts",outputDir:"../extra-test-results",timeout:45000,expect:{timeout:10000},workers:1,reporter:"line"});

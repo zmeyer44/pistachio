@@ -1,0 +1,8 @@
+<!-- Windows/Linux app icon: the brand mark full-bleed, same geometry as
+     PistachioMark.tsx scaled to a 1024 canvas. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <g transform="scale(21.3333)">
+    <rect width="48" height="48" rx="14" fill="#52a862"/>
+    <path d="M115.10 51.50A13.5 13.5 0 0 1 115.10 65.00L93.40 102.60A13.5 13.5 0 0 1 81.71 109.35L38.29 109.35A13.5 13.5 0 0 1 26.60 102.60L4.90 65.00A13.5 13.5 0 0 1 4.90 51.50L27.47 12.40A3.5 3.5 0 0 1 33.53 12.40L56.54 52.25A4 4 0 0 0 63.46 52.25L86.47 12.40A3.5 3.5 0 0 1 92.53 12.40Z" transform="translate(6 6) scale(0.3)" fill="#fff"/>
+  </g>
+</svg>

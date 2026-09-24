@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DOM editor verification</title>
+<style>
+  body { margin: 40px; max-width: 800px; font: 20px/1.5 system-ui; color: #173b32; }
+  button { font: inherit; padding: 8px 16px; }
+  [role=textbox] { border: 1px solid #79978e; border-radius: 8px; padding: 20px; min-height: 140px; margin: 20px 0; white-space: pre-wrap; }
+  output { display: block; white-space: pre-wrap; min-height: 40px; }
+</style>
+<h1>DOM editor verification</h1>
+<p>This diagnostic page keeps all text in this tab. It does not submit or save it.</p>
+<button id="read">Read without editing</button>
+<div id="composer" role="textbox" aria-label="Composer" contenteditable="true"></div>
+<p>Cloud draft:</p><output id="draft" aria-label="Cloud draft">Empty</output>
+<p id="history" role="status">Checking history updates…</p>
+<script>
+  const composer = document.querySelector('#composer');
+  composer.addEventListener('input', () => { document.querySelector('#draft').textContent = composer.textContent || 'Empty'; });
+  let ticks = 0;
+  const timer = setInterval(() => {
+    history.replaceState({}, '', location.href);
+    if (++ticks === 30) { clearInterval(timer); document.querySelector('#history').textContent = '30 history updates completed'; }
+  }, 100);
+</script>
+</html>

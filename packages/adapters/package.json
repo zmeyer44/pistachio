@@ -1,0 +1,22 @@
+{
+  "name": "@pistachio/adapters",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pistachio/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

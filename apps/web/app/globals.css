@@ -1,0 +1,89 @@
+/**
+ * The browser app's one stylesheet (docs/web-browser-design.md §15, §3.3).
+ *
+ * This app is the shell and nothing else, so its stylesheet is the desktop
+ * renderer's: Tailwind's reset, theme and utilities, then the shell's own
+ * tokens and layers. None of the marketing site's tokens are here — they dress
+ * `apps/www`, and the one room the two sites share is the gate, which brings
+ * its own self-contained skin.
+ *
+ * `@source` is what utilities are generated FROM, and every scan is named
+ * rather than inferred: this app's own two directories, and the account
+ * package, where the curtain's buttons and notes live. (`shell.css` declares
+ * its own, relative to itself.)
+ */
+
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@pistachio/shell-ui/theme.css";
+@import "@pistachio/shell-ui/shell.css";
+@import "@pistachio/web-account/auth.css";
+@source ".";
+@source "../components";
+@source "../../../packages/web-account/src";
+
+/*
+ * The shell fills the tab. `100dvh` rather than `100vh`: on a phone the
+ * shell's own strip would otherwise sit under the browser's toolbar for the
+ * whole session, and a chrome you cannot reach is worse than a shorter one.
+ */
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background-200);
+  color: var(--color-gray-1000);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+.pa-browse {
+  height: 100dvh;
+  width: 100%;
+  overflow: hidden;
+  padding: 0;
+  background: var(--color-background-200);
+}
+
+/* The shell's root fills it; nothing inside scrolls the document. */
+.pa-browse > * {
+  height: 100%;
+}
+
+/* The route is full-bleed, not chrome-free: a keyboard reaches the shell the
+   same way it reaches every other page. The anchor is a SIBLING of the pane
+   container on purpose — `.pa-browse > *` is sized to 100% and clipped, which
+   would swallow it. */
+.pa-skip {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 20;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  box-shadow: var(--shadow-small);
+  font-size: 13px;
+}
+
+.pa-skip:focus {
+  left: 8px;
+}
+
+/* A pane while the agent holds control: the last frame stays where it was
+   under a veil that says why the pointer is doing nothing (§7, W7). A pane
+   that simply stops taking clicks reads as a hung page. */
+.pa-pane-veil {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: oklch(0 0 0 / 0.32);
+}
+
+@source "../../../packages/browser-client/src";

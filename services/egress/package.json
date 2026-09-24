@@ -1,0 +1,32 @@
+{
+  "name": "@pistachio/egress",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Identity egress gateway: a blind HTTP CONNECT proxy with HMAC credentials, SSRF policy, and numeric metering.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0",
+    "dev": "tsx watch src/dev-server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@pistachio/egress-policy": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "eslint": "^9.39.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

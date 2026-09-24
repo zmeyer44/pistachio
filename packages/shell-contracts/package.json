@@ -1,0 +1,32 @@
+{
+  "name": "@pistachio/shell-contracts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The shell's contracts: the IPC surface, the snapshot shapes, and the socket protocol shared by desktop main, the shell UI, the cloud-browser host and the web app.",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src test --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pistachio/agent-runtime": "workspace:*",
+    "@pistachio/dom-mirror": "workspace:*",
+    "@pistachio/evidence": "workspace:*",
+    "@pistachio/live-view": "workspace:*",
+    "@pistachio/protocol": "workspace:*",
+    "@pistachio/reports": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@pistachio/sync-protocol": "workspace:*",
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

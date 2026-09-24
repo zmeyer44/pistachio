@@ -1,0 +1,34 @@
+{
+  "name": "@pistachio/sync-hub",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Session hub core (sealed records, HLC registry, origin leases, presence) with a Node WebSocket host.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "@pistachio/sync-protocol": "workspace:*",
+    "drizzle-orm": "^0.44.0",
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.2.17",
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.0",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@pistachio/egress-policy",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Per-space egress routing decisions and Chromium proxy configuration for the identity gateway.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "@pistachio/sync-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

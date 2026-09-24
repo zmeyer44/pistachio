@@ -1,0 +1,218 @@
+import { describe, expect, it } from "vitest";
+import * as protocol from "../src/index.js";
+import type {
+  AgreementKeypair,
+  Cause,
+  CdpCookie,
+  ClientMessage,
+  CookieAttributes,
+  CookieIdentity,
+  CookiePlain,
+  CookieRecordWire,
+  DeviceActivityDoc,
+  DeviceKeypair,
+  DeviceKind,
+  DevicePresence,
+  DeviceTokenClaims,
+  DeviceWorkspaceDoc,
+  DurableTabSession,
+  EgressPolicy,
+  ElectronCookie,
+  ElectronCookieSetDetails,
+  Hlc,
+  HostedCheckoutRule,
+  HubErrorCode,
+  KeyWrapper,
+  KeyWrapperKind,
+  LwwRegister,
+  OriginPolicy,
+  PlaywrightSetCookie,
+  PortableCookie,
+  PublishRejection,
+  SameSite,
+  ServerMessage,
+  SettingsDoc,
+  SignableRecordFields,
+  SpaceDoc,
+  SpaceKeys,
+  VersionToken,
+  WorkspaceDoc,
+  WorkspaceRecordWire,
+  WorkspaceSettings,
+  WorkspaceSettingsDoc,
+} from "../src/index.js";
+
+/**
+ * Every value harbor's sync-engine, sessionhub, desktop sync, and
+ * egress-policy import from `@suma/protocol` or `@suma/config` (minus the
+ * gateway/machine/files names the spec skips), plus the §2 additions, must
+ * resolve from the root export.
+ */
+const VALUE_EXPORTS = [
+  // harbor consumers
+  "CAUSES",
+  "DELETION_CAUSES",
+  "HOSTED_CHECKOUT_RULES",
+  "HlcClock",
+  "MAX_CLOCK_DRIFT_MS",
+  "MAX_MUTATIONS_PER_ORIGIN_PER_MINUTE",
+  "MEDIA_BYPASS_DOMAINS",
+  "ORIGIN_LEASE_TTL_MS",
+  "SEEDED_HOSTILE_DOMAINS",
+  "SEED_CORPUS",
+  "SPACE_ROOT_SECRET_BYTES",
+  "TOMBSTONE_RETENTION_MS",
+  "compareHlc",
+  "computeOriginIdHex",
+  "computeRecordIdHex",
+  "decodeCookiePlain",
+  "deriveKekFromPassphrase",
+  "deriveKekFromRecoveryCode",
+  "deriveSpaceKeys",
+  "deviceLoginSigningBytes",
+  "encodeCookiePlain",
+  "encodeHlc",
+  "exportPublicKeyRaw",
+  "fromBase64",
+  "fromUtf8",
+  "generateDeviceKeypair",
+  "generateEnrollmentCode",
+  "generateRecoveryCode",
+  "generateSpaceRootSecret",
+  "generateTokenKeypair",
+  "hlcSchema",
+  "hostKeyIsHostOnly",
+  "importPublicKeyRaw",
+  "importTokenSigningKey",
+  "importTokenVerifyKey",
+  "lengthPrefixed",
+  "makeVersionToken",
+  "matchOriginPolicy",
+  "mergeLww",
+  "normalizedHost",
+  "open",
+  "parseClientMessage",
+  "parseServerMessage",
+  "parseVersionToken",
+  "seal",
+  "settingsDocs",
+  "applySettingsDoc",
+  "signDeviceToken",
+  "signRecord",
+  "sortByHlc",
+  "toBase64",
+  "toHex",
+  "fromHex",
+  "unwrapRootSecret",
+  "utf8",
+  "verifyDeviceToken",
+  "verifyRecord",
+  "wrapRootSecret",
+  "serializeWrapper",
+  "wrapperBytes",
+  "UNTESTED_ORIGIN_POLICY",
+  "DEFAULT_WORKSPACE_SETTINGS",
+  "workspaceKeyFor",
+  // §2 additions
+  "recordSealAad",
+  "workspaceSealAad",
+  "workspaceSigningBytes",
+  "runEventSealAad",
+  "runThreadSealAad",
+  "liveProofSealAad",
+  "shellProofSealAad",
+  "WORKSPACE_PSEUDO_SPACE_ID",
+  "identityForCookie",
+  "attributesForCookie",
+  "setDetailsForPlain",
+  "removeTargetFor",
+  "cookieUrlFor",
+  "playwrightCookieForPlain",
+  "portableCookieFromCdp",
+  "portableCookieFromElectron",
+  "sameSiteFromChromium",
+  "sameSiteToChromium",
+  "generateAgreementKeypair",
+  "importAgreementPublicKeyRaw",
+  "wrapRootSecretToDevice",
+  "unwrapRootSecretFromDevice",
+  "deviceWrapperSigningBytes",
+  "sealCredentialCapturePayload",
+  "openCredentialCapturePayload",
+  "deviceKindSchema",
+  "DEVICE_KINDS",
+  "HUB_ERROR_CODES",
+  "MAX_LEASE_TTL_MS",
+  "EXCLUSIVE_LEASE_TTL_MS",
+  "LEASE_RENEW_INTERVAL_MS",
+  "REVOCATION_PROPAGATION_MS",
+  "DEVICE_TOKEN_TTL_SECONDS",
+  "MAX_DECLARED_SPACES",
+  "TAB_SESSION_VERSION",
+] as const;
+
+describe("root export surface (§2)", () => {
+  it("resolves every consumer-imported value", () => {
+    const missing = VALUE_EXPORTS.filter((name) => !(name in protocol));
+    expect(missing).toEqual([]);
+  });
+
+  it("pins the §2 constants", () => {
+    expect(protocol.ORIGIN_LEASE_TTL_MS).toBe(60_000);
+    expect(protocol.MAX_LEASE_TTL_MS).toBe(300_000);
+    expect(protocol.EXCLUSIVE_LEASE_TTL_MS).toBe(120_000);
+    expect(protocol.LEASE_RENEW_INTERVAL_MS).toBe(40_000);
+    expect(protocol.TOMBSTONE_RETENTION_MS).toBe(30 * 24 * 60 * 60 * 1000);
+    expect(protocol.MAX_MUTATIONS_PER_ORIGIN_PER_MINUTE).toBe(120);
+    expect(protocol.REVOCATION_PROPAGATION_MS).toBe(60_000);
+    expect(protocol.DEVICE_TOKEN_TTL_SECONDS).toBe(600);
+    expect(protocol.MAX_DECLARED_SPACES).toBe(64);
+  });
+
+  it("exposes the consumer-facing types (compile-time check)", () => {
+    // Referencing each type keeps the import list honest under `tsc --noEmit`.
+    type Consumed = [
+      AgreementKeypair,
+      Cause,
+      CdpCookie,
+      ClientMessage,
+      CookieAttributes,
+      CookieIdentity,
+      CookiePlain,
+      CookieRecordWire,
+      DeviceActivityDoc,
+      DeviceKeypair,
+      DeviceKind,
+      DevicePresence,
+      DeviceTokenClaims,
+      DeviceWorkspaceDoc,
+      DurableTabSession,
+      EgressPolicy,
+      ElectronCookie,
+      ElectronCookieSetDetails,
+      Hlc,
+      HostedCheckoutRule,
+      HubErrorCode,
+      KeyWrapper,
+      KeyWrapperKind,
+      LwwRegister<unknown>,
+      OriginPolicy,
+      PlaywrightSetCookie,
+      PortableCookie,
+      PublishRejection,
+      SameSite,
+      ServerMessage,
+      SettingsDoc,
+      SignableRecordFields,
+      SpaceDoc,
+      SpaceKeys,
+      VersionToken,
+      WorkspaceDoc,
+      WorkspaceRecordWire,
+      WorkspaceSettings,
+      WorkspaceSettingsDoc,
+    ];
+    const witness: Consumed | null = null;
+    expect(witness).toBeNull();
+  });
+});

@@ -1,0 +1,29 @@
+{
+  "name": "pistachio",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "dev:ready": "node scripts/dev-ready.mjs",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "test:e2e": "pnpm --filter @pistachio/desktop test:e2e",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "check-types": "turbo run check-types",
+    "dev:cloud": "turbo run dev --filter=@pistachio/control --filter=@pistachio/cloud-browser --filter=@pistachio/egress --filter=www --filter=web"
+  },
+  "devDependencies": {
+    "prettier": "^3.7.4",
+    "turbo": "^2.10.11",
+    "typescript": "5.9.2"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "playwright-core@1.62.1": "patches/playwright-core@1.62.1.patch"
+    }
+  }
+}

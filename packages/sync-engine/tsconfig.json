@@ -1,0 +1,10 @@
+{
+  "extends": "@repo/typescript-config/internal-library.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": [
+    "src",
+    "test"
+  ]
+}

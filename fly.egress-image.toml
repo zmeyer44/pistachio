@@ -1,0 +1,14 @@
+# Build-and-push config for the identity egress gateway image (docs/cloud-sync-design.md §9).
+#
+# The `pistachio-egress` Fly app exists only to namespace the image in Fly's
+# registry — it never runs machines. Control provisions one `pa-eg-<userId>`
+# app per user from this image (FLY_EGRESS_IMAGE, services/control/src/egress.ts).
+#
+#   fly deploy . -c fly.egress-image.toml --build-only --push --remote-only \
+#     --image-label "v1-$(git rev-parse --short HEAD)-$(date +%Y%m%d)"
+#
+# then point control's FLY_EGRESS_IMAGE at the printed registry.fly.io ref.
+app = "pistachio-egress"
+
+[build]
+  dockerfile = "Dockerfile.egress"

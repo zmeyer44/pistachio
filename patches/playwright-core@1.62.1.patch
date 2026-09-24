@@ -1,0 +1,19 @@
+diff --git a/lib/coreBundle.js b/lib/coreBundle.js
+index d9041dd0f009072511a7d808dec83121ff29e127..a4076ee6df58f6f6a71cc37c49ee4cc2d2465ba7 100644
+--- a/lib/coreBundle.js
++++ b/lib/coreBundle.js
+@@ -34796,9 +34796,12 @@ var init_crConnection = __esm({
+           } else {
+             callback.resolve(object.result);
+           }
+-        } else if (object.id && object.error?.code === -32001) {
++        } else if (object.id) {
++          // Chromium can deliver a command response after a target crash has
++          // already rejected and removed its callback. There is no caller left
++          // to receive that response, so do not turn one renderer crash into an
++          // uncaught assertion that terminates the whole Node process.
+         } else {
+-          assert(!object.id, object?.error?.message || void 0);
+           Promise.resolve().then(() => {
+             if (this._eventListener)
+               this._eventListener(object.method, object.params);
