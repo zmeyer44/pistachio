@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WebContents } from "electron";
 import {
   DEFAULT_WATCHTOWER_SETTINGS,
+  type WatchtowerIndexJob,
   type WatchtowerRegionRule,
   type WatchtowerSettings,
 } from "@pistachio/shell-contracts/watchtower";
@@ -19,6 +20,10 @@ class Worker extends EventEmitter {
   messages: Record<string, unknown>[] = [];
   readError: { error: string; code?: string } | null = null;
   rules: WatchtowerRegionRule[] = [];
+  /** Saved versions the archive would hand the index next. */
+  jobs: WatchtowerIndexJob[] = [];
+  /** What a deliberate save's reading turns into, as the archive would prepare it. */
+  prepared: { job: WatchtowerIndexJob; factKinds: string[] } | null = null;
   settings: WatchtowerSettings = {
     ...DEFAULT_WATCHTOWER_SETTINGS,
     enabled: true,
@@ -41,7 +46,15 @@ class Worker extends EventEmitter {
         value:
           message.type === "rules"
             ? { rules: this.rules }
-            : { settings: { ...this.settings }, stats: {}, results: [] },
+            : message.type === "index-next"
+              ? { job: this.jobs.shift() ?? null }
+              : message.type === "index"
+                ? { job: null, about: message.level === 3 ? [{ id: 1, kind: "person", name: "Patrick Collison" }] : undefined }
+                : message.type === "keep"
+                  ? { kept: { observationId: "kept-o", snapshotId: 41, pageId: 5 } }
+                  : message.type === "file-prepare"
+                    ? { prepared: this.prepared }
+                    : { settings: { ...this.settings }, stats: {}, results: [] },
       }),
     );
   }
@@ -549,5 +562,171 @@ describe("Watchtower lifecycle", () => {
       spaces: [],
     });
     expect((await forgetting).stats.visits).toBe(0);
+  });
+
+  describe("the index", () => {
+    const job = (snapshotId: number): WatchtowerIndexJob => ({
+      snapshotId,
+      spaceId: "personal",
+      host: "techcrunch.example",
+      title: "Stripe raises $6.5B",
+      candidates: [
+        { name: "Stripe", key: "stripe", kind: null, aliases: [], count: 3, salience: 1, context: "Stripe said it raised money.", known: [] },
+      ],
+      facts: [{ candidate: 0, text: "Stripe is a payments company." }],
+    });
+    const indexOn = async (): Promise<void> => {
+      await service.request("personal", { type: "settings", patch: { smartIndex: true } });
+    };
+
+    it("never asks without consent", async () => {
+      worker.jobs.push(job(1));
+      service.useDecisionModel(() => ({ id: "jev", model: "scripted" as never }));
+      service.useIndexModel(async () => {
+        throw new Error("must not be called");
+      });
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(count(worker, "index-next")).toBe(0);
+    });
+
+    it("sends the next saved version's names to the model and its decisions back, then rests until a capture", async () => {
+      worker.jobs.push(job(7));
+      const asked: { host: string; title: string; snapshotId: number }[] = [];
+      service.useDecisionModel(() => ({ id: "jev", model: "scripted" as never }));
+      service.useIndexModel(async (page, work) => {
+        asked.push({ ...page, snapshotId: (work as WatchtowerIndexJob).snapshotId });
+        return { entities: [{ kind: "company", same: null }], facts: ["definition"] };
+      });
+      await indexOn();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(asked).toEqual([{ host: "techcrunch.example", title: "Stripe raises $6.5B", snapshotId: 7 }]);
+      const applied = worker.messages.find((message) => message.type === "index") as
+        | { job: WatchtowerIndexJob; decisions: unknown; facts: unknown }
+        | undefined;
+      expect(applied?.job.snapshotId).toBe(7);
+      expect(applied?.decisions).toEqual([{ kind: "company", same: null }]);
+      expect(applied?.facts).toEqual(["definition"]);
+      // Nothing left: the loop rests instead of polling the archive every second.
+      await vi.advanceTimersByTimeAsync(3000);
+      const idle = count(worker, "index-next");
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(count(worker, "index-next")).toBe(idle);
+      // A new capture wakes it.
+      contents.url = "https://example.com/next";
+      contents.emit("did-navigate");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(count(worker, "ingest")).toBeGreaterThan(0);
+      expect(count(worker, "index-next")).toBeGreaterThan(idle);
+    });
+
+    it("rests after the model fails, and applies nothing decided about an index that changed meanwhile", async () => {
+      worker.jobs.push(job(1), job(2), job(3));
+      let calls = 0;
+      let release!: () => void;
+      service.useDecisionModel(() => ({ id: "jev", model: "scripted" as never }));
+      service.useIndexModel(async () => {
+        calls++;
+        if (calls === 1) throw new Error("gateway down");
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { entities: [{ kind: "company", same: null }], facts: [null] };
+      });
+      await indexOn();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(31000);
+      expect(calls).toBe(2);
+      // A hand edit while the model is answering: that answer is about the old index.
+      const edit = service.request("personal", { type: "entity-edit", entityId: 4, remove: true });
+      release();
+      await edit;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(count(worker, "index")).toBe(0);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(calls).toBe(3);
+      // Forgetting while the model is answering: nothing about the forgotten pages is written.
+      const forget = service.request("personal", { type: "forget", all: true });
+      release();
+      await forget;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(count(worker, "index")).toBe(0);
+    });
+  });
+  describe("a save kept on purpose", () => {
+    it("keeps the page now even while saving what you read is off, and sends nothing to Jev before Watchtower is on", async () => {
+      await service.request("personal", { type: "settings", patch: { enabled: false } });
+      contents.extract.mockImplementation(async () => layoutPage(contents.url));
+      let regionsAsked = 0;
+      service.useDecisionModel(
+        () => ({ id: "jev", model: "scripted" as never }),
+        async (_page, regions) => {
+          regionsAsked++;
+          return regions.map(() => null);
+        },
+      );
+      const kept = await service.keep("tab", "example.com/first");
+      expect(kept).toEqual({ observationId: "kept-o", snapshotId: 41, pageId: 5, spaceId: "personal", epoch: expect.any(Number) });
+      const message = worker.messages.find((item) => item.type === "keep")!;
+      expect(message).toMatchObject({ keptKey: "example.com/first", visit: { url: "https://example.com/first", spaceId: "personal" } });
+      expect((message.capture as { blocks: string[] }).blocks.length).toBeGreaterThan(0);
+      expect(regionsAsked).toBe(0);
+      // Passive capture stays off: the save made no other visit.
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(count(worker, "visit")).toBe(0);
+    });
+
+    it("files nothing for a save whose page was forgotten while the model read it", async () => {
+      worker.prepared = {
+        job: { snapshotId: 41, spaceId: "personal", host: "example.com", title: "Fixture", candidates: [], facts: [] },
+        factKinds: [],
+      };
+      const kept = await service.keep("tab", "example.com/first");
+      if ("skipped" in kept) throw new Error(kept.skipped);
+      // The model is still reading when the person forgets the page.
+      await service.request("personal", { type: "forget", all: true });
+      expect(await service.file(kept, [{ kind: "person", name: "Ada Okafor", aliases: [], role: "subject", facts: [], context: "" }])).toEqual([]);
+      service.rekeep(kept, "example.com/first");
+      expect(count(worker, "file-prepare")).toBe(0);
+      expect(count(worker, "index")).toBe(0);
+      expect(count(worker, "kept")).toBe(0);
+    });
+
+    it("never keeps an excluded site, or a tab the agent is driving", async () => {
+      await service.request("personal", { type: "settings", patch: { excludedHosts: ["example.com"] } });
+      expect(await service.keep("tab", "example.com/first")).toEqual({ skipped: "This site or Space is excluded from Watchtower." });
+      expect(await service.keep("gone", "x")).toEqual({ skipped: "The page is no longer open." });
+      expect(count(worker, "keep")).toBe(0);
+    });
+
+    it("files what the page is about, asking Jev only whether a name is an existing entry, and only when allowed", async () => {
+      const candidate = (name: string, known: WatchtowerIndexJob["candidates"][number]["known"]) => ({ name, key: name.toLowerCase(), kind: "person" as const, aliases: [], count: 1, salience: 1, context: `${name} spoke.`, known });
+      worker.prepared = {
+        job: { snapshotId: 41, spaceId: "personal", host: "profiles.example", title: "Patrick Collison", candidates: [candidate("Collison", [{ id: 1, kind: "person", name: "Patrick Collison", aliases: [], sites: [], context: "" }])], facts: [{ candidate: 0, text: "Collison spoke." }] },
+        factKinds: ["claim"],
+      };
+      const asked: { questions: string[] }[] = [];
+      service.useDecisionModel(() => ({ id: "jev", model: "scripted" as never }));
+      service.useIndexModel(async (_page, work) => {
+        asked.push({ questions: work.facts.map((fact) => fact.text) });
+        return { entities: [{ kind: "person", same: 1 }], facts: [] };
+      });
+      // Without the index's consent: joined by spelling only, nothing asked.
+      const kept = await service.keep("tab", "example.com/first");
+      if ("skipped" in kept) throw new Error(kept.skipped);
+      expect(await service.file(kept, [])).toEqual([{ id: 1, kind: "person", name: "Patrick Collison" }]);
+      expect(worker.messages.find((item) => item.type === "file-prepare")).toMatchObject({ snapshotId: 41, observationId: "kept-o", spaceId: "personal" });
+      expect(asked).toEqual([]);
+      expect(worker.messages.find((item) => item.type === "index")).toMatchObject({ level: 3, decisions: [{ kind: "person", same: null }], facts: ["claim"] });
+      // With it: Jev confirms the match; the sentences are already sorted.
+      await service.request("personal", { type: "settings", patch: { smartIndex: true } });
+      const again = await service.keep("tab", "example.com/first");
+      if ("skipped" in again) throw new Error(again.skipped);
+      await service.file(again, []);
+      expect(asked).toEqual([{ questions: [] }]);
+      expect(worker.messages.filter((item) => item.type === "index").at(-1)).toMatchObject({ level: 3, decisions: [{ kind: "person", same: 1 }] });
+    });
   });
 });

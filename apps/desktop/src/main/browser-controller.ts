@@ -11,13 +11,16 @@ import {
   WebContentsView,
   app,
   clipboard,
+  desktopCapturer,
   dialog,
   nativeTheme,
   net,
+  screen,
   session,
   shell,
   webContents as electronWebContents,
   type ContextMenuParams,
+  type DisplayMediaRequestHandlerHandlerRequest,
   type DownloadItem,
   type BrowserWindowConstructorOptions,
   type Cookie,
@@ -25,6 +28,7 @@ import {
   type HandlerDetails,
   type NativeImage,
   type Session,
+  type Streams,
   type WebContents,
   type WebContentsDidStartNavigationEventParams,
 } from "electron";
@@ -55,10 +59,18 @@ import type {
   SplitOrientation,
   SplitSide,
   TabSwitcherPreview,
+  TabSwitcherThumbnail,
   RecentlyClosedTabInfo,
 } from "@pistachio/shell-contracts/ipc";
 import { IPC } from "@pistachio/shell-contracts/ipc";
-import type { ShellCommand } from "@pistachio/shell-contracts/chrome";
+import type { DragSample, ShellCommand } from "@pistachio/shell-contracts/chrome";
+import {
+  holdsDeskModifier,
+  MAX_DESK_STILL_WIDTH,
+  MAX_DESK_WINDOWS,
+  type DeskGrab,
+  type DeskState,
+} from "@pistachio/shell-contracts/desk";
 import {
   gridLayoutForSide,
   MAX_SPLIT_PANES,
@@ -137,7 +149,7 @@ import {
 } from "@pistachio/shell-contracts/shortcuts";
 import { copyUrlNotice, pageLinkMarkdown } from "@pistachio/shell-contracts/page-link";
 import type { NoticeTone } from "@pistachio/shell-contracts/notice";
-import { recordTabVisit, TAB_SWITCHER_LIMIT } from "@pistachio/shell-contracts/tab-switcher";
+import { recordTabVisit, TAB_SWITCHER_LIMIT, type PassedKeystroke } from "@pistachio/shell-contracts/tab-switcher";
 import { pasteAndGoUrl, searchUrl } from "@pistachio/shell-contracts/url";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { isShellPageUrl, shellPageOf, shellPagePlaceholderHtml } from "@pistachio/shell-contracts/shell-pages";
@@ -221,6 +233,11 @@ const GLANCE_INTENT_TTL_MS = 1_000;
 const PRESENTATION_RELEASE_MS = 400;
 /** How long a failed "Read aloud" toast stays before clearing itself. */
 const READ_ALOUD_FAILURE_LINGER_MS = 6_000;
+/**
+ * How long a ⌘C speaks for the copy that follows it. The menu's copy reaches
+ * the page within milliseconds; this only has to outlast a busy renderer.
+ */
+const EMPTY_COPY_WINDOW_MS = 1_000;
 const TAB_IDLE_SUSPEND_MS = 60 * 60 * 1_000;
 const TAB_LIFECYCLE_SWEEP_MS = 60 * 1_000;
 const RECENTLY_CLOSED_LIMIT = 25;
@@ -440,7 +457,32 @@ export interface BrowserControllerHooks {
    * keyboard (#handKeyboardToShell).
    */
   focusShell?: () => void;
+  /**
+   * The desk's grab key was held as a desk page was pressed
+   * (@pistachio/shell-contracts/desk): the shell runs the move from here, and
+   * `onDeskSample` carries the rest of that press to it.
+   */
+  onDeskGrab?: (grab: DeskGrab) => void;
+  onDeskSample?: (sample: DragSample) => void;
+  /** A fresher capture of a card the open tab switcher shows. */
+  onTabSwitcherThumbnail?: (thumbnail: TabSwitcherThumbnail) => void;
+  /**
+   * A page took a click or a scroll: a modifier held down meanwhile belongs
+   * to that (⌘-click, ⌃-scroll), not to the tab switcher's hold.
+   */
+  onPointerInput?: () => void;
 }
+
+/** How long a closed switcher's page waits to be laid out before it gives up on the keyboard. */
+const PAGE_FOCUS_WAIT_MS = 1500;
+/** How long the switcher waits on its first captures before painting what it has. */
+const SWITCHER_FIRST_CAPTURE_MS = 120;
+/** How often the open switcher's cards are captured again. */
+const SWITCHER_LIVE_CAPTURE_MS = 1000;
+/** Device pixels: a card's thumbnail at 2×. */
+const SWITCHER_THUMBNAIL_WIDTH = 480;
+/** Page input that means a held modifier is part of a pointer gesture. */
+const POINTER_INPUT_TYPES: ReadonlySet<string> = new Set(["mouseDown", "mouseWheel", "gestureScrollBegin"]);
 
 /** How a remote restore point is applied to a Space (§10.2 Pull/Merge). */
 export type DurableSessionApplyMode = "replace" | "merge";
@@ -555,6 +597,15 @@ async function loadTabHistory(contents: WebContents, history: TabHistory | null,
   await loadTabUrl(contents, url);
 }
 
+/**
+ * An event that says where it happened on the screen. A synthesized one
+ * (sendInputEvent without globalX/Y) reports the origin; only a real screen
+ * point can anchor a press whose view moves under it.
+ */
+function hasScreenPoint(mouse: Electron.MouseInputEvent): boolean {
+  return typeof mouse.globalX === "number" && typeof mouse.globalY === "number" && (mouse.globalX !== 0 || mouse.globalY !== 0);
+}
+
 /** Sub-pixel geometry, rounded so a redundant re-issue compares equal. */
 function rounded(value: number): number {
   return Math.round(value * 100_000) / 100_000;
@@ -637,6 +688,18 @@ export class BrowserController {
   readonly #gate = new SessionGate();
   readonly #lastActiveTabBySpace = new Map<string, string>();
   readonly #recentTabIdsBySpace = new Map<string, string[]>();
+  /** The last switcher thumbnail of each tab, so the next opening paints at once (and a suspended tab still has one). */
+  readonly #tabThumbnails = new Map<string, string>();
+  /** The cards of the open switcher that main keeps capturing, or null when it is closed. */
+  #switcherCapture: { serial: number; tabIds: string[] } | null = null;
+  #switcherCaptureSerial = 0;
+  /**
+   * The tab switcher closed: until this time, the page in front takes the
+   * keyboard as soon as it is laid out and uncovered (0 when nothing waits).
+   */
+  #focusPageUntil = 0;
+  /** A key the switcher passed on while it had the keyboard: it goes with the keyboard. */
+  #passedKeystroke: PassedKeystroke | null = null;
   /**
    * Claimed by every selection as it begins and bumped by every activation.
    * A selection that had to wait for a view (waking a sleeping tab) compares
@@ -668,6 +731,28 @@ export class BrowserController {
   #secondaryTabId: string | null = null;
   #splitMode: SplitMode = "single";
   #layout: BrowserLayout = { views: [] };
+  /** The live pages of a stacked layout, bottom to top, as last restacked (#restackViews). */
+  #stackedOrder = "";
+  /** The desk that is up (@pistachio/shell-contracts/desk), or null. */
+  #desk: DeskState | null = null;
+  /**
+   * A press on a desk page the grab key turned into a window move: the page
+   * saw none of it, and every later event of the press is relayed to the
+   * shell. `offset` maps the event's screen point to the window's content
+   * box, fixed at the press — the view itself moves under the pointer as the
+   * shell drags it, so its own origin cannot be the reference.
+   */
+  #deskGrab: { tabId: string; offset: { x: number; y: number } | null } | null = null;
+  /**
+   * The grab key is down, as the keyboard last said. A mouse event reaching
+   * `before-mouse-event` carries no modifiers, so the key is followed from
+   * the key events instead — the pages' here, the shell's and the utility
+   * views' through noteDeskKey — wherever the keyboard happens to be.
+   */
+  #deskKeyHeld = false;
+  /** The cursor forced on a desk page while the grab key is held, and the CSS that forces it. */
+  readonly #deskCursors = new Map<string, { cursor: string; key: Promise<string | null> }>();
+  #deskBlurWatch = false;
   /** While true the tab views stay hidden so the chrome can paint over them. */
   #overlayActive = false;
   /**
@@ -747,6 +832,8 @@ export class BrowserController {
   readonly #policyEvents: BrowserPolicyEvent[] = [];
   #findState: FindState = CLOSED_FIND;
   #findRequestId = 0;
+  /** The last bare ⌘C a page let through, until its copy is accounted for (acceptEmptyCopy). */
+  #copyKeystroke: { tabId: string; at: number } | null = null;
   /**
    * The smart find under way, if any (docs/smart-find.md): one session per
    * document, so a navigation or another tab starts a new one.
@@ -1113,27 +1200,102 @@ export class BrowserController {
     };
   }
 
-  /** Capture the current Space's MRU tabs at preview size, never full-page payload size. */
-  async tabSwitcherPreviews(): Promise<TabSwitcherPreview[]> {
+  /**
+   * The switcher's cards: the current Space's tabs, the active one first,
+   * then in the order they were last visited, at most `limit`. Each carries
+   * the thumbnail main last took of it; captures taken now follow as
+   * TabSwitcherThumbnail events, the first round briefly awaited so a
+   * quick opening paints real pages rather than placeholders, and further
+   * rounds keep the cards live until endTabSwitcher().
+   */
+  async tabSwitcherPreviews(limit = TAB_SWITCHER_LIMIT): Promise<TabSwitcherPreview[]> {
     const spaceId = this.activeSpaceId();
     const active = this.#activeTabId;
-    const currentHistory = this.#recentTabIdsBySpace.get(spaceId) ?? [];
-    const history =
-      active === null ? currentHistory : recordTabVisit(currentHistory, active);
-    this.#recentTabIdsBySpace.set(spaceId, history);
-    const ids = history
-      .filter((tabId) => this.#tabInfo(tabId)?.spaceId === spaceId)
-      .slice(0, TAB_SWITCHER_LIMIT);
-    return Promise.all(
-      ids.map(async (tabId) => {
-        const live = this.#tabs.get(tabId);
-        if (live !== undefined) return this.#captureTabSwitcherPreview(live);
-        const info = this.#tabInfo(tabId);
-        if (info === null)
-          throw new Error("tab disappeared while preparing the switcher");
-        return { tab: { ...info }, dataUrl: null };
+    const history = this.#recentTabIdsBySpace.get(spaceId) ?? [];
+    if (active !== null) this.#recentTabIdsBySpace.set(spaceId, recordTabVisit(history, active));
+    const tabIds = this.#tabSwitcherOrder(spaceId).slice(0, Math.max(0, Math.min(TAB_SWITCHER_LIMIT, limit)));
+    const serial = ++this.#switcherCaptureSerial;
+    this.#switcherCapture = { serial, tabIds };
+    const firstRound = this.#captureSwitcherRound(serial, tabIds, true);
+    await Promise.race([firstRound, new Promise((resolve) => setTimeout(resolve, SWITCHER_FIRST_CAPTURE_MS))]);
+    void firstRound.then(() => this.#keepSwitcherLive(serial));
+    return tabIds.flatMap((tabId) => {
+      const info = this.#tabInfo(tabId);
+      return info === null ? [] : [{ tab: { ...info }, dataUrl: this.#tabThumbnails.get(tabId) ?? null }];
+    });
+  }
+
+  /** How many tabs the switcher would show; it opens only for two or more. */
+  tabSwitcherCandidateCount(): number {
+    return this.#tabSwitcherOrder(this.activeSpaceId()).length;
+  }
+
+  /** The switcher closed: stop capturing its cards. */
+  endTabSwitcher(): void {
+    this.#switcherCapture = null;
+  }
+
+  /** Active tab, then visit order, then the never-visited by last activity. */
+  #tabSwitcherOrder(spaceId: string): string[] {
+    const listed = (tabId: string) => {
+      const info = this.#tabInfo(tabId);
+      return info !== null && info.spaceId === spaceId && !info.unlisted;
+    };
+    const active = this.#activeTabId !== null && listed(this.#activeTabId) ? [this.#activeTabId] : [];
+    const visited = (this.#recentTabIdsBySpace.get(spaceId) ?? []).filter(listed);
+    const seen = new Set([...active, ...visited]);
+    const rest = this.#spaceTabIds(spaceId)
+      .filter((tabId) => !seen.has(tabId) && listed(tabId))
+      .sort((left, right) => (this.#tabInfo(right)?.lastActiveAt ?? 0) - (this.#tabInfo(left)?.lastActiveAt ?? 0));
+    return [...new Set([...active, ...visited, ...rest])];
+  }
+
+  async #captureSwitcherRound(serial: number, tabIds: readonly string[], first: boolean): Promise<void> {
+    await Promise.all(
+      tabIds.map(async (tabId) => {
+        const tab = this.#tabs.get(tabId);
+        if (tab === undefined) return;
+        const dataUrl = await this.#captureTabThumbnail(tab, first);
+        if (dataUrl === null || !this.#tabs.has(tabId)) return;
+        const previous = this.#tabThumbnails.get(tabId);
+        this.#tabThumbnails.set(tabId, dataUrl);
+        if (this.#switcherCapture?.serial === serial && previous !== dataUrl)
+          this.#hooks.onTabSwitcherThumbnail?.({ tabId, dataUrl });
       }),
     );
+  }
+
+  async #keepSwitcherLive(serial: number): Promise<void> {
+    while (this.#switcherCapture?.serial === serial) {
+      await new Promise((resolve) => setTimeout(resolve, SWITCHER_LIVE_CAPTURE_MS));
+      const capture = this.#switcherCapture;
+      if (capture?.serial !== serial) return;
+      await this.#captureSwitcherRound(serial, capture.tabIds, false);
+    }
+  }
+
+  /**
+   * A thumbnail-sized JPEG of the page as it is now. Background pages are
+   * drawn for the capture without being told they are visible (no
+   * visibilitychange, no resumed video); only the first round, if that
+   * yields nothing, falls back to a capture that briefly shows the page.
+   */
+  async #captureTabThumbnail(tab: ManagedTab, allowShow: boolean): Promise<string | null> {
+    const contents = tab.view.webContents;
+    // The shell draws the home page and the brief itself; the view has nothing to show.
+    if (contents.isDestroyed() || isShellPageUrl(tab.info.url)) return null;
+    try {
+      let image = await contents.capturePage(undefined, { stayHidden: true });
+      if (image.isEmpty() && allowShow && !contents.isDestroyed()) image = await contents.capturePage();
+      if (image.isEmpty()) return null;
+      // Never wider than the card at 2×, and never wider than the view's
+      // CSS box, which a HiDPI capture exceeds by the scale factor.
+      const width = Math.min(SWITCHER_THUMBNAIL_WIDTH, tab.view.getBounds().width || SWITCHER_THUMBNAIL_WIDTH);
+      return `data:image/jpeg;base64,${fitStillToView(image, width).toJPEG(80).toString("base64")}`;
+    } catch {
+      // A loading, crashed, or GPU-unavailable page keeps its last thumbnail, or the designed fallback card.
+      return null;
+    }
   }
 
   activeSpaceId(): string {
@@ -1625,7 +1787,9 @@ export class BrowserController {
     if (
       tab === undefined ||
       tab.info.kind !== "human" ||
-      (this.#visibleTabIds().includes(tabId) || this.#media.has(tabId))
+      (this.#visibleTabIds().includes(tabId) || this.#media.has(tabId)) ||
+      // A desk shows several pages besides the active one: none of them is idle.
+      this.#layout.views.some((view) => view.tabId === tabId)
     )
       return;
     this.#cancelPermissionsForTab(tabId);
@@ -2401,6 +2565,70 @@ export class BrowserController {
     if (!tab.view.getVisible()) return false;
     tab.view.webContents.focus();
     return true;
+  }
+
+  /**
+   * The tab switcher is done: the page it left in front takes the keyboard
+   * the switcher borrowed — now, or when the overlay over it comes down.
+   * `keystroke` is a key typed meanwhile that the switcher passed on; it
+   * follows the keyboard there.
+   */
+  focusPageAfterOverlay(keystroke?: PassedKeystroke): void {
+    if (keystroke !== undefined) this.#passedKeystroke = keystroke;
+    this.#focusPageUntil = Date.now() + PAGE_FOCUS_WAIT_MS;
+    this.#settlePageFocus();
+  }
+
+  /**
+   * Hand the waiting keyboard to the page in front once it is on screen:
+   * the overlay down, and the shell's layout placing the tab the switcher
+   * chose — which follows the selection by a round trip.
+   */
+  #settlePageFocus(): void {
+    if (this.#focusPageUntil === 0) return;
+    if (Date.now() > this.#focusPageUntil) {
+      this.#focusPageUntil = 0;
+      this.#passedKeystroke = null;
+      return;
+    }
+    const tabId = this.#activeTabId;
+    const tab = tabId === null ? undefined : this.#tabs.get(tabId);
+    if (tab === undefined || tab.view.webContents.isDestroyed() || isShellPageUrl(tab.info.url)) {
+      // Nothing to hand it to: a shell-drawn page keeps the shell's keyboard.
+      this.#focusPageUntil = 0;
+      this.#pressPassedKey(this.#window.webContents, null);
+      return;
+    }
+    if (
+      this.#overlayActive ||
+      this.#waking.has(tab.info.id) ||
+      !this.#layout.views.some((placement) => placement.tabId === tab.info.id)
+    )
+      return;
+    this.#focusPageUntil = 0;
+    tab.view.webContents.focus();
+    this.#pressPassedKey(tab.view.webContents, tab);
+  }
+
+  /**
+   * Strike the key the switcher passed on, into the view that now has the
+   * keyboard. It passes through before-input-event like a real one, so the
+   * app's shortcuts and the data policy see it.
+   */
+  #pressPassedKey(contents: WebContents, tab: ManagedTab | null): void {
+    const keystroke = this.#passedKeystroke;
+    this.#passedKeystroke = null;
+    if (keystroke === null || contents.isDestroyed()) return;
+    const { keyCode, modifiers, char, edit } = keystroke;
+    contents.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    if (char) contents.sendInputEvent({ type: "char", keyCode, modifiers });
+    contents.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+    // macOS does the edit keys' work from the Edit menu, which a sent key
+    // never reaches: do it here, unless the data policy keeps it from the page.
+    if (edit === null || process.platform !== "darwin") return;
+    const guarded = edit === "paste" || edit === "pasteAndMatchStyle" ? "paste" : edit === "copy" || edit === "cut" ? "copy" : null;
+    if (tab !== null && guarded !== null && this.#actionVerdict(tab, guarded).decision === "block") return;
+    contents[edit]();
   }
 
   activePaneBounds(): ContentBounds | null {
@@ -3483,9 +3711,17 @@ export class BrowserController {
       };
       this.#emitFind();
     });
+    // (The desk's grab key is followed through #onTabSwitcherInput, which
+    // is main's relay of every view's keys — noteDeskKey.)
     view.webContents.on("before-input-event", (event, input) =>
       this.#handleTabShortcut(tab, event, input),
     );
+    view.webContents.on("before-mouse-event", (event, mouse) =>
+      this.#handleDeskMouse(tab, event, mouse),
+    );
+    view.webContents.on("input-event", (_event, input) => {
+      if (POINTER_INPUT_TYPES.has(input.type)) this.#hooks.onPointerInput?.();
+    });
     this.#installWindowOpenHandler(tab, view.webContents);
     view.webContents.on("will-navigate", (event, url) => {
       const allowed =
@@ -4402,10 +4638,23 @@ export class BrowserController {
         this.#emitBrowserControls();
       },
     );
-    target.setPermissionCheckHandler((contents, rawPermission) => {
+    // getDisplayMedia() reaches this only after the permission handler
+    // above granted display-capture. Without a handler here Chromium
+    // answers every request "Not supported" — the error Meet reports as
+    // being unable to share from this application.
+    target.setDisplayMediaRequestHandler(
+      (request, callback) => void this.#shareScreenWithoutPicker(request, callback),
+      { useSystemPicker: true },
+    );
+    target.setPermissionCheckHandler((contents, rawPermission, _origin, details) => {
       const tab =
         contents === null ? undefined : this.#tabForWebContents(contents.id);
-      const permission = normalizeElectronPermissions(rawPermission)[0] ?? null;
+      // A check names the one device it is about ("unknown" is taken as
+      // the camera); it is never about screen capture.
+      const permission =
+        normalizeElectronPermissions(rawPermission, [
+          details.mediaType === "audio" ? "audio" : "video",
+        ])[0] ?? null;
       if (tab === undefined || permission === null) return false;
       const clipboardAction =
         permission === "clipboard-read"
@@ -4491,6 +4740,64 @@ export class BrowserController {
     const verdict = this.#actionVerdict(tab, action);
     if (verdict.decision === "block")
       this.#recordPolicy(tab, action, "block", verdict.source, verdict.reason);
+  }
+
+  /**
+   * A copy in a tab's page found nothing to copy: no selection, and no
+   * handler of the page's own took it. When ⌘C asked for that copy, the
+   * page's address is copied instead, as ⌘⇧C would. A copy nobody pressed
+   * ⌘C for — Edit › Copy, a script's execCommand — leaves the clipboard be.
+   */
+  acceptEmptyCopy(senderId: number): void {
+    const keystroke = this.#copyKeystroke;
+    this.#copyKeystroke = null;
+    const tab = this.#tabForWebContents(senderId);
+    if (
+      tab === undefined ||
+      keystroke === null ||
+      keystroke.tabId !== tab.info.id ||
+      Date.now() - keystroke.at > EMPTY_COPY_WINDOW_MS
+    )
+      return;
+    this.#copyPageUrl(tab, "plain");
+  }
+
+  /**
+   * Where macOS has no system picker (before 15), the page gets the whole
+   * display its window is on. The person has already said yes to "capture
+   * your screen", and only a click in the page (its share button) may start
+   * it — a script acting on its own gets nothing.
+   */
+  async #shareScreenWithoutPicker(
+    request: DisplayMediaRequestHandlerHandlerRequest,
+    callback: (streams: Streams) => void,
+  ): Promise<void> {
+    const frame = request.frame;
+    const contents =
+      frame === null || frame.detached
+        ? undefined
+        : electronWebContents.fromFrame(frame);
+    const tab =
+      contents === undefined ? undefined : this.#tabForWebContents(contents.id);
+    if (tab === undefined || !request.userGesture || !request.videoRequested) {
+      callback({});
+      return;
+    }
+    try {
+      const displayId = String(
+        screen.getDisplayMatching(this.#window.getBounds()).id,
+      );
+      const screens = await desktopCapturer.getSources({
+        types: ["screen"],
+        thumbnailSize: { width: 0, height: 0 },
+      });
+      const source =
+        screens.find((candidate) => candidate.display_id === displayId) ??
+        screens[0];
+      callback(source === undefined ? {} : { video: source });
+    } catch {
+      callback({});
+    }
   }
 
   #tabForWebContents(id: number): ManagedTab | undefined {
@@ -4898,6 +5205,8 @@ export class BrowserController {
             verdict.source,
             verdict.reason,
           );
+        } else if (key === "c" && !input.shift) {
+          this.#copyKeystroke = { tabId: tab.info.id, at: Date.now() };
         }
       }
       return;
@@ -5387,6 +5696,7 @@ export class BrowserController {
     }
     const orderIndex = this.#tabOrder.indexOf(tabId);
     if (orderIndex >= 0) this.#tabOrder.splice(orderIndex, 1);
+    this.#tabThumbnails.delete(tabId);
     this.#recentTabIdsBySpace.set(
       closingSpaceId,
       (this.#recentTabIdsBySpace.get(closingSpaceId) ?? []).filter(
@@ -6503,6 +6813,222 @@ export class BrowserController {
       this.#clearMediaPreview();
     this.#layout = layout;
     this.#applyLayout();
+    this.#restackViews();
+  }
+
+  /**
+   * A stacked layout (the desk) may overlap its pages: put the shown ones in
+   * the order it lists them, bottom to top. Re-adding a child view moves it
+   * to the top without reloading it, so each is re-added in turn — only when
+   * the order actually changed, which is a raise, not every frame of a drag.
+   * The utility views then go back above them all.
+   */
+  #restackViews(): void {
+    if (this.#layout.stacked !== true) {
+      this.#stackedOrder = "";
+      return;
+    }
+    const shown = this.#layout.views
+      .map(({ tabId }) => this.#tabs.get(tabId))
+      .filter((tab): tab is ManagedTab => tab !== undefined && tab.view.getVisible());
+    const order = shown.map((tab) => tab.info.id).join(" ");
+    if (order === this.#stackedOrder) return;
+    this.#stackedOrder = order;
+    if (shown.length < 2) return;
+    for (const tab of shown) this.#window.contentView.addChildView(tab.view);
+    this.#onViewAdded();
+  }
+
+  // ── The desk (@pistachio/shell-contracts/desk) ──────────────────────────────
+
+  setDesk(state: DeskState | null): void {
+    this.#desk = state === null ? null : { tabIds: state.tabIds.slice(0, MAX_DESK_WINDOWS), grab: state.grab };
+    const desk = this.#desk;
+    for (const tabId of [...this.#deskCursors.keys()]) {
+      const tab = this.#tabs.get(tabId);
+      if (tab === undefined) this.#deskCursors.delete(tabId);
+      else if (desk === null || desk.grab === null || !desk.tabIds.includes(tabId)) this.#setDeskCursor(tab, null);
+    }
+    if (desk === null && this.#deskGrab !== null) this.#endDeskGrab("cancel");
+    if (desk !== null && !this.#deskBlurWatch) {
+      this.#deskBlurWatch = true;
+      // Keys released outside the app are never seen: a window that loses
+      // focus drops the grab cursor, and a press in progress is cancelled.
+      this.#window.on("blur", () => {
+        this.#deskKeyHeld = false;
+        if (this.#deskGrab !== null) this.#endDeskGrab("cancel");
+        for (const tabId of [...this.#deskCursors.keys()]) {
+          const tab = this.#tabs.get(tabId);
+          if (tab !== undefined) this.#setDeskCursor(tab, null);
+        }
+      });
+    }
+  }
+
+  /**
+   * Stills of these tabs' pages for the desk's drawn windows and its
+   * inventory, shown or hidden — capturePage renders a hidden view for the
+   * capture, as the tab switcher's previews do. At most `width` device px
+   * wide: a window that sits behind another shows its still for as long as
+   * it stays there, so it is taken at the display's density.
+   */
+  async captureTabStills(tabIds: readonly string[], width: number): Promise<PaneStill[]> {
+    const limit = Math.max(64, Math.min(MAX_DESK_STILL_WIDTH, Math.round(Number.isFinite(width) ? width : 0)));
+    const captures = [...new Set(tabIds)].slice(0, MAX_DESK_WINDOWS * 2).map(async (tabId): Promise<PaneStill | null> => {
+      const tab = this.#tabs.get(tabId);
+      if (
+        tab === undefined ||
+        tab.info.spaceId !== this.activeSpaceId() ||
+        tab.view.webContents.isDestroyed() ||
+        this.#waking.has(tabId) ||
+        // The shell draws these pages itself.
+        isShellPageUrl(tab.info.url)
+      )
+        return null;
+      try {
+        const image = await tab.view.webContents.capturePage();
+        if (image.isEmpty()) return null;
+        return { tabId, dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}` };
+      } catch {
+        return null;
+      }
+    });
+    return (await Promise.all(captures)).filter((still): still is PaneStill => still !== null);
+  }
+
+  /** Select a desk window's tab and hand its page the keyboard once it is on screen. */
+  async focusTab(tabId: string): Promise<void> {
+    if (this.#activeTabId !== tabId) await this.selectTab(tabId);
+    if (this.#activeTabId !== tabId) return;
+    this.focusActivePage();
+  }
+
+  /**
+   * Any key event, from any of the window's views: every one says whether
+   * the grab key is down (its own flags), and when that changes every desk
+   * page shows — or drops — the open hand at once.
+   */
+  noteDeskKey(input: Electron.Input): void {
+    const desk = this.#desk;
+    if (desk === null || desk.grab === null || (input.type !== "keyDown" && input.type !== "keyUp")) return;
+    const held = desk.grab === "shift" ? input.shift : desk.grab === "alt" ? input.alt : input.meta;
+    if (held === this.#deskKeyHeld) return;
+    this.#deskKeyHeld = held;
+    for (const tabId of desk.tabIds) {
+      const tab = this.#tabs.get(tabId);
+      if (tab === undefined || this.#deskGrab?.tabId === tabId) continue;
+      this.#setDeskCursor(tab, held ? "grab" : null);
+    }
+  }
+
+  /**
+   * Every mouse event on a tab's page passes here before the page sees it.
+   * Only a desk page is of interest: a press with the grab key held is taken
+   * from the page and becomes a window move, and a plain press makes that
+   * window's tab the active one — the desk's pages are all on screen, so a
+   * click into one is the only way the browser learns which is in use.
+   */
+  #handleDeskMouse(tab: ManagedTab, event: Electron.Event, mouse: Electron.MouseInputEvent): void {
+    const tabId = tab.info.id;
+    const grab = this.#deskGrab;
+    if (grab !== null && grab.tabId === tabId) {
+      // The drag layer the shell raises for the move may take the release
+      // itself, and then this page never hears the button come up: a new
+      // press says the grab is long over (and the shell's gesture ending
+      // says so first — releaseDeskGrab).
+      if (mouse.type === "mouseDown") {
+        this.#deskGrab = null;
+        this.#setDeskCursor(tab, null);
+      } else {
+        if (mouse.type === "mouseWheel") return;
+        event.preventDefault();
+        if (mouse.type === "mouseMove") this.#hooks.onDeskSample?.({ ...this.#deskPoint(tab, mouse, grab.offset), phase: "move" });
+        if (mouse.type === "mouseUp") {
+          this.#hooks.onDeskSample?.({ ...this.#deskPoint(tab, mouse, grab.offset), phase: "up" });
+          this.#deskGrab = null;
+          this.#setDeskCursor(tab, this.#deskKeyHeld ? "grab" : null);
+        }
+        return;
+      }
+    }
+    const desk = this.#desk;
+    if (desk === null || !desk.tabIds.includes(tabId)) return;
+    const armed = desk.grab !== null && (this.#deskKeyHeld || holdsDeskModifier(mouse.modifiers, desk.grab));
+    switch (mouse.type) {
+      case "mouseMove":
+      case "mouseEnter":
+        this.#setDeskCursor(tab, armed ? "grab" : null);
+        return;
+      case "mouseLeave":
+        this.#setDeskCursor(tab, null);
+        return;
+      case "mouseDown":
+        break;
+      default:
+        return;
+    }
+    if (armed && (mouse.button ?? "left") === "left") {
+      event.preventDefault();
+      const bounds = tab.view.getBounds();
+      const local = { x: bounds.x + mouse.x, y: bounds.y + mouse.y };
+      const offset = hasScreenPoint(mouse) ? { x: local.x - mouse.globalX!, y: local.y - mouse.globalY! } : null;
+      this.#deskGrab = { tabId, offset };
+      this.#setDeskCursor(tab, "grabbing");
+      this.#hooks.onDeskGrab?.({ tabId, ...local });
+      return;
+    }
+    if (this.#activeTabId !== tabId) void this.selectTab(tabId);
+  }
+
+  /** An event of the grabbed press, in the window's content box. */
+  #deskPoint(tab: ManagedTab, mouse: Electron.MouseInputEvent, offset: { x: number; y: number } | null): { x: number; y: number } {
+    if (offset !== null && hasScreenPoint(mouse)) return { x: mouse.globalX! + offset.x, y: mouse.globalY! + offset.y };
+    const bounds = tab.view.getBounds();
+    return { x: bounds.x + mouse.x, y: bounds.y + mouse.y };
+  }
+
+  /** The shell's move is over, however it ended: a press still marked as grabbed is not one any more. */
+  releaseDeskGrab(): void {
+    const grab = this.#deskGrab;
+    if (grab === null) return;
+    this.#deskGrab = null;
+    const tab = this.#tabs.get(grab.tabId);
+    if (tab !== undefined) this.#setDeskCursor(tab, this.#deskKeyHeld ? "grab" : null);
+  }
+
+  #endDeskGrab(phase: "up" | "cancel"): void {
+    const grab = this.#deskGrab;
+    if (grab === null) return;
+    this.#deskGrab = null;
+    const tab = this.#tabs.get(grab.tabId);
+    if (tab !== undefined) this.#setDeskCursor(tab, null);
+    this.#hooks.onDeskSample?.({ x: 0, y: 0, phase });
+  }
+
+  /**
+   * Force a cursor over a whole desk page, or give the page its own back.
+   * A user-origin !important rule outranks anything the page declares, and
+   * the hand shows the moment the key goes down rather than on the next
+   * move over an element that happens to be a link.
+   */
+  #setDeskCursor(tab: ManagedTab, cursor: "grab" | "grabbing" | null): void {
+    const tabId = tab.info.id;
+    const contents = tab.view.webContents;
+    const current = this.#deskCursors.get(tabId);
+    if ((current?.cursor ?? null) === cursor) return;
+    if (current !== undefined) {
+      this.#deskCursors.delete(tabId);
+      void current.key.then((key) => {
+        if (key !== null && !contents.isDestroyed()) void contents.removeInsertedCSS(key).catch(() => undefined);
+      });
+    }
+    if (cursor === null || contents.isDestroyed()) return;
+    this.#deskCursors.set(tabId, {
+      cursor,
+      key: contents
+        .insertCSS(`*, *::before, *::after { cursor: ${cursor} !important; }`, { cssOrigin: "user" })
+        .catch(() => null),
+    });
   }
 
   /**
@@ -6512,6 +7038,9 @@ export class BrowserController {
    */
   async prepareOverlay(): Promise<PaneStill[]> {
     const request = ++this.#overlayRequest;
+    // Another overlay is coming up; it keeps the keyboard.
+    this.#focusPageUntil = 0;
+    this.#passedKeystroke = null;
     if (this.#overlayActive) return [];
     // A modal over a fullscreen video would veil the whole screen; end the
     // presentation the way Chrome does when its own UI comes up.
@@ -6563,27 +7092,6 @@ export class BrowserController {
       }
     });
     return (await Promise.all(captures)).filter((still): still is PaneStill => still !== null);
-  }
-
-  async #captureTabSwitcherPreview(
-    tab: ManagedTab,
-  ): Promise<TabSwitcherPreview> {
-    let dataUrl: string | null = null;
-    if (!tab.view.webContents.isDestroyed()) {
-      try {
-        const image = await tab.view.webContents.capturePage();
-        if (!image.isEmpty()) {
-          // Never wider than the switcher's tile, and never wider than the
-          // view's CSS box, which a HiDPI capture exceeds by the scale factor.
-          const width = Math.min(420, tab.view.getBounds().width || 420);
-          const preview = fitStillToView(image, width);
-          dataUrl = `data:image/jpeg;base64,${preview.toJPEG(80).toString("base64")}`;
-        }
-      } catch {
-        // A loading, crashed, or GPU-unavailable page gets the designed fallback tile.
-      }
-    }
-    return { tab: { ...tab.info }, dataUrl };
   }
 
   /** The live tab whose page is in HTML fullscreen. */
@@ -6716,6 +7224,7 @@ export class BrowserController {
     }
     this.#syncMediaPresentation(presented);
     this.#handKeyboardToShell();
+    this.#settlePageFocus();
     const glance = this.#glance;
     if (glance !== null) {
       if (glance.bounds !== null) settleViewBounds(glance.tab.view, glance.bounds);
@@ -7632,9 +8141,11 @@ function normalizeElectronPermissions(
 ): BrowserPermission[] {
   switch (permission) {
     case "media": {
+      // Electron lists only device capture in mediaTypes, so a request
+      // naming neither device is getDisplayMedia() asking for the screen.
+      if (mediaTypes.length === 0) return ["display-capture"];
       const requested: BrowserPermission[] = [];
-      if (mediaTypes.length === 0 || mediaTypes.includes("video"))
-        requested.push("camera");
+      if (mediaTypes.includes("video")) requested.push("camera");
       if (mediaTypes.includes("audio")) requested.push("microphone");
       return requested;
     }

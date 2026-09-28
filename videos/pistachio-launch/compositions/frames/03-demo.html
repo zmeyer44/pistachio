@@ -1,0 +1,574 @@
+<template>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:block;src:url("assets/fonts/InterVariable.woff2") format("woff2")}
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-ba9851c3c22cd980-s.woff2") format("woff2");unicode-range:u+0460-052f,u+1c80-1c8a,u+20b4,u+2de0-2dff,u+a640-a69f,u+fe2e-fe2f}
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-21350d82a1f187e9-s.woff2") format("woff2");unicode-range:u+0301,u+0400-045f,u+0490-0491,u+04b0-04b1,u+2116}
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-c5fe6dc8356a8c31-s.woff2") format("woff2");unicode-range:u+1f??}
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-19cfc7226ec3afaa-s.woff2") format("woff2");unicode-range:u+0370-0377,u+037a-037f,u+0384-038a,u+038c,u+038e-03a1,u+03a3-03ff}
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-df0a9ae256c0569c-s.woff2") format("woff2");unicode-range:u+0102-0103,u+0110-0111,u+0128-0129,u+0168-0169,u+01a0-01a1,u+01af-01b0,u+0300-0301,u+0303-0304,u+0308-0309,u+0323,u+0329,u+1ea0-1ef9,u+20ab}
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-8e9860b6e62d6359-s.woff2") format("woff2");unicode-range:u+0100-02ba,u+02bd-02c5,u+02c7-02cc,u+02ce-02d7,u+02dd-02ff,u+0304,u+0308,u+0329,u+1d00-1dbf,u+1e00-1e9f,u+1ef2-1eff,u+2020,u+20a0-20ab,u+20ad-20c0,u+2113,u+2c60-2c7f,u+a720-a7ff}
+
+#root{position:absolute;inset:0;width:1920px;height:1080px;overflow:hidden;font-family:Inter,sans-serif;color:#1A1A1A;-webkit-font-smoothing:antialiased;font-feature-settings:"cv11","ss01";}
+#root *{box-sizing:border-box;}
+#root svg{display:block;}
+
+.\30 3-demo-wall{position:absolute;left:0;top:0;width:1920px;height:1080px;object-fit:cover;object-position:50% 50%;}
+.\30 3-demo-stage{position:absolute;left:0;top:0;width:1920px;height:1080px;}
+.\30 3-demo-cam,.\30 3-demo-move{position:absolute;left:0;top:0;width:1920px;height:1080px;}
+
+/* ---------- window ---------- */
+.\30 3-demo-win{position:absolute;left:180px;top:84px;width:1560px;height:880px;border-radius:16px;overflow:hidden;
+  background:rgba(232,244,236,.55);-webkit-backdrop-filter:blur(40px) saturate(1.3);backdrop-filter:blur(40px) saturate(1.3);
+  box-shadow:0 0 0 1px rgba(0,0,0,.08),0 40px 80px -20px rgba(15,46,22,.35),0 12px 28px -12px rgba(15,46,22,.18);}
+.\30 3-demo-win::after{content:"";position:absolute;inset:0;border-radius:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);pointer-events:none;}
+
+/* sidebar */
+.\30 3-demo-side{position:absolute;left:0;top:0;width:300px;height:880px;}
+.\30 3-demo-lights{position:absolute;left:18px;top:18px;display:flex;gap:8px;}
+.\30 3-demo-lights i{display:block;width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.12);}
+.\30 3-demo-nav{position:absolute;top:15px;left:92px;display:flex;gap:12px;align-items:center;}
+.\30 3-demo-nav svg{width:18px;height:18px;}
+.\30 3-demo-sbtoggle{position:absolute;top:15px;left:266px;}
+.\30 3-demo-url{position:absolute;left:12px;top:50px;width:276px;height:34px;border-radius:9px;background:rgba(255,255,255,.5);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.04);display:flex;align-items:center;gap:8px;padding:0 11px;font-size:13px;color:#454F47;letter-spacing:.01em;}
+.\30 3-demo-url svg{width:14px;height:14px;flex:none;}
+.\30 3-demo-tiles{position:absolute;left:12px;top:96px;width:276px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+.\30 3-demo-tile{height:46px;border-radius:10px;background:rgba(255,255,255,.55);box-shadow:inset 0 0 0 1px rgba(0,0,0,.035);display:flex;align-items:center;justify-content:center;}
+.\30 3-demo-tile img{width:20px;height:20px;display:block;}
+.\30 3-demo-newtab{position:absolute;left:14px;top:208px;height:32px;display:flex;align-items:center;gap:10px;font-size:13.5px;color:#3E4A41;padding-left:6px;}
+.\30 3-demo-newtab svg{width:14px;height:14px;}
+.\30 3-demo-label{position:absolute;left:20px;top:256px;font-size:12px;font-weight:500;color:#2F3A32;display:flex;justify-content:space-between;width:262px;}
+.\30 3-demo-tab{position:absolute;left:10px;width:280px;height:36px;border-radius:9px;display:flex;align-items:center;gap:10px;padding:0 12px;font-size:13.5px;color:#1A1A1A;white-space:nowrap;}
+.\30 3-demo-tab img,.\30 3-demo-tab svg{width:16px;height:16px;flex:none;display:block;}
+.\30 3-demo-tab.\30 3-demo-active{background:#FFFFFF;box-shadow:0 1px 2px rgba(15,46,22,.08),0 0 0 1px rgba(0,0,0,.04);font-weight:500;}
+.\30 3-demo-sidefoot{position:absolute;left:18px;bottom:16px;width:264px;display:flex;justify-content:space-between;align-items:center;}
+.\30 3-demo-sidefoot svg{width:16px;height:16px;}
+.\30 3-demo-me{width:22px;height:22px;border-radius:50%;background:#E8F4EC;color:#2B6B37;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px rgba(82,168,98,.25);}
+
+/* main pane */
+.\30 3-demo-pane{position:absolute;left:300px;top:8px;width:1252px;height:864px;border-radius:12px;background:#FFFFFF;overflow:hidden;
+  clip-path:inset(0px 0px 0px 0px round 12px);}
+.\30 3-demo-inbox,.\30 3-demo-mail{position:absolute;left:0;top:0;width:1252px;height:864px;}
+.\30 3-demo-phead{position:absolute;left:0;top:0;width:1252px;height:68px;display:flex;align-items:center;padding:0 24px 0 28px;gap:22px;}
+.\30 3-demo-ptitle{font-size:22px;font-weight:500;letter-spacing:-.02em;}
+.\30 3-demo-search{width:380px;height:38px;border-radius:10px;background:#F2F2F2;display:flex;align-items:center;gap:10px;padding:0 14px;font-size:14px;color:#9A9A9A;}
+.\30 3-demo-search svg{width:16px;height:16px;}
+.\30 3-demo-r{position:absolute;}
+.\30 3-demo-picons{right:24px;top:22px;display:flex;gap:18px;}
+.\30 3-demo-picons svg{width:20px;height:20px;}
+.\30 3-demo-tools{position:absolute;left:0;top:68px;width:1252px;height:44px;border-bottom:1px solid #F0F0F0;}
+.\30 3-demo-tools .\30 3-demo-tl{position:absolute;left:28px;top:12px;display:flex;gap:22px;align-items:center;}
+.\30 3-demo-tools svg{width:18px;height:18px;}
+.\30 3-demo-count{right:24px;top:13px;font-size:12.5px;color:#6B6B6B;display:flex;gap:16px;align-items:center;}
+.\30 3-demo-count svg{width:15px;height:15px;}
+.\30 3-demo-rows{position:absolute;left:0;top:112px;width:1252px;}
+.\30 3-demo-row{position:relative;height:64px;width:1252px;border-bottom:1px solid #F3F3F3;font-size:14.5px;white-space:nowrap;}
+.\30 3-demo-dot{position:absolute;left:16px;top:28px;width:8px;height:8px;border-radius:50%;background:#52A862;}
+.\30 3-demo-from{position:absolute;left:36px;top:0;line-height:64px;width:180px;overflow:hidden;text-overflow:ellipsis;color:#1A1A1A;}
+.\30 3-demo-subj{position:absolute;left:228px;top:0;line-height:64px;width:470px;overflow:hidden;text-overflow:ellipsis;color:#1A1A1A;}
+.\30 3-demo-subj span{color:#8A8A8A;}
+.\30 3-demo-time{right:24px;top:0;line-height:64px;font-size:13px;color:#6B6B6B;font-variant-numeric:tabular-nums;}
+.\30 3-demo-unread .\30 3-demo-from,.\30 3-demo-unread .\30 3-demo-time{font-weight:600;color:#1A1A1A;}
+.\30 3-demo-unread .\30 3-demo-subj b{font-weight:600;}
+.\30 3-demo-subj b{font-weight:500;}
+
+/* open mail */
+.\30 3-demo-mail .\30 3-demo-mtools{position:absolute;left:24px;top:22px;display:flex;gap:22px;}
+.\30 3-demo-mail .\30 3-demo-mtools svg{width:19px;height:19px;}
+.\30 3-demo-mcount{position:absolute;left:690px;top:22px;font-size:12.5px;color:#6B6B6B;}
+.\30 3-demo-msubj{position:absolute;left:28px;top:80px;font-size:26px;font-weight:500;letter-spacing:-.025em;display:flex;align-items:center;gap:12px;}
+.\30 3-demo-chip{font-size:12px;font-weight:500;color:#3F8F4F;background:#E8F4EC;border-radius:6px;padding:3px 8px;letter-spacing:0;}
+.\30 3-demo-msender{position:absolute;left:28px;top:134px;width:766px;height:44px;}
+.\30 3-demo-av{position:absolute;left:0;top:2px;width:40px;height:40px;border-radius:50%;background:#E8F4EC;color:#3F8F4F;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;}
+.\30 3-demo-mname{position:absolute;left:54px;top:2px;font-size:15px;font-weight:600;white-space:nowrap;}
+.\30 3-demo-mname span{font-weight:400;color:#8A8A8A;font-size:13.5px;margin-left:6px;}
+.\30 3-demo-mto{position:absolute;left:54px;top:24px;font-size:13px;color:#8A8A8A;}
+.\30 3-demo-mtime{position:absolute;right:0;top:4px;font-size:13px;color:#6B6B6B;}
+.\30 3-demo-mbody{position:absolute;left:28px;top:202px;width:740px;font-size:15.5px;line-height:1.6;color:#2A2A2A;}
+.\30 3-demo-mbody p{margin:0;}
+.\30 3-demo-mbody p+p{margin-top:8px;}
+.\30 3-demo-reply{position:absolute;left:28px;top:300px;width:766px;height:166px;border-radius:12px;box-shadow:inset 0 0 0 1px #E3E3E3;}
+.\30 3-demo-rhead{position:absolute;left:18px;top:14px;font-size:13px;color:#8A8A8A;display:flex;gap:8px;align-items:center;}
+.\30 3-demo-rhead svg{width:15px;height:15px;}
+.\30 3-demo-rtext{position:absolute;left:18px;top:44px;width:720px;font-size:15.5px;line-height:1.5;color:#1A1A1A;white-space:pre-wrap;}
+.\30 3-demo-send{position:absolute;left:16px;top:118px;width:84px;height:34px;border-radius:8px;background:#52A862;color:#fff;font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:6px;}
+.\30 3-demo-rfmt{position:absolute;left:118px;top:127px;display:flex;gap:16px;}
+.\30 3-demo-rfmt svg{width:16px;height:16px;}
+
+.\30 3-demo-hl{position:absolute;left:0;top:0;width:822px;height:864px;overflow:visible;pointer-events:none;}
+.\30 3-demo-toast{position:absolute;left:0;top:776px;width:822px;display:flex;justify-content:center;}
+.\30 3-demo-toastin{height:44px;border-radius:10px;background:#1A1A1A;color:#fff;font-size:14px;display:flex;align-items:center;gap:18px;padding:0 18px;box-shadow:0 12px 30px -10px rgba(0,0,0,.35);}
+.\30 3-demo-toastin b{font-weight:500;color:#8FD19A;}
+
+/* agent panel */
+.\30 3-demo-panel{position:absolute;left:1130px;top:0;width:430px;height:880px;background:#FAFAFA;box-shadow:-1px 0 0 rgba(0,0,0,.06);}
+.\30 3-demo-ahead{position:absolute;left:0;top:0;width:430px;height:62px;border-bottom:1px solid #F0F0F0;}
+.\30 3-demo-aav{position:absolute;left:18px;top:15px;width:32px;height:32px;border-radius:9px;background:#52A862;display:flex;align-items:center;justify-content:center;color:#fff;}
+.\30 3-demo-aav svg{width:18px;height:18px;}
+.\30 3-demo-aname{position:absolute;left:60px;top:13px;font-size:15px;font-weight:500;}
+.\30 3-demo-astat{position:absolute;left:60px;top:33px;font-size:12px;color:#6B6B6B;display:flex;align-items:center;gap:6px;height:16px;}
+.\30 3-demo-sdot{width:7px;height:7px;border-radius:50%;background:#52A862;}
+.\30 3-demo-scheck{width:12px;height:12px;display:none;}
+.\30 3-demo-aicons{position:absolute;right:16px;top:22px;display:flex;gap:14px;}
+.\30 3-demo-aicons svg{width:17px;height:17px;}
+
+.\30 3-demo-empty{position:absolute;left:0;top:62px;width:430px;height:650px;}
+.\30 3-demo-spark{position:absolute;left:22px;top:40px;width:50px;height:50px;border-radius:13px;background:#fff;box-shadow:0 0 0 1px #ECECEC,0 2px 6px rgba(0,0,0,.04);display:flex;align-items:center;justify-content:center;}
+.\30 3-demo-spark svg{width:22px;height:22px;}
+.\30 3-demo-ehead{position:absolute;left:22px;top:110px;width:360px;font-size:33px;font-weight:400;line-height:1.14;letter-spacing:-.03em;}
+.\30 3-demo-esub{position:absolute;left:22px;top:202px;width:380px;font-size:14.5px;line-height:1.55;color:#6B6B6B;}
+.\30 3-demo-sugs{position:absolute;left:12px;top:292px;width:406px;}
+.\30 3-demo-sug{height:44px;border-radius:10px;display:flex;align-items:center;gap:12px;padding:0 12px;font-size:14px;color:#1A1A1A;}
+.\30 3-demo-sug svg{width:16px;height:16px;flex:none;}
+.\30 3-demo-sug .\30 3-demo-arr{margin-left:auto;}
+.\30 3-demo-rec{position:absolute;left:22px;top:450px;width:386px;}
+.\30 3-demo-reclab{font-size:12px;color:#8A8F8A;font-weight:500;display:flex;gap:6px;align-items:center;margin-bottom:8px;}
+.\30 3-demo-reclab svg{width:13px;height:13px;}
+.\30 3-demo-recrow{height:30px;display:flex;align-items:center;gap:10px;font-size:13.5px;color:#1A1A1A;}
+.\30 3-demo-recrow i{width:6px;height:6px;border-radius:50%;background:#52A862;flex:none;opacity:.8;}
+.\30 3-demo-recrow em{font-style:normal;margin-left:auto;color:#9A9A9A;font-size:12px;}
+
+.\30 3-demo-thread{position:absolute;left:16px;top:80px;width:398px;display:flex;flex-direction:column;align-items:flex-end;gap:16px;}
+.\30 3-demo-bubble{max-width:330px;background:#F0F1EE;border-radius:14px 14px 4px 14px;padding:12px 16px;font-size:15px;line-height:1.47;color:#1A1A1A;}
+.\30 3-demo-card{width:398px;}
+.\30 3-demo-chead{height:46px;background:#fff;border-radius:12px 12px 0 0;box-shadow:inset 1px 1px 0 #ECECEC,inset -1px 0 0 #ECECEC;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:13px;}
+.\30 3-demo-chead .\30 3-demo-cl{color:#6B6B6B;font-weight:500;}
+.\30 3-demo-cnt{color:#1A1A1A;font-weight:500;font-variant-numeric:tabular-nums;display:inline-block;}
+.\30 3-demo-cmask{height:156px;overflow:hidden;transform-origin:50% 0%;}
+.\30 3-demo-csheet{height:156px;background:#fff;box-shadow:inset 1px 0 0 #ECECEC,inset -1px 0 0 #ECECEC;transform-origin:50% 0%;}
+.\30 3-demo-step{height:52px;display:flex;align-items:center;gap:12px;padding:0 16px;border-top:1px solid #F3F3F3;font-size:14.5px;}
+.\30 3-demo-badge{width:28px;height:28px;border-radius:7px;background:#52A862;color:#fff;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;letter-spacing:.02em;flex:none;}
+.\30 3-demo-chk{margin-left:auto;width:20px;height:20px;flex:none;}
+.\30 3-demo-cfoot{height:10px;background:#fff;border-radius:0 0 12px 12px;box-shadow:inset 1px 0 0 #ECECEC,inset -1px -1px 0 #ECECEC;}
+
+.\30 3-demo-ctx{position:absolute;left:22px;top:708px;font-size:12px;color:#8A8F8A;display:flex;gap:6px;align-items:center;}
+.\30 3-demo-ctx svg{width:13px;height:13px;}
+.\30 3-demo-ctx b{font-weight:500;color:#6B6B6B;}
+.\30 3-demo-composer{position:absolute;left:16px;top:736px;width:398px;height:128px;border-radius:14px;background:#fff;box-shadow:0 0 0 1px #E3E3E3,0 2px 8px rgba(0,0,0,.04);}
+.\30 3-demo-ctext{position:absolute;left:16px;top:14px;width:366px;font-size:15.5px;line-height:1.48;white-space:pre-wrap;color:#1A1A1A;}
+.\30 3-demo-ph{position:absolute;left:16px;top:14px;font-size:15.5px;line-height:1.48;color:#A3A3A3;white-space:nowrap;}
+.\30 3-demo-caret{display:inline-block;width:2px;height:19px;background:#1A1A1A;vertical-align:-3px;margin-left:1px;border-radius:1px;}
+.\30 3-demo-cicons{position:absolute;left:16px;bottom:15px;display:flex;gap:14px;}
+.\30 3-demo-cicons svg{width:17px;height:17px;}
+.\30 3-demo-sendbtn{position:absolute;right:12px;bottom:10px;width:30px;height:30px;border-radius:50%;background:#EDEDED;display:flex;align-items:center;justify-content:center;}
+.\30 3-demo-sendbtn svg{width:15px;height:15px;}
+
+/* keycaps */
+.\30 3-demo-keys{position:absolute;left:0;top:588px;width:1920px;display:flex;justify-content:center;gap:18px;pointer-events:none;}
+.\30 3-demo-key{width:104px;height:104px;border-radius:16px;background:linear-gradient(#FFFFFF,#F5F6F4);
+  box-shadow:0 0 0 1px rgba(0,0,0,.07),0 5px 0 #DCDFDA,0 22px 40px -12px rgba(15,46,22,.4);display:flex;align-items:center;justify-content:center;font-size:46px;color:#1A1A1A;}
+.\30 3-demo-key.\30 3-demo-k2{font-size:42px;font-weight:500;}
+
+/* closing type */
+.\30 3-demo-type{position:absolute;left:0;top:0;width:1920px;height:1080px;pointer-events:none;}
+.\30 3-demo-shade{position:absolute;left:-360px;top:40px;width:1320px;height:960px;background:radial-gradient(closest-side,rgba(15,46,22,.42),rgba(15,46,22,.18) 55%,rgba(15,46,22,0));}
+.\30 3-demo-lines{position:absolute;left:104px;top:318px;width:600px;font-size:70px;font-weight:400;line-height:1.08;letter-spacing:-.04em;color:#FFFFFF;text-shadow:0 2px 24px rgba(15,46,22,.25);}
+.\30 3-demo-lines .\30 3-demo-l{display:block;white-space:nowrap;}
+.\30 3-demo-lines .\30 3-demo-w{display:inline-block;}
+.\30 3-demo-lines .\30 3-demo-g{color:#E8F4EC;}
+.\30 3-demo-gap{margin-top:0;}
+</style>
+
+<div data-hf-id="hf-3h4x" id="root" data-composition-id="03-demo" data-width="1920" data-height="1080" data-start="0" data-duration="16.4">
+
+  <img data-hf-id="hf-enzi" id="d03-wall-clip" class="03-demo-wall clip" data-start="0" data-duration="16.4" data-track-index="0" src="assets/hero-wallpaper-pistachio.jpg" alt="">
+
+  <div data-hf-id="hf-mbp7" id="d03-stage-clip" class="03-demo-stage clip" data-start="0" data-duration="16.4" data-track-index="1">
+   <div data-hf-id="hf-tbyz" class="03-demo-cam">
+    <div data-hf-id="hf-lb59" class="03-demo-move">
+     <div data-hf-id="hf-wxdg" class="03-demo-win">
+
+      <!-- sidebar -->
+      <div data-hf-id="hf-8ka3" class="03-demo-side">
+        <div data-hf-id="hf-cklx" class="03-demo-lights"><i data-hf-id="hf-fo5p" style="background:#FF5F57"></i><i data-hf-id="hf-e2nd" style="background:#FEBC2E"></i><i data-hf-id="hf-8b7v" style="background:#28C840"></i></div>
+        <div data-hf-id="hf-whs1" class="03-demo-nav">
+          <svg data-hf-id="hf-ivfm" viewBox="0 0 24 24" fill="none" stroke="#5E625E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-e7o7" d="M15 18l-6-6 6-6" /></svg>
+          <svg data-hf-id="hf-p1fc" viewBox="0 0 24 24" fill="none" stroke="#B4B8B4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-wraw" d="M9 18l6-6-6-6" /></svg>
+          <svg data-hf-id="hf-zqti" viewBox="0 0 24 24" fill="none" stroke="#5E625E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-8xcz" d="M20 11a8 8 0 1 0-2.3 5.7" /><path data-hf-id="hf-9bx8" d="M20 4v7h-7" /></svg>
+        </div>
+        <div data-hf-id="hf-mwo5" class="03-demo-sbtoggle"><svg data-hf-id="hf-ybv8" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#5E625E" stroke-width="1.7"><rect data-hf-id="hf-r47j" x="3.5" y="4.5" width="17" height="15" rx="3" /><path data-hf-id="hf-tuyk" d="M9.5 4.5v15" /></svg></div>
+        <div data-hf-id="hf-y5q9" class="03-demo-url">
+          <svg data-hf-id="hf-sypc" viewBox="0 0 24 24" fill="none" stroke="#8A8F8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect data-hf-id="hf-6sej" x="5" y="10.5" width="14" height="10" rx="2.5" /><path data-hf-id="hf-ts00" d="M8 10.5V8a4 4 0 0 1 8 0v2.5" /></svg>
+          <span data-hf-id="hf-a5o4">mail.google.com</span>
+        </div>
+        <div data-hf-id="hf-thul" class="03-demo-tiles">
+          <div data-hf-id="hf-fr3e" class="03-demo-tile"><img data-hf-id="hf-4us1" src="assets/favicons/x.png" alt=""></div>
+          <div data-hf-id="hf-zhym" class="03-demo-tile"><img data-hf-id="hf-gi92" src="assets/favicons/youtube.png" alt=""></div>
+          <div data-hf-id="hf-zw9n" class="03-demo-tile"><img data-hf-id="hf-u1bk" src="assets/favicons/google.png" alt=""></div>
+          <div data-hf-id="hf-0ako" class="03-demo-tile"><img data-hf-id="hf-pjbx" src="assets/favicons/google-calendar.png" alt=""></div>
+          <div data-hf-id="hf-xifh" class="03-demo-tile"><img data-hf-id="hf-bpkk" src="assets/favicons/chatgpt.png" alt=""></div>
+          <div data-hf-id="hf-xwqi" class="03-demo-tile"><img data-hf-id="hf-cyzv" src="assets/favicons/claude.png" alt=""></div>
+        </div>
+        <div data-hf-id="hf-xnyu" class="03-demo-newtab"><svg data-hf-id="hf-89u9" viewBox="0 0 24 24" fill="none" stroke="#8A8F8A" stroke-width="2" stroke-linecap="round"><path data-hf-id="hf-1zsu" d="M12 5v14M5 12h14" /></svg>New tab</div>
+        <div data-hf-id="hf-3k8w" class="03-demo-label"><span data-hf-id="hf-fmd5">Live tabs</span><span data-hf-id="hf-hs2e">3</span></div>
+        <div data-hf-id="hf-qsqw" class="03-demo-tab 03-demo-active" style="top:280px">
+          <svg data-hf-id="hf-rq4h" viewBox="0 0 24 24" fill="none" stroke="#52A862" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect data-hf-id="hf-z1ue" x="3" y="5.5" width="18" height="13" rx="2.5" /><path data-hf-id="hf-td4l" d="M3.5 7l8.5 6 8.5-6" /></svg>
+          <span data-hf-id="hf-nxgu" class="03-demo-inboxtab">Inbox (3)</span>
+        </div>
+        <div data-hf-id="hf-z4l9" class="03-demo-tab" style="top:320px"><img data-hf-id="hf-0eb0" src="assets/favicons/wikipedia.png" alt=""><span data-hf-id="hf-mnjh">Pistachio – Wikipedia</span></div>
+        <div data-hf-id="hf-60w1" class="03-demo-tab" style="top:360px"><img data-hf-id="hf-b7f4" src="assets/favicons/github.png" alt=""><span data-hf-id="hf-x6wm">GitHub</span></div>
+        <div data-hf-id="hf-1n0v" class="03-demo-sidefoot">
+          <svg data-hf-id="hf-af3m" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round"><path data-hf-id="hf-gf8m" d="M4 7h16M4 12h16M4 17h10" /></svg>
+          <div data-hf-id="hf-i726" class="03-demo-me">Z</div>
+        </div>
+      </div>
+
+      <!-- main pane -->
+      <div data-hf-id="hf-h8c4" class="03-demo-pane">
+        <div data-hf-id="hf-jdb2" class="03-demo-inbox">
+          <div data-hf-id="hf-856o" class="03-demo-phead">
+            <div data-hf-id="hf-z84o" class="03-demo-ptitle">Inbox</div>
+            <div data-hf-id="hf-pc15" class="03-demo-search"><svg data-hf-id="hf-upnh" viewBox="0 0 24 24" fill="none" stroke="#9A9A9A" stroke-width="2" stroke-linecap="round"><circle data-hf-id="hf-mu0v" cx="11" cy="11" r="6.5" /><path data-hf-id="hf-aewz" d="M20 20l-4.2-4.2" /></svg>Search mail</div>
+          </div>
+          <div data-hf-id="hf-bq28" class="03-demo-r 03-demo-picons">
+            <svg data-hf-id="hf-pazi" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-rt15" d="M12 20h9" /><path data-hf-id="hf-3qv4" d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+            <svg data-hf-id="hf-yt9y" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round"><path data-hf-id="hf-h95p" d="M4 6h16M7 12h10M10 18h4" /></svg>
+            <svg data-hf-id="hf-fjqi" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8"><circle data-hf-id="hf-2731" cx="12" cy="12" r="3" /><path data-hf-id="hf-z86k" d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" /></svg>
+          </div>
+          <div data-hf-id="hf-pcxb" class="03-demo-tools">
+            <div data-hf-id="hf-rxhi" class="03-demo-tl">
+              <svg data-hf-id="hf-dvwp" viewBox="0 0 24 24" fill="none" stroke="#8A8A8A" stroke-width="1.8"><rect data-hf-id="hf-99a2" x="4.5" y="4.5" width="15" height="15" rx="3" /></svg>
+              <svg data-hf-id="hf-s2sj" viewBox="0 0 24 24" fill="none" stroke="#8A8A8A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-maxv" d="M20 11a8 8 0 1 0-2.3 5.7" /><path data-hf-id="hf-nr10" d="M20 4v7h-7" /></svg>
+              <svg data-hf-id="hf-mes5" viewBox="0 0 24 24" fill="#8A8A8A"><circle data-hf-id="hf-d3j0" cx="12" cy="5.5" r="1.6" /><circle data-hf-id="hf-1z27" cx="12" cy="12" r="1.6" /><circle data-hf-id="hf-x106" cx="12" cy="18.5" r="1.6" /></svg>
+            </div>
+            <div data-hf-id="hf-r20q" class="03-demo-r 03-demo-count">1–9 of 212
+              <svg data-hf-id="hf-bik5" viewBox="0 0 24 24" fill="none" stroke="#B4B4B4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-u53r" d="M15 18l-6-6 6-6" /></svg>
+              <svg data-hf-id="hf-uymn" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-63v4" d="M9 18l6-6-6-6" /></svg>
+            </div>
+          </div>
+          <div data-hf-id="hf-swn9" class="03-demo-rows">
+            <div data-hf-id="hf-16bw" class="03-demo-row1 03-demo-row 03-demo-unread"><i data-hf-id="hf-kop3" class="03-demo-dot"></i><div data-hf-id="hf-5fg2" class="03-demo-from">Maya Chen</div><div data-hf-id="hf-jslu" class="03-demo-subj"><b data-hf-id="hf-r8qy">Standup moved to 9:30</b> <span data-hf-id="hf-q3o0">— Can everyone still make it? Reply here if not</span></div><div data-hf-id="hf-bud6" class="03-demo-r 03-demo-time">8:52 AM</div></div>
+            <div data-hf-id="hf-azol" class="03-demo-below">
+              <div data-hf-id="hf-z8kp" class="03-demo-row 03-demo-unread"><i data-hf-id="hf-jodj" class="03-demo-dot"></i><div data-hf-id="hf-e717" class="03-demo-from">Linear</div><div data-hf-id="hf-xfbq" class="03-demo-subj"><b data-hf-id="hf-haxo">3 issues assigned to you</b> <span data-hf-id="hf-535k">— PIS-212, PIS-218 and PIS-221 are due this week</span></div><div data-hf-id="hf-0n2w" class="03-demo-r 03-demo-time">8:10 AM</div></div>
+              <div data-hf-id="hf-v9j6" class="03-demo-row"><div data-hf-id="hf-ksco" class="03-demo-from">Jonah Park</div><div data-hf-id="hf-xtmr" class="03-demo-subj"><b data-hf-id="hf-gmc3">Q4 roadmap draft</b> <span data-hf-id="hf-vmv7">— Left comments on section 2, mostly around sequencing</span></div><div data-hf-id="hf-jli3" class="03-demo-r 03-demo-time">Yesterday</div></div>
+              <div data-hf-id="hf-gf3a" class="03-demo-row"><div data-hf-id="hf-imhe" class="03-demo-from">Figma</div><div data-hf-id="hf-y7xs" class="03-demo-subj"><b data-hf-id="hf-a425">Maya invited you to “Launch deck”</b> <span data-hf-id="hf-m7n9">— Open the file to start editing</span></div><div data-hf-id="hf-0ziz" class="03-demo-r 03-demo-time">Yesterday</div></div>
+              <div data-hf-id="hf-gteb" class="03-demo-row"><div data-hf-id="hf-iihf" class="03-demo-from">Stripe</div><div data-hf-id="hf-vfsl" class="03-demo-subj"><b data-hf-id="hf-5ap1">Your weekly summary</b> <span data-hf-id="hf-rxi5">— Payouts, disputes and new customers for the week</span></div><div data-hf-id="hf-c7n1" class="03-demo-r 03-demo-time">Mon</div></div>
+              <div data-hf-id="hf-h7pc" class="03-demo-row"><div data-hf-id="hf-3yui" class="03-demo-from">Priya Raman</div><div data-hf-id="hf-vu3m" class="03-demo-subj"><b data-hf-id="hf-mn95">Dinner Friday?</b> <span data-hf-id="hf-68yv">— Thinking the place on Valencia around 7</span></div><div data-hf-id="hf-ikph" class="03-demo-r 03-demo-time">Sun</div></div>
+              <div data-hf-id="hf-efk5" class="03-demo-row"><div data-hf-id="hf-omb7" class="03-demo-from">Notion</div><div data-hf-id="hf-w8en" class="03-demo-subj"><b data-hf-id="hf-u263">Your weekly digest</b> <span data-hf-id="hf-pizt">— 4 pages were updated in Product</span></div><div data-hf-id="hf-p3t5" class="03-demo-r 03-demo-time">Sun</div></div>
+              <div data-hf-id="hf-etv6" class="03-demo-row"><div data-hf-id="hf-ebos" class="03-demo-from">Calendar</div><div data-hf-id="hf-wmpo" class="03-demo-subj"><b data-hf-id="hf-r0jv">Design review moved to Thursday</b> <span data-hf-id="hf-mi4z">— 2:00 – 3:00 PM, Room 4B</span></div><div data-hf-id="hf-qlgz" class="03-demo-r 03-demo-time">Sat</div></div>
+              <div data-hf-id="hf-f867" class="03-demo-row"><div data-hf-id="hf-9udl" class="03-demo-from">Sam Ortiz</div><div data-hf-id="hf-tukh" class="03-demo-subj"><b data-hf-id="hf-ggfj">Photos from Saturday</b> <span data-hf-id="hf-kd5f">— Shared an album with you</span></div><div data-hf-id="hf-j5sb" class="03-demo-r 03-demo-time">Sep 19</div></div>
+              <div data-hf-id="hf-fmh8" class="03-demo-row"><div data-hf-id="hf-h035" class="03-demo-from">GitHub</div><div data-hf-id="hf-u8vi" class="03-demo-subj"><b data-hf-id="hf-g87o">2 new pull requests</b> <span data-hf-id="hf-rogv">— Review requested on pistachio/shell</span></div><div data-hf-id="hf-jk3c" class="03-demo-r 03-demo-time">Sep 18</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div data-hf-id="hf-ueu3" class="03-demo-mail">
+          <div data-hf-id="hf-4otg" class="03-demo-mtools">
+            <svg data-hf-id="hf-4hrd" viewBox="0 0 24 24" fill="none" stroke="#5E5E5E" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-uuug" d="M19 12H5M11 18l-6-6 6-6" /></svg>
+            <svg data-hf-id="hf-ex8i" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect data-hf-id="hf-4tf4" x="3" y="4" width="18" height="5" rx="1.5" /><path data-hf-id="hf-1p89" d="M5 9v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4" /></svg>
+            <svg data-hf-id="hf-fbjj" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-l1v9" d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13" /></svg>
+            <svg data-hf-id="hf-fpuk" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect data-hf-id="hf-7lkq" x="3" y="5.5" width="18" height="13" rx="2.5" /><path data-hf-id="hf-i0h5" d="M3.5 7l8.5 6 8.5-6" /></svg>
+          </div>
+          <div data-hf-id="hf-qx0d" class="03-demo-mcount">1 of 212</div>
+          <div data-hf-id="hf-tgvg" class="03-demo-msubj">Standup moved to 9:30 <span data-hf-id="hf-cj8f" class="03-demo-chip">Inbox</span></div>
+          <div data-hf-id="hf-7lj8" class="03-demo-msender">
+            <div data-hf-id="hf-2srz" class="03-demo-av">MC</div>
+            <div data-hf-id="hf-2gui" class="03-demo-mname">Maya Chen<span data-hf-id="hf-en50">maya@northwind.co</span></div>
+            <div data-hf-id="hf-2718" class="03-demo-mto">to me, team</div>
+            <div data-hf-id="hf-vr39" class="03-demo-mtime">8:52 AM</div>
+          </div>
+          <div data-hf-id="hf-1qqf" class="03-demo-mbody">
+            <p data-hf-id="hf-us11">Hi all — standup moves to 9:30 today so we can fit the design review in first.</p>
+            <p data-hf-id="hf-eka8">Can everyone still make it? Reply here if not.</p>
+          </div>
+          <div data-hf-id="hf-j0gy" class="03-demo-reply">
+            <div data-hf-id="hf-n4ge" class="03-demo-rhead"><svg data-hf-id="hf-nyry" viewBox="0 0 24 24" fill="none" stroke="#8A8A8A" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-1gc5" d="M9 14L4 9l5-5" /><path data-hf-id="hf-9g1j" d="M4 9h10a6 6 0 0 1 6 6v4" /></svg>Maya Chen</div>
+            <div data-hf-id="hf-1m5x" class="03-demo-rtext"><span data-hf-id="hf-oij1" class="03-demo-rtyped"></span><span data-hf-id="hf-2djv" class="03-demo-rcaret 03-demo-caret"></span></div>
+            <div data-hf-id="hf-4iwu" class="03-demo-send">Send</div>
+            <div data-hf-id="hf-agld" class="03-demo-rfmt">
+              <svg data-hf-id="hf-7e7l" viewBox="0 0 24 24" fill="none" stroke="#9A9A9A" stroke-width="1.9" stroke-linecap="round"><path data-hf-id="hf-ohdt" d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z" /></svg>
+              <svg data-hf-id="hf-2kah" viewBox="0 0 24 24" fill="none" stroke="#9A9A9A" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-vhix" d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg>
+              <svg data-hf-id="hf-w9t1" viewBox="0 0 24 24" fill="none" stroke="#9A9A9A" stroke-width="1.9" stroke-linecap="round"><circle data-hf-id="hf-1iwn" cx="12" cy="12" r="9" /><path data-hf-id="hf-sup1" d="M8.5 14.5a4.5 4.5 0 0 0 7 0M9 9.5h.01M15 9.5h.01" /></svg>
+            </div>
+          </div>
+        </div>
+
+        <svg data-hf-id="hf-wmf8" class="03-demo-hl" viewBox="0 0 822 864">
+          <rect data-hf-id="hf-bmha" class="03-demo-hlr" x="10" y="114" width="802" height="60" rx="8" ry="8" fill="rgba(82,168,98,.08)" stroke="#52A862" stroke-width="2" />
+        </svg>
+
+        <div data-hf-id="hf-a0e7" class="03-demo-toast"><div data-hf-id="hf-vq71" class="03-demo-toastin">Conversation archived<b data-hf-id="hf-5men">Undo</b></div></div>
+      </div>
+
+      <!-- agent panel -->
+      <div data-hf-id="hf-rodk" class="03-demo-panel">
+        <div data-hf-id="hf-h8vx" class="03-demo-ahead">
+          <div data-hf-id="hf-f4xy" class="03-demo-aav"><svg data-hf-id="hf-lthc" viewBox="0 4 120 110"><path data-hf-id="hf-0n98" d="M115.10 51.50A13.5 13.5 0 0 1 115.10 65.00L93.40 102.60A13.5 13.5 0 0 1 81.71 109.35L38.29 109.35A13.5 13.5 0 0 1 26.60 102.60L4.90 65.00A13.5 13.5 0 0 1 4.90 51.50L27.47 12.40A3.5 3.5 0 0 1 33.53 12.40L56.54 52.25A4 4 0 0 0 63.46 52.25L86.47 12.40A3.5 3.5 0 0 1 92.53 12.40Z" fill="currentColor" /></svg></div>
+          <div data-hf-id="hf-o6ye" class="03-demo-aname">Pistachio</div>
+          <div data-hf-id="hf-uc9t" class="03-demo-astat"><i data-hf-id="hf-4de6" class="03-demo-sdot"></i><svg data-hf-id="hf-0ri6" class="03-demo-scheck" viewBox="0 0 24 24" fill="none" stroke="#52A862" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-s5bw" d="M5 12.5l4.5 4.5L19 7.5" /></svg><span data-hf-id="hf-yqja" class="03-demo-stext">Ready</span></div>
+          <div data-hf-id="hf-x5db" class="03-demo-aicons">
+            <svg data-hf-id="hf-g45l" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-2nzt" d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path data-hf-id="hf-xrqc" d="M3 3v5h5M12 7v5l3 2" /></svg>
+            <svg data-hf-id="hf-gigm" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-un2c" d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" /><path data-hf-id="hf-48wh" d="M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z" /></svg>
+            <svg data-hf-id="hf-fwq6" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8"><rect data-hf-id="hf-og1b" x="3.5" y="4.5" width="17" height="15" rx="3" /><path data-hf-id="hf-g1pc" d="M14.5 4.5v15" /></svg>
+            <svg data-hf-id="hf-z7kz" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round"><path data-hf-id="hf-hoi2" d="M6 6l12 12M18 6L6 18" /></svg>
+          </div>
+        </div>
+
+        <div data-hf-id="hf-52qt" class="03-demo-empty">
+          <div data-hf-id="hf-ix45" class="03-demo-spark"><svg data-hf-id="hf-relu" viewBox="0 0 24 24" fill="none" stroke="#1A1A1A" stroke-width="1.6" stroke-linejoin="round"><path data-hf-id="hf-uurn" d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9Z" /><path data-hf-id="hf-p8a1" d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8Z" /></svg></div>
+          <div data-hf-id="hf-pz8m" class="03-demo-ehead">What can I do in your browser?</div>
+          <div data-hf-id="hf-1uyi" class="03-demo-esub">I can work across your tabs, use the sessions you’re already signed in to, and pause whenever you step in.</div>
+          <div data-hf-id="hf-0z9o" class="03-demo-sugs">
+            <div data-hf-id="hf-0xjw" class="03-demo-sug"><svg data-hf-id="hf-gwrn" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-ceb8" d="M5 12.5l4.5 4.5L19 7.5" /></svg>Finish the task on this page<svg data-hf-id="hf-3dfs" class="03-demo-arr" viewBox="0 0 24 24" fill="none" stroke="#9A9A9A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-m7n8" d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+            <div data-hf-id="hf-627f" class="03-demo-sug"><svg data-hf-id="hf-zlw0" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round"><path data-hf-id="hf-kw5t" d="M4 6h16M4 12h10M4 18h13" /></svg>Compare information across my open tabs<svg data-hf-id="hf-td8g" class="03-demo-arr" viewBox="0 0 24 24" fill="none" stroke="#9A9A9A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-cq4s" d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+            <div data-hf-id="hf-bz7e" class="03-demo-sug"><svg data-hf-id="hf-hb2o" viewBox="0 0 24 24" fill="none" stroke="#6B6B6B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-n56y" d="M21 3L3 10.5l7.5 3 3 7.5Z" /></svg>Find the right page and take me there<svg data-hf-id="hf-s6bd" class="03-demo-arr" viewBox="0 0 24 24" fill="none" stroke="#9A9A9A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-bj7p" d="M5 12h14M13 6l6 6-6 6" /></svg></div>
+          </div>
+          <div data-hf-id="hf-5kto" class="03-demo-rec">
+            <div data-hf-id="hf-5sze" class="03-demo-reclab"><svg data-hf-id="hf-xxl1" viewBox="0 0 24 24" fill="none" stroke="#8A8F8A" stroke-width="2" stroke-linecap="round"><circle data-hf-id="hf-q513" cx="12" cy="12" r="9" /><path data-hf-id="hf-zcgb" d="M12 7v5l3 2" /></svg>Recent conversations</div>
+            <div data-hf-id="hf-0jdf" class="03-demo-recrow"><i data-hf-id="hf-wt6k"></i>Summarize this week’s tech releases<em data-hf-id="hf-kk2y">15h ago</em></div>
+            <div data-hf-id="hf-a1a8" class="03-demo-recrow"><i data-hf-id="hf-zeb8"></i>Plan a weekend in Big Sur<em data-hf-id="hf-u57v">1d ago</em></div>
+            <div data-hf-id="hf-wfjr" class="03-demo-recrow"><i data-hf-id="hf-y7e5"></i>Compare three standing desks<em data-hf-id="hf-fs4k">2d ago</em></div>
+            <div data-hf-id="hf-2whm" class="03-demo-recrow"><i data-hf-id="hf-ylp6"></i>Notes from the design review<em data-hf-id="hf-fhzl">3d ago</em></div>
+          </div>
+        </div>
+
+        <div data-hf-id="hf-tf3e" class="03-demo-thread">
+          <div data-hf-id="hf-xpf9" class="03-demo-bubble">Reply to the top email saying I’ll be ten minutes late, then archive it.</div>
+          <div data-hf-id="hf-j4i0" class="03-demo-card">
+            <div data-hf-id="hf-y0ej" class="03-demo-chead"><span data-hf-id="hf-c82k" class="03-demo-cl">Steps so far</span><span data-hf-id="hf-3kgv" class="03-demo-cnt">1 action</span></div>
+            <div data-hf-id="hf-u6t4" class="03-demo-cmask" data-layout-allow-overflow="">
+              <div data-hf-id="hf-2uei" class="03-demo-csheet">
+                <div data-hf-id="hf-obyb" class="03-demo-s1 03-demo-step"><span data-hf-id="hf-donb" class="03-demo-badge">01</span>Opened the top email<svg data-hf-id="hf-io5w" class="03-demo-chk" viewBox="0 0 20 20"><circle data-hf-id="hf-0cqp" class="03-demo-cc" cx="10" cy="10" r="9" fill="#52A862" /><path data-hf-id="hf-nwhq" class="03-demo-cp" d="M6 10.4l2.7 2.7L14.2 7.4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></div>
+                <div data-hf-id="hf-w3nm" class="03-demo-s2 03-demo-step"><span data-hf-id="hf-daca" class="03-demo-badge">02</span>Typed the reply<svg data-hf-id="hf-of70" class="03-demo-chk" viewBox="0 0 20 20"><circle data-hf-id="hf-bmad" class="03-demo-cc" cx="10" cy="10" r="9" fill="#52A862" /><path data-hf-id="hf-zllu" class="03-demo-cp" d="M6 10.4l2.7 2.7L14.2 7.4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></div>
+                <div data-hf-id="hf-1781" class="03-demo-s3 03-demo-step"><span data-hf-id="hf-cw19" class="03-demo-badge">03</span>Sent it and archived the thread<svg data-hf-id="hf-n89x" class="03-demo-chk" viewBox="0 0 20 20"><circle data-hf-id="hf-ct7g" class="03-demo-cc" cx="10" cy="10" r="9" fill="#52A862" /><path data-hf-id="hf-zzwv" class="03-demo-cp" d="M6 10.4l2.7 2.7L14.2 7.4" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></div>
+              </div>
+            </div>
+            <div data-hf-id="hf-9fu9" class="03-demo-cfoot"></div>
+          </div>
+        </div>
+
+        <div data-hf-id="hf-jh21" class="03-demo-ctx"><svg data-hf-id="hf-qnbh" viewBox="0 0 24 24" fill="none" stroke="#8A8F8A" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect data-hf-id="hf-7zvr" x="3" y="5.5" width="18" height="13" rx="2.5" /><path data-hf-id="hf-j7e8" d="M3.5 7l8.5 6 8.5-6" /></svg>Connected to <b data-hf-id="hf-eopl" class="03-demo-ctxname">Inbox (3)</b></div>
+        <div data-hf-id="hf-aqwg" class="03-demo-composer">
+          <div data-hf-id="hf-unwv" class="03-demo-ph">Ask Pistachio to do anything in your browser…</div>
+          <div data-hf-id="hf-8kdo" class="03-demo-ctext"><span data-hf-id="hf-410t" class="03-demo-typed"></span><span data-hf-id="hf-p05x" class="03-demo-pcaret 03-demo-caret"></span></div>
+          <div data-hf-id="hf-th69" class="03-demo-cicons">
+            <svg data-hf-id="hf-gq1e" viewBox="0 0 24 24" fill="none" stroke="#8A8A8A" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-krpp" d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" /></svg>
+            <svg data-hf-id="hf-ik52" viewBox="0 0 24 24" fill="none" stroke="#8A8A8A" stroke-width="1.9" stroke-linecap="round"><rect data-hf-id="hf-6g2q" x="9" y="3" width="6" height="11" rx="3" /><path data-hf-id="hf-uy1o" d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" /></svg>
+          </div>
+          <div data-hf-id="hf-pty8" class="03-demo-sendbtn"><svg data-hf-id="hf-12oc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path data-hf-id="hf-frf7" d="M12 19V5M6 11l6-6 6 6" /></svg></div>
+        </div>
+      </div>
+
+     </div>
+    </div>
+   </div>
+
+   <div data-hf-id="hf-8rzm" class="03-demo-keys">
+     <div data-hf-id="hf-6y37" class="03-demo-k1 03-demo-key">⌘</div>
+     <div data-hf-id="hf-zcxh" class="03-demo-k2 03-demo-key">I</div>
+   </div>
+  </div>
+
+  <div data-hf-id="hf-wr7e" id="d03-type-clip" class="03-demo-type clip" data-start="0" data-duration="16.4" data-track-index="2">
+    <div data-hf-id="hf-pptd" class="03-demo-shade"></div>
+    <div data-hf-id="hf-n8lv" class="03-demo-lines">
+      <span data-hf-id="hf-itvx" class="03-demo-l"><span data-hf-id="hf-uf6k" class="03-demo-w 03-demo-a">It</span> <span data-hf-id="hf-af3p" class="03-demo-w 03-demo-a">works</span> <span data-hf-id="hf-hka1" class="03-demo-w 03-demo-a">inside</span></span>
+      <span data-hf-id="hf-af41" class="03-demo-l"><span data-hf-id="hf-2myw" class="03-demo-w 03-demo-a">the</span> <span data-hf-id="hf-oqxl" class="03-demo-w 03-demo-a">tabs</span></span>
+      <span data-hf-id="hf-bm14" class="03-demo-l"><span data-hf-id="hf-gwit" class="03-demo-w 03-demo-b">you’re</span> <span data-hf-id="hf-glnq" class="03-demo-w 03-demo-b">already</span></span>
+      <span data-hf-id="hf-b7q3" class="03-demo-l"><span data-hf-id="hf-focn" class="03-demo-w 03-demo-b 03-demo-g">signed</span> <span data-hf-id="hf-4mqw" class="03-demo-w 03-demo-b 03-demo-g">in</span> <span data-hf-id="hf-zncz" class="03-demo-w 03-demo-b">to.</span></span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var P = "03-demo-";
+  var $ = function (n) { return document.getElementsByClassName(P + n)[0]; };
+  var $$ = function (n) { return Array.prototype.slice.call(document.getElementsByClassName(P + n)); };
+  var tl = gsap.timeline({ paused: true });
+
+  var PANEL_W = 430;
+  var ROW_H = 64;
+  var STEP_H = 52;
+
+  /* ---------- deterministic typing schedules ---------- */
+  function schedule(text, start, dur) {
+    var w = [];
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charAt(i);
+      var k = (c === " ") ? 1.7 : (c === "," || c === "." || c === "—") ? 3.0 : 1 + ((text.charCodeAt(i) * 37) % 7) / 14;
+      w.push(k);
+    }
+    var sum = 0; for (var j = 0; j < w.length; j++) sum += w[j];
+    var acc = 0, out = [];
+    for (var m = 0; m < w.length; m++) { acc += w[m]; out.push(start + (acc / sum) * dur); }
+    return out;
+  }
+  function countAt(times, t) { var n = 0; while (n < times.length && times[n] <= t) n++; return n; }
+
+  var PROMPT = "Reply to the top email saying I’ll be ten minutes late, then archive it.";
+  var REPLY = "Running about ten minutes late — start without me, I’ll catch up.";
+  var T_PROMPT = schedule(PROMPT, 2.62, 2.66);   // done ~5.28
+  var T_REPLY = schedule(REPLY, 8.75, 1.5);      // done ~10.25
+
+  var typed = $("typed"), caret = $("pcaret"), ph = $("ph"), sendbtn = $("sendbtn");
+  var rtyped = $("rtyped"), rcaret = $("rcaret");
+  var stext = $("stext"), sdot = $("sdot"), scheck = $("scheck"), cnt = $("cnt");
+  var inboxtab = $("inboxtab"), ctxname = $("ctxname");
+
+  function blinkOn(t, since) { return Math.sin((t - since) * Math.PI * 2 / 1.05 + Math.PI / 2) > -0.2; }
+
+  var last = {};
+  function setText(el, key, v) { if (last[key] !== v) { el.textContent = v; last[key] = v; } }
+  function setStyle(el, prop, key, v) { if (last[key] !== v) { el.style[prop] = v; last[key] = v; } }
+
+  function render(t) {
+    // composer prompt
+    var n = (t >= 2.6 && t < 5.56) ? countAt(T_PROMPT, t) : 0;
+    setText(typed, "typed", PROMPT.slice(0, n));
+    setStyle(ph, "opacity", "ph", (t >= 2.6 && t < 5.56) ? "0" : "1");
+    var cOn = false;
+    if (t >= 2.5 && t < 5.56) {
+      var lastKey = n > 0 ? T_PROMPT[n - 1] : 2.5;
+      cOn = (t - lastKey < 0.3 && n < PROMPT.length) ? true : blinkOn(t, lastKey);
+    }
+    setStyle(caret, "opacity", "caret", cOn ? "1" : "0");
+    var active = n > 0;
+    setStyle(sendbtn, "background", "sbg", active ? "#52A862" : "#EDEDED");
+    setStyle(sendbtn, "color", "sfg", active ? "#FFFFFF" : "#A3A3A3");
+
+    // reply box
+    var rn = t >= 8.7 ? countAt(T_REPLY, t) : 0;
+    setText(rtyped, "rtyped", REPLY.slice(0, rn));
+    var rOn = false;
+    if (t >= 8.62 && t < 11.3) {
+      var lk = rn > 0 ? T_REPLY[rn - 1] : 8.62;
+      rOn = (t - lk < 0.3 && rn < REPLY.length) ? true : blinkOn(t, lk);
+    }
+    setStyle(rcaret, "opacity", "rcaret", rOn ? "1" : "0");
+
+    // status
+    var working = t >= 5.56 && t < 12.2;
+    setText(stext, "stext", working ? "Working…" : "Ready");
+    setStyle(scheck, "display", "sck", t >= 12.2 ? "block" : "none");
+    setStyle(sdot, "display", "sdd", t >= 12.2 ? "none" : "block");
+    var dotOp = working ? (0.35 + 0.65 * (0.5 + 0.5 * Math.cos((t - 5.56) * Math.PI * 2 / 1.0))) : 1;
+    sdot.style.opacity = dotOp.toFixed(3);
+    sdot.style.background = working ? "#52A862" : "#7FC18B";
+
+    // counter + tab title
+    setText(cnt, "cnt", t >= 11.0 ? "3 actions" : t >= 8.5 ? "2 actions" : "1 action");
+    var inb = t >= 11.95 ? "Inbox (2)" : "Inbox (3)";
+    setText(inboxtab, "inb", inb);
+    setText(ctxname, "ctx", inb);
+  }
+
+  var clock = { t: 0 };
+  tl.fromTo(clock, { t: 0 }, { t: 16, duration: 16, ease: "none", onUpdate: function () { render(clock.t); } }, 0);
+  render(0);
+
+  /* ---------- Scene 1: window rises (0.0–1.5) ---------- */
+  tl.fromTo($("win"), { y: 60, scale: 0.96, opacity: 0 }, { y: 0, scale: 1, opacity: 1, duration: 1.1, ease: "power3.out" }, 0.0);
+
+  /* ---------- Scene 2: ⌘ I keycaps + panel opens (1.5–2.5) ---------- */
+  tl.fromTo([$("k1"), $("k2")], { y: 24, scale: 0.92, opacity: 0 }, { y: 0, scale: 1, opacity: 1, duration: 0.3, ease: "power3.out", stagger: 0.05 }, 1.28);
+  tl.to([$("k1"), $("k2")], { y: 5, scale: 0.965, duration: 0.09, ease: "power2.in" }, 1.5);
+  tl.to([$("k1"), $("k2")], { y: 0, scale: 1, duration: 0.22, ease: "power3.out" }, 1.62);
+  tl.to([$("k1"), $("k2")], { y: -10, opacity: 0, duration: 0.3, ease: "power2.in" }, 2.08);
+
+  // anchored-layout-expand, X axis: one proxy drives panel slide + pane right edge + pane right-anchored content
+  var paneEl = $("pane"), panelEl = $("panel"), rightEls = $$("r");
+  var open = { p: 0 };
+  function applyOpen() {
+    var d = PANEL_W * open.p;
+    gsap.set(panelEl, { x: PANEL_W - d });
+    paneEl.style.clipPath = "inset(0px " + d.toFixed(2) + "px 0px 0px round 12px)";
+    gsap.set(rightEls, { x: -d });
+  }
+  tl.fromTo(open, { p: 0 }, { p: 1, duration: 0.6, ease: "power3.out", onUpdate: applyOpen }, 1.56);
+  applyOpen();
+
+  /* ---------- Scene 3: camera eases in on the panel (2.5–5.5) ---------- */
+  var cam = $("cam");
+  gsap.set(cam, { transformOrigin: "0px 0px" });
+  tl.fromTo(cam, { x: 0, y: 0, scale: 1 }, { x: -880, y: -352, scale: 1.3, duration: 1.0, ease: "power3.inOut" }, 2.45);
+
+  /* ---------- Scene 4: send (5.5–6.0) ---------- */
+  tl.to(sendbtn, { scale: 0.86, duration: 0.08, ease: "power2.in" }, 5.46);
+  tl.to(sendbtn, { scale: 1, duration: 0.22, ease: "power3.out" }, 5.54);
+  tl.to($("empty"), { opacity: 0, y: -14, duration: 0.28, ease: "power2.out" }, 5.52);
+  tl.fromTo($("bubble"), { x: -52, y: 672, opacity: 0 }, { x: 0, y: 0, opacity: 1, duration: 0.6, ease: "expo.out" }, 5.56);
+  tl.to(cam, { x: 0, y: 0, scale: 1, duration: 0.85, ease: "power3.inOut" }, 5.56);
+
+  /* ---------- Steps card: proxy counter-scale growth, one row per step ---------- */
+  var cmask = $("cmask"), csheet = $("csheet"), cfoot = $("cfoot");
+  var BODY_H = STEP_H * 3;
+  var grow = { h: 0 };
+  function applyGrow() {
+    var s = Math.max(grow.h / BODY_H, 0.0001);
+    gsap.set(cmask, { scaleY: s });
+    gsap.set(csheet, { scaleY: 1 / s });
+    gsap.set(cfoot, { y: grow.h - BODY_H });
+  }
+  tl.fromTo($("card"), { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 5.92);
+  tl.set(grow, { h: 0, onUpdate: applyGrow }, 0);
+  tl.to(grow, { h: STEP_H, duration: 0.45, ease: "power3.out", onUpdate: applyGrow }, 6.0);
+  tl.to(grow, { h: STEP_H * 2, duration: 0.45, ease: "power3.out", onUpdate: applyGrow }, 8.5);
+  tl.to(grow, { h: STEP_H * 3, duration: 0.45, ease: "power3.out", onUpdate: applyGrow }, 11.0);
+  applyGrow();
+
+  function stepIn(id, at) {
+    var row = $(id);
+    var cc = row.getElementsByClassName(P + "cc")[0];
+    var cp = row.getElementsByClassName(P + "cp")[0];
+    tl.set(row, { opacity: 0, x: 10 }, 0);
+    tl.set(cc, { opacity: 0, scale: 0.5, transformOrigin: "50% 50%" }, 0);
+    tl.set(cp, { strokeDasharray: 14, strokeDashoffset: 14 }, 0);
+    tl.to(row, { opacity: 1, x: 0, duration: 0.4, ease: "power3.out" }, at + 0.04);
+    tl.to(cc, { opacity: 1, scale: 1, duration: 0.3, ease: "power3.out" }, at + 0.3);
+    tl.to(cp, { strokeDashoffset: 0, duration: 0.32, ease: "power2.out" }, at + 0.42);
+  }
+  stepIn("s1", 6.0);
+  stepIn("s2", 8.5);
+  stepIn("s3", 11.0);
+  tl.set(cnt, { y: 7, opacity: 0.2 }, 8.5);
+  tl.to(cnt, { y: 0, opacity: 1, duration: 0.3, ease: "power3.out" }, 8.5);
+  tl.set(cnt, { y: 7, opacity: 0.2 }, 11.0);
+  tl.to(cnt, { y: 0, opacity: 1, duration: 0.3, ease: "power3.out" }, 11.0);
+
+  /* ---------- agent highlight (SVG rect attrs — no layout) ---------- */
+  var hl = $("hlr");
+  tl.fromTo(hl, { attr: { x: 560, y: 114, width: 250, height: 60 }, opacity: 0 },
+    { attr: { x: 10, y: 114, width: 802, height: 60 }, opacity: 1, duration: 0.5, ease: "power3.out" }, 6.08);
+  // row "press"
+  tl.to($("row1"), { backgroundColor: "rgba(82,168,98,0.06)", duration: 0.15, ease: "power1.out" }, 6.6);
+
+  /* Scene 5: open the email view */
+  var inbox = $("inbox"), mail = $("mail");
+  tl.to(inbox, { opacity: 0, x: -14, duration: 0.18, ease: "power2.in" }, 6.82);
+  tl.fromTo(mail, { opacity: 0, x: 18 }, { opacity: 1, x: 0, duration: 0.4, ease: "power3.out" }, 6.98);
+  tl.to(hl, { attr: { x: 16, y: 74, width: 790, height: 196 }, duration: 0.5, ease: "power3.inOut" }, 7.0);
+
+  /* Scene 6: reply box */
+  tl.to(hl, { attr: { x: 22, y: 294, width: 778, height: 178 }, duration: 0.45, ease: "power3.inOut" }, 8.35);
+
+  /* Scene 7: send + archive */
+  tl.to(hl, { attr: { x: 38, y: 412, width: 96, height: 46 }, duration: 0.4, ease: "power3.inOut" }, 10.95);
+  tl.to($("send"), { scale: 0.93, duration: 0.08, ease: "power2.in" }, 11.38);
+  tl.to($("send"), { scale: 1, duration: 0.2, ease: "power3.out" }, 11.46);
+  tl.to(hl, { opacity: 0, duration: 0.18, ease: "power1.out" }, 11.55);
+  tl.to(mail, { opacity: 0, x: 14, duration: 0.16, ease: "power2.in" }, 11.55);
+  tl.to(inbox, { opacity: 1, x: 0, duration: 0.4, ease: "power3.out" }, 11.7);
+  tl.set(hl, { attr: { x: 10, y: 114, width: 802, height: 60 } }, 11.74);
+  tl.to(hl, { opacity: 1, duration: 0.15, ease: "power1.out" }, 11.75);
+  // row collapses out, the rest slide up in contact
+  tl.to([$("row1"), hl], { opacity: 0, duration: 0.24, ease: "power2.out" }, 11.9);
+  tl.fromTo($("below"), { y: 0 }, { y: -ROW_H, duration: 0.45, ease: "power3.inOut", immediateRender: false }, 11.98);
+  // toast
+  tl.fromTo($("toastin"), { y: 22, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45, ease: "power3.out" }, 12.05);
+  tl.fromTo(scheck, { scale: 0.4, transformOrigin: "50% 50%" }, { scale: 1, duration: 0.3, ease: "power3.out", immediateRender: false }, 12.2);
+
+  /* ---------- Scene 8: window glides right, headline rises (13.0–16.0) ---------- */
+  var move = $("move");
+  gsap.set(move, { transformOrigin: "960px 524px" });
+  tl.to(move, { x: 337, scale: 0.74, duration: 1.1, ease: "power3.inOut" }, 12.5);
+  tl.fromTo($("shade"), { opacity: 0 }, { opacity: 1, duration: 0.9, ease: "power2.out" }, 12.95);
+  tl.fromTo($$("a"), { y: 30, opacity: 0, filter: "blur(8px)" }, { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.75, ease: "power3.out", stagger: 0.08 }, 13.0);
+  tl.fromTo($$("b"), { y: 30, opacity: 0, filter: "blur(8px)" }, { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.75, ease: "power3.out", stagger: 0.08 }, 13.5);
+
+  window.__timelines["03-demo"] = tl;
+})();
+</script>
+</template>

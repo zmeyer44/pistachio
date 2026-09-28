@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import type { ModelMessage } from "ai";
+import { simulateReadableStream, type ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import {
   closeDanglingToolCalls,
@@ -1245,5 +1245,98 @@ describe("the answer path", () => {
     expect(offered).toContain("tabs_list");
     expect(offered).not.toContain(USE_BROWSER_TOOL);
     expect(systemText(model.doGenerateCalls[0]!.prompt)).toContain("begin by listing the tabs");
+  });
+});
+
+/* ---------------------------- streamed turns ----------------------------- */
+
+/** What a provider's stream carries, read off the mock so the test needs no provider package of its own. */
+type StreamPart = Awaited<ReturnType<MockLanguageModelV4["doStream"]>>["stream"] extends ReadableStream<infer T> ? T : never;
+
+/** One streamed model step: its reasoning, its words, and the calls it ends on, as a provider would send them. */
+function streamed(options: { reasoning?: string[]; text?: string[]; calls?: Array<{ name: string; input: Record<string, unknown> }> }): StreamPart[] {
+  const parts: StreamPart[] = [{ type: "stream-start", warnings: [] }];
+  if (options.reasoning !== undefined) {
+    parts.push({ type: "reasoning-start", id: "r" });
+    for (const delta of options.reasoning) parts.push({ type: "reasoning-delta", id: "r", delta });
+    parts.push({ type: "reasoning-end", id: "r" });
+  }
+  if (options.text !== undefined) {
+    parts.push({ type: "text-start", id: "t" });
+    for (const delta of options.text) parts.push({ type: "text-delta", id: "t", delta });
+    parts.push({ type: "text-end", id: "t" });
+  }
+  for (const request of options.calls ?? []) {
+    parts.push({ type: "tool-call", toolCallId: `call-${String(++nextCallId)}`, toolName: request.name, input: JSON.stringify(request.input) });
+  }
+  const tokens = 4_000;
+  parts.push({
+    type: "finish",
+    finishReason: { unified: options.calls === undefined || options.calls.length === 0 ? "stop" : "tool-calls", raw: "end" },
+    usage: {
+      inputTokens: { total: tokens, noCache: tokens, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 20, text: 20, reasoning: undefined },
+    },
+  });
+  return parts;
+}
+
+/** A model that streams from a queue of scripted steps and answers nothing when asked to generate whole. */
+function streamingModel(steps: StreamPart[][]): MockLanguageModelV4 {
+  const queue = [...steps];
+  const model = new MockLanguageModelV4({
+    doGenerate: async () => {
+      throw new Error("a streaming host must not ask for a whole answer");
+    },
+    doStream: async () => {
+      const chunks = queue.shift();
+      if (chunks === undefined) throw new Error(`model script exhausted after ${String(model.doStreamCalls.length)} calls`);
+      return { stream: simulateReadableStream({ chunks }) };
+    },
+  });
+  return model;
+}
+
+describe("streamed turns", () => {
+  it("streams when a host listens for the reply's words, and still ends in the same result", async () => {
+    const callbacks = { ...recorder(), stepStarted: vi.fn(), textDelta: vi.fn(), reasoningDelta: vi.fn(), reasoningEnded: vi.fn() };
+    const model = streamingModel([
+      streamed({ reasoning: ["Need the ", "page first."], calls: [{ name: "page_inspect", input: { tabId: "tab-1" } }] }),
+      streamed({ reasoning: ["Total is $120."], text: ["The invoice ", "total is ", "**$120**."] }),
+    ]);
+    const { result } = await turn({ model, callbacks });
+
+    expect(result).toMatchObject({ outcome: "final", text: "The invoice total is **$120**.", steps: 2 });
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(model.doGenerateCalls).toHaveLength(0);
+    // Every word went out as it arrived, in order, one step at a time.
+    expect(callbacks.stepStarted).toHaveBeenCalledTimes(2);
+    expect(callbacks.reasoningDelta.mock.calls.map(([text]) => text)).toEqual(["Need the ", "page first.", "Total is $120."]);
+    expect(callbacks.reasoningEnded).toHaveBeenCalledTimes(2);
+    expect(callbacks.textDelta.mock.calls.map(([text]) => text)).toEqual(["The invoice ", "total is ", "**$120**."]);
+    // The tool the first step called ran as on the generated path.
+    expect(callbacks.toolStarted).toHaveBeenCalledWith(expect.objectContaining({ name: "page.inspect" }), "Read page", expect.any(String));
+    expect(callbacks.toolCompleted).toHaveBeenCalledTimes(1);
+    expect(historyToolCalls(result.messages).map((call) => call.toolName)).toEqual(["page_inspect"]);
+  });
+
+  it("generates whole when no host listens", async () => {
+    const model = scriptedModel([answer("Done.")]);
+    const { result } = await turn({ model });
+    expect(result.outcome).toBe("final");
+    expect(model.doGenerateCalls).toHaveLength(1);
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
+  it("fails the turn on a stream error as a rejection would", async () => {
+    const callbacks = { ...recorder(), textDelta: vi.fn() };
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream<StreamPart>({
+          chunks: [{ type: "stream-start", warnings: [] }, { type: "error", error: new Error("upstream closed") }],
+        }),
+      }),
+    });
+    await expect(turn({ model, callbacks })).rejects.toThrow("upstream closed");
   });
 });

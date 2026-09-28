@@ -5,13 +5,25 @@
  * says what this is and how much of it there is, a recessed strip to search
  * and filter, a list, and a detail pane beside it. The list is a timeline —
  * visits under the day they happened — because "when" is the one thing a
- * person always half-remembers. How capture BEHAVES is not here: that is
- * Settings → Watchtower, one click from the header.
+ * person always half-remembers. Beside it, Saved: the pages kept on purpose
+ * with shift, shift — the synced saved records, each also kept here in full
+ * and filed under what it is about (the bookmarks library, embedded). And
+ * the Index: the same pages as the people, companies, products and ideas
+ * they are about, each one entry however many sites named it
+ * (`IndexView.tsx`). How capture BEHAVES is not here: that is Settings →
+ * Watchtower, one click from the header.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowUpRight, FileClock, GitCompareArrows, Pause, Play, Search, Settings2, Sparkles, Trash2, X } from "lucide-react";
-import type { WatchtowerDocument, WatchtowerHit, WatchtowerResponse } from "@pistachio/shell-contracts/watchtower";
+import { ArrowLeft, ArrowUpRight, FileClock, GitCompareArrows, Pause, Play, Plus, Search, Settings2, Sparkles, Trash2, X } from "lucide-react";
+import type {
+  WatchtowerDocument,
+  WatchtowerEntityDocument,
+  WatchtowerEntityKind,
+  WatchtowerHit,
+  WatchtowerIndex,
+  WatchtowerResponse,
+} from "@pistachio/shell-contracts/watchtower";
 import { shellApi } from "../../api";
 import { cn } from "../../lib/cn";
 import { WATCHTOWER_COPY } from "../../lib/surface-copy";
@@ -24,7 +36,9 @@ import { Kbd } from "../ui/kbd";
 import { Note } from "../ui/note";
 import { Select } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { BookmarksLibrary, SaveThisPage } from "../bookmarks/BookmarksPage";
 import { ForgetDialog, forgetRequest, type ForgetScope } from "./ForgetDialog";
+import { EntityChips, EntityReader, EntityRow, IndexNote, indexSummary, KindPills } from "./IndexView";
 import { SavedBlock, SavedCard } from "./SavedText";
 import { COVERAGE_NOTE, coverageLabel, formatDay, formatMoment, formatTime, hostOfUrl, KIND_LABEL } from "./format";
 import { useWatchtower, watchtowerError } from "./use-watchtower";
@@ -37,9 +51,14 @@ const KINDS = [
   { value: "page", label: "Pages" },
 ] as const;
 type KindFilter = (typeof KINDS)[number]["value"];
+type View = "timeline" | "saved" | "index";
+/** What the reader pane shows; following a link or an entry pushes, Back pops. */
+type Selection = { type: "page"; id: string } | { type: "entity"; id: number };
 
-export function WatchtowerPage() {
+export function WatchtowerPage({ initialView = "timeline" }: { initialView?: View } = {}) {
   const setOverlay = useAppStore((state) => state.setOverlay);
+  const savedCount = useAppStore((state) => state.bookmarks.bookmarks.length);
+  const focusEntity = useAppStore((state) => state.watchtowerFocus);
   const openSettings = useAppStore((state) => state.openSettings);
   const spaceName = useAppStore((state) => state.snapshot?.spaces.find((space) => space.id === state.snapshot?.activeSpaceId)?.name ?? "This Space");
   const native = useSurface().kind === "native";
@@ -53,8 +72,20 @@ export function WatchtowerPage() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [improving, setImproving] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [view, setView] = useState<View>(initialView);
+  const [addingSaved, setAddingSaved] = useState(false);
+  const [trail, setTrail] = useState<Selection[]>([]);
+  const shown = trail.at(-1) ?? null;
+  const selected = shown?.type === "page" ? shown.id : null;
+  const selectedEntity = shown?.type === "entity" ? shown.id : null;
   const [document, setDocument] = useState<WatchtowerDocument | null>(null);
+  const [indexQuery, setIndexQuery] = useState("");
+  const [entityKind, setEntityKind] = useState<WatchtowerEntityKind | null>(null);
+  const [indexOffset, setIndexOffset] = useState(0);
+  const [index, setIndex] = useState<WatchtowerIndex | null>(null);
+  const [entity, setEntity] = useState<WatchtowerEntityDocument | null>(null);
+  const [indexRevision, setIndexRevision] = useState(0);
+  const [editing, setEditing] = useState(false);
   const [diff, setDiff] = useState<WatchtowerResponse["diff"]>();
   const [forgetting, setForgetting] = useState<ForgetScope | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -90,6 +121,50 @@ export function WatchtowerPage() {
     };
   }, [fullQuery, offset, status.revision, native, absorb]);
 
+  // The index: entries matching the typed name, re-read every few seconds
+  // while nothing is typed, so entries appear as pages are read.
+  useEffect(() => {
+    if (!native || view !== "index") return;
+    let cancelled = false;
+    const read = (): void => {
+      void shellApi()
+        .watchtower({ type: "entities", query: indexQuery, ...(entityKind === null ? {} : { kind: entityKind }), offset: indexOffset })
+        .then((response) => {
+          if (cancelled) return;
+          absorb(response);
+          setIndex(response.index ?? null);
+          setSearchError(null);
+        })
+        .catch((failure: unknown) => {
+          if (!cancelled) setSearchError(watchtowerError(failure));
+        });
+    };
+    const timer = window.setTimeout(read, 150);
+    const poll = indexQuery === "" && indexOffset === 0 ? window.setInterval(read, 5000) : undefined;
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.clearInterval(poll);
+    };
+  }, [native, view, indexQuery, entityKind, indexOffset, indexRevision, status.revision, absorb]);
+
+  useEffect(() => {
+    setEntity(null);
+    if (selectedEntity === null) return;
+    let cancelled = false;
+    void shellApi()
+      .watchtower({ type: "entity", entityId: selectedEntity })
+      .then((response) => {
+        if (!cancelled) setEntity(response.entity ?? null);
+      })
+      .catch((failure: unknown) => {
+        if (!cancelled) setSearchError(watchtowerError(failure));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedEntity, indexRevision]);
+
   useEffect(() => {
     setDocument(null);
     setDiff(undefined);
@@ -113,16 +188,61 @@ export function WatchtowerPage() {
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  // Landing on an entry a save's card named.
+  useEffect(() => {
+    if (focusEntity === null) return;
+    setView("index");
+    setTrail([{ type: "entity", id: focusEntity }]);
+    useAppStore.setState({ watchtowerFocus: null });
+  }, [focusEntity]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
+      // In Saved the library owns Escape: its detail and form, then the page.
+      // (Both listen on the window; which registered last changes with every
+      // render, so neither may rely on running first.)
+      if (event.key !== "Escape" || event.defaultPrevented || view === "saved") return;
       event.preventDefault();
-      if (selected !== null) setSelected(null);
+      if (trail.length > 0) setTrail(trail.slice(0, -1));
       else setOverlay("none");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selected, setOverlay]);
+  }, [trail, setOverlay, view]);
+
+  const push = (selection: Selection): void => setTrail((path) => [...path, selection].slice(-20));
+  const back = (): void => setTrail((path) => path.slice(0, -1));
+  /** The version selector replaces what is shown rather than stacking on it. */
+  const replace = (selection: Selection): void => setTrail((path) => [...path.slice(0, -1), selection]);
+  const switchView = (next: View): void => {
+    setView(next);
+    setTrail([]);
+    setNotice(null);
+  };
+  const viewTabs = (
+    <div role="tablist" aria-label="Watchtower view" className="flex shrink-0 items-center gap-0.5 rounded-full bg-background-100 p-0.5 shadow-border">
+      <Pill active={view === "timeline"} label="Timeline" onClick={() => switchView("timeline")} testId="watchtower-view-timeline" />
+      <Pill active={view === "saved"} label="Saved" onClick={() => switchView("saved")} testId="watchtower-view-saved" />
+      <Pill active={view === "index"} label="Index" onClick={() => switchView("index")} testId="watchtower-view-index" />
+    </div>
+  );
+  const editEntity = async (id: number, edit: { merge?: number; kind?: WatchtowerEntityKind; remove?: boolean }): Promise<void> => {
+    setEditing(true);
+    try {
+      const response = await shellApi().watchtower({ type: "entity-edit", entityId: id, ...edit });
+      absorb(response);
+      setIndexRevision((value) => value + 1);
+      if (edit.remove) {
+        setNotice(`Removed ${entity?.name ?? "the entry"} from the index.`);
+        back();
+      } else if (edit.merge !== undefined) replace({ type: "entity", id: edit.merge });
+      else setEntity(response.entity ?? null);
+    } catch (failure) {
+      setSearchError(watchtowerError(failure));
+    } finally {
+      setEditing(false);
+    }
+  };
 
   const openTab = async (url: string): Promise<void> => {
     await shellApi().createTab(url);
@@ -160,6 +280,7 @@ export function WatchtowerPage() {
 
   const { settings, stats } = status;
   const days = useMemo(() => groupByDay(results ?? []), [results]);
+  const summary = index === null ? "" : indexSummary(index.counts);
   const error = searchError ?? status.error;
   const reset = (): void => {
     setOffset(0);
@@ -180,7 +301,13 @@ export function WatchtowerPage() {
         <div className="min-w-0">
           <h1 className="text-heading-16 text-gray-1000">Watchtower</h1>
           <p className="truncate text-label-12 text-gray-700">
-            {stats === null || settings === null ? "Loading…" : `${count(stats.visits, "visit")} · ${count(stats.snapshots, "saved version")} · ${spaceName}`}
+            {view === "saved"
+              ? `${count(savedCount, "saved page")} · tap shift twice on any page to save it`
+              : stats === null || settings === null
+              ? "Loading…"
+              : view === "index" && summary !== ""
+                ? `${summary} · ${spaceName}`
+                : `${count(stats.visits, "visit")} · ${count(stats.snapshots, "saved version")} · ${spaceName}`}
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -211,6 +338,31 @@ export function WatchtowerPage() {
 
       {!native ? (
         <Centered icon={<FileClock className="size-6" aria-hidden="true" />} title="Watchtower is on your desktop" body={WATCHTOWER_COPY.unavailable} />
+      ) : view === "saved" ? (
+        <BookmarksLibrary
+          adding={addingSaved}
+          onAddingChange={setAddingSaved}
+          onClose={() => setOverlay("none")}
+          leading={viewTabs}
+          trailing={
+            <>
+              <SaveThisPage />
+              <Button size="sm" variant="secondary" prefix={<Plus aria-hidden="true" />} onClick={() => setAddingSaved((value) => !value)} data-testid="new-bookmark">
+                Add
+              </Button>
+            </>
+          }
+          watchtower={{
+            openEntity: (id) => {
+              switchView("index");
+              setTrail([{ type: "entity", id }]);
+            },
+            openPage: (id) => {
+              switchView("timeline");
+              setTrail([{ type: "page", id }]);
+            },
+          }}
+        />
       ) : settings === null || stats === null ? (
         error === null ? null : (
           <div className="p-5">
@@ -220,32 +372,55 @@ export function WatchtowerPage() {
           </div>
         )
       ) : !settings.enabled && stats.visits === 0 ? (
-        <TurnOn busy={status.busy} error={error} onEnable={(choices) => void status.configure({ enabled: true, ...choices })} />
+        <TurnOn
+          busy={status.busy}
+          error={error}
+          saved={savedCount}
+          onSaved={() => switchView("saved")}
+          onEnable={(choices) => void status.configure({ enabled: true, ...choices })}
+        />
       ) : (
         <>
           <div className="flex shrink-0 flex-col gap-3 border-b border-alpha-400 bg-background-200 px-5 py-3 @max-md:px-3">
             <div className="flex flex-wrap items-center gap-2">
+              {viewTabs}
               <Input
                 ref={searchRef}
                 size="sm"
-                aria-label="Search Watchtower"
-                placeholder="Search what you read — words from the page, a name, “an exact phrase”"
+                aria-label={view === "index" ? "Find in the index" : "Search Watchtower"}
+                placeholder={view === "index" ? "Find a person, company, product, place or idea" : "Search what you read — words from the page, a name, “an exact phrase”"}
                 prefix={<Search aria-hidden="true" />}
                 affixStyling={false}
-                value={query}
+                value={view === "index" ? indexQuery : query}
                 onChange={(event) => {
-                  setQuery(event.target.value);
-                  reset();
+                  if (view === "index") {
+                    setIndexQuery(event.target.value);
+                    setIndexOffset(0);
+                  } else {
+                    setQuery(event.target.value);
+                    reset();
+                  }
                 }}
                 className="min-w-60 flex-1"
                 data-testid="watchtower-search"
               />
-              {settings.remoteRerank && query.trim() !== "" ? (
+              {view === "timeline" && settings.remoteRerank && query.trim() !== "" ? (
                 <Button size="sm" variant="secondary" prefix={<Sparkles aria-hidden="true" />} loading={improving} onClick={() => void improve()}>
                   Improve matches
                 </Button>
               ) : null}
             </div>
+            {view === "index" ? (
+              <KindPills
+                counts={index?.counts ?? {}}
+                kind={entityKind}
+                Pill={Pill}
+                onChange={(kind) => {
+                  setEntityKind(kind);
+                  setIndexOffset(0);
+                }}
+              />
+            ) : (
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <div role="tablist" aria-label="Filter by kind" className="flex items-center gap-1">
                 {KINDS.map((option) => (
@@ -265,10 +440,12 @@ export function WatchtowerPage() {
                 <code className="font-mono text-gray-900">before:</code> · dates are UTC
               </p>
             </div>
+            )}
           </div>
 
-          {error !== null || notice !== null || stats.nearFull || !settings.enabled ? (
+          {error !== null || notice !== null || stats.nearFull || !settings.enabled || (view === "index" && (!settings.smartIndex || (index?.pending ?? 0) > 0)) ? (
             <div className="flex shrink-0 flex-col gap-2 border-b border-alpha-400 px-5 py-3 @max-md:px-3">
+              {view === "index" ? <IndexNote smartIndex={settings.smartIndex} pending={index?.pending ?? 0} busy={status.busy} onEnable={() => void status.configure({ smartIndex: true })} /> : null}
               {error === null ? null : (
                 <Note type="error" size="sm">
                   {error}
@@ -297,10 +474,49 @@ export function WatchtowerPage() {
 
           <div className="relative flex min-h-0 flex-1">
             <main
-              className={cn("scroll-thin min-w-0 overflow-y-auto", selected === null ? "flex-1" : "w-100 shrink-0 border-r border-alpha-400 @max-3xl:w-full @max-3xl:border-r-0")}
+              className={cn("scroll-thin min-w-0 overflow-y-auto", shown === null ? "flex-1" : "w-100 shrink-0 border-r border-alpha-400 @max-3xl:w-full @max-3xl:border-r-0")}
               data-testid="watchtower-list"
             >
-              {results === null ? null : results.length === 0 ? (
+              {view === "index" ? (
+                index === null ? null : index.entities.length === 0 ? (
+                  indexQuery === "" && entityKind === null ? (
+                    <Centered
+                      icon={<FileClock className="size-6" aria-hidden="true" />}
+                      title="Nothing indexed yet"
+                      body={settings.smartIndex ? "People, companies, products and ideas appear here as saved pages are read." : "Pages that declare what they are about — a product, an event, a repository — appear here as you save them."}
+                    />
+                  ) : (
+                    <div className="p-5">
+                      <Note type="secondary" size="sm">
+                        No entry matches. Try another spelling, or search the saved pages themselves.
+                      </Note>
+                    </div>
+                  )
+                ) : (
+                  <div className={cn("mx-auto w-full pb-6", shown === null && "max-w-190")}>
+                    <ul aria-label="Index">
+                      {index.entities.map((item) => (
+                        <EntityRow
+                          key={item.id}
+                          entity={item}
+                          selected={item.id === selectedEntity && trail.length === 1}
+                          onSelect={() => setTrail(item.id === selectedEntity && trail.length === 1 ? [] : [{ type: "entity", id: item.id }])}
+                        />
+                      ))}
+                    </ul>
+                    {indexOffset > 0 || index.entities.length === PAGE_SIZE ? (
+                      <div className="flex items-center justify-center gap-2 px-5 pt-5">
+                        <Button size="sm" variant="secondary" disabled={indexOffset === 0} onClick={() => setIndexOffset(Math.max(0, indexOffset - PAGE_SIZE))}>
+                          Previous
+                        </Button>
+                        <Button size="sm" variant="secondary" disabled={index.entities.length < PAGE_SIZE} onClick={() => setIndexOffset(indexOffset + PAGE_SIZE)}>
+                          More
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              ) : results === null ? null : results.length === 0 ? (
                 fullQuery === "" ? (
                   <Centered icon={<FileClock className="size-6" aria-hidden="true" />} title="Nothing saved yet" body="Pages you read in this Space appear here a moment after you open them." />
                 ) : (
@@ -311,13 +527,18 @@ export function WatchtowerPage() {
                   </div>
                 )
               ) : (
-                <div className={cn("mx-auto w-full pb-6", selected === null && "max-w-190")}>
+                <div className={cn("mx-auto w-full pb-6", shown === null && "max-w-190")}>
                   {days.map((day, index) => (
                     <section key={`${day.label}-${String(index)}`} aria-label={day.label}>
                       <h2 className="sticky top-0 z-10 border-b border-alpha-400 bg-background-100/95 px-5 py-2 text-label-12 font-medium text-gray-700 backdrop-blur-sm @max-md:px-3">{day.label}</h2>
                       <ul>
                         {day.hits.map((hit) => (
-                          <VisitRow key={hit.observationId} hit={hit} selected={hit.observationId === selected} onSelect={() => setSelected(hit.observationId === selected ? null : hit.observationId)} />
+                          <VisitRow
+                            key={hit.observationId}
+                            hit={hit}
+                            selected={hit.observationId === selected && trail.length === 1}
+                            onSelect={() => setTrail(hit.observationId === selected && trail.length === 1 ? [] : [{ type: "page", id: hit.observationId }])}
+                          />
                         ))}
                       </ul>
                     </section>
@@ -335,8 +556,34 @@ export function WatchtowerPage() {
                 </div>
               )}
             </main>
-            {selected === null ? null : (
+            {shown?.type === "entity" ? (
               <aside
+                key={`entity-${String(shown.id)}`}
+                aria-label={entity === null ? "Index entry" : `Index entry: ${entity.name}`}
+                data-testid="watchtower-entity-pane"
+                className="scroll-thin min-w-0 flex-1 overflow-y-auto bg-background-100 @max-3xl:absolute @max-3xl:inset-0"
+              >
+                {entity === null ? (
+                  <p className="p-6 text-copy-13 text-gray-700">Opening entry…</p>
+                ) : (
+                  <EntityReader
+                    entity={entity}
+                    busy={editing}
+                    onBack={back}
+                    onOpenPage={(id) => push({ type: "page", id })}
+                    onOpenEntity={(id) => push({ type: "entity", id })}
+                    onSearch={(name) => {
+                      switchView("timeline");
+                      setQuery(`"${name.replace(/"/gu, "")}"`);
+                      reset();
+                    }}
+                    onEdit={(edit) => void editEntity(entity.id, edit)}
+                  />
+                )}
+              </aside>
+            ) : shown?.type === "page" ? (
+              <aside
+                key={`page-${shown.id}`}
                 aria-label={document === null ? "Saved page" : `Saved page: ${document.title}`}
                 data-testid="watchtower-document"
                 className="scroll-thin min-w-0 flex-1 overflow-y-auto bg-background-100 @max-3xl:absolute @max-3xl:inset-0"
@@ -347,8 +594,10 @@ export function WatchtowerPage() {
                   <Reader
                     document={document}
                     diff={diff}
-                    onBack={() => setSelected(null)}
-                    onSelect={setSelected}
+                    onBack={back}
+                    onSelect={(id) => replace({ type: "page", id })}
+                    onFollow={(id) => push({ type: "page", id })}
+                    onOpenEntity={(id) => push({ type: "entity", id })}
                     onOpen={(url) => void openTab(url)}
                     onCompare={(before) => void compare(before, document)}
                     onCloseDiff={() => setDiff(undefined)}
@@ -356,7 +605,7 @@ export function WatchtowerPage() {
                   />
                 )}
               </aside>
-            )}
+            ) : null}
           </div>
         </>
       )}
@@ -374,7 +623,7 @@ export function WatchtowerPage() {
             void status.forget(forgetRequest(forgetting)).then((done) => {
               if (!done) return;
               setForgetting(null);
-              setSelected(null);
+              setTrail([]);
             });
           }}
         />
@@ -429,13 +678,14 @@ function NoteAction({ label, onClick }: { label: string; onClick(): void }) {
   );
 }
 
-function Pill({ active, label, onClick }: { active: boolean; label: string; onClick(): void }) {
+function Pill({ active, label, onClick, testId }: { active: boolean; label: string; onClick(): void; testId?: string }) {
   return (
     <button
       type="button"
       role="tab"
       aria-selected={active}
       onClick={onClick}
+      data-testid={testId}
       className={cn(
         "flex h-7 shrink-0 cursor-pointer items-center rounded-full px-3 text-label-12 whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
         active ? "bg-gray-1000 text-background-100" : "text-gray-900 hover:bg-alpha-100 hover:text-gray-1000",
@@ -461,8 +711,21 @@ function Centered({ icon, title, body }: { icon: React.ReactNode; title: string;
  * can leave the machine, so they are made where capture starts, not found
  * later in settings.
  */
-function TurnOn({ busy, error, onEnable }: { busy: boolean; error: string | null; onEnable(choices: { smartFilter: boolean; agentAccess: boolean }): void }) {
+function TurnOn({
+  busy,
+  error,
+  saved,
+  onSaved,
+  onEnable,
+}: {
+  busy: boolean;
+  error: string | null;
+  saved: number;
+  onSaved(): void;
+  onEnable(choices: { smartFilter: boolean; smartIndex: boolean; agentAccess: boolean }): void;
+}) {
   const [smartFilter, setSmartFilter] = useState(true);
+  const [smartIndex, setSmartIndex] = useState(true);
   const [agentAccess, setAgentAccess] = useState(false);
   return (
     <div className="scroll-thin flex-1 overflow-y-auto" data-testid="watchtower-onboarding">
@@ -483,6 +746,12 @@ function TurnOn({ busy, error, onEnable }: { busy: boolean; error: string | null
           >
             <Switch checked={smartFilter} onChange={setSmartFilter} label="Filter ads and page furniture with Jev" />
           </Choice>
+          <Choice
+            label="Index people, companies and ideas with Jev"
+            note={`So “Stripe” read on three sites is one entry with three sources. Names found on a page and the sentence around each go to the Jev decision model through your Pistachio account. ${WATCHTOWER_COPY.indexOff}`}
+          >
+            <Switch checked={smartIndex} onChange={setSmartIndex} label="Index people, companies and ideas with Jev" />
+          </Choice>
           <Choice label="Let the agent search what you saved" note="Only when you ask it to. Text it retrieves is sent to your agent’s model.">
             <Switch checked={agentAccess} onChange={setAgentAccess} label="Let the agent search saved pages" />
           </Choice>
@@ -493,10 +762,21 @@ function TurnOn({ busy, error, onEnable }: { busy: boolean; error: string | null
           </Note>
         )}
         <div className="flex flex-col items-center gap-3">
-          <Button loading={busy} onClick={() => onEnable({ smartFilter, agentAccess })}>
+          <Button loading={busy} onClick={() => onEnable({ smartFilter, smartIndex, agentAccess })}>
             Enable Watchtower
           </Button>
           <p className="max-w-105 text-center text-label-12 text-gray-700">{WATCHTOWER_COPY.local} Pause it, exclude sites, or forget anything at any time. The archive is not encrypted by the app.</p>
+          <p className="max-w-105 text-center text-label-12 text-gray-700">
+            Tapping shift twice on a page saves it either way, and keeps its text here.
+            {saved > 0 ? (
+              <>
+                {" "}
+                <button type="button" onClick={onSaved} className="cursor-pointer text-gray-1000 underline decoration-gray-500 underline-offset-2 outline-none hover:decoration-gray-1000 focus-visible:ring-2 focus-visible:ring-ring">
+                  See {count(saved, "saved page")}
+                </button>
+              </>
+            ) : null}
+          </p>
         </div>
       </div>
     </div>
@@ -537,6 +817,11 @@ function VisitRow({ hit, selected, onSelect }: { hit: WatchtowerHit; selected: b
           <span className="truncate font-mono">{hostOfUrl(hit.url)}</span>
           <span aria-hidden="true">·</span>
           <span>{KIND_LABEL[hit.kind]}</span>
+          {hit.kept ? (
+            <Badge variant="blue-subtle" size="sm" data-testid="watchtower-kept">
+              Saved
+            </Badge>
+          ) : null}
           {coverage === null ? null : (
             <Badge variant="gray-subtle" size="sm">
               {coverage}
@@ -553,6 +838,8 @@ function Reader({
   diff,
   onBack,
   onSelect,
+  onFollow,
+  onOpenEntity,
   onOpen,
   onCompare,
   onCloseDiff,
@@ -561,7 +848,11 @@ function Reader({
   document: WatchtowerDocument;
   diff: WatchtowerResponse["diff"];
   onBack(): void;
+  /** Another version of this page, in place. */
   onSelect(observationId: string): void;
+  /** Another saved page, stacked on this one. */
+  onFollow(observationId: string): void;
+  onOpenEntity(id: number): void;
   onOpen(url: string): void;
   onCompare(before: WatchtowerHit): void;
   onCloseDiff(): void;
@@ -605,6 +896,8 @@ function Reader({
           )}
         </p>
       </header>
+
+      <EntityChips label="About" entities={document.entities.slice(0, 10)} onOpen={onOpenEntity} />
 
       {versions.length > 1 ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md bg-background-200 px-3 py-2 shadow-border">
@@ -685,7 +978,7 @@ function Reader({
             key: link.url,
             label: link.text || link.url,
             saved: link.observationId !== undefined,
-            onClick: () => (link.observationId === undefined ? onOpen(link.url) : onSelect(link.observationId)),
+            onClick: () => (link.observationId === undefined ? onOpen(link.url) : onFollow(link.observationId)),
           }))}
         />
       )}
@@ -697,7 +990,7 @@ function Reader({
             label: hit.title || hostOfUrl(hit.url),
             detail: formatMoment(hit.visitedAt),
             saved: true,
-            onClick: () => onSelect(hit.observationId),
+            onClick: () => onFollow(hit.observationId),
           }))}
         />
       )}

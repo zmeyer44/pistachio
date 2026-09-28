@@ -5,6 +5,8 @@
  * say and the tests read them without a DOM.
  */
 
+import { isTerminalStatus, type RunSummary } from "@pistachio/protocol";
+import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import type { CalendarAgenda, CalendarAgendaEvent } from "@pistachio/shell-contracts/ipc";
 import { calendarItems, dayKey, type CalendarItem, type ReminderSnapshot } from "@pistachio/shell-contracts/reminders";
 import type { RecentSite } from "./recents";
@@ -316,4 +318,31 @@ export function saveCalendarPromptDismissed(): void {
  */
 export function showsCalendarPrompt(agenda: Pick<CalendarAgenda, "status" | "connectable"> | null, dismissed: boolean): boolean {
   return agenda !== null && agenda.status === "not_connected" && agenda.connectable && !dismissed;
+}
+
+/* ---------------------------------- chat --------------------------------- */
+
+interface TabsView {
+  tabs: ReadonlyArray<{ id: string; url: string }>;
+}
+
+/**
+ * Whether a tab publish took a home tab off the home page while its chat's
+ * run is live — a browse turn works in the person's tab and may navigate
+ * it (docs/home-chat.md §2). The pane stops drawing the chat then, so the
+ * sidebar is where the conversation goes on. Only the step off home
+ * counts: a sidebar the person closes while the agent works stays closed.
+ */
+export function homeChatLeftHome(
+  before: TabsView | null,
+  after: TabsView & { run: Pick<RunSummary, "runId" | "status"> | null },
+  chats: Readonly<Record<string, { runId: string | null }>>,
+): boolean {
+  const run = after.run;
+  if (before === null || run === null || isTerminalStatus(run.status)) return false;
+  return after.tabs.some((tab) => {
+    if (chats[tab.id]?.runId !== run.runId || isHomeUrl(tab.url)) return false;
+    const was = before.tabs.find((candidate) => candidate.id === tab.id);
+    return was !== undefined && isHomeUrl(was.url);
+  });
 }

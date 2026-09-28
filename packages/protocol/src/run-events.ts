@@ -26,7 +26,7 @@ import type {
   TaskStatus,
   ThreadListItem,
 } from "./index.js";
-import { toolOutputOf } from "./tool-output.js";
+import { toolOutputOf, toolSourceOf } from "./tool-output.js";
 
 /* ------------------------------- pauses --------------------------------- */
 
@@ -336,9 +336,11 @@ function foldInto(
     case "tool.detail": {
       const name = run.toolCalls.find((tool) => tool.id === event.toolId)?.name;
       const output = name === undefined ? null : toolOutputOf(name, event.data);
+      const source = name === undefined ? null : toolSourceOf(name, event.data);
       return updateTool(run, event.toolId, {
         detail: event.summary === "" ? event.detail : event.summary,
         ...(output === null ? {} : { output }),
+        ...(source === null ? {} : { source }),
       });
     }
     case "question":

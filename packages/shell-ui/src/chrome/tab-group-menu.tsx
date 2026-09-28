@@ -1,9 +1,11 @@
 import { useEffect, useRef } from "react";
-import { Columns2, Pencil, Plus, Ungroup, X } from "lucide-react";
+import { AppWindow, Columns2, Pencil, Plus, Ungroup, X } from "lucide-react";
 import { DEFAULT_TAB_GROUP_TITLE, type TabGroupColor, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { shellApi } from "../api";
 import type { MenuEntry } from "../components/ContextMenu";
 import { useAppStore } from "../store";
+import { deskAvailable, toggleDesk } from "../lib/desk/open";
+import { useDeskStore } from "../lib/desk/store";
 
 /**
  * A tab group's menu and its close, declared once for both layouts — the
@@ -66,6 +68,7 @@ export function useTabGroupMenu(options: { onRename: (groupId: string) => void }
 } {
   const tabGroupCommand = useAppStore((s) => s.tabGroupCommand);
   const showNotice = useAppStore((s) => s.showNotice);
+  const deskGroupId = useDeskStore((s) => s.groupId);
   const { onRename } = options;
 
   const close = (group: TabGroupInfo): void => {
@@ -103,6 +106,15 @@ export function useTabGroupMenu(options: { onRename: (groupId: string) => void }
       disabled: group.tabIds.length < 2,
       onSelect: () => void tabGroupCommand({ type: "openAsSplit", groupId: group.id }),
     },
+    ...(deskAvailable()
+      ? [
+          {
+            label: deskGroupId === group.id ? "Leave the desk" : "Open as desk",
+            icon: <AppWindow aria-hidden="true" />,
+            onSelect: () => toggleDesk(group.id),
+          },
+        ]
+      : []),
     {
       label: "Keep open",
       checked: group.open,

@@ -52,6 +52,8 @@ import { pinnedRows } from "../lib/sidebar-tree";
 import { updateTabSelection } from "../lib/tab-selection";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
+import { deskAvailable, toggleDesk } from "../lib/desk/open";
+import { useDeskStore } from "../lib/desk/store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { Favicon, TabMark } from "./Favicon";
 import { TabGroupRow } from "./TabGroupRow";
@@ -1532,6 +1534,7 @@ export function TabList() {
     if (title !== null && title.trim() !== "") void tabGroupCommand({ type: "rename", groupId, title });
   };
   const { menu: groupMenu, close: closeGroup } = useTabGroupMenu({ onRename: setRenaming });
+  const deskGroupId = useDeskStore((s) => s.groupId);
 
   const pinMenu = (pin: SidebarPin): MenuEntry[] => {
     const live = liveByAnchor.get(pin.id) ?? null;
@@ -1967,6 +1970,8 @@ export function TabList() {
                     }}
                     onRename={(title) => (renaming === unit.group.id ? finishGroupRename(unit.group.id, title) : setRenaming(unit.group.id))}
                     onOpenAsSplit={() => void tabGroupCommand({ type: "openAsSplit", groupId: unit.group.id })}
+                    onOpenAsDesk={deskAvailable() ? () => toggleDesk(unit.group.id) : undefined}
+                    deskOpen={deskGroupId === unit.group.id}
                     onClose={() => closeGroup(unit.group)}
                     onPointerDown={(e) => beginPress(groupItem(unit), e)}
                     onContextMenu={(e) => {

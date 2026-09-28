@@ -84,7 +84,8 @@ function chipWidthEstimate(label: string): number {
  * plus matching recents.
  *
  * On either face the field shows where the active row goes once the person
- * has steered to it (lib/use-field-preview.ts); `query` stays what they typed.
+ * has steered to it, by arrow or by pointer, and the next edit works on that
+ * text (lib/use-field-preview.ts); until then `query` stays what they typed.
  */
 export function UrlBar() {
   // Closed, the bar is nothing: none of the dialog's selectors, memos, or
@@ -431,7 +432,7 @@ function UrlBarDialog() {
       stepTo(e.key === "ArrowLeft" ? Math.max(selected - 1, zone.start) : Math.min(selected + 1, zone.end - 1));
       return;
     }
-    preview.release(e);
+    preview.adopt(e);
   };
 
   const indexOfKind = (kind: Entry["kind"], offset: number): number =>

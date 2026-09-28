@@ -12,10 +12,17 @@
  * address is real — typing it in the bar lands here — but there is no
  * document behind it: the page is a view over main's bookmarks file, and
  * every change is a request to main.
+ *
+ * On the desktop the same library is Watchtower's Saved view: a save is
+ * one thing there, the card here and the page's text and index entries in
+ * the archive. `BookmarksLibrary` is that body, embedded; each item's
+ * detail then also says what Watchtower filed the page under.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, BookmarkPlus, Copy, ExternalLink, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Bookmark, BookmarkPlus, Copy, ExternalLink, FileClock, LoaderCircle, Pencil, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import type { WatchtowerResponse } from "@pistachio/shell-contracts/watchtower";
+import { shellApi } from "../../api";
 import {
   BOOKMARK_KIND_LABEL,
   BOOKMARK_KIND_PLURAL,
@@ -42,16 +49,99 @@ import { BookmarkImage, KindBadge, KindIcon, primaryFact, PROVENANCE_LABEL, save
 export function BookmarksPage() {
   const all = useAppStore((state) => state.bookmarks.bookmarks);
   const loaded = useAppStore((state) => state.bookmarksLoaded);
-  const focus = useAppStore((state) => state.bookmarksFocus);
   const closeBookmarks = useAppStore((state) => state.closeBookmarks);
+  const copy = copyFor(useSurface().kind).bookmarks;
+  const [adding, setAdding] = useState(false);
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Bookmarks"
+      data-testid="bookmarks-page"
+      className="@container animate-backdrop-in absolute inset-0 z-20 flex flex-col overflow-hidden rounded-md bg-background-100 shadow-small"
+    >
+      <header className="flex shrink-0 items-center gap-3 border-b border-alpha-400 px-5 py-3 @max-md:px-3">
+        <span className="grid size-8 shrink-0 place-items-center rounded-md bg-gray-100 text-gray-1000 shadow-border">
+          <Bookmark className="size-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <h1 className="text-heading-16 text-gray-1000">Bookmarks</h1>
+          <p className="truncate text-label-12 text-gray-700">
+            {loaded ? `${String(all.length)} saved · tap shift twice on any page to add one · ${copy.scope}` : "Loading…"}
+          </p>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <SaveThisPage className="@max-md:hidden" />
+          <Button size="sm" prefix={<Plus aria-hidden="true" />} onClick={() => setAdding((value) => !value)} data-testid="new-bookmark">
+            Add
+          </Button>
+          <Kbd className="@max-md:hidden">esc</Kbd>
+          <Button variant="tertiary" size="sm" svgOnly aria-label="Close bookmarks" onClick={closeBookmarks}>
+            <X aria-hidden="true" />
+          </Button>
+        </div>
+      </header>
+      <BookmarksLibrary adding={adding} onAddingChange={setAdding} onClose={closeBookmarks} />
+    </div>
+  );
+}
+
+/** The active tab, saved — when it is a web page not saved yet. */
+export function SaveThisPage({ className }: { className?: string }) {
+  const all = useAppStore((state) => state.bookmarks.bookmarks);
   const activeTab = useAppStore((state) => state.snapshot?.tabs.find((tab) => tab.id === state.snapshot?.activeTabId) ?? null);
   const bookmarkTab = useAppStore((state) => state.bookmarkTab);
-  const copy = copyFor(useSurface().kind).bookmarks;
+  const canSaveTab = activeTab !== null && activeTab.kind === "human" && /^https?:/i.test(activeTab.url) && !all.some((bookmark) => bookmark.url === activeTab.url);
+  if (!canSaveTab) return null;
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      prefix={<BookmarkPlus aria-hidden="true" />}
+      onClick={() => {
+        if (activeTab !== null) void bookmarkTab(activeTab.id);
+      }}
+      data-testid="bookmark-current-tab"
+      className={className}
+    >
+      Save this page
+    </Button>
+  );
+}
+
+/** What an item's detail may say about its page in Watchtower (desktop only). */
+export interface SavedInWatchtower {
+  openEntity(entityId: number): void;
+  openPage(observationId: string): void;
+}
+
+/**
+ * The saved items: search, site and kind filters, the grid, and the
+ * selected item's detail. `leading` and `trailing` sit at either end of the
+ * search row — Watchtower puts its view tabs there.
+ */
+export function BookmarksLibrary({
+  adding,
+  onAddingChange,
+  onClose,
+  leading,
+  trailing,
+  watchtower,
+}: {
+  adding: boolean;
+  onAddingChange(adding: boolean): void;
+  onClose(): void;
+  leading?: ReactNode;
+  trailing?: ReactNode;
+  watchtower?: SavedInWatchtower;
+}) {
+  const all = useAppStore((state) => state.bookmarks.bookmarks);
+  const loaded = useAppStore((state) => state.bookmarksLoaded);
+  const focus = useAppStore((state) => state.bookmarksFocus);
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<BookmarkKind | null>(null);
   const [host, setHost] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(focus);
-  const [adding, setAdding] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -79,13 +169,13 @@ export function BookmarksPage() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
-      if (adding) setAdding(false);
+      if (adding) onAddingChange(false);
       else if (selected !== null) setSelected(null);
-      else closeBookmarks();
+      else onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [adding, closeBookmarks, selected]);
+  }, [adding, onAddingChange, onClose, selected]);
 
   const hosts = useMemo(() => bookmarkHosts(all), [all]);
   const counts = useMemo(() => {
@@ -98,53 +188,13 @@ export function BookmarksPage() {
   }, [all, host]);
   const shown = useMemo(() => searchBookmarks(all, query, { kind, host, limit: 2_000 }), [all, query, kind, host]);
   const current = selected === null ? null : (all.find((bookmark) => bookmark.id === selected) ?? null);
-  const canSaveTab = activeTab !== null && activeTab.kind === "human" && /^https?:/i.test(activeTab.url) && !all.some((bookmark) => bookmark.url === activeTab.url);
 
   return (
-    <div
-      role="dialog"
-      aria-label="Bookmarks"
-      data-testid="bookmarks-page"
-      className="@container animate-backdrop-in absolute inset-0 z-20 flex flex-col overflow-hidden rounded-md bg-background-100 shadow-small"
-    >
-      <header className="flex shrink-0 items-center gap-3 border-b border-alpha-400 px-5 py-3 @max-md:px-3">
-        <span className="grid size-8 shrink-0 place-items-center rounded-md bg-gray-100 text-gray-1000 shadow-border">
-          <Bookmark className="size-4" aria-hidden="true" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-heading-16 text-gray-1000">Bookmarks</h1>
-          <p className="truncate text-label-12 text-gray-700">
-            {loaded ? `${String(all.length)} saved · tap shift twice on any page to add one · ${copy.scope}` : "Loading…"}
-          </p>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          {canSaveTab ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              prefix={<BookmarkPlus aria-hidden="true" />}
-              onClick={() => {
-                if (activeTab !== null) void bookmarkTab(activeTab.id);
-              }}
-              data-testid="bookmark-current-tab"
-              className="@max-md:hidden"
-            >
-              Save this page
-            </Button>
-          ) : null}
-          <Button size="sm" prefix={<Plus aria-hidden="true" />} onClick={() => setAdding((value) => !value)} data-testid="new-bookmark">
-            Add
-          </Button>
-          <Kbd className="@max-md:hidden">esc</Kbd>
-          <Button variant="tertiary" size="sm" svgOnly aria-label="Close bookmarks" onClick={closeBookmarks}>
-            <X aria-hidden="true" />
-          </Button>
-        </div>
-      </header>
-
+    <>
       <div className="flex shrink-0 flex-col gap-3 border-b border-alpha-400 bg-background-200 px-5 py-3 @max-md:px-3">
-        {adding ? <AddByAddress onDone={() => setAdding(false)} /> : null}
+        {adding ? <AddByAddress onDone={() => onAddingChange(false)} /> : null}
         <div className="flex flex-wrap items-center gap-2">
+          {leading}
           <Input
             ref={searchRef}
             size="sm"
@@ -166,6 +216,7 @@ export function BookmarksPage() {
               className="w-44"
             />
           ) : null}
+          {trailing}
         </div>
         <div role="tablist" aria-label="Filter by kind" className="scroll-thin flex items-center gap-1 overflow-x-auto pb-0.5">
           <KindPill active={kind === null} label="All" count={all.filter((bookmark) => host === null || bookmarkHost(bookmark.url) === host).length} onClick={() => setKind(null)} />
@@ -204,11 +255,11 @@ export function BookmarksPage() {
             data-testid="bookmark-detail"
             className="scroll-thin w-95 shrink-0 overflow-y-auto border-l border-alpha-400 bg-background-100 @max-3xl:absolute @max-3xl:inset-y-0 @max-3xl:right-0 @max-3xl:shadow-menu @max-md:w-full"
           >
-            <BookmarkDetail key={current.id} bookmark={current} now={now} onClose={() => setSelected(null)} />
+            <BookmarkDetail key={current.id} bookmark={current} now={now} onClose={() => setSelected(null)} watchtower={watchtower} />
           </aside>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -365,7 +416,7 @@ function BookmarkCard({ bookmark, selected, onSelect }: { bookmark: BookmarkReco
 
 /* -------------------------------- detail -------------------------------- */
 
-function BookmarkDetail({ bookmark, now, onClose }: { bookmark: BookmarkRecord; now: Date; onClose(): void }) {
+function BookmarkDetail({ bookmark, now, onClose, watchtower }: { bookmark: BookmarkRecord; now: Date; onClose(): void; watchtower?: SavedInWatchtower | undefined }) {
   const updateBookmark = useAppStore((state) => state.updateBookmark);
   const deleteBookmark = useAppStore((state) => state.deleteBookmark);
   const refreshBookmark = useAppStore((state) => state.refreshBookmark);
@@ -472,6 +523,7 @@ function BookmarkDetail({ bookmark, now, onClose }: { bookmark: BookmarkRecord; 
               <Trash2 aria-hidden="true" />
             </Button>
           </div>
+          {watchtower === undefined ? null : <InWatchtower bookmark={bookmark} watchtower={watchtower} />}
           {bookmark.details.length === 0 ? null : (
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 rounded-md bg-background-200 px-3.5 py-3 text-label-12 shadow-border">
               {bookmark.details.map((detail) => (
@@ -505,5 +557,62 @@ function BookmarkDetail({ bookmark, now, onClose }: { bookmark: BookmarkRecord; 
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The same save in Watchtower: the page's text kept on this Mac, and the
+ * index entries it was filed under — the person, the company, the product.
+ */
+function InWatchtower({ bookmark, watchtower }: { bookmark: BookmarkRecord; watchtower: SavedInWatchtower }) {
+  const [about, setAbout] = useState<WatchtowerResponse["about"] | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    setAbout(undefined);
+    void shellApi()
+      .watchtower({ type: "about", url: bookmark.url })
+      .then((response) => {
+        if (!cancelled) setAbout(response.about ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setAbout(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bookmark.url, bookmark.updatedAt]);
+  if (about === undefined) return null;
+  return (
+    <section aria-label="In Watchtower" data-testid="bookmark-in-watchtower" className="flex flex-col gap-2 rounded-md px-3.5 py-3 shadow-border">
+      <div className="flex items-center gap-2">
+        <FileClock className="size-3.5 text-gray-700" aria-hidden="true" />
+        <h3 className="text-label-12 font-medium text-gray-1000">In Watchtower</h3>
+        {about === null ? null : (
+          <Button size="xs" variant="tertiary" className="ml-auto" onClick={() => watchtower.openPage(about.observationId)}>
+            Saved text
+          </Button>
+        )}
+      </div>
+      {about === null ? (
+        <p className="text-label-12 text-gray-700">Its text is not kept here. Tap shift twice on the page to keep it and file what it is about.</p>
+      ) : about.entities.length === 0 ? (
+        <p className="text-label-12 text-gray-700">Its text is kept. Nothing on it is filed in the index yet.</p>
+      ) : (
+        <ul aria-label="Filed under" className="flex flex-wrap gap-1.5">
+          {about.entities.slice(0, 12).map((entity) => (
+            <li key={entity.id}>
+              <button
+                type="button"
+                onClick={() => watchtower.openEntity(entity.id)}
+                data-testid="bookmark-entity"
+                className="flex h-6 max-w-56 cursor-pointer items-center rounded-full bg-background-100 px-2.5 text-label-12 text-gray-1000 shadow-border outline-none hover:bg-alpha-100 focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="truncate">{entity.name}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

@@ -3,8 +3,12 @@ import {
   watchtowerEligible,
   watchtowerRequestSchema,
   type WatchtowerCapture,
+  type WatchtowerEntityDecision,
+  type WatchtowerFactKind,
+  type WatchtowerIndexJob,
   type WatchtowerRegionRule,
   type WatchtowerResponse,
+  type WatchtowerSavedEntity,
   type WatchtowerVisit,
 } from "@pistachio/shell-contracts/watchtower";
 
@@ -19,8 +23,23 @@ interface Message {
     | "epoch"
     | "shutdown"
     | "rules"
-    | "learn";
+    | "learn"
+    | "index-next"
+    | "index"
+    | "keep"
+    | "file-prepare"
+    | "kept";
   host?: string;
+  /** `index`: the job `index-next` handed out, and what was decided about it. */
+  job?: WatchtowerIndexJob;
+  decisions?: (WatchtowerEntityDecision | null)[];
+  facts?: (WatchtowerFactKind | null)[];
+  /** `index` at level 3: a deliberate save's reading, merged in. */
+  level?: 2 | 3;
+  keptKey?: string;
+  keptKeys?: string[];
+  snapshotId?: number;
+  entities?: WatchtowerSavedEntity[];
   rules?: WatchtowerRegionRule[];
   visit?: WatchtowerVisit;
   observationId?: string;
@@ -54,6 +73,16 @@ if (process.argv[3] === "export") {
 }
 const archive = new Archive(process.argv[2] ?? ":memory:");
 archive.prune(archive.settings().retentionDays);
+// Versions saved before the index existed are filed locally, a few at a
+// time, whether or not the decision model is ever allowed to read them.
+const backlog = setInterval(() => {
+  try {
+    if (archive.index.backlog() === 0) clearInterval(backlog);
+  } catch {
+    /* the index is derived; the archive keeps working without it */
+  }
+}, 5000);
+backlog.unref();
 // Retention also advances on idle days with no new content captures.
 setInterval(() => {
   try {
@@ -125,6 +154,57 @@ port.on("message", ({ data }: { data: Message }) => {
       });
       return;
     }
+    // The index: which saved version the decision model reads next, and
+    // what it decided. A job from before a policy change is not applied.
+    if (message.type === "index-next" || message.type === "index") {
+      let job: WatchtowerIndexJob | null = null;
+      let about: ReturnType<typeof archive.index.about> | undefined;
+      if (message.epoch === epoch) {
+        if (message.type === "index-next") job = archive.index.next();
+        else if (message.job) {
+          const saved = message.level === 3;
+          archive.index.apply(message.job, message.decisions ?? [], message.facts ?? [], saved ? 3 : 2, { merge: saved });
+          if (saved) about = archive.index.about(message.job.snapshotId);
+        }
+      }
+      port.postMessage({ id: message.id, value: { job, about } });
+      return;
+    }
+    // A deliberate save (shift, shift): this page, now, whatever passive
+    // capture is set to — but never an excluded site or Space.
+    if (message.type === "keep") {
+      const settings = archive.settings();
+      const visit = message.visit;
+      const kept =
+        message.epoch === epoch &&
+        visit &&
+        message.capture &&
+        message.observationId &&
+        message.at &&
+        message.keptKey &&
+        watchtowerEligible(visit.url, visit.spaceId, { ...settings, enabled: true, paused: false })
+          ? archive.keep(visit, message.observationId, message.at, message.capture, message.keptKey)
+          : null;
+      port.postMessage({ id: message.id, value: { kept }, full: !archive.hasRoom(), spaces: archive.spaces() });
+      return;
+    }
+    if (message.type === "file-prepare") {
+      const prepared =
+        message.epoch === epoch && message.snapshotId !== undefined && message.observationId && message.spaceId
+          ? archive.index.prepareSaved(message.snapshotId, message.entities ?? [], {
+              observationId: message.observationId,
+              spaceId: message.spaceId,
+            })
+          : null;
+      port.postMessage({ id: message.id, value: { prepared } });
+      return;
+    }
+    if (message.type === "kept") {
+      if (message.observationId && message.keptKey) archive.rekeep(message.observationId, message.keptKey);
+      else archive.setKept(message.keptKeys ?? []);
+      port.postMessage({ id: message.id, value: null });
+      return;
+    }
     const spaceId = message.spaceId;
     if (!spaceId) throw new Error("A Space is required.");
     let result: Partial<WatchtowerResponse> = {};
@@ -155,6 +235,20 @@ port.on("message", ({ data }: { data: Message }) => {
         break;
       case "export":
         throw new Error("Export needs a destination.");
+      case "entities":
+        result.index = archive.index.list(spaceId, request);
+        break;
+      case "entity":
+        result.entity = archive.index.read(spaceId, request.entityId);
+        break;
+      case "about":
+        result.about = archive.about(spaceId, request.url);
+        break;
+      case "entity-edit": {
+        const kept = archive.index.edit(spaceId, request);
+        if (kept !== null) result.entity = archive.index.read(spaceId, kept);
+        break;
+      }
     }
     result = {
       ...result,

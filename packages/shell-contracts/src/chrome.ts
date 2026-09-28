@@ -184,10 +184,20 @@ export function pointerHoldsPaneToolbar(point: { x: number; y: number }, box: { 
  */
 
 /** The cursor the drag layer paints while it holds the pointer. */
-export type DragCursor = "col-resize" | "row-resize" | "grabbing";
+export type DragCursor =
+  | "col-resize"
+  | "row-resize"
+  | "grabbing"
+  // A desk window's edges and corners (@pistachio/shell-contracts/desk).
+  | "ew-resize"
+  | "ns-resize"
+  | "nwse-resize"
+  | "nesw-resize";
+
+const DRAG_CURSORS: readonly string[] = ["col-resize", "row-resize", "grabbing", "ew-resize", "ns-resize", "nwse-resize", "nesw-resize"];
 
 export function isDragCursor(value: unknown): value is DragCursor {
-  return value === "col-resize" || value === "row-resize" || value === "grabbing";
+  return typeof value === "string" && DRAG_CURSORS.includes(value);
 }
 
 /**
@@ -309,6 +319,12 @@ export interface ShellState {
    * there — the raise itself is the overlay reporting's.
    */
   liveViewOpen: boolean;
+  /**
+   * The shell is running a tab switcher session — shown, or about to be.
+   * When it ends, main forgets the gesture and gives the keyboard back to
+   * the page the person chose (@pistachio/shell-contracts/tab-switcher).
+   */
+  tabSwitcherOpen: boolean;
 }
 
 export const DEFAULT_SHELL_STATE: ShellState = {
@@ -318,6 +334,7 @@ export const DEFAULT_SHELL_STATE: ShellState = {
   remindersOpen: false,
   bookmarksOpen: false,
   liveViewOpen: false,
+  tabSwitcherOpen: false,
   veiled: false,
   sidebarRevealed: false,
 };
@@ -326,7 +343,7 @@ export function isShellState(value: unknown): value is ShellState {
   if (typeof value !== "object" || value === null) return false;
   const state = value as Record<string, unknown>;
   return (
-    ["consoleOpen", "evidenceOpen", "settingsOpen", "veiled", "sidebarRevealed", "remindersOpen", "bookmarksOpen", "liveViewOpen"] as const
+    ["consoleOpen", "evidenceOpen", "settingsOpen", "veiled", "sidebarRevealed", "remindersOpen", "bookmarksOpen", "liveViewOpen", "tabSwitcherOpen"] as const
   ).every((key) => typeof state[key] === "boolean");
 }
 
@@ -366,7 +383,11 @@ export type ShellCommand =
   /** Write a new note and open it: what ⌘⌥N does. */
   | { type: "newNote" }
   | { type: "toggleBookmarks" }
-  | { type: "openWatchtower" }
+  /**
+   * Watchtower, optionally landing on one index entry (a save's card names
+   * what the page was filed under) or on the Saved view.
+   */
+  | { type: "openWatchtower"; entityId?: number; view?: "saved" }
   /** The archive of tabs Tidy put away and groups that were closed (docs/tab-tidy.md §3.6). */
   | { type: "openArchive" }
   /** Run Tidy now for the active Space, and say what it did (§3.2). */
@@ -431,7 +452,6 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "toggleSidebarPinned":
     case "toggleReminders":
     case "openBrief":
-    case "openWatchtower":
     case "openArchive":
     case "tidyTabs":
     case "undoTidy":
@@ -452,6 +472,10 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "openBookmarks": {
       const bookmarkId = (value as { bookmarkId?: unknown }).bookmarkId;
       return bookmarkId === undefined || (typeof bookmarkId === "string" && bookmarkId.length > 0 && bookmarkId.length <= 128);
+    }
+    case "openWatchtower": {
+      const { entityId, view } = value as { entityId?: unknown; view?: unknown };
+      return (entityId === undefined || (typeof entityId === "number" && Number.isSafeInteger(entityId) && entityId > 0)) && (view === undefined || view === "saved");
     }
     case "openNotes": {
       const noteId = (value as { noteId?: unknown }).noteId;

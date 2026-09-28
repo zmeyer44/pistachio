@@ -24,7 +24,7 @@ import { cn } from "../lib/cn";
 import { collapseDestinations, destinationKey } from "../lib/destination";
 import { rankFuzzy, STRONG_FUZZY_SCORE, type FuzzyCandidate } from "../lib/fuzzy";
 import { applyIntentRanking, buildIntentRequest, shouldAskIntentModel, type IntentCandidateSeed } from "../lib/intent-ranking";
-import { secondarySearchItems, type UrlItem } from "../lib/search-suggestions";
+import { secondarySearchItems, type AssistantTarget, type UrlItem } from "../lib/search-suggestions";
 import { SETTINGS_INTENTS, settingsIntentEntryId, settingsIntentKeywords, type SettingsIntent } from "../lib/settings-intents";
 import { useAddressIntent, type IntentRankState, type TypedFace } from "../lib/use-address-intent";
 import { displayHost, prettyUrl } from "../lib/url";
@@ -32,6 +32,7 @@ import { recentFaviconUrl, type RecentSite } from "../lib/recents";
 import { selectActiveTab, useAppStore } from "../store";
 import { summaryAsNote, useNotes } from "./notes/use-notes";
 import { Favicon, TabMark } from "./Favicon";
+import { PistachioMark } from "./PistachioMark";
 import { SearchProviderLogo } from "./SearchProviderLogo";
 import { isNavGroup, SETTINGS_NAV, type NavEntry } from "./settings/nav-config";
 import { shellApi } from "../api";
@@ -243,6 +244,7 @@ export function useTypedEntries({
   palette,
   paletteTabs,
   shelfRows,
+  assistant = "provider",
 }: {
   q: string;
   primaryItem: UrlItem | null;
@@ -251,6 +253,8 @@ export function useTypedEntries({
   palette: CommandPaletteSnapshot;
   paletteTabs: BrowserTabInfo[];
   shelfRows: readonly ShelfEntry[];
+  /** Where the "Ask …" row goes (lib/search-suggestions.ts): the home page answers in place. */
+  assistant?: AssistantTarget;
 }): TypedFace {
   const shell = useShell();
   const activeTab = useAppStore(selectActiveTab);
@@ -540,7 +544,7 @@ export function useTypedEntries({
     const topScore = matches[0]?.score ?? 0;
     const suggestion = (item: UrlItem): Entry => ({ kind: "suggestion", id: item.id, url: item.url, item });
     const primary = suggestion(primaryItem);
-    const searches = secondarySearchItems(q, primaryItem, settings.search).map(suggestion);
+    const searches = secondarySearchItems(q, primaryItem, settings.search, assistant).map(suggestion);
     const face = (entries: Entry[]): TypedInventory => ({ entries, candidateEntries, seeds: offered, matchedIds });
     // A typed address goes first and its matches follow it; searching for
     // the address's own letters is the fallback, so it closes the list.
@@ -552,7 +556,7 @@ export function useTypedEntries({
     // "where should these words go".
     const preferMatch = q.length >= 2 && topScore >= STRONG_FUZZY_SCORE;
     return face(preferMatch ? [...ranked, primary, ...searches] : [primary, ...searches, ...ranked]);
-  }, [actionSnapshot, activeSpaceId, activeTab, shelfRows, clearUnpinnedTabs, closeTab, currentUrl, hasRun, moveTabToSpace, noteSummaries, palette.recentlyClosedTabs, paletteTabs, primaryItem, q, recentSites, restoreClosedTab, settings, shell, spaces, switchSpace, tab, tabs]);
+  }, [actionSnapshot, activeSpaceId, activeTab, assistant, shelfRows, clearUnpinnedTabs, closeTab, currentUrl, hasRun, moveTabToSpace, noteSummaries, palette.recentlyClosedTabs, paletteTabs, primaryItem, q, recentSites, restoreClosedTab, settings, shell, spaces, switchSpace, tab, tabs]);
 
   // ── What the words most likely MEAN (docs/smart-suggestions.md) ──────
   // Everything below reorders `inventory.entries`; none of it can add a row.
@@ -697,7 +701,7 @@ export function PaletteResultRow({
           ) : entry.item.kind === "search" ? (
             <Search aria-hidden="true" />
           ) : entry.item.kind === "ai" ? (
-            <Sparkles aria-hidden="true" />
+            entry.item.url === "" ? <PistachioMark size={20} /> : <Sparkles aria-hidden="true" />
           ) : (
             <ArrowRight aria-hidden="true" />
           )}

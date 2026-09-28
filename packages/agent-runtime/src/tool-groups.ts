@@ -24,7 +24,7 @@ export const TOOL_GROUPS = {
   reminders: ["reminder_list", "reminder_create", "reminder_update", "reminder_cancel"],
   artifacts: ["artifact_list", "artifact_create", "artifact_update"],
   bookmarks: ["bookmark_search", "bookmark_create", "bookmark_update", "bookmark_delete"],
-  watchtower: ["watchtower_search", "watchtower_read"],
+  watchtower: ["watchtower_search", "watchtower_read", "watchtower_index", "watchtower_entity"],
   notes: ["task_notes"],
   /** The person's own notes (docs/notes.md N7). `notes` above is the run's scratchpad. */
   user_notes: ["note_list", "note_search", "note_read", "note_create", "note_update", "note_delete"],

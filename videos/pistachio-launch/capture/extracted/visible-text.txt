@@ -1,0 +1,64 @@
+[span] Pistachio
+[a] Download
+[a] Docs
+[span] Get early access
+[a] Agent
+[a] Spaces
+[a] Memory
+[a] Download
+[a] Get early access
+[a] Early preview for macOS
+[h1] A browser built
+[h1] for tomorrow
+[p] Pistachio is a Mac browser with an agent built in. Ask for something in plain words and it gets it done.
+[span] Work email
+[button] Get early access
+[p] Core features
+[p] Core features
+[h2] A browser that pulls its weight.
+[p] An agent that works inside your tabs, and the everyday moves — glance, split, reader, media — built in around it.
+[h3] An agent in your tab
+[p] Open the chat with ⌘I and say what you want. The agent clicks, types, and reads inside the sessions you are already signed in to, listing each step as it happens — and typing interrupts it.
+[h3] Glance at a link
+[p] Hold a link open in a card floating over the page you are on. Close it and you are exactly where you were, or promote it to a full tab or a split when it earns one.
+[h3] Split the window
+[p] Put two pages side by side and work across both. A split is a saved pair, not a passing layout — leave it, come back, and both panes are how you left them.
+[h3] Read without the clutter
+[p] Reader view peels an article down to the words, on your background and your type. The same shortcut puts the page back the way it was.
+[h3] Media follows you
+[p] Leave a tab mid-song or mid-video and it keeps playing from a card at the bottom of the sidebar. The stack fans out on hover, so pausing never means finding the tab.
+[h2] A browser that pulls its weight.
+[p] An agent that works inside your tabs, and the everyday moves — glance, split, reader, media — built in around it.
+[h3] An agent in your tab
+[p] Open the chat with ⌘I and say what you want. The agent clicks, types, and reads inside the sessions you are already signed in to, listing each step as it happens — and typing interrupts it.
+[h3] Glance at a link
+[p] Hold a link open in a card floating over the page you are on. Close it and you are exactly where you were, or promote it to a full tab or a split when it earns one.
+[h3] Split the window
+[p] Put two pages side by side and work across both. A split is a saved pair, not a passing layout — leave it, come back, and both panes are how you left them.
+[h3] Read without the clutter
+[p] Reader view peels an article down to the words, on your background and your type. The same shortcut puts the page back the way it was.
+[h3] Media follows you
+[p] Leave a tab mid-song or mid-video and it keeps playing from a card at the bottom of the sidebar. The stack fans out on hover, so pausing never means finding the tab.
+[h2] Are you ready yet?
+[p] Download Pistachio for Macs with Apple silicon.
+[a] Download
+[p] 0.0.20
+[p] 131 MB
+[a] Details
+[a] Tabs and Spaces
+[a] Download
+[a] Early access
+[a] Getting started
+[a] Memory and reminders
+[a] Keyboard shortcuts
+[a] Import from another browser
+[a] Managed policy
+[a] Privacy and permissions
+[a] Privacy policy
+[p] Open source
+[a] Source on GitHub
+[a] License (GPL-3.0)
+[a] Help and source
+[p] © 2026 Pistachio
+[p] All rights reserved
+[a] X (Twitter)

@@ -883,6 +883,9 @@ importers:
       lucide-react:
         specifier: ^0.468.0
         version: 0.468.0(react@19.2.0)
+      marked:
+        specifier: ^17.0.6
+        version: 17.0.6
       react:
         specifier: ^19.1.0
         version: 19.2.0

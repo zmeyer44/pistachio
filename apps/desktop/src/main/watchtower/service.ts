@@ -22,6 +22,7 @@ import {
   judgeRegions,
   WATCHTOWER_KEPT_ROLES,
 } from "@pistachio/agent-runtime/watchtower-filter";
+import { judgeIndex } from "@pistachio/agent-runtime/watchtower-entities";
 import { configuredIntentModel } from "../model-provider.js";
 import {
   snapshotHtml,
@@ -34,6 +35,10 @@ import {
   watchtowerRequestSchema,
   watchtowerUrl,
   type WatchtowerCapture,
+  type WatchtowerEntityRef,
+  type WatchtowerFactKind,
+  type WatchtowerIndexJob,
+  type WatchtowerSavedEntity,
   type WatchtowerRawCapture,
   type WatchtowerRegionRule,
   type WatchtowerRequest,
@@ -54,6 +59,12 @@ export interface WatchtowerSource {
 const RECAPTURE_MS = [30000, 60000, 120000, 300000] as const;
 /** Less new text than this since the last capture is not a new state of the page. */
 const RECAPTURE_MIN_CHARS = 400;
+/** With nothing left to index, look again after this long — or right after a capture. */
+const INDEX_IDLE_MS = 60000;
+/** A saved page is indexed this long after it is captured, once the model is free. */
+const INDEX_AFTER_CAPTURE_MS = 2000;
+/** After the decision model fails, indexing rests this long. */
+const INDEX_COOLDOWN_MS = 60000;
 interface TabState {
   contents: WebContents;
   generation: number;
@@ -78,6 +89,20 @@ interface Reply {
   spaces?: string[];
   ready?: boolean;
   full?: boolean;
+}
+
+/** A page kept by a deliberate save: the version now in the archive. */
+export interface WatchtowerKept {
+  observationId: string;
+  snapshotId: number;
+  pageId: number;
+  spaceId: string;
+  /**
+   * The policy epoch it was kept under. The model's reading arrives seconds
+   * later; after a forget or a settings change in between, it is not filed
+   * — the page may be gone and its version's id given to another page.
+   */
+  epoch: number;
 }
 
 /** Bounded capture/RPC supervisor. No SQL, compression or page parsing on main. */
@@ -113,6 +138,14 @@ export class WatchtowerService {
   #modelCooldown = new Map<string, number>();
   #judge: typeof judgeRegions = judgeRegions;
   #model: () => ReturnType<typeof configuredIntentModel> = configuredIntentModel;
+  /** The index: one saved version with the decision model at a time. */
+  #indexing = false;
+  #indexIdleUntil = 0;
+  #indexCooldownUntil = 0;
+  /** Bumped by hand edits to the index, so an answer about the old index is not applied. */
+  #indexGeneration = 0;
+  #indexJudge: typeof judgeIndex = judgeIndex;
+  #keptKeys: (() => string[]) | null = null;
 
   constructor(
     private readonly directory: string,
@@ -155,6 +188,7 @@ export class WatchtowerService {
         this.#startupError = "";
         void this.send({ type: "epoch" })
           .then(() => this.request("__startup__", { type: "status" }))
+          .then(() => this.refreshKept())
           .catch(() => {});
         return;
       }
@@ -218,6 +252,8 @@ export class WatchtowerService {
   private invalidate(suppress = false): void {
     this.#epoch++;
     this.#rules.clear();
+    // A settings change may have just allowed indexing: look without waiting.
+    this.#indexIdleUntil = 0;
     for (const controller of this.#reranks) controller.abort();
     for (const tab of this.#tabs.values()) {
       tab.suppressed ||= suppress;
@@ -245,6 +281,8 @@ export class WatchtowerService {
       }
       // A committed deletion cannot be canceled by an RPC deadline. Worker exit
       // still rejects the request; keep policy gating and reader invalidation active.
+      // Editing the index by hand changes what a pending answer was about.
+      if (request.type === "entity-edit") this.#indexGeneration++;
       result = await this.send(
         { type: "request", spaceId, request },
         changesPolicy ? 0 : 15000,
@@ -550,6 +588,7 @@ export class WatchtowerService {
     const visible = new Set(
       sources.filter((source) => source.visible).map((source) => source.id),
     );
+    void this.understand();
     for (const [id, state] of this.#tabs)
       if (!visible.has(id)) state.visibleSince = 0;
     for (const source of sources) {
@@ -674,6 +713,11 @@ export class WatchtowerService {
           at: Date.now(),
           capture,
         });
+        // What the page is about is read soon after it is saved.
+        this.#indexIdleUntil = Math.min(
+          this.#indexIdleUntil,
+          Date.now() + INDEX_AFTER_CAPTURE_MS,
+        );
       } catch {
         /* Best effort: a renderer disappearing must not interrupt browsing. */
       } finally {
@@ -688,7 +732,10 @@ export class WatchtowerService {
    * confident answers are remembered so the same layout is not asked about
    * again. Failure of any step keeps the text.
    */
-  private async filter(page: WatchtowerRawCapture): Promise<WatchtowerCapture> {
+  private async filter(
+    page: WatchtowerRawCapture,
+    allowModel = true,
+  ): Promise<WatchtowerCapture> {
     const regions = buildRegions(page.blocks);
     const host = new URL(page.url).hostname.toLowerCase();
     let rules = this.#rules.get(host);
@@ -714,6 +761,7 @@ export class WatchtowerService {
       verdict.decided ? [] : [index],
     );
     const evaluator =
+      allowModel &&
       undecided.length > 0 &&
       this.#settings.smartFilter &&
       (this.#modelCooldown.get(host) ?? 0) < Date.now()
@@ -753,6 +801,264 @@ export class WatchtowerService {
       void this.send({ type: "learn", host, rules: learned }).catch(() => {});
     }
     return applyRegions(page, regions, sane(regions, keep));
+  }
+  /**
+   * The index, filled in the background: the next saved version whose names
+   * need the decision model, newest first; what the model decided goes back
+   * to the archive. Runs only while saving is on and unpaused, with the
+   * person's consent (`smartIndex`), and never for an excluded site or Space
+   * (the archive does not offer them). A failure rests the loop; the
+   * version stays pending and is offered again later.
+   */
+  private async understand(): Promise<void> {
+    const now = Date.now();
+    if (
+      this.#indexing ||
+      this.#closed ||
+      !this.#ready ||
+      this.#full ||
+      this.#policyChanges > 0 ||
+      !this.#settings.enabled ||
+      this.#settings.paused ||
+      !this.#settings.smartIndex ||
+      now < this.#indexIdleUntil ||
+      now < this.#indexCooldownUntil
+    )
+      return;
+    const evaluator = this.#model();
+    if (!evaluator) {
+      this.#indexIdleUntil = now + INDEX_IDLE_MS;
+      return;
+    }
+    this.#indexing = true;
+    const epoch = this.#epoch;
+    const generation = this.#indexGeneration;
+    const controller = new AbortController();
+    this.#reranks.add(controller);
+    try {
+      const next = (await this.send({ type: "index-next" })) as unknown as {
+        job?: WatchtowerIndexJob | null;
+      } | null;
+      const job = next?.job;
+      if (!job) {
+        this.#indexIdleUntil = Date.now() + INDEX_IDLE_MS;
+        return;
+      }
+      const answers = await this.#indexJudge(
+        { host: job.host, title: job.title },
+        job,
+        { model: evaluator.model, signal: controller.signal },
+      );
+      if (
+        epoch !== this.#epoch ||
+        generation !== this.#indexGeneration ||
+        this.#closed
+      )
+        return;
+      await this.send({
+        type: "index",
+        job,
+        decisions: answers.entities,
+        facts: answers.facts,
+      });
+    } catch {
+      // Stopped by a policy change is not a failure of the model.
+      if (!controller.signal.aborted)
+        this.#indexCooldownUntil = Date.now() + INDEX_COOLDOWN_MS;
+    } finally {
+      this.#reranks.delete(controller);
+      this.#indexing = false;
+    }
+  }
+  /**
+   * A deliberate save (shift, shift) of one tab: its page read NOW, into the
+   * archive, and marked kept under the saved record's `keptKey` so retention
+   * leaves it — even while passive saving is off or paused, since the save
+   * is the person's say-so for this page. Not for an excluded site or
+   * Space, a page with a password field, or a tab the agent is driving;
+   * `skipped` says which. Jev filters the page's regions only when
+   * Watchtower is on and its filter allowed: a save before Watchtower was
+   * ever enabled sends nothing to it.
+   */
+  async keep(
+    tabId: string,
+    keptKey: string,
+  ): Promise<WatchtowerKept | { skipped: string }> {
+    if (!this.#ready || this.#closed)
+      return { skipped: "Watchtower is starting." };
+    const source = this.sources().find((item) => item.id === tabId);
+    if (!source || source.contents.isDestroyed())
+      return { skipped: "The page is no longer open." };
+    if (source.agentDriven)
+      return { skipped: "The agent is using this tab." };
+    const url = source.contents.getURL();
+    if (watchtowerUrl(url) === null)
+      return { skipped: "Only web pages are kept in Watchtower." };
+    if (
+      !watchtowerEligible(url, source.spaceId, {
+        ...this.#settings,
+        enabled: true,
+        paused: false,
+      })
+    )
+      return { skipped: "This site or Space is excluded from Watchtower." };
+    if (this.#full) return { skipped: "Watchtower's storage is full." };
+    this.attach(tabId, source.contents);
+    const state = this.#tabs.get(tabId)!;
+    const epoch = this.#epoch;
+    let deadline: NodeJS.Timeout | undefined;
+    let raw: unknown;
+    try {
+      raw = await Promise.race([
+        source.contents.executeJavaScriptInIsolatedWorld(991, [
+          { code: WATCHTOWER_CAPTURE_SCRIPT },
+        ]),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => reject(new Error("Capture timed out")), 6000);
+        }),
+      ]);
+    } catch {
+      return { skipped: "The page could not be read." };
+    } finally {
+      if (deadline) clearTimeout(deadline);
+    }
+    if (epoch !== this.#epoch || source.contents.isDestroyed())
+      return { skipped: "Watchtower changed while the page was read." };
+    const page = validateCapture(raw);
+    if (!page)
+      return { skipped: "Pages with a password field are not kept in Watchtower." };
+    if (routeUrl(page.url) !== routeUrl(url))
+      return { skipped: "The page changed while it was read." };
+    const visit =
+      state.visit && routeUrl(state.visit.url) === routeUrl(url)
+        ? state.visit
+        : {
+            id: randomUUID(),
+            spaceId: source.spaceId,
+            url,
+            title: source.contents.getTitle().slice(0, 500),
+            at: Date.now(),
+          };
+    page.url = visit.url;
+    const capture = await this.filter(page, this.#settings.enabled);
+    if (epoch !== this.#epoch)
+      return { skipped: "Watchtower changed while the page was read." };
+    const reply = (await this.send({
+      type: "keep",
+      visit,
+      observationId: randomUUID(),
+      at: Date.now(),
+      capture,
+      keptKey,
+    }).catch(() => null)) as unknown as {
+      kept?: Omit<WatchtowerKept, "spaceId"> | null;
+    } | null;
+    if (!reply?.kept) return { skipped: "Watchtower could not save this page." };
+    if (epoch !== this.#epoch)
+      return { skipped: "Watchtower changed while the page was saved." };
+    // The tab's own visit now exists: passive capture carries on with it
+    // rather than recording the same view twice.
+    if (routeUrl(source.contents.getURL()) === routeUrl(visit.url)) {
+      state.visit = visit;
+      state.recorded = true;
+    }
+    return { ...reply.kept, spaceId: source.spaceId, epoch };
+  }
+
+  /**
+   * File what a deliberate save's reading found — the person and the
+   * company, the product and its maker — under the kept version, merged
+   * with what the index already holds. Each name that may be an existing
+   * entry is put to Jev when the person allows the index to ask it;
+   * otherwise only an entry of the same kind and spelling is joined.
+   * Resolves with the entries the page is now filed under.
+   */
+  async file(
+    kept: Pick<WatchtowerKept, "snapshotId" | "observationId" | "spaceId" | "epoch">,
+    entities: WatchtowerSavedEntity[],
+  ): Promise<WatchtowerEntityRef[]> {
+    // Bound to the save that kept the page, not to whenever the reading
+    // came back: the archive checks the observation still holds the version.
+    const epoch = kept.epoch;
+    if (epoch !== this.#epoch) return [];
+    const prepared = (
+      (await this.send({
+        type: "file-prepare",
+        snapshotId: kept.snapshotId,
+        observationId: kept.observationId,
+        spaceId: kept.spaceId,
+        entities,
+      })) as unknown as {
+        prepared?: { job: WatchtowerIndexJob; factKinds: WatchtowerFactKind[] } | null;
+      } | null
+    )?.prepared;
+    if (!prepared || epoch !== this.#epoch) return [];
+    const { job, factKinds } = prepared;
+    let decisions = job.candidates.map((candidate) => ({
+      kind: candidate.kind,
+      same: null as number | null,
+    }));
+    const evaluator =
+      this.#settings.enabled &&
+      this.#settings.smartIndex &&
+      job.candidates.some((candidate) => candidate.known.length > 0)
+        ? this.#model()
+        : null;
+    if (evaluator)
+      try {
+        decisions = (
+          await this.#indexJudge(
+            { host: job.host, title: job.title },
+            { candidates: job.candidates, facts: [] },
+            { model: evaluator.model },
+          )
+        ).entities;
+      } catch {
+        /* unmatched names become their own entries; a merge is offered later */
+      }
+    if (epoch !== this.#epoch) return [];
+    const applied = (await this.send({
+      type: "index",
+      job,
+      decisions,
+      facts: factKinds,
+      level: 3,
+    })) as unknown as { about?: WatchtowerEntityRef[] } | null;
+    return applied?.about ?? [];
+  }
+
+  /** What the archive already holds for a saved page, in a Space. */
+  async about(
+    spaceId: string,
+    url: string,
+  ): Promise<WatchtowerResponse["about"]> {
+    return (await this.request(spaceId, { type: "about", url })).about ?? null;
+  }
+
+  /**
+   * Where the saved records' address keys come from: every page still saved
+   * on purpose. Sent whenever the worker (re)starts, and on `refreshKept`.
+   */
+  trackKept(keys: () => string[]): void {
+    this.#keptKeys = keys;
+    this.refreshKept();
+  }
+  /** A save was added or deleted, here or on another device: pages it no longer covers age normally. */
+  refreshKept(): void {
+    const keys = this.#keptKeys;
+    if (!this.#ready || keys === null) return;
+    void this.send({ type: "kept", keptKeys: keys() }).catch(() => {});
+  }
+
+  /** A saved record settled on the page's canonical address. */
+  rekeep(kept: Pick<WatchtowerKept, "observationId" | "epoch">, keptKey: string): void {
+    if (kept.epoch !== this.#epoch) return;
+    void this.send({ type: "kept", observationId: kept.observationId, keptKey }).catch(() => {});
+  }
+
+  /** Tests substitute a deterministic decision model for the index. */
+  useIndexModel(judge: typeof judgeIndex): void {
+    this.#indexJudge = judge;
   }
   /** Tests substitute a deterministic decision model. */
   useDecisionModel(

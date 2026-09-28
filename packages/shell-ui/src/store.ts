@@ -31,6 +31,7 @@ import type {
   SyncOriginOverride,
   SyncStatus,
   TabSwitcherPreview,
+  TabSwitcherThumbnail,
   WorkspaceSyncAction,
   WorkspaceSyncStatus,
 } from "@pistachio/shell-contracts/ipc";
@@ -52,6 +53,22 @@ import {
   type PermissionDecision,
 } from "@pistachio/shell-contracts/browser-controls";
 import { isShellUnsupported } from "@pistachio/shell-contracts/socket";
+import { HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
+import { agentIsActing } from "@pistachio/run-view";
+
+/** A home tab's conversation (AppState.homeChats). */
+export interface HomeChat {
+  /** The run the tab shows; null from the ask until main has published it. */
+  runId: string | null;
+  /** The question as asked, shown while the run is on its way. */
+  prompt: string;
+}
+
+/** The `homeChats` key of a window with no tabs, whose home page has no tab id. */
+export const TABLESS_HOME_KEY = "tabless";
+
+/** How long a home tab waits for main to publish the run its question started. */
+const ASK_HOME_TIMEOUT_MS = 10_000;
 
 /**
  * What the site-controls surface shows when the host cannot say: no site, no
@@ -110,9 +127,15 @@ import { clearRecents, dismissRecent, loadRecents, recordVisit, refaviconVisit, 
 import { share } from "./lib/share";
 import { clampPanelWidth, getStoredPanelWidth, storePanelWidth } from "./lib/panel";
 import { permissionPromptOverlay } from "./lib/permission-prompt";
+import { homeChatLeftHome } from "./lib/home";
 import { pushNotice, type NoticeOptions, type ShellNotice } from "./lib/notices";
 import { clampSidebarWidth, getStoredSidebarWidth, storeSidebarWidth } from "./lib/sidebar";
-import { tabSwitcherIndex } from "@pistachio/shell-contracts/tab-switcher";
+import {
+  tabSwitcherIndex,
+  tabSwitcherMove,
+  type TabSwitcherDirection,
+  type TabSwitcherModifier,
+} from "@pistachio/shell-contracts/tab-switcher";
 import { noteUrl } from "@pistachio/shell-contracts/notes";
 import { BRIEF_PAGE_URL } from "@pistachio/shell-contracts/reports";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
@@ -180,6 +203,15 @@ export interface AppState {
   snapshot: ShellSnapshot | null;
   /** The agent console (the right-hand delegation panel) is open. */
   consoleOpen: boolean;
+  /**
+   * Home tabs showing a conversation instead of the page (components/home/HomeChat.tsx),
+   * by tab id — `TABLESS_HOME_KEY` for a window with no tabs. The console's
+   * open thread is the one conversation there is; a home tab that asked
+   * for it presents it full-page until the person leaves it or the console
+   * moves on. `runId` is null from the ask until main has the run, and the
+   * prompt is shown meanwhile so the question lands on screen at once.
+   */
+  homeChats: Record<string, HomeChat>;
   /**
    * "Add … to Chat" from a page, waiting for the composer. It is kept here
    * rather than in the console because the console may be closed — or
@@ -283,11 +315,8 @@ export interface AppState {
   /** The stills are painted and main has hidden the native views. */
   overlayReady: boolean;
   paneStills: PaneStill[];
-  tabSwitcherPreviews: TabSwitcherPreview[];
-  /** Signed MRU steps from the current tab: +1 is the previous tab. */
-  tabSwitcherOffset: number;
-  tabSwitcherLoading: boolean;
-  tabSwitcherCommitPending: boolean;
+  /** The held-modifier tab switcher, from the gesture's start to its end; null when none is running. */
+  tabSwitcher: TabSwitcherSession | null;
   /** Ephemeral link preview, owned by main but composed by this shell. */
   glance: GlanceState | null;
   /** Background playback cards; updated on a narrow channel outside ShellSnapshot. */
@@ -344,6 +373,8 @@ export interface AppState {
   bookmarksLoaded: boolean;
   /** The bookmark the bookmarks page should open on, when opened from the card. */
   bookmarksFocus: string | null;
+  /** The Watchtower index entry to open on, when a save's card named it. */
+  watchtowerFocus: number | null;
   /** The card main has over the page, if any (drawn by the bookmark chrome view). */
   bookmarkToast: BookmarkToast | null;
   /**
@@ -402,6 +433,8 @@ export interface AppState {
   toggleReminders(): void;
   openBookmarks(bookmarkId?: string): void;
   closeBookmarks(): void;
+  /** Watchtower, landing on one index entry when given. */
+  openWatchtower(entityId?: number): void;
   /**
    * Dismiss whichever full-window page (settings, reminders, bookmarks) is
    * covering the content hole, so a tab the user just picked is what shows.
@@ -460,6 +493,15 @@ export interface AppState {
   clearRecents(): void;
   toggleConsole(): void;
   setConsoleOpen(open: boolean): void;
+  /**
+   * Ask Pistachio from a home tab: the tab becomes a chat around the
+   * question and a fresh conversation starts on it. Answers false — and
+   * changes nothing — when the agent is acting on another conversation,
+   * which a question from a new tab must neither steer nor stop.
+   */
+  askHome(tabKey: string, prompt: string): Promise<boolean>;
+  /** A home tab is back to being the home page; the conversation itself goes on in the console. */
+  closeHomeChat(tabKey: string): void;
   /** Queue an insert for the composer and bring the composer into view. */
   receiveChatInsert(insert: ChatInsert): void;
   /** The page's menu offered an insert that could not be read; the composer says so. */
@@ -481,9 +523,13 @@ export interface AppState {
   setSplitDragTab(tab: SplitDragTab | null): void;
   setContentBounds(bounds: ContentBounds | null): void;
   reportOverlayActive(active: boolean): Promise<void>;
-  stepTabSwitcher(reverse: boolean): Promise<void>;
+  /** Start a session; `limit` is how many cards the window has room for. */
+  openTabSwitcher(modifier: TabSwitcherModifier, step: -1 | 0 | 1, limit: number): Promise<void>;
+  stepTabSwitcher(reverse: boolean): void;
+  moveTabSwitcher(direction: TabSwitcherDirection, columns: number): void;
   finishTabSwitcher(commit: boolean, tabId?: string): Promise<void>;
   setTabSwitcherIndex(index: number): void;
+  setTabSwitcherThumbnail(thumbnail: TabSwitcherThumbnail): void;
   setGlanceClosing(closing: boolean): void;
   setGlanceStaged(staged: boolean): void;
   prepareGlanceClose(): Promise<string | null>;
@@ -666,7 +712,48 @@ function mergePatch(current: DesktopSettings, patch: SettingsPatch): DesktopSett
 }
 
 let overlayReportRequest = 0;
-let tabSwitcherLoadRequest = 0;
+let tabSwitcherSerial = 0;
+let tabSwitcherRevealTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * The last gesture's ending until it lands: its cards, when the modifier
+ * came up before they did, then main selecting its tab. The next gesture's
+ * cards wait for it, so they come in the order it leaves behind.
+ */
+let tabSwitcherLanding: Promise<void> = Promise.resolve();
+
+/**
+ * ⌃Tab tapped and let go at once is a flip to the previous tab; the switcher
+ * waits this long before raising, so a quick flip never paints it.
+ */
+const TAB_SWITCHER_REVEAL_MS = 110;
+
+/**
+ * One gesture's run of the switcher. `offset` is signed steps from the
+ * active tab (card 0), so a step taken while the cards are loading lands
+ * where it should once they arrive. Once the gesture ends its session only
+ * lands; the next gesture gets a session of its own.
+ */
+export interface TabSwitcherSession {
+  serial: number;
+  modifier: TabSwitcherModifier;
+  /** Main's cards for this run, which become `previews` when they land. */
+  cards: Promise<TabSwitcherPreview[]>;
+  previews: TabSwitcherPreview[];
+  offset: number;
+  loading: boolean;
+  /** The overlay is (or is being) raised; false during a quick flip's grace. */
+  revealed: boolean;
+  /**
+   * The gesture has ended (committed or cancelled): waiting on the cards,
+   * if the modifier beat them, and on main to select the chosen tab.
+   */
+  finishing: boolean;
+}
+
+function clearTabSwitcherReveal(): void {
+  if (tabSwitcherRevealTimer !== null) clearTimeout(tabSwitcherRevealTimer);
+  tabSwitcherRevealTimer = null;
+}
 
 function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
@@ -858,6 +945,7 @@ async function load(set: SetState, get: () => AppState, first: boolean): Promise
 export const useAppStore = create<AppState>((set, get) => ({
   snapshot: null,
   consoleOpen: false,
+  homeChats: {},
   chatInbox: EMPTY_CHAT_INBOX,
   consoleWidth: getStoredPanelWidth(),
   sidebarWidth: getStoredSidebarWidth(),
@@ -879,10 +967,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   overlayActive: false,
   overlayReady: false,
   paneStills: [],
-  tabSwitcherPreviews: [],
-  tabSwitcherOffset: 0,
-  tabSwitcherLoading: false,
-  tabSwitcherCommitPending: false,
+  tabSwitcher: null,
   glance: null,
   media: [],
   readAloud: [],
@@ -904,6 +989,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   bookmarks: { bookmarks: [] },
   bookmarksLoaded: false,
   bookmarksFocus: null,
+  watchtowerFocus: null,
   bookmarkToast: null,
   onboardingOpen: false,
   onboardingReplay: false,
@@ -936,7 +1022,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => {
         const snapshot = mergeTabs(state.snapshot, tabs);
         if (snapshot === state.snapshot) return {};
-        return { snapshot, recents: recordSnapshot(state.recents, snapshot, state.snapshot, state.settings) };
+        return {
+          snapshot,
+          recents: recordSnapshot(state.recents, snapshot, state.snapshot, state.settings),
+          // The agent took a home tab's chat off the home page: the pane
+          // no longer draws it, and the sidebar picks the conversation up.
+          ...(homeChatLeftHome(state.snapshot, snapshot, state.homeChats) ? { consoleOpen: true } : {}),
+        };
       }),
     );
     const offRun = shellApi().onRun((run) =>
@@ -1076,6 +1168,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openBookmarks: (bookmarkId) =>
     set({ overlay: "bookmarks", bookmarksFocus: bookmarkId ?? null, urlBarTabId: null, urlBarNew: false }),
   closeBookmarks: () => set((state) => (state.overlay === "bookmarks" ? { overlay: "none", bookmarksFocus: null } : {})),
+  openWatchtower: (entityId) =>
+    set({ overlay: "watchtower", watchtowerFocus: entityId ?? null, urlBarTabId: null, urlBarNew: false }),
   closePage: () =>
     set((state) => (isPageOverlay(state.overlay) ? { overlay: "none", remindersFocus: null, bookmarksFocus: null } : {})),
   toggleBookmarks: () =>
@@ -1189,6 +1283,65 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ consoleOpen: opening });
   },
   setConsoleOpen: (open) => set({ consoleOpen: open }),
+  askHome: async (tabKey, prompt) => {
+    const question = prompt.trim();
+    if (question === "") return false;
+    const before = get().snapshot?.run ?? null;
+    // A run the agent is acting on belongs to whoever is watching it; a
+    // question typed into a new tab is not a steer of it.
+    if (before !== null && agentIsActing(before) && get().homeChats[tabKey]?.runId !== before.runId) return false;
+    let key = tabKey;
+    if (tabKey === TABLESS_HOME_KEY) {
+      // A conversation needs a tab to belong to: the window gets its home
+      // tab, and the snapshot that names it arrives before the reply does.
+      await get().createTab(HOME_PAGE_URL);
+      key = get().snapshot?.activeTabId ?? tabKey;
+    }
+    set((state) => ({ homeChats: { ...state.homeChats, [key]: { runId: null, prompt: question } } }));
+    // Main's `start` continues an open thread; a question from the home
+    // page is a new one, so any open thread is set aside first.
+    if (before !== null) await get().newThread();
+    void get().startDelegation(question, [], { page: false });
+    // The run exists as soon as main publishes it, long before the turn
+    // ends (which is when `startDelegation` settles): bind the tab to it
+    // then, or give the page back if nothing arrives.
+    await new Promise<void>((resolve) => {
+      const done = (): void => {
+        unsubscribe();
+        window.clearTimeout(timer);
+        resolve();
+      };
+      const check = (): void => {
+        const state = get();
+        const run = state.snapshot?.run ?? null;
+        const chat = state.homeChats[key];
+        if (chat === undefined || chat.runId !== null) return done();
+        // The new run, not the one set aside: another run's clock is not this device's, so identity, not time.
+        if (run === null || run.runId === before?.runId || run.purpose !== question) return;
+        set({ homeChats: { ...state.homeChats, [key]: { runId: run.runId, prompt: question } } });
+        done();
+      };
+      const unsubscribe = useAppStore.subscribe(check);
+      const timer = window.setTimeout(() => {
+        set((state) => {
+          if (state.homeChats[key]?.runId !== null) return {};
+          const homeChats = { ...state.homeChats };
+          delete homeChats[key];
+          return { homeChats };
+        });
+        done();
+      }, ASK_HOME_TIMEOUT_MS);
+      check();
+    });
+    return true;
+  },
+  closeHomeChat: (tabKey) =>
+    set((state) => {
+      if (!(tabKey in state.homeChats)) return {};
+      const homeChats = { ...state.homeChats };
+      delete homeChats[tabKey];
+      return { homeChats };
+    }),
   receiveChatInsert: (insert) =>
     set((state) => ({
       consoleOpen: true,
@@ -1268,79 +1421,107 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ error: error instanceof Error ? error.message : String(error) });
     }
   },
-  async stepTabSwitcher(reverse) {
-    const delta = reverse ? -1 : 1;
-    if (get().overlay === "tab-switcher") {
-      set((state) => ({ tabSwitcherOffset: state.tabSwitcherOffset + delta }));
+  async openTabSwitcher(modifier, step, limit) {
+    const current = get().tabSwitcher;
+    // The same gesture moves along. One that has ended is only landing:
+    // this is the next gesture, and it gets a run of its own.
+    if (current !== null && !current.finishing) {
+      if (step !== 0) get().stepTabSwitcher(step < 0);
       return;
     }
-    const request = ++tabSwitcherLoadRequest;
+    // The wizard is the whole window; there are no tabs to switch to yet.
+    if (get().onboardingOpen) return;
+    clearTabSwitcherReveal();
+    const serial = ++tabSwitcherSerial;
+    const reveal = () => {
+      tabSwitcherRevealTimer = null;
+      const session = get().tabSwitcher;
+      if (session?.serial !== serial || session.finishing) return;
+      set({ tabSwitcher: { ...session, revealed: true }, overlay: "tab-switcher", urlBarTabId: null, urlBarNew: false });
+    };
+    // A quick flip before this one may still be selecting its tab: these
+    // cards follow it, so card 0 is the tab it lands on.
+    const cards = tabSwitcherLanding.then(() => shellApi().getTabSwitcherPreviews(limit));
     set({
-      overlay: "tab-switcher",
-      urlBarTabId: null,
-      urlBarNew: false,
-      tabSwitcherPreviews: [],
-      tabSwitcherOffset: delta,
-      tabSwitcherLoading: true,
-      tabSwitcherCommitPending: false,
+      tabSwitcher: { serial, modifier, cards, previews: [], offset: step, loading: true, revealed: false, finishing: false },
     });
+    // Held on purpose: show it now. ⌃Tab: give a quick flip its grace.
+    if (step === 0) reveal();
+    else tabSwitcherRevealTimer = setTimeout(reveal, TAB_SWITCHER_REVEAL_MS);
     try {
-      const previews = await shellApi().getTabSwitcherPreviews();
-      if (request !== tabSwitcherLoadRequest || get().overlay !== "tab-switcher") return;
+      const previews = await cards;
+      const session = get().tabSwitcher;
+      // Ended while loading: the ending takes the cards from here.
+      if (session?.serial !== serial || session.finishing) return;
       if (previews.length < 2) {
-        set({
-          overlay: "none",
-          tabSwitcherPreviews: [],
-          tabSwitcherOffset: 0,
-          tabSwitcherLoading: false,
-          tabSwitcherCommitPending: false,
-        });
+        void get().finishTabSwitcher(false);
         return;
       }
-      const commitPending = get().tabSwitcherCommitPending;
-      set({ tabSwitcherPreviews: previews, tabSwitcherLoading: false });
-      if (commitPending) void get().finishTabSwitcher(true);
+      set({ tabSwitcher: { ...session, previews, loading: false } });
     } catch (error: unknown) {
-      if (request !== tabSwitcherLoadRequest) return;
-      set({
-        overlay: "none",
-        tabSwitcherPreviews: [],
-        tabSwitcherLoading: false,
-        tabSwitcherCommitPending: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const session = get().tabSwitcher;
+      if (session?.serial !== serial || session.finishing) return;
+      set({ error: error instanceof Error ? error.message : String(error) });
+      void get().finishTabSwitcher(false);
     }
+  },
+  stepTabSwitcher(reverse) {
+    const session = get().tabSwitcher;
+    if (session === null || session.finishing) return;
+    set({ tabSwitcher: { ...session, offset: session.offset + (reverse ? -1 : 1) } });
+  },
+  moveTabSwitcher(direction, columns) {
+    const session = get().tabSwitcher;
+    if (session === null || session.loading || session.finishing) return;
+    const count = session.previews.length;
+    const index = tabSwitcherMove(tabSwitcherIndex(session.offset, count), direction, count, columns);
+    set({ tabSwitcher: { ...session, offset: index } });
   },
   async finishTabSwitcher(commit, tabId) {
-    const state = get();
-    if (state.overlay !== "tab-switcher") return;
-    if (commit && state.tabSwitcherLoading) {
-      set({ tabSwitcherCommitPending: true });
-      return;
+    const session = get().tabSwitcher;
+    // Main and the document can both see one release; the first one ends it.
+    if (session === null || session.finishing) return;
+    // Ended within a quick flip's grace: it stays unseen however long it takes to land.
+    clearTabSwitcherReveal();
+    set({ tabSwitcher: { ...session, finishing: true } });
+    const previous = tabSwitcherLanding;
+    const landing = (async () => {
+      // Gestures land in order, so this one's cards were asked for (and
+      // the switcher is still up to cover them) before it comes down.
+      await previous;
+      if (!commit) return;
+      // Released before the cards came: they still say where the steps led.
+      const previews = session.loading ? await session.cards : session.previews;
+      const targetId = tabId ?? previews[tabSwitcherIndex(session.offset, previews.length)]?.tab.id ?? null;
+      // Keep the still and switcher up until main has selected the page;
+      // lowering then reveals the destination without one frame of the old tab.
+      if (targetId !== null && targetId !== get().snapshot?.activeTabId) await shellApi().selectTab(targetId);
+    })();
+    tabSwitcherLanding = landing.catch(() => undefined);
+    try {
+      await landing;
+    } catch (error: unknown) {
+      set({ error: error instanceof Error ? error.message : String(error) });
     }
-    const selected = state.tabSwitcherPreviews[tabSwitcherIndex(state.tabSwitcherOffset, state.tabSwitcherPreviews.length)];
-    const targetId = tabId ?? selected?.tab.id ?? null;
-    ++tabSwitcherLoadRequest;
-    if (commit && targetId !== null) {
-      try {
-        // Keep the still and switcher up until main has selected the page;
-        // lowering then reveals the destination without one frame of the old tab.
-        await shellApi().selectTab(targetId);
-      } catch (error: unknown) {
-        set({ error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-    if (get().overlay === "tab-switcher") {
-      set({
-        overlay: "none",
-        tabSwitcherPreviews: [],
-        tabSwitcherOffset: 0,
-        tabSwitcherLoading: false,
-        tabSwitcherCommitPending: false,
-      });
-    }
+    // The next gesture may have opened meanwhile; it is not this one's to close.
+    if (get().tabSwitcher?.serial !== session.serial) return;
+    set((state) => ({ tabSwitcher: null, ...(state.overlay === "tab-switcher" ? { overlay: "none" as const } : {}) }));
   },
-  setTabSwitcherIndex: (tabSwitcherOffset) => set({ tabSwitcherOffset }),
+  setTabSwitcherIndex: (index) =>
+    set((state) =>
+      state.tabSwitcher === null || state.tabSwitcher.finishing ? {} : { tabSwitcher: { ...state.tabSwitcher, offset: index } },
+    ),
+  setTabSwitcherThumbnail: ({ tabId, dataUrl }) =>
+    set((state) => {
+      const session = state.tabSwitcher;
+      if (session === null || !session.previews.some((preview) => preview.tab.id === tabId && preview.dataUrl !== dataUrl)) return {};
+      return {
+        tabSwitcher: {
+          ...session,
+          previews: session.previews.map((preview) => (preview.tab.id === tabId ? { ...preview, dataUrl } : preview)),
+        },
+      };
+    }),
   setGlanceClosing: (glanceClosing) => set({ glanceClosing }),
   setGlanceStaged: (glanceStaged) => set({ glanceStaged }),
   async prepareGlanceClose() {

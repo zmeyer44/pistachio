@@ -92,10 +92,12 @@ test("the chosen web and AI search providers drive the suggestions of the addres
     const homeWeb = homeResults.locator('[data-suggestion-kind="search"]');
     const homeAi = homeResults.locator('[data-suggestion-kind="ai"]');
     await expect(homeWeb).toContainText(`Search Google for “${query}”`);
-    await expect(homeAi).toContainText(`Ask ChatGPT “${query}”`);
-    // Each row is drawn with its provider's own logo, not a generic glyph.
+    // The home page answers a question itself (shell-ui components/home/HomeChat.tsx):
+    // its AI row names Pistachio, whichever assistant Settings chose for the address bar.
+    await expect(homeAi).toContainText(`Ask Pistachio “${query}”`);
+    // The web row is drawn with its provider's own logo, not a generic glyph; the AI row wears the brand mark.
     await expect(homeWeb.locator('svg[data-provider-logo="google"]')).toBeVisible();
-    await expect(homeAi.locator('svg[data-provider-logo="chatgpt"]')).toBeVisible();
+    await expect(homeAi.locator("svg[data-provider-logo]")).toHaveCount(0);
     await captureShell(app, "01-home-default-suggestions.png");
     await homeInput.fill("");
 
@@ -154,28 +156,19 @@ test("the chosen web and AI search providers drive the suggestions of the addres
     await homeInput.click();
     await homeInput.fill(query);
     await expect(homeWeb).toContainText(`Search DuckDuckGo for “${query}”`);
-    await expect(homeAi).toContainText(`Ask Claude “${query}”`);
+    await expect(homeAi).toContainText(`Ask Pistachio “${query}”`);
     await expect(homeWeb.locator('svg[data-provider-logo="duckduckgo"]')).toBeVisible();
-    await expect(homeAi.locator('svg[data-provider-logo="claude"]')).toBeVisible();
     await captureShell(app, "05-home-chosen-suggestions.png");
 
     // A typed address still goes first there; both searches stay beneath it, logos and all.
     await homeInput.fill("github.com");
     await expect(homeResults.locator('[data-suggestion-kind="navigate"]')).toHaveAttribute("data-index", "0");
     await expect(homeWeb).toContainText("Search DuckDuckGo for “github.com”");
-    await expect(homeAi).toContainText("Ask Claude “github.com”");
+    await expect(homeAi).toContainText("Ask Pistachio “github.com”");
     await expect(homeWeb.locator('svg[data-provider-logo="duckduckgo"]')).toBeVisible();
-    await expect(homeAi.locator('svg[data-provider-logo="claude"]')).toBeVisible();
     await captureShell(app, "06-home-address-with-searches.png");
-
-    // One ↓ from the web search reaches the AI row; ↵ hands the words to the assistant.
-    await homeInput.fill(query);
-    await expect(homeWeb).toHaveAttribute("data-index", "0");
-    await shell.keyboard.press("ArrowDown");
-    await expect(homeAi).toHaveClass(/bg-alpha-200/);
-    await shell.keyboard.press("Enter");
-    // The assistant may bounce a signed-out visitor to its login; the host is what this proves.
-    await expect.poll(async () => new URL((await activeUrl(shell)) ?? "about:blank").hostname).toBe("claude.ai");
+    // (↵ on the home page's AI row is the chat's own journey: e2e/tests/home-chat.spec.ts.)
+    await homeInput.fill("");
 
     // ── The address bar (⌘L) offers the same pair ───────────────────────────
     const results = shell.getByTestId("command-results");

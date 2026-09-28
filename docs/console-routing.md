@@ -227,6 +227,10 @@ A hand-off happens at most once per turn: the browse path has no
 - Hand-off: "Switching to the browser · <the model's reason>", then the
   usual trace.
 - Browse path: exactly as before.
+- On either path the reply streams: what the model is thinking, then its
+  words a few at a time, rendered as Markdown with the pages it read as
+  sources — in the console and, for a question asked from a new tab, on
+  the home page itself (docs/home-chat.md).
 
 ### 7.1 The reply's footer
 

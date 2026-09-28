@@ -22,7 +22,8 @@
     "./testing": "./src/testing/browser-backend-contract.ts",
     "./watchtower": "./src/views/watchtower.ts",
     "./watchtower-rerank": "./src/watchtower-rerank.ts",
-    "./watchtower-filter": "./src/watchtower-filter.ts"
+    "./watchtower-filter": "./src/watchtower-filter.ts",
+    "./watchtower-entities": "./src/watchtower-entities.ts"
   },
   "scripts": {
     "check-types": "tsc --noEmit",

@@ -4,15 +4,15 @@
  * come from the signed, notarized DMG that was uploaded.
  */
 export const release = {
-  version: "0.0.20",
+  version: "0.0.21",
   channel: "Early preview",
-  publishedAt: "2026-09-24",
+  publishedAt: "2026-09-28",
   platform: "macOS",
   arch: "Apple silicon",
   minimumOs: "macOS 12 Monterey",
-  file: "Pistachio-0.0.20-arm64.dmg",
-  bytes: 130_581_940,
-  sha256: "13eca5d6673b8df2acc0d6bc263f3ad2908f754651683275535deff5028776b1",
+  file: "Pistachio-0.0.21-arm64.dmg",
+  bytes: 130_784_422,
+  sha256: "57b0112f26d47f349f586824b0556149955c747d633cd132feaf10409aa4bb19",
 } as const;
 
 /** Public R2 bucket (harbor-public) where release DMGs are uploaded. */

@@ -15,6 +15,7 @@ import {
   type SplitLayoutNode,
 } from "../lib/split-layout";
 import { useSettingsCoversConsole } from "../lib/settings-fit";
+import { useDeskStore } from "../lib/desk/store";
 import { displayHost } from "../lib/url";
 import { useAppStore, type AppState } from "../store";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
@@ -48,6 +49,8 @@ const LiveViewPage = lazy(() => import("./LiveViewPage").then((m) => ({ default:
 // the markdown parser — so that chunk arrives the first time a note is opened
 // and never when a web page is.
 const NotesPage = lazy(() => import("./notes/NotesPage").then((m) => ({ default: m.NotesPage })));
+// The desk is an experiment opened from a tab group, never on the first frame.
+const DeskSurface = lazy(() => import("./desk/DeskSurface"));
 
 /**
  * The page area: the browser surface with the settings page over it. Both
@@ -61,6 +64,7 @@ export function ContentArea() {
   const archiveOpen = useAppStore((state) => state.overlay === "archive");
   const spaceId = useAppStore((state) => state.snapshot?.activeSpaceId);
   const bookmarksOpen = useAppStore((state) => state.overlay === "bookmarks");
+  const nativeSurface = useSurface().kind === "native";
   const siteControlsOpen = useAppStore((state) => state.overlay === "site");
   const permissionPromptOpen = useAppStore((state) => state.overlay === "permission");
   const spaceForkOpen = useAppStore((state) => state.overlay === "space-fork");
@@ -88,7 +92,8 @@ export function ContentArea() {
       {remindersOpen ? <SurfacePage leading={leading}><RemindersPage /></SurfacePage> : null}
       {watchtowerOpen ? <SurfacePage leading={leading}><WatchtowerPage key={spaceId} /></SurfacePage> : null}
       {archiveOpen ? <SurfacePage leading={leading}><ArchivePage key={spaceId} /></SurfacePage> : null}
-      {bookmarksOpen ? <SurfacePage leading={leading}><BookmarksPage /></SurfacePage> : null}
+      {/* On the desktop a save is a Watchtower save: the library is its Saved view. */}
+      {bookmarksOpen ? <SurfacePage leading={leading}>{nativeSurface ? <WatchtowerPage key={spaceId} initialView="saved" /> : <BookmarksPage />}</SurfacePage> : null}
       {siteControlsOpen ? <SurfacePage leading={leading}><SiteControlsPanel /></SurfacePage> : null}
       {/* A site's request is a small dialog over the page's still, not a
           page of its own: the page stays in view and is back untouched
@@ -167,6 +172,17 @@ function SurfacePage({
  * once per event.
  */
 export function BrowserSurface() {
+  const deskGroupId = useDeskStore((state) => state.groupId);
+  const native = useSurface().kind === "native";
+  // A tab group's desk takes the surface's place while it is up: same box,
+  // same gutter, its own windows over it (components/desk). Keyed by the
+  // group, so another group's desk is a fresh one.
+  if (deskGroupId !== null && native)
+    return (
+      <Suspense fallback={null}>
+        <DeskSurface key={deskGroupId} groupId={deskGroupId} />
+      </Suspense>
+    );
   return <BrowserSurfaceImpl />;
 }
 

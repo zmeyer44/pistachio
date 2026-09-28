@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ModelMessage } from "ai";
+import { simulateReadableStream, type ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { verifyEvidenceEntries } from "@pistachio/evidence";
 import { NotificationRouter, type NotificationAdapter, type NotificationMessage } from "@pistachio/notifications";
@@ -247,6 +247,8 @@ function scratch(): string {
 
 function build(options: {
   model: MockLanguageModelV4;
+  /** The turn streams its reply (AgentDraft); off unless the model scripts a stream. */
+  stream?: boolean;
   browser?: ReturnType<typeof fakeBrowser>;
   threads?: ThreadStore;
   dir?: string;
@@ -262,6 +264,8 @@ function build(options: {
   artifactWebUrl?: () => string | null;
   /** The router's opinion of every new request; absent, nothing is asked and every turn is browser work. */
   router?: TurnRouter;
+  /** Sees every publish, with the controller as it is at that moment. */
+  observe?: (controller: RunController) => void;
 }) {
   const dir = options.dir ?? scratch();
   const threads = options.threads ?? new ThreadStore(dir);
@@ -269,6 +273,7 @@ function build(options: {
   const statuses: Array<TaskStatus | null> = [];
   const onChange = vi.fn(() => {
     statuses.push(controller.snapshot()?.status ?? null);
+    options.observe?.(controller);
   });
   const controller = new RunController({
     browser: browser as unknown as BrowserController,
@@ -282,6 +287,7 @@ function build(options: {
     ...(options.onRunEnded === undefined ? {} : { onRunEnded: options.onRunEnded }),
     ...(options.router === undefined ? {} : { router: options.router }),
     model: () => options.model,
+    ...(options.stream === undefined ? {} : { stream: options.stream }),
     summarize: options.summarize ?? (async () => "SUMMARY: earlier steps"),
     limits: options.limits ?? { stepsPerCall: 40, continuations: 5 },
     budget: options.budget ?? { window: 200_000, compactAt: 100_000 },
@@ -1227,6 +1233,47 @@ describe("Watchtower agent retrieval", () => {
     expect(controller.snapshot()?.toolCalls.at(-1)?.status).toBe("failed");
     expect(controller.evidence().some((entry) => entry.type === "watchtower.action")).toBe(true);
   });
+
+  it("looks up what saved pages are about by entry, with each fact's source, in the run's Space", async () => {
+    const requests: { spaceId: string; request: { type: string } }[] = [];
+    const hit = (observationId: string, url: string) => ({ observationId, visitId: "v", pageId: 1, snapshotId: 1, url, title: "Stripe raises $6.5B", kind: "article", visitedAt: Date.UTC(2026, 8, 12), capturedAt: 0, coverage: "complete", snippet: "" });
+    const watchtower = {
+      settings: () => ({ agentAccess: true }),
+      agentAvailable: () => true,
+      request: async (spaceId: string, request: { type: string }) => {
+        requests.push({ spaceId, request });
+        if (request.type === "entities")
+          return { index: { counts: { company: 1 }, pending: 0, entities: [{ id: 5, kind: "company", name: "Stripe", aliases: ["Stripe", "Stripe, Inc."], pageCount: 2, siteCount: 2, factCount: 1, firstSeen: Date.UTC(2026, 8, 1), lastSeen: Date.UTC(2026, 8, 12) }] } };
+        return {
+          entity: {
+            id: 5, kind: "company", name: "Stripe", aliases: ["Stripe"], pageCount: 2, siteCount: 2, factCount: 1, firstSeen: 0, lastSeen: 0,
+            facts: [{ kind: "metric", text: "Stripe processed $1.4 trillion in 2024.", source: hit("saved-one", `https://techcrunch.example/${"q".repeat(900)}`) }],
+            mentions: [{ source: hit("saved-two", "https://stripe.example/"), context: "Stripe is a payments company.", salience: 1 }],
+            sites: [{ host: "techcrunch.example", pages: 1 }], related: [{ id: 6, kind: "person", name: "Patrick Collison" }], similar: [],
+          },
+        };
+      },
+    } as unknown as import("../src/main/watchtower/service").WatchtowerService;
+    const { model } = scriptedModel([
+      calls({ name: "watchtower_index", input: { query: "stripe", kind: "company" } }),
+      calls({ name: "watchtower_entity", input: { entityId: 5 } }),
+      answer("TechCrunch said Stripe processed $1.4 trillion."),
+    ]);
+    const { controller } = build({ model, watchtower });
+    await controller.start("What have I read about Stripe's volume?");
+    expect(requests.map(({ spaceId, request }) => [spaceId, request.type])).toEqual([["work", "entities"], ["work", "entity"]]);
+    expect(requests[0]!.request).toMatchObject({ query: "stripe", kind: "company" });
+    const index = JSON.stringify(toolResultsIn(model.doGenerateCalls[1]!.prompt));
+    expect(index).toContain('"entityId":5');
+    expect(index).toContain('"alsoWritten":["Stripe, Inc."]');
+    expect(index).toContain('"lastSeen":"2026-09-12"');
+    const entity = JSON.stringify(toolResultsIn(model.doGenerateCalls[2]!.prompt));
+    expect(entity).toContain("Stripe processed $1.4 trillion in 2024.");
+    expect(entity).toContain('"observationId":"saved-one"');
+    expect(entity).toContain("untrusted");
+    // A saved address is recognizable, not replayed in full.
+    expect(entity).not.toContain("q".repeat(600));
+  });
 });
 
 /* --------------------------- the person's notes --------------------------- */
@@ -1640,5 +1687,135 @@ describe("retrying a turn", () => {
     second.controller.interrupt();
     blocked.resolve(page());
     await started;
+  });
+});
+
+/* ---------------------------- a streamed reply --------------------------- */
+
+/** What a provider's stream carries, read off the mock so the test needs no provider package of its own. */
+type StreamPart = Awaited<ReturnType<MockLanguageModelV4["doStream"]>>["stream"] extends ReadableStream<infer T> ? T : never;
+
+/** One streamed step: its reasoning and words, then the calls it ends on, as a provider would send them. */
+function streamedStep(options: { reasoning?: string[]; text?: string[]; calls?: Array<{ name: string; input: Record<string, unknown> }> }): StreamPart[] {
+  const parts: StreamPart[] = [{ type: "stream-start", warnings: [] }];
+  if (options.reasoning !== undefined) {
+    parts.push({ type: "reasoning-start", id: "r" });
+    for (const delta of options.reasoning) parts.push({ type: "reasoning-delta", id: "r", delta });
+    parts.push({ type: "reasoning-end", id: "r" });
+  }
+  if (options.text !== undefined) {
+    parts.push({ type: "text-start", id: "t" });
+    for (const delta of options.text) parts.push({ type: "text-delta", id: "t", delta });
+    parts.push({ type: "text-end", id: "t" });
+  }
+  for (const request of options.calls ?? []) {
+    parts.push({ type: "tool-call", toolCallId: `call-${String(++nextCallId)}`, toolName: request.name, input: JSON.stringify(request.input) });
+  }
+  parts.push({
+    type: "finish",
+    finishReason: { unified: options.calls === undefined || options.calls.length === 0 ? "stop" : "tool-calls", raw: "end" },
+    usage: {
+      inputTokens: { total: 4_000, noCache: 4_000, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 20, text: 20, reasoning: undefined },
+    },
+  });
+  return parts;
+}
+
+describe("a streamed reply", () => {
+  it("publishes the reply as a draft while it is written, then keeps it as Markdown with what the model thought", async () => {
+    const steps = [
+      streamedStep({ reasoning: ["Read the ", "invoice first."], calls: [{ name: "page_inspect", input: { tabId: "tab-1" } }] }),
+      streamedStep({ reasoning: ["It says $120."], text: ["The total is ", "**$120**", " ([Invoice](https://finance.example/invoices/1))."] }),
+    ];
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        const chunks = steps.shift();
+        if (chunks === undefined) throw new Error("script exhausted");
+        // A real provider's words arrive over time; the draft goes out between them.
+        return { stream: simulateReadableStream({ chunks, chunkDelayInMs: 30 }) };
+      },
+    });
+    // Every publish that carries a draft is kept: the reply as the shell saw it being written.
+    const drafts: Array<NonNullable<RunSummary["draft"]>> = [];
+    const { controller } = build({
+      model,
+      stream: true,
+      observe: (live) => {
+        const draft = live.peek()?.draft;
+        if (draft !== undefined) drafts.push(structuredClone(draft));
+      },
+    });
+
+    await controller.start("Check the invoice total");
+
+    // The draft was seen thinking, then writing — and only the final step's words were ever the reply.
+    expect(drafts.length).toBeGreaterThan(0);
+    expect(drafts.every((draft) => draft.turn === 1)).toBe(true);
+    expect(drafts.some((draft) => draft.thinking && draft.text === "" && draft.reasoning.startsWith("Read the"))).toBe(true);
+    expect(drafts.some((draft) => draft.reasoning === "Read the invoice first." && draft.text === "")).toBe(true);
+    const written = drafts.filter((draft) => draft.text !== "");
+    expect(written.length).toBeGreaterThan(0);
+    expect(written.every((draft) => !draft.thinking && draft.thinkingSince !== null && draft.thinkingMs !== null)).toBe(true);
+    expect(written.at(-1)?.text.startsWith("The total is ")).toBe(true);
+
+    const run = controller.snapshot()!;
+    expect(run.status).toBe("completed");
+    // The words are kept as the model wrote them — Markdown for the chat —
+    // and read plainly where they are only words.
+    expect(lastAssistant(run)).toBe("The total is **$120** ([Invoice](https://finance.example/invoices/1)).");
+    expect(run.result?.summary).toBe("The total is $120 (Invoice (https://finance.example/invoices/1)).");
+    const reply = run.messages.at(-1)!;
+    expect(reply.reasoning).toBe("Read the invoice first.It says $120.");
+    expect(reply.thinkingMs).toBeGreaterThanOrEqual(0);
+    // The page the turn read is a source on its call; nothing half-written survives the turn.
+    expect(run.toolCalls.find((tool) => tool.name === "page.inspect")?.source).toEqual({ url: "https://finance.example/invoices/1", title: "Invoice" });
+    expect(run.draft).toBeUndefined();
+    expect(controller.threads()).toHaveLength(1);
+  });
+
+  it("leaves the steered turn's draft alone when the request it replaced fails late", async () => {
+    const failReplaced = deferred<void>();
+    const finishSteered = deferred<void>();
+    let streams = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streams += 1;
+        if (streams === 1) {
+          // The replaced request pays no attention to the abort and fails
+          // only once the steered turn is already writing.
+          await failReplaced.promise;
+          throw new Error("socket hang up");
+        }
+        const chunks = streamedStep({ text: ["Here is ", "the new answer."] });
+        const finish = chunks.pop()!;
+        const stream = new ReadableStream<StreamPart>({
+          async start(controller) {
+            for (const chunk of chunks) controller.enqueue(chunk);
+            await finishSteered.promise;
+            controller.enqueue(finish);
+            controller.close();
+          },
+        });
+        return { stream };
+      },
+    });
+    const { controller } = build({ model, stream: true });
+
+    const first = controller.start("Check the invoice total");
+    await vi.waitFor(() => expect(streams).toBe(1));
+    const steered = controller.message("Actually, just the date");
+    await vi.waitFor(() => expect(controller.peek()?.draft?.text).toBe("Here is the new answer."));
+
+    failReplaced.resolve();
+    await first;
+    // The failure belonged to a turn that no longer exists: the reply being written is untouched.
+    expect(controller.peek()?.draft?.text).toBe("Here is the new answer.");
+    expect(controller.snapshot()?.status).toBe("running");
+
+    finishSteered.resolve();
+    await steered;
+    expect(controller.snapshot()?.status).toBe("completed");
+    expect(lastAssistant(controller.snapshot()!)).toBe("Here is the new answer.");
   });
 });

@@ -1,7 +1,8 @@
 /**
  * The address field shows where the active row goes (shell-ui's
  * lib/use-field-preview.ts), in the home page's search and the address modal
- * alike: ↑/↓ commit to the row's text, the pointer only looks.
+ * alike, and the next key edits that row's text — reached by ↑/↓ or by the
+ * pointer. A pointer that leaves before a key lands was only looking.
  */
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -127,8 +128,8 @@ test("the address field shows the active row's text, from the arrows and from th
     await expect(homeInput).toHaveValue(`${fixtureUrl}?x`);
     await expect(homeResults.locator('[data-suggestion-kind="navigate"]')).toBeVisible();
 
-    // The pointer only looks: the field shows the row under it, puts the typed
-    // text back when it leaves the list…
+    // The pointer shows the row under it, and puts the typed text back when it
+    // leaves the list without a key having landed…
     await homeInput.fill("Fixture");
     await expect(homeTabRow).toBeVisible();
     await homeTabRow.hover();
@@ -136,11 +137,23 @@ test("the address field shows the active row's text, from the arrows and from th
     await captureShell(app, shell, "02-home-hover-preview.png");
     await homeInput.hover();
     await expect(homeInput).toHaveValue("Fixture");
-    // …and typing over a look continues what was typed, not the row's address.
+    // …but a key over a hovered row edits the row's text, which stays when the pointer leaves.
     await homeTabRow.hover();
     await expect(homeInput).toHaveValue(fixtureUrl);
-    await shell.keyboard.type("s");
-    await expect(homeInput).toHaveValue("Fixtures");
+    await shell.keyboard.press("Backspace");
+    await expect(homeInput).toHaveValue(fixtureUrl.slice(0, -1));
+    await shell.keyboard.type("x");
+    await expect(homeInput).toHaveValue(`${fixtureUrl.slice(0, -1)}x`);
+    await homeInput.hover();
+    await expect(homeInput).toHaveValue(`${fixtureUrl.slice(0, -1)}x`);
+    // A key that only moves the caret takes the row's text as well.
+    await homeInput.fill("Fixture");
+    await expect(homeTabRow).toBeVisible();
+    await homeTabRow.hover();
+    await expect(homeInput).toHaveValue(fixtureUrl);
+    await shell.keyboard.press("ArrowLeft");
+    await homeInput.hover();
+    await expect(homeInput).toHaveValue(fixtureUrl);
     await shell.keyboard.press("Escape");
     await expect(homeInput).toHaveValue("");
     await shell.keyboard.press("Escape");
@@ -165,8 +178,8 @@ test("the address field shows the active row's text, from the arrows and from th
     await shell.keyboard.press("Escape");
     await expect(modal).toHaveCount(0);
 
-    // Over a page the field opens holding its address, selected. A pointer
-    // that strays onto a row must not cost that: typing still replaces it.
+    // Over a page the field opens holding its address, selected. Hovering a
+    // row shows its address instead, and typing continues that address.
     await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), fixtureId);
     await shell.keyboard.press("Meta+L");
     await expect(address).toBeFocused();
@@ -176,18 +189,25 @@ test("the address field shows the active row's text, from the arrows and from th
     await expect(homeTabInModal).toBeVisible();
     await homeTabInModal.hover();
     await expect(address).not.toHaveValue(fixtureUrl);
+    const homeTabText = await address.inputValue();
     await captureShell(app, shell, "04-modal-hover-preview.png");
     await shell.keyboard.type("abc");
-    await expect(address).toHaveValue("abc");
+    await expect(address).toHaveValue(`${homeTabText}abc`);
 
-    // The typed face looks and lets go the same way.
+    // The typed face looks, lets go, and hands over its text the same way.
     const typedHomeRow = modal.getByTestId("command-results").locator(`[data-tab-id="${homeId}"]`);
     await address.fill("Home");
     await expect(typedHomeRow).toBeVisible();
     await typedHomeRow.hover();
-    await expect(address).not.toHaveValue("Home");
+    await expect(address).toHaveValue(homeTabText);
     await address.hover();
     await expect(address).toHaveValue("Home");
+    await typedHomeRow.hover();
+    await expect(address).toHaveValue(homeTabText);
+    await shell.keyboard.press("Backspace");
+    await expect(address).toHaveValue(homeTabText.slice(0, -1));
+    await address.hover();
+    await expect(address).toHaveValue(homeTabText.slice(0, -1));
     await shell.keyboard.press("Escape");
     await expect(modal).toHaveCount(0);
   } finally {

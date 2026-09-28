@@ -1,0 +1,33 @@
+{
+  "bgm": { "path": "assets/audio/bgm.wav", "volume": 0.85 },
+  "voices": [],
+  "sfx": [
+    { "frame": 1, "file": "assets/sfx/key-press.mp3", "offset_s": 0.0, "duration_s": 0.4, "volume": 0.35 },
+    { "frame": 1, "file": "assets/sfx/key-press.mp3", "offset_s": 1.0, "duration_s": 0.4, "volume": 0.35 },
+    { "frame": 1, "file": "assets/sfx/key-press.mp3", "offset_s": 2.0, "duration_s": 0.4, "volume": 0.35 },
+    { "frame": 1, "file": "assets/sfx/whoosh-short.mp3", "offset_s": 3.45, "duration_s": 0.57, "volume": 0.25 },
+    { "frame": 2, "file": "assets/sfx/impact-bass-1.mp3", "offset_s": 0.0, "duration_s": 2.1, "volume": 0.3 },
+    { "frame": 2, "file": "assets/sfx/pop.mp3", "offset_s": 0.5, "duration_s": 0.72, "volume": 0.22 },
+    { "frame": 3, "file": "assets/sfx/click.mp3", "offset_s": 1.6, "duration_s": 0.37, "volume": 0.3 },
+    { "frame": 3, "file": "assets/sfx/typing.mp3", "offset_s": 2.5, "duration_s": 1.5, "volume": 0.2 },
+    { "frame": 3, "file": "assets/sfx/typing.mp3", "offset_s": 4.0, "duration_s": 1.4, "volume": 0.2 },
+    { "frame": 3, "file": "assets/sfx/click.mp3", "offset_s": 5.5, "duration_s": 0.37, "volume": 0.3 },
+    { "frame": 3, "file": "assets/sfx/pop.mp3", "offset_s": 6.0, "duration_s": 0.72, "volume": 0.18 },
+    { "frame": 3, "file": "assets/sfx/pop.mp3", "offset_s": 8.5, "duration_s": 0.72, "volume": 0.18 },
+    { "frame": 3, "file": "assets/sfx/typing.mp3", "offset_s": 8.7, "duration_s": 1.5, "volume": 0.16 },
+    { "frame": 3, "file": "assets/sfx/pop.mp3", "offset_s": 11.0, "duration_s": 0.72, "volume": 0.18 },
+    { "frame": 3, "file": "assets/sfx/whoosh-short.mp3", "offset_s": 11.6, "duration_s": 0.57, "volume": 0.18 },
+    { "frame": 3, "file": "assets/sfx/chime.mp3", "offset_s": 12.2, "duration_s": 2.0, "volume": 0.14 },
+    { "frame": 4, "file": "assets/sfx/key-press.mp3", "offset_s": 0.0, "duration_s": 0.4, "volume": 0.3 },
+    { "frame": 4, "file": "assets/sfx/key-press.mp3", "offset_s": 1.0, "duration_s": 0.4, "volume": 0.3 },
+    { "frame": 4, "file": "assets/sfx/key-press.mp3", "offset_s": 2.0, "duration_s": 0.4, "volume": 0.3 },
+    { "frame": 4, "file": "assets/sfx/click-soft.mp3", "offset_s": 2.6, "duration_s": 0.37, "volume": 0.3 },
+    { "frame": 5, "file": "assets/sfx/whoosh-short.mp3", "offset_s": 1.95, "duration_s": 0.57, "volume": 0.2 },
+    { "frame": 5, "file": "assets/sfx/whoosh-short.mp3", "offset_s": 3.95, "duration_s": 0.57, "volume": 0.2 },
+    { "frame": 5, "file": "assets/sfx/whoosh-short.mp3", "offset_s": 5.95, "duration_s": 0.57, "volume": 0.2 },
+    { "frame": 5, "file": "assets/sfx/whoosh-short.mp3", "offset_s": 7.95, "duration_s": 0.57, "volume": 0.2 },
+    { "frame": 6, "file": "assets/sfx/impact-bass-2.mp3", "offset_s": 0.0, "duration_s": 2.5, "volume": 0.2 },
+    { "frame": 7, "file": "assets/sfx/impact-bass-1.mp3", "offset_s": 0.0, "duration_s": 2.1, "volume": 0.3 },
+    { "frame": 7, "file": "assets/sfx/pop.mp3", "offset_s": 2.5, "duration_s": 0.72, "volume": 0.2 }
+  ]
+}

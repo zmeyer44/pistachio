@@ -1,0 +1,264 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:block;src:url("assets/fonts/InterVariable.woff2") format("woff2")}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-ba9851c3c22cd980-s.woff2") format("woff2");unicode-range:u+0460-052f,u+1c80-1c8a,u+20b4,u+2de0-2dff,u+a640-a69f,u+fe2e-fe2f}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-21350d82a1f187e9-s.woff2") format("woff2");unicode-range:u+0301,u+0400-045f,u+0490-0491,u+04b0-04b1,u+2116}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-c5fe6dc8356a8c31-s.woff2") format("woff2");unicode-range:u+1f??}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-19cfc7226ec3afaa-s.woff2") format("woff2");unicode-range:u+0370-0377,u+037a-037f,u+0384-038a,u+038c,u+038e-03a1,u+03a3-03ff}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-df0a9ae256c0569c-s.woff2") format("woff2");unicode-range:u+0102-0103,u+0110-0111,u+0128-0129,u+0168-0169,u+01a0-01a1,u+01af-01b0,u+0300-0301,u+0303-0304,u+0308-0309,u+0323,u+0329,u+1ea0-1ef9,u+20ab}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-8e9860b6e62d6359-s.woff2") format("woff2");unicode-range:u+0100-02ba,u+02bd-02c5,u+02c7-02cc,u+02ce-02d7,u+02dd-02ff,u+0304,u+0308,u+0329,u+1d00-1dbf,u+1e00-1e9f,u+1ef2-1eff,u+2020,u+20a0-20ab,u+20ad-20c0,u+2113,u+2c60-2c7f,u+a720-a7ff}
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      font-family: Inter, sans-serif;
+      color: #ffffff;
+    }
+    #root * { box-sizing: border-box; }
+
+    /* full-bleed pistachio field (lowest track) */
+    #o7-field {
+      position: absolute;
+      inset: 0;
+      background: #52A862;
+    }
+
+    /* everything that fades out at the very end */
+    #o7-stage {
+      position: absolute;
+      inset: 0;
+    }
+
+    /* ---- giant footer wordmark ---- */
+    #o7-wordmark {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 480px;          /* baseline lands ~78% down (see fit script) */
+      display: flex;
+      justify-content: center;
+    }
+    #o7-wordmark-line {
+      display: flex;
+      overflow: hidden;
+      padding: 0.04em 0.02em 0.06em;
+      font-size: 400px;
+      font-weight: 500;
+      line-height: 0.9;
+      letter-spacing: -0.05em;
+      white-space: nowrap;
+    }
+    .o7-ch {
+      display: inline-block;
+      will-change: transform;
+    }
+
+    /* ---- upper band: tagline left, CTA right ---- */
+    #o7-left {
+      position: absolute;
+      left: 110px;         /* re-aligned to the wordmark's left edge by the fit script */
+      top: 262px;
+      width: 1000px;
+    }
+    #o7-tagline {
+      font-size: 64px;
+      font-weight: 400;
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+      white-space: nowrap;
+    }
+    .o7-word {
+      display: inline-block;
+      margin-right: 0.24em;
+    }
+    .o7-word:last-child { margin-right: 0; }
+    #o7-note {
+      margin-top: 22px;
+      font-size: 28px;
+      font-weight: 400;
+      letter-spacing: -0.01em;
+      color: #FFFFFF;
+      white-space: nowrap;
+    }
+
+    #o7-right {
+      position: absolute;
+      right: 110px;        /* re-aligned to the wordmark's right edge by the fit script */
+      top: 250px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 26px;
+    }
+    #o7-press {
+      position: relative;
+    }
+    #o7-burst {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      border-radius: 8px;
+      background: radial-gradient(closest-side, rgba(15, 46, 22, 0.55), rgba(63, 143, 79, 0));
+      filter: blur(40px);
+      opacity: 0;
+    }
+    #o7-btn {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 30px 44px;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #3F8F4F;
+      font-size: 32px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+      transform-origin: 50% 50%;
+      box-shadow: 0 24px 48px -16px rgba(15, 46, 22, 0.40);
+    }
+    #o7-url-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    #o7-mark {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.55);
+      overflow: hidden;
+    }
+    #o7-mark img { display: block; width: 100%; height: 100%; }
+    #o7-url {
+      font-size: 30px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      color: #FFFFFF;
+    }
+  </style>
+
+  <div data-hf-id="hf-z5a7" id="root" data-composition-id="07-outro" data-start="0" data-duration="7" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-81si" id="o7-field" class="clip" data-start="0" data-duration="7" data-track-index="0"></div>
+
+    <div data-hf-id="hf-sdh1" id="o7-stage" class="clip" data-start="0" data-duration="7" data-track-index="1">
+      <div data-hf-id="hf-a177" id="o7-left">
+        <div data-hf-id="hf-yce6" id="o7-tagline">
+          <span data-hf-id="hf-m0df" class="o7-word">A</span><span data-hf-id="hf-e3h4" class="o7-word">browser</span><span data-hf-id="hf-qgxs" class="o7-word">built</span><span data-hf-id="hf-9jdr" class="o7-word">for</span><span data-hf-id="hf-5sdf" class="o7-word">tomorrow.</span>
+        </div>
+        <div data-hf-id="hf-0iop" id="o7-note">Early preview · macOS on Apple silicon</div>
+      </div>
+
+      <div data-hf-id="hf-mdry" id="o7-right">
+        <div data-hf-id="hf-9ov1" id="o7-press">
+          <div data-hf-id="hf-xtr6" id="o7-burst"></div>
+          <div data-hf-id="hf-iqqo" id="o7-btn"><span data-hf-id="hf-fpyh">Download for Mac</span><span data-hf-id="hf-p70p">→</span></div>
+        </div>
+        <div data-hf-id="hf-o4sg" id="o7-url-row">
+          <div data-hf-id="hf-1hp7" id="o7-mark"><img data-hf-id="hf-s1iq" src="assets/pistachio-mark.svg" alt=""></div>
+          <div data-hf-id="hf-rsg6" id="o7-url">pistachio.run</div>
+        </div>
+      </div>
+
+      <div data-hf-id="hf-arpv" id="o7-wordmark">
+        <div data-hf-id="hf-fjxe" id="o7-wordmark-line"><span data-hf-id="hf-uhyr" class="o7-ch">P</span><span data-hf-id="hf-y2q0" class="o7-ch">i</span><span data-hf-id="hf-6tgm" class="o7-ch">s</span><span data-hf-id="hf-5mjj" class="o7-ch">t</span><span data-hf-id="hf-1968" class="o7-ch">a</span><span data-hf-id="hf-0gk6" class="o7-ch">c</span><span data-hf-id="hf-xoez" class="o7-ch">h</span><span data-hf-id="hf-jmps" class="o7-ch">i</span><span data-hf-id="hf-vovu" class="o7-ch">o</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var FID = "07-outro";
+      var root = document.querySelector('[data-composition-id="' + FID + '"]');
+      var q = function (sel) { return root.querySelectorAll(sel); };
+      var one = function (sel) { return root.querySelector(sel); };
+
+      // Fit: keep the giant wordmark inside 1920 with >=96px margins, then align
+      // the tagline / CTA columns to its measured left / right ink edges.
+      // Deterministic (pure layout measurement); re-run once fonts settle.
+      var MAX_W = 1920 - 2 * 110;
+      function fit() {
+        var line = one("#o7-wordmark-line");
+        var size = 400;
+        line.style.fontSize = size + "px";
+        var w = line.scrollWidth;
+        if (w > MAX_W) {
+          size = Math.floor(size * MAX_W / w);
+          line.style.fontSize = size + "px";
+          w = line.scrollWidth;
+        }
+        // baseline ~78% down (842px): line box top = baseline - ascent-ish
+        one("#o7-wordmark").style.top = Math.round(842 - size * 0.86) + "px";
+        var first = q(".o7-ch")[0].getBoundingClientRect();
+        var rootBox = root.getBoundingClientRect();
+        var scale = rootBox.width / 1920 || 1;
+        var lineBox = line.getBoundingClientRect();
+        var leftInk = Math.round((first.left - rootBox.left) / scale + size * 0.07);
+        var rightInk = Math.round((rootBox.right - lineBox.right) / scale + size * 0.05);
+        one("#o7-left").style.left = Math.max(96, leftInk) + "px";
+        one("#o7-right").style.right = Math.max(96, rightInk) + "px";
+      }
+      fit();
+      if (document.fonts && document.fonts.ready) { document.fonts.ready.then(fit); }
+
+      var tl = gsap.timeline({ paused: true });
+
+      // Scene 1 (0.0–1.2): letters rise out of the clip mask, fast stagger, expo.out
+      tl.fromTo(q(".o7-ch"),
+        { yPercent: 115 },
+        { yPercent: 0, duration: 0.9, ease: "expo.out", stagger: 0.035 },
+        0.0);
+
+      // Scene 2 (1.5–2.5): tagline rises per word, blur-to-sharp
+      tl.fromTo(q(".o7-word"),
+        { y: 44, opacity: 0, filter: "blur(8px)" },
+        { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.7, ease: "power3.out", stagger: 0.08 },
+        1.5);
+
+      // Scene 3 (2.5–3.5): CTA arrives, then a subtle press-release spring settle
+      tl.fromTo("#o7-press",
+        { y: 28, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" },
+        2.5);
+      tl.fromTo("#o7-url-row",
+        { y: 20, opacity: 0, filter: "blur(6px)" },
+        { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.6, ease: "power3.out" },
+        2.6);
+      var PRESS_START = 2.85, PRESS_DUR = 0.14;
+      var RELEASE_START = PRESS_START + PRESS_DUR;
+      tl.fromTo("#o7-btn",
+        { scale: 1, boxShadow: "0 24px 48px -16px rgba(15,46,22,0.40)" },
+        { scale: 0.95, boxShadow: "0 8px 16px -8px rgba(15,46,22,0.45)", duration: PRESS_DUR, ease: "power1.in", immediateRender: false },
+        PRESS_START);
+      tl.to("#o7-btn",
+        { scale: 1, boxShadow: "0 24px 48px -16px rgba(15,46,22,0.40)", duration: 0.55, ease: "back.out(1.4)" },
+        RELEASE_START);
+      tl.fromTo("#o7-burst",
+        { scale: 1, opacity: 0 },
+        { scale: 2.2, opacity: 0.7, duration: 0.45, ease: "power2.out" },
+        RELEASE_START);
+      tl.to("#o7-burst", { opacity: 0, duration: 0.5, ease: "power2.in" }, RELEASE_START + 0.45);
+
+      // Scene 4 (3.2–6.4): small print fades in under the tagline, then hold
+      tl.fromTo("#o7-note",
+        { y: 16, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+        3.2);
+
+      // Scene 5 (6.4–7.0): final frame — everything clears to the green field
+      tl.to("#o7-stage", { opacity: 0, duration: 0.6, ease: "power2.inOut" }, 6.4);
+
+      // pad to the full duration
+      tl.set({}, {}, 7);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines[FID] = tl;
+    })();
+  </script>
+</template>

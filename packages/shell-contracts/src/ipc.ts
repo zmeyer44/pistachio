@@ -4,6 +4,7 @@ import type { WatchtowerRequest, WatchtowerResponse } from "./watchtower.js";
 import type { TabArchiveRequest, TabArchiveResponse } from "./tab-archive.js";
 import type { TabGroupCommand, TabGroupCommandResult, TabGroupInfo } from "./tab-groups.js";
 import type { TidyRequest, TidyResponse } from "./tidy.js";
+import type { TabSwitcherInput } from "./tab-switcher.js";
 import type { LiveFrame, LiveInput, LiveTabInfo } from "@pistachio/live-view";
 import type { EvidenceEntry } from "@pistachio/evidence";
 import type {
@@ -48,6 +49,7 @@ import type {
   ReminderSnapshot,
 } from "./reminders.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
+import type { DeskGrab, DeskState } from "./desk.js";
 import type {
   DragCursor,
   DragSample,
@@ -216,6 +218,12 @@ export interface ShellRunSnapshot {
 
 export interface BrowserLayout {
   views: Array<{ tabId: string; bounds: ContentBounds }>;
+  /**
+   * The views are listed bottom to top and may overlap (the desk,
+   * @pistachio/shell-contracts/desk): main stacks the live pages in that
+   * order. Panes never overlap, so the pane grid leaves it unset.
+   */
+  stacked?: boolean;
 }
 
 /** A background video's live native view, fitted into the sidebar player. */
@@ -236,17 +244,23 @@ export interface PaneStill {
   dataUrl: string;
 }
 
-/** A downsized live capture and its trusted, main-owned tab metadata. */
+/**
+ * One card of the tab switcher: trusted, main-owned tab metadata and the
+ * last thumbnail main holds for it (null until one is captured). Fresher
+ * captures follow as TabSwitcherThumbnail events while the switcher is open.
+ */
 export interface TabSwitcherPreview {
   tab: BrowserTabInfo;
   dataUrl: string | null;
 }
 
-/** Native Control–Tab lifecycle relayed to the shell, whichever view had focus. */
-export type TabSwitcherInput =
-  | { type: "step"; reverse: boolean }
-  | { type: "commit" }
-  | { type: "cancel" };
+/** A newer downsized capture of one tab the open switcher shows. */
+export interface TabSwitcherThumbnail {
+  tabId: string;
+  dataUrl: string;
+}
+
+export type { TabSwitcherInput } from "./tab-switcher.js";
 
 /** A link's box in its tab view, captured when the Glance gesture starts. */
 export interface GlanceOpenRequest {
@@ -791,9 +805,15 @@ export interface ShellApi {
   tabArchive(request: TabArchiveRequest): Promise<TabArchiveResponse>;
   /** Run Tidy now, take the last run back, or ask what it last did (docs/tab-tidy.md). */
   tidy(request: TidyRequest): Promise<TidyResponse>;
-  /** The current Space's five most recently visited tabs, newest first. */
-  getTabSwitcherPreviews(): Promise<TabSwitcherPreview[]>;
+  /**
+   * The current Space's most recently visited tabs, the active one first,
+   * at most `limit` (TAB_SWITCHER_LIMIT) — the cards the switcher has room for.
+   */
+  getTabSwitcherPreviews(limit?: number): Promise<TabSwitcherPreview[]>;
+  /** The held-modifier gesture, read by main from whichever view had the keyboard. */
   onTabSwitcherInput(listener: (input: TabSwitcherInput) => void): () => void;
+  /** Live captures of the cards the open switcher shows, as each lands. */
+  onTabSwitcherThumbnail(listener: (thumbnail: TabSwitcherThumbnail) => void): () => void;
   // ── Glance: modifier-click or automatic from an anchored tab ──
   getGlance(): Promise<GlanceState | null>;
   onGlanceChanged(listener: (glance: GlanceState | null) => void): () => void;
@@ -900,8 +920,12 @@ export interface ShellApi {
   /** The card over the page: which bookmark it shows, or null when it is down. */
   getBookmarkToast(): Promise<BookmarkToast | null>;
   onBookmarkToast(listener: (toast: BookmarkToast | null) => void): () => void;
-  /** Open the bookmarks page in the shell, landing on one bookmark when given. */
-  openBookmarksPage(bookmarkId?: string): void;
+  /**
+   * Open the bookmarks page in the shell, landing on one bookmark when given
+   * — or, on the desktop, Watchtower at the index entry a save filed the
+   * page under.
+   */
+  openBookmarksPage(bookmarkId?: string, entityId?: number): void;
   /** Read or manage the active Space's desktop-local browsing archive. */
   watchtower(request: WatchtowerRequest): Promise<WatchtowerResponse>;
   /** Wipe the active Space's site data (cookies, storage, cache). */
@@ -1056,6 +1080,18 @@ export interface NativeSurfaceApi {
   prepareOverlay(): Promise<PaneStill[]>;
   /** Hide or restore the native tab views after the shell has painted their stills. */
   setOverlay(active: boolean): Promise<void>;
+  // ── The desk (@pistachio/shell-contracts/desk) ───────────────────────────────
+  /** Which tabs are desk windows and which key grabs one from inside its page; null when no desk is up. */
+  setDesk(state: DeskState | null): void;
+  /**
+   * Stills of these tabs' pages, shown or not, at most `width` device px wide.
+   * A tab with no page to capture (asleep, shell-drawn, crashed) is left out.
+   */
+  captureTabStills(tabIds: string[], width: number): Promise<PaneStill[]>;
+  /** Make this tab the active one and give its page the keyboard, if its view is on screen. */
+  focusTab(tabId: string): void;
+  /** The grab key was held as a desk page was pressed: the move is the shell's from here. */
+  onDeskGrab(listener: (grab: DeskGrab) => void): () => void;
   /**
    * The owner's still is painted under its live view: main can now hide the
    * view without a blank frame, and the renderer starts the opening motion.
@@ -1187,6 +1223,10 @@ export const NATIVE_SURFACE_MEMBERS = {
   setLayout: "Places the native tab views over the panes' holes in the DOM.",
   prepareOverlay: "Captures the native tab views while they are still on screen.",
   setOverlay: "Hides and restores the native tab views under a shell overlay.",
+  setDesk: "Arms main's hook on the desk windows' native page views for the grab key.",
+  captureTabStills: "Captures native tab views, shown or hidden, for the desk's drawn windows.",
+  focusTab: "Hands the keyboard to one native tab view among the desk's several.",
+  onDeskGrab: "Fires from main's mouse hook on a native page view.",
   recedeGlanceOwner: "Coordinates the owner tab's native view with the glance view.",
   setGlanceBounds: "Places the native glance preview view at the shell's frame.",
   prepareGlanceClose: "Captures the native glance view's last frame before it hides.",
@@ -1301,6 +1341,7 @@ export const IPC = {
   downloadsChanged: "pistachio:downloads-changed",
   tabDataPolicy: "pistachio:tab-data-policy",
   tabPolicyBlocked: "pistachio:tab-policy-blocked",
+  tabEmptyCopy: "pistachio:tab-empty-copy",
   tabPasskeySupportReport: "pistachio:tab-passkey-support-report",
   findGet: "pistachio:find-get",
   findChanged: "pistachio:find-changed",
@@ -1312,8 +1353,13 @@ export const IPC = {
   layoutSet: "pistachio:layout-set",
   overlayPrepare: "pistachio:overlay-prepare",
   overlaySet: "pistachio:overlay-set",
+  deskSet: "pistachio:desk-set",
+  deskStillsCapture: "pistachio:desk-stills-capture",
+  deskFocus: "pistachio:desk-focus",
+  deskGrab: "pistachio:desk-grab",
   tabSwitcherPreviewsGet: "pistachio:tab-switcher-previews-get",
   tabSwitcherInput: "pistachio:tab-switcher-input",
+  tabSwitcherThumbnail: "pistachio:tab-switcher-thumbnail",
   glanceGet: "pistachio:glance-get",
   glanceChanged: "pistachio:glance-changed",
   glanceOpenRequest: "pistachio:glance-open-request",
@@ -1674,6 +1720,7 @@ export const SHELL_EVENT_CHANNELS = allEvents([
   { member: "onDownloadsChanged", channel: IPC.downloadsChanged },
   { member: "onFindStateChanged", channel: IPC.findChanged },
   { member: "onTabSwitcherInput", channel: IPC.tabSwitcherInput },
+  { member: "onTabSwitcherThumbnail", channel: IPC.tabSwitcherThumbnail },
   { member: "onGlanceChanged", channel: IPC.glanceChanged },
   { member: "onGlanceDismissRequested", channel: IPC.glanceDismissRequested },
   { member: "onShellCommand", channel: IPC.shellCommand },

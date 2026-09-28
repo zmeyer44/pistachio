@@ -2,6 +2,7 @@ import type { WatchtowerResponse } from "@pistachio/shell-contracts/watchtower";
 import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
+import type { DeskGrab, DeskState } from "@pistachio/shell-contracts/desk";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CredentialCapture,
@@ -109,6 +110,7 @@ import {
   type SyncStatus,
   type TabSwitcherInput,
   type TabSwitcherPreview,
+  type TabSwitcherThumbnail,
   type WorkspaceSyncAction,
   type WorkspaceSyncStatus,
 } from "@pistachio/shell-contracts/ipc";
@@ -264,8 +266,17 @@ const api: PistachioApi = {
     ipcRenderer.invoke(IPC.overlayPrepare) as Promise<PaneStill[]>,
   setOverlay: (active) =>
     ipcRenderer.invoke(IPC.overlaySet, active) as Promise<void>,
-  getTabSwitcherPreviews: () =>
-    ipcRenderer.invoke(IPC.tabSwitcherPreviewsGet) as Promise<
+  setDesk: (state: DeskState | null) => ipcRenderer.send(IPC.deskSet, state),
+  captureTabStills: (tabIds: string[], width: number) =>
+    ipcRenderer.invoke(IPC.deskStillsCapture, tabIds, width) as Promise<PaneStill[]>,
+  focusTab: (tabId: string) => ipcRenderer.send(IPC.deskFocus, tabId),
+  onDeskGrab(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, grab: DeskGrab): void => listener(grab);
+    ipcRenderer.on(IPC.deskGrab, handler);
+    return () => ipcRenderer.removeListener(IPC.deskGrab, handler);
+  },
+  getTabSwitcherPreviews: (limit) =>
+    ipcRenderer.invoke(IPC.tabSwitcherPreviewsGet, limit) as Promise<
       TabSwitcherPreview[]
     >,
   onTabSwitcherInput(listener) {
@@ -275,6 +286,14 @@ const api: PistachioApi = {
     ): void => listener(input);
     ipcRenderer.on(IPC.tabSwitcherInput, handler);
     return () => ipcRenderer.removeListener(IPC.tabSwitcherInput, handler);
+  },
+  onTabSwitcherThumbnail(listener) {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      thumbnail: TabSwitcherThumbnail,
+    ): void => listener(thumbnail);
+    ipcRenderer.on(IPC.tabSwitcherThumbnail, handler);
+    return () => ipcRenderer.removeListener(IPC.tabSwitcherThumbnail, handler);
   },
   getGlance: () =>
     ipcRenderer.invoke(IPC.glanceGet) as Promise<GlanceState | null>,
@@ -521,8 +540,8 @@ const api: PistachioApi = {
     ipcRenderer.on(IPC.noticeEvent, handler);
     return () => ipcRenderer.removeListener(IPC.noticeEvent, handler);
   },
-  openBookmarksPage: (bookmarkId?: string) =>
-    ipcRenderer.send(IPC.bookmarksOpen, bookmarkId),
+  openBookmarksPage: (bookmarkId?: string, entityId?: number) =>
+    ipcRenderer.send(IPC.bookmarksOpen, bookmarkId, entityId),
   watchtower: (request) => ipcRenderer.invoke(IPC.watchtower, request) as Promise<WatchtowerResponse>,
   clearBrowsingData: () =>
     ipcRenderer.invoke(IPC.browsingDataClear) as Promise<void>,

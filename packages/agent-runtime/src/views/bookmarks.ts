@@ -174,6 +174,12 @@ export interface BookmarkToast {
   id: string;
   existed: boolean;
   shownAt: string;
+  /**
+   * The same save in Watchtower, on the desktop: the page's text kept in the
+   * archive and what it is about filed in the index. Absent where there is
+   * no archive (the web, a save the agent made of an address).
+   */
+  watchtower?: import("./watchtower.js").WatchtowerKeepStatus;
 }
 
 export const MAX_BOOKMARKS = 5_000;

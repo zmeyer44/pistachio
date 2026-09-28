@@ -162,6 +162,59 @@ export async function capturePage(): Promise<WatchtowerWireCapture | null> {
     0,
     40,
   );
+  // What the page declares it is about — a Product and its brand, an Event
+  // and its venue, a profile's Person — named and typed, for the index.
+  // Which declarations count is decided outside the page (`entities.ts`).
+  const subjects: { name: string; type: string; via?: string }[] = [];
+  const declared = new Set<string>();
+  const declare = (value: unknown, via: string | undefined, depth: number): void => {
+    if (subjects.length >= 12 || !value || depth > 1) return;
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 6)) declare(item, via, depth);
+      return;
+    }
+    let name = "";
+    let type = "";
+    if (typeof value === "string") name = value;
+    else if (typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      name = nameOf(record["name"]);
+      const types = ([] as unknown[]).concat(record["@type"]);
+      type = (types.find((item) => typeof item === "string") as string | undefined) ?? "";
+    }
+    name = name.replace(/\s+/gu, " ").trim().slice(0, 120);
+    if (!name || /^https?:/u.test(name) || declared.has(`${type}:${name}`)) return;
+    declared.add(`${type}:${name}`);
+    subjects.push({ name, type: type.slice(0, 60), ...(via ? { via } : {}) });
+  };
+  // The page's own items (the article, the breadcrumb, the site) are not
+  // what it is about; what they point at may be.
+  const pageItem =
+    /^(WebPage|WebSite|\w+Page|(?!Scholarly)\w*Article|BlogPosting|Report|VideoObject|Clip|ImageObject|MediaObject|BreadcrumbList|ItemList|ListItem|SiteNavigationElement|SearchAction|Offer|AggregateOffer|AggregateRating|Rating|Review|Comment|\w*Posting|WPHeader|WPFooter|WPSideBar|Recipe|HowTo)$/u;
+  for (const item of structured.slice(0, 12)) {
+    if (
+      !([] as unknown[])
+        .concat(item["@type"])
+        .some((type) => typeof type === "string" && pageItem.test(type))
+    )
+      declare(item, undefined, 0);
+    for (const via of [
+      "author",
+      "creator",
+      "publisher",
+      "brand",
+      "manufacturer",
+      "organizer",
+      "performer",
+      "location",
+      "about",
+      "mainEntity",
+      "founder",
+      "director",
+      "actor",
+    ])
+      declare(item[via], via, 1);
+  }
 
   // The player and everything drawn over it (clock, scrubber, captions
   // toggles) is chrome, and its clock would make every capture "new".
@@ -540,6 +593,7 @@ export async function capturePage(): Promise<WatchtowerWireCapture | null> {
     blocks,
     links: links.filter((link) => link.block >= 0),
     truncated,
+    subjects,
   };
 }
 

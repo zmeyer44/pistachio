@@ -6,20 +6,15 @@
  *
  * What was typed is kept apart from what is shown: the list is ranked from
  * the typed text alone, so a preview can never re-rank the list it came from.
- * The two ways of steering differ in what the keyboard does next:
  *
- * - **Arrow keys commit to the text.** Editing a row reached with ↑/↓ edits
- *   what the field shows ("github.com/…" + "/issues"), and that becomes what
- *   was typed.
- * - **The pointer only looks.** A pointer resting over the list would
- *   otherwise turn every nudge into an edit of some row's address, so the
- *   next key that is not steering puts the typed text back first — caret and
- *   selection where they were, so ⌘L, a nudge, then typing still replaces the
- *   selected address — and leaving the list ends the look.
+ * Whichever way the row was reached, the keyboard edits what the field shows:
+ * typing, ⌫ or a caret move on a row reached with ↑/↓ or under the pointer
+ * works on its text ("github.com/…" + "/issues"), and an edit makes that the
+ * typed text. Until a key lands, a pointer's row is only a look — leaving the
+ * list puts the typed text back, caret and selection where they were.
  */
 
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { flushSync } from "react-dom";
 import type { Entry } from "../components/address-palette";
 
 /**
@@ -43,8 +38,8 @@ export interface FieldPreview {
   steer(by: SteeredBy, index: number): void;
   /** The typed text changed (an edit, a reset): whatever the field shows now IS the text. */
   settle(): void;
-  /** A key that steers nothing went to the field: a pointer's look ends before it lands. */
-  release(event: KeyboardEvent): void;
+  /** A key that steers nothing went to the field: a pointer's look becomes the text it works on. */
+  adopt(event: KeyboardEvent): void;
   /** The pointer left the list. True when it was showing a row — the caller puts the selection back. */
   leave(): boolean;
 }
@@ -93,10 +88,12 @@ export function useFieldPreview({
       held.current = null;
       setBy(null);
     },
-    release: (event) => {
+    adopt: (event) => {
       if (by !== "pointer" || MODIFIER_KEYS.has(event.key)) return;
-      // Synchronously: the key's own edit has to land on the typed text.
-      flushSync(() => setBy(null));
+      // The field already shows the row, so an edit lands on its text by
+      // itself (and settles); this is for a key that only moves the caret,
+      // after which leaving the list must not take the text away again.
+      setBy("keys");
     },
     leave: () => {
       if (by !== "pointer") return false;

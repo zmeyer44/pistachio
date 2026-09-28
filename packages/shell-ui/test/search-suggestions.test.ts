@@ -52,3 +52,15 @@ describe("the address bar's search suggestions", () => {
     expect(new Set([primary.id, ...rest.map((item) => item.id)]).size).toBe(3);
   });
 });
+
+describe("the home page's own assistant", () => {
+  it("keeps the question on the page: the row names Pistachio and goes nowhere", () => {
+    const search = { webProvider: "google", aiProvider: "claude", smartSuggestions: true, smartFind: true } as const;
+    const primary = primaryItemFor("why is the sky blue", search);
+    if (primary === null) throw new Error("no primary item");
+    const [ai] = secondarySearchItems("why is the sky blue", primary, search, "pistachio");
+    expect(ai).toEqual({ id: "ai-search", kind: "ai", title: "Ask Pistachio “why is the sky blue”", hint: "AI", url: "" });
+    // The modal's row is untouched: the same call without the target still names the provider.
+    expect(secondarySearchItems("why is the sky blue", primary, search)[0]?.title).toBe("Ask Claude “why is the sky blue”");
+  });
+});

@@ -140,6 +140,23 @@ async function nativeKeys(app: ElectronApplication, url: string, inputs: Keyboar
   }, { target: url, inputs });
 }
 
+/**
+ * A shortcut pressed on the page (⌘=, zoom in): main consumes its key-down,
+ * and Chromium then swallows the key-ups of = and ⌘ — main never sees them.
+ * Sent without waiting for the releases, since they never arrive.
+ */
+async function pageShortcut(app: ElectronApplication, url: string): Promise<void> {
+  await app.evaluate(({ webContents }, target) => {
+    const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === target);
+    if (contents === undefined) throw new Error(`no tab at ${target}`);
+    contents.focus();
+    contents.sendInputEvent({ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] });
+    contents.sendInputEvent({ type: "keyDown", keyCode: "=", modifiers: ["meta"] });
+    contents.sendInputEvent({ type: "keyUp", keyCode: "=", modifiers: ["meta"] });
+    contents.sendInputEvent({ type: "keyUp", keyCode: "Meta" });
+  }, url);
+}
+
 /** Shift held while a letter is typed: a capital, not the gesture. */
 async function typeCapital(app: ElectronApplication, url: string, letter: string): Promise<void> {
   await app.evaluate(({ webContents }, { target, key }) => {
@@ -242,6 +259,14 @@ test("bookmark gesture requires two completed, uninterrupted Shift taps", async 
     await nativeKeys(app, listing, [down(), up()]);
     expect((await state()).toast).toBeNull();
     await snapshot(page, "gesture-04-blur-cancelled");
+
+    // A shortcut on the page used to disable the gesture until the window
+    // lost focus: its swallowed releases left keys "held" forever.
+    await pageShortcut(app, listing);
+    await page.waitForTimeout(1_200);
+    await nativeKeys(app, listing, [down(), up(), down(), up()]);
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveAttribute("data-existed", "true");
   } finally {
     await app.close();
     server.close();
@@ -283,6 +308,12 @@ test("shift, shift saves the thing on the page; the card fills in; the page list
     await expect(toast).toContainText("Product");
     await expect(toast).toContainText("$699.95");
     await expect(toast).toContainText("From the page's own tags");
+    // The same save in Watchtower: the page kept, and filed under what its
+    // own structured data declares (no model under test).
+    const archived = toastView.getByTestId("bookmark-toast-watchtower");
+    await expect(archived).toHaveAttribute("data-state", "saved");
+    await expect(archived).toContainText("Filed under");
+    await expect(toastView.getByTestId("bookmark-toast-entity")).toHaveText(["Breville Barista Express Espresso Machine", "Breville"]);
     await snapshot(toastView, "card");
 
     // The card's view sits at the pane's bottom-right corner, sized to the card.
@@ -350,10 +381,12 @@ test("shift, shift saves the thing on the page; the card fills in; the page list
     );
     await expect.poll(async () => activeUrl(shell)).toBe(`${origin}/recipe`);
 
-    // The page: the card in the grid, the search, the detail.
+    // The page: on the desktop, Watchtower's Saved view — the card in the
+    // grid, the search, the detail.
     await shell.keyboard.press("Meta+Shift+B");
-    const bookmarks = shell.getByTestId("bookmarks-page");
+    const bookmarks = shell.getByTestId("watchtower-page");
     await expect(bookmarks).toBeVisible();
+    await expect(bookmarks.getByTestId("watchtower-view-saved")).toHaveAttribute("aria-selected", "true");
     await expect(bookmarks.getByTestId("bookmark-card")).toHaveCount(1);
     await expect(bookmarks.getByTestId("bookmark-card")).toContainText("The espresso machine");
 
@@ -383,6 +416,17 @@ test("shift, shift saves the thing on the page; the card fills in; the page list
     await expect(detail).toContainText("Cacio e Pepe");
     await expect(detail).toContainText("Total time");
     await snapshot(shell, "page");
+
+    // The espresso machine's detail says what Watchtower filed it under,
+    // and leads to that entry in the index.
+    await bookmarks.locator('[data-testid="bookmark-card"][data-kind="product"]').click();
+    const inWatchtower = detail.getByTestId("bookmark-in-watchtower");
+    await expect(inWatchtower).toContainText("Breville");
+    await inWatchtower.getByTestId("bookmark-entity").filter({ hasText: /^Breville$/ }).click();
+    await expect(bookmarks.getByTestId("watchtower-entity-reader")).toContainText("Company");
+    await bookmarks.getByTestId("watchtower-view-saved").click();
+    await bookmarks.getByTestId("bookmark-card").first().click();
+    await expect(detail).toBeVisible();
 
     // Escape closes the detail, then the page.
     await shell.keyboard.press("Escape");

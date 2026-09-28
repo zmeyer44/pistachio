@@ -1,0 +1,279 @@
+<template>
+  <style>
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:block;src:url("assets/fonts/InterVariable.woff2") format("woff2")}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-ba9851c3c22cd980-s.woff2") format("woff2");unicode-range:u+0460-052f,u+1c80-1c8a,u+20b4,u+2de0-2dff,u+a640-a69f,u+fe2e-fe2f}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-21350d82a1f187e9-s.woff2") format("woff2");unicode-range:u+0301,u+0400-045f,u+0490-0491,u+04b0-04b1,u+2116}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-c5fe6dc8356a8c31-s.woff2") format("woff2");unicode-range:u+1f??}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-19cfc7226ec3afaa-s.woff2") format("woff2");unicode-range:u+0370-0377,u+037a-037f,u+0384-038a,u+038c,u+038e-03a1,u+03a3-03ff}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-df0a9ae256c0569c-s.woff2") format("woff2");unicode-range:u+0102-0103,u+0110-0111,u+0128-0129,u+0168-0169,u+01a0-01a1,u+01af-01b0,u+0300-0301,u+0303-0304,u+0308-0309,u+0323,u+0329,u+1ea0-1ef9,u+20ab}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-8e9860b6e62d6359-s.woff2") format("woff2");unicode-range:u+0100-02ba,u+02bd-02c5,u+02c7-02cc,u+02ce-02d7,u+02dd-02ff,u+0304,u+0308,u+0329,u+1d00-1dbf,u+1e00-1e9f,u+1ef2-1eff,u+2020,u+20a0-20ab,u+20ad-20c0,u+2113,u+2c60-2c7f,u+a720-a7ff}
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      font-family: Inter, sans-serif;
+      color: #1A1A1A;
+    }
+    [data-composition-id="01-hook"] .hook01-bg,
+    [data-composition-id="01-hook"] .hook01-stage {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+    }
+    [data-composition-id="01-hook"] .hook01-bg { background: #FFFFFF; }
+
+    /* ---- tab strip (top band) ---- */
+    [data-composition-id="01-hook"] .hook01-strip {
+      position: absolute;
+      left: 96px;
+      top: 44px;
+      width: 1728px;
+      height: 64px;
+      border-radius: 16px;
+      background: #FAFAFA;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      display: flex;
+      align-items: center;
+      padding: 0 12px 0 22px;
+      box-sizing: border-box;
+    }
+    [data-composition-id="01-hook"] .hook01-lights {
+      display: flex;
+      gap: 9px;
+      flex: 0 0 auto;
+      margin-right: 22px;
+    }
+    [data-composition-id="01-hook"] .hook01-lights span {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      display: block;
+    }
+    [data-composition-id="01-hook"] .hook01-tabs {
+      flex: 1 1 auto;
+      min-width: 0;
+      height: 44px;
+      display: flex;
+      align-items: stretch;
+    }
+    [data-composition-id="01-hook"] .hook01-tab {
+      flex: 1 1 0;
+      min-width: 0;
+      max-width: 0;
+      overflow: hidden;
+    }
+    [data-composition-id="01-hook"] .hook01-pill {
+      margin: 0 3px;
+      height: 44px;
+      border-radius: 10px;
+      background: #FFFFFF;
+      border: 1px solid #ECECEC;
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      box-sizing: border-box;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    [data-composition-id="01-hook"] .hook01-pill img {
+      width: 20px;
+      height: 20px;
+      flex: 0 0 20px;
+      border-radius: 4px;
+      display: block;
+    }
+    [data-composition-id="01-hook"] .hook01-title {
+      margin-left: 10px;
+      font-size: 17px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      color: #6B6B6B;
+      overflow: hidden;
+    }
+    [data-composition-id="01-hook"] .hook01-plus {
+      flex: 0 0 auto;
+      margin-left: 10px;
+      width: 32px;
+      height: 32px;
+      font-size: 26px;
+      line-height: 30px;
+      text-align: center;
+      font-weight: 400;
+      color: #9A9A9A;
+    }
+
+    /* ---- pain lines (left third) ---- */
+    [data-composition-id="01-hook"] .hook01-lines {
+      position: absolute;
+      left: 200px;
+      top: 330px;
+      width: 1600px;
+    }
+    [data-composition-id="01-hook"] .hook01-line {
+      display: block;
+      white-space: nowrap;
+      font-weight: 400;
+      color: #1A1A1A;
+    }
+    [data-composition-id="01-hook"] .hook01-l1,
+    [data-composition-id="01-hook"] .hook01-l2 {
+      font-size: 120px;
+      line-height: 1.12;
+      letter-spacing: -0.04em;
+    }
+    [data-composition-id="01-hook"] .hook01-l3 {
+      margin-top: 18px;
+      font-size: 84px;
+      line-height: 1.1;
+      letter-spacing: -0.04em;
+    }
+
+    /* ---- question (centered) ---- */
+    [data-composition-id="01-hook"] .hook01-q {
+      position: absolute;
+      left: 0;
+      top: 360px;
+      width: 1920px;
+      text-align: center;
+      font-weight: 400;
+      font-size: 110px;
+      line-height: 1.14;
+      letter-spacing: -0.04em;
+      color: #1A1A1A;
+      opacity: 0;
+    }
+    [data-composition-id="01-hook"] .hook01-q .hook01-line { display: block; }
+    [data-composition-id="01-hook"] .hook01-w { display: inline-block; }
+    [data-composition-id="01-hook"] .hook01-green { color: #52A862; }
+  </style>
+
+  <div data-hf-id="hf-tzga" id="root" data-composition-id="01-hook" data-start="0" data-duration="6" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-nd5u" id="hook01-bg" class="clip hook01-bg" data-start="0" data-duration="6" data-track-index="0"></div>
+
+    <div data-hf-id="hf-lmz3" id="hook01-stage" class="clip hook01-stage" data-start="0" data-duration="6" data-track-index="1">
+      <!-- Phase A: the grind (0.0–3.5s) -->
+      <div data-hf-id="hf-25hd" class="hook01-grind">
+        <div data-hf-id="hf-wba1" class="hook01-strip">
+          <div data-hf-id="hf-qg4e" class="hook01-lights">
+            <span data-hf-id="hf-sglc" style="background:#FF5F57"></span>
+            <span data-hf-id="hf-9opw" style="background:#FEBC2E"></span>
+            <span data-hf-id="hf-rr1y" style="background:#28C840"></span>
+          </div>
+          <div data-hf-id="hf-fkg1" class="hook01-tabs"></div>
+          <div data-hf-id="hf-4tii" class="hook01-plus">+</div>
+        </div>
+
+        <div data-hf-id="hf-hqzu" class="hook01-lines">
+          <span data-hf-id="hf-8k04" class="hook01-line hook01-l1"><span data-hf-id="hf-9fvj" class="hook01-w">Forty</span> <span data-hf-id="hf-qc5l" class="hook01-w">tabs.</span></span>
+          <span data-hf-id="hf-jfhr" class="hook01-line hook01-l2"><span data-hf-id="hf-kz8k" class="hook01-w">Twelve</span> <span data-hf-id="hf-51dj" class="hook01-w">logins.</span></span>
+          <span data-hf-id="hf-d9ry" class="hook01-line hook01-l3"><span data-hf-id="hf-sp5g" class="hook01-w">Every</span> <span data-hf-id="hf-u7r3" class="hook01-w">one</span> <span data-hf-id="hf-ftqw" class="hook01-w">of</span> <span data-hf-id="hf-klir" class="hook01-w">them</span> <span data-hf-id="hf-nlko" class="hook01-w">waiting</span> <span data-hf-id="hf-j074" class="hook01-w">on</span> <span data-hf-id="hf-6r52" class="hook01-w">you.</span></span>
+        </div>
+      </div>
+
+      <!-- Phase B: the question (3.5–6.0s) -->
+      <div data-hf-id="hf-vil6" class="hook01-q">
+        <span data-hf-id="hf-p53z" class="hook01-line hook01-q1"><span data-hf-id="hf-bef3" class="hook01-w">What</span> <span data-hf-id="hf-frue" class="hook01-w">if</span> <span data-hf-id="hf-l262" class="hook01-w">your</span> <span data-hf-id="hf-asm7" class="hook01-w">browser</span></span>
+        <span data-hf-id="hf-gh84" class="hook01-line hook01-q2"><span data-hf-id="hf-l7qm" class="hook01-w">could</span> <span data-hf-id="hf-ae2o" class="hook01-w hook01-green">do</span> <span data-hf-id="hf-om7k" class="hook01-w hook01-green">the</span> <span data-hf-id="hf-op3d" class="hook01-w hook01-green">work?</span></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    (function () {
+      var root = document.querySelector('[data-composition-id="01-hook"]');
+      var $ = function (sel) { return root.querySelector(sel); };
+      var $$ = function (sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); };
+
+      // ---- build 40 tabs deterministically ----
+      var SITES = [
+        ["google", "Google Search"],
+        ["x", "Home / X"],
+        ["github", "Pull requests"],
+        ["google-calendar", "Calendar"],
+        ["youtube", "YouTube"],
+        ["chatgpt", "ChatGPT"],
+        ["wikipedia", "Wikipedia"],
+        ["claude", "Claude"]
+      ];
+      var ORDER = [0, 1, 2, 3, 4, 5, 6, 7, 2, 0, 4, 1, 3, 6, 5, 7, 2, 1, 0, 4,
+                   6, 2, 3, 5, 1, 7, 0, 2, 4, 6, 1, 3, 5, 0, 2, 7, 4, 1, 6, 2];
+      var tabsEl = $(".hook01-tabs");
+      ORDER.forEach(function (idx) {
+        var s = SITES[idx];
+        var tab = document.createElement("div");
+        tab.className = "hook01-tab";
+        tab.innerHTML =
+          '<div class="hook01-pill"><img src="assets/favicons/' + s[0] + '.png" alt="">' +
+          '<span class="hook01-title">' + s[1] + "</span></div>";
+        tabsEl.appendChild(tab);
+      });
+      var tabs = $$(".hook01-tab");
+      var pills = $$(".hook01-pill");
+
+      var tl = gsap.timeline({ paused: true });
+      var EASE = "power3.out";
+
+      // per-word rise, blur-to-sharp
+      function rise(words, at, stagger) {
+        tl.fromTo(words,
+          { opacity: 0, y: 44, filter: "blur(8px)" },
+          { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.6, ease: EASE, stagger: stagger },
+          at);
+      }
+
+      // tab arrivals: grow into the flex row (others compress), slide in from right
+      function addTabs(from, to, at, stagger, maxW) {
+        for (var i = from; i < to; i++) {
+          var t = at + (i - from) * stagger;
+          tl.fromTo(tabs[i], { maxWidth: 0 }, { maxWidth: maxW, duration: 0.45, ease: EASE }, t);
+          tl.fromTo(pills[i], { opacity: 0, x: 40 }, { opacity: 1, x: 0, duration: 0.45, ease: EASE }, t);
+        }
+      }
+
+      // ---- Scene 1 (0.0–1.0): "Forty tabs." + strip + 8 tabs ----
+      tl.fromTo($(".hook01-lines"), { y: 150 }, { y: 150, duration: 0.01 }, 0);
+      rise($$(".hook01-l1 .hook01-w"), 0.0, 0.08);
+      tl.fromTo($(".hook01-l2"), { opacity: 0 }, { opacity: 0, duration: 0.01 }, 0);
+      tl.fromTo($(".hook01-l3"), { opacity: 0 }, { opacity: 0, duration: 0.01 }, 0);
+      tl.fromTo($(".hook01-strip"), { opacity: 0, y: -16 }, { opacity: 1, y: 0, duration: 0.5, ease: EASE }, 0.0);
+      addTabs(0, 8, 0.1, 0.09, 200);
+
+      // ---- Scene 2 (1.0–2.0): "Twelve logins." + 20 tabs ----
+      tl.set($(".hook01-l2"), { opacity: 1 }, 1.0);
+      rise($$(".hook01-l2 .hook01-w"), 1.0, 0.08);
+      tl.to($(".hook01-l1"), { color: "#9A9A9A", duration: 0.5, ease: EASE }, 1.0);
+      tl.to($(".hook01-lines"), { y: 80, duration: 0.7, ease: EASE }, 1.0);
+      addTabs(8, 20, 1.02, 0.07, 200);
+
+      // ---- Scene 3 (2.0–3.5): third line, overload to 40 tabs, hold ----
+      tl.set($(".hook01-l3"), { opacity: 1 }, 2.0);
+      rise($$(".hook01-l3 .hook01-w"), 2.0, 0.06);
+      tl.to($(".hook01-l1"), { color: "#D2D2D2", duration: 0.5, ease: EASE }, 2.0);
+      tl.to($(".hook01-l2"), { color: "#9A9A9A", duration: 0.5, ease: EASE }, 2.0);
+      tl.to($(".hook01-lines"), { y: 0, duration: 0.7, ease: EASE }, 2.0);
+      tl.to($$(".hook01-title"), { opacity: 0, duration: 0.3, ease: EASE }, 2.0);
+      addTabs(20, 40, 2.02, 0.045, 200);
+
+      // ---- Scene 4 (3.5): hard clear — discrete cut, then the question ----
+      tl.set($(".hook01-grind"), { opacity: 1 }, 0);
+      tl.set($(".hook01-grind"), { opacity: 0 }, 3.5);
+      tl.set($(".hook01-q"), { opacity: 1 }, 3.5);
+      rise($$(".hook01-q1 .hook01-w"), 3.5, 0.08);
+
+      // ---- Scene 5 (4.5–6.0): "could do the work?" — hold to the cut ----
+      rise($$(".hook01-q2 .hook01-w"), 4.5, 0.08);
+
+      // pin the timeline length to the frame duration
+      tl.set({}, {}, 6.0);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["01-hook"] = tl;
+    })();
+  </script>
+</template>

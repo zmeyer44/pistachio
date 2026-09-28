@@ -23,6 +23,7 @@ import {
 } from "@pistachio/shell-contracts/read-aloud";
 import { isAuthenticationNavigation } from "@pistachio/shell-contracts/auth-popup";
 import { registrableHost } from "@pistachio/shell-contracts/browser-import";
+import { hasCopyableSelection } from "@pistachio/shell-contracts/page-link";
 
 // Keep this sandbox preload a single file. Importing the shared IPC object at
 // runtime makes Rollup split it into a local chunk, while Electron's sandbox
@@ -37,6 +38,7 @@ const MEDIA_PRESENTATION_CHANNEL = "pistachio:media-presentation";
 const MEDIA_PREVIEW_HOVER_REPORT_CHANNEL = "pistachio:media-preview-hover-report";
 const DATA_POLICY_CHANNEL = "pistachio:tab-data-policy";
 const POLICY_BLOCKED_CHANNEL = "pistachio:tab-policy-blocked";
+const EMPTY_COPY_CHANNEL = "pistachio:tab-empty-copy";
 const PASSKEY_SUPPORT_REPORT_CHANNEL = "pistachio:tab-passkey-support-report";
 
 const DRAG_TOLERANCE = 4;
@@ -109,6 +111,21 @@ function enforceDataEvent(event: ClipboardEvent, action: "copy" | "paste"): void
 window.addEventListener("copy", (event) => enforceDataEvent(event, "copy"), true);
 window.addEventListener("cut", (event) => enforceDataEvent(event, "copy"), true);
 window.addEventListener("paste", (event) => enforceDataEvent(event, "paste"), true);
+
+// A copy that leaves nothing behind — nothing selected, and no handler of the
+// page's own (a canvas editor's, a code editor's copy-line) called
+// preventDefault to write its own data — is reported once dispatch is over.
+// Main copies the page's address instead when the copy came from ⌘C.
+window.addEventListener(
+  "copy",
+  (event) => {
+    if (hasCopyableSelection(document)) return;
+    setTimeout(() => {
+      if (!event.defaultPrevented) ipcRenderer.send(EMPTY_COPY_CHANNEL);
+    }, 0);
+  },
+  true,
+);
 
 function linkInPath(event: Event): HTMLAnchorElement | HTMLAreaElement | null {
   for (const target of event.composedPath()) {

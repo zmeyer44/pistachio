@@ -181,5 +181,7 @@ export function settingsNavFor(surface: CopySurface): NavSection[] {
     if (isNavGroup(entry)) return { ...entry, items: entry.items.map(reword) };
     return entry.section === "account" ? { ...entry, note } : entry;
   };
-  return SETTINGS_NAV.map((section) => ({ ...section, items: section.items.map(reword) }));
+  // On a Mac a save is a Watchtower save: its switches live on Watchtower's page.
+  const here = (entry: NavEntry): boolean => !(surface === "native" && !isNavGroup(entry) && entry.section === "bookmarks");
+  return SETTINGS_NAV.map((section) => ({ ...section, items: section.items.filter(here).map(reword) }));
 }

@@ -1,0 +1,270 @@
+<template>
+  <style>
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:block;src:url("assets/fonts/InterVariable.woff2") format("woff2")}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-ba9851c3c22cd980-s.woff2") format("woff2");unicode-range:u+0460-052f,u+1c80-1c8a,u+20b4,u+2de0-2dff,u+a640-a69f,u+fe2e-fe2f}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-21350d82a1f187e9-s.woff2") format("woff2");unicode-range:u+0301,u+0400-045f,u+0490-0491,u+04b0-04b1,u+2116}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-c5fe6dc8356a8c31-s.woff2") format("woff2");unicode-range:u+1f??}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-19cfc7226ec3afaa-s.woff2") format("woff2");unicode-range:u+0370-0377,u+037a-037f,u+0384-038a,u+038c,u+038e-03a1,u+03a3-03ff}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-df0a9ae256c0569c-s.woff2") format("woff2");unicode-range:u+0102-0103,u+0110-0111,u+0128-0129,u+0168-0169,u+01a0-01a1,u+01af-01b0,u+0300-0301,u+0303-0304,u+0308-0309,u+0323,u+0329,u+1ea0-1ef9,u+20ab}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-8e9860b6e62d6359-s.woff2") format("woff2");unicode-range:u+0100-02ba,u+02bd-02c5,u+02c7-02cc,u+02ce-02d7,u+02dd-02ff,u+0304,u+0308,u+0329,u+1d00-1dbf,u+1e00-1e9f,u+1ef2-1eff,u+2020,u+20a0-20ab,u+20ad-20c0,u+2113,u+2c60-2c7f,u+a720-a7ff}
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      font-family: Inter, sans-serif;
+      color: #ffffff;
+    }
+    [id="f02-intro-ground"] {
+      position: absolute;
+      inset: 0;
+      background: #ffffff;
+    }
+    /* The rounded hero card that grows to full-bleed: a full-frame layer clipped by an animated inset(). */
+    [id="f02-intro-stage"] {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      clip-path: inset(378px 672px 378px 672px round 28px);
+    }
+    [id="f02-intro-wallpaper"] {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      object-fit: cover;
+      object-position: 50% 50%;
+      transform-origin: 50% 50%;
+      display: block;
+    }
+    [id="f02-intro-content"] {
+      position: absolute;
+      inset: 0;
+      text-shadow: 0 2px 28px rgba(15, 46, 22, 0.28);
+    }
+
+    /* Chip — above the lockup */
+    [id="f02-intro-chip-row"] {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 236px;
+      display: flex;
+      justify-content: center;
+    }
+    [id="f02-intro-chip"] {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      height: 52px;
+      padding: 0 26px;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: 100px;
+      background: rgba(255, 255, 255, 0.08);
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    [id="f02-intro-chip"] .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ffffff;
+    }
+
+    /* Lockup — mark + wordmark, centered in the upper-middle */
+    [id="f02-intro-lockup"] {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 330px;
+      height: 160px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 40px;
+    }
+    [id="f02-intro-lockup-inner"] {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 40px;
+      height: 160px;
+    }
+    [id="f02-intro-lockup-inner"] .slot {
+      width: 150px;
+      height: 150px;
+      flex: 0 0 150px;
+    }
+    /* Spans the full lockup width, so xPercent:50 puts the mark at the lockup's center regardless of font metrics. */
+    [id="f02-intro-mover"] {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+    }
+    [id="f02-intro-mark"] {
+      position: relative;
+      z-index: 2;
+      width: 150px;
+      height: 150px;
+      flex: 0 0 150px;
+      border-radius: 42px;
+      box-shadow: 0 24px 48px -16px rgba(15, 46, 22, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.35);
+      transform-origin: 50% 50%;
+    }
+    [id="f02-intro-mark"] img {
+      width: 150px;
+      height: 150px;
+      display: block;
+    }
+    [id="f02-intro-word"] {
+      position: relative;
+      z-index: 1;
+      flex: 0 0 auto;
+      font-size: 150px;
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: -0.045em;
+      white-space: nowrap;
+      padding-bottom: 12px;
+      color: #ffffff;
+    }
+
+    /* Tagline + subline */
+    [id="f02-intro-tagline"] {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 548px;
+      text-align: center;
+      font-size: 76px;
+      font-weight: 400;
+      line-height: 1.1;
+      letter-spacing: -0.04em;
+      white-space: nowrap;
+    }
+    [id="f02-intro-tagline"] .w {
+      display: inline-block;
+      margin-right: 0.22em;
+    }
+    [id="f02-intro-tagline"] .w:last-child {
+      margin-right: 0;
+    }
+    [id="f02-intro-sub"] {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 664px;
+      text-align: center;
+      font-size: 40px;
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      color: #e8f4ec;
+      white-space: nowrap;
+    }
+  </style>
+
+  <div data-hf-id="hf-g51n" id="root" data-composition-id="02-intro" data-width="1920" data-height="1080" data-duration="6.5">
+    <div data-hf-id="hf-hpy2" id="f02-intro-ground" class="clip" data-start="0" data-duration="6.5" data-track-index="0"></div>
+
+    <div data-hf-id="hf-ife4" id="f02-intro-stage" class="clip" data-start="0" data-duration="6.5" data-track-index="1">
+      <img data-hf-id="hf-o7vh" id="f02-intro-wallpaper" src="assets/hero-wallpaper-pistachio.jpg" alt="">
+    </div>
+
+    <div data-hf-id="hf-2f8k" id="f02-intro-content" class="clip" data-start="0" data-duration="6.5" data-track-index="2">
+      <div data-hf-id="hf-5kze" id="f02-intro-chip-row">
+        <div data-hf-id="hf-dkbi" id="f02-intro-chip"><span data-hf-id="hf-9gry" class="dot"></span>Early preview for macOS</div>
+      </div>
+
+      <div data-hf-id="hf-0u29" id="f02-intro-lockup">
+        <div data-hf-id="hf-amiu" id="f02-intro-lockup-inner">
+          <div data-hf-id="hf-fv78" class="slot"></div>
+          <div data-hf-id="hf-6gal" id="f02-intro-word">Pistachio</div>
+          <div data-hf-id="hf-cqxu" id="f02-intro-mover"><div data-hf-id="hf-13gc" id="f02-intro-mark"><img data-hf-id="hf-s1iq" src="assets/pistachio-mark.svg" alt=""></div></div>
+        </div>
+      </div>
+
+      <div data-hf-id="hf-7xhj" id="f02-intro-tagline"><span data-hf-id="hf-ufi3" class="w">A</span><span data-hf-id="hf-28ww" class="w">browser</span><span data-hf-id="hf-swew" class="w">built</span><span data-hf-id="hf-eyfb" class="w">for</span><span data-hf-id="hf-zu4r" class="w">tomorrow.</span></div>
+
+      <div data-hf-id="hf-7wjs" id="f02-intro-sub">With an agent built in.</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    (function () {
+      var FID = "02-intro";
+      var root = document.querySelector('[data-composition-id="' + FID + '"]');
+      var $ = function (id) { return root.querySelector('[id="' + "f02-intro-" + id + '"]'); };
+
+      var stage = $("stage");
+      var wallpaper = $("wallpaper");
+      var mark = $("mark");
+      var word = $("word");
+      var chip = $("chip");
+      var sub = $("sub");
+      var words = Array.prototype.slice.call($("tagline").querySelectorAll(".w"));
+
+      // Fixed lockup geometry (wordmark box has a fixed CSS width, so no font-load measuring).
+      var mover = $("mover");
+      var MARK_W = 150;
+
+      var tl = gsap.timeline({ paused: true });
+
+      // Scene 1 (0.0–0.6): rounded card holding the wallpaper blooms to full-bleed.
+      tl.fromTo(stage,
+        { clipPath: "inset(378px 672px 378px 672px round 28px)" },
+        { clipPath: "inset(0px 0px 0px 0px round 0px)", duration: 0.6, ease: "expo.out" }, 0);
+      // Wallpaper counter-scales 1.25 -> 1.06 so the waves unfold ...
+      tl.fromTo(wallpaper, { scale: 1.25, opacity: 1 }, { scale: 1.06, opacity: 1, duration: 0.6, ease: "expo.out" }, 0);
+      // ... then drifts imperceptibly 1.06 -> 1.0, decelerating to rest exactly at the cut (handoff_out).
+      tl.to(wallpaper, { scale: 1.0, duration: 5.4, ease: "sine.out" }, 0.6);
+
+      // Scene 2 (0.5–2.0): mark springs in at dead center, then slides left as the wordmark wipes out from behind it.
+      // mover spans the lockup: xPercent 50 + x -75 centers the mark on the frame's center line.
+      tl.fromTo(mover, { xPercent: 50, x: -MARK_W / 2 }, { xPercent: 50, x: -MARK_W / 2, duration: 0.01 }, 0);
+      tl.fromTo(mark,
+        { scale: 0, opacity: 0 },
+        { scale: 1, opacity: 1, duration: 0.6, ease: "expo.out" }, 0.5);
+      tl.to(mover, { xPercent: 0, x: 0, duration: 0.8, ease: "power3.inOut" }, 1.1);
+      tl.fromTo(word,
+        { xPercent: -45, opacity: 0, filter: "blur(8px)", clipPath: "inset(-20% 100% -20% 0%)" },
+        { xPercent: 0, opacity: 1, filter: "blur(0px)", clipPath: "inset(-20% 0% -20% 0%)", duration: 0.85, ease: "power3.inOut" }, 1.1);
+
+      // Scene 3 (2.0–3.5): tagline rises per-word. Word offsets are pre-computed from content length
+      // (dynamic-content-sequencing): longer words earn a slightly longer lead-in; the run fits one beat-aligned window.
+      var BASE = 0.06, PER_CHAR = 0.018, t = 2.0, starts = [];
+      words.forEach(function (w) { starts.push(t); t += BASE + w.textContent.length * PER_CHAR; });
+      words.forEach(function (w, i) {
+        tl.fromTo(w,
+          { y: 44, opacity: 0, filter: "blur(8px)" },
+          { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.7, ease: "power3.out" }, starts[i]);
+      });
+
+      // Scene 4 (3.5–4.0): chip fades up above the lockup.
+      tl.fromTo(chip,
+        { y: 18, opacity: 0, filter: "blur(6px)" },
+        { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.6, ease: "power3.out" }, 3.5);
+
+      // Scene 5 (4.0–6.0): subline fades up in field green; then hold still.
+      tl.fromTo(sub,
+        { y: 24, opacity: 0, filter: "blur(8px)" },
+        { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.7, ease: "power3.out" }, 4.0);
+
+      // Pin the timeline length to the frame duration.
+      tl.set({}, {}, 6.0);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines[FID] = tl;
+    })();
+  </script>
+</template>

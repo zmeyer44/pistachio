@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { ChevronDown, Columns2, X } from "lucide-react";
+import { AppWindow, ChevronDown, Columns2, X } from "lucide-react";
 import { MAX_TAB_GROUP_TITLE, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { cn } from "../lib/cn";
 import { displayHost } from "../lib/url";
@@ -181,6 +181,8 @@ export function TabGroupRow({
   onToggleOpen,
   onRename,
   onOpenAsSplit,
+  onOpenAsDesk,
+  deskOpen = false,
   onClose,
   onPointerDown,
   onContextMenu,
@@ -206,6 +208,10 @@ export function TabGroupRow({
   /** Called with null to START renaming (a double click), then with the new title — or null — when the field is done. */
   onRename: (title: string | null) => void;
   onOpenAsSplit: () => void;
+  /** Open (or put away) the group's desk; absent where there is no desk to open. */
+  onOpenAsDesk?: () => void;
+  /** This group's desk is the one up. */
+  deskOpen?: boolean;
   onClose: () => void;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -283,13 +289,18 @@ export function TabGroupRow({
           </span>
         )}
         {renaming ? null : (
-          <span className="relative flex h-6 w-12 shrink-0 items-center justify-end">
+          <span className={cn("relative flex h-6 shrink-0 items-center justify-end", onOpenAsDesk === undefined ? "w-12" : "w-[4.5rem]")}>
             {/* The count gives way to the controls on hover — both always in layout, so the title's
                 width never changes under the pointer. */}
             <span data-testid="tab-group-count" className="text-[10.5px] font-normal opacity-80 transition-opacity duration-150 group-focus-within/tg:opacity-0 group-hover/tg:opacity-0 motion-reduce:transition-none">
               {count}
             </span>
             <span className="pointer-events-none absolute right-0 flex items-center opacity-0 transition-opacity duration-150 group-focus-within/tg:pointer-events-auto group-focus-within/tg:opacity-100 group-hover/tg:pointer-events-auto group-hover/tg:opacity-100 motion-reduce:transition-none">
+              {onOpenAsDesk === undefined ? null : (
+                <HeaderButton label={deskOpen ? "Leave the desk" : "Open as desk"} testId="tab-group-desk" onClick={onOpenAsDesk}>
+                  <AppWindow aria-hidden="true" />
+                </HeaderButton>
+              )}
               <HeaderButton label={count > 4 ? "Open 4 most recent as split view" : "Open as split view"} testId="tab-group-split" disabled={count < 2} onClick={onOpenAsSplit}>
                 <Columns2 aria-hidden="true" />
               </HeaderButton>

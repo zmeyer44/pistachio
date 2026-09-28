@@ -38,6 +38,7 @@ export function shellStateOf(state: AppState): ShellState {
     remindersOpen: state.overlay === "reminders",
     bookmarksOpen: state.overlay === "bookmarks",
     liveViewOpen: state.overlay === "liveView",
+    tabSwitcherOpen: state.tabSwitcher !== null,
     veiled:
       state.overlay === "url" ||
       state.overlay === "site" ||
@@ -68,6 +69,7 @@ function useStoreShellState(): ShellState {
   const remindersOpen = useAppStore((s) => s.overlay === "reminders");
   const bookmarksOpen = useAppStore((s) => s.overlay === "bookmarks");
   const liveViewOpen = useAppStore((s) => s.overlay === "liveView");
+  const tabSwitcherOpen = useAppStore((s) => s.tabSwitcher !== null);
   const veiled = useAppStore(
     (s) =>
       s.overlay === "url" ||
@@ -92,10 +94,11 @@ function useStoreShellState(): ShellState {
       remindersOpen,
       bookmarksOpen,
       liveViewOpen,
+      tabSwitcherOpen,
       veiled,
       sidebarRevealed,
     }),
-    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, veiled, sidebarRevealed],
+    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, tabSwitcherOpen, veiled, sidebarRevealed],
   );
 }
 
@@ -176,7 +179,8 @@ export function runShellCommand(command: ShellCommand): void {
       break;
     }
     case "openWatchtower":
-      s.setOverlay("watchtower");
+      if (command.view === "saved") s.openBookmarks();
+      else s.openWatchtower(command.entityId);
       break;
     case "openArchive":
       s.setOverlay("archive");

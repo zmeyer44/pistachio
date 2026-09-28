@@ -2,9 +2,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { extractBookmark, extractionPrompt, mergeModelAnswer } from "../src/main/bookmark-extractor";
+import { MockLanguageModelV4 } from "ai/test";
+import type { WatchtowerSavedEntity } from "@pistachio/shell-contracts/watchtower";
+import { extractBookmark, extractionPrompt, mergeModelAnswer, verifiedEntities } from "../src/main/bookmark-extractor";
 import { BookmarkStore } from "../src/main/bookmark-store";
-import { BookmarkService, USER_BOOKMARK_SOURCE, type BookmarkPageReader } from "../src/main/bookmarks";
+import { BookmarkService, USER_BOOKMARK_SOURCE, type ArchiveKept, type BookmarkArchive, type BookmarkPageReader } from "../src/main/bookmarks";
 import { draftFromPage, type BookmarkToast, type PageSnapshot } from "@pistachio/shell-contracts/bookmarks";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 
@@ -18,7 +20,7 @@ function snapshot(url: string, overrides: Partial<PageSnapshot> = {}): PageSnaps
 
 const HTML = `<html><head><title>Cacio e Pepe | Serious Eats</title><meta property="og:site_name" content="Serious Eats"><script type="application/ld+json">{"@type":"Recipe","name":"Cacio e Pepe","totalTime":"PT20M"}</script></head><body><p>Pasta.</p></body></html>`;
 
-function harness(options: { tabs?: BrowserTabInfo[]; capture?: (tabId: string) => Promise<PageSnapshot>; fetch?: (url: string) => Promise<string>; useModel?: boolean } = {}) {
+function harness(options: { tabs?: BrowserTabInfo[]; capture?: (tabId: string) => Promise<PageSnapshot>; fetch?: (url: string) => Promise<string>; useModel?: boolean; archive?: BookmarkArchive; entities?: WatchtowerSavedEntity[] } = {}) {
   const tabs = options.tabs ?? [tab("t1", "https://www.amazon.com/dp/B00CH9QWOU?tag=x", "Amazon.com: Breville Barista Express")];
   const calls: string[] = [];
   const reader: BookmarkPageReader = {
@@ -45,7 +47,8 @@ function harness(options: { tabs?: BrowserTabInfo[]; capture?: (tabId: string) =
     useModel: () => options.useModel ?? false,
     onToast: (toast) => toasts.push(toast),
     // The page's own draft, without a model: what a run without a key gets.
-    extract: async (page) => ({ fields: draftFromPage(page), url: page.url, provenance: "page" }),
+    extract: async (page) => ({ fields: draftFromPage(page), url: page.url, provenance: "page", entities: options.entities ?? [] }),
+    ...(options.archive === undefined ? {} : { archive: () => options.archive ?? null }),
   });
   return { store, service, toasts, calls };
 }
@@ -195,3 +198,171 @@ describe("extraction", () => {
     expect(prompt).toContain("An espresso machine.");
   });
 });
+
+/** Watchtower, as the save sees it: what it was asked to keep and to file. */
+function archive(outcome: ArchiveKept | { skipped: string } = { observationId: "o1", snapshotId: 7, pageId: 3, spaceId: "s", epoch: 1 }) {
+  const log: string[] = [];
+  const filed: WatchtowerSavedEntity[][] = [];
+  const fake: BookmarkArchive = {
+    keep: async (tabId, keptKey) => {
+      log.push(`keep:${tabId}:${keptKey}`);
+      return outcome;
+    },
+    file: async (_kept, entities) => {
+      filed.push(entities);
+      return entities.map((entity, index) => ({ id: index + 1, kind: entity.kind, name: entity.name }));
+    },
+    about: async () => ({ observationId: "o1", entities: [{ id: 9, kind: "product", name: "Barista Express" }] }),
+    rekeep: (_kept, keptKey) => log.push(`rekeep:${keptKey}`),
+  };
+  return { fake, log, filed };
+}
+
+const PERSON_AND_COMPANY: WatchtowerSavedEntity[] = [
+  { kind: "person", name: "Patrick Collison", aliases: ["Collison"], role: "subject", facts: [{ kind: "definition", text: "Patrick Collison is the CEO of Stripe." }], context: "Patrick Collison is the CEO of Stripe." },
+  { kind: "company", name: "Stripe", aliases: [], role: "major", facts: [], context: "Patrick Collison is the CEO of Stripe." },
+];
+
+async function archived(service: BookmarkService, state: "saved" | "skipped", tries = 50): Promise<void> {
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    if (service.toast()?.watchtower?.state === state) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`the save never reached ${state} in Watchtower`);
+}
+
+describe("a save is a Watchtower save", () => {
+  it("keeps the page while the model reads it, then files everything it is about and says so on the card", async () => {
+    const { fake, log, filed } = archive();
+    const { store, service, toasts } = harness({ archive: fake, entities: PERSON_AND_COMPANY });
+    const skeleton = service.captureTab();
+    // The card goes up at once, already saying the page is being kept.
+    expect(toasts[0]).toMatchObject({ id: skeleton.id, existed: false, watchtower: { state: "saving", entities: [] } });
+    expect(log).toEqual(["keep:t1:amazon.com/dp/B00CH9QWOU"]);
+    await settled(store, skeleton.id);
+    await archived(service, "saved");
+    expect(filed).toEqual([PERSON_AND_COMPANY]);
+    expect(service.toast()?.watchtower).toEqual({
+      state: "saved",
+      observationId: "o1",
+      entities: [
+        { id: 1, kind: "person", name: "Patrick Collison" },
+        { id: 2, kind: "company", name: "Stripe" },
+      ],
+    });
+    // The kept page follows the record's address as it settled.
+    expect(log).toContain("rekeep:amazon.com/dp/B00CH9QWOU");
+  });
+
+  it("with nothing read by the model, shows what the archive already filed the page under", async () => {
+    const { fake, filed } = archive();
+    const { store, service } = harness({ archive: fake });
+    const saved = service.captureTab();
+    await settled(store, saved.id);
+    await archived(service, "saved");
+    expect(filed).toEqual([]);
+    expect(service.toast()?.watchtower?.entities).toEqual([{ id: 9, kind: "product", name: "Barista Express" }]);
+  });
+
+  it("still saves when Watchtower will not keep the page, and says why", async () => {
+    const { fake } = archive({ skipped: "This site or Space is excluded from Watchtower." });
+    const { store, service } = harness({ archive: fake, entities: PERSON_AND_COMPANY });
+    const saved = service.captureTab();
+    await settled(store, saved.id);
+    await archived(service, "skipped");
+    expect(store.get(saved.id)?.status).toBe("ready");
+    expect(service.toast()?.watchtower).toEqual({ state: "skipped", reason: "This site or Space is excluded from Watchtower.", entities: [] });
+  });
+
+  it("saves a page saved before again: a new version kept, its entries brought up to date", async () => {
+    const { fake, log, filed } = archive();
+    const { store, service } = harness({ archive: fake, entities: PERSON_AND_COMPANY });
+    const first = service.captureTab();
+    await settled(store, first.id);
+    await archived(service, "saved");
+    const again = service.captureTab();
+    expect(again.id).toBe(first.id);
+    expect(service.toast()).toMatchObject({ id: first.id, existed: true, watchtower: { state: "saving" } });
+    await settled(store, first.id);
+    await archived(service, "saved");
+    expect(log.filter((entry) => entry.startsWith("keep:"))).toHaveLength(2);
+    expect(filed).toHaveLength(2);
+    expect(store.all()).toHaveLength(1);
+  });
+
+  it("has no Watchtower half where there is no archive", async () => {
+    const { store, service, toasts } = harness();
+    const saved = service.captureTab();
+    await settled(store, saved.id);
+    expect(toasts.every((toast) => toast === null || toast.watchtower === undefined)).toBe(true);
+  });
+});
+
+describe("what a saved page is about", () => {
+  const TEXT = "Patrick Collison is the CEO of Stripe. He co-founded the company with his brother John in 2010. Stripe processed $1.4 trillion in 2024, up 38% from the year before.";
+  const answer = (entities: Parameters<typeof verifiedEntities>[0]) => entities;
+
+  it("keeps a fact only when the page says it, word for word", () => {
+    const entities = verifiedEntities(
+      answer([
+        { kind: "company", name: "Stripe", alsoKnownAs: ["Stripe, Inc.", "Stripe"], role: "major", facts: [
+          { kind: "metric", quote: "Stripe processed $1.4 trillion in 2024, up 38% from the year before." },
+          // Paraphrased: not on the page.
+          { kind: "metric", quote: "Stripe handled about $1.4T of payments last year." },
+        ] },
+        { kind: "person", name: "  Patrick   Collison ", alsoKnownAs: [], role: "subject", facts: [
+          // Curly quotes and a line break where the page had none still match.
+          { kind: "definition", quote: "“Patrick Collison is the CEO\nof Stripe.”" },
+        ] },
+        { kind: "person", name: "Patrick Collison", alsoKnownAs: [], role: "mention", facts: [] },
+      ]),
+      TEXT,
+    );
+    // The subject first; the duplicate gone; the invented fact dropped.
+    expect(entities.map((entity) => [entity.kind, entity.name, entity.role])).toEqual([
+      ["person", "Patrick Collison", "subject"],
+      ["company", "Stripe", "major"],
+    ]);
+    expect(entities[0]!.facts).toEqual([{ kind: "definition", text: "Patrick Collison is the CEO of Stripe." }]);
+    expect(entities[1]!.facts).toEqual([{ kind: "metric", text: "Stripe processed $1.4 trillion in 2024, up 38% from the year before." }]);
+    expect(entities[1]!.aliases).toEqual(["Stripe, Inc."]);
+    expect(entities[1]!.context).toContain("Stripe");
+  });
+
+  it("reads the card and every entity in one answer from the model", async () => {
+    const page = snapshot("https://www.example.com/people/patrick-collison", { title: "Patrick Collison | Profiles", text: TEXT, meta: [{ name: "og:site_name", content: "Profiles" }] });
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              kind: "website",
+              title: "Patrick Collison",
+              description: "The CEO of Stripe.",
+              siteName: "Profiles",
+              imageUrl: null,
+              keywords: ["stripe", "founder"],
+              details: [],
+              entities: [
+                { kind: "person", name: "Patrick Collison", alsoKnownAs: ["Collison"], role: "subject", facts: [{ kind: "definition", quote: "Patrick Collison is the CEO of Stripe." }] },
+                { kind: "company", name: "Stripe", alsoKnownAs: [], role: "major", facts: [{ kind: "metric", quote: "Stripe processed $1.4 trillion in 2024, up 38% from the year before." }] },
+                { kind: "person", name: "John Collison", alsoKnownAs: ["John"], role: "mention", facts: [] },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: "stop", raw: "end_turn" },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } },
+        warnings: [],
+      }),
+    });
+    const result = await extractBookmark(page, { model, env: {} });
+    expect(result.provenance).toBe("model");
+    expect(result.fields.title).toBe("Patrick Collison");
+    expect(result.entities?.map((entity) => `${entity.role}:${entity.kind}:${entity.name}`)).toEqual(["subject:person:Patrick Collison", "major:company:Stripe", "mention:person:John Collison"]);
+    // Without a model there is nothing to file: the page's own tags stand.
+    expect((await extractBookmark(page, { useModel: false })).entities).toBeUndefined();
+  });
+});
+

@@ -49,6 +49,7 @@ import {
 } from "lucide-react";
 import type { ShellCommand, ShellState } from "@pistachio/shell-contracts/chrome";
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import { hasCopyableSelection } from "@pistachio/shell-contracts/page-link";
 import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
 import type { DesktopSettings } from "@pistachio/shell-contracts/settings";
 import {
@@ -61,6 +62,7 @@ import {
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
+import { useSurface } from "../surface";
 import { useShell, type ShellHost } from "./shell-host";
 import { nextSplitMode, toggledSplitMode } from "./split-mode";
 
@@ -544,8 +546,39 @@ export function ChromeShortcuts() {
       window.removeEventListener(RUN_SHORTCUT_EVENT, onRelayedShortcut);
     };
   }, []);
+  // In the desktop app a bare ⌘C with nothing selected copies the page's URL,
+  // as ⌘⇧C does. A tab's page has its own half of this (its preload reports
+  // the empty copy to main); this half is for when the chrome holds the
+  // keyboard. The copy event is what the key's Edit › Copy dispatches, and it
+  // only counts when nothing was selected and no handler took it.
+  const native = useSurface().kind === "native";
+  useEffect(() => {
+    if (!native) return;
+    const platform: ShortcutPlatform = /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
+    let copyKeyAt = Number.NEGATIVE_INFINITY;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const command = platform === "darwin" ? event.metaKey : event.ctrlKey;
+      if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "c") copyKeyAt = event.timeStamp;
+    };
+    const onCopy = (event: ClipboardEvent) => {
+      if (event.timeStamp - copyKeyAt > EMPTY_COPY_WINDOW_MS || hasCopyableSelection(document)) return;
+      copyKeyAt = Number.NEGATIVE_INFINITY;
+      setTimeout(() => {
+        if (!event.defaultPrevented) runConfiguredShortcut("copyUrl", hostRef.current);
+      }, 0);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("copy", onCopy, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("copy", onCopy, true);
+    };
+  }, [native]);
   return null;
 }
+
+/** How long a ⌘C speaks for the copy its Edit › Copy dispatches. */
+const EMPTY_COPY_WINDOW_MS = 1_000;
 
 export interface BoundAction {
   action: ChromeAction;

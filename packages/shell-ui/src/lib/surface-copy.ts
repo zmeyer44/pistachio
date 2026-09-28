@@ -271,4 +271,5 @@ export const WATCHTOWER_COPY = {
   storage: "on this Mac",
   filterOff: "Off, capture never leaves this Mac and filters less.",
   filterMemory: "then remembers the answer on this Mac",
+  indexOff: "Off, the index holds only what pages declare about themselves.",
 } as const;

@@ -1042,11 +1042,11 @@ export class DemoShellHost {
     queueMicrotask(() => queueMicrotask(() => this.#setGlance(null)));
   }
 
-  async getTabSwitcherPreviews() {
+  async getTabSwitcherPreviews(limit = 15) {
     return this.#orderedTabs()
       .slice()
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
-      .slice(0, 5)
+      .slice(0, limit)
       .map((tab) => ({ tab: { ...tab }, dataUrl: null }));
   }
 

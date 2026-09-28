@@ -20,6 +20,7 @@ import {
   screen,
   session,
   systemPreferences,
+  type WebContents,
 } from "electron";
 import {
   NotificationRouter,
@@ -181,6 +182,7 @@ import {
   type ReminderSource,
 } from "@pistachio/shell-contracts/reminders";
 import {
+  bookmarkUrlKey,
   isBookmarksUrl,
   sanitizeBookmarkInput,
   sanitizeBookmarkPatch,
@@ -203,6 +205,13 @@ import {
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
+import { isDeskState } from "@pistachio/shell-contracts/desk";
+import {
+  menuKeepsKey,
+  passedKeystroke,
+  TAB_SWITCHER_HOLD_MS,
+  TabSwitcherGesture,
+} from "@pistachio/shell-contracts/tab-switcher";
 import type { DesktopSettings } from "@pistachio/shell-contracts/settings";
 import {
   shortcutAccelerator,
@@ -476,44 +485,129 @@ let dragLayer: ChromeOverlayView | null = null;
 let findLayer: ChromeOverlayView | null = null;
 /** The shell's last published state, used by native window/view coordination. */
 let shellState: ShellState = DEFAULT_SHELL_STATE;
-let tabSwitcherChordActive = false;
 let windowButtonHideTimer: NodeJS.Timeout | null = null;
 
-/** One native Control–Tab chord, independent of which child WebContents has focus. */
+/**
+ * The tab switcher's held-modifier gesture, fed by every view's keyboard
+ * (@pistachio/shell-contracts/tab-switcher). It opens only when there are
+ * two tabs to choose between; the hold also waits out any overlay already up.
+ */
+const tabSwitcher = new TabSwitcherGesture(
+  () => browser !== null && browser.tabSwitcherCandidateCount() >= 2,
+);
+let tabSwitcherHoldTimer: NodeJS.Timeout | null = null;
+/**
+ * The switcher took the keyboard from a page, not from the shell's own
+ * document: a key it passes on goes back with the keyboard, to the page.
+ */
+let tabSwitcherBorrowedKeyboard = false;
+/** Where the OS pointer was when the hold began: a pointer that travels is on its way to a ⌘-click. */
+let tabSwitcherHoldCursor: Electron.Point | null = null;
+/** Farther than this and the pointer is going somewhere. */
+const TAB_SWITCHER_HOLD_DRIFT = 6;
+
+function clearTabSwitcherHold(): void {
+  if (tabSwitcherHoldTimer !== null) clearTimeout(tabSwitcherHoldTimer);
+  tabSwitcherHoldTimer = null;
+  tabSwitcherHoldCursor = null;
+}
+
+function tabSwitcherHoldElapsed(): void {
+  const start = tabSwitcherHoldCursor;
+  tabSwitcherHoldTimer = null;
+  tabSwitcherHoldCursor = null;
+  const cursor = screen.getCursorScreenPoint();
+  const drifted =
+    start !== null &&
+    Math.hypot(cursor.x - start.x, cursor.y - start.y) > TAB_SWITCHER_HOLD_DRIFT;
+  const busy = shellState.veiled || shellState.settingsOpen;
+  if (
+    drifted ||
+    busy ||
+    shellWindow === null ||
+    shellWindow.isDestroyed() ||
+    !shellWindow.isFocused()
+  ) {
+    tabSwitcher.disarm();
+    return;
+  }
+  const input = tabSwitcher.holdElapsed();
+  if (input !== null) openTabSwitcher(input);
+}
+
+/**
+ * The switcher is opening: the shell takes the keyboard now, before the
+ * modifier comes up. A view whose keyDown main consumed drops its later
+ * keyUps (Chromium suppresses them until the next keyDown), so the release
+ * that commits must land in a view that has consumed nothing — the shell,
+ * whose keys main only reads.
+ */
+function openTabSwitcher(input: TabSwitcherInput): void {
+  if (shellWindow !== null && !shellWindow.isDestroyed()) {
+    const shell = shellWindow.webContents;
+    // A switcher still landing the gesture before may be why the shell has it.
+    if (!shellState.tabSwitcherOpen) tabSwitcherBorrowedKeyboard = !shell.isFocused();
+    shell.focus();
+  }
+  publishTabSwitcherInput(input);
+}
+
+/**
+ * One key from any view, for the switcher. `source` is the view it came
+ * from, when that is the shell: the shell's keys are read, never consumed —
+ * its document keeps them from its own focus and buttons while the switcher
+ * is open (components/TabSwitcher.tsx), and its releases stay visible.
+ */
 function relayTabSwitcherInput(
   event: Electron.Event,
   input: Electron.Input,
+  source?: WebContents,
 ): boolean {
-  const key = input.key.toLowerCase();
+  const wasOpen = tabSwitcher.open;
+  const outcome = tabSwitcher.key(input);
+  if (tabSwitcher.armed) {
+    if (tabSwitcherHoldTimer === null) {
+      tabSwitcherHoldCursor = screen.getCursorScreenPoint();
+      tabSwitcherHoldTimer = setTimeout(tabSwitcherHoldElapsed, TAB_SWITCHER_HOLD_MS);
+    }
+  } else clearTabSwitcherHold();
+  if (outcome.input !== null) {
+    if (outcome.input.type === "open") openTabSwitcher(outcome.input);
+    else publishTabSwitcherInput(outcome.input);
+    // Ended before the shell said it was showing (it declined, or the
+    // release beat it): the keyboard the opening borrowed goes back.
+    if (wasOpen && !tabSwitcher.open && !shellState.tabSwitcherOpen) browser?.focusPageAfterOverlay();
+  }
+  const shell = shellWindow !== null && !shellWindow.isDestroyed() ? shellWindow.webContents : null;
+  if (outcome.consume && source !== shell) event.preventDefault();
+  // A key the switcher passed on reached the shell only because the switcher
+  // had its keyboard; it was going to the page, and goes there with the
+  // keyboard (⌘B after a ⌘ hold is still bold) instead of to the shell.
   if (
-    input.type === "keyDown" &&
-    key === "tab" &&
-    input.control &&
-    !input.alt &&
-    !input.meta
-  ) {
+    !outcome.consume &&
+    outcome.input !== null &&
+    source === shell &&
+    tabSwitcherBorrowedKeyboard &&
+    passKeyToPage(input)
+  )
     event.preventDefault();
-    tabSwitcherChordActive = true;
-    publishTabSwitcherInput({ type: "step", reverse: input.shift });
-    return true;
-  }
-  if (
-    tabSwitcherChordActive &&
-    input.type === "keyUp" &&
-    (!input.control || key.startsWith("control"))
-  ) {
-    event.preventDefault();
-    tabSwitcherChordActive = false;
-    publishTabSwitcherInput({ type: "commit" });
-    return true;
-  }
-  if (tabSwitcherChordActive && input.type === "keyDown" && key === "escape") {
-    event.preventDefault();
-    tabSwitcherChordActive = false;
-    publishTabSwitcherInput({ type: "cancel" });
-    return true;
-  }
-  return false;
+  return outcome.consume;
+}
+
+/** Queue `input` for the page the keyboard goes back to; false leaves it with the shell. */
+function passKeyToPage(input: Electron.Input): boolean {
+  if (browser === null || input.type !== "keyDown") return false;
+  if (process.platform === "darwin" && menuKeepsKey(input)) return false;
+  const keystroke = passedKeystroke(input);
+  if (keystroke === null) return false;
+  browser.focusPageAfterOverlay(keystroke);
+  return true;
+}
+
+/** A click or scroll anywhere: a modifier held for it is not a switcher hold. */
+function disarmTabSwitcher(): void {
+  tabSwitcher.disarm();
+  clearTabSwitcherHold();
 }
 
 function publishTabSwitcherInput(input: TabSwitcherInput): void {
@@ -547,10 +641,16 @@ function captureActivePage(tabId?: string): void {
   }
 }
 
-/** Every chrome view and the shell relay the same two chords. */
-function relayChromeInput(event: Electron.Event, input: Electron.Input): boolean {
+/** Every chrome view, the shell and the tab views relay the same two gestures. */
+function relayChromeInput(
+  event: Electron.Event,
+  input: Electron.Input,
+  source?: WebContents,
+): boolean {
+  // The desk follows its grab key from every view's keys (@pistachio/shell-contracts/desk).
+  browser?.noteDeskKey(input);
   // The detector must see even the events consumed by another shortcut.
-  return relayDoubleShift(input) || relayTabSwitcherInput(event, input);
+  return relayDoubleShift(input) || relayTabSwitcherInput(event, input, source);
 }
 
 /** The compact sidebar: the column hides itself, and the window buttons with it. */
@@ -1882,14 +1982,18 @@ async function createWindow(): Promise<void> {
     noticeView.webContents,
   ]) {
     contents.on("before-input-event", (event, input) => {
-      relayChromeInput(event, input);
+      relayChromeInput(event, input, contents);
+    });
+    contents.on("input-event", (_event, input) => {
+      if (input.type === "mouseDown" || input.type === "mouseWheel") disarmTabSwitcher();
     });
   }
   window.on("blur", () => {
     doubleShift.reset();
-    if (!tabSwitcherChordActive) return;
-    tabSwitcherChordActive = false;
-    publishTabSwitcherInput({ type: "cancel" });
+    clearTabSwitcherHold();
+    const wasOpen = tabSwitcher.open;
+    tabSwitcher.reset();
+    if (wasOpen) publishTabSwitcherInput({ type: "cancel" });
   });
   sidebarWatch = new SidebarWatch(window);
   paneToolbarWatch = new PaneToolbarWatch(window);
@@ -1944,6 +2048,23 @@ async function createWindow(): Promise<void> {
         featureHandlers.lifecycle.onSessionCreated(target, spaceId, partition, kind),
       beginBulkCookieWrite: (spaceId) => featureHandlers.lifecycle.beginBulkCookieWrite(spaceId),
       endBulkCookieWrite: (spaceId) => featureHandlers.lifecycle.endBulkCookieWrite(spaceId),
+      onDeskGrab: (grab) => {
+        // The grab key held through a press is not a tap of it, nor a switcher hold
+        // (the page never sees this press, so its pointer never disarms the hold).
+        doubleShift.reset();
+        disarmTabSwitcher();
+        if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskGrab, grab);
+      },
+      // The rest of a grabbed press rides the drag layer's channel: the shell
+      // runs the move with the same code either way (lib/pane-drag.ts).
+      onDeskSample: (sample) => {
+        if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.dragSample, sample);
+      },
+      onTabSwitcherThumbnail: (thumbnail) => {
+        if (shellWindow === null || shellWindow.isDestroyed()) return;
+        shellWindow.webContents.send(IPC.tabSwitcherThumbnail, thumbnail);
+      },
+      onPointerInput: disarmTabSwitcher,
       focusShell: () => {
         if (shellWindow === null || shellWindow.isDestroyed()) return;
         // A shown utility layer that is being typed into (the find bar, the
@@ -2574,6 +2695,9 @@ function installIpc(): void {
     if (isGuardedBrowserAction(action))
       requireBrowser().acceptPolicyBlocked(event.sender.id, action);
   });
+  ipcMain.on(IPC.tabEmptyCopy, (event) => {
+    requireBrowser().acceptEmptyCopy(event.sender.id);
+  });
   ipcMain.on(IPC.tabPasskeySupportReport, (event, report: unknown) => {
     requireBrowser().acceptPasskeySupport(event.sender.id, report);
   });
@@ -2660,9 +2784,25 @@ function installIpc(): void {
   ipcMain.handle(IPC.overlaySet, (event, active: unknown) => {
     if (isShell(event.sender)) requireBrowser().setOverlay(active === true);
   });
-  ipcMain.handle(IPC.tabSwitcherPreviewsGet, (event) => {
+  ipcMain.on(IPC.deskSet, (event, state: unknown) => {
+    if (!isShell(event.sender)) return;
+    requireBrowser().setDesk(isDeskState(state) ? state : null);
+  });
+  ipcMain.handle(IPC.deskStillsCapture, (event, tabIds: unknown, width: unknown) => {
+    if (!isShell(event.sender) || !Array.isArray(tabIds)) return [];
+    return requireBrowser().captureTabStills(
+      tabIds.filter((tabId): tabId is string => typeof tabId === "string"),
+      typeof width === "number" ? width : 0,
+    );
+  });
+  ipcMain.on(IPC.deskFocus, (event, tabId: unknown) => {
+    if (isShell(event.sender) && typeof tabId === "string") void requireBrowser().focusTab(tabId);
+  });
+  ipcMain.handle(IPC.tabSwitcherPreviewsGet, (event, limit: unknown) => {
     if (!isShell(event.sender)) return [];
-    return requireBrowser().tabSwitcherPreviews();
+    return requireBrowser().tabSwitcherPreviews(
+      typeof limit === "number" && Number.isInteger(limit) ? limit : undefined,
+    );
   });
   // ── Glance: sandboxed tab gesture → main-owned view ↔ shell UI ─────
   ipcMain.handle(IPC.glanceGet, (event) =>
@@ -2736,7 +2876,16 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.shellStateSet, (event, state: unknown) => {
     if (!isShell(event.sender) || !isShellState(state)) return;
+    const switcherEnded = shellState.tabSwitcherOpen && !state.tabSwitcherOpen;
     shellState = state;
+    if (switcherEnded) {
+      tabSwitcher.reset();
+      clearTabSwitcherHold();
+      browser?.endTabSwitcher();
+      // Unless something else took over the overlay (⌘T went on to the
+      // address bar), the page now in front gets the keyboard back.
+      if (!state.veiled && !state.settingsOpen) browser?.focusPageAfterOverlay();
+    }
     // The compact sidebar's column came or went: the traffic lights follow it.
     applyWindowButtons();
     syncSidebarEntryWatch();
@@ -2979,8 +3128,13 @@ function installIpc(): void {
     if (shellWindow === null || shellWindow.isDestroyed()) return;
     shellWindow.webContents.send(IPC.noticeEvent, noticeEvent);
   });
-  ipcMain.on(IPC.bookmarksOpen, (_event, bookmarkId: unknown) => {
+  ipcMain.on(IPC.bookmarksOpen, (_event, bookmarkId: unknown, entityId: unknown) => {
     bookmarkService?.dismissToast();
+    // From a save's card: the Watchtower entry the page was filed under.
+    if (typeof entityId === "number" && Number.isSafeInteger(entityId) && entityId > 0) {
+      sendShellCommand({ type: "openWatchtower", entityId });
+      return;
+    }
     sendShellCommand({
       type: "openBookmarks",
       ...(typeof bookmarkId === "string" && bookmarkId !== ""
@@ -3599,6 +3753,8 @@ function setDragCapture(cursor: DragCursor | null): void {
   }
   layer.setShown(false);
   layer.webContents.send(IPC.tabDragVisualChanged, null);
+  // A desk page grabbed with the grab key may never have heard its release — the layer took it.
+  browser?.releaseDeskGrab();
   // The pointerdown that ended over the layer left the keyboard there; a
   // A hidden utility view must never keep keyboard focus.
   if (layer.webContents.isFocused()) shellWindow.webContents.focus();
@@ -4080,8 +4236,34 @@ app.whenReady().then(async () => {
   watchtower = new WatchtowerService(app.getPath("userData"), join(currentDir, "watchtower-worker.js"), () => browser?.watchtowerSources() ?? []);
   bookmarks = new BookmarkStore(app.getPath("userData"));
   const bookmarkSettings = settings;
+  // A saved page is kept in Watchtower for as long as its saved record
+  // exists — deleted here or on another device, the page ages normally.
+  const savedStore = bookmarks;
+  const keptKeys = (): string[] => savedStore.all().map((saved) => bookmarkUrlKey(saved.url));
+  watchtower.trackKept(keptKeys);
+  let keptSync: NodeJS.Timeout | null = null;
+  bookmarks.onChange(() => {
+    if (keptSync !== null) clearTimeout(keptSync);
+    keptSync = setTimeout(() => {
+      keptSync = null;
+      watchtower?.refreshKept();
+    }, 2000);
+  });
   bookmarkService = new BookmarkService({
     store: bookmarks,
+    // A save is also a Watchtower save: the page's text kept, and what it
+    // is about filed in the index (main/bookmarks.ts).
+    archive: () => {
+      const archive = watchtower;
+      return archive === null
+        ? null
+        : {
+            keep: (tabId, keptKey) => archive.keep(tabId, keptKey),
+            file: (kept, entities) => archive.file(kept, entities),
+            about: (spaceId, url) => archive.about(spaceId, url),
+            rekeep: (kept, keptKey) => archive.rekeep(kept, keptKey),
+          };
+    },
     // Reached through the live browser, which comes and goes with the window.
     reader: () => {
       const live = browser;

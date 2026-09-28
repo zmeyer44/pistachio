@@ -8,11 +8,12 @@
  */
 
 import { useEffect, useState } from "react";
-import { FileClock, FolderDown } from "lucide-react";
+import { Bookmark, FileClock, FolderDown } from "lucide-react";
 import { WATCHTOWER_COPY } from "../../../lib/surface-copy";
 import { useAppStore } from "../../../store";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { Kbd } from "../../ui/kbd";
 import { Note } from "../../ui/note";
 import { Select } from "../../ui/select";
 import { Switch } from "../../ui/switch";
@@ -105,12 +106,20 @@ function Available() {
         </Row>
       </Group>
 
-      <Group title="What is sent to a model" note="Searching and saving happen on your computer. These three are the exceptions, each off unless you choose it.">
+      <SavingOnPurpose />
+
+      <Group title="What is sent to a model" note="Searching and saving happen on your computer. These four are the exceptions, each off unless you choose it.">
         <Row
           label="Leave out ads, sidebars and menus with Jev"
           note={`The first time a site’s layout is seen, short excerpts of the page’s regions go to the Jev decision model through your Pistachio account, ${WATCHTOWER_COPY.filterMemory}. Excluded sites are never sent. ${WATCHTOWER_COPY.filterOff}`}
         >
           <Switch checked={settings.smartFilter} disabled={status.busy} onChange={(smartFilter) => void status.configure({ smartFilter })} label="Filter ads and page furniture with Jev" />
+        </Row>
+        <Row
+          label="Index people, companies and ideas with Jev"
+          note={`Files saved pages under what they are about, so “Stripe” read on three sites is one entry with three sources. Names found on a page and the sentence around each go to the Jev decision model through your Pistachio account, with the names already in your index they might match. Excluded sites are never sent. ${WATCHTOWER_COPY.indexOff}`}
+        >
+          <Switch checked={settings.smartIndex} disabled={status.busy} onChange={(smartIndex) => void status.configure({ smartIndex })} label="Index people, companies and ideas with Jev" />
         </Row>
         <Row label="Let the agent search what you saved" note="Only when you ask it to, and only in the Space the run belongs to. Text it retrieves is sent to your agent’s model and stays in that conversation.">
           <Switch checked={settings.agentAccess} disabled={status.busy} onChange={(agentAccess) => void status.configure({ agentAccess })} label="Let the agent search saved pages" />
@@ -189,6 +198,48 @@ function Available() {
         />
       )}
     </Page>
+  );
+}
+
+/**
+ * Shift, shift: a page saved on purpose. The saved record syncs to the
+ * person's other devices; Watchtower keeps the page's text here and files
+ * it under what it is about. These switches are the app's settings (they
+ * sync), not the archive's.
+ */
+function SavingOnPurpose() {
+  const bookmarks = useAppStore((state) => state.settings.bookmarks);
+  const updateSettings = useAppStore((state) => state.updateSettings);
+  const openBookmarks = useAppStore((state) => state.openBookmarks);
+  const saved = useAppStore((state) => state.bookmarks.bookmarks.length);
+  return (
+    <Group
+      title="Saving on purpose"
+      note={`Tap shift twice on any page to save it. The save syncs to your other devices; Watchtower keeps the page’s text ${WATCHTOWER_COPY.storage}, whether or not it saves what you read, and files it under the people, companies and products it is about.`}
+      footer={`${saved.toLocaleString()} ${saved === 1 ? "page" : "pages"} saved.`}
+      footerAction={
+        <Button variant="secondary" size="sm" prefix={<Bookmark aria-hidden="true" />} onClick={() => openBookmarks()}>
+          Open saved pages
+        </Button>
+      }
+    >
+      <Row
+        label={
+          <span className="inline-flex items-center gap-1.5">
+            Save with <Kbd>⇧</Kbd> <Kbd>⇧</Kbd>
+          </span>
+        }
+        note="A double tap of shift, with nothing else held. Off leaves the Save button in Watchtower, the command palette and the agent as the ways to save."
+      >
+        <Switch checked={bookmarks.doubleShift} onChange={(doubleShift) => void updateSettings({ bookmarks: { doubleShift } })} label="Save with a double tap of shift" />
+      </Row>
+      <Row
+        label="Read saved pages with the model"
+        note="The page’s text goes to your agent’s model, which names the thing it is about for the saved card and every person, company, product, place and idea it covers for the index — each fact a sentence copied from the page. Off, a save keeps what the page declares about itself."
+      >
+        <Switch checked={bookmarks.enrichWithModel} onChange={(enrichWithModel) => void updateSettings({ bookmarks: { enrichWithModel } })} label="Read saved pages with the model" />
+      </Row>
+    </Group>
   );
 }
 

@@ -13,6 +13,8 @@ import type { HomeNavigation } from "./navigation";
 
 export interface HomeSearchHandle {
   focus(): void;
+  /** The pill's box on screen right now: where a chat's composer flies from (HomeChat). */
+  rect(): DOMRect | null;
 }
 
 const BROWSE_ROWS = 6;
@@ -27,12 +29,30 @@ const BROWSE_ROWS = 6;
  * and the recent pages. As in the modal, the field shows where the active row
  * goes once the person has steered to it (lib/use-field-preview.ts).
  *
+ * One row stays on the page: "Ask Pistachio". Where the modal would send the
+ * words to the person's AI provider, the home page answers them itself —
+ * `onAsk` hands the prompt to the page, which turns into a chat around this
+ * very field (HomePage, HomeChat). The intent model puts that row first
+ * when the words read as a question, so ↵ on a question asks.
+ *
  * Focus alone does not open it: the page hands it the keyboard as a new tab
  * shows, and a list covering the page before anything was asked would hide
  * the page itself.
  */
-export function HomeSearch({ ref, navigation, className }: { ref?: Ref<HomeSearchHandle>; navigation: HomeNavigation; className?: string }) {
+export function HomeSearch({
+  ref,
+  navigation,
+  onAsk,
+  className,
+}: {
+  ref?: Ref<HomeSearchHandle>;
+  navigation: HomeNavigation;
+  /** The typed words, asked of Pistachio's own chat rather than sent anywhere. */
+  onAsk: (prompt: string) => void;
+  className?: string;
+}) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const pillRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState(-1);
@@ -40,14 +60,21 @@ export function HomeSearch({ ref, navigation, className }: { ref?: Ref<HomeSearc
   const editAddress = useAppStore((s) => s.settings.shortcuts.editAddress);
   const { tab } = navigation;
 
-  useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus({ preventScroll: true }) }), []);
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => inputRef.current?.focus({ preventScroll: true }),
+      rect: () => pillRef.current?.getBoundingClientRect() ?? null,
+    }),
+    [],
+  );
 
   const q = query.trim();
   const { palette, paletteTabs } = usePaletteInventory(expanded);
   const shelfRows = useShelfRows(tab?.anchorId);
   const searchSettings = useAppStore((s) => s.settings.search);
   const primaryItem = useMemo(() => primaryItemFor(q, searchSettings), [q, searchSettings]);
-  const face = useTypedEntries({ q, primaryItem, tab, currentUrl: tab?.url ?? "", palette, paletteTabs, shelfRows });
+  const face = useTypedEntries({ q, primaryItem, tab, currentUrl: tab?.url ?? "", palette, paletteTabs, shelfRows, assistant: "pistachio" });
   // Held still as soon as the person steers, and ↵ keeps meaning what the
   // list said a moment ago (lib/use-address-intent).
   const order = useIntentOrder(face, q, primaryItem);
@@ -84,6 +111,12 @@ export function HomeSearch({ ref, navigation, className }: { ref?: Ref<HomeSearc
 
   const act = (entry: Entry | undefined) => {
     if (entry === undefined) return;
+    // The question stays in the field: the page's chat takes over around it.
+    if (entry.kind === "suggestion" && entry.item.kind === "ai") {
+      collapse();
+      onAsk(q);
+      return;
+    }
     setQuery("");
     collapse();
     inputRef.current?.blur();
@@ -169,7 +202,7 @@ export function HomeSearch({ ref, navigation, className }: { ref?: Ref<HomeSearc
       stepTo(selected > firstStop ? selected - 1 : entries.length - 1);
       return;
     }
-    preview.release(event);
+    preview.adopt(event);
   };
 
   useEffect(() => {
@@ -183,6 +216,7 @@ export function HomeSearch({ ref, navigation, className }: { ref?: Ref<HomeSearc
   return (
     <div className={cn("relative h-14", className)}>
       <div
+        ref={pillRef}
         data-testid="home-search"
         data-expanded={open ? "" : undefined}
         className={cn(

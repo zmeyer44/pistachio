@@ -5,6 +5,7 @@ import { NotificationRouter } from "@pistachio/notifications";
 import {
   integrationOfToolName,
   type AgentAttachment,
+  type AgentDraft,
   type AgentSubagent,
   type AgentToolCall,
   type PendingApproval,
@@ -13,6 +14,7 @@ import {
   type ThreadListItem,
   isTerminalStatus,
   toolOutputOf,
+  toolSourceOf,
 } from "@pistachio/protocol";
 import { ARTIFACT_HOST, artifactToolView, type Artifact, type ArtifactSource, type ArtifactToolView } from "@pistachio/shell-contracts/artifacts";
 import { bookmarkToolView, type BookmarkSource } from "@pistachio/shell-contracts/bookmarks";
@@ -79,6 +81,21 @@ import { threadListItem, titleFor, type ThreadRecord, type ThreadStore } from ".
 
 /** The agent is acting, or about to: nothing else may take the console. */
 const ACTIVE_STATUSES: TaskStatus[] = ["capturing", "ready", "running"];
+
+/**
+ * How often the reply being written goes out to the shell, at most. Well
+ * under a frame's worth of words per publish at a model's pace, and the
+ * shell smooths what it gets between publishes (components/chat).
+ */
+const DRAFT_PUBLISH_MS = 40;
+
+/**
+ * What every model call is asked for beyond the SDK's own vocabulary: a
+ * summary of the model's reasoning, so the chat can show what it is
+ * thinking while it thinks. Keyed by provider; a provider reads only its
+ * own key, so the same object is sent whichever model is configured.
+ */
+const MODEL_PROVIDER_OPTIONS = { openai: { reasoningSummary: "auto" } } as const;
 
 /**
  * A run the cloud browser drives (docs/cloud-sync-design.md §10.4). Its
@@ -340,6 +357,8 @@ export class RunController {
   readonly #threads: ThreadStore | null;
   readonly #cloud: CloudRunCommands | null;
   readonly #model: (() => LanguageModel) | null;
+  /** Turns stream their reply (see the constructor's `stream`). */
+  readonly #stream: boolean;
   readonly #router: TurnRouter;
   readonly #summarize: ((prompt: string) => Promise<string>) | null;
   readonly #limits: Partial<TurnLimits>;
@@ -372,6 +391,17 @@ export class RunController {
   #aiGeneration = 0;
   #aiMode = false;
   #runSpaceId: string | null = null;
+  /**
+   * The reply being written, while a turn streams (AgentDraft). Held beside
+   * the run rather than on it so nothing that persists the run — the thread
+   * store, the cloud mirror — ever sees half a sentence; `peek` and
+   * `snapshot` fold it in for the shell alone.
+   */
+  #draft: AgentDraft | null = null;
+  /** A publish of the draft is due: deltas arrive many times a second and go out at most every DRAFT_PUBLISH_MS. */
+  #draftTimer: NodeJS.Timeout | null = null;
+  /** When the draft's reasoning stopped, for the reply's "Thought for 4s". */
+  #thinkingEndedAt: number | null = null;
 
   constructor(options: {
     browser: BrowserController;
@@ -400,6 +430,12 @@ export class RunController {
     /** The model to run turns on; the configured one when absent. Tests inject a mock. */
     model?: () => LanguageModel;
     /**
+     * Whether a turn streams its reply word by word (AgentDraft). On for
+     * the configured model; off by default for an injected one, whose
+     * scripted answers arrive whole — a test that scripts a stream says so.
+     */
+    stream?: boolean;
+    /**
      * Decides whether a new request is a reply or browser work
      * (docs/console-routing.md); the account's intent model when absent,
      * which answers null — the browser path — until this Mac is enrolled.
@@ -423,6 +459,7 @@ export class RunController {
     this.#threads = options.threads ?? null;
     this.#cloud = options.cloud ?? null;
     this.#model = options.model ?? null;
+    this.#stream = options.stream ?? options.model === undefined;
     this.#router = options.router ?? defaultTurnRouter;
     this.#summarize = options.summarize ?? null;
     this.#limits = options.limits ?? {};
@@ -452,16 +489,47 @@ export class RunController {
   }
 
   snapshot(): RunSummary | null {
-    return this.#run === null ? null : structuredClone(this.#run);
+    const run = this.peek();
+    return run === null ? null : structuredClone(run);
   }
 
   /**
    * The live run, uncloned, for readers that only serialize or inspect it —
    * IPC serializes at send time, so publishing needs no defensive copy of a
    * conversation that grows for the length of a thread. Never mutate it.
+   * While a turn streams, the reply so far rides along as `draft`: a
+   * shallow copy with one more field, so the run itself stays exactly what
+   * the thread store writes.
    */
   peek(): Readonly<RunSummary> | null {
-    return this.#run;
+    if (this.#run === null) return null;
+    return this.#draft === null ? this.#run : { ...this.#run, draft: this.#draft };
+  }
+
+  /**
+   * The words of the reply as they arrive. Coalesced: a model writes a few
+   * tokens at a time, and one publish per token would re-send the thread
+   * for every syllable. The first delta of a burst goes out on the next
+   * tick, the rest wait for it.
+   */
+  #publishDraft(): void {
+    if (this.#draftTimer !== null) return;
+    const timer = setTimeout(() => {
+      this.#draftTimer = null;
+      if (this.#draft !== null) this.#onChange();
+    }, DRAFT_PUBLISH_MS);
+    timer.unref();
+    this.#draftTimer = timer;
+  }
+
+  /** The turn's stream ended, however it ended: nothing half-written is left on the run. */
+  #clearDraft(): void {
+    if (this.#draftTimer !== null) {
+      clearTimeout(this.#draftTimer);
+      this.#draftTimer = null;
+    }
+    this.#draft = null;
+    this.#thinkingEndedAt = null;
   }
 
   evidence(): EvidenceEntry[] {
@@ -1456,7 +1524,11 @@ export class RunController {
         ...extras,
         timezone: this.timezone(),
         ...(this.#scheduledTurn && run.origin?.kind === "reminder" ? { scheduled: { title: run.origin.title, scheduledFor: run.origin.scheduledFor } } : {}),
+        ...(this.#stream ? { providerOptions: MODEL_PROVIDER_OPTIONS } : {}),
         callbacks: {
+          // Present only when the turn streams: their presence is what asks
+          // the runner for a stream rather than one answer at the end.
+          ...(this.#stream ? this.#streamCallbacks(run.turns, current) : {}),
           toolStarted: (request, label, detail) => {
             const tabId = "tabId" in request ? request.tabId : null;
             const call = this.#startTool(request.name, label, detail, tabId);
@@ -1484,6 +1556,11 @@ export class RunController {
             // under the reply as a card rather than as a line in the trace.
             const output = toolCall === undefined ? null : toolOutputOf(toolCall.name, toolResult.data);
             if (toolCall !== undefined && output !== null) toolCall.output = output;
+            // The page the call read rides on the record too: the chat
+            // gathers a turn's sources under its reply and draws a link
+            // to one of them as a citation.
+            const source = toolCall === undefined ? null : toolSourceOf(toolCall.name, toolResult.data);
+            if (toolCall !== undefined && source !== null) toolCall.source = source;
             this.#chain?.append(`${toolFamily(toolCall?.name ?? "")}.action`, {
               tool: toolCall?.name ?? "unknown",
               tabId: toolCall?.tabId ?? null,
@@ -1584,6 +1661,9 @@ export class RunController {
       this.#aiAbort = null;
       this.#history = result.messages;
       this.#turnUsage = { inputTokens: 0, outputTokens: 0 };
+      // What the model thought before it answered stays with the answer;
+      // the draft itself is done with — the words are a message now.
+      const thought = this.#takeThought();
       switch (result.outcome) {
         case "handoff":
           // Only the answer path hands off, and it was rerun above; a
@@ -1608,15 +1688,88 @@ export class RunController {
             this.#pauseTurn(runId, "I stopped without a final answer. Press Resume or send a message to continue.", "Turn ended without an answer");
             break;
           }
-          await this.#completeAiRun(runId, result.text, result.model);
+          await this.#completeAiRun(runId, result.text, result.model, thought);
           break;
       }
     } catch (error: unknown) {
-      if (abort.signal.aborted || generation !== this.#aiGeneration) return;
+      // A turn that has since been replaced leaves the draft alone: it is
+      // the replacement's now, and the abort already cleared this turn's.
+      if (generation !== this.#aiGeneration) return;
+      this.#clearDraft();
+      if (abort.signal.aborted) return;
       this.#aiAbort = null;
       this.#turnUsage = { inputTokens: 0, outputTokens: 0 };
       await this.#failRun(runId, error);
     }
+  }
+
+  /**
+   * The callbacks a streamed turn writes its words through. The words land
+   * on the draft and go out coalesced; a step that goes on to call a tool
+   * leaves its words behind, since only the final step's are the reply.
+   * `current` guards every write, as the other callbacks are guarded: a
+   * turn that has since been replaced touches nothing.
+   */
+  #streamCallbacks(turn: number, current: () => boolean): Pick<AiAgentRunInput["callbacks"], "stepStarted" | "textDelta" | "reasoningDelta" | "reasoningEnded"> {
+    const draft = (): AgentDraft => {
+      if (this.#draft === null) this.#draft = { turn, text: "", reasoning: "", thinkingSince: null, thinking: false, thinkingMs: null };
+      return this.#draft;
+    };
+    /** Reasoning stopped: the draft keeps how long it took, for the reply's "Thought for 4s". */
+    const stopThinking = (live: AgentDraft): void => {
+      live.thinking = false;
+      this.#thinkingEndedAt = Date.now();
+      const since = live.thinkingSince === null ? Number.NaN : Date.parse(live.thinkingSince);
+      live.thinkingMs = Number.isNaN(since) ? 0 : Math.max(0, this.#thinkingEndedAt - since);
+    };
+    return {
+      stepStarted: () => {
+        if (!current()) return;
+        const live = draft();
+        // A new step starts a fresh reply; a step's reasoning goes on from
+        // the last one's, since one turn of thought reads as one.
+        if (live.text !== "") {
+          live.text = "";
+          this.#publishDraft();
+        }
+      },
+      reasoningDelta: (text) => {
+        if (!current() || text === "") return;
+        const live = draft();
+        live.reasoning += text;
+        // Thinking again after a tool step: the clock runs on from the first thought.
+        live.thinking = true;
+        live.thinkingMs = null;
+        live.thinkingSince ??= new Date().toISOString();
+        this.#publishDraft();
+      },
+      reasoningEnded: () => {
+        if (!current() || this.#draft === null || !this.#draft.thinking) return;
+        stopThinking(this.#draft);
+        this.#publishDraft();
+      },
+      textDelta: (text) => {
+        if (!current() || text === "") return;
+        const live = draft();
+        live.text += text;
+        if (live.thinking) stopThinking(live);
+        this.#publishDraft();
+      },
+    };
+  }
+
+  /**
+   * What the finished turn thought, taken off the draft as the draft is
+   * cleared: the reasoning text, and how long it took — from the first
+   * reasoning word to the last, or to now when the stream never said.
+   */
+  #takeThought(): { reasoning: string; thinkingMs: number } | null {
+    const draft = this.#draft;
+    const endedAt = this.#thinkingEndedAt ?? Date.now();
+    this.#clearDraft();
+    if (draft === null || draft.reasoning.trim() === "") return null;
+    const since = draft.thinkingSince === null ? Number.NaN : Date.parse(draft.thinkingSince);
+    return { reasoning: draft.reasoning.trim(), thinkingMs: draft.thinkingMs ?? (Number.isNaN(since) ? 0 : Math.max(0, endedAt - since)) };
   }
 
   /**
@@ -1690,6 +1843,7 @@ export class RunController {
   #pauseTurn(runId: string, message: string, label: string): void {
     const run = this.#run;
     if (run?.runId !== runId || run.status !== "running") return;
+    this.#clearDraft();
     run.status = "interrupted";
     run.control = "human";
     for (const tool of run.toolCalls) if (tool.status === "running") tool.status = "paused";
@@ -1701,14 +1855,18 @@ export class RunController {
     this.#onChange();
   }
 
-  async #completeAiRun(runId: string, response: string, model: string): Promise<void> {
+  async #completeAiRun(runId: string, response: string, model: string, thought: { reasoning: string; thinkingMs: number } | null = null): Promise<void> {
     const run = this.#run;
     if (run?.runId !== runId || run.status !== "running") return;
-    const answer = this.#plainModelText(response) || "I finished the browser task and verified the current page state.";
+    // The reply is kept as the model wrote it — Markdown the chat renders.
+    // Everywhere it is read as words rather than shown (a notification, a
+    // text message, the thread's summary) reads the plain form.
+    const markdown = response.trim() || "I finished the browser task and verified the current page state.";
+    const answer = this.#plainModelText(markdown) || markdown;
     run.status = "completed";
     run.control = "human";
     run.completedAt = new Date().toISOString();
-    this.#message("assistant", answer);
+    this.#message("assistant", markdown, [], thought);
     this.#activity("Task complete", `Finished with ${model}`, "safe");
     this.#chain?.append("run.completed", {
       model,
@@ -1833,6 +1991,18 @@ export class RunController {
     const check = (): void => { if (!service.settings().agentAccess) throw new Error("Watchtower agent access is disabled."); };
     return { watchtower: { host: {
       search: async (query) => { check(); return (await service.request(spaceId, { type: "search", query })).results?.slice(0, 12) ?? []; },
+      entities: async (query, kind) => {
+        check();
+        const index = (await service.request(spaceId, { type: "entities", query, kind, limit: 25 })).index;
+        if (!index) throw new Error("The index is unavailable.");
+        return index;
+      },
+      entity: async (entityId) => {
+        check();
+        const entity = (await service.request(spaceId, { type: "entity", entityId })).entity;
+        if (!entity) throw new Error("Index entry unavailable.");
+        return entity;
+      },
       read: async (observationId, offset, maxChars) => {
         check();
         const doc = (await service.request(spaceId, { type: "read", observationId })).document;
@@ -2019,6 +2189,7 @@ export class RunController {
   #abortAi(): void {
     this.#aiAbort?.abort();
     this.#aiAbort = null;
+    this.#clearDraft();
   }
 
   #shouldUseAi(): boolean {
@@ -2194,6 +2365,7 @@ export class RunController {
     if (run?.runId !== runId || isTerminalStatus(run.status)) return;
     const message = error instanceof Error ? error.message : String(error);
     this.#clearTimers();
+    this.#clearDraft();
     run.pendingApproval = null;
     const pendingQuestionId = run.pendingQuestion?.id;
     run.pendingQuestion = null;
@@ -2240,6 +2412,7 @@ export class RunController {
     role: RunSummary["messages"][number]["role"],
     content: string,
     attachments: AgentAttachment[] = [],
+    thought: { reasoning: string; thinkingMs: number } | null = null,
   ): void {
     const run = this.#requireRun();
     run.messages.push({
@@ -2249,6 +2422,7 @@ export class RunController {
       content,
       turn: Math.max(1, run.turns),
       ...(attachments.length > 0 ? { attachments } : {}),
+      ...(thought === null ? {} : { reasoning: thought.reasoning, thinkingMs: thought.thinkingMs }),
     });
     this.#touch();
   }

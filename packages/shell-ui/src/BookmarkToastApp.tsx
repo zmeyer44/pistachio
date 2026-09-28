@@ -10,11 +10,16 @@
  * or take the save back. Main is told the card's height so the view can be
  * sized to it; the card leaves on its own once it has been read, unless
  * it is being hovered, edited, or holds keyboard focus.
+ *
+ * On the desktop the save is a Watchtower save too, and the card's last
+ * line says so: the page's text kept, then what it was filed under — the
+ * person, the company, the product — each a way into its index entry.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Bookmark, BookmarkCheck, ExternalLink, Pencil, Trash2, X } from "lucide-react";
+import { Bookmark, BookmarkCheck, ExternalLink, FileClock, Pencil, Trash2, X } from "lucide-react";
 import type { Bookmark as BookmarkRecord, BookmarkSnapshot, BookmarkToast } from "@pistachio/shell-contracts/bookmarks";
+import { WATCHTOWER_ENTITY_LABELS } from "@pistachio/shell-contracts/watchtower";
 import { BookmarkEditor } from "./components/bookmarks/BookmarkEditor";
 import { BookmarkImage, KindBadge, primaryFact, PROVENANCE_LABEL, siteLabel, SkeletonBlock } from "./components/bookmarks/parts";
 import { Button } from "./components/ui/button";
@@ -56,6 +61,7 @@ function ToastCard({ toast, bookmark }: { toast: BookmarkToast; bookmark: Bookma
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const extracting = bookmark.status === "extracting";
+  const archiving = toast.watchtower?.state === "saving";
   const dismiss = () => nativeApi()?.dismissBookmarkToast();
 
   // Main sizes the view to the card: report every change of height.
@@ -81,10 +87,10 @@ function ToastCard({ toast, bookmark }: { toast: BookmarkToast; bookmark: Bookma
   // The card leaves on its own once read — unless it is being looked at:
   // hovered, edited, or holding the keyboard focus a person tabbed into it.
   useEffect(() => {
-    if (extracting || editing || hovered || focused) return;
+    if (extracting || archiving || editing || hovered || focused) return;
     const timer = window.setTimeout(dismiss, LINGER_MS);
     return () => window.clearTimeout(timer);
-  }, [extracting, editing, hovered, focused, bookmark.updatedAt]);
+  }, [extracting, archiving, editing, hovered, focused, bookmark.updatedAt, toast.watchtower?.state]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -109,7 +115,7 @@ function ToastCard({ toast, bookmark }: { toast: BookmarkToast; bookmark: Bookma
         className={cn("bookmark-toast rounded-lg bg-background-100 text-gray-1000 shadow-modal", extracting && "bookmark-toast-reading")}
         role="status"
         aria-live="polite"
-        aria-label={extracting ? "Saving bookmark" : `Bookmarked ${bookmark.title}`}
+        aria-label={extracting ? "Saving" : `Saved ${bookmark.title}`}
         data-testid="bookmark-toast"
         data-status={bookmark.status}
         data-existed={toast.existed || undefined}
@@ -124,7 +130,7 @@ function ToastCard({ toast, bookmark }: { toast: BookmarkToast; bookmark: Bookma
           <span className={cn("grid size-5 place-items-center rounded-full", extracting ? "bg-alpha-100 text-gray-900" : "bg-green-100 text-green-900")} aria-hidden="true">
             {extracting ? <Bookmark className="size-3 animate-pulse" /> : <BookmarkCheck className="size-3" />}
           </span>
-          <span className="text-label-12 font-medium text-gray-1000">{extracting ? "Saving…" : toast.existed ? "Saved earlier" : "Bookmarked"}</span>
+          <span className="text-label-12 font-medium text-gray-1000">{extracting ? "Saving…" : toast.existed ? "Saved earlier" : "Saved"}</span>
           <span className="truncate text-[11px] text-gray-700">{caption}</span>
           <span className="ml-auto flex items-center gap-0.5">
             {extracting || editing ? null : (
@@ -136,8 +142,8 @@ function ToastCard({ toast, bookmark }: { toast: BookmarkToast; bookmark: Bookma
               variant="tertiary"
               size="xs"
               svgOnly
-              aria-label="Show in bookmarks"
-              title="Show in bookmarks"
+              aria-label="Show in Saved"
+              title="Show in Saved"
               onClick={() => shellApi().openBookmarksPage(bookmark.id)}
               data-testid="bookmark-toast-open"
             >
@@ -148,7 +154,7 @@ function ToastCard({ toast, bookmark }: { toast: BookmarkToast; bookmark: Bookma
                 variant="tertiary"
                 size="xs"
                 svgOnly
-                aria-label={toast.existed ? "Delete bookmark" : "Undo — remove bookmark"}
+                aria-label={toast.existed ? "Delete the save" : "Undo — remove the save"}
                 title={toast.existed ? "Delete" : "Undo"}
                 onClick={() => void shellApi().deleteBookmark(bookmark.id)}
                 data-testid="bookmark-toast-remove"
@@ -214,7 +220,52 @@ function ToastCard({ toast, bookmark }: { toast: BookmarkToast; bookmark: Bookma
             </div>
           </div>
         )}
+        {editing || toast.watchtower === undefined ? null : <InWatchtower toast={toast} bookmarkId={bookmark.id} />}
       </article>
     </div>
+  );
+}
+
+/** The Watchtower half of the save: kept, and filed under what the page is about. */
+function InWatchtower({ toast, bookmarkId }: { toast: BookmarkToast; bookmarkId: string }) {
+  const status = toast.watchtower!;
+  const shown = status.entities.slice(0, 4);
+  const more = status.entities.length - shown.length;
+  return (
+    <footer
+      className="flex min-h-9 items-center gap-1.5 border-t border-alpha-200 px-3.5 py-1.5 text-[11px] text-gray-700"
+      data-testid="bookmark-toast-watchtower"
+      data-state={status.state}
+    >
+      <FileClock className={cn("size-3 shrink-0", status.state === "saving" && "animate-pulse")} aria-hidden="true" />
+      {status.state === "saving" ? (
+        <span>Keeping in Watchtower…</span>
+      ) : status.state === "skipped" ? (
+        <span className="truncate" title={status.reason}>
+          Not kept in Watchtower{status.reason === undefined ? "" : ` — ${status.reason}`}
+        </span>
+      ) : shown.length === 0 ? (
+        <span>Kept in Watchtower</span>
+      ) : (
+        <>
+          <span className="shrink-0">Filed under</span>
+          <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+            {shown.map((entity) => (
+              <button
+                key={entity.id}
+                type="button"
+                title={WATCHTOWER_ENTITY_LABELS[entity.kind].one}
+                onClick={() => shellApi().openBookmarksPage(bookmarkId, entity.id)}
+                data-testid="bookmark-toast-entity"
+                className="h-5 max-w-36 min-w-0 shrink cursor-pointer truncate rounded-full bg-alpha-100 px-2 text-[11px] text-gray-1000 outline-none hover:bg-alpha-200 focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {entity.name}
+              </button>
+            ))}
+            {more > 0 ? <span className="shrink-0">+{more}</span> : null}
+          </span>
+        </>
+      )}
+    </footer>
   );
 }

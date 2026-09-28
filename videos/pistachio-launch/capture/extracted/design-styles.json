@@ -1,0 +1,198 @@
+{
+  "typography": [
+    {
+      "role": "display",
+      "fontFamily": "Inter",
+      "fontSize": "97.4497px",
+      "fontWeight": "400",
+      "lineHeight": "97.4497px",
+      "letterSpacing": "-3.89799px",
+      "color": "#1A1A1A",
+      "sampleText": "A browser builtfor tomorrow"
+    },
+    {
+      "role": "heading",
+      "fontFamily": "Inter",
+      "fontSize": "40px",
+      "fontWeight": "400",
+      "lineHeight": "48px",
+      "letterSpacing": "-1.6px",
+      "color": "#1A1A1A",
+      "sampleText": "A browser that pulls its weight."
+    },
+    {
+      "role": "heading-2",
+      "fontFamily": "Inter",
+      "fontSize": "32px",
+      "fontWeight": "400",
+      "lineHeight": "38.4px",
+      "letterSpacing": "-0.64px",
+      "color": "#1A1A1A",
+      "sampleText": "Are you ready yet?"
+    },
+    {
+      "role": "body",
+      "fontFamily": "Inter",
+      "fontSize": "20px",
+      "fontWeight": "400",
+      "lineHeight": "28px",
+      "letterSpacing": "-0.4px",
+      "color": "#1A1A1A",
+      "sampleText": "Pistachio is a Mac browser with an agent built in. Ask for s"
+    },
+    {
+      "role": "link",
+      "fontFamily": "Inter",
+      "fontSize": "14px",
+      "fontWeight": "500",
+      "lineHeight": "20px",
+      "letterSpacing": "-0.28px",
+      "color": "#1A1A1A",
+      "sampleText": "Agent"
+    }
+  ],
+  "spacing": {
+    "observed": [
+      4,
+      8,
+      12,
+      16,
+      20,
+      24,
+      32,
+      40,
+      48,
+      80
+    ],
+    "baseUnit": 8
+  },
+  "radius": [
+    "6px",
+    "8px"
+  ],
+  "shadows": [
+    {
+      "value": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgb(82, 168, 98) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+      "count": 1
+    },
+    {
+      "value": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgb(82, 168, 98) 0px 1px 0px 0px inset",
+      "count": 1
+    },
+    {
+      "value": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.12) 0px 0px 0px 1px, rgba(20, 50, 30, 0.45) 0px 30px 80px -20px, rgba(0, 0, 0, 0.3) 0px 12px 28px -12px",
+      "count": 1
+    },
+    {
+      "value": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.06) 0px 0px 0px 1px",
+      "count": 1
+    },
+    {
+      "value": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.08) 0px 0px 0px 1px",
+      "count": 1
+    }
+  ],
+  "buttons": [
+    {
+      "label": "Get early access",
+      "background": "#52A862",
+      "backgroundImage": "",
+      "backdropFilter": "",
+      "color": "#FFFFFF",
+      "padding": "0px 20px",
+      "borderRadius": "0px",
+      "border": "0px solid rgb(255, 255, 255)",
+      "boxShadow": "none",
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "height": "48px"
+    }
+  ],
+  "cards": [
+    {
+      "label": "card",
+      "background": "transparent",
+      "backgroundImage": "",
+      "backdropFilter": "",
+      "color": "#52A862",
+      "padding": "0px 0px 24px",
+      "borderRadius": "0px",
+      "border": "0px solid rgb(82, 168, 98)",
+      "boxShadow": "none",
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "height": "6266px"
+    }
+  ],
+  "nav": {
+    "label": "navigation",
+    "background": "transparent",
+    "backgroundImage": "",
+    "backdropFilter": "",
+    "color": "#52A862",
+    "padding": "20px 8px 0px",
+    "borderRadius": "0px",
+    "border": "0px solid rgb(82, 168, 98)",
+    "boxShadow": "none",
+    "fontSize": "16px",
+    "fontWeight": "400",
+    "height": "76px"
+  },
+  "chips": [
+    {
+      "label": "Early preview for macOS",
+      "background": "#FFFFFF",
+      "color": "#52A862",
+      "padding": "4px 10px",
+      "borderRadius": "40px",
+      "border": "0px solid rgb(82, 168, 98)",
+      "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgb(82, 168, 98) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+      "fontSize": "12px",
+      "fontWeight": "400",
+      "height": "24px"
+    }
+  ],
+  "statCells": [],
+  "tabs": [
+    {
+      "label": "Work emailGet early acce",
+      "background": "transparent",
+      "color": "#52A862",
+      "padding": "0px",
+      "borderRadius": "0px",
+      "border": "0px solid rgb(82, 168, 98)",
+      "boxShadow": "none",
+      "fontSize": "16px",
+      "fontWeight": "400",
+      "height": "48px"
+    }
+  ],
+  "backgrounds": [
+    {
+      "value": "linear-gradient(rgba(0, 0, 0, 0), rgb(255, 255, 255) 320px)",
+      "area": 2275040
+    },
+    {
+      "value": "linear-gradient(rgb(255, 255, 255) calc(100% - 96px), rgba(0, 0, 0, 0))",
+      "area": 126496
+    }
+  ],
+  "glass": [
+    {
+      "backdropFilter": "blur(40px)",
+      "background": "oklab(0.957882 -0.00850833 0.00986427 / 0.6)",
+      "border": "0px solid rgb(82, 168, 98)",
+      "borderRadius": "0px",
+      "boxShadow": "",
+      "area": 864000
+    },
+    {
+      "backdropFilter": "blur(4px)",
+      "background": "oklab(0.985098 0.0000447631 0.0000197291 / 0.8)",
+      "border": "1px solid rgb(230, 230, 230)",
+      "borderRadius": "10px",
+      "boxShadow": "",
+      "area": 80640
+    }
+  ]
+}

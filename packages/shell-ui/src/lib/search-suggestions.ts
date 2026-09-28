@@ -31,6 +31,18 @@ export interface UrlItem {
 
 type SearchSettings = DesktopSettings["search"];
 
+/**
+ * Where the "Ask …" row goes. The address modal sends the words to the
+ * assistant the person chose in Settings, opened at its own site; the home
+ * page keeps them and answers in place, as its own chat
+ * (components/home/HomeChat.tsx), so its row names Pistachio and carries no
+ * address — the page acts on the row itself.
+ */
+export type AssistantTarget = "provider" | "pistachio";
+
+/** The name the home page's chat goes by in its row. */
+export const IN_APP_ASSISTANT_LABEL = "Pistachio";
+
 /** A search for the typed text on the person's web engine. */
 function webSearchItem(q: string, search: SearchSettings, hint: string): UrlItem {
   return {
@@ -43,8 +55,11 @@ function webSearchItem(q: string, search: SearchSettings, hint: string): UrlItem
   };
 }
 
-/** The typed text sent as a prompt to the person's AI assistant. */
-function aiSearchItem(q: string, search: SearchSettings): UrlItem {
+/** The typed text sent as a prompt to the person's AI assistant — or kept for Pistachio's own chat. */
+function aiSearchItem(q: string, search: SearchSettings, assistant: AssistantTarget): UrlItem {
+  if (assistant === "pistachio") {
+    return { id: "ai-search", kind: "ai", title: `Ask ${IN_APP_ASSISTANT_LABEL} “${q}”`, hint: "AI", url: "" };
+  }
   return {
     id: "ai-search",
     kind: "ai",
@@ -68,7 +83,7 @@ export function primaryItemFor(q: string, search: SearchSettings): UrlItem | nul
  * web search too when the primary is an address — "github.com" is a place to
  * go first, but still words someone may have meant to look up.
  */
-export function secondarySearchItems(q: string, primaryItem: UrlItem, search: SearchSettings): UrlItem[] {
-  const ai = aiSearchItem(q, search);
+export function secondarySearchItems(q: string, primaryItem: UrlItem, search: SearchSettings, assistant: AssistantTarget = "provider"): UrlItem[] {
+  const ai = aiSearchItem(q, search, assistant);
   return primaryItem.kind === "search" ? [ai] : [webSearchItem(q, search, "Web"), ai];
 }

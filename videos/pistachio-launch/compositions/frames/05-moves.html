@@ -1,0 +1,323 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:block;src:url("assets/fonts/InterVariable.woff2") format("woff2")}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-ba9851c3c22cd980-s.woff2") format("woff2");unicode-range:u+0460-052f,u+1c80-1c8a,u+20b4,u+2de0-2dff,u+a640-a69f,u+fe2e-fe2f}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-21350d82a1f187e9-s.woff2") format("woff2");unicode-range:u+0301,u+0400-045f,u+0490-0491,u+04b0-04b1,u+2116}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-c5fe6dc8356a8c31-s.woff2") format("woff2");unicode-range:u+1f??}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-19cfc7226ec3afaa-s.woff2") format("woff2");unicode-range:u+0370-0377,u+037a-037f,u+0384-038a,u+038c,u+038e-03a1,u+03a3-03ff}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-df0a9ae256c0569c-s.woff2") format("woff2");unicode-range:u+0102-0103,u+0110-0111,u+0128-0129,u+0168-0169,u+01a0-01a1,u+01af-01b0,u+0300-0301,u+0303-0304,u+0308-0309,u+0323,u+0329,u+1ea0-1ef9,u+20ab}
+    @font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url("assets/fonts/captured-8e9860b6e62d6359-s.woff2") format("woff2");unicode-range:u+0100-02ba,u+02bd-02c5,u+02c7-02cc,u+02ce-02d7,u+02dd-02ff,u+0304,u+0308,u+0329,u+1d00-1dbf,u+1e00-1e9f,u+1ef2-1eff,u+2020,u+20a0-20ab,u+20ad-20c0,u+2113,u+2c60-2c7f,u+a720-a7ff}
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      font-family: Inter, sans-serif;
+      color: #1A1A1A;
+      -webkit-font-smoothing: antialiased;
+    }
+    #root * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    #m05-moves-bg {
+      position: absolute;
+      inset: 0;
+      background: #FFFFFF;
+    }
+
+    /* Scene 1 — centered headline */
+    #m05-moves-headline {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 900px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transform-origin: 50% 50%;
+    }
+    .m05-moves-hline {
+      font-size: 88px;
+      font-weight: 400;
+      letter-spacing: -0.04em;
+      line-height: 1.12;
+      white-space: nowrap;
+    }
+    .m05-moves-w {
+      display: inline-block;
+      margin-right: 0.24em;
+    }
+    .m05-moves-w:last-child { margin-right: 0; }
+    .m05-moves-green { color: #52A862; }
+
+    /* Scene 2+ — left column */
+    #m05-moves-left {
+      position: absolute;
+      left: 110px;
+      top: 0;
+      width: 600px;
+      height: 900px;
+    }
+    #m05-moves-ticker {
+      position: absolute;
+      left: 0;
+      top: 228px;
+      width: 420px;
+      height: 220px;
+      overflow: hidden;
+    }
+    #m05-moves-stack {
+      display: flex;
+      flex-direction: column;
+    }
+    .m05-moves-num {
+      height: 220px;
+      font-size: 200px;
+      line-height: 220px;
+      font-weight: 400;
+      letter-spacing: -0.05em;
+      font-variant-numeric: tabular-nums;
+      color: #1A1A1A;
+      opacity: 0.9;
+    }
+    #m05-moves-rule {
+      position: absolute;
+      left: 6px;
+      top: 470px;
+      width: 60px;
+      height: 4px;
+      border-radius: 2px;
+      background: #52A862;
+      transform-origin: 0 50%;
+    }
+    .m05-moves-copy {
+      position: absolute;
+      left: 0;
+      top: 506px;
+      width: 600px;
+    }
+    .m05-moves-title {
+      font-size: 56px;
+      line-height: 1.12;
+      font-weight: 400;
+      letter-spacing: -0.035em;
+      color: #1A1A1A;
+    }
+    .m05-moves-sub {
+      margin-top: 22px;
+      font-size: 30px;
+      line-height: 1.35;
+      font-weight: 400;
+      letter-spacing: -0.015em;
+      color: #6B6B6B;
+    }
+
+    /* hidden until their swap (entrances use fromTo / set on the timeline) */
+    #m05-moves-left, #m05-moves-panel,
+    #m05-moves-copy1, #m05-moves-copy2, #m05-moves-copy3,
+    #m05-moves-shot1, #m05-moves-shot2, #m05-moves-shot3 { opacity: 0; }
+
+    /* Right — wallpaper panel + window */
+    #m05-moves-panel {
+      position: absolute;
+      left: 760px;
+      top: 66px;
+      width: 1100px;
+      height: 800px;
+      border-radius: 24px;
+      overflow: hidden;
+      background: #E8F4EC;
+      transform-origin: 50% 50%;
+    }
+    #m05-moves-wall {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: 50% 50%;
+    }
+    #m05-moves-window {
+      position: absolute;
+      left: 50px;
+      top: 54px;
+      width: 1000px;
+      height: 692px;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #F2F2F2;
+      box-shadow: 0 40px 80px -20px rgba(15, 46, 22, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.08);
+    }
+    .m05-moves-shot {
+      position: absolute;
+      left: -4px;
+      top: -3px;
+      width: 1008px;
+      height: 699px;
+      display: block;
+    }
+  </style>
+
+  <div data-hf-id="hf-exzg" id="root" data-composition-id="05-moves" data-start="0" data-duration="10.6" data-width="1920" data-height="1080">
+    <div data-hf-id="hf-y5l0" id="m05-moves-bg" class="clip" data-start="0" data-duration="10.6" data-track-index="0"></div>
+
+    <div data-hf-id="hf-b79v" id="m05-moves-headline">
+      <div data-hf-id="hf-7dy8" class="m05-moves-hline">
+        <span data-hf-id="hf-08q1" class="m05-moves-w m05-moves-hw1">And</span><span data-hf-id="hf-765n" class="m05-moves-w m05-moves-hw1">the</span><span data-hf-id="hf-nnof" class="m05-moves-w m05-moves-hw1">everyday</span><span data-hf-id="hf-4u7m" class="m05-moves-w m05-moves-hw1">moves,</span>
+      </div>
+      <div data-hf-id="hf-azx4" class="m05-moves-hline">
+        <span data-hf-id="hf-ltug" class="m05-moves-w m05-moves-hw2 m05-moves-green">built</span><span data-hf-id="hf-upcn" class="m05-moves-w m05-moves-hw2 m05-moves-green">in</span><span data-hf-id="hf-z45y" class="m05-moves-w m05-moves-hw2">around</span><span data-hf-id="hf-vr2w" class="m05-moves-w m05-moves-hw2">it.</span>
+      </div>
+    </div>
+
+    <div data-hf-id="hf-xa1s" id="m05-moves-left">
+      <div data-hf-id="hf-m4s9" id="m05-moves-ticker">
+        <div data-hf-id="hf-5fkl" id="m05-moves-stack">
+          <div data-hf-id="hf-0bxw" class="m05-moves-num">02</div>
+          <div data-hf-id="hf-zxmv" class="m05-moves-num">03</div>
+          <div data-hf-id="hf-14jy" class="m05-moves-num">04</div>
+          <div data-hf-id="hf-0q8x" class="m05-moves-num">05</div>
+        </div>
+      </div>
+      <div data-hf-id="hf-gra9" id="m05-moves-rule"></div>
+
+      <div data-hf-id="hf-g1ka" class="m05-moves-copy" id="m05-moves-copy0">
+        <div data-hf-id="hf-b1jm" class="m05-moves-title">Glance at a link</div>
+        <div data-hf-id="hf-wdbj" class="m05-moves-sub">Peek, then pick up where you were.</div>
+      </div>
+      <div data-hf-id="hf-jzob" class="m05-moves-copy" id="m05-moves-copy1">
+        <div data-hf-id="hf-p701" class="m05-moves-title">Split the window</div>
+        <div data-hf-id="hf-e5mt" class="m05-moves-sub">Two pages side by side, saved as a pair.</div>
+      </div>
+      <div data-hf-id="hf-bbsg" class="m05-moves-copy" id="m05-moves-copy2">
+        <div data-hf-id="hf-1tzm" class="m05-moves-title">Read without the clutter</div>
+        <div data-hf-id="hf-7ake" class="m05-moves-sub">Just the words, on your type.</div>
+      </div>
+      <div data-hf-id="hf-c3g9" class="m05-moves-copy" id="m05-moves-copy3">
+        <div data-hf-id="hf-wdit" class="m05-moves-title">Media follows you</div>
+        <div data-hf-id="hf-7cjr" class="m05-moves-sub">Keeps playing from the sidebar.</div>
+      </div>
+    </div>
+
+    <div data-hf-id="hf-dsmf" id="m05-moves-panel">
+      <img data-hf-id="hf-gahh" id="m05-moves-wall" src="assets/hero-wallpaper-pistachio.jpg" alt="">
+      <div data-hf-id="hf-ilx3" id="m05-moves-window">
+        <img data-hf-id="hf-9wi7" class="m05-moves-shot" id="m05-moves-shot0" src="assets/feature-glance.jpg" alt="" style="z-index:1">
+        <img data-hf-id="hf-kyz7" class="m05-moves-shot" id="m05-moves-shot1" src="assets/feature-split.jpg" alt="" style="z-index:2">
+        <img data-hf-id="hf-0y6m" class="m05-moves-shot" id="m05-moves-shot2" src="assets/feature-reader.jpg" alt="" style="z-index:3">
+        <img data-hf-id="hf-3xh0" class="m05-moves-shot" id="m05-moves-shot3" src="assets/feature-media-stack.jpg" alt="" style="z-index:4">
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      const q = (s) => document.querySelectorAll("#root " + s);
+      const one = (id) => document.getElementById(id);
+
+      // ---------- Initial states for the later layout (explicit, seek-safe) ----------
+      // (hidden starting states for the later layout are authored in CSS)
+
+      // ---------- Scene 1 (0.0–2.0): per-word rise, blur-to-sharp ----------
+      tl.fromTo(q(".m05-moves-hw1"),
+        { y: 44, opacity: 0, filter: "blur(8px)" },
+        { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.7, ease: "power3.out", stagger: 0.09 },
+        0.0);
+      tl.fromTo(q(".m05-moves-hw2"),
+        { y: 44, opacity: 0, filter: "blur(8px)" },
+        { y: 0, opacity: 1, filter: "blur(0px)", duration: 0.7, ease: "power3.out", stagger: 0.09 },
+        0.8);
+
+      // ---------- Scene 2 (2.0): scale-swap — headline out, layout in ----------
+      // Outgoing: fast power2.in rush away, finishes right as the layout lands on 2.0
+      tl.fromTo("#m05-moves-headline",
+        { y: 0, scale: 1, opacity: 1, filter: "blur(0px)" },
+        { y: -70, scale: 0.8, opacity: 0, filter: "blur(6px)", duration: 0.4, ease: "power2.in" },
+        1.7);
+      // Incoming (brand: no bounce — expo.out settle instead of back.out)
+      tl.fromTo("#m05-moves-panel",
+        { opacity: 0, scale: 0.94, y: 30 },
+        { opacity: 1, scale: 1, y: 0, duration: 0.9, ease: "expo.out" },
+        1.98);
+      tl.fromTo("#m05-moves-window",
+        { y: 40, scale: 0.96 },
+        { y: 0, scale: 1, duration: 1.0, ease: "expo.out" },
+        2.02);
+      tl.set("#m05-moves-left", { opacity: 1 }, 1.98);
+      tl.fromTo("#m05-moves-ticker",
+        { opacity: 0, y: 40, filter: "blur(8px)" },
+        { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.8, ease: "power3.out" },
+        2.0);
+      tl.fromTo("#m05-moves-rule",
+        { scaleX: 0 },
+        { scaleX: 1, duration: 0.7, ease: "power3.out" },
+        2.2);
+      // inner content reveals after the container settles
+      tl.fromTo("#m05-moves-copy0 .m05-moves-title",
+        { opacity: 0, y: 30, filter: "blur(8px)" },
+        { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power3.out" },
+        2.25);
+      tl.fromTo("#m05-moves-copy0 .m05-moves-sub",
+        { opacity: 0, y: 24, filter: "blur(8px)" },
+        { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power3.out" },
+        2.4);
+
+      // ---------- Numeral ticker: additive steps 02→03→04→05 on 4.0 / 6.0 / 8.0 ----------
+      const ITEM_H = 220;
+      const SWAPS = [4.0, 6.0, 8.0];
+      // Seek-safe: tween the stack's own y (baseline set at 0), no onUpdate proxies.
+      tl.set("#m05-moves-stack", { y: 0 }, 0);
+      SWAPS.forEach(function (T, i) {
+        tl.fromTo("#m05-moves-stack",
+          { y: -i * ITEM_H },
+          { y: -(i + 1) * ITEM_H, duration: 0.75, ease: "expo.out", immediateRender: false },
+          T - 0.08);
+      });
+
+      // ---------- Title/sub + screenshot swaps ----------
+      SWAPS.forEach(function (T, i) {
+        const outC = "#m05-moves-copy" + i;
+        const inC = "#m05-moves-copy" + (i + 1);
+        // outgoing copy: up-and-out
+        tl.fromTo(outC,
+          { y: 0, opacity: 1, filter: "blur(0px)" },
+          { y: -36, opacity: 0, filter: "blur(8px)", duration: 0.32, ease: "power2.in", immediateRender: false },
+          T - 0.3);
+        // incoming copy: up-and-in, blur-to-sharp
+        tl.set(inC, { opacity: 1 }, T);
+        tl.fromTo(inC + " .m05-moves-title",
+          { opacity: 0, y: 36, filter: "blur(8px)" },
+          { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power3.out" },
+          T);
+        tl.fromTo(inC + " .m05-moves-sub",
+          { opacity: 0, y: 28, filter: "blur(8px)" },
+          { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power3.out" },
+          T + 0.12);
+
+        // screenshot: short horizontal push inside the window
+        const outS = "#m05-moves-shot" + i;
+        const inS = "#m05-moves-shot" + (i + 1);
+        tl.fromTo(outS,
+          { x: 0, opacity: 1 },
+          { x: -90, opacity: 0.4, duration: 0.7, ease: "power3.inOut", immediateRender: false },
+          T - 0.2);
+        tl.fromTo(inS,
+          { x: 140, opacity: 0 },
+          { x: 0, opacity: 1, duration: 0.8, ease: "expo.out" },
+          T - 0.08);
+        tl.set(outS, { opacity: 0 }, T + 0.72);
+      });
+
+      // Hold to the cut (scene 5 settles by ~8.8s; timeline spans the full 10s)
+      tl.set({}, {}, 10);
+
+      window.__timelines["05-moves"] = tl;
+    })();
+  </script>
+</template>

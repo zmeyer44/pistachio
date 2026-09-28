@@ -1922,14 +1922,10 @@
     animation-duration: 1ms;
     animation-delay: 0ms;
   }
-  .tab-switcher-stage,
-  .tab-switcher-panel,
-  .tab-switcher-skeleton .tab-switcher-thumbnail,
-  .tab-switcher-skeleton .tab-switcher-label > span {
+  .tab-switcher-thumbnail > img,
+  .tab-switcher-skeleton > span:first-child,
+  .tab-switcher-skeleton > span:last-child > span {
     animation-duration: 1ms;
-  }
-  .tab-switcher-option {
-    transition: none;
   }
 }
 
@@ -2139,132 +2135,24 @@ body:not([data-chrome-view])::after {
   pointer-events: none;
 }
 
-/* Control–Tab: a compact strip of live page memories, closer to a native app
-   switcher than a browser menu. The selected card borrows the user's accent
-   while the panel keeps enough translucency for the frozen page to read under it. */
-.tab-switcher-stage {
-  background: oklch(0 0 0 / 0.2);
-  animation: tab-switcher-veil-in 110ms ease-out both;
-}
-.tab-switcher-panel {
-  width: min(var(--tab-switcher-width), calc(100vw - 56px));
-  padding: 12px;
-  overflow: hidden;
-  border: 1px solid
-    color-mix(in oklch, var(--color-background-100) 78%, var(--color-alpha-500));
-  border-radius: 22px;
-  background: linear-gradient(
-    145deg,
-    color-mix(in oklch, var(--color-background-100) 96%, var(--theme-accent)),
-    var(--color-background-100)
-  );
-  box-shadow:
-    0 1px 1px oklch(1 0 0 / 0.72) inset,
-    0 28px 90px oklch(0 0 0 / 0.28),
-    0 8px 30px oklch(0 0 0 / 0.18);
-  backdrop-filter: blur(28px) saturate(1.25);
-  animation: tab-switcher-panel-in 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-.tab-switcher-grid {
-  display: grid;
-  grid-template-columns: repeat(var(--tab-switcher-count), minmax(0, 1fr));
-  gap: 4px;
-}
-.tab-switcher-option {
-  min-width: 0;
-  padding: 9px;
-  cursor: default;
-  border: 0;
-  border-radius: 14px;
-  color: var(--color-gray-1000);
-  background: transparent;
-  text-align: left;
-  outline: none;
-  transition:
-    background-color 105ms ease,
-    box-shadow 105ms ease,
-    transform 105ms ease;
-}
-.tab-switcher-option.is-selected {
-  background: color-mix(
-    in oklch,
-    var(--theme-accent) 28%,
-    var(--color-background-100)
-  );
-  box-shadow:
-    0 0 0 1px
-      color-mix(in oklch, var(--theme-accent) 52%, var(--color-alpha-400)),
-    0 7px 20px color-mix(in oklch, var(--theme-accent) 18%, transparent);
-  transform: translateY(-1px);
-}
+/* The tab switcher (components/TabSwitcher.tsx): the address modal's
+   material (.palette-surface) holding a grid of live page thumbnails. A card
+   is selected the way a palette row is — a quiet alpha wash, no accent — so
+   the pages themselves are the colour in the panel. */
 .tab-switcher-thumbnail {
-  position: relative;
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  overflow: hidden;
-  border-radius: 10px;
-  background: var(--color-gray-100);
   box-shadow:
-    0 0 0 1px var(--color-alpha-300),
-    0 5px 14px oklch(0 0 0 / 0.12);
+    0 0 0 1px var(--color-alpha-200),
+    0 2px 8px oklch(0 0 0 / 0.08);
 }
 .tab-switcher-thumbnail > img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
   object-position: top left;
+  animation: tab-switcher-thumbnail-in 140ms ease-out both;
 }
 .tab-switcher-fallback {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 9px;
-  color: var(--color-gray-900);
-  background:
-    radial-gradient(
-      circle at 70% 15%,
-      color-mix(in oklch, var(--theme-accent) 34%, transparent),
-      transparent 42%
-    ),
-    linear-gradient(145deg, var(--color-background-100), var(--color-gray-100));
-  font-size: 10px;
+  background: linear-gradient(160deg, var(--color-background-100), var(--color-gray-100));
 }
-.tab-switcher-fallback > :first-child {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  font-size: 11px;
-}
-.tab-switcher-fallback > span:last-child {
-  max-width: 82%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tab-switcher-label {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 2px 1px;
-  font-size: 13px;
-  font-weight: 550;
-  letter-spacing: -0.012em;
-}
-.tab-switcher-label > span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tab-switcher-skeleton {
-  pointer-events: none;
-}
-.tab-switcher-skeleton .tab-switcher-thumbnail,
-.tab-switcher-skeleton .tab-switcher-label > span {
+.tab-switcher-skeleton > span:first-child,
+.tab-switcher-skeleton > span:last-child > span {
   background: linear-gradient(
     105deg,
     var(--color-alpha-100) 25%,
@@ -2275,15 +2163,9 @@ body:not([data-chrome-view])::after {
   animation: tab-switcher-shimmer 1.15s ease-in-out infinite;
 }
 
-@keyframes tab-switcher-veil-in {
+@keyframes tab-switcher-thumbnail-in {
   from {
     opacity: 0;
-  }
-}
-@keyframes tab-switcher-panel-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.965);
   }
 }
 @keyframes tab-switcher-shimmer {
@@ -2720,4 +2602,1001 @@ body:not([data-chrome-view])::after {
   background: var(--color-alpha-500);
   border-radius: 999px;
   pointer-events: none;
+}
+
+/* ── The desk (components/desk, docs/desk.md) ──────────────────────────────
+   A tab group's tabs as free windows. The engine writes each window's
+   transform and size every frame; nothing here animates position. What CSS
+   carries is everything the engine only switches: the frame's depth as a
+   window is focused or lifted, the chrome fading while a window IS the
+   surface (entering and leaving), the inventory sliding in and out, the
+   zone a carried window would land in.
+
+   The stage is tinted by its group (.tab-group-tone on the stage), so the
+   focus ring, the zone and the inventory's marks are the group's colour. */
+/* Windows and the inventory stack high against each other (a carried window
+   is 60+); the surface keeps all of that inside it, beneath the pages that
+   cover the whole surface (Settings, Bookmarks, … at z-20). */
+.desk-surface {
+  isolation: isolate;
+}
+.desk-stage {
+  /* A faint dot grid: the desk reads as a surface things are put ON. */
+  background-image: radial-gradient(circle at 1px 1px, var(--color-alpha-300) 1px, transparent 1.4px);
+  background-size: 22px 22px;
+  background-position: -1px -1px;
+}
+
+.desk-window {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+  touch-action: none;
+}
+.desk-window[data-flight="in"] {
+  animation: desk-window-in 200ms ease-out both;
+}
+.desk-window[data-flight="away"] {
+  opacity: 0;
+  transition: opacity 220ms ease-in 110ms;
+  pointer-events: none;
+}
+@keyframes desk-window-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.desk-window-card {
+  position: absolute;
+  inset: 0;
+  border-radius: calc(var(--radius-md) + 4px);
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 1px 2px oklch(0 0 0 / 0.05),
+    0 10px 28px -14px oklch(0 0 0 / 0.26);
+  transition:
+    box-shadow 240ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    background-color 220ms ease;
+}
+.desk-window[data-focused] .desk-window-card {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--tg-solid) 42%, var(--color-alpha-300)),
+    0 2px 4px oklch(0 0 0 / 0.06),
+    0 24px 52px -20px oklch(0 0 0 / 0.34);
+}
+.desk-window[data-lifted][data-drawn] .desk-window-card {
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 10px 20px -8px oklch(0 0 0 / 0.14),
+    0 44px 84px -26px oklch(0 0 0 / 0.44);
+}
+:root[data-color-scheme="dark"] .desk-window-card {
+  box-shadow:
+    0 0 0 1px var(--color-alpha-400),
+    0 12px 32px -12px oklch(0 0 0 / 0.6);
+}
+:root[data-color-scheme="dark"] .desk-window[data-focused] .desk-window-card {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--tg-solid) 50%, transparent),
+    0 26px 60px -18px oklch(0 0 0 / 0.72);
+}
+
+.desk-window-chrome {
+  user-select: none;
+  transition: opacity 220ms ease;
+}
+/* The window IS the surface for a moment (entering, leaving): only its page shows. */
+.desk-window[data-framed="off"] .desk-window-card {
+  background: transparent;
+  box-shadow: none;
+}
+.desk-window[data-framed="off"] .desk-window-chrome {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.desk-window-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 5px 0 11px;
+  font-size: 12px;
+  color: var(--color-gray-900);
+}
+.desk-window-host {
+  font-size: 11px;
+  color: var(--color-gray-700);
+}
+.desk-window:not([data-focused]) .desk-window-bar > :not(.desk-window-controls) {
+  opacity: 0.66;
+}
+.desk-window-controls {
+  opacity: 0.55;
+  transition: opacity 150ms ease;
+}
+.desk-window-chrome:hover .desk-window-controls,
+.desk-window[data-focused] .desk-window-bar .desk-window-controls {
+  opacity: 1;
+}
+
+/* The folder tab: on the card's shoulder, one material with it. */
+.desk-window[data-chrome="tab"] .desk-window-card {
+  border-top-left-radius: 0;
+}
+.desk-window-tab {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  height: 27px;
+  max-width: min(72%, 260px);
+  align-items: center;
+  gap: 6px;
+  padding: 0 3px 0 10px;
+  border-radius: calc(var(--radius-md) + 4px) calc(var(--radius-md) + 4px) 0 0;
+  background: var(--color-background-100);
+  box-shadow: 0 0 0 1px var(--color-alpha-300);
+  /* The ring stops at the join, so tab and card read as one piece. */
+  clip-path: inset(-2px -2px 0 -2px);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-gray-1000);
+}
+.desk-window[data-focused] .desk-window-tab {
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--tg-solid) 42%, var(--color-alpha-300));
+}
+.desk-window-tab .desk-window-controls {
+  opacity: 0;
+}
+.desk-window-tab:hover .desk-window-controls {
+  opacity: 1;
+}
+
+/* Bare: the page alone, and a handle to lift it by. */
+.desk-window[data-chrome="bare"] .desk-window-card {
+  border-radius: var(--radius-md);
+}
+.desk-window-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+.desk-window-pill {
+  width: 40px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--color-alpha-500);
+  transition:
+    width 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    background-color 200ms ease;
+}
+.desk-window-handle:hover .desk-window-pill,
+.desk-window[data-carried] .desk-window-pill {
+  width: 60px;
+  background: var(--color-alpha-800);
+}
+.desk-window-handle .desk-window-controls {
+  position: absolute;
+  top: -4px;
+  right: 0;
+  opacity: 0;
+}
+.desk-window-handle:hover .desk-window-controls {
+  opacity: 1;
+}
+
+.desk-window-page {
+  position: absolute;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-background-100);
+}
+.desk-still {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+  user-select: none;
+}
+.desk-window[data-drawn]:not([data-carried]) .desk-window-page {
+  cursor: default;
+}
+
+.desk-window-edge {
+  z-index: 2;
+}
+.desk-window:is([data-flight], [data-framed="off"], [data-carried]) .desk-window-edge {
+  display: none;
+}
+
+/* The grab key is down: every window can be taken by any part of it. */
+.desk-stage[data-grab-armed] .desk-window-card,
+.desk-stage[data-grab-armed] .desk-window-chrome,
+.desk-stage[data-grab-armed] .desk-window-page {
+  cursor: grab;
+}
+.desk-stage[data-gesture] .desk-window,
+.desk-stage[data-gesture] .desk-rail {
+  cursor: grabbing;
+}
+
+/* Where a carried window would land, pushed into an edge. */
+.desk-zone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 45;
+  border-radius: calc(var(--radius-md) + 4px);
+  background: color-mix(in oklch, var(--tg-solid) 13%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 55%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    width 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    height 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    opacity 140ms ease;
+}
+.desk-zone[data-on] {
+  opacity: 1;
+}
+.desk-guides > span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 46;
+  background: var(--tg-solid);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+/* The inventory. */
+.desk-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-small);
+  animation: desk-rail-in 380ms cubic-bezier(0.2, 0.9, 0.25, 1) 90ms backwards;
+  transition:
+    transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 240ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+@keyframes desk-rail-in {
+  from {
+    transform: translateX(calc(-100% - 12px));
+    opacity: 0;
+  }
+}
+.desk-stage[data-phase="leaving"] .desk-rail {
+  transform: translateX(calc(-100% - 12px));
+  opacity: 0;
+}
+.desk-rail[data-armed] {
+  background: color-mix(in oklch, var(--tg-solid) 9%, var(--color-background-100));
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 60%, transparent),
+    var(--shadow-small);
+}
+.desk-rail-drop {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--tg-solid);
+  color: white;
+  font-size: 11.5px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.9);
+  transition:
+    opacity 140ms ease,
+    transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
+}
+.desk-rail[data-armed] .desk-rail-drop {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.desk-rail-list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding: 2px 7px 10px;
+  scrollbar-width: none;
+}
+.desk-thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px;
+  border-radius: 10px;
+  cursor: grab;
+  outline: none;
+  user-select: none;
+  transition: background-color 150ms ease;
+}
+.desk-thumb:hover {
+  background: var(--color-alpha-100);
+}
+.desk-thumb:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-thumb-shot {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--color-gray-100);
+  box-shadow: 0 0 0 1px var(--color-alpha-300);
+  transition:
+    transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    box-shadow 200ms ease,
+    opacity 200ms ease;
+}
+.desk-thumb-shot img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+.desk-thumb:hover .desk-thumb-shot {
+  transform: translateY(-1px) scale(1.025);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-400),
+    0 8px 16px -8px oklch(0 0 0 / 0.3);
+}
+.desk-thumb:active .desk-thumb-shot {
+  transform: scale(0.98);
+}
+/* Out on the desk: ringed in the group's colour, with a dot in the corner. */
+.desk-thumb[data-on-desk] .desk-thumb-shot {
+  box-shadow: 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 50%, transparent);
+}
+.desk-thumb[data-on-desk] .desk-thumb-shot::after {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--tg-solid);
+  box-shadow: 0 0 0 1.5px var(--color-background-100);
+  content: "";
+}
+.desk-thumb[data-focused] .desk-thumb-shot {
+  box-shadow: 0 0 0 2px var(--tg-solid);
+}
+.desk-thumb:not([data-on-desk]) .desk-thumb-shot img {
+  filter: saturate(0.85);
+}
+.desk-variant-value {
+  animation: desk-variant-in 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes desk-variant-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* ── Chat: a reply's Markdown, its stream, its reasoning, its sources ─────
+   Shared by the sidebar console (`.chat-markdown-panel`) and the home
+   page's chat (`.chat-markdown-page`), components/chat. */
+.chat-markdown {
+  color: var(--color-gray-1000);
+  overflow-wrap: anywhere;
+}
+.chat-markdown-page {
+  font-size: 15px;
+  line-height: 1.6;
+}
+.chat-markdown-panel {
+  font-size: 14px;
+  line-height: 20px;
+}
+.chat-markdown > * + * {
+  margin-top: 0.75em;
+}
+.chat-markdown-panel > * + * {
+  margin-top: 0.55em;
+}
+.chat-markdown p {
+  white-space: pre-wrap;
+}
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+  color: var(--color-gray-1000);
+}
+.chat-markdown > :is(h1, h2, h3, h4, h5, h6) + * {
+  margin-top: 0.4em;
+}
+.chat-markdown > * + :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 1.35em;
+}
+.chat-markdown-page h1 {
+  font-size: 1.35em;
+}
+.chat-markdown-page h2 {
+  font-size: 1.2em;
+}
+.chat-markdown-page h3 {
+  font-size: 1.07em;
+}
+.chat-markdown-page :is(h4, h5, h6) {
+  font-size: 1em;
+}
+.chat-markdown-panel :is(h1, h2) {
+  font-size: 1.1em;
+}
+.chat-markdown-panel :is(h3, h4, h5, h6) {
+  font-size: 1em;
+}
+.chat-markdown strong {
+  font-weight: 600;
+}
+.chat-markdown ul,
+.chat-markdown ol {
+  padding-inline-start: 1.5em;
+  display: grid;
+  gap: 0.3em;
+}
+.chat-markdown-panel ul,
+.chat-markdown-panel ol {
+  padding-inline-start: 1.35em;
+  gap: 0.2em;
+}
+.chat-markdown ul {
+  list-style: disc;
+}
+.chat-markdown ol {
+  list-style: decimal;
+}
+.chat-markdown li::marker {
+  color: var(--color-gray-700);
+}
+.chat-markdown li > :is(ul, ol) {
+  margin-top: 0.3em;
+}
+.chat-markdown li > p + p {
+  margin-top: 0.4em;
+}
+.chat-markdown li.chat-task {
+  list-style: none;
+  margin-inline-start: -1.4em;
+  display: flex;
+  gap: 0.5em;
+  align-items: baseline;
+}
+.chat-markdown li.chat-task input {
+  translate: 0 1px;
+  accent-color: var(--color-gray-1000);
+}
+.chat-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  padding: 0.1em 0.35em;
+  border-radius: 5px;
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.chat-markdown blockquote {
+  border-inline-start: 2px solid var(--color-alpha-500);
+  padding-inline-start: 0.9em;
+  color: var(--color-gray-900);
+}
+.chat-markdown hr {
+  border: 0;
+  height: 1px;
+  background: var(--color-alpha-400);
+  margin-block: 1.2em;
+}
+.chat-markdown .chat-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: text-decoration-color 120ms ease;
+}
+.chat-markdown .chat-link:hover {
+  text-decoration-color: currentColor;
+}
+.chat-markdown .chat-link:focus-visible {
+  outline: none;
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+
+/* A word that has just landed resolves into place through opacity and a
+   hair of blur: the text condenses rather than types (transitions.dev
+   "streaming text"). Only a streaming reply wraps its words. */
+.chat-word {
+  display: inline;
+  animation: chat-word-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes chat-word-in {
+  from {
+    opacity: 0;
+    filter: blur(1.5px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* Code blocks: a bar naming the language and offering a copy, then the code. */
+.chat-code {
+  margin: 0;
+  border-radius: 10px;
+  background: var(--color-background-200);
+  box-shadow: var(--shadow-border);
+  overflow: hidden;
+}
+.chat-code-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 32px;
+  padding-inline: 12px 6px;
+  border-bottom: 1px solid var(--color-alpha-400);
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--color-gray-700);
+}
+.chat-code-lang {
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+}
+.chat-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding-inline: 7px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--color-gray-700);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.chat-code-copy:hover {
+  background: var(--color-alpha-300);
+  color: var(--color-gray-1000);
+}
+.chat-code pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.chat-code pre code {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* Tables scroll sideways rather than squeezing their columns. */
+.chat-table {
+  overflow-x: auto;
+  border-radius: 10px;
+  box-shadow: var(--shadow-border);
+}
+.chat-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.93em;
+}
+.chat-table th,
+.chat-table td {
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--color-alpha-400);
+}
+.chat-table th {
+  font-weight: 600;
+  background: var(--color-background-200);
+  color: var(--color-gray-900);
+  white-space: nowrap;
+}
+.chat-table tr:last-child td {
+  border-bottom: 0;
+}
+
+/* A citation in a sentence: the site's mark and host on a pill, sized to
+   the line so it reads as punctuation rather than as a button. */
+.chat-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: baseline;
+  margin-inline: 1px;
+  padding: 0 7px 0 4px;
+  height: 1.35em;
+  max-width: 14em;
+  border-radius: 999px;
+  background: var(--color-alpha-200);
+  color: var(--color-gray-900);
+  font-size: 0.78em;
+  line-height: 1;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+  translate: 0 -0.1em;
+}
+.chat-cite:hover {
+  background: var(--color-alpha-400);
+  color: var(--color-gray-1000);
+}
+.chat-cite:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.chat-cite-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-cite-index {
+  color: var(--color-gray-700);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Every page a turn read, as cards under its reply. */
+.chat-sources {
+  display: grid;
+  gap: 8px;
+}
+.chat-sources-label {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--color-gray-700);
+}
+.chat-sources-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.chat-source {
+  display: grid;
+  gap: 4px;
+  width: 200px;
+  max-width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--color-background-200);
+  box-shadow: var(--shadow-border);
+  text-decoration: none;
+  color: var(--color-gray-1000);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    translate 120ms ease;
+}
+.chat-source:hover {
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-small);
+  translate: 0 -1px;
+}
+.chat-source:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.chat-source-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--color-gray-700);
+}
+.chat-source-host {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-source-index {
+  font-variant-numeric: tabular-nums;
+}
+.chat-source-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 17px;
+  font-weight: 500;
+}
+
+/* What the model thought: a header that shimmers while it thinks, over a
+   two-line ticker of the latest reasoning; folded to "Thought for 4s"
+   once the reply begins, opening to the whole of it on a click. */
+.chat-reasoning {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.chat-reasoning-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  max-width: 100%;
+  height: 24px;
+  margin-inline-start: -2px;
+  padding-inline: 2px 4px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--color-gray-700);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.chat-reasoning-panel .chat-reasoning-head {
+  font-size: 12px;
+  height: 22px;
+}
+.chat-reasoning-head:hover {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.chat-reasoning-head:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.chat-reasoning-label {
+  white-space: nowrap;
+}
+.chat-reasoning-ticker {
+  --ticker-line: 20px;
+  position: relative;
+  height: calc(var(--ticker-line) * var(--ticker-lines, 2));
+  overflow: hidden;
+  font-size: 13px;
+  line-height: var(--ticker-line);
+  color: var(--color-gray-700);
+  /* The edge fades are a mask, not painted gradients, so the ground can be anything. */
+  -webkit-mask-image: linear-gradient(transparent 0, black 30%, black 100%);
+  mask-image: linear-gradient(transparent 0, black 30%, black 100%);
+}
+.chat-reasoning-panel .chat-reasoning-ticker {
+  --ticker-line: 18px;
+  font-size: 12px;
+}
+.chat-reasoning-scroll {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  will-change: transform;
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chat-reasoning-body {
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--color-alpha-400);
+  color: var(--color-gray-800);
+  animation: chat-reasoning-open 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.chat-reasoning-body .chat-markdown {
+  color: var(--color-gray-800);
+  font-size: 13px;
+  line-height: 19px;
+}
+@keyframes chat-reasoning-open {
+  from {
+    opacity: 0;
+    translate: 0 -3px;
+  }
+  to {
+    opacity: 1;
+    translate: 0;
+  }
+}
+
+/* The status line while nothing is written yet: one box, two lines laid
+   over it through a swap — the old rising out through a blur, the new
+   rising in (transitions.dev "thinking states"). */
+.chat-think {
+  --think-swap: 180ms;
+  --think-distance: 7px;
+  --think-blur: 2px;
+  position: relative;
+  display: inline-block;
+  min-width: 0;
+  color: var(--color-gray-700);
+}
+.chat-think-sizer {
+  display: block;
+  visibility: hidden;
+  white-space: nowrap;
+}
+.chat-think-text {
+  position: absolute;
+  inset: 0 auto 0 0;
+  white-space: nowrap;
+  will-change: transform, filter, opacity;
+}
+.chat-think-enter {
+  animation: chat-think-in var(--think-swap) ease-in-out both;
+}
+.chat-think-exit {
+  animation: chat-think-out var(--think-swap) ease-in-out both;
+}
+@keyframes chat-think-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--think-distance));
+    filter: blur(var(--think-blur));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+@keyframes chat-think-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(calc(var(--think-distance) * -1));
+    filter: blur(var(--think-blur));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desk-rail,
+  .desk-window,
+  .desk-zone,
+  .desk-variant-value {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-word,
+  .chat-think-enter,
+  .chat-think-exit,
+  .chat-reasoning-body {
+    animation: none;
+  }
+  .chat-word {
+    opacity: 1;
+    filter: none;
+  }
+  .chat-reasoning-scroll {
+    transition: none;
+  }
+}
+
+/* ── Home page → chat ──────────────────────────────────────────────────────
+   The page steps aside for the chat (HomePage `home-leave`) while the
+   search pill flies to the foot of the pane and becomes the composer
+   (HomeChat); it fades back when the chat is left (`home-return`). */
+.home-leave {
+  pointer-events: none;
+  animation: home-leave 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.home-return {
+  animation: home-return 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes home-leave {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.985);
+  }
+}
+@keyframes home-return {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* The thread's ground fades its edges as the console's does. */
+.home-thread::before,
+.home-thread::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: 24px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.home-thread::before {
+  top: 0;
+  background: linear-gradient(var(--color-background-200), transparent);
+}
+.home-thread::after {
+  bottom: 0;
+  background: linear-gradient(transparent, var(--color-background-200));
+}
+.home-thread[data-scrollable~="start"]::before,
+.home-thread[data-scrollable~="end"]::after {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-leave,
+  .home-return {
+    animation: none;
+  }
+  .home-leave {
+    opacity: 0;
+  }
 }

@@ -2778,15 +2778,16 @@ export class ShellHost implements ShellApi, StreamShellApi {
   /* ------------------------------ tab switcher ----------------------------- */
 
   /**
-   * The five most recently active tabs with a still of each, captured from
-   * the host rather than from a native view (§10). A sleeping tab has no
-   * page and answers with metadata alone, exactly as the desktop's does.
+   * The most recently active tabs, at most `limit`, with a still of each,
+   * captured from the host rather than from a native view (§10). A sleeping
+   * tab has no page and answers with metadata alone, exactly as the
+   * desktop's does.
    */
-  async getTabSwitcherPreviews(): Promise<TabSwitcherPreview[]> {
+  async getTabSwitcherPreviews(limit = TAB_SWITCHER_LIMIT): Promise<TabSwitcherPreview[]> {
     const recent = [...this.#tabs.values()]
       .filter((tab) => !tab.unlisted)
       .sort((left, right) => right.lastActiveAt - left.lastActiveAt)
-      .slice(0, TAB_SWITCHER_LIMIT);
+      .slice(0, Math.max(0, Math.min(TAB_SWITCHER_LIMIT, limit)));
     return Promise.all(
       recent.map(async (tab) => {
         const page = tab.backendTabId === null ? null : this.#pageFor(tab.id);
@@ -2804,6 +2805,11 @@ export class ShellHost implements ShellApi, StreamShellApi {
 
   /** Control–Tab is the OS's on a Mac; in a browser tab the shell owns it. */
   onTabSwitcherInput(): () => void {
+    return () => undefined;
+  }
+
+  /** Each still is taken once, when the switcher asks: there are no later captures to stream. */
+  onTabSwitcherThumbnail(): () => void {
     return () => undefined;
   }
 

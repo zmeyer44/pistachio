@@ -1,10 +1,17 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import {
+  DatabaseSync,
+  type SQLInputValue,
+  type StatementResultingChanges,
+} from "node:sqlite";
 import { deflateRawSync, inflateRawSync, inflateSync } from "node:zlib";
 import {
   DEFAULT_WATCHTOWER_SETTINGS,
+  WATCHTOWER_ENTITY_KINDS,
+  WATCHTOWER_ENTITY_LABELS,
+  WATCHTOWER_FACT_LABELS,
   watchtowerPageUrl,
   watchtowerSettingsSchema,
   watchtowerUrl,
@@ -16,6 +23,8 @@ import {
   type WatchtowerStats,
   type WatchtowerVisit,
 } from "@pistachio/agent-runtime/watchtower";
+import { bookmarkUrlKey } from "@pistachio/agent-runtime/bookmarks";
+import { EntityIndex } from "./entity-index.js";
 import { parseQuery, words } from "./query.js";
 
 /** 32 raw bytes: a hex string and its unique index cost 130 bytes a block. */
@@ -37,7 +46,7 @@ const unpack = <T>(value: Uint8Array | string): T =>
 const HIT = `o.id AS observationId, v.id AS visitId, p.id AS pageId,
  o.snapshot_id AS snapshotId, v.url, COALESCE(s.title,v.title) AS title,
  COALESCE(s.kind,'page') AS kind, v.at AS visitedAt, o.at AS capturedAt,
- o.coverage, '' AS snippet`;
+ o.coverage, '' AS snippet, (p.kept_key IS NOT NULL) AS kept`;
 const JOINS = `observation o JOIN visit v ON v.id=o.visit_id JOIN page p ON p.id=v.page_id
  LEFT JOIN snapshot s ON s.id=o.snapshot_id`;
 
@@ -47,6 +56,8 @@ export class Archive {
   #spaces: string[] | null = null;
   readonly db: DatabaseSync;
   readonly path: string;
+  /** What the saved pages are about: people, companies, products… (`entity-index.ts`). */
+  readonly index = new EntityIndex(this);
   #commits = 0;
 
   constructor(path: string, options: { readOnly?: boolean } = {}) {
@@ -61,7 +72,7 @@ export class Archive {
     const version =
       this.get<{ user_version: number }>("PRAGMA user_version")?.user_version ??
       0;
-    if (version > 3) {
+    if (version > 4) {
       this.db.close();
       throw new Error("This Watchtower archive needs a newer Pistachio.");
     }
@@ -70,13 +81,14 @@ export class Archive {
       BEGIN;
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS page(id INTEGER PRIMARY KEY, space_id TEXT NOT NULL,
-        url TEXT NOT NULL, host TEXT NOT NULL, UNIQUE(space_id,url));
+        url TEXT NOT NULL, host TEXT NOT NULL, kept_key TEXT, UNIQUE(space_id,url));
       CREATE TABLE IF NOT EXISTS visit(search_id INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, page_id INTEGER NOT NULL REFERENCES page(id) ON DELETE CASCADE,
         url TEXT NOT NULL, title TEXT NOT NULL, at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS visit_page_time ON visit(page_id,at DESC);
       CREATE INDEX IF NOT EXISTS visit_time ON visit(at DESC);
       CREATE TABLE IF NOT EXISTS snapshot(id INTEGER PRIMARY KEY, page_id INTEGER NOT NULL REFERENCES page(id) ON DELETE CASCADE,
-        digest BLOB NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL, links BLOB NOT NULL, UNIQUE(page_id,digest));
+        digest BLOB NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL, links BLOB NOT NULL,
+        understood INTEGER NOT NULL DEFAULT 0, subjects BLOB, UNIQUE(page_id,digest));
       CREATE TABLE IF NOT EXISTS observation(id TEXT PRIMARY KEY, visit_id TEXT NOT NULL REFERENCES visit(id) ON DELETE CASCADE,
         snapshot_id INTEGER REFERENCES snapshot(id), at INTEGER NOT NULL, coverage TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS observation_visit ON observation(visit_id,at DESC);
@@ -95,6 +107,25 @@ export class Archive {
       -- What a site's layout regions turned out to be; holds no page text.
       CREATE TABLE IF NOT EXISTS rule(host TEXT NOT NULL, signature TEXT NOT NULL, keep INTEGER NOT NULL,
         role TEXT NOT NULL, source TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(host,signature)) WITHOUT ROWID;
+      -- The index: what saved pages are about. Derived from snapshots and
+      -- forgotten with them; see entity-index.ts.
+      CREATE TABLE IF NOT EXISTS entity(id INTEGER PRIMARY KEY, space_id TEXT NOT NULL, kind TEXT NOT NULL,
+        name TEXT NOT NULL, at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS entity_space ON entity(space_id,kind);
+      CREATE TABLE IF NOT EXISTS entity_alias(entity_id INTEGER NOT NULL REFERENCES entity(id) ON DELETE CASCADE,
+        key TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(entity_id,key)) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS entity_alias_key ON entity_alias(key);
+      CREATE TABLE IF NOT EXISTS mention(entity_id INTEGER NOT NULL REFERENCES entity(id) ON DELETE CASCADE,
+        snapshot_id INTEGER NOT NULL REFERENCES snapshot(id) ON DELETE CASCADE, count INTEGER NOT NULL,
+        salience REAL NOT NULL, context TEXT NOT NULL, PRIMARY KEY(entity_id,snapshot_id)) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS mention_snapshot ON mention(snapshot_id);
+      CREATE TABLE IF NOT EXISTS fact(id INTEGER PRIMARY KEY, entity_id INTEGER NOT NULL REFERENCES entity(id) ON DELETE CASCADE,
+        snapshot_id INTEGER NOT NULL REFERENCES snapshot(id) ON DELETE CASCADE, kind TEXT NOT NULL, text TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS fact_entity ON fact(entity_id);
+      CREATE INDEX IF NOT EXISTS fact_snapshot ON fact(snapshot_id);
+      -- Names a person took out of the index, kept out of it. Holds no page text.
+      CREATE TABLE IF NOT EXISTS entity_ignore(space_id TEXT NOT NULL, key TEXT NOT NULL,
+        PRIMARY KEY(space_id,key)) WITHOUT ROWID;
       CREATE VIRTUAL TABLE IF NOT EXISTS block_fts USING fts5(body, content='',tokenize='${TOKENIZER}');
       CREATE VIRTUAL TABLE IF NOT EXISTS visit_fts USING fts5(title,url,content='',tokenize='${TOKENIZER}');
       CREATE TRIGGER IF NOT EXISTS visit_search_insert AFTER INSERT ON visit BEGIN
@@ -109,10 +140,33 @@ export class Archive {
       END;
       COMMIT;
     `);
+    // Version 3 to 4: saved versions learn whether they have been indexed,
+    // and keep what their page declared about itself. Existing versions
+    // are indexed in the background (`EntityIndex.backlog`).
+    if (
+      !this.all<{ name: string }>("PRAGMA table_info(snapshot)").some(
+        (column) => column.name === "understood",
+      )
+    )
+      this.db.exec(`
+        ALTER TABLE snapshot ADD COLUMN understood INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE snapshot ADD COLUMN subjects BLOB;
+      `);
+    // A page saved on purpose (shift, shift) is KEPT: retention leaves its
+    // text. The key is the saved record's address key, so deleting the save
+    // — here or on another device — lets the page age like any other.
+    if (
+      !this.all<{ name: string }>("PRAGMA table_info(page)").some(
+        (column) => column.name === "kept_key",
+      )
+    )
+      this.db.exec("ALTER TABLE page ADD COLUMN kept_key TEXT;");
     this.db.exec(`
+      CREATE INDEX IF NOT EXISTS page_kept ON page(kept_key) WHERE kept_key IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS snapshot_understood ON snapshot(understood,id);
       INSERT INTO block_fts(block_fts,rank) VALUES('secure-delete',1);
       INSERT INTO visit_fts(visit_fts,rank) VALUES('secure-delete',1);
-      PRAGMA user_version=3;
+      PRAGMA user_version=4;
       PRAGMA temp_store=MEMORY;
       CREATE VIRTUAL TABLE temp.query_tokens USING fts5(body, content='', tokenize='${TOKENIZER}');
       CREATE VIRTUAL TABLE temp.query_vocab USING fts5vocab(temp,query_tokens,instance);
@@ -198,6 +252,9 @@ export class Archive {
   }
   get<T>(sql: string, ...params: SQLInputValue[]): T | undefined {
     return this.db.prepare(sql).get(...params) as unknown as T | undefined;
+  }
+  run(sql: string, ...params: SQLInputValue[]): StatementResultingChanges {
+    return this.db.prepare(sql).run(...params);
   }
   transaction<T>(work: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
@@ -383,26 +440,37 @@ export class Archive {
     if (this.#spaces && !this.#spaces.includes(visit.spaceId))
       this.#spaces.push(visit.spaceId);
   }
+  /**
+   * Saves a capture of a visit's page: a new version, or the visit's latest
+   * observation again when the text has not changed. Returns the observation
+   * that now holds this text, or null when nothing was saved — a stale or
+   * forgotten visit, a full archive, a capture too large, or (for passive
+   * capture) a visit that already has its dozen observations. A deliberate
+   * save (shift, shift) is not held to that dozen: it is what the person
+   * asked for, and saying it saved the previous version would be false.
+   */
   ingest(
     visit: WatchtowerVisit,
     id: string,
     at: number,
     capture: WatchtowerCapture,
-  ): void {
-    if (watchtowerPageUrl(capture.url) !== watchtowerPageUrl(visit.url)) return;
+    options: { deliberate?: boolean } = {},
+  ): { observationId: string; snapshotId: number; pageId: number } | null {
+    if (watchtowerPageUrl(capture.url) !== watchtowerPageUrl(visit.url)) return null;
     const existingVisit = this.get<{ page_id: number; space_id: string }>(
       "SELECT v.page_id,p.space_id FROM visit v JOIN page p ON p.id=v.page_id WHERE v.id=?",
       visit.id,
     );
-    if (!existingVisit || existingVisit.space_id !== visit.spaceId) return; // forgotten or stale job
-    if (this.get("SELECT id FROM observation WHERE id=?", id)) return;
+    if (!existingVisit || existingVisit.space_id !== visit.spaceId) return null; // forgotten or stale job
+    if (this.get("SELECT id FROM observation WHERE id=?", id)) return null;
     if (
+      !options.deliberate &&
       (this.get<{ n: number }>(
         "SELECT count(*) n FROM observation WHERE visit_id=?",
         visit.id,
       )?.n ?? 0) >= MAX_OBSERVATIONS_PER_VISIT
     )
-      return;
+      return null;
     const title = capture.title.slice(0, 500);
     const line = (label: string, value: string | undefined, max: number) =>
       value?.trim() ? `${label}: ${value.trim().replace(/\s+/gu, " ").slice(0, max)}` : "";
@@ -423,7 +491,7 @@ export class Archive {
       (block) => block.trim() !== "",
     );
     const bytes = blocks.reduce((n, text) => n + Buffer.byteLength(text), 0);
-    if (bytes > MAX_BYTES || !this.hasRoom(bytes)) return;
+    if (bytes > MAX_BYTES || !this.hasRoom(bytes)) return null;
     const seen = new Set<string>();
     const links = capture.links.slice(0, 300).flatMap((link) => {
       // A link names a page, so `#section` links resolve to the saved page.
@@ -436,7 +504,9 @@ export class Archive {
     // Links are not part of a version's identity: a rotating "more stories"
     // list under unchanged text is the same document.
     const digest = hash(JSON.stringify([2, capture.kind, coverage, blocks]));
-    this.transaction(() => {
+    const subjects = (capture.subjects ?? []).slice(0, 12);
+    let created: number | null = null;
+    const saved = this.transaction((): { observationId: string; snapshotId: number; pageId: number } => {
       let snapshotId = this.get<{ id: number }>(
         "SELECT id FROM snapshot WHERE page_id=? AND digest=?",
         existingVisit.page_id,
@@ -446,7 +516,7 @@ export class Archive {
         snapshotId = Number(
           this.db
             .prepare(
-              "INSERT INTO snapshot(page_id,digest,title,kind,links) VALUES(?,?,?,?,?)",
+              "INSERT INTO snapshot(page_id,digest,title,kind,links,subjects) VALUES(?,?,?,?,?,?)",
             )
             .run(
               existingVisit.page_id,
@@ -454,8 +524,10 @@ export class Archive {
               title,
               capture.kind,
               pack(links),
+              subjects.length ? pack(subjects) : null,
             ).lastInsertRowid,
         );
+        created = snapshotId;
         const find = this.db.prepare(
           "SELECT id,body,codec FROM block WHERE hash=?",
         );
@@ -498,22 +570,95 @@ export class Archive {
           point.run(snapshotId, link.url);
         }
       }
-      const latest = this.get<{ snapshot_id: number }>(
-        "SELECT snapshot_id FROM observation WHERE visit_id=? ORDER BY at DESC,id DESC LIMIT 1",
+      const latest = this.get<{ id: string; snapshot_id: number }>(
+        "SELECT id,snapshot_id FROM observation WHERE visit_id=? ORDER BY at DESC,id DESC LIMIT 1",
         visit.id,
       );
-      if (latest?.snapshot_id === snapshotId) return;
+      const pageId = existingVisit.page_id;
+      if (latest?.snapshot_id === snapshotId) return { observationId: latest.id, snapshotId, pageId };
       this.db
         .prepare("DELETE FROM observation WHERE id=? AND snapshot_id IS NULL")
         .run(`${visit.id}:metadata`);
       this.db
         .prepare("INSERT INTO observation VALUES(?,?,?,?,?)")
         .run(id, visit.id, snapshotId, at, coverage);
+      return { observationId: id, snapshotId, pageId };
     });
+    // A new version is indexed at once with what it declares about itself;
+    // the decision model reads its names later, if the person allows it.
+    // The index is derived: failing here must never fail a capture.
+    if (created !== null)
+      try {
+        this.index.local(created);
+      } catch {
+        /* retried by the backlog: the version stays understood=0 */
+      }
     if (++this.#commits % 50 === 0) {
       this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       this.prune(this.settings().retentionDays);
     }
+    return saved;
+  }
+  /**
+   * A page saved on purpose (shift, shift): this visit and this version,
+   * whatever passive capture is set to — the save is the person's consent
+   * for this page — and the page marked kept under `keptKey`. Returns the
+   * version now saved, or null when nothing could be written (storage
+   * full, a stale visit).
+   */
+  keep(
+    visit: WatchtowerVisit,
+    id: string,
+    at: number,
+    capture: WatchtowerCapture,
+    keptKey: string,
+  ): { observationId: string; snapshotId: number; pageId: number } | null {
+    this.visit(visit);
+    // What ingest saved, never "the visit's latest": after a failure that
+    // would pass an older version off as this one.
+    const saved = this.ingest(visit, id, at, capture, { deliberate: true });
+    if (!saved) return null;
+    this.run("UPDATE page SET kept_key=? WHERE id=?", keptKey.slice(0, 2048), saved.pageId);
+    this.#stats.clear();
+    return saved;
+  }
+  /**
+   * The saved record's key moved (it settled on the page's canonical
+   * address). Found through the kept observation, so a page forgotten
+   * meanwhile — its id perhaps reused — is left alone.
+   */
+  rekeep(observationId: string, keptKey: string): void {
+    this.run(
+      `UPDATE page SET kept_key=? WHERE kept_key IS NOT NULL AND id=
+       (SELECT v.page_id FROM observation o JOIN visit v ON v.id=o.visit_id WHERE o.id=?)`,
+      keptKey.slice(0, 2048),
+      observationId,
+    );
+  }
+  /** The keys of every page still saved on purpose; the rest return to ordinary retention. */
+  setKept(keys: string[]): void {
+    this.run(
+      "UPDATE page SET kept_key=NULL WHERE kept_key IS NOT NULL AND kept_key NOT IN (SELECT value FROM json_each(?))",
+      JSON.stringify(keys.slice(0, 20000)),
+    );
+  }
+  /** What Watchtower holds for a saved page: its latest saved version and what it is about. */
+  about(
+    spaceId: string,
+    url: string,
+  ): { observationId: string; entities: ReturnType<EntityIndex["about"]> } | null {
+    const key = bookmarkUrlKey(url);
+    const pageUrl = watchtowerPageUrl(url) ?? "";
+    const hit = this.get<{ observationId: string; snapshotId: number }>(
+      `SELECT o.id observationId,o.snapshot_id snapshotId FROM ${JOINS}
+       WHERE p.space_id=? AND (p.url=? OR p.kept_key=?) AND o.snapshot_id IS NOT NULL
+       ORDER BY (p.kept_key=?) DESC,o.at DESC,o.id DESC LIMIT 1`,
+      spaceId,
+      pageUrl,
+      key,
+      key,
+    );
+    return hit ? { observationId: hit.observationId, entities: this.index.about(hit.snapshotId) } : null;
   }
   decode(block: { body: Uint8Array; codec: number }): string {
     return (
@@ -794,7 +939,7 @@ export class Archive {
     // observation is replaced by substantive content.
     if (!hit && observationId.endsWith(":metadata")) {
       hit = this.get<WatchtowerHit>(
-        `SELECT ? observationId,v.id visitId,p.id pageId,NULL snapshotId,v.url,v.title,'page' kind,v.at visitedAt,v.at capturedAt,'metadata' coverage,'' snippet
+        `SELECT ? observationId,v.id visitId,p.id pageId,NULL snapshotId,v.url,v.title,'page' kind,v.at visitedAt,v.at capturedAt,'metadata' coverage,'' snippet,(p.kept_key IS NOT NULL) kept
         FROM visit v JOIN page p ON p.id=v.page_id WHERE p.space_id=? AND v.id=?`,
         observationId,
         spaceId,
@@ -853,6 +998,7 @@ export class Archive {
       links,
       history,
       backlinks,
+      entities: hit.snapshotId === null ? [] : this.index.about(hit.snapshotId),
       markdown: markdown(hit, blocks),
     };
   }
@@ -885,6 +1031,7 @@ export class Archive {
       history: _history,
       links: _links,
       backlinks: _backlinks,
+      entities: _entities,
       ...hit
     }: WatchtowerDocument): WatchtowerHit => hit;
     return {
@@ -958,15 +1105,18 @@ export class Archive {
     const cutoff = now - days * 86400000;
     if (
       !this.get(
-        "SELECT 1 FROM observation o JOIN visit v ON v.id=o.visit_id WHERE v.at<? AND o.snapshot_id IS NOT NULL LIMIT 1",
+        `SELECT 1 FROM observation o JOIN visit v ON v.id=o.visit_id JOIN page p ON p.id=v.page_id
+         WHERE v.at<? AND o.snapshot_id IS NOT NULL AND p.kept_key IS NULL LIMIT 1`,
         cutoff,
       )
     )
       return;
     this.transaction(() => {
+      // A page saved on purpose keeps its text however old it is.
       this.db
         .prepare(
-          "DELETE FROM observation WHERE snapshot_id IS NOT NULL AND visit_id IN (SELECT id FROM visit WHERE at<?)",
+          `DELETE FROM observation WHERE snapshot_id IS NOT NULL AND visit_id IN
+           (SELECT id FROM visit WHERE at<? AND page_id NOT IN (SELECT id FROM page WHERE kept_key IS NOT NULL))`,
         )
         .run(cutoff);
       this.db
@@ -1006,6 +1156,8 @@ export class Archive {
       DELETE FROM link_target WHERE id IN (SELECT id FROM temp.doomed_target);
       DELETE FROM page WHERE NOT EXISTS(SELECT 1 FROM visit WHERE page_id=page.id);
       DELETE FROM rule WHERE host NOT IN (SELECT host FROM page);
+      DELETE FROM entity WHERE NOT EXISTS(SELECT 1 FROM mention WHERE entity_id=entity.id);
+      DELETE FROM entity_ignore WHERE space_id NOT IN (SELECT DISTINCT space_id FROM page);
       DELETE FROM temp.doomed_block; DELETE FROM temp.doomed_target;
     `);
   }
@@ -1092,6 +1244,63 @@ export class Archive {
       }
     const label = (value: string): string =>
       value.replace(/[\]\\\r\n[]/gu, " ");
+    // The index as pages of the wiki: one per entry, linked from every saved
+    // version that names it. A read-only export of an archive the writer has
+    // not upgraded yet has no index to write.
+    const indexed = this.get(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='entity'",
+    )
+      ? this.index.everything(spaceId)
+      : [];
+    const entityFile = (id: number): string => `entity-${id}.md`;
+    const about = new Map<number, { id: number; name: string; kind: string }[]>();
+    for (const { entity, mentions } of indexed)
+      for (const mention of mentions)
+        about.set(mention.snapshotId, [
+          ...(about.get(mention.snapshotId) ?? []),
+          { id: entity.id, name: entity.name, kind: entity.kind },
+        ]);
+    for (const { entity, mentions, facts } of indexed) {
+      const noun = WATCHTOWER_ENTITY_LABELS[entity.kind].one;
+      const source = (snapshotId: number): string => {
+        const file = files.get(snapshotId);
+        const hit = snapshots.get(snapshotId);
+        return file && hit ? `[${label(hit.title || hit.url)}](${file})` : "a saved page";
+      };
+      const lines = [
+        `---\nkind: ${entity.kind}\nname: ${JSON.stringify(entity.name)}\naliases: ${JSON.stringify(entity.aliases)}\npages: ${entity.pageCount}\nsites: ${entity.siteCount}\n---`,
+        "",
+        `# ${label(entity.name)}`,
+        "",
+        `${noun} · named on ${entity.pageCount} saved ${entity.pageCount === 1 ? "page" : "pages"} across ${entity.siteCount} ${entity.siteCount === 1 ? "site" : "sites"}.${entity.aliases.length > 1 ? ` Also written ${entity.aliases.slice(1).map((alias) => `“${label(alias)}”`).join(", ")}.` : ""}`,
+      ];
+      if (facts.length) {
+        lines.push("", "## Facts", "");
+        for (const fact of facts)
+          lines.push(`- **${WATCHTOWER_FACT_LABELS[fact.kind]}.** “${fact.text.replace(/\s+/gu, " ")}” — ${source(fact.snapshotId)}`);
+      }
+      lines.push("", "## Mentioned in", "");
+      for (const mention of mentions)
+        lines.push(`- ${source(mention.snapshotId)}${mention.context ? ` — “${mention.context.replace(/\s+/gu, " ")}”` : ""}`);
+      writeFileSync(join(directory, entityFile(entity.id)), lines.join("\n") + "\n", {
+        mode: 0o600,
+      });
+    }
+    if (indexed.length) {
+      index.push("## Index", "");
+      for (const kind of WATCHTOWER_ENTITY_KINDS) {
+        const entries = indexed
+          .map(({ entity }) => entity)
+          .filter((entity) => entity.kind === kind)
+          .sort((a, b) => b.pageCount - a.pageCount || a.name.localeCompare(b.name));
+        if (!entries.length) continue;
+        index.push(`### ${WATCHTOWER_ENTITY_LABELS[kind].many} (${entries.length})`, "");
+        for (const entity of entries)
+          index.push(`- [${label(entity.name)}](${entityFile(entity.id)}) · ${entity.pageCount} ${entity.pageCount === 1 ? "page" : "pages"}`);
+        index.push("");
+      }
+      index.push("## Saved pages", "");
+    }
     for (const [snapshotId, hit] of snapshots) {
       const file = files.get(snapshotId)!;
       const links = (linksBySnapshot.get(snapshotId) ?? []).map((link) => {
@@ -1119,6 +1328,14 @@ export class Archive {
             : "") +
           (backlinks.length
             ? "\n## Referenced by\n\n" + backlinks.join("\n") + "\n"
+            : "") +
+          (about.get(snapshotId)?.length
+            ? "\n## About\n\n" +
+              about
+                .get(snapshotId)!
+                .map((entity) => `- [${label(entity.name)}](${entityFile(entity.id)}) · ${WATCHTOWER_ENTITY_LABELS[entity.kind as keyof typeof WATCHTOWER_ENTITY_LABELS]?.one ?? entity.kind}`)
+                .join("\n") +
+              "\n"
             : ""),
         { mode: 0o600 },
       );

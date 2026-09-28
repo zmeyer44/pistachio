@@ -20,3 +20,20 @@ export function pageLinkMarkdown(title: string, url: string): string {
 export function copyUrlNotice(format: "plain" | "markdown"): string {
   return format === "markdown" ? "Link copied as Markdown" : "URL copied";
 }
+
+/**
+ * Whether a copy in this document has anything of its own to copy: a range
+ * (text, an image) or the selected part of a text field, looked for through
+ * open shadow roots. Any sign of one counts, so a bare ⌘C only ever falls
+ * back to copying the page's URL when there is truly nothing selected.
+ */
+export function hasCopyableSelection(document: Document): boolean {
+  const selection = document.getSelection();
+  if (selection !== null && (selection.type === "Range" || selection.toString() !== "")) return true;
+  let active = document.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    return active.selectionStart !== null && active.selectionStart !== active.selectionEnd;
+  }
+  return false;
+}

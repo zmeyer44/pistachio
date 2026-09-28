@@ -96,6 +96,7 @@ export interface AgentMessage {
   id: string;
   at: string;
   role: "user" | "assistant" | "system";
+  /** The words themselves; an assistant's are Markdown, rendered by the chat. */
   content: string;
   /** Images and documents sent with this turn. Absent when there were none. */
   attachments?: AgentAttachment[];
@@ -105,6 +106,45 @@ export interface AgentMessage {
    * calls under the exchange that produced them. Absent on older records.
    */
   turn?: number;
+  /**
+   * What the model thought before it wrote this reply, when its provider
+   * shares that (a reasoning summary). Kept with the reply so the thread
+   * still shows "Thought for 4s" after the stream is over. Absent when the
+   * model shared nothing, and on every non-assistant message.
+   */
+  reasoning?: string;
+  /** How long the model thought before writing, in milliseconds. */
+  thinkingMs?: number;
+}
+
+/**
+ * A page a tool call read on the person's behalf: where an answer can be
+ * traced back to. The chat shows a turn's sources under its reply and
+ * turns a link to one into a citation chip.
+ */
+export interface AgentSource {
+  url: string;
+  title: string;
+}
+
+/**
+ * The reply as it is being written. Streamed from the model a few words at
+ * a time and published on the run while a turn is live; never persisted —
+ * once the turn ends the words are a message and the draft is gone.
+ */
+export interface AgentDraft {
+  /** The turn the draft belongs to (AgentMessage.turn). */
+  turn: number;
+  /** The reply so far, Markdown. Empty while the model is still thinking or acting. */
+  text: string;
+  /** The reasoning so far, when the provider shares it. */
+  reasoning: string;
+  /** When the model started thinking this turn, or null before the first reasoning word. */
+  thinkingSince: string | null;
+  /** Whether reasoning is still arriving: a reply's words follow once it stops. */
+  thinking: boolean;
+  /** How long the thinking took, once it stopped; null while it goes on. */
+  thinkingMs: number | null;
 }
 
 /** A browser operation exposed by the main process to the agent runtime. */
@@ -138,6 +178,8 @@ export interface AgentToolCall {
     | "artifact.list"
     | "watchtower.search"
     | "watchtower.read"
+    | "watchtower.index"
+    | "watchtower.entity"
     | "bookmark.search"
     | "bookmark.create"
     | "bookmark.update"
@@ -178,6 +220,12 @@ export interface AgentToolCall {
    * title is the person's words (docs/cloud-sync-design.md D25).
    */
   output?: AgentToolOutput;
+  /**
+   * The page the call read, when it read one — a `page.inspect`, a saved
+   * page from Watchtower. Set when the call completes; the chat gathers a
+   * turn's sources under its reply. Absent on calls that read nothing.
+   */
+  source?: AgentSource;
 }
 
 /**
@@ -324,7 +372,9 @@ export interface CredentialToolRequest {
 
 export type WatchtowerToolRequest =
   | { name: "watchtower.search"; query: string }
-  | { name: "watchtower.read"; id: string };
+  | { name: "watchtower.read"; id: string }
+  | { name: "watchtower.index"; query: string }
+  | { name: "watchtower.entity"; id: string };
 
 /** Anything the agent can call — browser, memory, reminders, artifacts, bookmarks, notes, integrations, or its scratchpad — for the run's tool trace. */
 export type AgentToolRequest =
@@ -477,6 +527,12 @@ export interface RunSummary {
   pendingQuestion: AgentQuestion | null;
   pendingTakeover: AgentTakeover | null;
   messages: AgentMessage[];
+  /**
+   * The reply being written right now, while a turn streams. Present only
+   * on a published snapshot of a live desktop turn; a saved thread and a
+   * cloud run never carry one.
+   */
+  draft?: AgentDraft;
   toolCalls: AgentToolCall[];
   subagents: AgentSubagent[];
   activity: Array<{

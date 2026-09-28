@@ -64,6 +64,20 @@ export function validateCapture(raw: unknown): WatchtowerRawCapture | null {
     }
   const short = (field: unknown, max: number): string =>
     typeof field === "string" ? field.slice(0, max) : "";
+  const subjects: NonNullable<WatchtowerRawCapture["subjects"]> = [];
+  if (Array.isArray(value["subjects"]))
+    for (const item of value["subjects"].slice(0, 12) as unknown[]) {
+      if (!item || typeof item !== "object") continue;
+      const subject = item as Record<string, unknown>;
+      const name = short(subject["name"], 120).replace(/\s+/gu, " ").trim();
+      if (!name) continue;
+      const via = short(subject["via"], 20);
+      subjects.push({
+        name,
+        type: short(subject["type"], 60),
+        ...(/^[a-zA-Z]+$/u.test(via) ? { via } : {}),
+      });
+    }
   return {
     url: value["url"].slice(0, 8192),
     title: value["title"].slice(0, 500),
@@ -78,5 +92,6 @@ export function validateCapture(raw: unknown): WatchtowerRawCapture | null {
     blocks,
     links,
     truncated: value["truncated"] === true,
+    ...(subjects.length ? { subjects } : {}),
   };
 }

@@ -130,7 +130,7 @@ export async function judgeRegions(
 }
 
 /** Jev's own calibrated figure when it sends one; else the winner's margin. */
-function confidenceOf(
+export function confidenceOf(
   metadata: unknown,
   id: string,
   probabilities: unknown,

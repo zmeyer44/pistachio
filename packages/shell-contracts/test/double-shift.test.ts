@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DoubleTap, DOUBLE_TAP_WINDOW_MS, MAX_TAP_HOLD_MS, type TapInput } from "../src/double-shift.js";
+import { DoubleTap, DOUBLE_TAP_WINDOW_MS, HELD_KEY_MS, MAX_TAP_HOLD_MS, type TapInput } from "../src/double-shift.js";
 
 const down = (key = "Shift", extra: Partial<TapInput> = {}): TapInput => ({ type: "keyDown", key, ...extra });
 const up = (key = "Shift", extra: Partial<TapInput> = {}): TapInput => ({ type: "keyUp", key, ...extra });
@@ -77,6 +77,23 @@ describe("DoubleTap", () => {
 
   it("reads DOM-style modifier names too", () => {
     expect(fires([[{ type: "keyDown", key: "Shift", ctrlKey: true }, 0], [up(), 50], [down(), 150], [up(), 200]])).toEqual([]);
+  });
+
+  it("keeps working after a shortcut whose releases never arrive", () => {
+    // ⌘= on a page: main consumes the key-down, and Chromium then swallows
+    // the key-ups of = and ⌘. Only the two key-downs are ever seen.
+    const shortcut: Array<[TapInput, number]> = [[down("Meta", { meta: true, code: "MetaLeft" }), 0], [down("=", { meta: true, code: "Equal" }), 10]];
+    const later = HELD_KEY_MS + 100;
+    expect(fires([...shortcut, [down(), later], [up(), later + 50], [down(), later + 200], [up(), later + 250]])).toEqual([later + 250]);
+    // The same for ⌘⇧T, whose Shift release is swallowed too.
+    expect(
+      fires([[down("Meta", { meta: true }), 0], [down("Shift", { meta: true, code: "ShiftLeft" }), 10], [down("T", { meta: true }), 20], [down("Shift", { code: "ShiftLeft" }), later], [up("Shift", { code: "ShiftLeft" }), later + 50], [down("Shift", { code: "ShiftLeft" }), later + 200], [up("Shift", { code: "ShiftLeft" }), later + 250]]),
+    ).toEqual([later + 250]);
+  });
+
+  it("still treats a key that is really held, and repeating, as held", () => {
+    const repeat = (at: number): [TapInput, number] => [down("a", { isAutoRepeat: true }), at];
+    expect(fires([[down("a"), 0], repeat(500), repeat(1400), [down(), 1450], [up(), 1500], [down(), 1600], [up(), 1650], [up("a"), 1700]])).toEqual([]);
   });
 
   it("forgets everything on reset", () => {

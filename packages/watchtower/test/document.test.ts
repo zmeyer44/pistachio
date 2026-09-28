@@ -18,6 +18,7 @@ const doc = (blocks: string[], extra: Partial<WatchtowerDocument> = {}): Watchto
   blocks,
   history: [],
   links: [],
+  entities: [],
   backlinks: [],
   ...extra,
 });

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "preferences": {
+    "destination": {
+      "value": "youtube",
+      "confirmed_in": [
+        "pistachio-launch"
+      ],
+      "updated_at": "2026-09-25T19:18:51.684Z"
+    },
+    "aspect": {
+      "value": "1920x1080",
+      "confirmed_in": [
+        "pistachio-launch"
+      ],
+      "updated_at": "2026-09-25T19:18:51.743Z"
+    },
+    "language": {
+      "value": "en",
+      "confirmed_in": [
+        "pistachio-launch"
+      ],
+      "updated_at": "2026-09-25T19:18:51.792Z"
+    },
+    "flow": {
+      "value": "automation",
+      "confirmed_in": [
+        "pistachio-launch"
+      ],
+      "updated_at": "2026-09-25T19:18:51.859Z"
+    },
+    "storyboard": {
+      "value": "no",
+      "confirmed_in": [
+        "pistachio-launch"
+      ],
+      "updated_at": "2026-09-25T19:18:51.910Z"
+    },
+    "style_preset.product-launch-video": {
+      "value": "blue-professional",
+      "confirmed_in": [
+        "pistachio-launch"
+      ],
+      "updated_at": "2026-09-25T19:19:04.256Z"
+    }
+  },
+  "sightings": {}
+}

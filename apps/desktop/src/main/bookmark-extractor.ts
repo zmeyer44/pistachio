@@ -10,6 +10,13 @@
  * page (an image it names must be one the page showed) and replaces the
  * draft where it improves on it.
  *
+ * The same answer names everything ELSE the page is about, for Watchtower's
+ * index: a profile page is a person and the company they run, a review is
+ * a product and its maker, a funding story a company, its founders and its
+ * investors. Each comes with sentences copied from the page — checked to be
+ * there, word for word, before one is kept — so a fact is always something
+ * the page said, never something the model wrote.
+ *
  * Best-effort in the way memory's learner is: no key, a timeout, a model
  * that returns nonsense — the draft stands and the bookmark is still
  * saved. Nothing here can fail a capture.
@@ -34,6 +41,11 @@ import {
   type BookmarkProvenance,
   type PageSnapshot,
 } from "@pistachio/shell-contracts/bookmarks";
+import {
+  WATCHTOWER_ENTITY_KINDS,
+  WATCHTOWER_FACT_KINDS,
+  type WatchtowerSavedEntity,
+} from "@pistachio/shell-contracts/watchtower";
 import { aiAvailable, configuredModel, loadWorkspaceEnvironment } from "./model-provider";
 
 export interface BookmarkExtraction {
@@ -41,6 +53,8 @@ export interface BookmarkExtraction {
   /** The page's own address for itself, cleaned. */
   url: string;
   provenance: BookmarkProvenance;
+  /** What the page is about, for Watchtower's index. Empty without a model. */
+  entities?: WatchtowerSavedEntity[];
 }
 
 export interface ExtractOptions {
@@ -54,7 +68,14 @@ export interface ExtractOptions {
 }
 
 const MODEL_TIMEOUT_MS = 45_000;
-const MAX_PROMPT_TEXT = 7_000;
+/** The whole captured text: a person named in the last paragraph is still named. */
+const MAX_PROMPT_TEXT = 12_000;
+export const MAX_SAVED_ENTITIES = 12;
+const MAX_FACTS_PER_ENTITY = 4;
+const MAX_FACT = 400;
+const SAVED_KINDS = WATCHTOWER_ENTITY_KINDS.filter(
+  (kind): kind is Exclude<(typeof WATCHTOWER_ENTITY_KINDS)[number], "question"> => kind !== "question",
+);
 const MAX_PROMPT_META = 60;
 const MAX_PROMPT_JSON_LD = 5_000;
 
@@ -85,6 +106,27 @@ const EXTRACTION_SCHEMA = z.object({
     .array(z.object({ label: z.string().min(1).max(40), value: z.string().min(1).max(200) }))
     .max(MAX_BOOKMARK_DETAILS)
     .describe("Facts the page states about the thing, each a short label and value: Price, Brand, Author, Director, Year, Rating, Cook time, Serves, Platform. Only what the page says; never guess."),
+  entities: z
+    .array(
+      z.object({
+        kind: z
+          .enum(SAVED_KINDS as [string, ...string[]])
+          .describe("person, company (a business or brand), organization (not a business: university, government, team, band), product, technology, place, event, work (a book, film, show, song, game, paper, recipe, course), project (an open-source repository or initiative), concept (an idea, field or topic)."),
+        name: z.string().min(1).max(120).describe("Its own full name as the page writes it: “Patrick Collison”, “Stripe”, “Barista Express”."),
+        alsoKnownAs: z.array(z.string().max(120)).max(4).describe("Other names the page uses for it: a surname, an abbreviation, a legal name."),
+        role: z.enum(["subject", "major", "mention"]).describe("subject: what the page is about; major: discussed at some length; mention: named in passing."),
+        facts: z
+          .array(
+            z.object({
+              kind: z.enum(WATCHTOWER_FACT_KINDS).describe("definition: what it is or does; metric: a measured number; price: what it costs; event: something that happened to it; claim: an assertion someone could check or dispute."),
+              quote: z.string().min(1).max(MAX_FACT).describe("One sentence copied EXACTLY from the visible text, word for word, that states the fact."),
+            }),
+          )
+          .max(MAX_FACTS_PER_ENTITY),
+      }),
+    )
+    .max(MAX_SAVED_ENTITIES)
+    .describe("Everything the page is about that the person might look up again, most central first — the thing itself, and the people, companies, products, places and ideas the page tells them about."),
 });
 
 function excerpt(text: string): string {
@@ -147,7 +189,63 @@ Rules:
 - description: what it is, in plain words, from the page. Two sentences at most.
 - details: only facts the page states, and only ones a person would want at a glance for this kind of thing. Prices with their currency symbol; years as years; durations like "2h 10m".
 - keywords: what the person would type to find it again — the category, the maker, the author, the genre, the topic, the use. Not the site's SEO list verbatim.
-- imageUrl: the picture OF the thing. A logo, an avatar, or a banner is not it; return null rather than a wrong image.`;
+- imageUrl: the picture OF the thing. A logo, an avatar, or a banner is not it; return null rather than a wrong image.
+- entities: the thing itself first, then each person, company, organization, product, technology, place, event, work, project or concept the page says something about. A page about a founder is the person AND their company; a review is the product AND its maker. Leave out the site that published the page unless the page is about it, and anything only listed in navigation, ads or "related" links. A name from the page, never one you know from elsewhere.
+- facts: copy whole sentences from the visible text above exactly as written — never paraphrase, never combine two sentences, never add a fact the text does not state. Better none than one that is not on the page.`;
+}
+
+/** Whitespace and typographic quotes vary between how a page renders and how a model copies it. */
+function comparable(text: string): string {
+  return text.replace(/[“”«»„]/gu, '"').replace(/[‘’‚]/gu, "'").replace(/\s+/gu, " ").trim();
+}
+
+/** The sentence of the page that names `names` first, for an entry's example. */
+function sentenceNaming(text: string, names: string[]): string {
+  for (const name of names) {
+    if (name.length < 2) continue;
+    const at = text.indexOf(name);
+    if (at === -1) continue;
+    const start = Math.max(text.lastIndexOf(". ", at) + 2, at - 160, 0);
+    const stop = text.indexOf(". ", at + name.length);
+    const end = stop === -1 ? Math.min(text.length, at + 200) : Math.min(stop + 1, at + 200);
+    return text.slice(start, end).trim();
+  }
+  return "";
+}
+
+/**
+ * The model's entities, checked against the page: a fact is kept only if
+ * its sentence is in the page's text; names are trimmed and deduplicated;
+ * at most twelve, most central first.
+ */
+export function verifiedEntities(answer: z.infer<typeof EXTRACTION_SCHEMA>["entities"], pageText: string): WatchtowerSavedEntity[] {
+  const page = comparable(pageText);
+  const seen = new Set<string>();
+  const out: WatchtowerSavedEntity[] = [];
+  const order = { subject: 0, major: 1, mention: 2 } as const;
+  for (const entity of [...answer].sort((a, b) => order[a.role] - order[b.role])) {
+    const name = entity.name.replace(/\s+/gu, " ").trim();
+    const key = `${entity.kind}:${name.toLowerCase()}`;
+    if (name === "" || seen.has(key) || !(SAVED_KINDS as readonly string[]).includes(entity.kind)) continue;
+    seen.add(key);
+    const facts: WatchtowerSavedEntity["facts"] = [];
+    for (const fact of entity.facts) {
+      const text = comparable(fact.quote).replace(/^"|"$/gu, "");
+      if (text.length < 12 || !page.includes(text) || facts.some((kept) => kept.text === text)) continue;
+      facts.push({ kind: fact.kind, text: text.slice(0, MAX_FACT) });
+    }
+    const aliases = [...new Set(entity.alsoKnownAs.map((alias) => alias.replace(/\s+/gu, " ").trim()))].filter((alias) => alias !== "" && alias !== name).slice(0, 4);
+    out.push({
+      kind: entity.kind as WatchtowerSavedEntity["kind"],
+      name: name.slice(0, 120),
+      aliases,
+      role: entity.role,
+      facts: facts.slice(0, MAX_FACTS_PER_ENTITY),
+      context: sentenceNaming(comparable(pageText), [name, ...aliases]) || facts[0]?.text || "",
+    });
+    if (out.length === MAX_SAVED_ENTITIES) break;
+  }
+  return out;
 }
 
 /**
@@ -175,7 +273,7 @@ export async function extractBookmark(snapshot: PageSnapshot, options: ExtractOp
       prompt: extractionPrompt(snapshot, draft, images, options.hint),
       abortSignal: AbortSignal.timeout(options.timeoutMs ?? MODEL_TIMEOUT_MS),
     });
-    return { fields: mergeModelAnswer(draft, object, images), url, provenance: "model" };
+    return { fields: mergeModelAnswer(draft, object, images), url, provenance: "model", entities: verifiedEntities(object.entities, snapshot.text) };
   } catch {
     return { fields: draft, url, provenance: "page" };
   }
@@ -186,7 +284,7 @@ export async function extractBookmark(snapshot: PageSnapshot, options: ExtractOp
  * the candidates; empty answers keep the draft's value; keywords are the
  * model's first, the draft's after, so the page's own tags are never lost.
  */
-export function mergeModelAnswer(draft: BookmarkFields, answer: z.infer<typeof EXTRACTION_SCHEMA>, images: string[]): BookmarkFields {
+export function mergeModelAnswer(draft: BookmarkFields, answer: Omit<z.infer<typeof EXTRACTION_SCHEMA>, "entities">, images: string[]): BookmarkFields {
   const title = answer.title.replace(/\s+/g, " ").trim();
   const description = answer.description.replace(/\s+/g, " ").trim();
   const image = answer.imageUrl?.trim() ?? "";

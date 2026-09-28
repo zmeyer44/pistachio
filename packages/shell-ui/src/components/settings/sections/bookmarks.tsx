@@ -1,6 +1,9 @@
 /**
  * Settings → Bookmarks: the switches around saving. What is saved lives on
  * its own page (pistachio://bookmarks), which this one points at.
+ *
+ * On the desktop a save is a Watchtower save, and these switches are part
+ * of Settings → Watchtower; this section shows that page instead.
  */
 
 import { Bookmark } from "lucide-react";
@@ -10,9 +13,15 @@ import { useSurface } from "../../../surface";
 import { Button } from "../../ui/button";
 import { Kbd } from "../../ui/kbd";
 import { Switch } from "../../ui/switch";
+import { WatchtowerSettingsPage } from "./watchtower";
 import { Fixed, Group, Page, Row } from "../parts";
 
 export function BookmarksSettingsPage() {
+  if (useSurface().kind === "native") return <WatchtowerSettingsPage />;
+  return <BookmarksSettings />;
+}
+
+function BookmarksSettings() {
   const bookmarks = useAppStore((state) => state.settings.bookmarks);
   const updateSettings = useAppStore((state) => state.updateSettings);
   const openBookmarks = useAppStore((state) => state.openBookmarks);
