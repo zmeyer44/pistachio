@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { holdsDeskModifier, isDeskGrab, isDeskState, MAX_DESK_WINDOWS } from "../src/desk.js";
-import { isDragCursor } from "../src/chrome.js";
+import { deskMaskKey, holdsDeskModifier, inDeskBox, isDeskGrab, isDeskMask, isDeskPageInput, isDeskState, MAX_DESK_WINDOWS } from "../src/desk.js";
+import { isDragCursor, isDragSample } from "../src/chrome.js";
 
 describe("the desk's contract", () => {
   it("accepts a desk state and refuses anything else", () => {
@@ -12,10 +12,44 @@ describe("the desk's contract", () => {
     expect(isDeskState(null)).toBe(false);
   });
 
+  it("takes where the dock stands aside only as a finite box, or none", () => {
+    const dock = { x: 0, y: 300, width: 68, height: 400 };
+    expect(isDeskState({ tabIds: ["a"], grab: null, dock })).toBe(true);
+    expect(isDeskState({ tabIds: ["a"], grab: null, dock: null })).toBe(true);
+    expect(isDeskState({ tabIds: ["a"], grab: null, dock: { ...dock, width: Number.POSITIVE_INFINITY } })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, dock: { ...dock, height: -1 } })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, dock: "left" })).toBe(false);
+    expect(inDeskBox(dock, 0, 300)).toBe(true);
+    expect(inDeskBox(dock, 67.5, 699)).toBe(true);
+    expect(inDeskBox(dock, 68, 500)).toBe(false);
+    expect(inDeskBox(dock, 30, 700)).toBe(false);
+  });
+
+  it("takes a mask only as a region inside its page, and the pages masked with the size they show at", () => {
+    const mask = { x: 300, y: 200, width: 400, height: 300, pageWidth: 1200, pageHeight: 800 };
+    expect(isDeskMask(mask)).toBe(true);
+    expect(isDeskMask({ ...mask, x: 900 })).toBe(false);
+    expect(isDeskMask({ ...mask, width: 4 })).toBe(false);
+    expect(isDeskMask({ ...mask, pageHeight: Number.NaN })).toBe(false);
+    expect(isDeskMask({ ...mask, y: -1 })).toBe(false);
+    expect(deskMaskKey({ ...mask, x: 300.4 })).toBe("300,200,400,300,1200,800");
+    expect(isDeskState({ tabIds: ["a"], grab: null, masks: [{ tabId: "a", mask, width: 800, height: 600 }] })).toBe(true);
+    expect(isDeskState({ tabIds: ["a"], grab: null, masks: [{ tabId: "a", mask, width: 0, height: 600 }] })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, masks: [{ tabId: "a", mask: { ...mask, width: 0 }, width: 8, height: 6 }] })).toBe(false);
+  });
+
   it("accepts a grab only with a finite point", () => {
     expect(isDeskGrab({ tabId: "a", x: 10, y: 20 })).toBe(true);
     expect(isDeskGrab({ tabId: "a", x: Number.NaN, y: 20 })).toBe(false);
     expect(isDeskGrab({ x: 1, y: 2 })).toBe(false);
+  });
+
+  it("relays a desk page's press, Escape, or the pointer coming to the dock, and nothing else", () => {
+    expect(isDeskPageInput("press")).toBe(true);
+    expect(isDeskPageInput("escape")).toBe(true);
+    expect(isDeskPageInput("dock")).toBe(true);
+    expect(isDeskPageInput("keyDown")).toBe(false);
+    expect(isDeskPageInput(null)).toBe(false);
   });
 
   it("reads the grab key from an input event's modifiers, whatever Electron calls ⌘", () => {
@@ -26,6 +60,13 @@ describe("the desk's contract", () => {
     expect(holdsDeskModifier(["alt"], "alt")).toBe(true);
     expect(holdsDeskModifier(["shift"], null)).toBe(false);
     expect(holdsDeskModifier(undefined, "shift")).toBe(false);
+  });
+
+  it("takes a drag sample's Shift reading (the desk's snap key) only as a boolean, and its absence", () => {
+    expect(isDragSample({ x: 1, y: 2, phase: "move" })).toBe(true);
+    expect(isDragSample({ x: 1, y: 2, phase: "move", shift: true })).toBe(true);
+    expect(isDragSample({ x: 1, y: 2, phase: "up", shift: false })).toBe(true);
+    expect(isDragSample({ x: 1, y: 2, phase: "move", shift: "yes" })).toBe(false);
   });
 
   it("lets the drag layer hold the resize cursors a window's corners need", () => {

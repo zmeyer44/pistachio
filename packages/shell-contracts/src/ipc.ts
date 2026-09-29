@@ -49,7 +49,7 @@ import type {
   ReminderSnapshot,
 } from "./reminders.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
-import type { DeskGrab, DeskState } from "./desk.js";
+import type { DeskGrab, DeskPageInput, DeskState } from "./desk.js";
 import type {
   DragCursor,
   DragSample,
@@ -59,6 +59,7 @@ import type {
 } from "./chrome.js";
 import type { AddressIntentRanking, AddressIntentRequest } from "./address-intent.js";
 import type { BrowserMediaInfo, MediaControl, ReadAloudStatus } from "./media.js";
+import type { ScreenShareInfo } from "./screen-share.js";
 import type {
   BrowserControlCommand,
   BrowserControlsSnapshot,
@@ -94,6 +95,12 @@ export interface BrowserTabInfo {
   title: string;
   url: string;
   faviconUrl: string | null;
+  /**
+   * The large square icon the page declares for itself (an apple-touch-icon,
+   * or a declared icon of 96px or more), when it has one: the desk's dock
+   * draws it as the tab's app icon. Absent until the page has been read.
+   */
+  appIconUrl?: string | null;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
@@ -199,6 +206,12 @@ export interface ShellSnapshot {
   threads: ThreadListItem[];
   /** The shelf — favorites, pins, folders — main keeps for the sidebar (@pistachio/shell-contracts/sidebar). */
   sidebar: SidebarState;
+  /**
+   * Every tab sharing the screen, in every Space, oldest share first
+   * (@pistachio/shell-contracts/screen-share). Absent where the host cannot
+   * tell — the chrome then shows no share.
+   */
+  screenShares?: ScreenShareInfo[];
 }
 
 /**
@@ -242,6 +255,12 @@ export type SplitSide = "left" | "right" | "top" | "bottom";
 export interface PaneStill {
   tabId: string;
   dataUrl: string;
+  /**
+   * A desk window's page under a mask is drawn as its region only: the
+   * mask's key (@pistachio/shell-contracts/desk deskMaskKey) when the still
+   * shows that region, absent when it shows the whole page.
+   */
+  mask?: string;
 }
 
 /**
@@ -765,6 +784,8 @@ export interface ShellApi {
   duplicateTab(tabId: string): Promise<string>;
   /** Make the page believe it is the visible, focused tab even in the background (BrowserTabInfo.forcedFocus). */
   setForcedFocus(tabId: string, enabled: boolean): Promise<void>;
+  /** Stop the screen share a tab is running (ShellSnapshot.screenShares). */
+  stopScreenShare(tabId: string): Promise<void>;
   /** Recreate a human tab inside the destination Space's isolated partition. */
   moveTabToSpace(tabId: string, spaceId: string): Promise<void>;
   /** Restore and select the newest closed human tab, if one exists. */
@@ -1092,6 +1113,10 @@ export interface NativeSurfaceApi {
   focusTab(tabId: string): void;
   /** The grab key was held as a desk page was pressed: the move is the shell's from here. */
   onDeskGrab(listener: (grab: DeskGrab) => void): () => void;
+  /** Shift went down or up, in any of the window's views, while a desk is up (its snap key). */
+  onDeskShift(listener: (held: boolean) => void): () => void;
+  /** A desk page took a press, or Escape was struck, while a desk is up: its menus close. */
+  onDeskPageInput(listener: (input: DeskPageInput) => void): () => void;
   /**
    * The owner's still is painted under its live view: main can now hide the
    * view without a blank frame, and the renderer starts the opening motion.
@@ -1227,6 +1252,8 @@ export const NATIVE_SURFACE_MEMBERS = {
   captureTabStills: "Captures native tab views, shown or hidden, for the desk's drawn windows.",
   focusTab: "Hands the keyboard to one native tab view among the desk's several.",
   onDeskGrab: "Fires from main's mouse hook on a native page view.",
+  onDeskShift: "Fires from main's relay of every view's keys, native page views included.",
+  onDeskPageInput: "Fires from main's mouse hook on native page views and its relay of their keys.",
   recedeGlanceOwner: "Coordinates the owner tab's native view with the glance view.",
   setGlanceBounds: "Places the native glance preview view at the shell's frame.",
   prepareGlanceClose: "Captures the native glance view's last frame before it hides.",
@@ -1304,6 +1331,7 @@ export const IPC = {
   tabSelect: "pistachio:tab-select",
   tabSuspend: "pistachio:tab-suspend",
   tabForcedFocus: "pistachio:tab-forced-focus",
+  tabStopScreenShare: "pistachio:tab-stop-screen-share",
   tabNavigate: "pistachio:tab-navigate",
   tabBack: "pistachio:tab-back",
   tabForward: "pistachio:tab-forward",
@@ -1325,6 +1353,8 @@ export const IPC = {
   mediaPreviewSet: "pistachio:media-preview-set",
   mediaPreviewHoverReport: "pistachio:media-preview-hover-report",
   mediaPreviewHoverChanged: "pistachio:media-preview-hover-changed",
+  screenShareReport: "pistachio:screen-share-report",
+  screenShareStop: "pistachio:screen-share-stop",
   readAloudGet: "pistachio:read-aloud-get",
   aiStatusGet: "pistachio:ai-status-get",
   aiUsageGet: "pistachio:ai-usage-get",
@@ -1357,6 +1387,8 @@ export const IPC = {
   deskStillsCapture: "pistachio:desk-stills-capture",
   deskFocus: "pistachio:desk-focus",
   deskGrab: "pistachio:desk-grab",
+  deskShift: "pistachio:desk-shift",
+  deskPageInput: "pistachio:desk-page-input",
   tabSwitcherPreviewsGet: "pistachio:tab-switcher-previews-get",
   tabSwitcherInput: "pistachio:tab-switcher-input",
   tabSwitcherThumbnail: "pistachio:tab-switcher-thumbnail",
@@ -1580,6 +1612,7 @@ export const SHELL_METHOD_NAMES = allMethods([  "getSnapshot",
   "removeFromSplit",
   "duplicateTab",
   "setForcedFocus",
+  "stopScreenShare",
   "moveTabToSpace",
   "restoreClosedTab",
   "clearUnpinnedTabs",

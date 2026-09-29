@@ -56,10 +56,18 @@ export function sameRect(a: Rect, b: Rect, epsilon = 0.5): boolean {
   );
 }
 
-/** No larger than `bounds` (nor smaller than a window may be, room permitting), and wholly inside it. */
-export function clampRect(rect: Rect, bounds: Rect): Rect {
-  const w = Math.min(bounds.w, Math.max(Math.min(MIN_WINDOW_W, bounds.w), rect.w));
-  const h = Math.min(bounds.h, Math.max(Math.min(MIN_WINDOW_H, bounds.h), rect.h));
+/** A window's least size: a page's, or — a masked window, a picture of part of one — as small as its mask may be. */
+export interface MinSize {
+  w: number;
+  h: number;
+}
+
+const WINDOW_MIN: MinSize = { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
+
+/** No larger than `bounds` (nor smaller than `min`, room permitting), and wholly inside it. */
+export function clampRect(rect: Rect, bounds: Rect, min: MinSize = WINDOW_MIN): Rect {
+  const w = Math.min(bounds.w, Math.max(Math.min(min.w, bounds.w), rect.w));
+  const h = Math.min(bounds.h, Math.max(Math.min(min.h, bounds.h), rect.h));
   return {
     x: Math.min(rightOf(bounds) - w, Math.max(bounds.x, rect.x)),
     y: Math.min(bottomOf(bounds) - h, Math.max(bounds.y, rect.y)),
@@ -79,8 +87,8 @@ export function rubberBand(over: number, limit: number): number {
 }
 
 /** Kept inside `bounds`, except that a push past an edge gives a little, as rubber does. */
-export function rubberBandRect(rect: Rect, bounds: Rect, limit: number): Rect {
-  const inside = clampRect(rect, bounds);
+export function rubberBandRect(rect: Rect, bounds: Rect, limit: number, min: MinSize = WINDOW_MIN): Rect {
+  const inside = clampRect(rect, bounds, min);
   const dx = rect.x - inside.x;
   const dy = rect.y - inside.y;
   return {
@@ -147,10 +155,12 @@ export type SnapZone = "left" | "right" | "top-left" | "top-right" | "bottom-lef
  * The zone a pointer arms by pushing into an edge of the desk while it
  * carries a window, the way a window pushed into a screen edge offers to
  * tile: a side edge is that half, the top edge is the whole desk, and the
- * ends of an edge are the quarters in that corner.
+ * ends of an edge are the quarters in that corner. The leading edge's band
+ * may be deeper (`leftEdge`): past it lie the dock's pads (dockDropAt), and
+ * a push meant for the left half must not have to stop on a line.
  */
-export function edgeZone(point: Point, bounds: Rect, edge = 18, corner = 96): SnapZone | null {
-  const nearLeft = point.x <= bounds.x + edge;
+export function edgeZone(point: Point, bounds: Rect, edge = 18, corner = 96, leftEdge = edge): SnapZone | null {
+  const nearLeft = point.x <= bounds.x + leftEdge;
   const nearRight = point.x >= rightOf(bounds) - edge;
   const nearTop = point.y <= bounds.y + edge;
   const nearBottom = point.y >= bottomOf(bounds) - edge;
@@ -191,23 +201,106 @@ export function zoneRect(zone: SnapZone, bounds: Rect, gap = DESK_GAP): Rect {
   }
 }
 
+/** A tile of the desk in thirds (thirdsZone): an edge zone's, or a comfortable window in the middle. */
+export type TileZone = SnapZone | "center";
+
+/** One of the nine cells of the desk in thirds, column and row from 0 to 2. */
+export interface ThirdsCell {
+  column: number;
+  row: number;
+}
+
+const THIRDS_GRID: ReadonlyArray<ReadonlyArray<TileZone>> = [
+  ["top-left", "maximize", "top-right"],
+  ["left", "center", "right"],
+  ["bottom-left", "center", "bottom-right"],
+];
+
 /**
- * Where a THROWN window lands when every throw lands in a tile: the desk in
- * thirds, read at the point the throw would carry the pointer to. The
- * corners are quarters, the sides halves, the top middle the whole desk,
- * and the middle and bottom middle a comfortable window in the centre.
+ * The cell of the desk in thirds a point is in (past an edge, the cell at
+ * that edge). Given the cell it was in before, it stays there until it is
+ * `hysteresis` px past that cell's edge — a pointer resting on a line must
+ * not flicker between the two tiles either side of it.
  */
-export function thirdsZone(point: Point, bounds: Rect): SnapZone | "center" {
-  const fx = (point.x - bounds.x) / Math.max(1, bounds.w);
-  const fy = (point.y - bounds.y) / Math.max(1, bounds.h);
-  const column = fx < 1 / 3 ? 0 : fx > 2 / 3 ? 2 : 1;
-  const row = fy < 1 / 3 ? 0 : fy > 2 / 3 ? 2 : 1;
-  const grid: ReadonlyArray<ReadonlyArray<SnapZone | "center">> = [
-    ["top-left", "maximize", "top-right"],
-    ["left", "center", "right"],
-    ["bottom-left", "center", "bottom-right"],
-  ];
-  return grid[row]![column]!;
+export function thirdsCell(point: Point, bounds: Rect, previous: ThirdsCell | null = null, hysteresis = 0): ThirdsCell {
+  const band = (at: number, start: number, size: number, before: number | undefined): number => {
+    const f = (at - start) / Math.max(1, size);
+    const plain = f < 1 / 3 ? 0 : f > 2 / 3 ? 2 : 1;
+    if (before === undefined || plain === before) return plain;
+    const slack = hysteresis / Math.max(1, size);
+    return f >= before / 3 - slack && f <= (before + 1) / 3 + slack ? before : plain;
+  };
+  return {
+    column: band(point.x, bounds.x, bounds.w, previous?.column),
+    row: band(point.y, bounds.y, bounds.h, previous?.row),
+  };
+}
+
+/** The tile a cell of the desk in thirds stands for. */
+export function cellZone(cell: ThirdsCell): TileZone {
+  return THIRDS_GRID[clampBand(cell.row)]![clampBand(cell.column)]!;
+}
+
+function clampBand(index: number): number {
+  return Math.min(2, Math.max(0, Math.round(index)));
+}
+
+/**
+ * The tiles a window can be put in, by where on the desk: the desk in
+ * thirds. The corners are quarters, the sides halves, the top middle the
+ * whole desk, and the middle and bottom middle a comfortable window in the
+ * centre. Read where a THROW would carry the pointer (the Snap throw), and
+ * where the pointer is while Shift is held (snap mode, tileRect).
+ */
+export function thirdsZone(point: Point, bounds: Rect): TileZone {
+  return cellZone(thirdsCell(point, bounds));
+}
+
+/** Where a window put in `zone` sits. */
+export function tileRect(zone: TileZone, bounds: Rect, gap = DESK_GAP): Rect {
+  return zone === "center" ? centeredRect(bounds) : zoneRect(zone, bounds, gap);
+}
+
+/**
+ * The size a window comes out onto the desk at — pulled from the inventory,
+ * or let go of the whole desk as it is dragged (unfilledSize): big enough
+ * to read, small enough to carry to a half or a quarter.
+ */
+export function windowSize(bounds: Rect): { w: number; h: number } {
+  return {
+    w: Math.max(Math.min(MIN_WINDOW_W, bounds.w), Math.round(bounds.w * 0.58)),
+    h: Math.max(Math.min(MIN_WINDOW_H, bounds.h), Math.round(bounds.h * 0.74)),
+  };
+}
+
+/** As good as the whole desk: this much of it both ways. */
+export function fillsDesk(rect: Rect, bounds: Rect, share = 0.9): boolean {
+  return rect.w >= bounds.w * share && rect.h >= bounds.h * share;
+}
+
+/**
+ * The size a window that fills the desk takes as it is dragged, the way a
+ * maximized window lets go of the screen when its title bar is pulled: the
+ * size it had before it was made to fill the desk, if it had one, or else
+ * the size windows come out at.
+ */
+export function unfilledSize(restore: Rect | null, bounds: Rect): { w: number; h: number } {
+  if (restore !== null && !fillsDesk(restore, bounds)) {
+    const kept = clampRect(restore, bounds);
+    return { w: kept.w, h: kept.h };
+  }
+  return windowSize(bounds);
+}
+
+/**
+ * The size a window comes to the hand at when it is taken from the desk by
+ * its icon: its own, or — too big to carry, a tall half or the whole desk —
+ * scaled down, its shape kept, to fit in two thirds of the desk's width and
+ * four fifths of its height.
+ */
+export function carrySize(rect: Rect, bounds: Rect): { w: number; h: number } {
+  const fit = Math.min(1, (bounds.w * 0.66) / Math.max(1, rect.w), (bounds.h * 0.8) / Math.max(1, rect.h));
+  return { w: rect.w * fit, h: rect.h * fit };
 }
 
 /** A single window's comfortable size and place: centred, most of the desk. */
@@ -373,6 +466,35 @@ export function resizedRect(start: Rect, edges: Edges, dx: number, dy: number, b
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
+/**
+ * A resize that keeps the content's shape, as a picture is resized — a
+ * masked window, whose region is a picture of part of its page. The content
+ * is the window less a header `top` px tall. Whichever edge the pointer holds
+ * sets the scale (at a corner, the one it has moved more); the edge or
+ * corner opposite holds still — for a side edge, the top or left too — and
+ * the scale stops where the content's shorter side would pass `minContent`,
+ * or the window would pass `bounds`.
+ */
+export function resizedKeepingAspect(start: Rect, edges: Edges, dx: number, dy: number, bounds: Rect, top: number, minContent: number): Rect {
+  const cw = Math.max(1, start.w);
+  const ch = Math.max(1, start.h - top);
+  const horizontal = edges.left || edges.right;
+  const vertical = edges.top || edges.bottom;
+  const sx = horizontal ? (cw + (edges.right ? dx : -dx)) / cw : null;
+  const sy = vertical ? (ch + (edges.bottom ? dy : -dy)) / ch : null;
+  let scale = sx !== null && sy !== null ? (Math.abs(sx - 1) >= Math.abs(sy - 1) ? sx : sy) : (sx ?? sy ?? 1);
+  const right = rightOf(start);
+  const bottom = bottomOf(start);
+  const roomW = edges.left ? right - bounds.x : rightOf(bounds) - start.x;
+  const roomH = (edges.top ? bottom - bounds.y : bottomOf(bounds) - start.y) - top;
+  const most = Math.max(0, Math.min(roomW / cw, roomH / ch));
+  const least = Math.min(most, minContent / Math.min(cw, ch));
+  scale = Math.min(most, Math.max(least, scale));
+  const w = cw * scale;
+  const h = ch * scale + top;
+  return { x: edges.left ? right - w : start.x, y: edges.top ? bottom - h : start.y, w, h };
+}
+
 /* -------------------------------- layouts -------------------------------- */
 
 /**
@@ -450,3 +572,157 @@ export function freeSpot(existing: readonly Rect[], size: { w: number; h: number
   }
   return best;
 }
+
+/* ------------------------- where a new window goes ------------------------- */
+
+/** Room worth putting a window in: a fair share of the desk each way, and never less than a window may be. */
+export function roomy(rect: Rect, bounds: Rect): boolean {
+  return rect.w >= Math.max(Math.min(MIN_WINDOW_W, bounds.w), bounds.w * 0.25) && rect.h >= Math.max(Math.min(MIN_WINDOW_H, bounds.h), bounds.h * 0.3);
+}
+
+/**
+ * The biggest rectangle of the desk that no window is in, keeping the gap
+ * from each — the hole a tiled desk has left — or null when there is none.
+ * Between two of nearly the same size, the taller: side by side is how
+ * pages are read.
+ */
+export function largestEmptyRect(existing: readonly Rect[], bounds: Rect, gap = DESK_GAP): Rect | null {
+  const lines = new Set<number>([bounds.x, rightOf(bounds)]);
+  for (const rect of existing) {
+    for (const x of [rect.x - gap, rightOf(rect) + gap]) if (x > bounds.x && x < rightOf(bounds)) lines.add(x);
+  }
+  const xs = [...lines].sort((a, b) => a - b);
+  let best: Rect | null = null;
+  const consider = (candidate: Rect): void => {
+    if (candidate.w <= 0 || candidate.h <= 0) return;
+    const area = candidate.w * candidate.h;
+    const bestArea = best === null ? 0 : best.w * best.h;
+    if (area > bestArea * 1.01 || (best !== null && area >= bestArea * 0.99 && candidate.h > best.h)) best = candidate;
+  };
+  for (let i = 0; i < xs.length; i += 1) {
+    for (let j = i + 1; j < xs.length; j += 1) {
+      const left = xs[i]!;
+      const right = xs[j]!;
+      // The windows across this band, each the stretch of it they block.
+      const blocked = existing
+        .filter((rect) => rect.x - gap < right && rightOf(rect) + gap > left)
+        .map((rect) => [rect.y - gap, bottomOf(rect) + gap] as const)
+        .sort((a, b) => a[0] - b[0]);
+      let top = bounds.y;
+      for (const [from, to] of blocked) {
+        if (from > top) consider({ x: left, y: top, w: right - left, h: Math.min(from, bottomOf(bounds)) - top });
+        top = Math.max(top, to);
+      }
+      if (top < bottomOf(bounds)) consider({ x: left, y: top, w: right - left, h: bottomOf(bounds) - top });
+    }
+  }
+  return best;
+}
+
+/**
+ * A window placed as a tile: it lies along two of the desk's edges (a
+ * half, a quarter, the whole desk) or is a cell of a tiled arrangement.
+ */
+export function isTile(rect: Rect, bounds: Rect, epsilon = 2): boolean {
+  const edges = [
+    Math.abs(rect.x - bounds.x) <= epsilon,
+    Math.abs(rightOf(rect) - rightOf(bounds)) <= epsilon,
+    Math.abs(rect.y - bounds.y) <= epsilon,
+    Math.abs(bottomOf(rect) - bottomOf(bounds)) <= epsilon,
+  ].filter(Boolean).length;
+  if (edges >= 2) return true;
+  for (let count = 4; count <= 12; count += 1) if (tileRects(count, bounds).some((tile) => sameRect(tile, rect, epsilon))) return true;
+  return false;
+}
+
+/** A window cut in two along its longer side, the gap between — or null when a half would be smaller than a window may be. */
+export function splitRect(rect: Rect, gap = DESK_GAP): [Rect, Rect] | null {
+  if (rect.w >= rect.h) {
+    const w = (rect.w - gap) / 2;
+    if (w < MIN_WINDOW_W) return null;
+    return [
+      { ...rect, w },
+      { ...rect, x: rect.x + w + gap, w },
+    ];
+  }
+  const h = (rect.h - gap) / 2;
+  if (h < MIN_WINDOW_H) return null;
+  return [
+    { ...rect, h },
+    { ...rect, y: rect.y + h + gap, h },
+  ];
+}
+
+/** Where a tab brought out of the dock goes: its window's box, and a window already out that gives up half of its own for it. */
+export interface Placement {
+  rect: Rect;
+  split: { index: number; rect: Rect } | null;
+}
+
+/**
+ * Where a window brought out onto the desk goes, read from how the desk is
+ * laid out now:
+ *
+ * - an empty desk: a comfortable window in the middle;
+ * - a TILED desk (every window a tile, none overlapping): the hole it has
+ *   left, if that is room enough — beside a half, the other half; with
+ *   three quarters out, the fourth — and if there is no such hole, the
+ *   window in use (`inUse`, an index into `existing`) splits in two along
+ *   its longer side and gives the new one its second half, so the desk
+ *   stays tiled;
+ * - windows set down freely: the size windows come out at, where it
+ *   covers the least of them.
+ */
+export function placeNewWindow(existing: readonly Rect[], bounds: Rect, inUse: number | null, gap = DESK_GAP): Placement {
+  if (existing.length === 0) return { rect: centeredRect(bounds), split: null };
+  const overlapping = existing.some((rect, index) => existing.some((other, later) => later > index && rectsOverlap(rect, other)));
+  const tiled = !overlapping && existing.every((rect) => isTile(rect, bounds));
+  if (tiled) {
+    const hole = largestEmptyRect(existing, bounds, gap);
+    if (hole !== null && roomy(hole, bounds)) return { rect: hole, split: null };
+    const order = existing.map((_, index) => index).sort((a, b) => existing[b]!.w * existing[b]!.h - existing[a]!.w * existing[a]!.h);
+    for (const index of inUse !== null && existing[inUse] !== undefined ? [inUse, ...order] : order) {
+      const halves = splitRect(existing[index]!, gap);
+      if (halves !== null) return { rect: halves[1], split: { index, rect: halves[0] } };
+    }
+  }
+  return { rect: freeSpot(existing, windowSize(bounds), bounds), split: null };
+}
+
+/* ------------------------- the dock's pads ------------------------- */
+
+/** What a window let go at the desk's leading edge does, once the dock has slid away: back into the dock, or its tab closed. */
+export type DockDrop = "away" | "close";
+
+export interface DockDrops {
+  away: Rect;
+  close: Rect;
+}
+
+/**
+ * The two pads that stand in the dock's column while a window is carried
+ * (the dock slides away to make room): back into the dock above, and its
+ * tab closed below — where the Dock keeps its Trash — the smaller of the
+ * two, since closing is the one to mean.
+ */
+export function dockDrops(height: number, dockW: number, inset = 6, gap = DESK_GAP): DockDrops {
+  const inner = Math.max(0, height - inset * 2);
+  const closeH = Math.min(Math.round(inner * 0.4), Math.max(120, Math.min(220, Math.round(inner * 0.28))));
+  const w = Math.max(1, dockW - inset * 2 + 4);
+  const close = { x: inset, y: inset + inner - closeH, w, h: closeH };
+  return { away: { x: inset, y: inset, w, h: Math.max(0, close.y - gap - inset) }, close };
+}
+
+/**
+ * The pad a carried window is over: anything left of `edge` (the dock's
+ * column, or further out, over the sidebar), level with the desk, split
+ * where the two pads meet. Right of `edge` is the desk, where the leading
+ * edge's band offers the left half and its quarters (edgeZone): the two
+ * never overlap, so a lit target is the only one.
+ */
+export function dockDropAt(point: Point, drops: DockDrops, edge: number, height: number, slack = 24): DockDrop | null {
+  if (point.x >= edge || point.y < -slack || point.y > height + slack) return null;
+  const split = (bottomOf(drops.away) + drops.close.y) / 2;
+  return point.y >= split ? "close" : "away";
+}
+

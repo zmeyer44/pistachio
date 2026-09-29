@@ -2,7 +2,7 @@ import type { WatchtowerResponse } from "@pistachio/shell-contracts/watchtower";
 import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
-import type { DeskGrab, DeskState } from "@pistachio/shell-contracts/desk";
+import { isDeskPageInput, type DeskGrab, type DeskPageInput, type DeskState } from "@pistachio/shell-contracts/desk";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CredentialCapture,
@@ -178,6 +178,8 @@ const api: PistachioApi = {
     ipcRenderer.invoke(IPC.tabDuplicate, tabId) as Promise<string>,
   setForcedFocus: (tabId, enabled) =>
     ipcRenderer.invoke(IPC.tabForcedFocus, tabId, enabled) as Promise<void>,
+  stopScreenShare: (tabId) =>
+    ipcRenderer.invoke(IPC.tabStopScreenShare, tabId) as Promise<void>,
   moveTabToSpace: (tabId, spaceId) =>
     ipcRenderer.invoke(IPC.tabMoveToSpace, tabId, spaceId) as Promise<void>,
   restoreClosedTab: () =>
@@ -274,6 +276,18 @@ const api: PistachioApi = {
     const handler = (_event: Electron.IpcRendererEvent, grab: DeskGrab): void => listener(grab);
     ipcRenderer.on(IPC.deskGrab, handler);
     return () => ipcRenderer.removeListener(IPC.deskGrab, handler);
+  },
+  onDeskShift(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, held: boolean): void => listener(held === true);
+    ipcRenderer.on(IPC.deskShift, handler);
+    return () => ipcRenderer.removeListener(IPC.deskShift, handler);
+  },
+  onDeskPageInput(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, input: DeskPageInput): void => {
+      if (isDeskPageInput(input)) listener(input);
+    };
+    ipcRenderer.on(IPC.deskPageInput, handler);
+    return () => ipcRenderer.removeListener(IPC.deskPageInput, handler);
   },
   getTabSwitcherPreviews: (limit) =>
     ipcRenderer.invoke(IPC.tabSwitcherPreviewsGet, limit) as Promise<

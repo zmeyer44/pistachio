@@ -123,7 +123,10 @@
    The surface adds no gutter on this side (ContentArea's leadingGutter), so
    the hidden slot IS the page's 10px inset. The wider interaction target is
    independent of it. */
-.sidebar-motion-slot[data-compact] {
+/* Pinned, the slot runs on this clock only while it goes away for a desk or
+   comes back (SidebarLayout's useAwaySlide): its width otherwise follows a
+   resize drag frame by frame. */
+.sidebar-motion-slot:is([data-compact], [data-desk-slide]) {
   transition: width 250ms cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 .sidebar-motion-slot[data-hidden] {
@@ -646,12 +649,22 @@
    In flow they rest on the front card's top edge whatever its height and
    ride along as it grows. */
 /* Floats over the bottom of the tab list; the list pads itself so rows scroll out from under it. */
-.media-stack-shell {
+/* The foot of the sidebar's tab list (components/SidebarChrome.tsx): the
+   media stack, then a screen share's card, floating over the last rows,
+   which the list pads clear of (useMediaStackInset, useScreenShareInset).
+   Only the cards take the pointer, not the gaps between them. */
+.sidebar-media-dock {
   position: absolute;
   right: 8px;
   bottom: 6px;
   left: 8px;
   z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.media-stack-shell {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -746,6 +759,109 @@
   50% {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+/* A screen share (components/ScreenShareIndicator.tsx): the read-aloud
+   toast's shape in the sidebar, a pill in the strip, both in red, the one
+   color in the chrome that means other people can see this. The live dot
+   pulses unless motion is reduced. */
+.screen-share-card {
+  display: flex;
+  height: 50px;
+  flex: 0 0 50px;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  border-radius: 11px;
+  pointer-events: auto;
+  color: var(--color-gray-1000);
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklch, var(--color-background-100) 88%, var(--color-red-400)),
+    var(--color-background-100)
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--color-red-700) 40%, transparent),
+    0 5px 16px oklch(0 0 0 / 0.1);
+  animation: media-toast-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.screen-share-card-main {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+  align-items: center;
+  gap: 8px;
+  padding-left: 10px;
+  border-radius: 11px 0 0 11px;
+  text-align: left;
+}
+.screen-share-card-icon {
+  position: relative;
+  display: grid;
+  width: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+  color: var(--color-red-900);
+}
+.screen-share-card-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.9;
+}
+.screen-share-card-icon .screen-share-live {
+  position: absolute;
+  top: -1px;
+  right: -2px;
+  box-shadow: 0 0 0 2px var(--color-background-100);
+}
+.screen-share-live {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 999px;
+  background: var(--color-red-700);
+  animation: screen-share-live 1.8s ease-in-out infinite;
+}
+.screen-share-stop {
+  height: 24px;
+  flex: 0 0 auto;
+  cursor: pointer;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: white;
+  background: var(--color-red-700);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 24px;
+  transition: background-color 120ms ease;
+}
+.screen-share-stop:hover {
+  background: color-mix(in oklch, var(--color-red-700) 86%, black);
+}
+.screen-share-stop:focus-visible {
+  outline: 2px solid var(--color-blue-700);
+  outline-offset: 1px;
+}
+@keyframes screen-share-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+/* The hidden compact sidebar's handle while a share runs (SidebarEdge). */
+.sidebar-edge-share {
+  animation: screen-share-live 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen-share-live,
+  .sidebar-edge-share {
+    animation: none;
   }
 }
 
@@ -1687,6 +1803,22 @@
   color: var(--color-gray-700);
 }
 
+/* A tab sharing the screen (TabScreenShareMark): the audio indicator's box,
+   in the share's red, and no press — it is a sign, not a control. */
+.tab-screen-share-mark {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--color-red-900);
+}
+.tab-screen-share-mark svg {
+  width: 12px;
+  height: 12px;
+}
+
 /* The reader-view badge beside a tab's mark: the same signal shape as the
    audio indicator, and the same accent, because both report a live state the
    press can undo. */
@@ -2619,6 +2751,11 @@ body:not([data-chrome-view])::after {
    cover the whole surface (Settings, Bookmarks, … at z-20). */
 .desk-surface {
   isolation: isolate;
+  /* The light caught along the top of the dock's glass (its shelf, the drop rail). */
+  --desk-glass-edge: oklch(1 0 0 / 0.38);
+}
+:root[data-color-scheme="dark"] .desk-surface {
+  --desk-glass-edge: oklch(1 0 0 / 0.07);
 }
 .desk-stage {
   /* A faint dot grid: the desk reads as a surface things are put ON. */
@@ -2633,6 +2770,16 @@ body:not([data-chrome-view])::after {
   top: 0;
   will-change: transform;
   touch-action: none;
+  transition: opacity 160ms ease;
+}
+/* In hand with a tile lit for it: the window thins so the tile reads
+   through it. Only a drawn one — a live page is a native view, always opaque. */
+.desk-window[data-carried][data-aiming][data-drawn] {
+  opacity: 0.84;
+}
+/* Over the rail in the dock's column, it goes in: the lit segment stands for it. */
+.desk-window[data-carried][data-into-dock][data-drawn] {
+  opacity: 0;
 }
 .desk-window[data-flight="in"] {
   animation: desk-window-in 200ms ease-out both;
@@ -2818,6 +2965,106 @@ body:not([data-chrome-view])::after {
   cursor: default;
 }
 
+/* Masks (DeskWindow's MaskSelector; a masked window). Choosing, the page is
+   frozen and dims; the region being drawn is cut out of the dimming, as a
+   screenshot's selection is. Masked, the window is its region with the bare
+   frame's handle above it: its still stretches with it (data-fill) or, taken
+   before the mask, is cropped to it; and the page it was cut from fades
+   from around it (desk-mask-fade). */
+.desk-surface {
+  --desk-mask-veil: oklch(0 0 0 / 0.4);
+}
+.desk-still[data-fill] {
+  object-fit: fill;
+}
+.desk-still-crop {
+  position: absolute;
+  max-width: none;
+  user-select: none;
+}
+.desk-mask-selector {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  background: var(--desk-mask-veil);
+}
+.desk-mask-selector[data-dragging] {
+  background: transparent;
+}
+.desk-mask-region {
+  position: absolute;
+  box-shadow: 0 0 0 100vmax var(--desk-mask-veil);
+  outline: 1px solid oklch(1 0 0 / 0.9);
+  outline-offset: -1px;
+}
+.desk-mask-size {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: oklch(0 0 0 / 0.62);
+  color: white;
+  font: 500 11px/18px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.desk-mask-hint {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: oklch(0 0 0 / 0.66);
+  color: white;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.desk-mask-fade {
+  position: absolute;
+  z-index: -1;
+  overflow: hidden;
+  border-radius: calc(var(--radius-md) + 4px);
+  pointer-events: none;
+  animation: desk-mask-fade 260ms ease-out forwards;
+}
+.desk-mask-fade img {
+  position: absolute;
+  max-width: none;
+  object-fit: cover;
+  object-position: top left;
+}
+.desk-mask-fade::after {
+  position: absolute;
+  inset: 0;
+  background: var(--desk-mask-veil);
+  content: "";
+}
+@keyframes desk-mask-fade {
+  to {
+    opacity: 0;
+  }
+}
+.desk-window[data-masked] .desk-window-card {
+  border-radius: 10px;
+}
+.desk-window[data-masked] .desk-window-page {
+  border-radius: 8px;
+}
+.desk-window[data-masked] .desk-window-pill {
+  max-width: 50%;
+}
+/* The window in use shows its controls without a hover: over its page, a hover is the page's, never the shell's. */
+.desk-window[data-masked][data-focused] .desk-window-handle .desk-window-controls {
+  opacity: 1;
+}
+
 .desk-window-edge {
   z-index: 2;
 }
@@ -2832,7 +3079,7 @@ body:not([data-chrome-view])::after {
   cursor: grab;
 }
 .desk-stage[data-gesture] .desk-window,
-.desk-stage[data-gesture] .desk-rail {
+.desk-stage[data-gesture] .desk-dock-shelf {
   cursor: grabbing;
 }
 
@@ -2843,8 +3090,16 @@ body:not([data-chrome-view])::after {
   left: 0;
   z-index: 45;
   border-radius: calc(var(--radius-md) + 4px);
-  background: color-mix(in oklch, var(--tg-solid) 13%, transparent);
-  box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 55%, transparent);
+  /* Frosted: what it lies over blurs, as a window's landing place, not a stain on it. */
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--color-background-100) 22%, transparent), transparent 70%),
+    color-mix(in oklch, var(--tg-solid) 13%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  backdrop-filter: blur(10px) saturate(1.3);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--tg-solid) 52%, transparent),
+    inset 0 0 0 4px color-mix(in oklch, var(--tg-solid) 7%, transparent),
+    0 18px 44px -24px color-mix(in oklch, var(--tg-solid) 70%, transparent);
   opacity: 0;
   pointer-events: none;
   transition:
@@ -2855,6 +3110,23 @@ body:not([data-chrome-view])::after {
 }
 .desk-zone[data-on] {
   opacity: 1;
+}
+/* Shift's snap mode: the tile the window will land in, drawn surer than an edge zone's offer. */
+.desk-zone[data-snap] {
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--color-background-100) 22%, transparent), transparent 70%),
+    color-mix(in oklch, var(--tg-solid) 17%, transparent);
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 72%, transparent),
+    inset 0 0 0 5px color-mix(in oklch, var(--tg-solid) 9%, transparent),
+    0 18px 44px -22px color-mix(in oklch, var(--tg-solid) 75%, transparent);
+}
+/* The lines clip to the stage: one along a window carried past its edge must not reach out of the page. */
+.desk-guides {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 .desk-guides > span {
   position: absolute;
@@ -2867,105 +3139,449 @@ body:not([data-chrome-view])::after {
   transition: opacity 120ms ease;
 }
 
-/* The inventory. */
-.desk-rail {
+/* The dock: the group's tabs as icons down the desk's leading edge, as the
+   macOS Dock sits on the left of the screen (DeskDock.tsx). Its column is
+   the desk's; the shelf sits in the middle of it. */
+.desk-dock {
   position: absolute;
   top: 0;
   bottom: 0;
   left: 0;
   z-index: 50;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: var(--radius-md);
-  background: var(--color-background-100);
-  box-shadow: var(--shadow-small);
-  animation: desk-rail-in 380ms cubic-bezier(0.2, 0.9, 0.25, 1) 90ms backwards;
-  transition:
-    transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 240ms ease,
-    background-color 160ms ease,
-    box-shadow 160ms ease;
+  pointer-events: none;
 }
-@keyframes desk-rail-in {
+/* The shelf slides away behind the desk's edge, not over the sidebar (DeskDock's CLIP_MARGIN). */
+.desk-dock-clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  overflow-x: clip;
+  overflow-y: visible;
+  pointer-events: none;
+}
+@keyframes desk-dock-in {
   from {
-    transform: translateX(calc(-100% - 12px));
+    transform: translateX(calc(-100% - 16px));
     opacity: 0;
   }
 }
-.desk-stage[data-phase="leaving"] .desk-rail {
-  transform: translateX(calc(-100% - 12px));
+/* A window in hand: the dock slides off the desk's edge, out of the way
+   (its pads stand in its column), and back once the window is let go. */
+.desk-dock[data-hidden] .desk-dock-shelf,
+.desk-stage[data-phase="leaving"] .desk-dock-shelf {
+  transform: translateX(calc(-100% - 16px));
+}
+.desk-dock[data-hidden] .desk-dock-shelf {
+  transition: transform 220ms cubic-bezier(0.4, 0, 0.7, 0.2);
+}
+.desk-stage[data-phase="leaving"] .desk-dock-shelf {
   opacity: 0;
 }
-.desk-rail[data-armed] {
-  background: color-mix(in oklch, var(--tg-solid) 9%, var(--color-background-100));
+.desk-dock-shelf {
+  display: flex;
+  flex: none;
+  max-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 0 8px;
+  border-radius: 20px;
+  background: color-mix(in oklch, var(--color-background-100) 80%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
   box-shadow:
-    inset 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 60%, transparent),
-    var(--shadow-small);
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 12px 32px -14px oklch(0 0 0 / 0.35);
+  pointer-events: auto;
+  animation: desk-dock-in 420ms cubic-bezier(0.2, 0.9, 0.25, 1) 90ms backwards;
+  transition:
+    transform 380ms cubic-bezier(0.2, 0.9, 0.25, 1.05),
+    opacity 240ms ease;
 }
-.desk-rail-drop {
+
+/* The rail of drop targets in the dock's column while a window is carried
+   (DropRail): the dock's own glass, sliding in from behind the desk's edge
+   where the dock went. Neutral until a release would go somewhere; then
+   that segment takes its colour, and its mark follows the pointer. */
+.desk-drops {
+  position: absolute;
+  z-index: 90;
+  overflow-x: clip;
+  overflow-y: visible;
+  pointer-events: none;
+}
+.desk-drop-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 20px;
+  background: color-mix(in oklch, var(--color-background-100) 88%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 16px 36px -16px oklch(0 0 0 / 0.32);
+  transform: translateX(calc(-100% - 16px));
+  transition: transform 240ms cubic-bezier(0.4, 0, 0.7, 0.2);
+}
+.desk-drops[data-shown] .desk-drop-rail {
+  transform: none;
+  transition: transform 380ms cubic-bezier(0.2, 0.9, 0.25, 1.05);
+}
+.desk-drop {
+  --drop: var(--tg-solid);
+  position: absolute;
+  right: 4px;
+  left: 4px;
+  border-radius: 16px;
+  transition:
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+.desk-drop[data-kind="close"] {
+  --drop: var(--color-red-700);
+}
+.desk-drop[data-armed] {
+  background: color-mix(in oklch, var(--drop) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--drop) 42%, transparent);
+}
+.desk-drop-divider {
+  position: absolute;
+  left: 50%;
+  width: 24px;
+  height: 1px;
+  margin-top: -0.5px;
+  background: var(--color-alpha-400);
+  translate: -50% 0;
+  transition: opacity 160ms ease;
+}
+.desk-drop-rail:has(.desk-drop[data-armed]) .desk-drop-divider {
+  opacity: 0;
+}
+/* The mark sits in the middle of its segment; lit, it follows the pointer's height along it. */
+.desk-drop-mark {
   position: absolute;
   top: 50%;
-  left: 50%;
-  padding: 5px 10px;
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  translate: 0 -50%;
+  transition: top 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.desk-drop[data-armed] .desk-drop-mark {
+  top: clamp(36px, calc(var(--pointer-y, 0px) - var(--segment-top, 0px)), calc(100% - 36px));
+  transition-duration: 120ms;
+}
+.desk-drop-badge {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 1px 2px oklch(0 0 0 / 0.06);
+  color: var(--color-gray-900);
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    scale 280ms cubic-bezier(0.2, 0.9, 0.3, 1.5);
+}
+.desk-drop-badge svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2.25;
+}
+.desk-drop-label {
+  color: var(--color-gray-700);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 12px;
+  transition: color 180ms ease;
+}
+.desk-drop[data-armed] .desk-drop-badge {
+  background: var(--drop);
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--drop) 85%, black),
+    inset 0 1px 0 oklch(1 0 0 / 0.28),
+    0 6px 16px -4px color-mix(in oklch, var(--drop) 65%, transparent);
+  color: white;
+  scale: 1.18;
+}
+.desk-drop[data-armed] .desk-drop-label {
+  color: color-mix(in oklch, var(--drop) 82%, var(--color-gray-1000));
+}
+
+/* A window taken back: its icon bounces as it lands. */
+@keyframes desk-dock-receive {
+  0% {
+    scale: 1;
+  }
+  30% {
+    scale: 1.24;
+  }
+  62% {
+    scale: 0.94;
+  }
+  100% {
+    scale: 1;
+  }
+}
+.desk-dock-tile[data-received] {
+  animation: desk-dock-receive 520ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+.desk-dock-group {
+  width: 16px;
+  height: 4px;
+  flex-shrink: 0;
+  margin-bottom: 6px;
   border-radius: 999px;
   background: var(--tg-solid);
-  color: white;
-  font-size: 11.5px;
-  font-weight: 600;
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(-50%, -50%) scale(0.9);
-  transition:
-    opacity 140ms ease,
-    transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1.4);
 }
-.desk-rail[data-armed] .desk-rail-drop {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-}
-.desk-rail-list {
+.desk-dock-icons {
   display: flex;
+  width: 100%;
   min-height: 0;
-  flex: 1;
   flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
   overflow-y: auto;
-  padding: 2px 7px 10px;
+  padding: 2px 0;
   scrollbar-width: none;
 }
-.desk-thumb {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 4px;
-  border-radius: 10px;
-  cursor: grab;
-  outline: none;
-  user-select: none;
-  transition: background-color 150ms ease;
-}
-.desk-thumb:hover {
-  background: var(--color-alpha-100);
-}
-.desk-thumb:focus-visible {
-  box-shadow: 0 0 0 2px var(--color-ring);
-}
-.desk-thumb-shot {
+.desk-dock-item {
   position: relative;
   display: grid;
-  overflow: hidden;
-  aspect-ratio: 16 / 10;
+  width: 100%;
+  height: 46px;
+  flex-shrink: 0;
   place-items: center;
-  border-radius: 7px;
-  background: var(--color-gray-100);
-  box-shadow: 0 0 0 1px var(--color-alpha-300);
-  transition:
-    transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
-    box-shadow 200ms ease,
-    opacity 200ms ease;
+  outline: none;
+  user-select: none;
 }
-.desk-thumb-shot img {
+.desk-dock-tile {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 10px;
+  transform-origin: left center;
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1.25),
+    opacity 160ms ease,
+    filter 120ms ease;
+}
+/* Hovered, an icon grows away from the edge, as the Dock's do. */
+.desk-dock-item:hover .desk-dock-tile {
+  transform: translateX(2px) scale(1.14);
+}
+.desk-dock-item:active .desk-dock-tile {
+  filter: brightness(0.88);
+  transform: translateX(2px) scale(1.06);
+}
+.desk-dock-item:focus-visible .desk-dock-tile {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+/* Its icon in hand: the place it came from stays, faintly. */
+.desk-dock-item[data-in-hand] .desk-dock-tile {
+  opacity: 0.3;
+  transform: none;
+}
+/* Out on the desk: a dot beside it, as beside a running app; the window in use, a longer one in the group's colour. */
+.desk-dock-dot {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 4px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 999px;
+  background: var(--color-gray-900);
+  opacity: 0;
+  transform: scale(0.3);
+  transition:
+    opacity 160ms ease,
+    transform 220ms cubic-bezier(0.2, 0.9, 0.3, 1.4),
+    height 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2),
+    margin-top 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2),
+    background-color 160ms ease;
+}
+.desk-dock-item[data-on-desk] .desk-dock-dot {
+  opacity: 0.72;
+  transform: none;
+}
+.desk-dock-item[data-focused] .desk-dock-dot {
+  height: 14px;
+  margin-top: -7px;
+  background: var(--tg-solid);
+  opacity: 1;
+}
+.desk-dock-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.desk-dock-divider {
+  width: 28px;
+  height: 1px;
+  flex-shrink: 0;
+  margin: 6px 0;
+  background: var(--color-alpha-400);
+}
+.desk-dock-button {
+  display: grid;
+  width: 34px;
+  height: 30px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--color-gray-800);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+.desk-dock-button:hover,
+.desk-dock-button[aria-pressed="true"] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.desk-dock-button:active {
+  transform: scale(0.94);
+}
+.desk-dock-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-dock-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* A tab drawn as an app (AppIcon). */
+.desk-app-icon {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 22.5%;
+  box-shadow:
+    0 0 0 0.5px var(--color-alpha-400),
+    0 2px 5px -2px oklch(0 0 0 / 0.25);
+}
+.desk-app-icon-full {
+  object-fit: cover;
+  background: var(--color-background-100);
+}
+.desk-app-icon-tile {
+  background: linear-gradient(to bottom, var(--color-background-100), var(--color-gray-100));
+}
+.desk-app-icon-tile img {
+  width: 56%;
+  height: 56%;
+  object-fit: contain;
+}
+.desk-app-icon-letter {
+  background: linear-gradient(160deg, oklch(0.74 0.12 var(--letter-h)), oklch(0.58 0.13 var(--letter-h)));
+  color: white;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+}
+.desk-app-icon-shell {
+  background: linear-gradient(160deg, color-mix(in oklch, var(--tg-solid) 80%, white), var(--tg-solid));
+  color: white;
+}
+.desk-app-icon-shell svg {
+  width: 50%;
+  height: 50%;
+}
+
+/* The icon in hand, before it is pulled clear of the dock (the engine moves it). */
+.desk-dock-ghost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 95;
+  width: 40px;
+  height: 40px;
+  filter: drop-shadow(0 10px 14px oklch(0 0 0 / 0.28));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 110ms ease;
+  will-change: transform;
+}
+.desk-dock-ghost[data-on] {
+  opacity: 1;
+}
+.desk-dock-ghost > * {
+  transform: scale(1.12);
+}
+
+/* The preview beside a hovered icon, and the Feel menu: drawn over the desk once the pages there have given way. */
+.desk-dock-preview,
+.desk-dock-menu {
+  position: absolute;
+  border-radius: 14px;
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-menu);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-6px) scale(0.97);
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    top 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.desk-dock-preview {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 6px 8px;
+  transform-origin: left center;
+}
+.desk-dock-preview[data-shown],
+.desk-dock-menu[data-shown] {
+  opacity: 1;
+  transform: none;
+}
+.desk-dock-menu[data-shown] {
+  pointer-events: auto;
+}
+.desk-dock-preview-tail {
+  position: absolute;
+  left: -4px;
+  width: 9px;
+  height: 9px;
+  margin-top: -4.5px;
+  border-radius: 2px;
+  background: var(--color-background-100);
+  box-shadow: -1px 1px 0 0 var(--color-alpha-300);
+  transform: rotate(45deg);
+  transition: top 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.desk-dock-preview-shot {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 9px;
+  background: var(--color-gray-100);
+  box-shadow: inset 0 0 0 1px var(--color-alpha-200);
+}
+.desk-dock-preview-shot img {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -2973,35 +3589,24 @@ body:not([data-chrome-view])::after {
   object-fit: cover;
   object-position: top left;
 }
-.desk-thumb:hover .desk-thumb-shot {
-  transform: translateY(-1px) scale(1.025);
-  box-shadow:
-    0 0 0 1px var(--color-alpha-400),
-    0 8px 16px -8px oklch(0 0 0 / 0.3);
-}
-.desk-thumb:active .desk-thumb-shot {
-  transform: scale(0.98);
-}
-/* Out on the desk: ringed in the group's colour, with a dot in the corner. */
-.desk-thumb[data-on-desk] .desk-thumb-shot {
-  box-shadow: 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 50%, transparent);
-}
-.desk-thumb[data-on-desk] .desk-thumb-shot::after {
+.desk-dock-preview-empty {
   position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--tg-solid);
-  box-shadow: 0 0 0 1.5px var(--color-background-100);
-  content: "";
+  inset: 0;
+  display: grid;
+  place-items: center;
 }
-.desk-thumb[data-focused] .desk-thumb-shot {
-  box-shadow: 0 0 0 2px var(--tg-solid);
+.desk-dock-preview-empty > .desk-app-icon {
+  width: 56px;
+  height: 56px;
 }
-.desk-thumb:not([data-on-desk]) .desk-thumb-shot img {
-  filter: saturate(0.85);
+.desk-dock-menu {
+  display: flex;
+  width: 220px;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px;
+  border-radius: 12px;
+  transform-origin: left bottom;
 }
 .desk-variant-value {
   animation: desk-variant-in 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
@@ -3510,7 +4115,17 @@ body:not([data-chrome-view])::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .desk-rail,
+  .desk-dock,
+  .desk-dock-shelf,
+  .desk-dock-tile,
+  .desk-dock-dot,
+  .desk-dock-ghost,
+  .desk-drop,
+  .desk-drop-rail,
+  .desk-drop-mark,
+  .desk-drop-badge,
+  .desk-dock-preview,
+  .desk-dock-menu,
   .desk-window,
   .desk-zone,
   .desk-variant-value {

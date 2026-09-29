@@ -1,20 +1,35 @@
 import { describe, expect, it } from "vitest";
 import {
+  carrySize,
   cascadeRects,
+  cellZone,
+  centeredRect,
   clampRect,
+  resizedKeepingAspect,
   DESK_GAP,
   denormalizeRect,
+  dockDropAt,
+  dockDrops,
   edgeZone,
+  fillsDesk,
   freeSpot,
+  isTile,
+  largestEmptyRect,
   magnetize,
   magnetizeEdges,
   normalizeRect,
+  placeNewWindow,
   rectsOverlap,
   resizedRect,
   rubberBand,
+  splitRect,
+  thirdsCell,
   thirdsZone,
+  tileRect,
   tileRects,
   uncoveredWindows,
+  unfilledSize,
+  windowSize,
   zoneRect,
   type Rect,
 } from "../src/lib/desk/geometry";
@@ -74,6 +89,55 @@ describe("edge zones", () => {
     expect(thirdsZone({ x: desk.x + desk.w / 2, y: 10 }, desk)).toBe("maximize");
     expect(thirdsZone({ x: desk.x + desk.w / 2, y: desk.h / 2 }, desk)).toBe("center");
     expect(thirdsZone({ x: desk.x + desk.w + 400, y: desk.h / 2 }, desk)).toBe("right");
+  });
+
+  it("holds a snap tile until the pointer is well past the line, so a resting pointer does not flicker", () => {
+    const third = desk.x + desk.w / 3;
+    const left = thirdsCell({ x: third - 4, y: 350 }, desk);
+    expect(cellZone(left)).toBe("left");
+    // Just over the line, coming from the left: still the left half.
+    expect(cellZone(thirdsCell({ x: third + 10, y: 350 }, desk, left, 16))).toBe("left");
+    // Well past it: the middle.
+    const middle = thirdsCell({ x: third + 20, y: 350 }, desk, left, 16);
+    expect(cellZone(middle)).toBe("center");
+    // And back just over the line from the middle: still the middle.
+    expect(cellZone(thirdsCell({ x: third - 10, y: 350 }, desk, middle, 16))).toBe("center");
+    // With no cell before, the line is the line.
+    expect(cellZone(thirdsCell({ x: third + 10, y: 350 }, desk))).toBe("center");
+  });
+
+  it("puts a tile's window where its zone is, and the middle's in the centre", () => {
+    expect(tileRect("left", desk)).toEqual(zoneRect("left", desk));
+    expect(tileRect("maximize", desk)).toEqual(desk);
+    expect(tileRect("center", desk)).toEqual(centeredRect(desk));
+  });
+});
+
+describe("letting go of the whole desk", () => {
+  it("carries a window taken by its icon at its own size, or scaled down to be carried, its shape kept", () => {
+    const small = { x: 300, y: 80, w: 480, h: 360 };
+    expect(carrySize(small, desk)).toEqual({ w: 480, h: 360 });
+    const tall = zoneRect("left", desk);
+    const carried = carrySize(tall, desk);
+    expect(carried.h).toBeCloseTo(desk.h * 0.8);
+    expect(carried.w / carried.h).toBeCloseTo(tall.w / tall.h);
+  });
+
+  it("knows a window that fills the desk, near enough", () => {
+    expect(fillsDesk(desk, desk)).toBe(true);
+    expect(fillsDesk({ ...desk, w: desk.w * 0.95, h: desk.h * 0.94 }, desk)).toBe(true);
+    expect(fillsDesk(zoneRect("left", desk), desk)).toBe(false);
+    expect(fillsDesk(centeredRect(desk), desk)).toBe(false);
+  });
+
+  it("goes back to the size it had before it filled the desk, or to the size windows come out at", () => {
+    expect(unfilledSize({ x: 300, y: 80, w: 520, h: 400 }, desk)).toEqual({ w: 520, h: 400 });
+    expect(unfilledSize(null, desk)).toEqual(windowSize(desk));
+    // A size to go back to that fills the desk too is no size to go back to.
+    expect(unfilledSize({ ...desk }, desk)).toEqual(windowSize(desk));
+    const size = windowSize(desk);
+    expect(size.w).toBeLessThan(zoneRect("left", desk).w * 1.2);
+    expect(size.h).toBeLessThan(desk.h);
   });
 });
 
@@ -205,5 +269,125 @@ describe("variants", () => {
       physics: "snap",
       grab: "alt",
     });
+  });
+});
+
+describe("where a window brought out of the dock goes", () => {
+  it("goes in the middle of an empty desk", () => {
+    expect(placeNewWindow([], desk, null)).toEqual({ rect: centeredRect(desk), split: null });
+  });
+
+  it("takes the other half beside a half, and the fourth quarter beside three", () => {
+    expect(placeNewWindow([zoneRect("left", desk)], desk, 0)).toEqual({ rect: zoneRect("right", desk), split: null });
+    const three = [zoneRect("top-left", desk), zoneRect("top-right", desk), zoneRect("bottom-left", desk)];
+    const placed = placeNewWindow(three, desk, 2);
+    expect(placed.split).toBeNull();
+    expect(placed.rect.x).toBeCloseTo(zoneRect("bottom-right", desk).x);
+    expect(placed.rect.y).toBeCloseTo(zoneRect("bottom-right", desk).y);
+    expect(placed.rect.w).toBeCloseTo(zoneRect("bottom-right", desk).w);
+    expect(placed.rect.h).toBeCloseTo(zoneRect("bottom-right", desk).h);
+  });
+
+  it("splits the window in use when a tiled desk is full: one filling it becomes the two halves", () => {
+    expect(placeNewWindow([{ ...desk }], desk, 0)).toEqual({
+      rect: zoneRect("right", desk),
+      split: { index: 0, rect: zoneRect("left", desk) },
+    });
+    // Two halves: the one in use splits top and bottom (it is taller than wide).
+    const halves = [zoneRect("left", desk), zoneRect("right", desk)];
+    const placed = placeNewWindow(halves, desk, 1);
+    expect(placed.split?.index).toBe(1);
+    expect(placed.split?.rect).toEqual(splitRect(zoneRect("right", desk))![0]);
+    expect(placed.rect).toEqual(splitRect(zoneRect("right", desk))![1]);
+  });
+
+  it("sets a window down among freely placed ones where it covers least, at the size windows come out at", () => {
+    const loose = [
+      { x: desk.x + 60, y: 40, w: 420, h: 300 },
+      { x: desk.x + 200, y: 120, w: 420, h: 300 },
+    ];
+    const placed = placeNewWindow(loose, desk, 1);
+    expect(placed.split).toBeNull();
+    expect(placed.rect).toEqual(freeSpot(loose, windowSize(desk), desk));
+    // A single window floating in the middle is not a tile either.
+    expect(placeNewWindow([centeredRect(desk)], desk, 0).split).toBeNull();
+  });
+
+  it("finds the hole a tiled desk has left, and knows a tile", () => {
+    expect(largestEmptyRect([{ ...desk }], desk)).toBeNull();
+    const hole = largestEmptyRect([zoneRect("left", desk)], desk)!;
+    expect(hole.x).toBeCloseTo(zoneRect("right", desk).x);
+    expect(hole.w).toBeCloseTo(zoneRect("right", desk).w);
+    expect(isTile(zoneRect("top-left", desk), desk)).toBe(true);
+    expect(isTile(tileRects(9, desk)[4]!, desk)).toBe(true);
+    expect(isTile(centeredRect(desk), desk)).toBe(false);
+  });
+});
+
+describe("the dock's pads", () => {
+  it("stand in the dock's column: back into the dock above, a smaller close below", () => {
+    const drops = dockDrops(880, 60);
+    expect(drops.away.y).toBe(6);
+    expect(drops.close.y + drops.close.h).toBe(874);
+    expect(drops.close.h).toBeLessThan(drops.away.h);
+    expect(drops.close.y - (drops.away.y + drops.away.h)).toBe(DESK_GAP);
+    // A short desk still has both.
+    const short = dockDrops(260, 60);
+    expect(short.close.h).toBeGreaterThan(40);
+    expect(short.away.h).toBeGreaterThan(40);
+  });
+
+  it("take a pointer left of the desk, split where they meet; the desk's own edge band is the left half's", () => {
+    const drops = dockDrops(880, 60);
+    const edge = 60 + DESK_GAP / 2;
+    expect(dockDropAt({ x: 30, y: 200 }, drops, edge, 880)).toBe("away");
+    expect(dockDropAt({ x: 30, y: 800 }, drops, edge, 880)).toBe("close");
+    // Further out, over the sidebar, is still the pad.
+    expect(dockDropAt({ x: -140, y: 300 }, drops, edge, 880)).toBe("away");
+    expect(dockDropAt({ x: edge + 1, y: 300 }, drops, edge, 880)).toBeNull();
+    const bounds = { x: 68, y: 0, w: 1100, h: 880 };
+    expect(edgeZone({ x: edge + 1, y: 440 }, bounds, 18, 96, 30)).toBe("left");
+    expect(edgeZone({ x: bounds.x + 28, y: 440 }, bounds, 18, 96, 30)).toBe("left");
+    expect(edgeZone({ x: bounds.x + 28, y: 30 }, bounds, 18, 96, 30)).toBe("top-left");
+    expect(edgeZone({ x: bounds.x + 40, y: 440 }, bounds, 18, 96, 30)).toBeNull();
+  });
+});
+
+describe("resizing a picture (a masked window)", () => {
+  const bounds = { x: 0, y: 0, w: 1600, h: 1000 };
+  // A 400×300 region under an 18px handle.
+  const start = { x: 200, y: 100, w: 400, h: 318 };
+  const all = (edges: Partial<Record<"left" | "right" | "top" | "bottom", boolean>>) => ({ left: false, right: false, top: false, bottom: false, ...edges });
+
+  it("keeps the region's shape from a side edge, the opposite side and the top holding still", () => {
+    const wider = resizedKeepingAspect(start, all({ right: true }), 200, 0, bounds, 18, 16);
+    expect(wider).toEqual({ x: 200, y: 100, w: 600, h: 450 + 18 });
+    const fromLeft = resizedKeepingAspect(start, all({ left: true }), 100, 0, bounds, 18, 16);
+    expect(fromLeft.x + fromLeft.w).toBeCloseTo(600);
+    expect(fromLeft.w / (fromLeft.h - 18)).toBeCloseTo(4 / 3);
+  });
+
+  it("scales by the axis moved more at a corner, the opposite corner holding still", () => {
+    const corner = resizedKeepingAspect(start, all({ right: true, bottom: true }), 40, 150, bounds, 18, 16);
+    expect(corner.h - 18).toBeCloseTo(450);
+    expect(corner.w).toBeCloseTo(600);
+    const topLeft = resizedKeepingAspect(start, all({ left: true, top: true }), 100, 10, bounds, 18, 16);
+    expect(topLeft.x + topLeft.w).toBeCloseTo(600);
+    expect(topLeft.y + topLeft.h).toBeCloseTo(418);
+    expect(topLeft.w).toBeCloseTo(300);
+  });
+
+  it("stops at the least region and at the desk's edge, its shape kept", () => {
+    const tiny = resizedKeepingAspect(start, all({ right: true }), -1000, 0, bounds, 18, 16);
+    expect(tiny.h - 18).toBeCloseTo(16);
+    expect(tiny.w).toBeCloseTo(16 * (4 / 3));
+    const huge = resizedKeepingAspect(start, all({ right: true, bottom: true }), 5000, 5000, bounds, 18, 16);
+    expect(huge.y + huge.h).toBeLessThanOrEqual(1000 + 1e-6);
+    expect(huge.w / (huge.h - 18)).toBeCloseTo(4 / 3);
+  });
+
+  it("lets a masked window be smaller than a page window may be", () => {
+    expect(clampRect({ x: 10, y: 10, w: 80, h: 60 }, bounds, { w: 16, h: 34 })).toEqual({ x: 10, y: 10, w: 80, h: 60 });
+    expect(clampRect({ x: 10, y: 10, w: 80, h: 60 }, bounds).w).toBe(300);
   });
 });

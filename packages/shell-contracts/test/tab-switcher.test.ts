@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { applySettingsPatch, DEFAULT_SETTINGS, sanitizeSettings } from "../src/settings.js";
 import {
   menuKeepsKey,
   passedKeystroke,
   recordTabVisit,
   tabSwitcherIndex,
   tabSwitcherMove,
+  TAB_SWITCHER_HOLD_MS,
   TabSwitcherGesture,
   type SwitcherKey,
 } from "../src/tab-switcher.js";
@@ -232,3 +234,20 @@ describe("menuKeepsKey", () => {
     expect(menuKeepsKey(down("a", CONTROL))).toBe(false);
   });
 });
+
+describe("how long a held ⌃ or ⌘ waits (Settings → Tabs)", () => {
+  it("is a short hold unless chosen, and only one of the three choices", () => {
+    expect(DEFAULT_SETTINGS.tabs.switcherHold).toBe("short");
+    expect(sanitizeSettings({}).tabs.switcherHold).toBe("short");
+    expect(sanitizeSettings({ tabs: { switcherHold: "instant" } }).tabs.switcherHold).toBe("instant");
+    expect(sanitizeSettings({ tabs: { switcherHold: "forever" } }).tabs.switcherHold).toBe("short");
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { tabs: { switcherHold: "long" } }).tabs.switcherHold).toBe("long");
+  });
+
+  it("waits nothing when instant, and less than the old hold when short", () => {
+    expect(TAB_SWITCHER_HOLD_MS.instant).toBe(0);
+    expect(TAB_SWITCHER_HOLD_MS.short).toBeLessThan(TAB_SWITCHER_HOLD_MS.long);
+    expect(TAB_SWITCHER_HOLD_MS.long).toBe(400);
+  });
+});
+

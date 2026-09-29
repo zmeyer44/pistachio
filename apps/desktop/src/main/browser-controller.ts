@@ -65,10 +65,15 @@ import type {
 import { IPC } from "@pistachio/shell-contracts/ipc";
 import type { DragSample, ShellCommand } from "@pistachio/shell-contracts/chrome";
 import {
+  deskMaskKey,
   holdsDeskModifier,
+  inDeskBox,
   MAX_DESK_STILL_WIDTH,
   MAX_DESK_WINDOWS,
   type DeskGrab,
+  type DeskMask,
+  type DeskMaskedPage,
+  type DeskPageInput,
   type DeskState,
 } from "@pistachio/shell-contracts/desk";
 import {
@@ -89,6 +94,8 @@ import { SmartFindSession } from "@pistachio/smart-find";
 import type { Experimental_EvaluationModel } from "ai";
 import { smartFindPageFor } from "./smart-find";
 import { focusEmulationAttached, setFocusEmulation } from "./forced-focus";
+import { holdDebugger, releaseDebugger } from "./debugger-hold";
+import { APP_ICON_SCRIPT, APP_ICON_WORLD, pickAppIcon } from "./app-icon";
 import { ReaderStore, type ReaderActions } from "./reader-store";
 import { readerSpeechText, readerUrl, type ReaderArticle } from "@pistachio/shell-contracts/reader";
 import {
@@ -141,6 +148,11 @@ import {
   type ReadAloudStatus,
   type TabMediaReport,
 } from "@pistachio/shell-contracts/media";
+import {
+  normalizeScreenShareReport,
+  type ScreenShareInfo,
+  type TabScreenShareReport,
+} from "@pistachio/shell-contracts/screen-share";
 import type { SidebarState } from "@pistachio/shell-contracts/sidebar";
 import { DEFAULT_SETTINGS, type DesktopSettings } from "@pistachio/shell-contracts/settings";
 import {
@@ -464,6 +476,18 @@ export interface BrowserControllerHooks {
    */
   onDeskGrab?: (grab: DeskGrab) => void;
   onDeskSample?: (sample: DragSample) => void;
+  /**
+   * Shift went down or up while a desk is up: held through a window's move
+   * it is the desk's snap key, and a key pressed with the pointer standing
+   * still reaches no pointer event the shell could read it from.
+   */
+  onDeskShift?: (held: boolean) => void;
+  /**
+   * A desk page took a press, or Escape was struck in any view, while a desk
+   * is up: the shell never hears a page's own input, and closes what it has
+   * open over the desk (@pistachio/shell-contracts/desk DeskPageInput).
+   */
+  onDeskPageInput?: (input: DeskPageInput) => void;
   /** A fresher capture of a card the open tab switcher shows. */
   onTabSwitcherThumbnail?: (thumbnail: TabSwitcherThumbnail) => void;
   /**
@@ -617,6 +641,55 @@ function rounded(value: number): number {
  * which move nothing; re-issuing identical geometry to the compositor is at
  * best wasted work and at worst a visible re-composite of a live page.
  */
+/**
+ * A desk page's mask (@pistachio/shell-contracts/desk DeskMask), shown by
+ * Chromium's viewport override over the tab's debugger session: the page
+ * lays out at its old box (`pageWidth` × `pageHeight`) and only the region
+ * is drawn, scaled to the view. The override's offset is in the document,
+ * and Chromium paints only what is inside the page's viewport, so the region
+ * is re-aimed by the page's scroll, which a script in an isolated world
+ * reports through a binding the page itself cannot see. Input is not mapped
+ * by the override, so main maps it (#forwardMaskedMouse).
+ */
+const DESK_MASK_WORLD = "pistachio-desk-mask";
+const DESK_MASK_BINDING = "__pistachioDeskMaskScroll";
+const DESK_MASK_SCRIPT = `(() => {
+  if (window !== window.top) return [0, 0];
+  if (!window.__pistachioDeskMaskScroll) {
+    window.__pistachioDeskMaskScroll = true;
+    const send = () => { try { ${DESK_MASK_BINDING}(JSON.stringify([scrollX, scrollY])); } catch {} };
+    addEventListener("scroll", send, { passive: true });
+    send();
+  }
+  return [scrollX, scrollY];
+})()`;
+
+interface DeskMaskState {
+  /** The page it is set up on: a tab that slept and woke has another, set up afresh. */
+  contents: WebContents;
+  mask: DeskMask;
+  key: string;
+  /** The size the region is shown at when the view is not placed: the window's page box. */
+  width: number;
+  height: number;
+  /** The page's scroll (CSS px), as it last said. */
+  scroll: { x: number; y: number };
+  /** What the override in place was set for, or null until one is. */
+  applied: { width: number; height: number; x: number; y: number } | null;
+  /** Where the layout wants the view and whether shown; placed once the override fits it. */
+  want: { bounds: ContentBounds; shown: boolean } | null;
+  /** An override on its way: the next is sent after it. */
+  sending: boolean;
+  /** The session is set up (binding, scroll script, scroll known). */
+  ready: boolean;
+  /** It could not be (another debugger holds the tab): the view stays down, and nothing is tried again. */
+  failed: boolean;
+  /** The page has gone fullscreen: the override is off until it comes back. */
+  suspended: boolean;
+  scriptId: string | null;
+  onMessage: (event: Electron.Event, method: string, params: unknown) => void;
+}
+
 function settleViewBounds(view: WebContentsView, bounds: ContentBounds): void {
   const current = view.getBounds();
   if (
@@ -627,6 +700,28 @@ function settleViewBounds(view: WebContentsView, bounds: ContentBounds): void {
   )
     return;
   view.setBounds(bounds);
+}
+
+/** The size a masked view shows its region at: where the layout places it, or else its window's page box. */
+function maskViewSize(state: DeskMaskState): { width: number; height: number } {
+  const want = state.want;
+  return want !== null && want.shown ? { width: want.bounds.width, height: want.bounds.height } : { width: state.width, height: state.height };
+}
+
+function sameMaskAim(a: { width: number; height: number; x: number; y: number }, b: { width: number; height: number; x: number; y: number }): boolean {
+  return a.width === b.width && a.height === b.height && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5;
+}
+
+/** A scroll report from a masked page's isolated world: `[scrollX, scrollY]`, finite. */
+function parseScroll(payload: string): { x: number; y: number } | null {
+  try {
+    const value: unknown = JSON.parse(payload);
+    if (!Array.isArray(value) || value.length !== 2) return null;
+    const [x, y] = value as unknown[];
+    return typeof x === "number" && typeof y === "number" && Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Show or hide a native view only on a real transition, as settleViewBounds. */
@@ -675,6 +770,8 @@ export class BrowserController {
    * old document — and the next dom-ready lights the new one.
    */
   readonly #glow = new Map<string, { token: number; key: string | null }>();
+  /** The site each tab's app icon was read from (BrowserTabInfo.appIconUrl): a page elsewhere drops it. */
+  readonly #appIconHosts = new WeakMap<ManagedTab, string>();
   #glowToken = 0;
   /** The tab the agent is driving, if any: its page takes the light. */
   #agentGlowTabId: string | null = null;
@@ -750,6 +847,20 @@ export class BrowserController {
    * views' through noteDeskKey — wherever the keyboard happens to be.
    */
   #deskKeyHeld = false;
+  /** Shift is down, as the keyboard last said (the desk's snap key; onDeskShift). */
+  #deskShiftHeld = false;
+  /** The pointer is over a desk page, at the place the dock stepped aside from (DeskState.dock). */
+  #deskAtDock = false;
+  /** The desk's masked pages (DeskMaskState), by tab. */
+  readonly #deskMasks = new Map<string, DeskMaskState>();
+  /** The latest work on a tab's mask (set up, re-aim, clear): a still of the tab waits for it. */
+  readonly #deskMaskWork = new Map<string, Promise<void>>();
+  /** A masked page's mouse event is being re-sent at the page's own point: it goes to the page as it is. */
+  #deskMaskForwarding = false;
+  /** The modifier keys down, as the keyboard last said: a mouse event reaching `before-mouse-event` carries none. */
+  #deskModifiers: Array<"shift" | "control" | "alt" | "meta"> = [];
+  /** The mouse buttons held on a masked page, so a re-sent move says it is a drag. */
+  readonly #deskMaskButtons = new Set<"left" | "middle" | "right">();
   /** The cursor forced on a desk page while the grab key is held, and the CSS that forces it. */
   readonly #deskCursors = new Map<string, { cursor: string; key: Promise<string | null> }>();
   #deskBlurWatch = false;
@@ -827,6 +938,12 @@ export class BrowserController {
    * BrowserMediaInfo.call). Cleared with the document.
    */
   readonly #capturingTabs = new Set<string>();
+  /**
+   * Tabs sharing the screen, in the order their shares began, as each page
+   * reports it (@pistachio/shell-contracts/screen-share). A share belongs to
+   * its document: it goes when the document does.
+   */
+  readonly #screenShares = new Map<string, TabScreenShareReport & { startedAt: number }>();
   readonly #downloads = new Map<string, BrowserDownload>();
   readonly #downloadItems = new Map<string, DownloadItem>();
   readonly #policyEvents: BrowserPolicyEvent[] = [];
@@ -1173,7 +1290,18 @@ export class BrowserController {
       run: scopedRun,
       threads,
       sidebar,
+      screenShares: this.screenShares(),
     };
+  }
+
+  /** Every share, oldest first, in every Space, named after its tab as the tab is now. */
+  screenShares(): ScreenShareInfo[] {
+    return [...this.#screenShares].flatMap(([tabId, share]) => {
+      const info = this.#tabInfo(tabId);
+      return info === null
+        ? []
+        : [{ ...share, tabId, spaceId: info.spaceId, tabTitle: info.title, tabUrl: info.url, faviconUrl: info.faviconUrl }];
+    });
   }
 
   /** Every tab, in the order the chrome lists them. */
@@ -1492,6 +1620,7 @@ export class BrowserController {
       this.#cancelPasskeysForTab(tabId);
       this.#passkeySupport.delete(tabId);
       this.#capturingTabs.delete(tabId);
+      this.#screenShares.delete(tabId);
       this.#forgetWake(tabId);
       this.#paneSizes.delete(tabId);
       this.#cancelPresentationRelease(tabId);
@@ -1788,6 +1917,8 @@ export class BrowserController {
       tab === undefined ||
       tab.info.kind !== "human" ||
       (this.#visibleTabIds().includes(tabId) || this.#media.has(tabId)) ||
+      // Sleep would end the share without a word to the people watching it.
+      this.#screenShares.has(tabId) ||
       // A desk shows several pages besides the active one: none of them is idle.
       this.#layout.views.some((view) => view.tabId === tabId)
     )
@@ -2639,6 +2770,38 @@ export class BrowserController {
   }
 
   /** Accept a report only from the real WebContents of a managed human tab. */
+  /** A tab's page says what it shares now, or (null) that it has stopped sharing. */
+  acceptScreenShareReport(senderId: number, value: unknown): void {
+    const tab = this.#tabForWebContents(senderId);
+    if (tab === undefined || tab.info.kind !== "human" || this.#tabs.get(tab.info.id) !== tab) return;
+    const tabId = tab.info.id;
+    if (value === null) {
+      this.#endScreenShare(tabId);
+      return;
+    }
+    const report = normalizeScreenShareReport(value);
+    if (report === null) return;
+    const current = this.#screenShares.get(tabId);
+    if (current?.surface === report.surface && current.audio === report.audio) return;
+    this.#screenShares.set(tabId, { ...report, startedAt: current?.startedAt ?? Date.now() });
+    this.#onChange();
+  }
+
+  /**
+   * The chrome's "Stop sharing". The page stops every track it captured and
+   * hears each one end, as it would from a browser's own stop button; its
+   * report that nothing is shared any more is what takes the share down.
+   */
+  stopScreenShare(tabId: string): void {
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || !this.#screenShares.has(tabId) || tab.view.webContents.isDestroyed()) return;
+    tab.view.webContents.send(IPC.screenShareStop);
+  }
+
+  #endScreenShare(tabId: string): void {
+    if (this.#screenShares.delete(tabId)) this.#onChange();
+  }
+
   acceptMediaReport(senderId: number, value: unknown): void {
     const tab = this.#tabForWebContents(senderId);
     // A Glance shares the lookup but is not a managed tab until promoted.
@@ -3526,8 +3689,9 @@ export class BrowserController {
     if (!this.#tabOrder.includes(id)) this.#tabOrder.push(id);
     if (options.activate || this.#activeTabId === null) this.#activateTab(id);
     const refresh = this.#wireManagedTab(tab);
-    // A tab waking from suspension takes its forced focus back up.
+    // A tab waking from suspension takes its forced focus back up — and, out on the desk, its mask.
     if (info.forcedFocus === true) void this.#applyForcedFocus(tab).catch(() => undefined);
+    if (this.#desk?.masks?.some((page) => page.tabId === id) === true) this.#syncDeskMasks(this.#desk.masks);
     const restored = options.restoredInfo;
     if (
       (restored !== undefined && options.awaitLoad === false) ||
@@ -3573,6 +3737,31 @@ export class BrowserController {
   }
 
   /**
+   * The page's app icon (./app-icon.ts), read from its own <link>s in an
+   * isolated world, for the desk's dock. A page that does not answer in a
+   * moment keeps what it had.
+   */
+  async #readAppIcon(tab: ManagedTab): Promise<void> {
+    const contents = tab.view.webContents;
+    if (contents.isDestroyed()) return;
+    const url = contents.getURL();
+    if (!/^https?:/i.test(url)) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const links = await Promise.race([
+      contents.executeJavaScriptInIsolatedWorld(APP_ICON_WORLD, [{ code: APP_ICON_SCRIPT }]).catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), 2_000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (links === undefined || contents.isDestroyed() || contents.getURL() !== url) return;
+    const icon = pickAppIcon(links);
+    this.#appIconHosts.set(tab, hostOf(url));
+    if ((tab.info.appIconUrl ?? null) === icon) return;
+    tab.info.appIconUrl = icon;
+    this.#publishManagedTab(tab);
+  }
+
+  /**
    * Wire a human/agent page once. The same ManagedTab may begin life as a
    * Glance and later join #tabs, so every callback discovers where it lives
    * when it publishes instead of closing over an ephemeral mode.
@@ -3600,8 +3789,16 @@ export class BrowserController {
     };
     view.webContents.on("did-start-loading", refresh);
     view.webContents.on("did-stop-loading", refresh);
+    // Another site's page is not this one's app: its icon goes until the new page's is read.
+    view.webContents.on("did-navigate", (_event, url) => {
+      if (info.appIconUrl != null && hostOf(url) !== this.#appIconHosts.get(tab)) info.appIconUrl = null;
+    });
     view.webContents.on("did-navigate", refresh);
     view.webContents.on("did-navigate-in-page", refresh);
+    // A capture ends with its document, and only once the next one has
+    // committed: a navigation that never does (a download, a cancelled
+    // unload) leaves the share running, so its start is too early to say.
+    view.webContents.on("did-navigate", () => this.#endScreenShare(info.id));
     // Preloads are ready at dom-ready. Send the anchor-dependent behavior
     // before a slow image or subresource can hold did-finish-load open.
     view.webContents.on("dom-ready", () => {
@@ -3645,6 +3842,7 @@ export class BrowserController {
       this.#cancelPasskeysForTab(info.id);
       this.#passkeySupport.delete(info.id);
       this.#capturingTabs.delete(info.id);
+      this.#endScreenShare(info.id);
     });
     view.webContents.on("did-start-navigation", (details) => {
       if (
@@ -3686,7 +3884,10 @@ export class BrowserController {
       info.faviconUrl = favicons[0] ?? null;
       this.#refreshMediaTab(tab);
       publish();
+      // The page's icon links changed, or were read at last: so may its app icon.
+      void this.#readAppIcon(tab);
     });
+    view.webContents.on("dom-ready", () => void this.#readAppIcon(tab));
     view.webContents.on("audio-state-changed", (event) => {
       const media = this.#media.get(info.id);
       if (media === undefined) return;
@@ -5679,6 +5880,7 @@ export class BrowserController {
       this.#cancelPasskeysForTab(tabId);
       this.#passkeySupport.delete(tabId);
       this.#capturingTabs.delete(tabId);
+      this.#screenShares.delete(tabId);
       this.#forgetWake(tabId);
       this.#paneSizes.delete(tabId);
       this.#cancelPresentationRelease(tabId);
@@ -5880,6 +6082,7 @@ export class BrowserController {
       this.#cancelPasskeysForTab(tabId);
       this.#passkeySupport.delete(tabId);
       this.#capturingTabs.delete(tabId);
+      this.#screenShares.delete(tabId);
       this.#forgetWake(tabId);
       this.#paneSizes.delete(tabId);
       this.#cancelPresentationRelease(tabId);
@@ -6842,7 +7045,13 @@ export class BrowserController {
   // ── The desk (@pistachio/shell-contracts/desk) ──────────────────────────────
 
   setDesk(state: DeskState | null): void {
-    this.#desk = state === null ? null : { tabIds: state.tabIds.slice(0, MAX_DESK_WINDOWS), grab: state.grab };
+    this.#desk =
+      state === null
+        ? null
+        : { tabIds: state.tabIds.slice(0, MAX_DESK_WINDOWS), grab: state.grab, dock: state.dock ?? null, masks: state.masks ?? [] };
+    // A pointer already at the dock's place says so again on its next move.
+    this.#deskAtDock = false;
+    this.#syncDeskMasks(state?.masks ?? []);
     const desk = this.#desk;
     for (const tabId of [...this.#deskCursors.keys()]) {
       const tab = this.#tabs.get(tabId);
@@ -6850,12 +7059,15 @@ export class BrowserController {
       else if (desk === null || desk.grab === null || !desk.tabIds.includes(tabId)) this.#setDeskCursor(tab, null);
     }
     if (desk === null && this.#deskGrab !== null) this.#endDeskGrab("cancel");
+    // The next desk starts from the keys as they are then, and hears of them afresh.
+    if (desk === null) this.#deskShiftHeld = false;
     if (desk !== null && !this.#deskBlurWatch) {
       this.#deskBlurWatch = true;
       // Keys released outside the app are never seen: a window that loses
       // focus drops the grab cursor, and a press in progress is cancelled.
       this.#window.on("blur", () => {
         this.#deskKeyHeld = false;
+        this.#noteDeskShift(false);
         if (this.#deskGrab !== null) this.#endDeskGrab("cancel");
         for (const tabId of [...this.#deskCursors.keys()]) {
           const tab = this.#tabs.get(tabId);
@@ -6886,9 +7098,14 @@ export class BrowserController {
       )
         return null;
       try {
+        // A mask being set up, re-aimed or taken off first: the still is of the page as it then stands.
+        await this.#deskMaskWork.get(tabId);
+        if (tab.view.webContents.isDestroyed()) return null;
         const image = await tab.view.webContents.capturePage();
         if (image.isEmpty()) return null;
-        return { tabId, dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}` };
+        const masked = this.#deskMasks.get(tabId);
+        const still: PaneStill = { tabId, dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}` };
+        return masked?.applied != null ? { ...still, mask: masked.key } : still;
       } catch {
         return null;
       }
@@ -6906,11 +7123,21 @@ export class BrowserController {
   /**
    * Any key event, from any of the window's views: every one says whether
    * the grab key is down (its own flags), and when that changes every desk
-   * page shows — or drops — the open hand at once.
+   * page shows — or drops — the open hand at once. Shift is passed on to the
+   * shell as it changes, whatever the grab key: it is the desk's snap key.
    */
   noteDeskKey(input: Electron.Input): void {
     const desk = this.#desk;
-    if (desk === null || desk.grab === null || (input.type !== "keyDown" && input.type !== "keyUp")) return;
+    if (desk === null || (input.type !== "keyDown" && input.type !== "keyUp")) return;
+    this.#noteDeskShift(input.shift);
+    this.#deskModifiers = [
+      ...(input.shift ? (["shift"] as const) : []),
+      ...(input.control ? (["control"] as const) : []),
+      ...(input.alt ? (["alt"] as const) : []),
+      ...(input.meta ? (["meta"] as const) : []),
+    ];
+    if (input.type === "keyDown" && input.key === "Escape") this.#hooks.onDeskPageInput?.("escape");
+    if (desk.grab === null) return;
     const held = desk.grab === "shift" ? input.shift : desk.grab === "alt" ? input.alt : input.meta;
     if (held === this.#deskKeyHeld) return;
     this.#deskKeyHeld = held;
@@ -6921,6 +7148,12 @@ export class BrowserController {
     }
   }
 
+  #noteDeskShift(held: boolean): void {
+    if (held === this.#deskShiftHeld) return;
+    this.#deskShiftHeld = held;
+    this.#hooks.onDeskShift?.(held);
+  }
+
   /**
    * Every mouse event on a tab's page passes here before the page sees it.
    * Only a desk page is of interest: a press with the grab key held is taken
@@ -6929,6 +7162,8 @@ export class BrowserController {
    * click into one is the only way the browser learns which is in use.
    */
   #handleDeskMouse(tab: ManagedTab, event: Electron.Event, mouse: Electron.MouseInputEvent): void {
+    // A masked page's own event, re-sent at its point on the page (#forwardMaskedMouse).
+    if (this.#deskMaskForwarding) return;
     const tabId = tab.info.id;
     const grab = this.#deskGrab;
     if (grab !== null && grab.tabId === tabId) {
@@ -6958,26 +7193,295 @@ export class BrowserController {
       case "mouseMove":
       case "mouseEnter":
         this.#setDeskCursor(tab, armed ? "grab" : null);
+        this.#noteDeskDock(tab, mouse);
+        this.#forwardMaskedMouse(tab, event, mouse);
         return;
       case "mouseLeave":
         this.#setDeskCursor(tab, null);
+        this.#deskAtDock = false;
+        this.#forwardMaskedMouse(tab, event, mouse);
         return;
       case "mouseDown":
         break;
       default:
+        this.#forwardMaskedMouse(tab, event, mouse);
         return;
     }
+    this.#hooks.onDeskPageInput?.("press");
     if (armed && (mouse.button ?? "left") === "left") {
       event.preventDefault();
-      const bounds = tab.view.getBounds();
-      const local = { x: bounds.x + mouse.x, y: bounds.y + mouse.y };
-      const offset = hasScreenPoint(mouse) ? { x: local.x - mouse.globalX!, y: local.y - mouse.globalY! } : null;
-      this.#deskGrab = { tabId, offset };
-      this.#setDeskCursor(tab, "grabbing");
-      this.#hooks.onDeskGrab?.({ tabId, ...local });
+      this.#startDeskGrab(tab, mouse);
       return;
     }
     if (this.#activeTabId !== tabId) void this.selectTab(tabId);
+    this.#forwardMaskedMouse(tab, event, mouse);
+  }
+
+  /**
+   * A masked page draws a region of itself, scaled, into its view, but the
+   * override does not map input: a point on the view would land where that
+   * point is on the whole page. So each of its mouse events is re-sent at
+   * the page's own point under the pointer — the region's corner, plus the
+   * point on the view over the scale — and the original never reaches the
+   * page. `before-mouse-event` sees the re-sent one too, at once: it passes
+   * (#deskMaskForwarding). The events come without modifiers, so the keys
+   * down (noteDeskKey) and the buttons held are put back on them: a Shift-
+   * or ⌘-click stays one, and a move with a button held stays a drag.
+   * (The wheel never comes this way; the compositor scrolls what is under
+   * the pointer as drawn.)
+   */
+  #forwardMaskedMouse(tab: ManagedTab, event: Electron.Event, mouse: Electron.MouseInputEvent): void {
+    const state = this.#deskMasks.get(tab.info.id);
+    if (state === undefined || state.suspended) return;
+    event.preventDefault();
+    const aim = state.applied;
+    if (aim === null || tab.view.webContents.isDestroyed()) return;
+    const scale = aim.width / state.mask.width;
+    const button = mouse.button ?? "left";
+    if (mouse.type === "mouseDown") this.#deskMaskButtons.add(button);
+    if (mouse.type === "mouseUp") this.#deskMaskButtons.delete(button);
+    const held = [...this.#deskMaskButtons].map((pressed) => `${pressed}buttondown` as const);
+    const forwarded: Electron.MouseInputEvent = {
+      ...mouse,
+      x: Math.round(state.mask.x + mouse.x / scale),
+      y: Math.round(state.mask.y + mouse.y / scale),
+      modifiers: [...this.#deskModifiers, ...held],
+    };
+    if (mouse.movementX !== undefined) forwarded.movementX = Math.round(mouse.movementX / scale);
+    if (mouse.movementY !== undefined) forwarded.movementY = Math.round(mouse.movementY / scale);
+    this.#deskMaskForwarding = true;
+    try {
+      tab.view.webContents.sendInputEvent(forwarded);
+    } finally {
+      this.#deskMaskForwarding = false;
+    }
+  }
+
+  /** A press on a desk page becomes its window's move: the page hears none of it, the shell runs it. */
+  #startDeskGrab(tab: ManagedTab, mouse: Electron.MouseInputEvent): void {
+    const bounds = tab.view.getBounds();
+    const local = { x: bounds.x + mouse.x, y: bounds.y + mouse.y };
+    const offset = hasScreenPoint(mouse) ? { x: local.x - mouse.globalX!, y: local.y - mouse.globalY! } : null;
+    this.#deskGrab = { tabId: tab.info.id, offset };
+    this.#setDeskCursor(tab, "grabbing");
+    this.#hooks.onDeskGrab?.({ tabId: tab.info.id, ...local });
+  }
+
+  // ── Desk masks (DeskMaskState) ────────────────────────────────────────────
+
+  /** The desk's masked pages now: new ones set up, sizes followed, the rest taken off. */
+  #syncDeskMasks(pages: readonly DeskMaskedPage[]): void {
+    const wanted = new Map(pages.map((page) => [page.tabId, page]));
+    // A page that is gone (its tab slept, and woke with another) holds nothing to take off.
+    for (const [tabId, state] of [...this.#deskMasks]) {
+      if (this.#tabs.get(tabId)?.view.webContents === state.contents) continue;
+      this.#deskMasks.delete(tabId);
+      if (!state.contents.isDestroyed()) state.contents.debugger.removeListener("message", state.onMessage);
+    }
+    for (const [tabId, state] of [...this.#deskMasks]) {
+      const page = wanted.get(tabId);
+      if (page === undefined || deskMaskKey(page.mask) !== state.key || !this.#tabs.has(tabId)) this.#clearDeskMask(tabId);
+    }
+    for (const page of pages) {
+      const tab = this.#tabs.get(page.tabId);
+      if (tab === undefined || tab.view.webContents.isDestroyed()) continue;
+      const state = this.#deskMasks.get(page.tabId) ?? this.#startDeskMask(tab, page.mask);
+      state.width = Math.max(1, Math.round(page.width));
+      state.height = Math.max(1, Math.round(page.height));
+      this.#placeMaskedView(tab, state);
+    }
+  }
+
+  /** Queue work on a tab's mask after whatever is under way for it. */
+  #deskMaskStep(tabId: string, work: () => Promise<void>): Promise<void> {
+    const next = (this.#deskMaskWork.get(tabId) ?? Promise.resolve()).then(work).catch((error: unknown) => {
+      console.warn("[desk mask]", error instanceof Error ? error.message : error);
+    });
+    this.#deskMaskWork.set(tabId, next);
+    void next.then(() => {
+      if (this.#deskMaskWork.get(tabId) === next) this.#deskMaskWork.delete(tabId);
+    });
+    return next;
+  }
+
+  #startDeskMask(tab: ManagedTab, mask: DeskMask): DeskMaskState {
+    const tabId = tab.info.id;
+    const contents = tab.view.webContents;
+    const state: DeskMaskState = {
+      contents,
+      mask,
+      key: deskMaskKey(mask),
+      width: Math.round(mask.width),
+      height: Math.round(mask.height),
+      scroll: { x: 0, y: 0 },
+      applied: null,
+      want: null,
+      sending: false,
+      ready: false,
+      failed: false,
+      suspended: false,
+      scriptId: null,
+      onMessage: (_event, method, params) => {
+        if (method !== "Runtime.bindingCalled" || this.#deskMasks.get(tabId) !== state) return;
+        const call = params as { name?: unknown; payload?: unknown };
+        if (call.name !== DESK_MASK_BINDING || typeof call.payload !== "string") return;
+        const scroll = parseScroll(call.payload);
+        if (scroll === null) return;
+        state.scroll = scroll;
+        this.#aimDeskMask(tab, state);
+      },
+    };
+    this.#deskMasks.set(tabId, state);
+    contents.debugger.on("message", state.onMessage);
+    void this.#deskMaskStep(tabId, async () => {
+      if (contents.isDestroyed() || this.#deskMasks.get(tabId) !== state) return;
+      // Set to false once it is ready: any throw below leaves it failed.
+      state.failed = true;
+      holdDebugger(contents, "desk-mask");
+      const session = contents.debugger;
+      await session.sendCommand("Runtime.enable");
+      await session.sendCommand("Page.enable");
+      await session.sendCommand("Runtime.addBinding", { name: DESK_MASK_BINDING, executionContextName: DESK_MASK_WORLD });
+      const script = (await session.sendCommand("Page.addScriptToEvaluateOnNewDocument", { source: DESK_MASK_SCRIPT, worldName: DESK_MASK_WORLD })) as { identifier?: string };
+      state.scriptId = script.identifier ?? null;
+      const tree = (await session.sendCommand("Page.getFrameTree")) as { frameTree: { frame: { id: string } } };
+      const world = (await session.sendCommand("Page.createIsolatedWorld", { frameId: tree.frameTree.frame.id, worldName: DESK_MASK_WORLD })) as { executionContextId: number };
+      const evaluated = (await session.sendCommand("Runtime.evaluate", { expression: DESK_MASK_SCRIPT, contextId: world.executionContextId, returnByValue: true })) as { result?: { value?: unknown } };
+      state.scroll = parseScroll(JSON.stringify(evaluated.result?.value)) ?? state.scroll;
+      state.ready = true;
+      state.failed = false;
+    });
+    this.#aimDeskMask(tab, state);
+    return state;
+  }
+
+  /**
+   * Set the override for the size the view is to have and the page's
+   * scroll now, if it is not already that; then place the view. One
+   * override is sent at a time, and the latest wish wins.
+   */
+  #aimDeskMask(tab: ManagedTab, state: DeskMaskState): void {
+    if (state.sending || state.failed || state.suspended) return;
+    const tabId = tab.info.id;
+    const contents = tab.view.webContents;
+    const target = (): { width: number; height: number; x: number; y: number } => {
+      const size = maskViewSize(state);
+      const zoom = contents.isDestroyed() ? 1 : contents.getZoomFactor();
+      return { ...size, x: state.mask.x + state.scroll.x * zoom, y: state.mask.y + state.scroll.y * zoom };
+    };
+    const current = state.applied;
+    const wanted = target();
+    if (state.ready && current !== null && sameMaskAim(current, wanted)) {
+      this.#placeMaskedView(tab, state);
+      return;
+    }
+    state.sending = true;
+    void this.#deskMaskStep(tabId, async () => {
+      if (contents.isDestroyed() || this.#deskMasks.get(tabId) !== state || !state.ready) return;
+      const aim = target();
+      const { mask } = state;
+      await contents.debugger.sendCommand("Emulation.setDeviceMetricsOverride", {
+        width: Math.round(mask.pageWidth),
+        height: Math.round(mask.pageHeight),
+        deviceScaleFactor: 0,
+        mobile: false,
+        viewport: { x: aim.x, y: aim.y, width: mask.width, height: mask.height, scale: aim.width / mask.width },
+      });
+      state.applied = aim;
+    }).then(() => {
+      state.sending = false;
+      if (this.#deskMasks.get(tabId) !== state || contents.isDestroyed() || state.suspended) return;
+      // Not set up (it failed), or sent nothing: aiming again would only spin.
+      if (!state.ready || state.applied === null) return;
+      // Something changed while it was sent: aim again (or, on target, place the view).
+      this.#aimDeskMask(tab, state);
+    });
+  }
+
+  /**
+   * A masked view goes where the layout wants it only once the override
+   * fits its size — shown at another size, it would show the region at the
+   * wrong scale for a frame. Until then it stays down, and the window's
+   * still, painted under every live page, is what shows.
+   */
+  #placeMaskedView(tab: ManagedTab, state: DeskMaskState): void {
+    // Fullscreen, the page is placed as the whole window is (#applyLayout).
+    if (state.suspended) return;
+    const size = maskViewSize(state);
+    const fits = state.applied !== null && state.applied.width === size.width && state.applied.height === size.height;
+    if (!fits) {
+      settleViewVisible(tab.view, false);
+      this.#aimDeskMask(tab, state);
+      return;
+    }
+    const want = state.want;
+    if (want !== null && want.shown) {
+      settleViewBounds(tab.view, want.bounds);
+      settleViewVisible(tab.view, true);
+      return;
+    }
+    settleViewVisible(tab.view, false);
+    // Down, it is still captured for the window's still: at the size it shows the region at.
+    const bounds = tab.view.getBounds();
+    if (bounds.width !== size.width || bounds.height !== size.height) settleViewBounds(tab.view, { x: bounds.x, y: bounds.y, ...size });
+  }
+
+  /**
+   * A masked page gone fullscreen: its override off, so the page fills the
+   * screen as itself, and forwarded input goes as it is. Its mask is aimed
+   * again when it leaves fullscreen (#applyLayout).
+   */
+  #suspendDeskMask(tab: ManagedTab, state: DeskMaskState): void {
+    if (state.suspended) return;
+    state.suspended = true;
+    state.applied = null;
+    this.#deskMaskButtons.clear();
+    const contents = tab.view.webContents;
+    void this.#deskMaskStep(tab.info.id, async () => {
+      if (contents.isDestroyed() || !contents.debugger.isAttached() || !state.suspended) return;
+      await contents.debugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+    });
+  }
+
+  /** Take a page's mask off: its old box back first (so it never lays out at the region's size), then the override. */
+  #clearDeskMask(tabId: string): void {
+    const state = this.#deskMasks.get(tabId);
+    if (state === undefined) return;
+    this.#deskMasks.delete(tabId);
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || tab.view.webContents.isDestroyed()) return;
+    const contents = tab.view.webContents;
+    contents.debugger.removeListener("message", state.onMessage);
+    this.#deskMaskButtons.clear();
+    // Down while it changes back, and at its old box: shown at the region's
+    // size without the override, it would reflow there for a frame.
+    settleViewVisible(tab.view, false);
+    const bounds = tab.view.getBounds();
+    settleViewBounds(tab.view, { x: bounds.x, y: bounds.y, width: Math.round(state.mask.pageWidth), height: Math.round(state.mask.pageHeight) });
+    void this.#deskMaskStep(tabId, async () => {
+      if (contents.isDestroyed() || !contents.debugger.isAttached()) return;
+      const session = contents.debugger;
+      await session.sendCommand("Emulation.clearDeviceMetricsOverride").catch(() => undefined);
+      if (state.scriptId !== null) await session.sendCommand("Page.removeScriptToEvaluateOnNewDocument", { identifier: state.scriptId }).catch(() => undefined);
+      await session.sendCommand("Runtime.removeBinding", { name: DESK_MASK_BINDING }).catch(() => undefined);
+      releaseDebugger(contents, "desk-mask");
+    }).then(() => {
+      // Placed meanwhile as a plain page: its box is the layout's again.
+      if (this.#tabs.get(tabId) === tab && !this.#deskMasks.has(tabId)) this.#applyLayout();
+    });
+  }
+
+  /**
+   * The dock steps aside for the window in use when that window lies behind
+   * it, and comes back as the pointer comes to its place — over that
+   * window's page, which the shell never hears: tell it, once as it comes.
+   */
+  #noteDeskDock(tab: ManagedTab, mouse: Electron.MouseInputEvent): void {
+    const dock = this.#desk?.dock ?? null;
+    const bounds = tab.view.getBounds();
+    const at = dock !== null && inDeskBox(dock, bounds.x + mouse.x, bounds.y + mouse.y);
+    if (at && !this.#deskAtDock) this.#hooks.onDeskPageInput?.("dock");
+    this.#deskAtDock = at;
   }
 
   /** An event of the grabbed press, in the window's content box. */
@@ -7163,6 +7667,9 @@ export class BrowserController {
       const { width, height } = this.#window.getContentBounds();
       for (const tab of this.#tabs.values())
         if (tab !== fullscreen) settleViewVisible(tab.view, false);
+      // A masked page gone fullscreen (the player's own button) is the whole page for as long as it is.
+      const maskedFullscreen = this.#deskMasks.get(fullscreen.info.id);
+      if (maskedFullscreen !== undefined) this.#suspendDeskMask(fullscreen, maskedFullscreen);
       if (this.#glance !== null) settleViewVisible(this.#glance.tab.view, false);
       settleViewBounds(fullscreen.view, {
         x: 0,
@@ -7182,6 +7689,12 @@ export class BrowserController {
       );
       const previewPlacement = this.#mediaPreview?.tabId === tabId ? this.#mediaPreview : null;
       const placement = panePlacement ?? previewPlacement;
+      const masked = this.#deskMasks.get(tabId);
+      // Back from fullscreen: its mask is aimed afresh.
+      if (masked !== undefined && masked.suspended) {
+        masked.suspended = false;
+        masked.applied = null;
+      }
       if (
         placement === undefined ||
         placement === null ||
@@ -7189,6 +7702,10 @@ export class BrowserController {
         placement.bounds.height < 1
       ) {
         settleViewVisible(tab.view, false);
+        if (masked !== undefined) {
+          masked.want = null;
+          this.#placeMaskedView(tab, masked);
+        }
         continue;
       }
       const bounds = {
@@ -7199,6 +7716,14 @@ export class BrowserController {
       };
       if (panePlacement !== undefined)
         this.#paneSizes.set(tabId, { width: bounds.width, height: bounds.height });
+      if (masked !== undefined && panePlacement !== undefined) {
+        masked.want = {
+          bounds,
+          shown: !this.#waking.has(tabId) && !this.#overlayActive && this.#glance?.ownerRecessed !== true && visible.has(tabId),
+        };
+        this.#placeMaskedView(tab, masked);
+        continue;
+      }
       settleViewBounds(tab.view, bounds);
       // A pane comes down for a raised overlay (its still is painted under
       // the modal) and while a Glance's owner is recessed — until the shell
@@ -8172,4 +8697,13 @@ function boundedLabel(
 ): string {
   const normalized = value?.replace(/\s+/g, " ").trim() ?? "";
   return (normalized === "" ? fallback : normalized).slice(0, maxLength);
+}
+
+/** A page's host, for telling one site's page from another's ("" when it has none). */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
 }

@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { useMediaStackInset } from "./MediaStack";
+import { useScreenShareInset } from "./ScreenShareIndicator";
 import {
   childrenOf,
   DEFAULT_SIDEBAR_STATE,
@@ -861,7 +862,8 @@ export function TabList() {
   const shelf = useAppStore(
     (s) => s.snapshot?.sidebar ?? DEFAULT_SIDEBAR_STATE,
   );
-  const mediaInset = useMediaStackInset();
+  // The dock at the list's foot: the media stack, then any screen share's card.
+  const mediaInset = useMediaStackInset() + useScreenShareInset();
   const selectTab = useAppStore((s) => s.selectTab);
   const closeTab = useAppStore((s) => s.closeTab);
   const sidebarCommand = useAppStore((s) => s.sidebarCommand);

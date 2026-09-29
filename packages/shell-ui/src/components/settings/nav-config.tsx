@@ -101,7 +101,7 @@ export const SETTINGS_NAV: NavSection[] = [
     items: [
       { key: "general", icon: Settings, section: "", note: "Layout, new tabs, search" },
       { key: "appearance", icon: Palette, section: "appearance", note: "Themes, gradients, material" },
-      { key: "tabs", icon: Layers, section: "tabs", note: "Archiving idle tabs, groups, favorites" },
+      { key: "tabs", icon: Layers, section: "tabs", note: "Tidy, archive, tab switcher" },
       { key: "shortcuts", icon: Keyboard, section: "shortcuts", label: "Shortcuts", note: "Key combinations for commands" },
       {
         key: "privacy",

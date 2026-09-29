@@ -209,6 +209,7 @@ import { isDeskState } from "@pistachio/shell-contracts/desk";
 import {
   menuKeepsKey,
   passedKeystroke,
+  DEFAULT_TAB_SWITCHER_HOLD,
   TAB_SWITCHER_HOLD_MS,
   TabSwitcherGesture,
 } from "@pistachio/shell-contracts/tab-switcher";
@@ -568,7 +569,10 @@ function relayTabSwitcherInput(
   if (tabSwitcher.armed) {
     if (tabSwitcherHoldTimer === null) {
       tabSwitcherHoldCursor = screen.getCursorScreenPoint();
-      tabSwitcherHoldTimer = setTimeout(tabSwitcherHoldElapsed, TAB_SWITCHER_HOLD_MS);
+      // How long is the person's choice (Settings → Tabs); "instant" still
+      // lets this key's own handling finish before the switcher takes the keyboard.
+      const hold = TAB_SWITCHER_HOLD_MS[settings?.get().tabs.switcherHold ?? DEFAULT_TAB_SWITCHER_HOLD];
+      tabSwitcherHoldTimer = setTimeout(tabSwitcherHoldElapsed, hold);
     }
   } else clearTabSwitcherHold();
   if (outcome.input !== null) {
@@ -649,6 +653,9 @@ function relayChromeInput(
 ): boolean {
   // The desk follows its grab key from every view's keys (@pistachio/shell-contracts/desk).
   browser?.noteDeskKey(input);
+  // Shift tapped while a drag holds the pointer is a snap key being tried
+  // (a desk window's move), never a double-Shift bookmark.
+  if (dragLayer?.shown === true) doubleShift.reset();
   // The detector must see even the events consumed by another shortcut.
   return relayDoubleShift(input) || relayTabSwitcherInput(event, input, source);
 }
@@ -660,11 +667,13 @@ function isCompactSidebar(current: DesktopSettings): boolean {
   );
 }
 
-/** Keep the native reveal target active only while compact mode is hidden. */
+/** Keep the native reveal target active only while compact mode is hidden (and not put away for a desk). */
 function syncSidebarEntryWatch(): void {
   if (sidebarWatch === null || settings === null) return;
   sidebarWatch.setEntryEnabled(
-    isCompactSidebar(settings.get()) && !shellState.sidebarRevealed,
+    isCompactSidebar(settings.get()) &&
+      !shellState.sidebarRevealed &&
+      !shellState.sidebarAway,
   );
 }
 
@@ -675,6 +684,9 @@ function syncSidebarEntryWatch(): void {
  * (ShellState.sidebarRevealed), since the column is the shell's own layout.
  * On close they remain through the CSS retreat rather than popping away from
  * a toolbar that is still visible. A reversal cancels that pending hide.
+ *
+ * The same goes for a sidebar put away while a tab group's desk is up
+ * (ShellState.sidebarAway), pinned or not.
  *
  * In native fullscreen they stay on: macOS then keeps them in the titlebar
  * that slides down with the menu bar when the pointer reaches the top edge,
@@ -691,8 +703,9 @@ function applyWindowButtons(immediate = false): void {
   const window = shellWindow;
   const shouldShow = () =>
     window.isFullScreen() ||
-    !isCompactSidebar(requireSettings().get()) ||
-    shellState.sidebarRevealed;
+    (!shellState.sidebarAway &&
+      (!isCompactSidebar(requireSettings().get()) ||
+        shellState.sidebarRevealed));
   if (shouldShow()) {
     if (windowButtonHideTimer !== null) clearTimeout(windowButtonHideTimer);
     windowButtonHideTimer = null;
@@ -2060,6 +2073,12 @@ async function createWindow(): Promise<void> {
       onDeskSample: (sample) => {
         if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.dragSample, sample);
       },
+      onDeskShift: (held) => {
+        if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskShift, held);
+      },
+      onDeskPageInput: (input) => {
+        if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskPageInput, input);
+      },
       onTabSwitcherThumbnail: (thumbnail) => {
         if (shellWindow === null || shellWindow.isDestroyed()) return;
         shellWindow.webContents.send(IPC.tabSwitcherThumbnail, thumbnail);
@@ -2605,6 +2624,10 @@ function installIpc(): void {
     if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
     return requireBrowser().setForcedFocus(requireString(tabId, "tabId"), enabled);
   });
+  ipcMain.handle(IPC.tabStopScreenShare, (event, tabId: unknown) => {
+    if (!isShell(event.sender)) return;
+    requireBrowser().stopScreenShare(requireString(tabId, "tabId"));
+  });
   ipcMain.handle(
     IPC.tabMoveToSpace,
     (_event, tabId: unknown, spaceId: unknown) =>
@@ -2629,6 +2652,11 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.mediaReport, (event, report: unknown) => {
     requireBrowser().acceptMediaReport(event.sender.id, report);
+  });
+  // The top document's share; the tab preload runs nowhere else.
+  ipcMain.on(IPC.screenShareReport, (event, report: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame) return;
+    requireBrowser().acceptScreenShareReport(event.sender.id, report);
   });
   ipcMain.handle(IPC.readAloudGet, (event) =>
     isShell(event.sender) ? requireBrowser().readAloudJobs() : [],
@@ -2886,7 +2914,7 @@ function installIpc(): void {
       // address bar), the page now in front gets the keyboard back.
       if (!state.veiled && !state.settingsOpen) browser?.focusPageAfterOverlay();
     }
-    // The compact sidebar's column came or went: the traffic lights follow it.
+    // The sidebar's column came or went (compact, or put away for a desk): the traffic lights follow it.
     applyWindowButtons();
     syncSidebarEntryWatch();
     if (findLayer !== null) findLayer.setVeiled(state.veiled);

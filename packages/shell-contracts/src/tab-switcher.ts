@@ -6,8 +6,16 @@
 
 /** The most cards the switcher ever shows; a small window shows fewer. */
 export const TAB_SWITCHER_LIMIT = 15;
-/** ⌃ or ⌘ held this long on its own brings the switcher up without a Tab. */
-export const TAB_SWITCHER_HOLD_MS = 400;
+/**
+ * How long ⌃ or ⌘ held on its own waits before it brings the switcher up
+ * without a Tab (Settings → Tabs). At once; a beat, short enough to feel
+ * instant yet longer than a shortcut typed at speed takes to follow its
+ * modifier; or the original, deliberate hold.
+ */
+export type TabSwitcherHold = "instant" | "short" | "long";
+export const TAB_SWITCHER_HOLDS: readonly TabSwitcherHold[] = ["instant", "short", "long"];
+export const TAB_SWITCHER_HOLD_MS: Readonly<Record<TabSwitcherHold, number>> = { instant: 0, short: 150, long: 400 };
+export const DEFAULT_TAB_SWITCHER_HOLD: TabSwitcherHold = "short";
 const TAB_HISTORY_LIMIT = 100;
 
 /** The modifier whose release commits the selection. */
@@ -191,8 +199,9 @@ type Phase = { name: "idle" } | { name: "armed"; modifier: TabSwitcherModifier }
 
 /**
  * The held-modifier gesture. ⌃ or ⌘ pressed on its own ARMS it; held for
- * TAB_SWITCHER_HOLD_MS with nothing else pressed (the caller's timer calls
- * `holdElapsed`), the switcher opens on the active tab. ⌃Tab opens it at
+ * the chosen TAB_SWITCHER_HOLD_MS with nothing else pressed (the caller's
+ * timer calls `holdElapsed`; "instant" is a timer of 0), the switcher opens
+ * on the active tab. ⌃Tab opens it at
  * once, one step along — ⌘Tab never reaches an app on macOS, which keeps it
  * for switching apps. While open, Tab and the arrows move the selection,
  * Return or releasing the modifier commits, Escape cancels, and any other

@@ -1,12 +1,15 @@
 import { SIDEBAR_EDGE_W, SIDEBAR_TRIGGER_W } from "@pistachio/shell-contracts/chrome";
+import { cn } from "../lib/cn";
 import { useAppStore } from "../store";
+import { useScreenShares, useScreenShareStartNotice } from "./ScreenShareIndicator";
 
 /**
  * The compact sidebar's trigger: the column the shell keeps at the window's
  * left edge while the sidebar is hidden. Pointer movement inside it brings
  * the sidebar's column back into the layout (layouts/SidebarLayout.tsx), in
  * this column's place; nothing paints here but a faint handle on hover, the
- * hint that the edge is live.
+ * hint that the edge is live — or, while a tab shares the screen, a red one
+ * that stays.
  *
  * The arrival is a pointer MOVE inside the column, never `pointerenter`:
  * Chromium synthesizes an enter for whatever lands under a cursor that has
@@ -22,16 +25,26 @@ import { useAppStore } from "../store";
  */
 export function SidebarEdge() {
   const setSidebarRevealed = useAppStore((s) => s.setSidebarRevealed);
+  // With the sidebar out of sight, so is a screen share's card: the handle
+  // stays up in the share's red while one runs, and a share that begins
+  // meanwhile says so as a notice.
+  const shares = useScreenShares();
+  const sharing = shares.length > 0;
+  useScreenShareStartNotice(shares);
   return (
     <div
       data-testid="sidebar-edge"
+      data-screen-share={sharing ? "" : undefined}
       className="no-drag group absolute inset-y-0 left-0 z-10 shrink-0"
       style={{ width: SIDEBAR_TRIGGER_W }}
       onPointerMove={() => setSidebarRevealed(true)}
     >
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute top-1/2 h-8 w-[3px] -translate-1/2 rounded-full bg-alpha-500 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+        className={cn(
+          "pointer-events-none absolute top-1/2 w-[3px] -translate-1/2 rounded-full transition-opacity duration-150",
+          sharing ? "sidebar-edge-share h-12 bg-red-700" : "h-8 bg-alpha-500 opacity-0 group-hover:opacity-100",
+        )}
         style={{ left: SIDEBAR_EDGE_W / 2 }}
       />
     </div>

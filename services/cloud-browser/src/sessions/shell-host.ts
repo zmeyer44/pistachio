@@ -1211,6 +1211,9 @@ export class ShellHost implements ShellApi, StreamShellApi {
   /** Not offered here: the cloud host never reports BrowserTabInfo.forcedFocus. */
   async setForcedFocus(): Promise<void> {}
 
+  /** Not offered here: the cloud host never reports ShellSnapshot.screenShares. */
+  async stopScreenShare(): Promise<void> {}
+
   async suspendTab(tabId: string): Promise<void> {
     const tab = this.#tabs.get(tabId);
     if (tab === undefined || tab.backendTabId === null) return;

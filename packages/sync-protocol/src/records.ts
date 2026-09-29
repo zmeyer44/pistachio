@@ -508,6 +508,8 @@ export interface ShellSettingsValue {
     groupRelated: boolean;
     resetFavorites: boolean;
     archiveRetentionDays: number;
+    /** How long a held ⌃ or ⌘ waits before the tab switcher opens. */
+    switcherHold: "instant" | "short" | "long";
   };
   cloud: {
     runByDefault: boolean;

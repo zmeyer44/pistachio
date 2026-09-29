@@ -277,6 +277,12 @@ export interface DragSample {
   y: number;
   /** "up" ends the gesture; so does "cancel" (a lost pointer, a blurred window). */
   phase: "move" | "up" | "cancel";
+  /**
+   * Whether Shift was down, when the source knows: a pointer event says, but
+   * main's relay of a grabbed desk press does not (Electron's mouse hook
+   * carries no modifiers), and then it is left out.
+   */
+  shift?: boolean;
 }
 
 export function isDragSample(value: unknown): value is DragSample {
@@ -287,7 +293,8 @@ export function isDragSample(value: unknown): value is DragSample {
     Number.isFinite(sample["x"]) &&
     typeof sample["y"] === "number" &&
     Number.isFinite(sample["y"]) &&
-    (sample["phase"] === "move" || sample["phase"] === "up" || sample["phase"] === "cancel")
+    (sample["phase"] === "move" || sample["phase"] === "up" || sample["phase"] === "cancel") &&
+    (sample["shift"] === undefined || typeof sample["shift"] === "boolean")
   );
 }
 
@@ -308,6 +315,13 @@ export interface ShellState {
    * Always true when the sidebar is pinned, meaningless in the top layout.
    */
   sidebarRevealed: boolean;
+  /**
+   * The sidebar's column is put away entirely, pinned or compact, until a
+   * tab group's desk is left (docs/desk.md): nothing is under the traffic
+   * lights, so they hide, and the compact sidebar's edge brings nothing out.
+   * Always false in the top layout.
+   */
+  sidebarAway: boolean;
   /** The reminders page (pistachio://reminders) is over the content hole. */
   remindersOpen: boolean;
   /** The bookmarks page (pistachio://bookmarks) is over the content hole. */
@@ -337,13 +351,25 @@ export const DEFAULT_SHELL_STATE: ShellState = {
   tabSwitcherOpen: false,
   veiled: false,
   sidebarRevealed: false,
+  sidebarAway: false,
 };
 
 export function isShellState(value: unknown): value is ShellState {
   if (typeof value !== "object" || value === null) return false;
   const state = value as Record<string, unknown>;
   return (
-    ["consoleOpen", "evidenceOpen", "settingsOpen", "veiled", "sidebarRevealed", "remindersOpen", "bookmarksOpen", "liveViewOpen", "tabSwitcherOpen"] as const
+    [
+      "consoleOpen",
+      "evidenceOpen",
+      "settingsOpen",
+      "veiled",
+      "sidebarRevealed",
+      "sidebarAway",
+      "remindersOpen",
+      "bookmarksOpen",
+      "liveViewOpen",
+      "tabSwitcherOpen",
+    ] as const
   ).every((key) => typeof state[key] === "boolean");
 }
 

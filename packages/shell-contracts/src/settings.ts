@@ -35,6 +35,7 @@ import {
   type ShortcutSettings,
 } from "./shortcuts.js";
 import { HOME_PAGE_URL, isHomeUrl } from "./home.js";
+import { DEFAULT_TAB_SWITCHER_HOLD, TAB_SWITCHER_HOLDS, type TabSwitcherHold } from "./tab-switcher.js";
 import {
   ARCHIVE_AFTER_HOURS,
   ARCHIVE_RETENTION_DAYS,
@@ -254,6 +255,12 @@ export interface DesktopSettings {
     resetFavorites: boolean;
     /** Days an archived tab is kept. */
     archiveRetentionDays: number;
+    /**
+     * How long ⌃ or ⌘ held on its own waits before the tab switcher opens
+     * (@pistachio/shell-contracts/tab-switcher). "instant" opens it as the
+     * key goes down — so every ⌘ or ⌃ shortcut shows it for a moment.
+     */
+    switcherHold: TabSwitcherHold;
   };
   /**
    * The hosted cloud browser (docs/cloud-sync-design.md §10.4). WHETHER a
@@ -347,6 +354,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
     groupRelated: true,
     resetFavorites: true,
     archiveRetentionDays: DEFAULT_ARCHIVE_RETENTION_DAYS,
+    switcherHold: DEFAULT_TAB_SWITCHER_HOLD,
   },
   cloud: {
     runByDefault: false,
@@ -694,6 +702,7 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
         ARCHIVE_RETENTION_DAYS,
         d.tabs.archiveRetentionDays,
       ),
+      switcherHold: oneOf(tabs["switcherHold"], TAB_SWITCHER_HOLDS, d.tabs.switcherHold),
     },
     cloud: {
       runByDefault: bool(cloud["runByDefault"], d.cloud.runByDefault),

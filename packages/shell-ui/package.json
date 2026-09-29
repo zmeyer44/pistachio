@@ -16,10 +16,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "@floating-ui/react": "^0.27.20",
     "@json-render/core": "0.21.0",
     "@json-render/react": "0.21.0",
     "@pistachio/evidence": "workspace:*",
-    "@floating-ui/react": "^0.27.20",
     "@pistachio/live-view": "workspace:*",
     "@pistachio/notes": "workspace:*",
     "@pistachio/protocol": "workspace:*",

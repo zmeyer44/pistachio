@@ -12,6 +12,7 @@ import { RUN_SHORTCUT_EVENT } from "@pistachio/shell-contracts/shortcuts";
 import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
+import { useDeskStore } from "../lib/desk/store";
 import { useAppStore, type AppState } from "../store";
 import { nextSplitMode } from "./split-mode";
 import { nativeApi, shellApi } from "../api";
@@ -52,14 +53,24 @@ export function shellStateOf(state: AppState): ShellState {
       state.overlay === "downloads" ||
       state.error !== null ||
       state.glance !== null,
-    sidebarRevealed: sidebarRevealedOf(state),
+    sidebarRevealed: sidebarRevealedOf(state, deskUp(useDeskStore.getState())),
+    sidebarAway: sidebarAwayOf(state, deskUp(useDeskStore.getState())),
   };
 }
 
-/** The column is up: pinned it always is; compact, while the pointer holds it out. */
-function sidebarRevealedOf(state: Pick<AppState, "settings" | "sidebarRevealed">): boolean {
+/** A tab group's desk is up, or waiting to open: the sidebar is put away (layouts/SidebarLayout.tsx). */
+function deskUp(desk: { opening: string | null; groupId: string | null }): boolean {
+  return desk.opening !== null || desk.groupId !== null;
+}
+
+/** The column is up: pinned it always is; compact, while the pointer holds it out — unless it is put away for a desk. */
+function sidebarRevealedOf(state: Pick<AppState, "settings" | "sidebarRevealed">, away: boolean): boolean {
   const layout = state.settings.layout;
-  return layout.mode === "sidebar" && (layout.sidebar === "pinned" || state.sidebarRevealed);
+  return layout.mode === "sidebar" && !away && (layout.sidebar === "pinned" || state.sidebarRevealed);
+}
+
+function sidebarAwayOf(state: Pick<AppState, "settings">, away: boolean): boolean {
+  return state.settings.layout.mode === "sidebar" && away;
 }
 
 function useStoreShellState(): ShellState {
@@ -85,7 +96,9 @@ function useStoreShellState(): ShellState {
       s.error !== null ||
       s.glance !== null,
   );
-  const sidebarRevealed = useAppStore(sidebarRevealedOf);
+  const away = useDeskStore(deskUp);
+  const sidebarRevealed = useAppStore((s) => sidebarRevealedOf(s, away));
+  const sidebarAway = useAppStore((s) => sidebarAwayOf(s, away));
   return useMemo(
     () => ({
       consoleOpen,
@@ -97,8 +110,9 @@ function useStoreShellState(): ShellState {
       tabSwitcherOpen,
       veiled,
       sidebarRevealed,
+      sidebarAway,
     }),
-    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, tabSwitcherOpen, veiled, sidebarRevealed],
+    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, tabSwitcherOpen, veiled, sidebarRevealed, sidebarAway],
   );
 }
 

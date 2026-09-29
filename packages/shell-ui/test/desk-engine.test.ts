@@ -1,17 +1,25 @@
 /**
  * What the desk's engine (src/components/desk/desk-engine.ts) tells main:
  * the first layout goes out even when it is empty, and the desk never holds
- * more windows than main accepts (@pistachio/shell-contracts/desk).
+ * more windows than main accepts (@pistachio/shell-contracts/desk). And what
+ * a window in hand does: a window filling the desk lets go of it as it is
+ * dragged, and Shift lands a released window in the tile it lights. And the
+ * dock: a click opens a tab where the layout has room, and an icon dragged
+ * clear of it becomes the tab's window, held by the title bar. And a window
+ * may lie behind the dock, which floats over it — stepping aside for it
+ * when it is the window in use.
  *
  * The engine runs a frame at a time outside React; here the frames are
  * driven by hand, and the only DOM it needs is a stage box.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DragSample } from "@pistachio/shell-contracts/chrome";
 import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { DeskEngine } from "../src/components/desk/desk-engine";
+import { CHROME_INSETS, DeskEngine, DOCK_ICON, DOCK_W, type DeskHost } from "../src/components/desk/desk-engine";
+import { carrySize, centeredRect, denormalizeRect, DESK_GAP, windowSize, zoneRect, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
 let frames: Array<(now: number) => void> = [];
@@ -27,28 +35,40 @@ function settle(): void {
   }
 }
 
-function native() {
+function native(options: { stills?: boolean } = {}) {
   const layouts: BrowserLayout[] = [];
   const desks: Array<DeskState | null> = [];
+  // The drag layer's channel, which a gesture listens on for the pointer.
+  const drag: { sample: ((sample: DragSample) => void) | null } = { sample: null };
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
   setShellApi({
     ...members,
     setLayout: (layout: BrowserLayout) => layouts.push(layout),
     setDesk: (state: DeskState | null) => desks.push(state),
-    captureTabStills: () => Promise.resolve([]),
+    // A picture of every page asked for, when the pages are live ones.
+    captureTabStills: (ids: readonly string[]) =>
+      Promise.resolve(options.stills === true ? ids.map((tabId) => ({ tabId, dataUrl: `data:image/jpeg;base64,${tabId}` })) : []),
     focusTab: () => Promise.resolve(),
+    onDragSample: (listener: (sample: DragSample) => void) => {
+      drag.sample = listener;
+      return () => {
+        if (drag.sample === listener) drag.sample = null;
+      };
+    },
   } as unknown as ShellApiBridge);
-  return { layouts, desks };
+  return { layouts, desks, drag };
 }
 
 /** A desk whose pages are all shell-drawn (no live views), over a 1600×1000 stage. */
-function engine(): DeskEngine {
+function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const created = new DeskEngine({
     variants: () => DEFAULT_DESK_VARIANTS,
     hasLivePage: () => false,
     select: () => undefined,
+    close: () => undefined,
     save: () => undefined,
     leaveDone: () => undefined,
+    ...host,
   });
   created.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 1000 }) } as unknown as HTMLElement);
   return created;
@@ -62,6 +82,8 @@ beforeEach(() => {
   vi.stubGlobal("window", {
     setInterval: () => 0,
     clearInterval: () => undefined,
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
     matchMedia: () => ({ matches: false }),
@@ -133,6 +155,780 @@ describe("the desk's window limit", () => {
     expect(desk.windowTabIds()).toHaveLength(MAX_DESK_WINDOWS);
     expect(desk.windowTabIds().at(-1)).toBe("tab-0");
     for (const state of desks) expect(isDeskState(state)).toBe(true);
+    desk.destroy();
+  });
+});
+
+/* ------------------------------ in hand ------------------------------ */
+
+/** The desk windows may use on the 1600×1000 stage: all of it but the inventory. */
+const usable: Rect = { x: DOCK_W + DESK_GAP, y: 0, w: 1600 - DOCK_W - DESK_GAP, h: 1000 };
+
+/** A stand-in for an element the engine writes to: a window's box is its translate and size. */
+function element() {
+  return { style: {} as Record<string, string>, dataset: {} as Record<string, string> };
+}
+
+function rectOf(el: ReturnType<typeof element>): Rect {
+  const [x, y] = /translate3d\((-?[\d.]+)px, (-?[\d.]+)px/.exec(el.style["transform"] ?? "")!.slice(1).map(Number);
+  return { x: x!, y: y!, w: Number.parseFloat(el.style["width"]!), h: Number.parseFloat(el.style["height"]!) };
+}
+
+/** A few frames, the clock moving as they go (a gesture keeps asking for them, so settle() would not stop). */
+function run(count: number): void {
+  for (let i = 0; i < count; i += 1) {
+    const due = frames;
+    frames = [];
+    clock += 16;
+    for (const frame of due) frame(clock);
+  }
+}
+
+function expectRect(actual: Rect, expected: Rect, within = 1): void {
+  for (const key of ["x", "y", "w", "h"] as const) expect(Math.abs(actual[key] - expected[key]), `${key}: ${actual[key]} vs ${expected[key]}`).toBeLessThanOrEqual(within);
+}
+
+describe("a window in hand", () => {
+  let restoreNow: () => void = () => undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+  });
+  afterEach(() => restoreNow());
+
+  /** One window out, centred, with its element and the zone's attached. */
+  function open(host: Partial<DeskHost> = {}) {
+    const { drag } = native();
+    const desk = engine(host);
+    const zone = element();
+    const win = element();
+    desk.attachZone(zone as unknown as HTMLElement);
+    desk.start([], "tab-0", tabIds(2));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    /** The pointer moves (in the stage, which is the window's content box here), a frame at a time. */
+    const move = (x: number, y: number, shift?: boolean): void => {
+      drag.sample?.({ x, y, phase: "move", ...(shift === undefined ? {} : { shift }) });
+      run(1);
+    };
+    const release = (): void => {
+      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+      settle();
+    };
+    return { desk, zone, win, move, release };
+  }
+
+  it("lets go of the whole desk once dragged: back to its own size, still held by its title bar", () => {
+    const { desk, win, move, release } = open();
+    expectRect(rectOf(win), centeredRect(usable));
+    desk.toggleMaximize("tab-0");
+    settle();
+    expectRect(rectOf(win), usable);
+    // Grab the title bar three quarters along it, and pull.
+    const at = { x: usable.x + usable.w * 0.75, y: 17 };
+    desk.grab("tab-0", at);
+    // Not on the move yet: nothing changes.
+    run(3);
+    expectRect(rectOf(win), usable);
+    for (let step = 1; step <= 40; step += 1) move(at.x - step * 4, at.y + step * 3);
+    const own = centeredRect(usable);
+    const carried = rectOf(win);
+    expect(Math.abs(carried.w - own.w)).toBeLessThan(2);
+    expect(Math.abs(carried.h - own.h)).toBeLessThan(2);
+    // Held where it was: three quarters along the bar, 17px below the top.
+    const pointer = { x: at.x - 160, y: at.y + 120 };
+    expect(Math.abs(pointer.x - (carried.x + carried.w * 0.75))).toBeLessThan(3);
+    expect(Math.abs(pointer.y - (carried.y + 17))).toBeLessThan(3);
+    release();
+    const rested = rectOf(win);
+    expect(Math.abs(rested.w - own.w)).toBeLessThan(2);
+    expect(desk.getView().windows[0]!.maximized).toBe(false);
+    desk.destroy();
+  });
+
+  it("with no size of its own to go back to, takes the size windows come out at", () => {
+    const { drag } = native();
+    const desk = engine();
+    const win = element();
+    desk.start([{ tabId: "tab-0", rect: { x: 0, y: 0, w: 1, h: 1 } }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(win), usable);
+    desk.grab("tab-0", { x: usable.x + 400, y: 17 });
+    for (let step = 1; step <= 40; step += 1) {
+      drag.sample?.({ x: usable.x + 400 + step * 5, y: 17 + step * 5, phase: "move" });
+      run(1);
+    }
+    const size = windowSize(usable);
+    expect(Math.abs(rectOf(win).w - size.w)).toBeLessThan(2);
+    expect(Math.abs(rectOf(win).h - size.h)).toBeLessThan(2);
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    settle();
+    desk.destroy();
+  });
+
+  it("with Shift held, lights the tile under the pointer and lands in it", () => {
+    const { desk, zone, win, move, release } = open();
+    const start = rectOf(win);
+    const at = { x: start.x + 200, y: start.y + 17 };
+    desk.grab("tab-0", at);
+    move(at.x + 10, at.y + 10);
+    expect(zone.dataset["on"]).toBeUndefined();
+    // Shift goes down with the pointer standing still: the tile lights at once.
+    desk.setShift(true);
+    expect(zone.dataset["on"]).toBe("");
+    expect(zone.dataset["snap"]).toBe("");
+    expect(desk.getView().snapping).toBe(true);
+    expect(desk.getView().windows[0]!.aiming).toBe(true);
+    // Over the desk's left third, halfway down: the left half.
+    for (let step = 1; step <= 10; step += 1) move(at.x + 10 + (usable.x + 60 - at.x - 10) * (step / 10), 500);
+    const left = zoneRect("left", usable);
+    expect(Number.parseFloat(zone.style["width"]!)).toBeCloseTo(left.w, 0);
+    release();
+    expectRect(rectOf(win), left);
+    expect(desk.getView().snapping).toBe(false);
+    desk.destroy();
+  });
+
+  it("reads Shift from the pointer too, and goes free when it is let go", () => {
+    const { desk, zone, win, move, release } = open();
+    const start = rectOf(win);
+    const at = { x: start.x + 200, y: start.y + 17 };
+    desk.grab("tab-0", at);
+    // The top right third, Shift held (as a pointer event says): a quarter.
+    for (let step = 1; step <= 8; step += 1) move(at.x + step * 40, at.y + 30, true);
+    move(usable.x + usable.w - 80, 120, true);
+    expect(Number.parseFloat(zone.style["width"]!)).toBeCloseTo(zoneRect("top-right", usable).w, 0);
+    // Shift up, the pointer away from the edges: nothing is lit, and it stays where it is put.
+    move(usable.x + 400, 150, false);
+    expect(zone.dataset["on"]).toBeUndefined();
+    for (let step = 0; step < 12; step += 1) move(usable.x + 400, 150);
+    const before = rectOf(win);
+    release();
+    const after = rectOf(win);
+    expect(Math.abs(after.x - before.x)).toBeLessThan(2);
+    expect(Math.abs(after.y - before.y)).toBeLessThan(2);
+    expect(Math.abs(after.w - start.w)).toBeLessThan(2);
+    desk.destroy();
+  });
+
+  it("shows the dock's pads only near the desk's leading edge, and lights the one a release would go to", () => {
+    const { desk, win, move, release } = open();
+    const start = rectOf(win);
+    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
+    move(start.x + 260, start.y + 60);
+    expect(desk.getView().dropsShown).toBe(false);
+    move(usable.x + 100, 300);
+    expect(desk.getView().dropsShown).toBe(true);
+    expect(desk.getView().dockDrop).toBeNull();
+    move(30, 300);
+    expect(desk.getView().dockDrop).toBe("away");
+    move(30, 940);
+    expect(desk.getView().dockDrop).toBe("close");
+    // Back across the desk's edge band: the left half again, not a pad.
+    move(usable.x + 10, 500);
+    expect(desk.getView().dockDrop).toBeNull();
+    release();
+    expectRect(rectOf(win), zoneRect("left", usable));
+    expect(desk.getView().dropsShown).toBe(false);
+    desk.destroy();
+  });
+
+  it("puts a window let go on the upper pad back into the dock, its tab kept", () => {
+    const close = vi.fn();
+    const { desk, win, move, release } = open({ close });
+    const start = rectOf(win);
+    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
+    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 170) / 8), 300);
+    expect(desk.getView().dockDrop).toBe("away");
+    release();
+    expect(desk.windowTabIds()).toEqual([]);
+    expect(close).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  it("closes the tab of a window let go on the lower pad, once it has gone into it", () => {
+    const close = vi.fn();
+    const { desk, win, move, release } = open({ close });
+    const start = rectOf(win);
+    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
+    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 170) / 8), 300 + step * 80);
+    expect(desk.getView().dockDrop).toBe("close");
+    release();
+    expect(desk.windowTabIds()).toEqual([]);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledWith("tab-0");
+    desk.destroy();
+  });
+
+  it("aims the middle of the desk at a comfortable window in the centre", () => {
+    const { desk, win, move, release } = open();
+    desk.toggleMaximize("tab-0");
+    settle();
+    desk.grab("tab-0", { x: usable.x + 300, y: 17 }, true);
+    for (let step = 1; step <= 20; step += 1) move(usable.x + 300 + step * 20, 17 + step * 24, true);
+    release();
+    expectRect(rectOf(win), centeredRect(usable));
+    desk.destroy();
+  });
+});
+
+/* ------------------------------ the dock ------------------------------ */
+
+describe("the dock", () => {
+  let restoreNow: () => void = () => undefined;
+  /** The shell page's own pointer listeners (a press on an icon is tracked there until it travels). */
+  let listeners: Map<string, Set<(event: unknown) => void>>;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+    listeners = new Map();
+    vi.stubGlobal("window", {
+      setInterval: () => 0,
+      clearInterval: () => undefined,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      addEventListener: (type: string, listener: (event: unknown) => void) => {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(listener);
+      },
+      removeEventListener: (type: string, listener: (event: unknown) => void) => listeners.get(type)?.delete(listener),
+      matchMedia: () => ({ matches: false }),
+      devicePixelRatio: 1,
+    });
+  });
+  afterEach(() => restoreNow());
+
+  const dispatch = (type: string, x: number, y: number): void => {
+    for (const listener of [...(listeners.get(type) ?? [])]) listener({ clientX: x, clientY: y, shiftKey: false });
+  };
+
+  /** Tab 0 out as a window; tab 1 in the dock. Icons sit in the dock's column, 40px square. */
+  function dock() {
+    const { drag } = native();
+    const desk = engine();
+    const ghost = element();
+    const windows = new Map<string, ReturnType<typeof element>>();
+    desk.attachGhost(ghost as unknown as HTMLElement);
+    desk.start([], "tab-0", tabIds(2));
+    for (const [index, tabId] of tabIds(2).entries()) {
+      const top = 400 + index * 46;
+      desk.attachIcon(tabId, { isConnected: true, getBoundingClientRect: () => ({ left: 10, top, width: DOCK_ICON, height: DOCK_ICON }) } as unknown as HTMLElement);
+    }
+    const attach = (tabId: string): ReturnType<typeof element> => {
+      const win = element();
+      windows.set(tabId, win);
+      desk.attachWindow(tabId, win as unknown as HTMLElement);
+      return win;
+    };
+    attach("tab-0");
+    settle();
+    const move = (x: number, y: number): void => {
+      drag.sample?.({ x, y, phase: "move" });
+      run(1);
+    };
+    const release = (): void => {
+      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+      settle();
+    };
+    /** Press tab `index`'s icon and pull it past the slop, as a person starts a drag. */
+    const pull = (index: number): void => {
+      const at = { x: 30, y: 420 + index * 46 };
+      desk.pressIcon(`tab-${index}`, { clientX: at.x, clientY: at.y, button: 0 });
+      dispatch("pointermove", at.x + 8, at.y);
+    };
+    return { desk, ghost, attach, move, release, pull };
+  }
+
+  it("brings a tab out where the layout has room: filling the desk, the window in use gives up half", () => {
+    const { desk, attach } = dock();
+    desk.toggleMaximize("tab-0");
+    settle();
+    desk.add("tab-1", { focus: true });
+    const added = attach("tab-1");
+    settle();
+    expectRect(rectOf(added), zoneRect("right", usable));
+    desk.destroy();
+  });
+
+  it("raises a window that is out rather than opening another", () => {
+    const { desk } = dock();
+    desk.add("tab-1", { focus: true });
+    settle();
+    expect(desk.windowTabIds()).toEqual(["tab-0", "tab-1"]);
+    desk.add("tab-0", { focus: true });
+    settle();
+    expect(desk.windowTabIds()).toEqual(["tab-1", "tab-0"]);
+    desk.destroy();
+  });
+
+  it("leaves a window alone while only its icon is in hand, Shift or no Shift", () => {
+    const { desk, attach, move, release, pull } = dock();
+    const win = attach("tab-0");
+    const before = rectOf(win);
+    pull(0);
+    move(DOCK_W + 10, 460);
+    expect(desk.getView().iconDrag).toBe("tab-0");
+    desk.setShift(true);
+    move(DOCK_W + 12, 470);
+    desk.setShift(false);
+    expectRect(rectOf(win), before);
+    release();
+    expectRect(rectOf(win), before);
+    desk.destroy();
+  });
+
+  it("lets go of an icon still in the dock with nothing changed", () => {
+    const { desk, ghost, move, release, pull } = dock();
+    pull(1);
+    expect(desk.getView().iconDrag).toBe("tab-1");
+    expect(ghost.dataset["on"]).toBe("");
+    move(DOCK_W + 10, 440);
+    expect(desk.getView().iconDrag).toBe("tab-1");
+    release();
+    expect(ghost.dataset["on"]).toBeUndefined();
+    expect(desk.getView().iconDrag).toBeNull();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+
+  it("turns an icon pulled clear of the dock into its window, held by the title bar", () => {
+    const { desk, ghost, attach, move, release, pull } = dock();
+    pull(1);
+    move(DOCK_W + 60, 460);
+    expect(ghost.dataset["on"]).toBeUndefined();
+    expect(desk.getView().iconDrag).toBeNull();
+    expect(desk.windowTabIds()).toEqual(["tab-0", "tab-1"]);
+    const win = attach("tab-1");
+    for (let step = 1; step <= 10; step += 1) move(DOCK_W + 60 + step * 20, 460 + step * 10);
+    const pointer = { x: DOCK_W + 260, y: 560 };
+    const carried = rectOf(win);
+    const size = windowSize(usable);
+    expect(carried.w).toBeCloseTo(size.w, 0);
+    // The title bar is under the pointer, near its leading end.
+    expect(pointer.y - carried.y).toBeCloseTo(CHROME_INSETS.bar.top / 2, 0);
+    expect(pointer.x - carried.x).toBeGreaterThanOrEqual(28);
+    expect(pointer.x - carried.x).toBeLessThan(size.w / 2);
+    for (let step = 0; step < 12; step += 1) move(pointer.x, pointer.y);
+    release();
+    const rested = rectOf(win);
+    expect(Math.abs(rested.x - carried.x)).toBeLessThan(2);
+    expect(desk.getView().windows.at(-1)!.tabId).toBe("tab-1");
+    desk.destroy();
+  });
+
+  it("brings a window that is out to the hand, its shape kept, its title bar under the pointer", () => {
+    const { desk, attach, move, release, pull } = dock();
+    const win = attach("tab-0");
+    const before = rectOf(win);
+    pull(0);
+    const pointer = { x: DOCK_W + 200, y: 300 };
+    for (let step = 1; step <= 6; step += 1) move(DOCK_W + 20 + step * 30, 420 - step * 20);
+    // It flies there: give the catch a moment with the pointer still.
+    for (let step = 0; step < 40; step += 1) move(pointer.x, pointer.y);
+    const held = rectOf(win);
+    // Most of the desk's height is too tall to carry: it comes scaled down, the same shape.
+    const carried = carrySize(before, usable);
+    expect(carried.h).toBeLessThan(before.h);
+    expect(held.w).toBeCloseTo(carried.w, 0);
+    expect(held.h).toBeCloseTo(carried.h, 0);
+    expect(pointer.y - held.y).toBeCloseTo(CHROME_INSETS.bar.top / 2, 0);
+    expect(pointer.x - held.x).toBeGreaterThanOrEqual(28);
+    release();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+});
+
+
+/* ------------------------- behind the dock ------------------------- */
+
+describe("a window behind the dock", () => {
+  let restoreNow: () => void = () => undefined;
+  let listeners: Map<string, Set<(event: unknown) => void>>;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+    listeners = new Map();
+    vi.stubGlobal("window", {
+      setInterval: () => 0,
+      clearInterval: () => undefined,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      addEventListener: (type: string, listener: (event: unknown) => void) => {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(listener);
+      },
+      removeEventListener: (type: string, listener: (event: unknown) => void) => listeners.get(type)?.delete(listener),
+      matchMedia: () => ({ matches: false }),
+      devicePixelRatio: 1,
+    });
+    // A still is decoded before it is shown.
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        decode(): Promise<void> {
+          return Promise.resolve();
+        }
+      },
+    );
+  });
+  afterEach(() => restoreNow());
+
+  /** The dock's shelf, centred on the 1000px stage's leading edge. */
+  const shelf: Rect = { x: 0, y: 300, w: DOCK_W, h: 400 };
+
+  /** Stills on their way in, and the frames that put them on screen. */
+  async function flush(): Promise<void> {
+    for (let round = 0; round < 4; round += 1) {
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+      settle();
+    }
+  }
+
+  function open(live: boolean) {
+    const { drag, layouts, desks } = native({ stills: live });
+    const desk = engine({ hasLivePage: () => live });
+    const win = element();
+    desk.setDockShelf(shelf);
+    desk.start([], "tab-0", tabIds(2));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const move = (x: number, y: number): void => {
+      drag.sample?.({ x, y, phase: "move" });
+      run(1);
+    };
+    /** Carry the window by its title bar, well along it, until its leading edge is at `x`; hold still, and let go. */
+    const tuck = (x: number): void => {
+      const start = rectOf(win);
+      const hold = { x: 320, y: 17 };
+      desk.grab("tab-0", { x: start.x + hold.x, y: start.y + hold.y });
+      for (let step = 1; step <= 10; step += 1) move(start.x + hold.x + (x - start.x) * (step / 10), start.y + hold.y);
+      for (let step = 0; step < 12; step += 1) move(x + hold.x, start.y + hold.y);
+      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+      settle();
+    };
+    const click = (x: number, y: number): void => {
+      desk.press("tab-0", { clientX: x, clientY: y, button: 0 }, "content");
+      for (const listener of [...(listeners.get("pointerup") ?? [])]) listener({ clientX: x, clientY: y });
+    };
+    const livePages = (): string[] => layouts.at(-1)!.views.map((view) => view.tabId);
+    return { desk, win, move, tuck, click, layouts, desks, livePages };
+  }
+
+  it("rests where it is let go in the dock's column, as far as the desk's leading edge", () => {
+    const { desk, win, tuck } = open(false);
+    tuck(24);
+    expect(Math.abs(rectOf(win).x - 24)).toBeLessThan(1.5);
+    // Pushed further, it stops at the desk's edge.
+    tuck(-200);
+    expect(Math.abs(rectOf(win).x)).toBeLessThan(1.5);
+    // Near the dock's edge, it sticks to it.
+    tuck(usable.x - 9);
+    expect(Math.abs(rectOf(win).x - usable.x)).toBeLessThan(1.5);
+    desk.destroy();
+  });
+
+  it("keeps filling the desk clear of the dock, and comes back to where it lay", () => {
+    const { desk, win, tuck } = open(false);
+    tuck(20);
+    const tucked = rectOf(win);
+    desk.toggleMaximize("tab-0");
+    settle();
+    expectRect(rectOf(win), usable);
+    desk.toggleMaximize("tab-0");
+    settle();
+    expectRect(rectOf(win), tucked);
+    desk.destroy();
+  });
+
+  it("resizes out to the desk's leading edge, sticking at the dock's on the way", () => {
+    const { desk, win, move } = open(false);
+    const start = rectOf(win);
+    const y = start.y + 100;
+    desk.resize("tab-0", { left: true, right: false, top: false, bottom: false }, { clientX: start.x, clientY: y, button: 0 });
+    move(usable.x - 6, y);
+    expect(Math.abs(rectOf(win).x - usable.x)).toBeLessThan(1);
+    move(12, y);
+    expect(Math.abs(rectOf(win).x - 12)).toBeLessThan(1);
+    move(-80, y);
+    expect(Math.abs(rectOf(win).x)).toBeLessThan(1);
+    // The opposite edge holds still.
+    expect(Math.abs(rectOf(win).x + rectOf(win).w - (start.x + start.w))).toBeLessThan(1);
+    desk.destroy();
+  });
+
+  it("is drawn under the dock; used, the dock steps aside for it, and comes back when the pointer comes to it", async () => {
+    const { desk, win, tuck, click, desks, livePages } = open(true);
+    await flush();
+    expect(livePages()).toEqual(["tab-0"]);
+    tuck(20);
+    await flush();
+    // Under the dock: its still, and the dock over it.
+    let view = desk.getView();
+    expect(rectOf(win).x).toBeLessThan(shelf.w);
+    expect(view.windows[0]!.drawn).toBe(true);
+    expect(view.dockAside).toBe(false);
+    expect(livePages()).toEqual([]);
+    // Clicked into, it is the window in use: the dock slides away, and once it has gone the page is live.
+    click(rectOf(win).x + 400, 500);
+    expect(desk.getView().dockAside).toBe(true);
+    expect(livePages()).toEqual([]);
+    await flush();
+    expect(desk.getView().windows[0]!.drawn).toBe(false);
+    expect(livePages()).toEqual(["tab-0"]);
+    // Main watches the dock's place for the pointer, over that page.
+    expect(desks.at(-1)!.dock).toEqual({ x: 0, y: shelf.y - 8, width: DOCK_W + DESK_GAP, height: shelf.h + 16 });
+    // The pointer comes there: the page gives way to its still, and the dock comes back over it.
+    desk.pointerAtDock();
+    await flush();
+    view = desk.getView();
+    expect(view.dockAside).toBe(false);
+    expect(view.windows[0]!.drawn).toBe(true);
+    expect(desks.at(-1)!.dock ?? null).toBeNull();
+    // Off it again, over the window: aside once more.
+    desk.notePointer({ x: 700, y: 500 });
+    await flush();
+    expect(desk.getView().dockAside).toBe(true);
+    expect(livePages()).toEqual(["tab-0"]);
+    // The Feel menu open beside the dock holds it there.
+    desk.holdDock("feel", true);
+    await flush();
+    expect(desk.getView().dockAside).toBe(false);
+    desk.holdDock("feel", false);
+    await flush();
+    expect(desk.getView().dockAside).toBe(true);
+    desk.destroy();
+  });
+
+  it("stays drawn under the dock when it is only let go there", async () => {
+    const { desk, win, tuck, livePages } = open(true);
+    await flush();
+    tuck(20);
+    await flush();
+    // Let go, it is the window in use too — but the dock stays until it is chosen.
+    expect(desk.focusedTabId()).toBe("tab-0");
+    expect(desk.getView().dockAside).toBe(false);
+    expect(livePages()).toEqual([]);
+    // Another window in use: the dock stays over this one. Chosen from outside the desk (the sidebar), the dock steps aside for it.
+    desk.add("tab-1", { focus: true });
+    desk.attachWindow("tab-1", element() as unknown as HTMLElement);
+    await flush();
+    expect(desk.focusedTabId()).toBe("tab-1");
+    expect(desk.getView().dockAside).toBe(false);
+    desk.activeChanged("tab-0");
+    await flush();
+    expect(desk.getView().dockAside).toBe(true);
+    expect(livePages()).toContain("tab-0");
+    // Out from behind the dock, it is live again.
+    tuck(usable.x + 40);
+    await flush();
+    expect(rectOf(win).x).toBeGreaterThan(usable.x);
+    expect(livePages()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+});
+
+/* ------------------------------ masks ------------------------------ */
+
+describe("a masked window", () => {
+  let restoreNow: () => void = () => undefined;
+  let listeners: Map<string, Set<(event: unknown) => void>>;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+    listeners = new Map();
+    vi.stubGlobal("window", {
+      setInterval: () => 0,
+      clearInterval: () => undefined,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      addEventListener: (type: string, listener: (event: unknown) => void) => {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(listener);
+      },
+      removeEventListener: (type: string, listener: (event: unknown) => void) => listeners.get(type)?.delete(listener),
+      matchMedia: () => ({ matches: false }),
+      devicePixelRatio: 1,
+    });
+    vi.stubGlobal(
+      "Image",
+      class {
+        src = "";
+        decode(): Promise<void> {
+          return Promise.resolve();
+        }
+      },
+    );
+  });
+  afterEach(() => restoreNow());
+
+  async function flush(): Promise<void> {
+    for (let round = 0; round < 4; round += 1) {
+      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
+      settle();
+    }
+  }
+
+  /** Tab 0 out, centred, its page live; masked (by the bar variant's insets) at a region of its page. */
+  async function masked(region: Rect = { x: 100, y: 50, w: 300, h: 200 }, host: Partial<DeskHost> = {}) {
+    const { drag, layouts, desks } = native({ stills: true });
+    const desk = engine({ hasLivePage: () => true, ...host });
+    const win = element();
+    desk.start([], "tab-0", tabIds(2));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    await flush();
+    const before = rectOf(win);
+    desk.startMask("tab-0");
+    await flush();
+    expect(desk.getView().windows[0]!.selecting).toBe(true);
+    expect(desk.getView().windows[0]!.drawn).toBe(true);
+    desk.applyMask("tab-0", region);
+    await flush();
+    const move = (x: number, y: number): void => {
+      drag.sample?.({ x, y, phase: "move" });
+      run(1);
+    };
+    const release = async (): Promise<void> => {
+      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+      await flush();
+    };
+    const lastMasks = () => desks.at(-1)!.masks ?? [];
+    const livePages = (): string[] => layouts.at(-1)!.views.map((view) => view.tabId);
+    return { desk, win, before, region, move, release, layouts, lastMasks, livePages };
+  }
+
+  const bar = CHROME_INSETS.bar;
+
+  it("is its region, where it was on the page, at its own size, and main shows only that region", async () => {
+    const { desk, win, before, region, lastMasks, livePages, layouts } = await masked();
+    const page = { x: before.x + bar.left, y: before.y + bar.top, w: before.w - bar.left - bar.right, h: before.h - bar.top - bar.bottom };
+    // The handle rides above the region; the region lies where it lay on the page.
+    expectRect(rectOf(win), { x: page.x + region.x, y: page.y + region.y - 18, w: region.w, h: region.h + 18 });
+    const view = desk.getView().windows[0]!;
+    expect(view.selecting).toBe(false);
+    expect(view.mask).toEqual({ x: 100, y: 50, width: 300, height: 200, pageWidth: Math.round(page.w), pageHeight: Math.round(page.h) });
+    expect(lastMasks()).toEqual([{ tabId: "tab-0", mask: view.mask, width: 300, height: 200 }]);
+    // Once the page it was cut from has faded, the region is live, its view the region's box.
+    expect(livePages()).toEqual(["tab-0"]);
+    const bounds = layouts.at(-1)!.views[0]!.bounds;
+    expect(bounds.width).toBe(300);
+    expect(bounds.height).toBe(200);
+    desk.destroy();
+  });
+
+  it("keeps its shape as it is resized, drawn meanwhile, and main hears the new size once it is let go", async () => {
+    const { desk, win, move, release, lastMasks, livePages } = await masked();
+    const start = rectOf(win);
+    const corner = { x: start.x + start.w, y: start.y + start.h };
+    desk.resize("tab-0", { left: false, right: true, top: false, bottom: true }, { clientX: corner.x, clientY: corner.y, button: 0 });
+    for (let step = 1; step <= 10; step += 1) move(corner.x + step * 30, corner.y + step * 5);
+    await flush();
+    const sized = rectOf(win);
+    expect(sized.w).toBeCloseTo(600, 0);
+    expect((sized.h - 18) / sized.w).toBeCloseTo(200 / 300, 3);
+    // Its still, stretched: not live, and main still has the size it started at.
+    expect(desk.getView().windows[0]!.drawn).toBe(true);
+    expect(lastMasks()[0]).toMatchObject({ width: 300, height: 200 });
+    await release();
+    expect(lastMasks()[0]).toMatchObject({ width: 600, height: 400 });
+    expect(livePages()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+
+  it("unmasked, grows back into the whole window around its region, the region staying where it is", async () => {
+    const { desk, win, before, lastMasks } = await masked();
+    desk.unmask("tab-0");
+    await flush();
+    expectRect(rectOf(win), before);
+    expect(desk.getView().windows[0]!.mask).toBeNull();
+    expect(lastMasks()).toEqual([]);
+    desk.destroy();
+  });
+
+  it("is left where it is by tiling and filling the desk, and never cut in two for a new window", async () => {
+    const { desk, win } = await masked();
+    const at = rectOf(win);
+    desk.toggleMaximize("tab-0");
+    desk.arrange("tile", tabIds(2));
+    await flush();
+    expectRect(rectOf(win), at);
+    desk.add("tab-1", { focus: true });
+    await flush();
+    expectRect(rectOf(win), at);
+    desk.destroy();
+  });
+
+  it("can only be made from a live web page", () => {
+    native();
+    const desk = engine({ hasLivePage: () => false });
+    desk.start([], "tab-0", tabIds(1));
+    settle();
+    desk.startMask("tab-0");
+    expect(desk.getView().windows[0]!.selecting).toBe(false);
+    desk.destroy();
+  });
+
+  /** Masked (tab 0), moved and scaled, the desk saved and put away: what it saved. */
+  async function maskedAndSaved(): Promise<{ saved: SavedDeskWindow[]; at: Rect }> {
+    let saved: SavedDeskWindow[] = [];
+    const { desk, win, move, release } = await masked(undefined, { save: (windows) => (saved = windows) });
+    const start = rectOf(win);
+    const corner = { x: start.x + start.w, y: start.y + start.h };
+    desk.resize("tab-0", { left: false, right: true, top: false, bottom: true }, { clientX: corner.x, clientY: corner.y, button: 0 });
+    for (let step = 1; step <= 10; step += 1) move(corner.x + step * 15, corner.y + step * 10);
+    await release();
+    const at = rectOf(win);
+    desk.destroy();
+    return { saved, at };
+  }
+
+  it("is saved masked, where it is and at its size", async () => {
+    const { saved, at } = await maskedAndSaved();
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.mask).toMatchObject({ x: 100, y: 50, width: 300, height: 200 });
+    expectRect(denormalizeRect(saved[0]!.rect, usable), at, 1);
+  });
+
+  it("comes back masked when the desk is reopened, flying in from the dock with its region", async () => {
+    const { saved, at } = await maskedAndSaved();
+    const { desks, layouts } = native({ stills: true });
+    const desk = engine({ hasLivePage: () => true });
+    const win = element();
+    // Reopened on the other tab: the masked window comes out of the dock.
+    const before = desks.length;
+    desk.start(saved, "tab-1", tabIds(2));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    // Main hears of the mask in the first report — before any still is asked for.
+    expect(desks[before]!.masks?.map((page) => page.tabId)).toEqual(["tab-0"]);
+    await flush();
+    const view = desk.getView().windows.find((window) => window.tabId === "tab-0")!;
+    expect(view.mask).toEqual(saved[0]!.mask);
+    expectRect(rectOf(win), at, 1.5);
+    // Under the window in view it is drawn; brought forward, its region is live.
+    desk.bringForward("tab-0");
+    await flush();
+    expect(layouts.at(-1)!.views.map((page) => page.tabId)).toContain("tab-0");
+    desk.destroy();
+  });
+
+  it("reopened on it, lands whole, then is masked again once its still is painted, and goes where it was left", async () => {
+    const { saved, at } = await maskedAndSaved();
+    const { desks } = native({ stills: true });
+    const desk = engine({ hasLivePage: () => true });
+    const win = element();
+    const before = desks.length;
+    desk.start(saved, "tab-0", tabIds(2));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    // It lifts off whole: nothing masked for main yet.
+    expect(desks[before]!.masks ?? []).toEqual([]);
+    await flush();
+    await flush();
+    const view = desk.getView().windows.find((window) => window.tabId === "tab-0")!;
+    expect(view.mask).toEqual(saved[0]!.mask);
+    expectRect(rectOf(win), at, 1.5);
+    expect(desks.at(-1)!.masks?.map((page) => page.tabId)).toEqual(["tab-0"]);
     desk.destroy();
   });
 });

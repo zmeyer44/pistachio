@@ -645,6 +645,10 @@ export class DemoShellHost {
     // A fake page has no focus to force; the demo never offers it.
   }
 
+  async stopScreenShare(): Promise<void> {
+    // A fake page shares nothing; the demo never reports a share.
+  }
+
   async suspendTab(): Promise<void> {
     // A fake page costs nothing to keep.
   }

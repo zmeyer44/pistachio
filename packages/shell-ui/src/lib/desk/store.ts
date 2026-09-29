@@ -7,7 +7,7 @@
  */
 
 import { create } from "zustand";
-import type { DeskGrabModifier } from "@pistachio/shell-contracts/desk";
+import { isDeskMask, type DeskGrabModifier, type DeskMask } from "@pistachio/shell-contracts/desk";
 import { writeStorageLater } from "../deferred-storage";
 import { isFiniteRect, type Rect } from "./geometry";
 
@@ -89,7 +89,7 @@ export const DESK_AXES: readonly [
     key: "grab",
     label: "Grab key",
     options: [
-      { id: "shift", label: "⇧ Shift", hint: "Hold Shift and drag anywhere on a page" },
+      { id: "shift", label: "⇧ Shift", hint: "Hold Shift and drag anywhere on a page (Shift also snaps: let go of it to place freely)" },
       { id: "alt", label: "⌥ Option", hint: "Hold Option and drag anywhere on a page" },
       { id: "meta", label: "⌘ Command", hint: "Hold Command and drag anywhere on a page" },
       { id: "off", label: "Off", hint: "Only the frame moves a window" },
@@ -105,10 +105,11 @@ export const DEFAULT_DESK_VARIANTS: DeskVariants = {
   grab: "shift",
 };
 
-/** One window as it was left: its tab and its box as fractions of the desk. */
+/** One window as it was left: its tab and its box as fractions of the desk — and, masked, its mask. */
 export interface SavedDeskWindow {
   tabId: string;
   rect: Rect;
+  mask?: DeskMask;
 }
 
 /** A group's desk as it was left, windows bottom to top. */
@@ -119,11 +120,20 @@ export interface SavedDesk {
 interface DeskStore {
   /** The group whose desk is up, or null. */
   groupId: string | null;
+  /**
+   * The group whose desk is waiting for the sidebar to go (sidebarGone): the
+   * sidebar is put away while a desk is up, and the desk opens over the
+   * whole row only once it has, so the page it lifts off is already there.
+   */
+  opening: string | null;
   /** The desk is putting itself away; the surface finishes it (finishLeave). */
   leaving: boolean;
   variants: DeskVariants;
   saved: Record<string, SavedDesk>;
-  open(groupId: string): void;
+  /** Open the group's desk — once the sidebar has gone, with `afterSidebar` (the sidebar layout). */
+  open(groupId: string, options?: { afterSidebar?: boolean }): void;
+  /** The sidebar has gone: the desk waiting for it opens. */
+  sidebarGone(): void;
   /** Put the desk away — with its closing motion unless `immediate`. */
   leave(options?: { immediate?: boolean }): void;
   /** The surface's closing motion is done. */
@@ -163,17 +173,20 @@ export function sanitizeVariants(value: unknown): DeskVariants {
   return { physics: pick("physics"), spring: pick("spring"), motion: pick("motion"), chrome: pick("chrome"), grab: pick("grab") };
 }
 
-function sanitizeSaved(value: unknown): Record<string, SavedDesk> {
+export function sanitizeSaved(value: unknown): Record<string, SavedDesk> {
   if (typeof value !== "object" || value === null) return {};
   const saved: Record<string, SavedDesk> = {};
   for (const [groupId, desk] of Object.entries(value as Record<string, unknown>).slice(-MAX_SAVED_DESKS)) {
     const windows = (desk as { windows?: unknown } | null)?.windows;
     if (!Array.isArray(windows)) continue;
     saved[groupId] = {
-      windows: windows.filter(
-        (window): window is SavedDeskWindow =>
-          typeof window === "object" && window !== null && typeof (window as SavedDeskWindow).tabId === "string" && isFiniteRect((window as SavedDeskWindow).rect),
-      ),
+      windows: windows
+        .filter(
+          (window): window is SavedDeskWindow =>
+            typeof window === "object" && window !== null && typeof (window as SavedDeskWindow).tabId === "string" && isFiniteRect((window as SavedDeskWindow).rect),
+        )
+        // A mask that does not hold up is dropped, and the window comes back whole.
+        .map(({ tabId, rect, mask }) => (isDeskMask(mask) ? { tabId, rect, mask } : { tabId, rect })),
     };
   }
   return saved;
@@ -187,11 +200,19 @@ const initial = readPersisted();
 
 export const useDeskStore = create<DeskStore>((set, get) => ({
   groupId: null,
+  opening: null,
   leaving: false,
   variants: initial.variants,
   saved: initial.saved,
-  open: (groupId) => set({ groupId, leaving: false }),
+  open: (groupId, options) =>
+    set(options?.afterSidebar === true ? { opening: groupId, groupId: null, leaving: false } : { groupId, opening: null, leaving: false }),
+  sidebarGone: () => {
+    const opening = get().opening;
+    if (opening !== null) set({ groupId: opening, opening: null, leaving: false });
+  },
   leave: (options) => {
+    // Still waiting for the sidebar: it never opened.
+    if (get().opening !== null) set({ opening: null });
     if (get().groupId === null) return;
     set(options?.immediate === true ? { groupId: null, leaving: false } : { leaving: true });
   },

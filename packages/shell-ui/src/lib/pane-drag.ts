@@ -17,6 +17,11 @@
  * Positions are coalesced onto one animation frame: a pointer emits moves
  * faster than the panes can be laid out, and every layout costs main a
  * setBounds on each tab view.
+ *
+ * A sample may also say whether Shift is down (a pointer event knows; main's
+ * relay of a grabbed desk press does not). That reading is passed on once,
+ * with the next position, and never repeated: a stale one must not outvote
+ * the key events the desk follows Shift by in between (setShift).
  */
 
 import type { DragCursor } from "@pistachio/shell-contracts/chrome";
@@ -24,8 +29,8 @@ import { nativeApi } from "../api";
 
 export interface PaneDrag {
   cursor: DragCursor;
-  /** The latest pointer position, in the window's content box. */
-  onMove(point: { x: number; y: number }): void;
+  /** The latest pointer position, in the window's content box — and Shift, if a sample since the last said. */
+  onMove(point: { x: number; y: number }, shift?: boolean): void;
   /** The pointer was released or lost. Always runs exactly once. */
   onEnd?(): void;
 }
@@ -33,15 +38,19 @@ export interface PaneDrag {
 /** Begin a drag. Returns a function that ends it early (an unmounting handle). */
 export function startPaneDrag(start: { x: number; y: number }, drag: PaneDrag): () => void {
   let point = start;
+  let shift: boolean | undefined;
   let frame = 0;
   let done = false;
 
   const apply = (): void => {
     frame = 0;
-    drag.onMove(point);
+    const read = shift;
+    shift = undefined;
+    drag.onMove(point, read);
   };
-  const schedule = (next: { x: number; y: number }): void => {
+  const schedule = (next: { x: number; y: number }, nextShift?: boolean): void => {
     point = next;
+    if (nextShift !== undefined) shift = nextShift;
     if (frame === 0) frame = requestAnimationFrame(apply);
   };
 
@@ -57,16 +66,16 @@ export function startPaneDrag(start: { x: number; y: number }, drag: PaneDrag): 
     drag.onEnd?.();
   };
 
-  const onLocalMove = (event: PointerEvent): void => schedule({ x: event.clientX, y: event.clientY });
+  const onLocalMove = (event: PointerEvent): void => schedule({ x: event.clientX, y: event.clientY }, event.shiftKey);
   const onLocalUp = (event: PointerEvent): void => {
-    schedule({ x: event.clientX, y: event.clientY });
+    schedule({ x: event.clientX, y: event.clientY }, event.shiftKey);
     end();
   };
 
   const offSample = nativeApi()?.onDragSample((sample) => {
     // A cancel carries no position — the window lost focus, and the last
     // known point is the one the person meant.
-    if (sample.phase !== "cancel") schedule({ x: sample.x, y: sample.y });
+    if (sample.phase !== "cancel") schedule({ x: sample.x, y: sample.y }, sample.shift);
     if (sample.phase !== "move") end();
   });
   window.addEventListener("pointermove", onLocalMove);

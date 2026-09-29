@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   pointerHoldsSidebar,
   SIDEBAR_DEFAULT_W,
@@ -10,8 +10,10 @@ import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
 import { AgentConsole } from "../components/AgentConsole";
 import { ContentArea } from "../components/ContentArea";
 import { ResizeHandle } from "../components/ResizeHandle";
+import { useScreenShares, useScreenShareStartNotice } from "../components/ScreenShareIndicator";
 import { SidebarChrome } from "../components/SidebarChrome";
 import { SidebarEdge } from "../components/SidebarEdge";
+import { useDeskStore } from "../lib/desk/store";
 import { useAppStore } from "../store";
 import { nativeApi } from "../api";
 
@@ -32,6 +34,13 @@ import { nativeApi } from "../api";
  * contents do not reset and the native tab view reflows beside it over the
  * same frames instead of jumping once.
  *
+ * While a tab group's desk is up (docs/desk.md) the sidebar is PUT AWAY,
+ * pinned or compact: the column leaves as the compact one does, but no edge
+ * brings it back until the desk is left. The desk waits for it to go
+ * (useDeskStore's `opening`, released here once the slot has narrowed), so
+ * the page it lifts off already fills the row; leaving, the desk gives the
+ * row back to panes first and the sidebar returns beside them.
+ *
  * The layout places the sidebar and nothing else about it: what the column
  * holds is SidebarChrome's business, and what THAT holds is the manifest's.
  */
@@ -39,15 +48,47 @@ export function SidebarLayout() {
   const pinned = useAppStore((state) => state.settings.layout.sidebar === "pinned");
   const revealed = useAppStore((state) => state.sidebarRevealed);
   const width = useAppStore((state) => state.sidebarWidth);
+  const away = useDeskStore(deskHoldsSidebar);
+  const opening = useDeskStore((state) => state.opening !== null);
   const slotRef = useRef<HTMLDivElement>(null);
-  const expanded = pinned || revealed;
+  const expanded = !away && (pinned || revealed);
+  const sliding = useAwaySlide(away, slotRef);
   useLayoutEffect(
     () =>
       nativeApi()?.onSidebarPointerEntered(() => {
+        if (deskHoldsSidebar(useDeskStore.getState())) return;
         useAppStore.getState().setSidebarRevealed(true);
       }),
     [],
   );
+  // Put away, a compact sidebar that was out is not out when it comes back.
+  useEffect(() => {
+    if (away) useAppStore.getState().setSidebarRevealed(false);
+  }, [away]);
+  // A desk waiting for the sidebar opens once the slot has narrowed — at
+  // once if it had nothing to narrow (the compact sidebar was hidden) or no
+  // motion to wait for.
+  useEffect(() => {
+    if (!opening) return;
+    const slot = slotRef.current;
+    const release = () => useDeskStore.getState().sidebarGone();
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (slot === null || still || Math.abs(slot.getBoundingClientRect().width - SIDEBAR_EDGE_W) < 0.5) {
+      release();
+      return;
+    }
+    const onEnd = (event: TransitionEvent) => {
+      if (event.target === slot && event.propertyName === "width") release();
+    };
+    slot.addEventListener("transitionend", onEnd);
+    const timer = window.setTimeout(release, AWAY_MS + 80);
+    return () => {
+      slot.removeEventListener("transitionend", onEnd);
+      window.clearTimeout(timer);
+    };
+  }, [opening]);
+  // The layout switched while a desk waited: nothing is in its way now.
+  useEffect(() => () => useDeskStore.getState().sidebarGone(), []);
   return (
     <div
       data-testid="chrome-layout-ground"
@@ -59,19 +100,67 @@ export function SidebarLayout() {
           data-testid="sidebar-motion-slot"
           data-compact={!pinned ? "" : undefined}
           data-hidden={!expanded ? "" : undefined}
+          data-away={away ? "" : undefined}
+          data-desk-slide={sliding ? "" : undefined}
           className="sidebar-motion-slot relative h-full shrink-0"
           style={{ width: expanded ? width : SIDEBAR_EDGE_W }}
         >
           <div className="absolute inset-0 overflow-clip">
             <SidebarPane autoHide={!pinned} revealed={expanded} slotRef={slotRef} />
           </div>
-          {!expanded ? <SidebarEdge /> : null}
+          {away ? <AwayShareNotice /> : !expanded ? <SidebarEdge /> : null}
         </div>
         <ContentArea />
         <AgentConsole />
       </div>
     </div>
   );
+}
+
+/** The sidebar is put away while a desk is up, or waiting to open. */
+function deskHoldsSidebar(desk: { opening: string | null; groupId: string | null }): boolean {
+  return desk.opening !== null || desk.groupId !== null;
+}
+
+/** The slot narrows this fast as the sidebar goes (`.sidebar-motion-slot[data-hidden]`), and widens this fast as it comes back. */
+const AWAY_MS = 180;
+const BACK_MS = 250;
+
+/**
+ * The sidebar going away for a desk, or coming back after it. For that
+ * slide the slot's width runs on the compact sidebar's clock, pinned or not
+ * — a pinned slot has no transition of its own, since its width follows a
+ * resize drag frame by frame. True from the render that changes `away`
+ * (so the width and the transition change together) until the slide ends.
+ */
+function useAwaySlide(away: boolean, slotRef: RefObject<HTMLDivElement | null>): boolean {
+  const [slide, setSlide] = useState({ away, sliding: false });
+  if (slide.away !== away) setSlide({ away, sliding: true });
+  useEffect(() => {
+    if (!slide.sliding) return;
+    const slot = slotRef.current;
+    const done = () => setSlide((current) => (current.sliding ? { ...current, sliding: false } : current));
+    const onEnd = (event: TransitionEvent) => {
+      if (event.target === slot && event.propertyName === "width") done();
+    };
+    slot?.addEventListener("transitionend", onEnd);
+    const timer = window.setTimeout(done, Math.max(AWAY_MS, BACK_MS) + 80);
+    return () => {
+      slot?.removeEventListener("transitionend", onEnd);
+      window.clearTimeout(timer);
+    };
+  }, [slide, slotRef]);
+  return slide.sliding || slide.away !== away;
+}
+
+/**
+ * Put away, the sidebar shows no screen share card and has no edge to
+ * redden: a share that begins meanwhile says so as a notice, as it does
+ * while the compact sidebar is hidden.
+ */
+function AwayShareNotice() {
+  useScreenShareStartNotice(useScreenShares());
+  return null;
 }
 
 /**

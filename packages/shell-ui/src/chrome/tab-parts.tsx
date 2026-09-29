@@ -19,12 +19,14 @@ import {
   Pin,
   PinOff,
   RotateCw,
+  ScreenShare,
   Sparkles,
   Volume2,
   VolumeX,
   X,
 } from "lucide-react";
 import { isReaderUrl } from "@pistachio/shell-contracts/reader";
+import { screenShareObject } from "@pistachio/shell-contracts/screen-share";
 import { TabMark } from "../components/Favicon";
 import { cn } from "../lib/cn";
 import { displayHost, prettyUrl } from "../lib/url";
@@ -454,6 +456,24 @@ export function TabAudioIndicator({ tab }: { tab: ChromeTab }) {
 }
 
 /**
+ * A tab sharing the screen says so for as long as it does. Only a sign: the
+ * stop is the share's pill or card (ScreenShareIndicator), where it cannot
+ * be mistaken for a tab control and hit mid-presentation.
+ */
+export function TabScreenShareMark({ tab }: { tab: ChromeTab }) {
+  const surface = useAppStore(
+    (state) => state.snapshot?.screenShares?.find((share) => share.tabId === tab.id)?.surface ?? null,
+  );
+  if (surface === null) return null;
+  const label = `Sharing ${screenShareObject(surface)}`;
+  return (
+    <span role="img" title={label} aria-label={label} data-testid={`tab-screen-share-mark-${tab.id}`} className="tab-screen-share-mark">
+      <ScreenShare aria-hidden="true" />
+    </span>
+  );
+}
+
+/**
  * A tab held in forced focus says so for as long as it is — the page there
  * thinks it is in front, which is worth knowing — and, like the audio signal,
  * pressing the mark undoes it without switching to the tab.
@@ -493,6 +513,7 @@ export function TabTrailing({ tab, omit = [] }: { tab: ChromeTab; omit?: readonl
   const actions = TAB_ACTIONS.filter((action) => !omit.includes(action.id)).map((action) => action.render(tab));
   return (
     <span className="-my-1 -mr-1 flex shrink-0 items-center">
+      <TabScreenShareMark tab={tab} />
       <TabForcedFocusMark tab={tab} />
       <TabAudioIndicator tab={tab} />
       <span className="grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-hover:grid-cols-[1fr] group-hover:opacity-100 group-has-[:focus-visible]:grid-cols-[1fr] group-has-[:focus-visible]:opacity-100">

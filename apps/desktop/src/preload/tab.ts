@@ -1,5 +1,5 @@
 import { capturePageResume, restorePageResume, sanitizePageResume } from "@pistachio/shell-contracts/page-resume";
-import { ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
 import type { GlanceIntentRequest, GlanceOpenRequest } from "@pistachio/shell-contracts/ipc";
 import {
   MAX_PLAYBACK_RATE,
@@ -24,6 +24,7 @@ import {
 import { isAuthenticationNavigation } from "@pistachio/shell-contracts/auth-popup";
 import { registrableHost } from "@pistachio/shell-contracts/browser-import";
 import { hasCopyableSelection } from "@pistachio/shell-contracts/page-link";
+import { watchScreenShares, type TabScreenShareReport } from "@pistachio/shell-contracts/screen-share";
 
 // Keep this sandbox preload a single file. Importing the shared IPC object at
 // runtime makes Rollup split it into a local chunk, while Electron's sandbox
@@ -40,6 +41,8 @@ const DATA_POLICY_CHANNEL = "pistachio:tab-data-policy";
 const POLICY_BLOCKED_CHANNEL = "pistachio:tab-policy-blocked";
 const EMPTY_COPY_CHANNEL = "pistachio:tab-empty-copy";
 const PASSKEY_SUPPORT_REPORT_CHANNEL = "pistachio:tab-passkey-support-report";
+const SCREEN_SHARE_REPORT_CHANNEL = "pistachio:screen-share-report";
+const SCREEN_SHARE_STOP_CHANNEL = "pistachio:screen-share-stop";
 
 const DRAG_TOLERANCE = 4;
 const GLANCE_PROTOCOLS = new Set(["http:", "https:", "pistachio:"]);
@@ -783,6 +786,23 @@ ipcRenderer.on("pistachio:restore-page-resume", (_event, value: unknown) => {
   const state = sanitizePageResume(value, location.href);
   if (state) requestAnimationFrame(() => restorePageResume(state));
 });
+
+// ── Screen sharing ─────────────────────────────────────────────────────────
+// Only the page's own world sees a getDisplayMedia() capture begin and end
+// (@pistachio/shell-contracts/screen-share), so the watcher runs there, ahead
+// of the page's scripts. It reports through a function it alone holds, and
+// hands back the stop the chrome's "Stop sharing" runs.
+let stopScreenShares: (() => void) | null = null;
+try {
+  const stop: unknown = contextBridge.executeInMainWorld({
+    func: watchScreenShares,
+    args: [(state: TabScreenShareReport | null) => ipcRenderer.send(SCREEN_SHARE_REPORT_CHANNEL, state)],
+  });
+  if (typeof stop === "function") stopScreenShares = stop as () => void;
+} catch {
+  // A page the watcher could not reach has no share the chrome can show or stop.
+}
+ipcRenderer.on(SCREEN_SHARE_STOP_CHANNEL, () => stopScreenShares?.());
 
 // ── Read aloud: following the text ─────────────────────────────────────────
 // Main sends the clip's text, how far its voice has been measured, and where

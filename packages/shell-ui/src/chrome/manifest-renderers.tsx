@@ -14,6 +14,7 @@ import { DownloadsChip } from "../components/DownloadsChip";
 import { TabMark } from "../components/Favicon";
 import { FavoritesGrid } from "../components/FavoritesGrid";
 import { MediaStack } from "../components/MediaStack";
+import { ScreenShareIndicator } from "../components/ScreenShareIndicator";
 import { SidebarMenu } from "../components/SidebarMenu";
 import { StatusControl } from "../components/StatusControl";
 import { SyncPill } from "../components/SyncPill";
@@ -113,6 +114,12 @@ function TabsFeature({ orientation }: ChromeRendererProps) {
 
 function MediaFeature() {
   return <MediaStack />;
+}
+
+/* ------------------------------ screenShare ----------------------------- */
+
+function ScreenShareFeature({ orientation }: ChromeRendererProps) {
+  return <ScreenShareIndicator orientation={orientation} />;
 }
 
 /* ------------------------------ sidebarPin ------------------------------ */
@@ -235,6 +242,7 @@ export const CHROME_RENDERERS: Record<ChromeFeatureId, FC<ChromeRendererProps>> 
   favorites: FavoritesFeature,
   tabs: TabsFeature,
   media: MediaFeature,
+  screenShare: ScreenShareFeature,
   sidebarPin: SidebarPinFeature,
   menu: MenuFeature,
   policy: PolicyFeature,

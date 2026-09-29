@@ -550,6 +550,8 @@ export interface AppState {
   suspendTab(tabId: string): Promise<void>;
   /** Tell the page it is the visible, focused tab even in the background. */
   setForcedFocus(tabId: string, enabled: boolean): Promise<void>;
+  /** The chrome's "Stop sharing" for a tab's screen share (ShellSnapshot.screenShares). */
+  stopScreenShare(tabId: string): Promise<void>;
   navigate(tabId: string, url: string): Promise<void>;
   goBack(tabId: string): Promise<void>;
   goForward(tabId: string): Promise<void>;
@@ -1569,6 +1571,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   suspendTab: (tabId) => safeAction(() => shellApi().suspendTab(tabId), set),
   setForcedFocus: (tabId, enabled) => safeAction(() => shellApi().setForcedFocus(tabId, enabled), set),
+  stopScreenShare: (tabId) => safeAction(() => shellApi().stopScreenShare(tabId), set),
   navigate: (tabId, url) => safeAction(() => shellApi().navigate(tabId, url), set),
   goBack: (tabId) => safeAction(() => shellApi().goBack(tabId), set),
   goForward: (tabId) => safeAction(() => shellApi().goForward(tabId), set),

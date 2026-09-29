@@ -10,7 +10,7 @@ import { useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay } from "../GlanceOverlay";
 import { DeskEngine } from "./desk-engine";
-import { DeskRail } from "./DeskRail";
+import { DeskDock } from "./DeskDock";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
 
 const EMPTY_TABS: readonly BrowserTabInfo[] = [];
@@ -72,6 +72,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         const store = useAppStore.getState();
         if (store.snapshot?.activeTabId !== tabId) void store.selectTab(tabId);
       },
+      close: (tabId) => void useAppStore.getState().closeTab(tabId),
       save: (windows) => useDeskStore.getState().save(groupId, { windows }),
       leaveDone: () => useDeskStore.getState().finishLeave(),
     });
@@ -103,10 +104,35 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     window.addEventListener("resize", measure);
     // A press with the grab key on a live page: main took it from the page and hands the move here.
     const offGrab = nativeApi()?.onDeskGrab((grab) => created.grabFromPage(grab));
+    // Shift is the snap key: followed from the shell's own keys, and from
+    // main's relay of every view's (a page has the keyboard as often as not;
+    // main also lets go of it when the window loses focus — the shell page
+    // blurs whenever a page takes the keyboard, Shift held or not).
+    const offShift = nativeApi()?.onDeskShift((held) => created.setShift(held));
+    const onKey = (event: KeyboardEvent): void => created.setShift(event.shiftKey);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    // Where the pointer is, for the dock (it steps aside for the window in
+    // use lying behind it, and comes back when the pointer comes to it):
+    // the shell's own pointer events, and main's word when the pointer comes
+    // there over a live page.
+    const onPointer = (event: PointerEvent): void => created.notePointer({ x: event.clientX, y: event.clientY });
+    const offPointer = (): void => created.notePointer(null);
+    stage.addEventListener("pointermove", onPointer);
+    stage.addEventListener("pointerleave", offPointer);
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "dock") created.pointerAtDock();
+    });
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", measure);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+      stage.removeEventListener("pointermove", onPointer);
+      stage.removeEventListener("pointerleave", offPointer);
       offGrab?.();
+      offShift?.();
+      offPage?.();
       created.destroy();
       setEngine(null);
     };
@@ -203,6 +229,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         ref={stageRef}
         data-phase={view?.phase ?? "entering"}
         data-gesture={view?.gesture ?? undefined}
+        data-snapping={view?.snapping === true ? "" : undefined}
         data-group-color={group?.color}
         className="desk-stage no-drag tab-group-tone relative min-h-0 min-w-0 flex-1"
       >
@@ -220,13 +247,14 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
                 tab={tabsById.get(window.tabId) ?? null}
                 chrome={variants.chrome}
                 grab={variants.grab}
-                // Under a raised overlay the live pages are down: paint what they were showing.
-                still={(overlayActive ? stillByTab.get(window.tabId) : undefined) ?? window.still}
+                // Under a raised overlay the live pages are down: paint what they were showing
+                // (not for a masked window: that still would be the whole page's, with nothing to say so).
+                still={(overlayActive && window.mask === null ? stillByTab.get(window.tabId) : undefined) ?? window.still}
                 waking={wakingTabIds.includes(window.tabId)}
                 engine={engine}
               />
             ))}
-        {engine === null || view === null || group === null ? null : <DeskRail group={group} tabs={tabs} view={view} engine={engine} />}
+        {engine === null || view === null || group === null ? null : <DeskDock group={group} tabs={tabs} view={view} engine={engine} />}
         {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} />}
       </div>
     </section>

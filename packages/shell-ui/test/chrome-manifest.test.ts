@@ -47,6 +47,7 @@ describe("chrome manifest", () => {
 
   it("puts settings at the end of the top strip, and the strip's buttons in the sidebar footer's menu", () => {
     expect(featuresIn("top", "trailing").map((feature) => feature.id)).toEqual([
+      "screenShare",
       "policy",
       "split",
       "console",
@@ -60,6 +61,9 @@ describe("chrome manifest", () => {
       "settings",
     ]);
     expect(featuresIn("sidebar", "address").map((feature) => feature.id)).toEqual(["address"]);
+    // A screen share's card sits at the foot of the dock, under the media
+    // stack, so the stack's fan-out never covers it.
+    expect(featuresIn("sidebar", "media").map((feature) => feature.id)).toEqual(["media", "screenShare"]);
     // Site info rides with the active page's own controls in both layouts.
     expect(isPlaced(CHROME_MANIFEST.siteInfo.top)).toBe(false);
     expect(isPlaced(CHROME_MANIFEST.siteInfo.sidebar)).toBe(false);

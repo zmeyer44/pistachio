@@ -40,6 +40,7 @@ export type ChromeFeatureId =
   | "favorites"
   | "tabs"
   | "media"
+  | "screenShare"
   | "sidebarPin"
   | "menu"
   | "policy"
@@ -107,6 +108,11 @@ export const CHROME_MANIFEST = {
     top: { hidden: "Background playback controls need the sidebar's vertical space for the expanding card stack" },
     sidebar: { region: "media", order: 10 },
   },
+  // Empty unless a tab is sharing the screen, then that share with a Stop:
+  // first in the strip's trailing cluster, and the sidebar's card at the
+  // foot of the dock, below the media stack, where the stack's fan-out
+  // never covers it (ScreenShareIndicator).
+  screenShare: { top: { region: "trailing", order: 5 }, sidebar: { region: "media", order: 20 } },
   menu: {
     top: { hidden: "The strip's trailing cluster has room for each control as its own button" },
     sidebar: { region: "footer", order: 10 },

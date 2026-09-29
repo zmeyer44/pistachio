@@ -38,7 +38,7 @@ export function DragApp() {
       if (phase !== "cancel") {
         setVisual((current) => current === null ? null : { ...current, x: event.clientX, y: event.clientY });
       }
-      nativeApi()?.sendDragSample({ x: event.clientX, y: event.clientY, phase });
+      nativeApi()?.sendDragSample({ x: event.clientX, y: event.clientY, phase, shift: event.shiftKey });
     };
     const onMove = relay("move");
     const onUp = relay("up");

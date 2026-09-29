@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import { holdDebugger, releaseDebugger } from "./debugger-hold";
 
 /**
  * Forced focus: a tab the page believes is the visible, focused one while it
@@ -20,18 +21,17 @@ import type { WebContents } from "electron";
  * reloads and cross-site navigations. A session something else ends (a
  * crashed renderer) is re-established by calling this again.
  */
-const PROTOCOL_VERSION = "1.3";
-
 export async function setFocusEmulation(webContents: WebContents, enabled: boolean): Promise<void> {
   if (webContents.isDestroyed()) return;
   const { debugger: session } = webContents;
   if (!enabled) {
     if (!session.isAttached()) return;
     await session.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => undefined);
-    if (!webContents.isDestroyed() && session.isAttached()) session.detach();
+    // The session may hold a desk mask too (./debugger-hold.ts).
+    if (!webContents.isDestroyed()) releaseDebugger(webContents, "forced-focus");
     return;
   }
-  if (!session.isAttached()) session.attach(PROTOCOL_VERSION);
+  holdDebugger(webContents, "forced-focus");
   await session.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true });
 }
 

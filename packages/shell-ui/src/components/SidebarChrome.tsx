@@ -27,13 +27,15 @@ export function SidebarChrome() {
       <div className="flex shrink-0 px-2 pb-2">
         <ChromeRegion layout="sidebar" region="address" />
       </div>
-      {/* The media stack floats over the bottom of the tab list rather than taking a slot of its own. */}
+      {/* The dock — the media stack, then a screen share's card — floats over the bottom of the tab list rather than taking a slot of its own. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <ShelfDragProvider>
           <ChromeRegion layout="sidebar" region="favorites" />
           <ChromeRegion layout="sidebar" region="tabs" />
         </ShelfDragProvider>
-        <ChromeRegion layout="sidebar" region="media" />
+        <div className="sidebar-media-dock">
+          <ChromeRegion layout="sidebar" region="media" />
+        </div>
       </div>
       {/* The footer: the menu (the Space avatar) at its start, then any pills. All are buttons, so the row opts out as one. */}
       <div className="no-drag flex h-10 shrink-0 items-center gap-1.5 border-t border-alpha-400 px-2">
