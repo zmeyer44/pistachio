@@ -21,7 +21,7 @@ const PRESSABLE_KEY_CODES: Record<AgentPressableKey, string> = {
 };
 
 /** What the agent learns about a tab: the fields of `BrowserTabInfo` it acts on. */
-function agentTabInfo(tab: BrowserTabInfo): AgentTabInfo {
+function agentTabInfo(tab: BrowserTabInfo, activeTabId: string | null): AgentTabInfo {
   return {
     id: tab.id,
     spaceId: tab.spaceId,
@@ -31,6 +31,7 @@ function agentTabInfo(tab: BrowserTabInfo): AgentTabInfo {
     canGoBack: tab.canGoBack,
     canGoForward: tab.canGoForward,
     kind: tab.kind,
+    active: tab.id === activeTabId,
   };
 }
 
@@ -39,6 +40,12 @@ function agentTabInfo(tab: BrowserTabInfo): AgentTabInfo {
  * existing WebContentsView and therefore keeps its cookies, storage,
  * authentication challenges, and live form state. Dispatch of model tool
  * calls is `executeBrowserTool` in the runtime; this class only drives.
+ *
+ * None of it moves the person. A tab the agent opens opens behind the one
+ * they are looking at, and every operation works on a tab off screen
+ * (BrowserController wakes a sleeping one without switching to it, and
+ * gives a never-drawn page a real viewport first); only `focusTab` — the
+ * model's `tab_show`, for "take me to…" — switches tabs.
  */
 export class DesktopBrowserBackend implements BrowserBackend {
   readonly kind = "desktop" as const;
@@ -49,11 +56,12 @@ export class DesktopBrowserBackend implements BrowserBackend {
   }
 
   listTabs(): AgentTabInfo[] {
-    return this.#browser.allTabs().map(agentTabInfo);
+    const activeTabId = this.#browser.activeTab()?.id ?? null;
+    return this.#browser.allTabs().map((tab) => agentTabInfo(tab, activeTabId));
   }
 
   async openTab(url?: string): Promise<string> {
-    return this.#browser.createTab(url);
+    return this.#browser.createTab(url, { activate: false });
   }
 
   async focusTab(tabId: string): Promise<void> {
@@ -99,7 +107,7 @@ export class DesktopBrowserBackend implements BrowserBackend {
     if (keyCode === undefined)
       throw new Error(`unsupported key: ${key} (one of ${Object.keys(PRESSABLE_KEY_CODES).join(", ")})`);
     // Only keys that produce input send a char event, matching a real press.
-    this.#browser.pressKeyPage(tabId, keyCode, key === "Enter" || key === "Tab");
+    await this.#browser.pressKeyPage(tabId, keyCode, key === "Enter" || key === "Tab");
     await this.#settle();
   }
 

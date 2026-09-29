@@ -4,6 +4,7 @@ import { cn } from "../../lib/cn";
 import type { CitedSource } from "../../lib/chat-sources";
 import { workingText } from "../../lib/run";
 import { holdUnfinished } from "../../lib/markdown";
+import { AgentTabChip } from "./AgentTabChip";
 import { Markdown } from "./Markdown";
 import type { ChatDensity } from "./parts";
 import { ReasoningBlock } from "./ReasoningBlock";
@@ -16,10 +17,11 @@ import { useSmoothText } from "./use-smooth-text";
  * model is thinking, as it thinks it (ReasoningBlock); then the words as
  * they land, paced smoothly (use-smooth-text) with each new word resolving
  * into place; and until there are words, one line saying what the agent
- * is doing instead — thinking, searching, working a page.
+ * is doing instead — thinking, searching, working a page — and, while
+ * that page is in a tab behind the person's, which one (AgentTabChip).
  *
- * Read from the run alone: `draft` is the stream (RunSummary.draft), the
- * tool calls say what is running. Shared by the console and the home
+ * Read from the run: `draft` is the stream (RunSummary.draft), the tool
+ * calls say what is running (the chip looks up the tab they name). Shared by the console and the home
  * page's chat, at their own densities.
  */
 export const LiveReply = memo(function LiveReply({
@@ -68,6 +70,7 @@ export const LiveReply = memo(function LiveReply({
       ) : (
         <Markdown text={text} streaming sources={sources} links={links} density={density} />
       )}
+      <AgentTabChip run={run} density={density} />
     </div>
   );
 });

@@ -15,7 +15,7 @@ import { GMAIL_TOOL_NAMES } from "./integrations/gmail/tools.js";
 import { GOOGLE_CALENDAR_TOOL_NAMES } from "./integrations/google-calendar/tools.js";
 
 export const TOOL_GROUPS = {
-  tabs: ["tabs_list", "tab_open", "tab_focus"],
+  tabs: ["tabs_list", "tab_open", "tab_show"],
   navigate: ["page_navigate", "page_back", "page_forward", "page_reload"],
   read: ["page_inspect"],
   screenshot: ["page_screenshot"],

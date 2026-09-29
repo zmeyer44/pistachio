@@ -251,7 +251,7 @@ addEventListener("keydown", (event) => { if (event.key === " ") { event.preventD
   return "https://dock.test";
 }
 
-test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, grab from the page, leave", async () => {
+test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, grab from the page, new tab, leave", async () => {
   test.setTimeout(150_000);
   const executablePath = resolveElectronExecutable();
   if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
@@ -458,18 +458,38 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
       await expect(shell.getByTestId("desk-variants")).toHaveCount(0);
     }
 
-    // ── 10. The variants (under Feel): Snap tiles every throw; the frames change ─
+    // ── 10. New tab: it joins the group, and comes out onto the desk in use ────
+    await shell.getByTestId("desk-new-tab").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(5);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    const added = (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-group")!.tabIds.find((tabId) => !ids.includes(tabId))!;
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === added)?.url).toBe("pistachio://demo/invoices");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(added);
+    await expect(shell.locator(`[data-testid="desk-dock-icon"][data-tab-id="${added}"][data-focused]`)).toHaveCount(1);
+    await expect(shell.locator(`${windowSelector(added)}`)).toHaveCount(1);
+    await settled(shell);
+    await capture(app, shell, "07c-new-tab.png");
+
+    // ── 11. The variants (under Feel): Snap tiles every throw; the frames change ─
     await shell.getByTestId("desk-feel").click();
     await expect(shell.locator('[data-testid="desk-variants"][data-shown]')).toHaveCount(1);
     await shell.waitForTimeout(200);
     await capture(app, shell, "07b-feel-menu.png");
     await shell.getByTestId("desk-variant-physics").click();
     await expect(shell.getByTestId("desk-variant-physics")).toHaveAttribute("data-value", "snap");
-    await shell.getByRole("button", { name: "Every tab out, tiled" }).click();
-    await expect(shell.getByTestId("desk-window")).toHaveCount(4);
+    await shell.keyboard.press("Escape");
     await expect(shell.getByTestId("desk-variants")).toHaveCount(0);
+    // Every tab out, by its icon, then tiled.
+    for (const tabId of ids) {
+      if ((await shell.locator(windowSelector(tabId)).count()) > 0) continue;
+      await shell.locator(iconSelector(tabId)).click();
+      await expect(shell.locator(windowSelector(tabId))).toHaveCount(1);
+      await settled(shell);
+    }
+    await expect(shell.getByTestId("desk-window")).toHaveCount(5);
+    await shell.getByRole("button", { name: "Tile the windows" }).click();
     await settled(shell);
-    await capture(app, shell, "08-gathered-tiled.png");
+    await capture(app, shell, "08-all-out-tiled.png");
     for (const chrome of ["tab", "bare"]) {
       await shell.getByTestId("desk-feel").click();
       await expect(shell.locator('[data-testid="desk-variants"][data-shown]')).toHaveCount(1);
@@ -484,7 +504,7 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
     await expect(shell.getByTestId("desk-variant-chrome")).toHaveAttribute("data-value", "bar");
     await shell.getByTestId("desk-feel").click();
 
-    // ── 11. Leave: the window in use becomes the pane again ────────────────────
+    // ── 12. Leave: the window in use becomes the pane again ────────────────────
     const inUse = (await snapshot(shell)).activeTabId!;
     await shell.getByTestId("desk-leave").click();
     await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
@@ -1253,6 +1273,346 @@ test("a mask: a region chosen from a page is all the window shows, live and stil
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
     await expect.poll(() => inPage<number>("innerWidth")).toBe(pageWidth);
     await capture(app, shell, "36-reopened-on-mask.png");
+  } finally {
+    await app.close();
+  }
+});
+
+test("a mask never lets its page see a resize, and its region can be edited: the whole page shown faded around it, edges dragged, Done or Escape", async () => {
+  test.setTimeout(120_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-mask-edit-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    const shell = await shellReady(app);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === "pistachio://demo/invoices")).toBe(true);
+    const origin = await serveDockSites(app);
+    const urls = [`${origin}/player`, "pistachio://demo/vendors/atlas-medical"];
+    for (const url of urls) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(2);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const ids = urls.map((url) => byUrl.get(url)!);
+    await shell.evaluate((tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-mask-edit", tabIds, title: "Mask", color: "green" }), ids);
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), ids[0]!);
+    const group = shell.getByTestId("tab-group");
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[0]!, ids[0]!);
+
+    const inPage = <T,>(script: string): Promise<T> =>
+      app.evaluate(
+        ({ webContents }, { url, script }) => webContents.getAllWebContents().find((contents) => contents.getURL() === url)!.executeJavaScript(script),
+        { url: urls[0]!, script },
+      ) as Promise<T>;
+    const clickPage = (point: { x: number; y: number }): Promise<void> =>
+      app.evaluate(
+        async ({ webContents }, { url, point }) => {
+          const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
+          contents.sendInputEvent({ type: "mouseMove", ...point });
+          contents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
+          await new Promise((done) => setTimeout(done, 40));
+          contents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
+          await new Promise((done) => setTimeout(done, 120));
+        },
+        { url: urls[0]!, point },
+      );
+    /** Everything the page could notice of its size, from now on: every resize, and every width a max-width query saw. */
+    await inPage(`(() => {
+      window.__sizes = [];
+      const note = (why) => window.__sizes.push(why + " " + innerWidth + "x" + innerHeight);
+      addEventListener("resize", () => note("resize"));
+      visualViewport.addEventListener("resize", () => note("visual"));
+      const narrow = matchMedia("(max-width: " + (innerWidth - 1) + "px)");
+      narrow.addEventListener("change", () => note("media"));
+      new ResizeObserver(() => note("observed")).observe(document.documentElement);
+      return true;
+    })()`);
+    // A ResizeObserver reports once as it starts observing: that is not the page resizing.
+    await expect.poll(() => inPage<string[]>("window.__sizes")).toHaveLength(1);
+    await inPage("window.__sizes.length = 0");
+    const pageWidth = await inPage<number>("innerWidth");
+    const pageHeight = await inPage<number>("innerHeight");
+    const win = windowSelector(ids[0]!);
+    const page = await box(shell, `${win} [data-testid="desk-window-page"]`);
+
+    // ── 1. Mask the player: the page never sees its size change, not for a frame ─
+    await shell.mouse.move(page.x + page.width / 2, page.y - 10);
+    await shell.locator(`${win} [data-testid="desk-mask"]`).click();
+    await expect(shell.locator(`${win} [data-testid="desk-mask-selector"]`)).toBeVisible();
+    const region = { x: 40, y: 88, w: 480, h: 270 };
+    await shell.mouse.move(page.x + region.x, page.y + region.y);
+    await shell.mouse.down();
+    for (let step = 1; step <= 10; step += 1) {
+      await shell.mouse.move(page.x + region.x + (region.w * step) / 10, page.y + region.y + (region.h * step) / 10);
+      await shell.waitForTimeout(16);
+    }
+    await shell.mouse.up();
+    await expect(shell.locator(`${win}[data-masked]`)).toHaveCount(1);
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[0]!, ids[0]!);
+    await shell.waitForTimeout(300);
+    expect(await inPage<string[]>("window.__sizes")).toEqual([]);
+    expect(await inPage<number>("innerWidth")).toBe(pageWidth);
+    expect(await inPage<number>("innerHeight")).toBe(pageHeight);
+    const masked = await box(shell, win);
+
+    // ── 2. Edit mask (the window in use): the whole page, faded, around the region ─
+    await shell.locator(`${win} [data-testid="desk-edit-mask"]`).click();
+    const editor = shell.locator(`${win} [data-testid="desk-mask-editor"]`);
+    await expect(editor).toHaveAttribute("data-shown", "");
+    await expect(editor).toHaveAttribute("data-whole", "");
+    await expect(shell.locator(`${win}[data-editing="shown"]`)).toHaveCount(1);
+    // The page's own view is down meanwhile; the editor's region is where the window's was.
+    await expect.poll(async () => (await liveViews(app)).some((view) => view.url === urls[0])).toBe(false);
+    const editRegion = await box(shell, `${win} [data-testid="desk-mask-editor-region"]`);
+    expect(Math.abs(editRegion.x - masked.x)).toBeLessThan(2);
+    expect(Math.abs(editRegion.y - (masked.y + 18))).toBeLessThan(2);
+    expect(Math.abs(editRegion.width - region.w)).toBeLessThan(2);
+    await shell.waitForTimeout(200);
+    await capture(app, shell, "37-mask-editing.png");
+
+    // ── 3. Drag the bottom-right corner out: the region grows over the page ────
+    const corner = center(await box(shell, `${win} [data-handle="se"]`));
+    await shell.mouse.move(corner.x, corner.y);
+    await shell.mouse.down();
+    for (let step = 1; step <= 8; step += 1) {
+      await shell.mouse.move(corner.x + (80 * step) / 8, corner.y + (40 * step) / 8);
+      await shell.waitForTimeout(16);
+    }
+    await expect(shell.locator(`${win} [data-testid="desk-mask-editor"] .desk-mask-size`)).toHaveText(`${region.w + 80} × ${region.h + 40}`);
+    await capture(app, shell, "38-mask-edit-dragging.png");
+    await shell.mouse.up();
+
+    // ── 4. Done: the window is the new region, live, where it lies on the page ──
+    await shell.getByTestId("desk-mask-edit-done").click();
+    await expect(editor).toHaveCount(0);
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[0]!, ids[0]!);
+    const edited = await box(shell, win);
+    expect(Math.abs(edited.x - masked.x)).toBeLessThan(2);
+    expect(Math.abs(edited.y - masked.y)).toBeLessThan(2);
+    expect(Math.abs(edited.width - (region.w + 80))).toBeLessThan(2);
+    expect(Math.abs(edited.height - (region.h + 40 + 18))).toBeLessThan(2);
+    // Still the page, its clicks mapped through the new region: the player plays.
+    await clickPage({ x: 240, y: 135 });
+    await expect.poll(() => inPage<number>("window.toggles")).toBe(1);
+    await shell.waitForTimeout(250);
+    await capture(app, shell, "39-mask-edited.png");
+    // And through all of it, the page never saw its size change.
+    expect(await inPage<string[]>("window.__sizes")).toEqual([]);
+    expect(await inPage<number>("innerWidth")).toBe(pageWidth);
+
+    // ── 5. Edit again, move the region, and Escape: nothing changes ──────────────
+    await shell.locator(`${win} [data-testid="desk-edit-mask"]`).click();
+    await expect(editor).toHaveAttribute("data-shown", "");
+    const inside = center(await box(shell, `${win} [data-testid="desk-mask-editor-region"]`));
+    await shell.mouse.move(inside.x, inside.y);
+    await shell.mouse.down();
+    await shell.mouse.move(inside.x + 30, inside.y + 30, { steps: 4 });
+    await shell.mouse.up();
+    await shell.keyboard.press("Escape");
+    await expect(editor).toHaveCount(0);
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[0]!, ids[0]!);
+    const kept = await box(shell, win);
+    expect(Math.abs(kept.x - edited.x)).toBeLessThan(2);
+    expect(Math.abs(kept.width - edited.width)).toBeLessThan(2);
+    expect(await inPage<string[]>("window.__sizes")).toEqual([]);
+  } finally {
+    await app.close();
+  }
+});
+
+test("the dock lists the Space's other groups; choosing one passes the desk to it, each group's windows going home and coming back where they were left", async () => {
+  test.setTimeout(150_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-groups-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    const shell = await shellReady(app);
+    const urls = [
+      "pistachio://demo/invoices",
+      "pistachio://demo/vendors/atlas-medical",
+      "pistachio://demo/invoices?page=north",
+      "pistachio://demo/invoices?page=south",
+      "pistachio://demo/invoices?page=east",
+    ];
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[0])).toBe(true);
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(urls.length);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const ids = urls.map((url) => byUrl.get(url)!);
+    const [a0, a1, b0, b1, b2] = ids as [string, string, string, string, string];
+    const create = (id: string, tabIds: string[], title: string, color: string): Promise<unknown> =>
+      shell.evaluate(
+        ({ id, tabIds, title, color }) =>
+          (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id, tabIds, title, color } as never),
+        { id, tabIds, title, color },
+      );
+    await create("desk-a", [a0, a1], "Research", "blue");
+    await create("desk-b", [b0, b1, b2], "Regions", "orange");
+    // The tab used last in Regions: south, so it is the one Regions opens on.
+    for (const tabId of [b1, b0, b2, a0]) {
+      await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), tabId);
+      await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(tabId);
+    }
+    const header = shell.locator('[data-testid="tab-group"]').filter({ hasText: "Research" }).getByTestId("tab-group-header");
+    await header.hover();
+    await shell.locator('[data-testid="tab-group"]').filter({ hasText: "Research" }).getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await settled(shell);
+
+    // ── 1. Under the group's tabs, the Space's other group: its tabs' icons in a pile ─
+    const groupIcon = (id: string) => shell.locator(`[data-testid="desk-dock-group"][data-group-id="${id}"]`);
+    await expect(shell.getByTestId("desk-dock-group")).toHaveCount(1);
+    await expect(groupIcon("desk-b")).toBeVisible();
+    await expect(groupIcon("desk-b").getByTestId("favicon-cluster")).toHaveCount(1);
+    const stage = await box(shell, ".desk-stage");
+    /** Off the dock: its preview and tooltips cover the pages beside it, which are stills meanwhile. */
+    const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
+    // Research: a second window out, both moved to where they are to be left.
+    await shell.locator(iconSelector(a1)).click();
+    await awayFromDock();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[1]!, a1);
+    const researchLeft = { [a0]: await box(shell, windowSelector(a0)), [a1]: await box(shell, windowSelector(a1)) };
+    // Hovered, its card: its desk drawn small as it would come out — never
+    // on a desk, its tab used last alone, pictured — and its name.
+    await groupIcon("desk-b").hover();
+    const groupCard = (id: string) => shell.locator(`[data-testid="desk-dock-group-card"][data-group-id="${id}"][data-shown]`);
+    await expect(groupCard("desk-b")).toContainText("Regions");
+    await expect(groupCard("desk-b")).toContainText("3 tabs · 1 on its desk");
+    await expect(groupCard("desk-b").getByTestId("desk-sketch-window")).toHaveCount(1);
+    await expect(groupCard("desk-b").locator(`[data-testid="desk-sketch-window"][data-tab-id="${b2}"][data-focused]`)).toHaveCount(1);
+    await expect(groupCard("desk-b").locator("img.desk-still")).toHaveCount(1);
+    await shell.waitForTimeout(250);
+    await capture(app, shell, "40-dock-groups.png");
+
+    // ── 2. Choose Regions: Research goes into its icon, Regions opens on the tab used last ─
+    await groupIcon("desk-b").click();
+    await shell.waitForTimeout(140);
+    await capture(app, shell, "41-group-switching.png");
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await expect(groupIcon("desk-a")).toBeVisible();
+    await expect(groupIcon("desk-b")).toHaveCount(0);
+    await awayFromDock();
+    await settled(shell);
+    // Never on a desk: its tab used last, alone, in the middle.
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(b2))).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(b2);
+    await expectLiveIn(app, shell, urls[4]!, b2);
+    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+    await capture(app, shell, "42-group-switched.png");
+    // Regions: another window out, then left as it is.
+    await shell.locator(iconSelector(b0)).click();
+    await awayFromDock();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell);
+    const regionsLeft = { [b0]: await box(shell, windowSelector(b0)), [b2]: await box(shell, windowSelector(b2)) };
+
+    // ── 3. Research's card: its desk as it was left, drawn small ─────────────
+    await groupIcon("desk-a").hover();
+    await expect(groupCard("desk-a").getByTestId("desk-sketch-window")).toHaveCount(2);
+    await expect(groupCard("desk-a").locator(`[data-testid="desk-sketch-window"][data-tab-id="${a1}"][data-focused]`)).toHaveCount(1);
+    await expect(groupCard("desk-a").locator("img.desk-still")).toHaveCount(2);
+    // (Settled out of its opening motion before it is measured.)
+    await shell.waitForTimeout(250);
+    const sketch = await box(shell, '[data-testid="desk-dock-group-card"] [data-testid="desk-sketch"]');
+    const scale = stage.width / sketch.width;
+    expect(Math.abs(sketch.height * scale - stage.height)).toBeLessThan(4);
+    for (const tabId of [a0, a1]) {
+      const small = await box(shell, `[data-testid="desk-sketch-window"][data-tab-id="${tabId}"]`);
+      const was = researchLeft[tabId]!;
+      expect(Math.abs(stage.x + (small.x - sketch.x) * scale - was.x)).toBeLessThan(6);
+      expect(Math.abs(stage.y + (small.y - sketch.y) * scale - was.y)).toBeLessThan(6);
+      expect(Math.abs(small.width * scale - was.width)).toBeLessThan(6);
+      expect(Math.abs(small.height * scale - was.height)).toBeLessThan(6);
+    }
+    await capture(app, shell, "42b-group-card.png");
+
+    // ── 3b. Back to Research: its windows come back where they were left ──────
+    await groupIcon("desk-a").click();
+    await awayFromDock();
+    await settled(shell);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    for (const tabId of [a0, a1]) {
+      const now = await box(shell, windowSelector(tabId));
+      const was = researchLeft[tabId]!;
+      expect(Math.abs(now.x - was.x)).toBeLessThan(3);
+      expect(Math.abs(now.y - was.y)).toBeLessThan(3);
+      expect(Math.abs(now.width - was.width)).toBeLessThan(3);
+      expect(Math.abs(now.height - was.height)).toBeLessThan(3);
+    }
+    // The window on top when it was left is the one in use again.
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a1);
+    await expectLiveIn(app, shell, urls[1]!, a1);
+    await capture(app, shell, "43-group-back.png");
+
+    // ── 4. And Regions again, as it was left ─────────────────────────────────────
+    await groupIcon("desk-b").click();
+    await awayFromDock();
+    await settled(shell);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    for (const tabId of [b0, b2]) {
+      const now = await box(shell, windowSelector(tabId));
+      const was = regionsLeft[tabId]!;
+      expect(Math.abs(now.x - was.x)).toBeLessThan(3);
+      expect(Math.abs(now.y - was.y)).toBeLessThan(3);
+    }
+    await expectLiveIn(app, shell, urls[2]!, b0);
+
+    // ── 4b. To Research and straight back, Regions' windows still on their way home:
+    // they turn round, to where they were left ─
+    await groupIcon("desk-a").click();
+    await groupIcon("desk-b").click({ force: true });
+    await awayFromDock();
+    await settled(shell);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    for (const tabId of [b0, b2]) {
+      const now = await box(shell, windowSelector(tabId));
+      const was = regionsLeft[tabId]!;
+      expect(Math.abs(now.x - was.x)).toBeLessThan(3);
+      expect(Math.abs(now.y - was.y)).toBeLessThan(3);
+    }
+    await expectLiveIn(app, shell, urls[2]!, b0);
+
+    // ── 5. Leave: the window in use is the pane, and the desk is gone ──────────
+    await shell.getByTestId("desk-leave").click();
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
+    await expect(shell.getByTestId("browser-surface")).toBeVisible();
+    expect((await snapshot(shell)).activeTabId).toBe(b0);
   } finally {
     await app.close();
   }

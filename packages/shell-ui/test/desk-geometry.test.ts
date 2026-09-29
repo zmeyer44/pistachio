@@ -10,6 +10,7 @@ import {
   denormalizeRect,
   dockDropAt,
   dockDrops,
+  editedMaskRegion,
   edgeZone,
   fillsDesk,
   freeSpot,
@@ -389,5 +390,31 @@ describe("resizing a picture (a masked window)", () => {
   it("lets a masked window be smaller than a page window may be", () => {
     expect(clampRect({ x: 10, y: 10, w: 80, h: 60 }, bounds, { w: 16, h: 34 })).toEqual({ x: 10, y: 10, w: 80, h: 60 });
     expect(clampRect({ x: 10, y: 10, w: 80, h: 60 }, bounds).w).toBe(300);
+  });
+});
+
+describe("editedMaskRegion", () => {
+  const page = { w: 1000, h: 700 };
+  const start = { x: 200, y: 150, w: 400, h: 300 };
+  const edges = (on: Partial<Record<"left" | "right" | "top" | "bottom", boolean>>) => ({ left: false, right: false, top: false, bottom: false, ...on });
+
+  it("moves the edges in hand, the opposite ones holding still", () => {
+    expect(editedMaskRegion(start, edges({ right: true, bottom: true }), 50, -20, page, 16)).toEqual({ x: 200, y: 150, w: 450, h: 280 });
+    expect(editedMaskRegion(start, edges({ left: true, top: true }), -30, 40, page, 16)).toEqual({ x: 170, y: 190, w: 430, h: 260 });
+  });
+
+  it("never passes the page's edges", () => {
+    expect(editedMaskRegion(start, edges({ left: true, top: true }), -500, -500, page, 16)).toEqual({ x: 0, y: 0, w: 600, h: 450 });
+    expect(editedMaskRegion(start, edges({ right: true, bottom: true }), 900, 900, page, 16)).toEqual({ x: 200, y: 150, w: 800, h: 550 });
+  });
+
+  it("never grows smaller than the least a mask may be", () => {
+    expect(editedMaskRegion(start, edges({ right: true }), -900, 0, page, 16)).toEqual({ x: 200, y: 150, w: 16, h: 300 });
+    expect(editedMaskRegion(start, edges({ top: true }), 0, 900, page, 16)).toEqual({ x: 200, y: 434, w: 400, h: 16 });
+  });
+
+  it("moves the whole region, kept on the page", () => {
+    expect(editedMaskRegion(start, null, 100, 50, page, 16)).toEqual({ x: 300, y: 200, w: 400, h: 300 });
+    expect(editedMaskRegion(start, null, 900, -900, page, 16)).toEqual({ x: 600, y: 0, w: 400, h: 300 });
   });
 });

@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   ArrowLeftToLine,
   ChevronsUpDown,
@@ -7,25 +8,48 @@ import {
   LayoutGrid,
   Newspaper,
   NotebookPen,
+  Plus,
   SlidersHorizontal,
-  Sparkles,
   X,
 } from "lucide-react";
-import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
+import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import type { DockDrop, DockDrops } from "../../lib/desk/geometry";
 import { nativeApi } from "../../api";
-import { DESK_AXES, useDeskStore, type DeskVariants } from "../../lib/desk/store";
+import { DESK_AXES, passedEntry, useDeskStore, type DeskChrome, type DeskVariants, type SavedDeskWindow } from "../../lib/desk/store";
 import { tabIcon } from "../../lib/desk/tab-icon";
 import { cn } from "../../lib/cn";
 import { displayHost } from "../../lib/url";
+import { useAppStore } from "../../store";
+import { FaviconCluster } from "../TabGroupRow";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
-import { DOCK_W, type DeskEngine, type DeskView } from "./desk-engine";
-import { pageKind } from "./DeskWindow";
+import {
+  CHROME_CARD_TOP,
+  CHROME_INSETS,
+  DOCK_W,
+  MASK_CARD_TOP,
+  MASK_INSETS,
+  type DeskEngine,
+  type DeskSketchWindow,
+  type DeskView,
+} from "./desk-engine";
+import { cropStyle, pageKind } from "./DeskWindow";
 
 /** The preview beside a hovered icon, and the gap between it and the dock. */
 const PREVIEW_W = 232;
 const PREVIEW_H = 200;
+/**
+ * Another group's card: its desk drawn small, this wide inside the card's
+ * padding — as tall as the desk's shape makes it, within these bounds (a
+ * desk of an odd shape is drawn smaller, in the middle).
+ */
+const SKETCH_W = 300;
+const SKETCH_MIN_H = 120;
+const SKETCH_MAX_H = 230;
+/** The card's padding and its caption, around the sketch. */
+const CARD_PAD = 6;
+const CARD_CAPTION_H = 50;
+const GROUP_CARD_W = SKETCH_W + CARD_PAD * 2;
 const POPOVER_GAP = 12;
 /** A drop rail's segment sits this far inside the rail. */
 const SEGMENT_INSET = 4;
@@ -48,6 +72,10 @@ const TIP_BAND_SLACK = 8;
 const TIP_DELAY_MS = 350;
 /** The band stays covered this long after a tooltip closes, so moving to the next tool the pages there stay stills. */
 const TIP_LINGER_MS = 200;
+const NO_GROUPS: readonly TabGroupInfo[] = [];
+const NO_TABS: readonly BrowserTabInfo[] = [];
+const NO_WINDOWS: readonly SavedDeskWindow[] = [];
+const NO_IDS: readonly string[] = [];
 
 /**
  * The dock: the group's tabs as icons down the desk's leading edge, the way
@@ -62,8 +90,14 @@ const TIP_LINGER_MS = 200;
  *   dock it becomes the tab's window, held by its title bar (the engine's
  *   #takeInHand). A window let go over the dock goes into it.
  *
- * Below a divider: the arrangements, the variants this experiment is for
- * (Feel), and the way out.
+ * Below a divider: the Space's other tab groups, each a pile of its tabs'
+ * icons as the sidebar draws a group (DockGroups). Hovered, one shows its
+ * desk beside it, drawn small, as it would come out (DockGroupCard); a
+ * click passes the desk to that group in place — this group's windows fly
+ * into its own icon there, and the other's come out of the icon clicked
+ * (the engine's switchGroup). Below another: a new tab in the group (it comes out onto
+ * the desk as the window in use), the arrangements, the variants this
+ * experiment is for (Feel), and the way out.
  *
  * While a window is carried, the dock slides away off the desk's edge, and a
  * rail of the same glass slides in in its place as the pointer nears the
@@ -75,7 +109,7 @@ const TIP_LINGER_MS = 200;
  * for it and comes back when the pointer comes to its place (the engine's
  * `dockAside`); it tells the engine where its shelf stands for that.
  *
- * The preview, the Feel menu and the tools' tooltips are drawn over the
+ * The previews, the Feel menu and the tools' tooltips are drawn over the
  * desk, where live pages would paint over them: the engine is told where
  * they go (setCover), the pages there give way to their stills, and each
  * shows once that is done.
@@ -97,10 +131,14 @@ export const DeskDock = memo(function DeskDock({
   const toolsRef = useRef<HTMLDivElement>(null);
   /** The tool whose tooltip is open, as Base UI says. */
   const [tip, setTip] = useState<string | null>(null);
+  /** The group the dock opened on: another's tabs, once passed to it, come in with a little pop. */
+  const [firstGroup] = useState(group.id);
   const feelButtonRef = useRef<HTMLButtonElement>(null);
   const feelRef = useRef<HTMLDivElement>(null);
+  /** The icon under the pointer — a tab's, or another group's — and its middle's height in the dock. */
   const [hovered, setHovered] = useState<{
-    tabId: string;
+    kind: "tab" | "group";
+    id: string;
     center: number;
   } | null>(null);
   const [inside, setInside] = useState(false);
@@ -166,12 +204,14 @@ export const DeskDock = memo(function DeskDock({
 
   // An icon is hovered: the band beside the dock, where its preview (and the
   // next icon's) appears, is cleared of live pages for as long as the
-  // pointer stays on the icons — moving between them, the preview never waits.
+  // pointer stays on the icons — moving between them, the preview never
+  // waits. A group's card is wider than a tab's preview.
   const peeking = hovered !== null && inside && !busy && !feelOpen;
+  const peekWidth = hovered?.kind === "group" ? GROUP_CARD_W : PREVIEW_W;
   useEffect(() => {
     const height = dockRef.current?.clientHeight ?? 0;
-    engine.setCover("preview", peeking && height > 0 ? { x: DOCK_W, y: 0, w: POPOVER_GAP + PREVIEW_W + 12, h: height } : null);
-  }, [engine, peeking]);
+    engine.setCover("preview", peeking && height > 0 ? { x: DOCK_W, y: 0, w: POPOVER_GAP + peekWidth + 12, h: height } : null);
+  }, [engine, peeking, peekWidth]);
   useEffect(() => () => engine.setCover("preview", null), [engine]);
 
   // The Feel menu, where it is drawn, for as long as it is open.
@@ -217,15 +257,16 @@ export const DeskDock = memo(function DeskDock({
   }, [feelOpen]);
 
   const onHover = useCallback(
-    (tabId: string, el: HTMLElement) => {
+    (kind: "tab" | "group", id: string, el: HTMLElement) => {
       const dock = dockRef.current;
       if (dock === null) return;
       const box = el.getBoundingClientRect();
       setHovered({
-        tabId,
+        kind,
+        id,
         center: box.top + box.height / 2 - dock.getBoundingClientRect().top,
       });
-      engine.peek(tabId);
+      if (kind === "tab") engine.peek(id);
     },
     [engine],
   );
@@ -241,9 +282,11 @@ export const DeskDock = memo(function DeskDock({
   };
 
   const attachGhost = useCallback((el: HTMLDivElement | null) => engine.attachGhost(el), [engine]);
-  const hoveredTab = hovered === null ? null : (tabs.find((tab) => tab.id === hovered.tabId) ?? null);
+  const hoveredTab = hovered?.kind !== "tab" ? null : (tabs.find((tab) => tab.id === hovered.id) ?? null);
+  // (Chosen, a group is the desk's own: no card for it.)
+  const hoveredGroup = hovered?.kind === "group" && hovered.id !== group.id ? hovered.id : null;
   const dockHeight = dockRef.current?.clientHeight ?? 0;
-  const previewShown = hoveredTab !== null && peeking && view.clearCovers.has("preview");
+  const previewShown = hovered !== null && peeking && view.clearCovers.has("preview");
   const draggedTab = view.iconDrag === null ? null : (tabs.find((tab) => tab.id === view.iconDrag) ?? null);
   /** A tool's tooltip: open as Base UI says, seen once no live page is left under it, none while the dock is busy or away. */
   const toolTip = (label: string, off = false): DockTip => ({
@@ -288,10 +331,11 @@ export const DeskDock = memo(function DeskDock({
               title={`${group.title} · ${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}`}
               aria-hidden="true"
             />
-            <div className="desk-dock-icons" role="list">
-              {tabs.map((tab) => (
+            <div key={group.id} className="desk-dock-icons" role="list" data-fresh={group.id === firstGroup ? undefined : ""}>
+              {tabs.map((tab, index) => (
                 <DockIcon
                   key={tab.id}
+                  index={index}
                   tab={tab}
                   onDesk={onDesk.has(tab.id)}
                   focused={focused === tab.id}
@@ -301,33 +345,42 @@ export const DeskDock = memo(function DeskDock({
                 />
               ))}
             </div>
-            {/* Off the icons, there is no preview to show. */}
-            <div ref={toolsRef} className="desk-dock-tools" onPointerEnter={() => setHovered(null)}>
-              <span className="desk-dock-divider" aria-hidden="true" />
+            <div className="desk-dock-lower">
+              <DockGroups groupId={group.id} engine={engine} onHover={onHover} onChoose={() => setHovered(null)} />
               <TooltipProvider delay={TIP_DELAY_MS}>
-                <DockButton label="Tile the windows" tip={toolTip("Tile the windows")} onClick={() => engine.arrange("tile", tabIds)}>
-                  <LayoutGrid aria-hidden="true" />
-                </DockButton>
-                <DockButton label="Cascade the windows" tip={toolTip("Cascade the windows")} onClick={() => engine.arrange("cascade", tabIds)}>
-                  <Layers2 aria-hidden="true" />
-                </DockButton>
-                <DockButton label="Every tab out, tiled" tip={toolTip("Every tab out, tiled")} onClick={() => engine.gather(tabIds)}>
-                  <Sparkles aria-hidden="true" />
-                </DockButton>
-                {/* Its menu open beside it, where the tooltip would be: no tooltip. */}
-                <DockButton
-                  ref={feelButtonRef}
-                  label="Feel"
-                  testId="desk-feel"
-                  pressed={feelOpen}
-                  tip={toolTip("Feel", feelOpen)}
-                  onClick={openFeel}
-                >
-                  <SlidersHorizontal aria-hidden="true" />
-                </DockButton>
-                <DockButton label="Leave the desk" testId="desk-leave" tip={toolTip("Leave the desk")} onClick={() => useDeskStore.getState().leave()}>
-                  <X aria-hidden="true" />
-                </DockButton>
+                {/* Off the icons, there is no preview to show. */}
+                <div ref={toolsRef} className="desk-dock-tools" onPointerEnter={() => setHovered(null)}>
+                  <span className="desk-dock-divider" aria-hidden="true" />
+                  {/* Main makes it in the group and selects it: the desk brings the selected tab out (activeChanged). */}
+                  <DockButton
+                    label="New tab"
+                    testId="desk-new-tab"
+                    tip={toolTip("New tab")}
+                    onClick={() => void useAppStore.getState().tabGroupCommand({ type: "newTab", groupId: group.id })}
+                  >
+                    <Plus aria-hidden="true" />
+                  </DockButton>
+                  <DockButton label="Tile the windows" tip={toolTip("Tile the windows")} onClick={() => engine.arrange("tile", tabIds)}>
+                    <LayoutGrid aria-hidden="true" />
+                  </DockButton>
+                  <DockButton label="Cascade the windows" tip={toolTip("Cascade the windows")} onClick={() => engine.arrange("cascade", tabIds)}>
+                    <Layers2 aria-hidden="true" />
+                  </DockButton>
+                  {/* Its menu open beside it, where the tooltip would be: no tooltip. */}
+                  <DockButton
+                    ref={feelButtonRef}
+                    label="Feel"
+                    testId="desk-feel"
+                    pressed={feelOpen}
+                    tip={toolTip("Feel", feelOpen)}
+                    onClick={openFeel}
+                  >
+                    <SlidersHorizontal aria-hidden="true" />
+                  </DockButton>
+                  <DockButton label="Leave the desk" testId="desk-leave" tip={toolTip("Leave the desk")} onClick={() => useDeskStore.getState().leave()}>
+                    <X aria-hidden="true" />
+                  </DockButton>
+                </div>
               </TooltipProvider>
             </div>
           </div>
@@ -339,6 +392,16 @@ export const DeskDock = memo(function DeskDock({
             center={hovered!.center}
             dockHeight={dockHeight}
             onDesk={onDesk.has(hoveredTab.id)}
+            shown={previewShown}
+          />
+        )}
+        {hoveredGroup === null ? null : (
+          <DockGroupCard
+            key={hoveredGroup}
+            groupId={hoveredGroup}
+            engine={engine}
+            center={hovered!.center}
+            dockHeight={dockHeight}
             shown={previewShown}
           />
         )}
@@ -466,6 +529,7 @@ function DropSegment({
 }
 
 function DockIcon({
+  index,
   tab,
   onDesk,
   focused,
@@ -473,12 +537,14 @@ function DockIcon({
   engine,
   onHover,
 }: {
+  /** Its place in the dock: a group's tabs come in one after another. */
+  index: number;
   tab: BrowserTabInfo;
   onDesk: boolean;
   focused: boolean;
   inHand: boolean;
   engine: DeskEngine;
-  onHover: (tabId: string, el: HTMLElement) => void;
+  onHover: DockHover;
 }) {
   const attach = useCallback((el: HTMLSpanElement | null) => engine.attachIcon(tab.id, el), [engine, tab.id]);
   const title = tab.title || displayHost(tab.url) || "Untitled";
@@ -493,7 +559,8 @@ function DockIcon({
       data-focused={focused ? "" : undefined}
       data-in-hand={inHand ? "" : undefined}
       className="desk-dock-item"
-      onPointerEnter={(event) => onHover(tab.id, event.currentTarget)}
+      style={{ "--i": index } as CSSProperties}
+      onPointerEnter={(event) => onHover("tab", tab.id, event.currentTarget)}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.preventDefault();
@@ -511,6 +578,76 @@ function DockIcon({
       </span>
     </div>
   );
+}
+
+/** A group's tabs, in its order (the store shares structure: the same objects while they are unchanged). */
+function tabsOf(snapshot: ShellSnapshot | null, tabIds: readonly string[]): readonly BrowserTabInfo[] {
+  if (snapshot === null) return NO_TABS;
+  const byId = new Map(snapshot.tabs.map((tab) => [tab.id, tab]));
+  return tabIds.map((tabId) => byId.get(tabId)).filter((tab): tab is BrowserTabInfo => tab !== undefined);
+}
+
+/** An icon came under the pointer: its preview (a tab's) or card (a group's) shows beside it. */
+type DockHover = (kind: "tab" | "group", id: string, el: HTMLElement) => void;
+
+/**
+ * The Space's other tab groups, under the group's tabs: each as the sidebar
+ * draws a group — a small pile of its tabs' icons (FaviconCluster) — made
+ * large, on a tile in the group's colour. Under the pointer, its card shows
+ * beside it (DockGroupCard), and its tabs' pictures are fetched, so the card
+ * shows them and its windows come out as themselves; a click passes the
+ * desk to it (the engine's chooseGroup).
+ */
+function DockGroups({ groupId, engine, onHover, onChoose }: { groupId: string; engine: DeskEngine; onHover: DockHover; onChoose: () => void }) {
+  const groups = useAppStore(useShallow((state) => (state.snapshot?.tabGroups ?? NO_GROUPS).filter((candidate) => candidate.id !== groupId)));
+  if (groups.length === 0) return null;
+  return (
+    <>
+      <span className="desk-dock-divider" aria-hidden="true" />
+      <div className="desk-dock-groups" role="list" aria-label="Other tab groups" data-testid="desk-dock-groups">
+        {groups.map((group) => (
+          <DockGroup key={group.id} group={group} engine={engine} onHover={onHover} onChoose={onChoose} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function DockGroup({ group, engine, onHover, onChoose }: { group: TabGroupInfo; engine: DeskEngine; onHover: DockHover; onChoose: () => void }) {
+  const tabs = useAppStore(useShallow((state) => tabsOf(state.snapshot, group.tabIds)));
+  const attach = useCallback((el: HTMLSpanElement | null) => engine.attachGroupIcon(group.id, el), [engine, group.id]);
+  return (
+    <div role="listitem" className="desk-dock-group-slot">
+      <button
+        type="button"
+        aria-label={`${group.title}, ${tabCount(tabs.length)}: open its desk`}
+        data-testid="desk-dock-group"
+        data-group-id={group.id}
+        data-group-color={group.color}
+        className="desk-dock-item desk-dock-group-icon tab-group-tone"
+        // A press leaves the keyboard where it was, as the tools' do.
+        onMouseDown={(event) => event.preventDefault()}
+        onPointerEnter={(event) => {
+          engine.peekGroup(group.id, group.tabIds);
+          onHover("group", group.id, event.currentTarget);
+        }}
+        onClick={() => {
+          onChoose();
+          engine.chooseGroup(group.id);
+        }}
+      >
+        <span ref={attach} className="desk-dock-tile desk-group-tile">
+          <span className="desk-group-pile">
+            <FaviconCluster tabs={tabs} />
+          </span>
+        </span>
+      </button>
+    </div>
+  );
+}
+
+function tabCount(count: number): string {
+  return `${count} ${count === 1 ? "tab" : "tabs"}`;
 }
 
 /**
@@ -613,6 +750,128 @@ function DockPreview({
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * Another group's card, beside its icon: its desk drawn small, as it would
+ * come out were the desk passed to it now (the engine's sketchGroup) — each
+ * window where it was left, framed, with the latest picture of its page,
+ * the one it would come up on on top in the group's colour; and under it,
+ * the group's name and how many of its tabs are out.
+ */
+function DockGroupCard({
+  groupId,
+  engine,
+  center,
+  dockHeight,
+  shown,
+}: {
+  groupId: string;
+  engine: DeskEngine;
+  center: number;
+  dockHeight: number;
+  shown: boolean;
+}) {
+  const group = useAppStore((state) => state.snapshot?.tabGroups.find((candidate) => candidate.id === groupId) ?? null);
+  const tabs = useAppStore(useShallow((state) => tabsOf(state.snapshot, group?.tabIds ?? NO_IDS)));
+  const saved = useDeskStore((state) => state.saved[groupId]?.windows ?? NO_WINDOWS);
+  const chrome = useDeskStore((state) => state.variants.chrome);
+  if (group === null) return null;
+  // Drawn again with the dock, whenever the desk's view changes — its pictures coming in among it.
+  const sketch = engine.sketchGroup(
+    tabs.map((tab) => tab.id),
+    saved,
+    passedEntry(saved, tabs),
+  );
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  // The desk's shape, SKETCH_W wide — or, too tall or too flat for that, as near as the bounds allow, centred.
+  const boxH = sketch.width > 0 ? Math.round(Math.min(SKETCH_MAX_H, Math.max(SKETCH_MIN_H, (SKETCH_W * sketch.height) / sketch.width))) : SKETCH_MIN_H;
+  const scale = sketch.width > 0 && sketch.height > 0 ? Math.min(SKETCH_W / sketch.width, boxH / sketch.height) : 0;
+  const height = CARD_PAD + boxH + CARD_CAPTION_H;
+  const top = Math.max(8, Math.min(Math.max(8, dockHeight - height - 8), center - height / 2));
+  return (
+    <div
+      aria-hidden="true"
+      data-testid="desk-dock-group-card"
+      data-group-id={group.id}
+      data-group-color={group.color}
+      data-shown={shown ? "" : undefined}
+      className="desk-dock-preview tab-group-tone"
+      style={{
+        left: DOCK_W + POPOVER_GAP,
+        top,
+        width: GROUP_CARD_W,
+        height,
+      }}
+    >
+      <span className="desk-dock-preview-tail" style={{ top: center - top }} />
+      <div className="desk-sketch-box" style={{ height: boxH }}>
+        {scale === 0 ? null : (
+          <div className="desk-sketch" data-testid="desk-sketch" style={{ width: sketch.width * scale, height: sketch.height * scale }}>
+            {sketch.windows.map((window) => (
+              <SketchWindow key={window.tabId} window={window} tab={byId.get(window.tabId) ?? null} chrome={chrome} scale={scale} />
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex min-w-0 flex-col gap-0.5 px-2.5 pt-2">
+        <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 font-medium text-gray-1000">
+          <span className="desk-sketch-swatch" aria-hidden="true" />
+          <span className="truncate">{group.title}</span>
+        </span>
+        <span className="truncate text-[11px] leading-4 text-gray-700">
+          {tabCount(tabs.length)} · {sketch.windows.length} on its desk
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** One window of a group's sketch: its frame as the desk draws it (the frame style's insets, scaled), its page's picture inside. */
+function SketchWindow({ window, tab, chrome, scale }: { window: DeskSketchWindow; tab: BrowserTabInfo | null; chrome: DeskChrome; scale: number }) {
+  const masked = window.mask !== null;
+  const insets = masked ? MASK_INSETS : CHROME_INSETS[chrome];
+  const cardTop = masked ? MASK_CARD_TOP : CHROME_CARD_TOP[chrome];
+  const { rect } = window;
+  return (
+    <div
+      className="desk-sketch-window"
+      data-testid="desk-sketch-window"
+      data-tab-id={window.tabId}
+      data-focused={window.focused ? "" : undefined}
+      data-masked={masked ? "" : undefined}
+      style={{ left: rect.x * scale, top: rect.y * scale, width: rect.w * scale, height: rect.h * scale }}
+    >
+      <div className="desk-sketch-card" style={{ top: cardTop * scale }}>
+        <div
+          className="desk-sketch-page"
+          style={{
+            top: (insets.top - cardTop) * scale,
+            left: insets.left * scale,
+            right: insets.right * scale,
+            bottom: insets.bottom * scale,
+          }}
+        >
+          {tab === null ? null : <SketchPage tab={tab} window={window} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** What a sketched window's page shows: its picture (a masked one's region), or — a shell page, asleep, never pictured — its app icon. */
+function SketchPage({ tab, window }: { tab: BrowserTabInfo; window: DeskSketchWindow }) {
+  const { still, mask, stillShows } = window;
+  if (pageKind(tab.url) === null && still !== null) {
+    if (mask === null && stillShows !== "none") return <img className="desk-still" src={still} alt="" draggable={false} />;
+    if (mask !== null && stillShows === "region") return <img className="desk-still" data-fill="" src={still} alt="" draggable={false} />;
+    if (mask !== null && stillShows === "page") return <img className="desk-still-crop" src={still} alt="" draggable={false} style={cropStyle(mask)} />;
+  }
+  return (
+    <span className="desk-sketch-empty">
+      <AppIcon tab={tab} />
+    </span>
   );
 }
 

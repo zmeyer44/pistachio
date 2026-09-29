@@ -6,9 +6,55 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { sanitizeSaved, useDeskStore } from "../src/lib/desk/store";
+import { passedEntry, sanitizeSaved, useDeskStore } from "../src/lib/desk/store";
 
 afterEach(() => useDeskStore.setState({ groupId: null, opening: null, leaving: false }));
+
+describe("passing a desk to another group", () => {
+  it("keeps the same desk: the group changes, the instance does not", () => {
+    useDeskStore.getState().open("g1");
+    const { instance } = useDeskStore.getState();
+    useDeskStore.getState().switchTo("g2");
+    expect(useDeskStore.getState()).toMatchObject({ groupId: "g2", instance, leaving: false });
+  });
+
+  it("does nothing with no desk up, or one on its way out", () => {
+    useDeskStore.getState().switchTo("g2");
+    expect(useDeskStore.getState().groupId).toBeNull();
+    useDeskStore.getState().open("g1");
+    useDeskStore.getState().leave();
+    useDeskStore.getState().switchTo("g2");
+    expect(useDeskStore.getState().groupId).toBe("g1");
+  });
+
+  it("opens a desk afresh as a new instance", () => {
+    const before = useDeskStore.getState().instance;
+    useDeskStore.getState().open("g1");
+    expect(useDeskStore.getState().instance).toBe(before + 1);
+  });
+});
+
+describe("the tab a desk passed to a group comes up on", () => {
+  const tabs = [
+    { id: "a", lastActiveAt: 30 },
+    { id: "b", lastActiveAt: 10 },
+    { id: "c", lastActiveAt: 20 },
+  ];
+  const at = { x: 0.1, y: 0.1, w: 0.4, h: 0.4 };
+
+  it("is its top window as it was left", () => {
+    expect(passedEntry([{ tabId: "b", rect: at }, { tabId: "c", rect: at }], tabs)).toBe("c");
+  });
+
+  it("passes over windows whose tabs are no longer the group's", () => {
+    expect(passedEntry([{ tabId: "b", rect: at }, { tabId: "gone", rect: at }], tabs)).toBe("b");
+  });
+
+  it("with none left, is its tab used last — or, with no tabs, none", () => {
+    expect(passedEntry([{ tabId: "gone", rect: at }], tabs)).toBe("a");
+    expect(passedEntry([], [])).toBeNull();
+  });
+});
 
 describe("opening a desk", () => {
   it("opens at once where there is no sidebar to wait for", () => {

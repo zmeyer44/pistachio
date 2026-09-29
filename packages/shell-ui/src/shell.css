@@ -344,9 +344,10 @@
 /* The ring goes around the ONE box holding the page the agent is driving —
    a split pane (ContentArea.tsx SplitPane) or the frame of a cloud run's
    live view (LiveViewPage.tsx) — never around the whole surface, and never
-   around a pane the agent is not working in. Nothing is lit while that page
-   is off screen: the agent working in a background tab is not the person's
-   business until they switch to it. A host sets --agent-ring-radius to the
+   around a pane the agent is not working in. No pane is lit while that page
+   is off screen: the agent works in tabs behind the person's, and that work
+   is marked on the tab itself (.agent-ring-mark below) and in the chat, not
+   on the page they are reading. A host sets --agent-ring-radius to the
    corner radius of the box it rings. */
 .agent-ring {
   --agent-ring-radius: var(--radius-md);
@@ -444,6 +445,20 @@
   left: anchor(left);
   pointer-events: none;
   --agent-ring-radius: var(--radius-sm);
+}
+
+/* The ring in miniature, around a tab's mark in the tab list and strip while
+   the agent works in that tab (Favicon.tsx TabMark `working`) — how the
+   person sees work going on in a tab behind the one they are on. The same
+   comet, drawn thinner and closer: a 3px band would swallow a 16px icon. */
+.agent-ring.agent-ring-mark {
+  --agent-ring-radius: 4px;
+}
+.agent-ring.agent-ring-mark::before,
+.agent-ring.agent-ring-mark::after {
+  inset: -2.5px;
+  padding: 1.5px;
+  border-radius: calc(var(--agent-ring-radius) + 2.5px);
 }
 
 @keyframes agent-ring-in {
@@ -3065,6 +3080,170 @@ body:not([data-chrome-view])::after {
   opacity: 1;
 }
 
+/* Editing a mask (DeskWindow's MaskEditor): the window's whole page around
+   its region, at the region's scale, faded so the desk shows through; the
+   region at full strength in a white frame with knobs at its corners and
+   edges; a bar with Cancel and Done above the page. The window itself hides
+   once the editor can be seen (it draws the region where the window was). */
+.desk-window[data-editing="shown"] > .desk-window-card,
+.desk-window[data-editing="shown"] > .desk-window-chrome {
+  visibility: hidden;
+}
+.desk-mask-editor {
+  --desk-mask-rest: 0.42;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+.desk-mask-editor[data-shown] {
+  opacity: 1;
+}
+.desk-mask-editor[data-shown] > * {
+  pointer-events: auto;
+}
+.desk-mask-editor-page {
+  position: absolute;
+  border-radius: 8px;
+  outline: 1px dashed oklch(1 0 0 / 0.55);
+  outline-offset: -1px;
+  box-shadow: 0 0 0 1px oklch(0 0 0 / 0.12);
+}
+.desk-mask-editor-rest {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: inherit;
+  opacity: var(--desk-mask-rest);
+  pointer-events: none;
+  user-select: none;
+}
+.desk-mask-editor-region {
+  position: absolute;
+  border-radius: 3px;
+  box-shadow:
+    0 0 0 1.5px white,
+    0 0 0 2.5px oklch(0 0 0 / 0.28),
+    0 10px 30px oklch(0 0 0 / 0.28);
+  cursor: move;
+  touch-action: none;
+}
+.desk-mask-editor-shot {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--color-background-100);
+}
+.desk-mask-editor-shot img {
+  position: absolute;
+  max-width: none;
+  pointer-events: none;
+  user-select: none;
+}
+.desk-mask-handle {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+.desk-mask-handle::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 5px;
+  border-radius: 999px;
+  background: white;
+  box-shadow:
+    0 0 0 1px oklch(0 0 0 / 0.3),
+    0 1px 3px oklch(0 0 0 / 0.3);
+  content: "";
+  transform: translate(-50%, -50%);
+  transition: transform 120ms ease;
+}
+.desk-mask-handle:is([data-handle="w"], [data-handle="e"])::after {
+  width: 5px;
+  height: 18px;
+}
+.desk-mask-handle[data-corner]::after {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.desk-mask-handle:hover::after {
+  transform: translate(-50%, -50%) scale(1.2);
+}
+.desk-mask-editor[data-dragging] .desk-mask-size,
+.desk-mask-editor-region:hover .desk-mask-size {
+  opacity: 1;
+}
+.desk-mask-editor .desk-mask-size {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.desk-mask-editor-bar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 12px;
+  border-radius: 10px;
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 8px 24px oklch(0 0 0 / 0.16);
+  font-size: 12px;
+}
+.desk-mask-editor-button {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: var(--color-gray-1000);
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 150ms ease,
+    transform 150ms ease;
+}
+.desk-mask-editor-button:hover {
+  background: var(--color-alpha-200);
+}
+.desk-mask-editor-button:active {
+  transform: scale(0.96);
+}
+.desk-mask-editor-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-mask-editor-button[data-primary] {
+  background: var(--color-gray-1000);
+  color: var(--color-background-100);
+}
+.desk-mask-editor-button[data-primary]:hover {
+  background: var(--color-gray-900);
+}
+/* Just edited: the page shown around the region fades on from where the editor left it. */
+.desk-mask-fade[data-edited] {
+  border-radius: 8px;
+  animation-name: desk-mask-edited;
+}
+.desk-mask-fade[data-edited]::after {
+  content: none;
+}
+@keyframes desk-mask-edited {
+  from {
+    opacity: 0.42;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 .desk-window-edge {
   z-index: 2;
 }
@@ -3432,6 +3611,66 @@ body:not([data-chrome-view])::after {
   align-items: center;
   gap: 2px;
 }
+/* Under the tabs: the Space's other groups, then the tools. The groups may
+   scroll, as the tabs do, when the dock runs out of height. */
+.desk-dock-lower {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+}
+.desk-dock-groups {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  overflow-y: auto;
+  padding: 2px 0;
+  scrollbar-width: none;
+}
+.desk-dock-group-slot {
+  width: 100%;
+  flex-shrink: 0;
+}
+.desk-dock-group-icon {
+  cursor: pointer;
+}
+/* Another group, as the sidebar draws one (FaviconCluster): its tabs'
+   icons in a small pile, made large, on a tile tinted with its colour. */
+.desk-group-tile {
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--tg-solid) 14%, var(--color-background-100));
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--tg-solid) 30%, transparent),
+    0 1px 2px oklch(0 0 0 / 0.12);
+}
+.desk-group-pile {
+  display: grid;
+  place-items: center;
+  transform: scale(1.5);
+  animation: desk-dock-pop 340ms cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+}
+.desk-group-pile > * {
+  margin: 0;
+}
+/* A group come into the dock (the desk passed from it), and the tabs of
+   the group the desk passed to, one after another. */
+@keyframes desk-dock-pop {
+  from {
+    opacity: 0;
+    scale: 0.55;
+  }
+}
+.desk-dock-icons[data-fresh] .desk-dock-tile {
+  animation: desk-dock-pop 320ms cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+  animation-delay: calc(var(--i, 0) * 32ms + 60ms);
+}
+.desk-dock-icons[data-fresh] .desk-dock-tile[data-received] {
+  animation: desk-dock-receive 520ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
 .desk-dock-divider {
   width: 28px;
   height: 1px;
@@ -3598,6 +3837,76 @@ body:not([data-chrome-view])::after {
 .desk-dock-preview-empty > .desk-app-icon {
   width: 56px;
   height: 56px;
+}
+/* Another group's card (DockGroupCard): its desk drawn small — the desk's
+   dotted ground, each window framed as the desk frames it, its picture in,
+   the one it would come up on ringed in the group's colour. */
+.desk-sketch-box {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+}
+.desk-sketch {
+  position: relative;
+  overflow: hidden;
+  border-radius: 9px;
+  background-color: var(--color-background-200);
+  background-image: radial-gradient(circle at 1px 1px, var(--color-alpha-300) 0.6px, transparent 0.9px);
+  background-size: 7px 7px;
+  box-shadow: inset 0 0 0 1px var(--color-alpha-200);
+}
+.desk-sketch-window {
+  position: absolute;
+}
+.desk-sketch-card {
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 0.5px var(--color-alpha-400),
+    0 2px 6px -2px oklch(0 0 0 / 0.22);
+}
+.desk-sketch-window[data-focused] .desk-sketch-card {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--tg-solid) 70%, transparent),
+    0 4px 10px -3px oklch(0 0 0 / 0.3);
+}
+:root[data-color-scheme="dark"] .desk-sketch-card {
+  box-shadow:
+    0 0 0 0.5px var(--color-alpha-500),
+    0 3px 8px -2px oklch(0 0 0 / 0.6);
+}
+:root[data-color-scheme="dark"] .desk-sketch-window[data-focused] .desk-sketch-card {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--tg-solid) 70%, transparent),
+    0 4px 12px -3px oklch(0 0 0 / 0.7);
+}
+.desk-sketch-page {
+  position: absolute;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--color-background-100);
+}
+.desk-sketch-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  container-type: size;
+  background: var(--color-gray-100);
+}
+.desk-sketch-empty > .desk-app-icon {
+  width: clamp(6px, 40cqmin, 24px);
+  height: clamp(6px, 40cqmin, 24px);
+  font-size: clamp(4px, 22cqmin, 12px);
+}
+.desk-sketch-swatch {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--tg-solid);
 }
 .desk-dock-menu {
   display: flex;

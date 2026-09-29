@@ -18,7 +18,7 @@ import { notesUrlId } from "@pistachio/shell-contracts/notes";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
-import type { Edges, Rect } from "../../lib/desk/geometry";
+import { editedMaskRegion, type Edges, type Rect } from "../../lib/desk/geometry";
 import type { DeskChrome, DeskGrab } from "../../lib/desk/store";
 import { displayHost } from "../../lib/url";
 import { Favicon } from "../Favicon";
@@ -47,8 +47,9 @@ export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: 
  * Masked (DeskMask), the window is a region of its page, shown alone and
  * scaled like a picture — still the live page, used as it always is: the
  * bare frame's handle above the region and nothing else, its controls
- * Unmask and Put away. Choosing the region, its page is frozen under a
- * MaskSelector.
+ * Unmask and Put away, and, in use, Edit mask. Choosing the region, its
+ * page is frozen under a MaskSelector; editing it, the whole page is shown
+ * around it under a MaskEditor.
  */
 export const DeskWindow = memo(function DeskWindow({
   view,
@@ -107,6 +108,11 @@ export const DeskWindow = memo(function DeskWindow({
 
   const controls = masked ? (
     <span className="desk-window-controls flex items-center">
+      {view.focused && tab !== null && !shellPage ? (
+        <FrameButton label="Edit mask" testId="desk-edit-mask" onClick={() => engine.editMask(tabId)}>
+          <Crop aria-hidden="true" />
+        </FrameButton>
+      ) : null}
       <FrameButton label="Unmask" testId="desk-unmask" onClick={() => engine.unmask(tabId)}>
         <Expand aria-hidden="true" />
       </FrameButton>
@@ -145,6 +151,7 @@ export const DeskWindow = memo(function DeskWindow({
       data-chrome={frame}
       data-masked={masked ? "" : undefined}
       data-selecting={view.selecting ? "" : undefined}
+      data-editing={view.editing === null ? undefined : view.editing.shown ? "shown" : "waiting"}
       data-focused={view.focused ? "" : undefined}
       data-drawn={view.drawn ? "" : undefined}
       data-carried={view.carried ? "" : undefined}
@@ -157,7 +164,19 @@ export const DeskWindow = memo(function DeskWindow({
       style={{ zIndex: view.carried || view.flight !== null ? 60 + view.z : 10 + view.z }}
     >
       {view.maskFade !== null && view.stillShows === "page" && still !== null ? (
-        <MaskFade from={view.maskFade} chrome={chrome} still={still} />
+        <MaskFade from={view.maskFade} insets={view.maskFade.framed ? CHROME_INSETS[chrome] : NO_INSETS} still={still} />
+      ) : null}
+      {view.editing !== null && view.mask !== null ? (
+        <MaskEditor
+          tabId={tabId}
+          engine={engine}
+          mask={view.mask}
+          page={view.editing.page}
+          bar={view.editing.bar}
+          shown={view.editing.shown}
+          still={still}
+          stillShows={view.stillShows}
+        />
       ) : null}
       {frame === "tab" ? (
         <div className="desk-window-chrome desk-window-tab" onPointerDown={onFrameDown}>
@@ -251,7 +270,7 @@ function WindowPage({
 }
 
 /** A still of the whole page box, placed so only the mask's region falls in the window's page: as fractions, whatever the window's size. */
-function cropStyle(mask: DeskMask): CSSProperties {
+export function cropStyle(mask: DeskMask): CSSProperties {
   return {
     left: `${(-mask.x / mask.width) * 100}%`,
     top: `${(-mask.y / mask.height) * 100}%`,
@@ -330,19 +349,185 @@ function MaskSelector({ tabId, engine }: { tabId: string; engine: DeskEngine }) 
   );
 }
 
+/** The mask editor's handles: a knob at each corner, and each edge's length, on the region's border. */
+const MASK_HANDLES: ReadonlyArray<{ id: string; edges: Edges; style: CSSProperties; cursor: string }> = [
+  { id: "n", edges: { left: false, right: false, top: true, bottom: false }, style: { top: -5, left: 10, right: 10, height: 10 }, cursor: "ns-resize" },
+  { id: "s", edges: { left: false, right: false, top: false, bottom: true }, style: { bottom: -5, left: 10, right: 10, height: 10 }, cursor: "ns-resize" },
+  { id: "w", edges: { left: true, right: false, top: false, bottom: false }, style: { left: -5, top: 10, bottom: 10, width: 10 }, cursor: "ew-resize" },
+  { id: "e", edges: { left: false, right: true, top: false, bottom: false }, style: { right: -5, top: 10, bottom: 10, width: 10 }, cursor: "ew-resize" },
+  { id: "nw", edges: { left: true, right: false, top: true, bottom: false }, style: { left: -8, top: -8, width: 16, height: 16 }, cursor: "nwse-resize" },
+  { id: "ne", edges: { left: false, right: true, top: true, bottom: false }, style: { right: -8, top: -8, width: 16, height: 16 }, cursor: "nesw-resize" },
+  { id: "sw", edges: { left: true, right: false, top: false, bottom: true }, style: { left: -8, bottom: -8, width: 16, height: 16 }, cursor: "nesw-resize" },
+  { id: "se", edges: { left: false, right: true, top: false, bottom: true }, style: { right: -8, bottom: -8, width: 16, height: 16 }, cursor: "nwse-resize" },
+];
+
+/**
+ * Editing a mask: the window's whole page, where it lies around the region
+ * and at the region's scale, the rest of it faded so the desk shows
+ * through, and the region at full strength inside a frame whose edges and
+ * corners can be dragged (and whose inside moves it). The page is its
+ * still — the whole page, taken as the edit began (until it comes, only
+ * the region's own still, where the region was). Done — Enter, or a press
+ * anywhere else — and the window becomes the new region (commitMaskEdit);
+ * Cancel or Escape, and it stays as it was.
+ */
+function MaskEditor({
+  tabId,
+  engine,
+  mask,
+  page,
+  bar,
+  shown,
+  still,
+  stillShows,
+}: {
+  tabId: string;
+  engine: DeskEngine;
+  mask: DeskMask;
+  page: Rect;
+  bar: Rect;
+  shown: boolean;
+  still: string | null;
+  stillShows: DeskWindowView["stillShows"];
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [region, setRegion] = useState<Rect>(() => ({ x: mask.x, y: mask.y, w: mask.width, h: mask.height }));
+  const regionRef = useRef(region);
+  regionRef.current = region;
+  const drag = useRef<{ edges: Edges | null; x: number; y: number; from: Rect } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const scale = page.w / mask.pageWidth;
+  const whole = still !== null && stillShows === "page";
+
+  useEffect(() => {
+    const done = (): void => engine.commitMaskEdit(tabId, regionRef.current);
+    // Capture: before anything else in the shell hears the key (Escape closes other things too).
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" && event.key !== "Enter") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") engine.cancelMaskEdit();
+      else done();
+    };
+    // A press anywhere else is done with it — before that press raises another window.
+    const onDown = (event: PointerEvent): void => {
+      if (rootRef.current?.contains(event.target as Node) !== true) done();
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onDown, true);
+    // A key or press on a live page, which the shell never hears itself (main relays it).
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "escape") engine.cancelMaskEdit();
+      else if (input === "press") done();
+    });
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onDown, true);
+      offPage?.();
+    };
+  }, [engine, tabId]);
+
+  const begin = (edges: Edges | null) => (event: ReactPointerEvent) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { edges, x: event.clientX, y: event.clientY, from: regionRef.current };
+    setDragging(true);
+  };
+  const onMove = (event: ReactPointerEvent): void => {
+    const held = drag.current;
+    if (held === null) return;
+    const dx = (event.clientX - held.x) / scale;
+    const dy = (event.clientY - held.y) / scale;
+    setRegion(editedMaskRegion(held.from, held.edges, dx, dy, { w: mask.pageWidth, h: mask.pageHeight }, MIN_DESK_MASK));
+  };
+  const end = (): void => {
+    drag.current = null;
+    setDragging(false);
+  };
+
+  // The region's picture: the whole page placed under it, or, until that comes, the old region's where it was.
+  const shot: CSSProperties = whole
+    ? { left: -region.x * scale, top: -region.y * scale, width: page.w, height: page.h }
+    : { left: (mask.x - region.x) * scale, top: (mask.y - region.y) * scale, width: mask.width * scale, height: mask.height * scale };
+  return (
+    <div
+      ref={rootRef}
+      className="desk-mask-editor"
+      data-testid="desk-mask-editor"
+      data-shown={shown ? "" : undefined}
+      data-whole={whole ? "" : undefined}
+      data-dragging={dragging ? "" : undefined}
+      onPointerMove={onMove}
+      onPointerUp={end}
+      onPointerCancel={end}
+    >
+      <div className="desk-mask-editor-page" style={{ left: page.x, top: page.y, width: page.w, height: page.h }}>
+        {whole ? <img className="desk-mask-editor-rest" src={still} alt="" draggable={false} /> : null}
+        <div
+          className="desk-mask-editor-region"
+          data-testid="desk-mask-editor-region"
+          style={{ left: region.x * scale, top: region.y * scale, width: region.w * scale, height: region.h * scale }}
+          onPointerDown={begin(null)}
+        >
+          <div className="desk-mask-editor-shot">{still !== null ? <img src={still} alt="" draggable={false} style={shot} /> : null}</div>
+          {MASK_HANDLES.map((handle) => (
+            <span
+              key={handle.id}
+              aria-hidden="true"
+              className="desk-mask-handle"
+              data-handle={handle.id}
+              data-corner={handle.id.length === 2 ? "" : undefined}
+              style={{ ...handle.style, cursor: handle.cursor }}
+              onPointerDown={begin(handle.edges)}
+            />
+          ))}
+          <span className="desk-mask-size">
+            {Math.round(region.w)} × {Math.round(region.h)}
+          </span>
+        </div>
+      </div>
+      <div className="desk-mask-editor-bar" style={{ left: bar.x, top: bar.y, width: bar.w, height: bar.h }}>
+        <span className="min-w-0 flex-1 truncate text-gray-800">Drag the edges</span>
+        <button type="button" className="desk-mask-editor-button" data-testid="desk-mask-edit-cancel" onClick={() => engine.cancelMaskEdit()}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="desk-mask-editor-button"
+          data-primary=""
+          data-testid="desk-mask-edit-done"
+          onClick={() => engine.commitMaskEdit(tabId, regionRef.current)}
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function regionOf(drag: { x0: number; y0: number; x1: number; y1: number }): Rect {
   return { x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w: Math.abs(drag.x1 - drag.x0), h: Math.abs(drag.y1 - drag.y0) };
 }
 
+const NO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
+
 /**
  * Just masked: the page the region was cut from, where the window stood,
  * dimmed as it was while the region was chosen — fading out from around the
- * region, which the window's own page now covers.
+ * region, which the window's own page now covers. Its mask just edited: the
+ * page shown around the region, as the editor showed it (`insets` none: the
+ * page box alone, no frame).
  */
-function MaskFade({ from, chrome, still }: { from: Rect; chrome: DeskChrome; still: string }) {
-  const insets = CHROME_INSETS[chrome];
+function MaskFade({ from, insets, still }: { from: Rect & { framed: boolean }; insets: typeof NO_INSETS; still: string }) {
   return (
-    <div className="desk-mask-fade" aria-hidden="true" style={{ left: from.x, top: from.y, width: from.w, height: from.h }}>
+    <div
+      className="desk-mask-fade"
+      data-edited={from.framed ? undefined : ""}
+      aria-hidden="true"
+      style={{ left: from.x, top: from.y, width: from.w, height: from.h }}
+    >
       <img
         src={still}
         alt=""

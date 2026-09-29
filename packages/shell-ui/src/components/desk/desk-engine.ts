@@ -20,7 +20,16 @@
  *   meanwhile, its still stretched like the picture it is), and is used as
  *   any page is: main maps the pointer on it to the page's own point. Its
  *   still shows the region, or, taken before it was masked, the whole page,
- *   cropped to the region.
+ *   cropped to the region. Its mask can be EDITED (editMask): the window is
+ *   drawn, the whole page shown around the region at its scale, and the
+ *   region's edges dragged; main shows the whole page meanwhile through the
+ *   same override (the page's box never changes, so the page never knows).
+ * - the desk can pass to ANOTHER GROUP in place (switchGroup): the dock
+ *   lists the Space's other groups under its tabs, and choosing one sends
+ *   this group's windows into their group's new icon there — each once it
+ *   has a still to fly as — while the other group's come out of the icon
+ *   chosen, to where they were left (or, never on a desk, its tab used last
+ *   alone, in the middle).
  * - the dock floats over the desk, and a window may lie behind it: the
  *   dock's place is a cover too, so a window there is drawn, under the
  *   dock's glass — except the window in use, which must be live. For that
@@ -134,6 +143,12 @@ const MASK_MIN: MinSize = { w: MIN_DESK_MASK, h: MIN_DESK_MASK + MASK_INSETS.top
 const MASK_FADE_MS = 260;
 /** A mask put back waits at most this long for a still of the whole window to fade from. */
 const MASK_BACK_WAIT_MS = 1_500;
+/** Editing a mask: its bar (Cancel, Done) stands this far above the page shown around the region. */
+export const MASK_EDIT_BAR = { w: 236, h: 34 };
+const MASK_EDIT_BAR_GAP = 8;
+
+/** Passing to another group: a live window waits at most this long for the still it flies home as. */
+const SWITCH_STILL_WAIT_MS = 400;
 
 /** The dock's column on the desk's leading side, and an icon in it. */
 export const DOCK_W = 60;
@@ -206,8 +221,18 @@ export interface DeskWindowView {
   stillShows: "page" | "region" | "none";
   /** Its page is frozen for a region to be chosen from it (startMask). */
   selecting: boolean;
-  /** Masked a moment ago: where the window it was cut from stood, from its own corner — fading out. */
-  maskFade: Rect | null;
+  /**
+   * Its mask is being edited (editMask): where its whole page is shown
+   * around the region, and the editor's bar, from the window's corner;
+   * `shown` once no live page is left under them, so they can be seen.
+   */
+  editing: { page: Rect; bar: Rect; shown: boolean } | null;
+  /**
+   * Masked a moment ago (or its mask edited): where the page it was cut from
+   * stood, from its own corner — fading out. `framed`: that is a whole
+   * window, its page inside its frame; otherwise the page box alone.
+   */
+  maskFade: (Rect & { framed: boolean }) | null;
 }
 
 export interface DeskView {
@@ -238,6 +263,26 @@ export interface DeskView {
   phase: "entering" | "open" | "leaving";
 }
 
+/** A window of another group's desk, drawn small (sketchGroup). */
+export interface DeskSketchWindow {
+  tabId: string;
+  /** Its box in the stage. */
+  rect: Rect;
+  mask: DeskMask | null;
+  /** On top: the window in use, once the desk has passed to the group. */
+  focused: boolean;
+  still: string | null;
+  /** What `still` is a picture of (DeskWindowView's). */
+  stillShows: "page" | "region" | "none";
+}
+
+/** Another group's desk as it would come out (sketchGroup): the stage's size, and its windows bottom to top. */
+export interface DeskSketch {
+  width: number;
+  height: number;
+  windows: DeskSketchWindow[];
+}
+
 export interface DeskHost {
   variants(): DeskVariants;
   /** A native page can be on screen for this tab right now: awake, not shell-drawn. */
@@ -247,6 +292,8 @@ export interface DeskHost {
   /** Close this tab (a window let go on the dock's Close pad). */
   close(tabId: string): void;
   save(windows: SavedDeskWindow[]): void;
+  /** Another of the Space's groups was chosen in the dock: its desk takes this one's place (switchGroup follows). */
+  switchGroup(groupId: string): void;
   /** The leaving motion is done: the surface can go back to panes. */
   leaveDone(): void;
 }
@@ -407,7 +454,25 @@ export class DeskEngine {
   /** The window whose page is frozen for its mask to be chosen (startMask). */
   #selecting: string | null = null;
   /** A window masked a moment ago, and the window it was cut from, fading until `until`. */
-  #maskFade: { tabId: string; from: Rect; until: number } | null = null;
+  #maskFade: { tabId: string; from: Rect; until: number; framed: boolean } | null = null;
+  /** The masked window whose mask is being edited (editMask). */
+  #editing: string | null = null;
+  /** The group's tabs (start, syncTabs, switchGroup): the dock's, whose pictures are kept fresh. */
+  #groupTabIds: readonly string[] = [];
+  /** The dock's icons for the Space's other groups (attachGroupIcon). */
+  readonly #groupIconEls = new Map<string, HTMLElement>();
+  /** When a group's pictures were last asked for from the dock (peekGroup). */
+  readonly #groupPeekedAt = new Map<string, number>();
+  /** Another group's icon pressed in the dock, and where it stood then: its windows come out of there (switchGroup). */
+  #groupPress: { groupId: string; rect: Rect } | null = null;
+  /**
+   * The windows of a group the desk has passed from (switchGroup), each
+   * waiting for a still to fly into its group's icon as: the group, and
+   * when it began waiting.
+   */
+  readonly #departing = new Map<string, { groupId: string; since: number }>();
+  /** How many windows are still flying into each group's icon: it bounces as the last lands. */
+  readonly #folding = new Map<string, number>();
 
   constructor(host: DeskHost) {
     this.#host = host;
@@ -460,6 +525,45 @@ export class DeskEngine {
   attachIcon(tabId: string, el: HTMLElement | null): void {
     if (el === null) this.#iconEls.delete(tabId);
     else this.#iconEls.set(tabId, el);
+  }
+
+  attachGroupIcon(groupId: string, el: HTMLElement | null): void {
+    if (el === null) this.#groupIconEls.delete(groupId);
+    else this.#groupIconEls.set(groupId, el);
+  }
+
+  /** Another group's icon is under the pointer: its tabs' pictures are fetched, so its windows come out as themselves. */
+  peekGroup(groupId: string, tabIds: readonly string[]): void {
+    const now = performance.now();
+    if (now - (this.#groupPeekedAt.get(groupId) ?? Number.NEGATIVE_INFINITY) < PEEK_FRESH_MS) return;
+    this.#groupPeekedAt.set(groupId, now);
+    this.#requestThumbs(tabIds.slice(0, MAX_DESK_WINDOWS).filter((tabId) => (this.#thumbs.get(tabId)?.at ?? Number.NEGATIVE_INFINITY) < now - PEEK_FRESH_MS));
+  }
+
+  /** Another group's icon was clicked: where it stands is kept, for its windows to come out of, and the host passes the desk to it. */
+  chooseGroup(groupId: string): void {
+    if (this.#phase === "leaving") return;
+    const rect = this.#groupIconRect(groupId);
+    this.#groupPress = rect === null ? null : { groupId, rect };
+    this.#host.switchGroup(groupId);
+  }
+
+  /**
+   * Another group's desk as it would come out if the desk passed to it now
+   * (laid out as switchGroup lays it out): the stage's size, and its windows
+   * in the stage, bottom to top, each with the latest picture of its page —
+   * for the dock to draw it small beside the group's icon.
+   */
+  sketchGroup(tabIds: readonly string[], saved: readonly SavedDeskWindow[], entry: string | null): DeskSketch {
+    const { windows, entry: top } = this.#laidOut(saved, tabIds, entry);
+    return {
+      width: this.#stageBox.width,
+      height: this.#stageBox.height,
+      windows: windows.map((window) => {
+        const still = this.#latestStill(window.tabId);
+        return { ...window, focused: window.tabId === top, still: still?.src ?? null, stillShows: stillShows(still, window.mask) };
+      }),
+    };
   }
 
   /** The icon in hand while one is dragged out of the dock. */
@@ -610,7 +714,7 @@ export class DeskEngine {
     win.coasting = false;
     win.delay = 0;
     win.written = "";
-    this.#maskFade = { tabId: win.tabId, from, until: performance.now() + MASK_FADE_MS };
+    this.#maskFade = { tabId: win.tabId, from, until: performance.now() + MASK_FADE_MS, framed: true };
     this.#dirtyView = true;
     this.#save();
   }
@@ -642,6 +746,7 @@ export class DeskEngine {
     const win = this.#wins.get(tabId);
     if (win === undefined || win.mask === null || win.flight !== null || this.#phase !== "open") return;
     if (this.#gesture?.tabId === tabId) this.#cancelGesture();
+    if (this.#editing === tabId) this.#editing = null;
     win.target = this.#unmaskedRect(win);
     win.mask = null;
     win.coasting = false;
@@ -652,6 +757,109 @@ export class DeskEngine {
     this.#save();
     this.#render();
     this.#kick();
+  }
+
+  /**
+   * Edit a masked window's region: the window is drawn, its whole page
+   * shown around the region at the region's scale (the rest dimmed), and
+   * the region's edges and corners can be dragged, or the region moved
+   * (DeskWindow's MaskEditor). Main shows the whole page meanwhile — the
+   * same override, aimed at all of the page's box — so a still of it can
+   * be taken. Done (commitMaskEdit) or called off (cancelMaskEdit).
+   */
+  editMask(tabId: string): void {
+    const win = this.#wins.get(tabId);
+    if (win === undefined || win.mask === null || win.flight !== null || this.#phase !== "open" || !this.#host.hasLivePage(tabId)) return;
+    if (this.#gesture !== null) this.#cancelGesture();
+    this.#raise(tabId);
+    this.#editing = tabId;
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  cancelMaskEdit(): void {
+    const tabId = this.#editing;
+    if (tabId === null) return;
+    this.#editing = null;
+    this.#pendingFocus = tabId;
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * The edited region, in the page's box: the window becomes it, where it
+   * lies on the page shown, at the same scale — the rest of the page fading
+   * from around it, as when it was first masked.
+   */
+  commitMaskEdit(tabId: string, region: Rect): void {
+    const win = this.#wins.get(tabId);
+    if (this.#editing !== tabId || win === undefined || win.mask === null) return;
+    const mask = win.mask;
+    const page = this.#editPage(win);
+    const scale = page.w / mask.pageWidth;
+    this.#editing = null;
+    const x = Math.round(clamp(region.x, 0, mask.pageWidth - MIN_DESK_MASK));
+    const y = Math.round(clamp(region.y, 0, mask.pageHeight - MIN_DESK_MASK));
+    const next: DeskMask = {
+      x,
+      y,
+      width: Math.round(clamp(region.w, MIN_DESK_MASK, mask.pageWidth - x)),
+      height: Math.round(clamp(region.h, MIN_DESK_MASK, mask.pageHeight - y)),
+      pageWidth: mask.pageWidth,
+      pageHeight: mask.pageHeight,
+    };
+    if (deskMaskKey(next) !== deskMaskKey(mask)) {
+      win.mask = next;
+      win.rect = {
+        x: page.x + next.x * scale - MASK_INSETS.left,
+        y: page.y + next.y * scale - MASK_INSETS.top,
+        w: next.width * scale + MASK_INSETS.left + MASK_INSETS.right,
+        h: next.height * scale + MASK_INSETS.top + MASK_INSETS.bottom,
+      };
+      // Where the region lies may be off the desk: the window keeps its size, and comes back onto it.
+      const reach = this.#reach();
+      const onDesk = {
+        ...win.rect,
+        x: clamp(win.rect.x, reach.x, Math.max(reach.x, reach.x + reach.w - win.rect.w)),
+        y: clamp(win.rect.y, reach.y, Math.max(reach.y, reach.y + reach.h - win.rect.h)),
+      };
+      win.target = sameRect(onDesk, win.rect, 0.5) ? null : onDesk;
+      win.restore = null;
+      win.coasting = false;
+      win.delay = 0;
+      win.written = "";
+      this.#maskFade = { tabId, from: page, until: performance.now() + MASK_FADE_MS, framed: false };
+      this.#save();
+    }
+    this.#pendingFocus = tabId;
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /** Editing a mask: where the whole page is shown, in the stage — around the region, where it is, at its scale. */
+  #editPage(win: Win): Rect {
+    const mask = win.mask!;
+    const scale = Math.max(0.01, (win.rect.w - MASK_INSETS.left - MASK_INSETS.right) / mask.width);
+    return {
+      x: win.rect.x + MASK_INSETS.left - mask.x * scale,
+      y: win.rect.y + MASK_INSETS.top - mask.y * scale,
+      w: mask.pageWidth * scale,
+      h: mask.pageHeight * scale,
+    };
+  }
+
+  /** The mask editor's bar: above the page shown, centred on what of it is on the desk — or inside its top, with no room above. */
+  #editBar(page: Rect): Rect {
+    const reach = this.#reach();
+    const left = Math.max(page.x, reach.x);
+    const right = Math.min(page.x + page.w, reach.x + reach.w);
+    const x = clamp((left + right) / 2 - MASK_EDIT_BAR.w / 2, reach.x + MASK_EDIT_BAR_GAP, reach.x + reach.w - MASK_EDIT_BAR.w - MASK_EDIT_BAR_GAP);
+    const above = page.y - MASK_EDIT_BAR_GAP - MASK_EDIT_BAR.h;
+    const y = above >= reach.y + MASK_EDIT_BAR_GAP ? above : Math.max(page.y, reach.y) + MASK_EDIT_BAR_GAP;
+    return { x, y, ...MASK_EDIT_BAR };
   }
 
   /** The dock is showing this tab's preview: see that its picture is recent. */
@@ -749,23 +957,8 @@ export class DeskEngine {
    * The others fly out of the inventory a beat apart.
    */
   start(saved: readonly SavedDeskWindow[], entryTabId: string | null, groupTabIds: readonly string[]): void {
-    const usable = this.#usable();
-    const reach = this.#reach();
-    const windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null }> = saved
-      .filter((window) => groupTabIds.includes(window.tabId))
-      .map((window) =>
-        window.mask !== undefined
-          ? { tabId: window.tabId, rect: this.#maskedRectFrom(window.rect, window.mask), mask: window.mask }
-          : { tabId: window.tabId, rect: clampRect(denormalizeRect(window.rect, usable), reach), mask: null },
-      );
-    if (entryTabId !== null && !windows.some((window) => window.tabId === entryTabId)) {
-      const rect = windows.length === 0 ? centeredRect(usable) : freeSpot(windows.map((window) => window.rect), { w: usable.w * 0.6, h: usable.h * 0.76 }, usable);
-      windows.push({ tabId: entryTabId, rect, mask: null });
-    }
-    const entry = entryTabId ?? windows[windows.length - 1]?.tabId ?? null;
-    // The window in view goes on top; past the desk's limit, the bottom ones stay in the inventory.
-    windows.sort((a, b) => Number(a.tabId === entry) - Number(b.tabId === entry));
-    windows.splice(0, Math.max(0, windows.length - MAX_DESK_WINDOWS));
+    // The window in view goes on top.
+    const { windows, entry } = this.#laidOut(saved, groupTabIds, entryTabId);
     const now = performance.now();
     windows.forEach((window, index) => {
       const isEntry = window.tabId === entry;
@@ -799,7 +992,8 @@ export class DeskEngine {
     });
     this.#focused = entry;
     this.#phase = windows.length === 0 ? "open" : "entering";
-    this.#thumbTimer = window.setInterval(() => this.#requestThumbs(groupTabIds.filter((tabId) => !this.#wins.has(tabId))), THUMB_REFRESH_MS);
+    this.#groupTabIds = groupTabIds;
+    this.#thumbTimer = window.setInterval(() => this.#requestThumbs(this.#groupTabIds.filter((tabId) => !this.#wins.has(tabId))), THUMB_REFRESH_MS);
     this.#coveredTimer = window.setInterval(() => this.#refreshCovered(), COVERED_REFRESH_MS);
     this.#emit();
     this.#render();
@@ -807,6 +1001,134 @@ export class DeskEngine {
     // picture is then of its region, the one its window flies in with.
     this.#requestThumbs(groupTabIds);
     this.#kick();
+  }
+
+  /**
+   * The desk passes to another of the Space's groups, in place. The group
+   * left is saved as it was left (the host still saves under its id), and
+   * its windows fly into its icon in the dock — each once a still of it is
+   * up, so it flies as what it showed (#departFor). The other group's
+   * windows come out of the icon chosen (chooseGroup) to where they were
+   * last left — or, never on a desk, its tab used last comes out alone, in
+   * the middle — and that tab is chosen, and takes the keyboard.
+   */
+  switchGroup(next: {
+    /** The group the desk passes from: its windows go into its icon. */
+    from: string;
+    groupId: string;
+    tabIds: readonly string[];
+    saved: readonly SavedDeskWindow[];
+    entry: string | null;
+  }): void {
+    if (this.#phase === "leaving") return;
+    this.#cancelGesture();
+    this.#selecting = null;
+    this.#editing = null;
+    this.#save();
+    const now = performance.now();
+    for (const tabId of this.#order) {
+      const win = this.#wins.get(tabId)!;
+      if (win.flight === "away" || this.#departing.has(tabId)) continue;
+      win.coasting = false;
+      this.#departing.set(tabId, { groupId: next.from, since: now });
+    }
+    if (this.#pendingFocus !== null && this.#departing.has(this.#pendingFocus)) this.#pendingFocus = null;
+    this.#groupTabIds = next.tabIds;
+    const from = this.#groupPress?.groupId === next.groupId ? this.#groupPress.rect : this.#dockMiddle();
+    this.#groupPress = null;
+    // The window in use on top. (A window of this group may still be on its
+    // way home, the desk passed from it a moment ago: it is taken back where
+    // it was left, not made anew.)
+    const { windows, entry } = this.#laidOut(next.saved, next.tabIds, next.entry);
+    windows.forEach((window, index) => {
+      const homing = this.#wins.get(window.tabId);
+      if (homing !== undefined) {
+        this.#takeBack(homing, window.rect);
+        return;
+      }
+      const win = this.#flyingIn(window.tabId, window.rect, from);
+      win.mask = window.mask;
+      win.delay = 0.03 + index * 0.035;
+      this.#wins.set(window.tabId, win);
+      this.#order.push(window.tabId);
+    });
+    // Nothing is flying into its icon now: it is the desk's group again, with no icon in the dock.
+    this.#folding.delete(next.groupId);
+    this.#focused = entry;
+    this.#pendingFocus = entry;
+    this.#asideFor = null;
+    this.#phase = "entering";
+    if (entry !== null) this.#host.select(entry);
+    this.#dirtyView = true;
+    this.#render();
+    // After the render has told main of the masks (as start does).
+    this.#requestThumbs(next.tabIds.filter((tabId) => this.#wins.has(tabId)));
+    // A window whose still never comes flies all the same once the wait is up.
+    this.#renderIn(SWITCH_STILL_WAIT_MS + 20);
+    this.#kick();
+  }
+
+  /** A window on its way into its group's icon, that group come back to the desk: it turns round, to where it was left, on top. */
+  #takeBack(win: Win, rect: Rect): void {
+    this.#departing.delete(win.tabId);
+    if (win.flight === "away") {
+      win.flight = "in";
+      win.onArrive = null;
+      win.lift = { scale: 1, tilt: 0 };
+    }
+    win.target = rect;
+    win.delay = 0;
+    win.coasting = false;
+    this.#order = [...this.#order.filter((tabId) => tabId !== win.tabId), win.tabId];
+  }
+
+  /**
+   * A group's windows as they come out onto the desk (start, switchGroup,
+   * sketchGroup): each where it was left, in the desk as it is now, and the
+   * tab the desk comes up on — out too, alone in the middle or in the room
+   * left beside the others — on top. Past the desk's limit, the bottom ones
+   * stay in the dock.
+   */
+  #laidOut(
+    saved: readonly SavedDeskWindow[],
+    tabIds: readonly string[],
+    entryTabId: string | null,
+  ): { windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null }>; entry: string | null } {
+    const usable = this.#usable();
+    const reach = this.#reach();
+    const windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null }> = saved
+      .filter((window) => tabIds.includes(window.tabId))
+      .map((window) =>
+        window.mask !== undefined
+          ? { tabId: window.tabId, rect: this.#maskedRectFrom(window.rect, window.mask), mask: window.mask }
+          : { tabId: window.tabId, rect: clampRect(denormalizeRect(window.rect, usable), reach), mask: null },
+      );
+    const entry = entryTabId !== null && tabIds.includes(entryTabId) ? entryTabId : (windows[windows.length - 1]?.tabId ?? null);
+    if (entry !== null && !windows.some((window) => window.tabId === entry)) {
+      const rect = windows.length === 0 ? centeredRect(usable) : freeSpot(windows.map((window) => window.rect), { w: usable.w * 0.6, h: usable.h * 0.76 }, usable);
+      windows.push({ tabId: entry, rect, mask: null });
+    }
+    windows.sort((a, b) => Number(a.tabId === entry) - Number(b.tabId === entry));
+    windows.splice(0, Math.max(0, windows.length - MAX_DESK_WINDOWS));
+    return { windows, entry };
+  }
+
+  /** A window of the group the desk passed from, once it has its still (or has waited long enough): into its group's icon. */
+  #departFor(win: Win, groupId: string): void {
+    this.#sendAway(win, false, this.#groupIconRect(groupId) ?? this.#dockMiddle());
+    this.#folding.set(groupId, (this.#folding.get(groupId) ?? 0) + 1);
+    const arrive = win.onArrive;
+    win.onArrive = () => {
+      arrive?.();
+      const left = (this.#folding.get(groupId) ?? 1) - 1;
+      if (left > 0) {
+        this.#folding.set(groupId, left);
+        return;
+      }
+      this.#folding.delete(groupId);
+      this.#bounce(this.#groupIconEls.get(groupId));
+    };
+    this.#dirtyView = true;
   }
 
   /**
@@ -819,6 +1141,8 @@ export class DeskEngine {
     if (this.#phase === "leaving") return;
     this.#cancelGesture();
     this.#selecting = null;
+    this.#editing = null;
+    this.#departing.clear();
     this.#save();
     this.#phase = "leaving";
     const top = this.#focused !== null && this.#wins.has(this.#focused) ? this.#focused : this.#order[this.#order.length - 1] ?? null;
@@ -847,9 +1171,11 @@ export class DeskEngine {
 
   /** The tabs of the group now: a window whose tab left it (closed, moved out) goes. */
   syncTabs(groupTabIds: readonly string[]): void {
+    this.#groupTabIds = groupTabIds;
     let changed = false;
-    for (const tabId of [...this.#wins.keys()]) {
-      if (groupTabIds.includes(tabId)) continue;
+    for (const [tabId, win] of [...this.#wins]) {
+      // (A window of a group the desk has passed from is on its way into that group's icon.)
+      if (groupTabIds.includes(tabId) || this.#departing.has(tabId) || win.flight === "away") continue;
       if (this.#gesture?.tabId === tabId) this.#cancelGesture();
       this.#remove(tabId);
       changed = true;
@@ -984,19 +1310,6 @@ export class DeskEngine {
     if (kind === "cascade") this.#order = [...this.#order.filter((tabId) => !ids.includes(tabId)), ...ids];
     this.#emit();
     this.#kick();
-  }
-
-  /** Every tab of the group out on the desk — as many as it holds, in the inventory's order — tiled. */
-  gather(groupTabIds: readonly string[]): void {
-    if (this.#phase !== "open") return;
-    let room = MAX_DESK_WINDOWS - this.#staying().length;
-    for (const tabId of groupTabIds) {
-      if (room <= 0) break;
-      if (this.#wins.has(tabId)) continue;
-      this.add(tabId, { focus: false });
-      room -= 1;
-    }
-    this.arrange("tile", groupTabIds);
   }
 
   // ── Presses and gestures ───────────────────────────────────────────────
@@ -1717,6 +2030,19 @@ export class DeskEngine {
   #render(): void {
     if (this.#destroyed) return;
     const now = performance.now();
+    // A mask being edited: its page shown around the region, and its bar,
+    // are drawn over the desk, above every window — a cover (clearCovers says when it can be seen).
+    const editing = this.#editing === null ? undefined : this.#wins.get(this.#editing);
+    if (editing !== undefined && editing.mask !== null) {
+      const page = this.#editPage(editing);
+      const bar = this.#editBar(page);
+      const x = Math.min(page.x, bar.x);
+      const y = Math.min(page.y, bar.y);
+      this.#covers.set("maskedit", { x, y, w: Math.max(page.x + page.w, bar.x + bar.w) - x, h: Math.max(page.y + page.h, bar.y + bar.h) - y });
+    } else {
+      if (editing === undefined && this.#editing !== null) this.#editing = null;
+      this.#covers.delete("maskedit");
+    }
     const frames = new Map<string, Rect>();
     for (const tabId of this.#order) frames.set(tabId, this.#wins.get(tabId)!.rect);
     const gesture = this.#gesture;
@@ -1768,13 +2094,21 @@ export class DeskEngine {
         win.wantStillSince = null;
       }
       const native = this.#host.hasLivePage(win.tabId);
-      const forced = win.flight !== null || (this.#gesture?.kind === "spawn" && this.#gesture.tabId === win.tabId);
+      // A mask being edited is drawn at once: main shows its whole page meanwhile, into a view sized for that, never over the region's box.
+      const forced = win.flight !== null || (this.#gesture?.kind === "spawn" && this.#gesture.tabId === win.tabId) || this.#editing === win.tabId;
       const drawn = !native || forced || (wants && this.#fresh(win));
       if (drawn !== win.drawn) {
         win.drawn = drawn;
         this.#dirtyView = true;
       }
       this.#write(win);
+    }
+    // Windows of a group the desk has passed from: each goes once its still stands in for it.
+    for (const [tabId, departing] of [...this.#departing]) {
+      const win = this.#wins.get(tabId);
+      if (win !== undefined && !win.drawn && now - departing.since < SWITCH_STILL_WAIT_MS) continue;
+      this.#departing.delete(tabId);
+      if (win !== undefined) this.#departFor(win, departing.groupId);
     }
     this.#checkCovers();
     // The dock slides back only once no live page is left under its place.
@@ -1809,7 +2143,7 @@ export class DeskEngine {
   }
 
   #wantsStillForMotion(win: Win): boolean {
-    if (win.flight !== null || win.hold || this.#selecting === win.tabId) return true;
+    if (win.flight !== null || win.hold || this.#selecting === win.tabId || this.#editing === win.tabId || this.#departing.has(win.tabId)) return true;
     const gesture = this.#gesture;
     const carried = gesture?.tabId === win.tabId ? gesture : null;
     if (carried?.kind === "spawn") return true;
@@ -1821,7 +2155,10 @@ export class DeskEngine {
   }
 
   #fresh(win: Win): boolean {
-    return win.wantStillSince !== null && win.paintedAt >= win.wantStillSince - STILL_GRACE_MS && stillShows(win.still, win.mask) !== "none";
+    const shows = stillShows(win.still, win.mask);
+    // Its mask being edited, only a still of the whole page will do.
+    if (this.#editing === win.tabId && shows !== "page") return false;
+    return win.wantStillSince !== null && win.paintedAt >= win.wantStillSince - STILL_GRACE_MS && shows !== "none";
   }
 
   /** Position one window's element, only when something about it changed. */
@@ -1878,14 +2215,29 @@ export class DeskEngine {
     const dock =
       place === null ? null : { x: Math.round(left + place.x), y: Math.round(top + place.y), width: Math.round(place.w), height: Math.round(place.h) };
     const masks: DeskMaskedPage[] = [];
-    for (const tabId of this.#order) {
+    // Passing to another group, both groups' windows are out a moment: the
+    // group come to the desk first, the one leaving after (waiting for its
+    // still, or on its way home), within main's limit.
+    const leaving = (id: string): boolean => this.#departing.has(id) || this.#wins.get(id)?.flight === "away";
+    const leavingLast = (ids: readonly string[]): string[] => [...ids.filter((id) => !leaving(id)), ...ids.filter(leaving)];
+    for (const tabId of leavingLast(this.#order)) {
       const win = this.#wins.get(tabId)!;
       if (win.mask === null) continue;
+      if (this.#editing === tabId) {
+        // Its mask being edited: the whole page, at the scale it is shown at,
+        // for its still — but no larger than a still is kept (a small region
+        // enlarged would ask for a page many screens wide), its shape kept.
+        const page = this.#editPage(win);
+        const fit = Math.min(1, MAX_DESK_STILL_WIDTH / Math.max(page.w, page.h));
+        masks.push({ tabId, mask: wholeDeskMask(win.mask), width: Math.max(1, Math.round(page.w * fit)), height: Math.max(1, Math.round(page.h * fit)) });
+        continue;
+      }
       const size = this.#maskShownAt(win);
       masks.push({ tabId, mask: win.mask, width: size.w, height: size.h });
     }
     // A window on its way into the inventory is drawn, with no page to grab.
-    const desk = { tabIds: this.#staying(), grab: grab === "off" ? null : grab, dock, masks };
+    masks.splice(MAX_DESK_WINDOWS);
+    const desk = { tabIds: leavingLast(this.#staying()).slice(0, MAX_DESK_WINDOWS), grab: grab === "off" ? null : grab, dock, masks };
     const deskKey = `${desk.tabIds.join(" ")}|${desk.grab ?? ""}|${dock === null ? "" : `${dock.x},${dock.y},${dock.width},${dock.height}`}|${masks
       .map((page) => `${page.tabId}:${deskMaskKey(page.mask)}:${page.width}x${page.height}`)
       .join(" ")}`;
@@ -1943,9 +2295,16 @@ export class DeskEngine {
           mask: win.mask,
           stillShows: stillShows(win.still ?? this.#thumbs.get(tabId) ?? null, win.mask),
           selecting: this.#selecting === tabId,
+          editing: this.#editing === tabId && win.mask !== null ? this.#editView(win) : null,
           maskFade:
             this.#maskFade?.tabId === tabId
-              ? { x: this.#maskFade.from.x - win.rect.x, y: this.#maskFade.from.y - win.rect.y, w: this.#maskFade.from.w, h: this.#maskFade.from.h }
+              ? {
+                  x: this.#maskFade.from.x - win.rect.x,
+                  y: this.#maskFade.from.y - win.rect.y,
+                  w: this.#maskFade.from.w,
+                  h: this.#maskFade.from.h,
+                  framed: this.#maskFade.framed,
+                }
               : null,
         };
       }),
@@ -1961,6 +2320,14 @@ export class DeskEngine {
       phase: this.#phase,
     };
     for (const listener of this.#listeners) listener();
+  }
+
+  /** The mask editor's page and bar, from the window's corner. */
+  #editView(win: Win): { page: Rect; bar: Rect; shown: boolean } {
+    const page = this.#editPage(win);
+    const bar = this.#editBar(page);
+    const from = (rect: Rect): Rect => ({ x: rect.x - win.rect.x, y: rect.y - win.rect.y, w: rect.w, h: rect.h });
+    return { page: from(page), bar: from(bar), shown: this.#clearCovers.has("maskedit") };
   }
 
   // ── Stills ─────────────────────────────────────────────────────────────
@@ -2001,7 +2368,9 @@ export class DeskEngine {
       this.#requestedAt.set(tabId, at);
       const win = this.#wins.get(tabId);
       const insets = win === undefined ? CHROME_INSETS[this.#host.variants().chrome] : this.#insets(win);
-      width = Math.max(width, (win?.target?.w ?? win?.rect.w ?? 640) - insets.left - insets.right, 640);
+      // A mask being edited is shown as its whole page.
+      const shown = win !== undefined && this.#editing === tabId && win.mask !== null ? this.#editPage(win).w : (win?.target?.w ?? win?.rect.w ?? 640) - insets.left - insets.right;
+      width = Math.max(width, shown, 640);
     }
     const devicePixels = Math.min(MAX_DESK_STILL_WIDTH, Math.round(width * (window.devicePixelRatio || 1)));
     void api
@@ -2033,6 +2402,13 @@ export class DeskEngine {
           }),
         );
       });
+  }
+
+  /** The newest picture of a tab's page: its window's, or the dock's. */
+  #latestStill(tabId: string): Still | null {
+    const own = this.#wins.get(tabId)?.still ?? null;
+    const thumb = this.#thumbs.get(tabId) ?? null;
+    return own === null || (thumb !== null && thumb.at > own.at) ? thumb : own;
   }
 
   #requestThumbs(tabIds: readonly string[]): void {
@@ -2100,8 +2476,8 @@ export class DeskEngine {
   }
 
   /** A window coming out of the inventory: at its thumbnail, scaled down to it, headed for `target` at full size. */
-  #flyingIn(tabId: string, target: Rect): Win {
-    const thumb = this.#iconRect(tabId) ?? shrunk(target);
+  #flyingIn(tabId: string, target: Rect, from?: Rect): Win {
+    const thumb = from ?? this.#iconRect(tabId) ?? shrunk(target);
     const win = this.#newWin(tabId, { x: thumb.x, y: thumb.y, w: target.w, h: target.h });
     win.origin = { x: 0, y: 0 };
     win.scale = Math.max(0.05, thumb.w / Math.max(1, target.w));
@@ -2117,6 +2493,10 @@ export class DeskEngine {
     this.#focused = tabId;
     if (this.#asideFor !== tabId) this.#asideFor = null;
     if (this.#selecting !== null && this.#selecting !== tabId) this.#selecting = null;
+    if (this.#editing !== null && this.#editing !== tabId) {
+      this.#editing = null;
+      this.#dirtyView = true;
+    }
     if (index !== this.#order.length - 1) {
       this.#order.splice(index, 1);
       this.#order.push(tabId);
@@ -2150,6 +2530,7 @@ export class DeskEngine {
     win.lift = { scale: Math.max(0.05, home.w / Math.max(1, win.rect.w)), tilt: 0 };
     win.vel = { ...win.vel, w: 0, h: 0 };
     win.target = { x: home.x, y: home.y, w: win.rect.w, h: win.rect.h };
+    if (this.#editing === win.tabId) this.#editing = null;
     if (win.still !== null) this.#thumbs.set(win.tabId, win.still);
     const intoIcon = to === undefined;
     win.onArrive = () => {
@@ -2168,7 +2549,10 @@ export class DeskEngine {
 
   /** The dock's icon for this tab gives a little bounce: its window has just come back into it. */
   #receive(tabId: string): void {
-    const el = this.#iconEls.get(tabId);
+    this.#bounce(this.#iconEls.get(tabId));
+  }
+
+  #bounce(el: HTMLElement | undefined): void {
     if (el === undefined || el.dataset === undefined) return;
     delete el.dataset["received"];
     // Restart the bounce if one is running (a style read between the two writes).
@@ -2220,6 +2604,7 @@ export class DeskEngine {
     this.#order = this.#order.filter((id) => id !== tabId);
     if (this.#asideFor === tabId) this.#asideFor = null;
     if (this.#selecting === tabId) this.#selecting = null;
+    if (this.#editing === tabId) this.#editing = null;
     if (this.#focused === tabId) this.#focused = this.#order[this.#order.length - 1] ?? null;
     this.#dirtyView = true;
   }
@@ -2411,6 +2796,21 @@ export class DeskEngine {
     return { x: box.left - this.#stageBox.left - slide, y: box.top - this.#stageBox.top, w: box.width, h: box.height };
   }
 
+  /** Another group's icon in the dock, where it rests (as #iconRect). */
+  #groupIconRect(groupId: string): Rect | null {
+    const el = this.#groupIconEls.get(groupId);
+    if (el === undefined || !el.isConnected) return null;
+    const box = el.getBoundingClientRect();
+    if (box.width < 1) return null;
+    const slide = dockSlide(el);
+    return { x: box.left - this.#stageBox.left - slide, y: box.top - this.#stageBox.top, w: box.width, h: box.height };
+  }
+
+  /** An icon's box in the middle of the dock's column: where windows go, or come from, with no icon of their own to find. */
+  #dockMiddle(): Rect {
+    return { x: DOCK_W / 2 - DOCK_ICON / 2, y: this.#stageBox.height / 2 - DOCK_ICON / 2, w: DOCK_ICON, h: DOCK_ICON };
+  }
+
   #toStage(client: Point): Point {
     return { x: client.x - this.#stageBox.left, y: client.y - this.#stageBox.top };
   }
@@ -2494,7 +2894,15 @@ function dockSlide(el: HTMLElement): number {
 function stillShows(still: Still | null, mask: DeskMask | null): "page" | "region" | "none" {
   if (still === null) return "none";
   if (still.mask === null) return "page";
-  return mask !== null && still.mask === deskMaskKey(mask) ? "region" : "none";
+  if (mask === null) return "none";
+  if (still.mask === deskMaskKey(mask)) return "region";
+  // Taken while the mask was edited: the whole page box, through the same override.
+  return still.mask === deskMaskKey(wholeDeskMask(mask)) ? "page" : "none";
+}
+
+/** A mask's page box, all of it: what main shows while the mask is edited. */
+function wholeDeskMask(mask: DeskMask): DeskMask {
+  return { x: 0, y: 0, width: mask.pageWidth, height: mask.pageHeight, pageWidth: mask.pageWidth, pageHeight: mask.pageHeight };
 }
 
 function reducedMotion(): boolean {

@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Bot } from "lucide-react";
+import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { cn } from "../lib/cn";
 import { displayHost } from "../lib/url";
@@ -47,14 +48,43 @@ export function Favicon({ src, seed, className, letter: showLetter = true }: { s
  * the load, sometimes after). `fallbackFaviconUrl` — the icon the tab's
  * anchor last kept — stands in until then, so opening a favorite or a pin
  * does not drop its tile to a letter for the length of the load.
+ *
+ * `working` rings the mark with the agent's comet while the agent works in
+ * the tab (@pistachio/shell-contracts/agent-glow `agentDrivenTabId`) — the
+ * pane's own ring in miniature, and the one place the person sees it when
+ * the agent works in a tab behind theirs. The caller says so: this file is
+ * also drawn by views that have no store.
  */
-export function TabMark({ tab, fallbackFaviconUrl = null, className }: { tab: BrowserTabInfo; fallbackFaviconUrl?: string | null; className?: string }) {
-  if (tab.kind === "agent") {
-    return (
+export function TabMark({
+  tab,
+  fallbackFaviconUrl = null,
+  working = false,
+  className,
+}: {
+  tab: BrowserTabInfo;
+  fallbackFaviconUrl?: string | null;
+  working?: boolean;
+  className?: string;
+}) {
+  // Phased on the wall clock like every other ring, taken as this one goes on.
+  const delay = useMemo(() => (working ? `${String(agentRingDelayMs(Date.now()))}ms` : undefined), [working]);
+  const mark =
+    tab.kind === "agent" ? (
       <span className={cn("grid size-4 shrink-0 place-items-center rounded-[4px] bg-green-100 text-green-900", className)}>
         <Bot className="size-[62%]" aria-hidden="true" />
       </span>
+    ) : (
+      <Favicon src={tab.faviconUrl ?? fallbackFaviconUrl} seed={displayHost(tab.url) || tab.title} className={className} />
     );
-  }
-  return <Favicon src={tab.faviconUrl ?? fallbackFaviconUrl} seed={displayHost(tab.url) || tab.title} className={className} />;
+  if (!working) return mark;
+  return (
+    <span
+      data-testid="tab-agent-working"
+      title="Pistachio is working in this tab"
+      className="agent-ring agent-ring-mark relative flex shrink-0"
+      style={{ "--agent-ring-delay": delay } as CSSProperties}
+    >
+      {mark}
+    </span>
+  );
 }

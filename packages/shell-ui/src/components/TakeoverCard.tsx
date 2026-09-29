@@ -1,5 +1,6 @@
-import { ArrowRight, LogIn, Monitor } from "lucide-react";
+import { ArrowRight, LogIn, Monitor, PanelTop } from "lucide-react";
 import type { RunSummary } from "@pistachio/protocol";
+import { agentTabId } from "@pistachio/shell-contracts/agent-glow";
 import {
   CredentialCapture,
   type CredentialCaptureTransport,
@@ -33,6 +34,16 @@ export function TakeoverCard({ run }: { run: RunSummary }) {
     (state) => state.unavailable["openLiveView"] ?? null,
   );
   const controlUrl = useAppStore((state) => state.account.controlUrl);
+  const selectTab = useAppStore((state) => state.selectTab);
+  // The page the agent wants the person in: the tab it last worked, which
+  // it may have been working in the background. A button takes them there
+  // when it is not on screen — the agent does not switch tabs for them.
+  // Not checked against the snapshot's tabs: those are the active Space's
+  // alone, and the page may be in another (selectTab switches to it).
+  const pageTabId = takeover.kind === "credentials" ? null : agentTabId(run);
+  const pageOffScreen = useAppStore(
+    (state) => pageTabId !== null && !(state.snapshot?.visibleTabIds.includes(pageTabId) ?? false),
+  );
   if (takeover.kind === "credentials") {
     return (
       <section
@@ -81,6 +92,18 @@ export function TakeoverCard({ run }: { run: RunSummary }) {
             : "Complete this directly in the page."}{" "}
           Don’t share passwords, verification codes, or payment details in chat.
         </p>
+        {elsewhere || !pageOffScreen || pageTabId === null ? null : (
+          <Button
+            className="mt-3 w-full"
+            variant="secondary"
+            size="sm"
+            data-testid="takeover-go-to-page"
+            prefix={<PanelTop aria-hidden="true" />}
+            onClick={() => void selectTab(pageTabId)}
+          >
+            Go to the page
+          </Button>
+        )}
         {!elsewhere ? null : liveViewUnavailable !== null ? (
           // The host has no overlay to raise, and says why. A button that
           // opens nothing is worse than the sentence that explains it.

@@ -495,6 +495,24 @@ describe("tool history carries across turns", () => {
     expect(JSON.stringify(takeover)).not.toContain("use request_credentials for sensitive editable fields");
   });
 
+  it("keeps the person's tab theirs on the desktop, and brings the worked tab forward for a cloud run's live view", async () => {
+    const desktopModel = scriptedModel([answer("Done.")]);
+    await turn({ model: desktopModel });
+    const desktopSystem = systemText(desktopModel.doGenerateCalls[0]!.prompt);
+    const desktopShow = (desktopModel.doGenerateCalls[0]!.tools ?? []).find((item) => item.name === "tab_show");
+    expect(desktopSystem).toContain("The active tab is the one the person is looking at. Leave it as it is");
+    expect(desktopSystem).toContain("Use tab_show only when the person asks to be taken to or shown a page");
+    expect(JSON.stringify(desktopShow)).toContain("Only when they ask to be taken to or shown a page");
+
+    const cloudModel = scriptedModel([answer("Done.")]);
+    await turn({ model: cloudModel, browser: { ...fakeBrowser().browser, kind: "cloud" } });
+    const cloudSystem = systemText(cloudModel.doGenerateCalls[0]!.prompt);
+    const cloudShow = (cloudModel.doGenerateCalls[0]!.tools ?? []).find((item) => item.name === "tab_show");
+    expect(cloudSystem).toContain("bringing one to the front with tab_show before you work in it");
+    expect(cloudSystem).not.toContain("The active tab is the one the person is looking at");
+    expect(JSON.stringify(cloudShow)).toContain("where the person watching the run sees it");
+  });
+
   it("creates an inline credential handoff without exposing the phone link", async () => {
     const model = scriptedModel([
       calls({
@@ -1117,7 +1135,7 @@ describe("a run policy", () => {
     expect(result.outcome).toBe("final");
     expect(result.model).toBe("scripted-model");
     const offered = (model.doGenerateCalls[0]!.tools ?? []).map((item) => item.name);
-    expect(offered).toEqual(["tabs_list", "tab_open", "tab_focus", "page_inspect", "ask_user", "ask_user_text", "request_takeover"]);
+    expect(offered).toEqual(["tabs_list", "tab_open", "tab_show", "page_inspect", "ask_user", "ask_user_text", "request_takeover"]);
   });
 
   it("keeps every pausing tool on, including the credential handoff the host offered", async () => {

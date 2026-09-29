@@ -36,12 +36,26 @@ export interface AgentTabInfo {
   canGoBack: boolean;
   canGoForward: boolean;
   kind: "human" | "agent";
+  /**
+   * True on the tab the person is looking at, which the agent leaves as it
+   * is unless asked. The desktop knows it; the cloud browser leaves it out
+   * (a run's pages are watched through a live view that follows the agent,
+   * and which tab a person has in front is its session host's to know).
+   */
+  active?: boolean;
 }
 
 export interface BrowserBackend {
   readonly kind: "desktop" | "cloud";
   listTabs(): AgentTabInfo[];
+  /**
+   * Open a tab for the agent to work in. The desktop opens it in the
+   * background — the person stays on the tab they are looking at, and every
+   * other operation here works on a tab off screen. The cloud browser makes
+   * it the run's front tab, which is what its live view follows.
+   */
   openTab(url?: string): Promise<string>;
+  /** Bring a tab to the front: on the desktop, switch the person to it (`tab_show`). */
   focusTab(tabId: string): Promise<void>;
   navigate(tabId: string, url: string): Promise<void>;
   back(tabId: string): Promise<void>;
@@ -67,11 +81,11 @@ export async function executeBrowserTool(backend: BrowserBackend, request: Brows
     }
     case "tab.open": {
       const tabId = await backend.openTab(request.url);
-      return { summary: "Opened a new tab", data: { tabId } };
+      return { summary: backend.kind === "desktop" ? "Opened a new tab in the background" : "Opened a new tab", data: { tabId } };
     }
-    case "tab.focus":
+    case "tab.show":
       await backend.focusTab(request.tabId);
-      return { summary: "Focused tab", data: { tabId: request.tabId } };
+      return { summary: "Brought the tab to the front; the person is looking at it now", data: { tabId: request.tabId } };
     case "page.inspect": {
       const page = await backend.inspect(request.tabId);
       return { summary: `Inspected ${page.title}`, data: page };
@@ -88,9 +102,20 @@ export async function executeBrowserTool(backend: BrowserBackend, request: Brows
     case "page.reload":
       await backend.reload(request.tabId);
       return { summary: "Reloaded page" };
-    case "page.click":
+    case "page.click": {
+      // A link or control that opens a page in a new tab leaves the agent
+      // on the old one; the result names the new tab so it can carry on
+      // there without listing the tabs to find it.
+      const before = new Set(backend.listTabs().map((tab) => tab.id));
       await backend.click(request.tabId, request.target);
-      return { summary: `Clicked ${request.target}` };
+      const opened = backend.listTabs().filter((tab) => !before.has(tab.id));
+      if (opened.length === 0) return { summary: `Clicked ${request.target}` };
+      const named = opened.map((tab) => `${tab.id} (${tab.url})`).join(", ");
+      return {
+        summary: `Clicked ${request.target}; it opened ${opened.length === 1 ? "a new tab" : "new tabs"}: ${named}`,
+        data: { openedTabIds: opened.map((tab) => tab.id) },
+      };
+    }
     case "page.type": {
       const written = await backend.type(request.tabId, request.target, request.value);
       const shown = written.length > 120 ? `${written.slice(0, 120)}…` : written;

@@ -328,6 +328,12 @@ interface ManagedTab {
    * written back over. Any other address forgets it.
    */
   shellTitle: { url: string; title: string } | null;
+  /**
+   * The page is laid out at an emulated viewport because it was read or
+   * driven off screen before it had ever been drawn (#ensureViewport); the
+   * emulation comes off once the view is drawn at a real size.
+   */
+  offscreenViewport: boolean;
 }
 
 interface DormantTab {
@@ -650,6 +656,14 @@ function rounded(value: number): number {
  * is re-aimed by the page's scroll, which a script in an isolated world
  * reports through a binding the page itself cannot see. Input is not mapped
  * by the override, so main maps it (#forwardMaskedMouse).
+ *
+ * The page must never learn it is masked. PROBED (Electron 43): the first
+ * override sent WITH a viewport lays the page out at the viewport's size for
+ * a frame — a `resize` to the region, media queries flipping — before the
+ * width and height take hold, and a responsive app (Notion) reflows for
+ * good. The same override sent first WITHOUT one (the page's own box, so
+ * nothing changes) and then with it, the page sees no resize at all; nor
+ * when the region, its scale or the view's size change afterwards.
  */
 const DESK_MASK_WORLD = "pistachio-desk-mask";
 const DESK_MASK_BINDING = "__pistachioDeskMaskScroll";
@@ -674,8 +688,8 @@ interface DeskMaskState {
   height: number;
   /** The page's scroll (CSS px), as it last said. */
   scroll: { x: number; y: number };
-  /** What the override in place was set for, or null until one is. */
-  applied: { width: number; height: number; x: number; y: number } | null;
+  /** What the override in place was set for (the view's size, the offset, the mask's key), or null until one is. */
+  applied: MaskAim | null;
   /** Where the layout wants the view and whether shown; placed once the override fits it. */
   want: { bounds: ContentBounds; shown: boolean } | null;
   /** An override on its way: the next is sent after it. */
@@ -708,8 +722,16 @@ function maskViewSize(state: DeskMaskState): { width: number; height: number } {
   return want !== null && want.shown ? { width: want.bounds.width, height: want.bounds.height } : { width: state.width, height: state.height };
 }
 
-function sameMaskAim(a: { width: number; height: number; x: number; y: number }, b: { width: number; height: number; x: number; y: number }): boolean {
-  return a.width === b.width && a.height === b.height && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5;
+interface MaskAim {
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  key: string;
+}
+
+function sameMaskAim(a: MaskAim, b: MaskAim): boolean {
+  return a.key === b.key && a.width === b.width && a.height === b.height && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5;
 }
 
 /** A scroll report from a masked page's isolated world: `[scrollX, scrollY]`, finite. */
@@ -3682,6 +3704,7 @@ export class BrowserController {
           : { entries: options.history.entries.map(({ url, title }) => ({ url, title })), index: options.history.index },
       pendingLoad: null,
       shellTitle: null,
+      offscreenViewport: false,
     };
     this.#dormantTabs.delete(id);
     this.#tabs.set(id, tab);
@@ -4228,7 +4251,13 @@ export class BrowserController {
         });
         return { action: "deny" };
       }
-      void this.createTab(details.url, { spaceId: tab.info.spaceId });
+      // A page off screen — one the agent is working in behind the person's
+      // back — opens its new tab behind them too, rather than switching
+      // them to it.
+      void this.createTab(details.url, {
+        spaceId: tab.info.spaceId,
+        activate: this.#visibleTabIds().includes(tab.info.id),
+      });
       return { action: "deny" };
     });
   }
@@ -5619,6 +5648,7 @@ export class BrowserController {
       partition: owner.partition,
       pendingLoad: null,
       shellTitle: null,
+      offscreenViewport: false,
     };
     this.#glance = {
       tab,
@@ -7105,7 +7135,7 @@ export class BrowserController {
         if (image.isEmpty()) return null;
         const masked = this.#deskMasks.get(tabId);
         const still: PaneStill = { tabId, dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}` };
-        return masked?.applied != null ? { ...still, mask: masked.key } : still;
+        return masked?.applied != null ? { ...still, mask: masked.applied.key } : still;
       } catch {
         return null;
       }
@@ -7280,7 +7310,23 @@ export class BrowserController {
     }
     for (const [tabId, state] of [...this.#deskMasks]) {
       const page = wanted.get(tabId);
-      if (page === undefined || deskMaskKey(page.mask) !== state.key || !this.#tabs.has(tabId)) this.#clearDeskMask(tabId);
+      if (page === undefined || !this.#tabs.has(tabId)) {
+        this.#clearDeskMask(tabId);
+        continue;
+      }
+      const key = deskMaskKey(page.mask);
+      if (key === state.key) continue;
+      // Another region of the same page box (the mask edited, or the whole
+      // page shown while it is): the override is re-aimed where it stands,
+      // and the page, laying out at the same box, never knows.
+      const samePage =
+        Math.round(page.mask.pageWidth) === Math.round(state.mask.pageWidth) && Math.round(page.mask.pageHeight) === Math.round(state.mask.pageHeight);
+      if (!samePage) {
+        this.#clearDeskMask(tabId);
+        continue;
+      }
+      state.mask = page.mask;
+      state.key = key;
     }
     for (const page of pages) {
       const tab = this.#tabs.get(page.tabId);
@@ -7364,10 +7410,10 @@ export class BrowserController {
     if (state.sending || state.failed || state.suspended) return;
     const tabId = tab.info.id;
     const contents = tab.view.webContents;
-    const target = (): { width: number; height: number; x: number; y: number } => {
+    const target = (): MaskAim => {
       const size = maskViewSize(state);
       const zoom = contents.isDestroyed() ? 1 : contents.getZoomFactor();
-      return { ...size, x: state.mask.x + state.scroll.x * zoom, y: state.mask.y + state.scroll.y * zoom };
+      return { ...size, x: state.mask.x + state.scroll.x * zoom, y: state.mask.y + state.scroll.y * zoom, key: state.key };
     };
     const current = state.applied;
     const wanted = target();
@@ -7380,11 +7426,13 @@ export class BrowserController {
       if (contents.isDestroyed() || this.#deskMasks.get(tabId) !== state || !state.ready) return;
       const aim = target();
       const { mask } = state;
+      const metrics = { width: Math.round(mask.pageWidth), height: Math.round(mask.pageHeight), deviceScaleFactor: 0, mobile: false };
+      // Turned on at the page's own box before any region is set: sent
+      // with a viewport first, it would lay the page out at the region's
+      // size for a frame (see DESK_MASK_WORLD).
+      if (state.applied === null) await contents.debugger.sendCommand("Emulation.setDeviceMetricsOverride", metrics);
       await contents.debugger.sendCommand("Emulation.setDeviceMetricsOverride", {
-        width: Math.round(mask.pageWidth),
-        height: Math.round(mask.pageHeight),
-        deviceScaleFactor: 0,
-        mobile: false,
+        ...metrics,
         viewport: { x: aim.x, y: aim.y, width: mask.width, height: mask.height, scale: aim.width / mask.width },
       });
       state.applied = aim;
@@ -7408,7 +7456,7 @@ export class BrowserController {
     // Fullscreen, the page is placed as the whole window is (#applyLayout).
     if (state.suspended) return;
     const size = maskViewSize(state);
-    const fits = state.applied !== null && state.applied.width === size.width && state.applied.height === size.height;
+    const fits = state.applied !== null && state.applied.key === state.key && state.applied.width === size.width && state.applied.height === size.height;
     if (!fits) {
       settleViewVisible(tab.view, false);
       this.#aimDeskMask(tab, state);
@@ -7721,6 +7769,7 @@ export class BrowserController {
           bounds,
           shown: !this.#waking.has(tabId) && !this.#overlayActive && this.#glance?.ownerRecessed !== true && visible.has(tabId),
         };
+        if (masked.want.shown && tab.offscreenViewport) this.#releaseOffscreenViewport(tab);
         this.#placeMaskedView(tab, masked);
         continue;
       }
@@ -7744,6 +7793,9 @@ export class BrowserController {
             visible.has(tabId)
           : previewPlacement !== null);
       settleViewVisible(tab.view, shown);
+      // Drawn at a real size now: a viewport emulated while it was off
+      // screen (#ensureViewport) gives way to the pane's own.
+      if (shown && tab.offscreenViewport) this.#releaseOffscreenViewport(tab);
       if (shown && panePlacement === undefined && previewPlacement !== null)
         presented = { tab, bounds };
     }
@@ -7932,8 +7984,9 @@ export class BrowserController {
    * agent sees the same authenticated session and page state as the person.
    */
   async inspectPage(tabId: string): Promise<PageInspection> {
-    const tab = this.#requireTab(tabId);
+    const tab = await this.#ensureLiveTab(tabId);
     await this.#whenTabReady(tab);
+    await this.#ensureViewport(tab);
     return tab.view.webContents.executeJavaScript(INSPECT_PAGE_SCRIPT) as Promise<PageInspection>;
   }
 
@@ -8148,8 +8201,9 @@ export class BrowserController {
   }
 
   async clickPage(tabId: string, target: string): Promise<void> {
-    const tab = this.#requireTab(tabId);
+    const tab = await this.#ensureLiveTab(tabId);
     await this.#whenTabReady(tab);
+    await this.#ensureViewport(tab);
     const clicked = await tab.view.webContents.executeJavaScript(clickPageScript(target));
     if (clicked !== true) throw new Error(`page control not found: ${target}`);
   }
@@ -8165,14 +8219,19 @@ export class BrowserController {
    * the caller reports ground truth instead of assuming the text landed.
    * When the keystrokes did not land — some widgets re-render mid-type —
    * the old synthetic path runs as a fallback before that read-back.
+   *
+   * The keyboard moves to the page only when it is on screen. Keystrokes
+   * sent to a page in the background land without it, and taking it would
+   * pull the person's typing out of whatever they are writing in.
    */
   async typePage(tabId: string, target: string, value: string): Promise<string> {
-    const tab = this.#requireTab(tabId);
+    const tab = await this.#ensureLiveTab(tabId);
     await this.#whenTabReady(tab);
+    await this.#ensureViewport(tab);
     const contents = tab.view.webContents;
     const prepared = await contents.executeJavaScript(typePrepareScript(target));
     if (prepared !== true) throw new Error(`editable page control not found: ${target}`);
-    contents.focus();
+    if (tab.view.getVisible()) contents.focus();
     for (const character of value) {
       const keyCode = character === "\n" ? "Return" : character;
       contents.sendInputEvent({ type: "keyDown", keyCode });
@@ -8189,26 +8248,132 @@ export class BrowserController {
    * menus. The same trusted input pipeline as typePage, for the same
    * reason. `keyCode` is the name Chromium's input pipeline knows the key
    * by (DesktopBrowserBackend maps the agent's key names); `char` sends
-   * the char event a key that produces input would.
+   * the char event a key that produces input would. Like typePage, it
+   * takes the keyboard only for a page on screen.
    */
-  pressKeyPage(tabId: string, keyCode: string, char: boolean): void {
-    const contents = this.#requireTab(tabId).view.webContents;
-    contents.focus();
+  async pressKeyPage(tabId: string, keyCode: string, char: boolean): Promise<void> {
+    const tab = await this.#ensureLiveTab(tabId);
+    await this.#ensureViewport(tab);
+    const contents = tab.view.webContents;
+    if (tab.view.getVisible()) contents.focus();
     contents.sendInputEvent({ type: "keyDown", keyCode });
     if (char) contents.sendInputEvent({ type: "char", keyCode });
     contents.sendInputEvent({ type: "keyUp", keyCode });
   }
 
   async scrollPage(tabId: string, deltaY: number): Promise<void> {
-    await this.#requireTab(tabId).view.webContents.executeJavaScript(scrollScript(deltaY));
+    const tab = await this.#ensureLiveTab(tabId);
+    await this.#ensureViewport(tab);
+    await tab.view.webContents.executeJavaScript(scrollScript(deltaY));
   }
 
   async screenshotPage(tabId: string): Promise<string> {
-    const tab = this.#requireTab(tabId);
+    const tab = await this.#ensureLiveTab(tabId);
+    await this.#ensureViewport(tab, { drawn: true });
     const image = await this.#withoutAgentGlow(tab, () =>
       tab.view.webContents.capturePage(),
     );
+    if (image.isEmpty())
+      throw new Error(
+        "this background tab has not been drawn yet, so there is no picture of it; read it with page_inspect instead",
+      );
     return image.toDataURL();
+  }
+
+  /**
+   * Give a page read or driven off screen a real viewport.
+   *
+   * Chromium sizes a view's page only while the view is shown in the window:
+   * a tab opened in the background — the agent's, or a link the person sent
+   * behind — lays out at 0×0 until it is first drawn, and a view resized
+   * while hidden keeps the size it had. Such a page reads as a column of
+   * collapsed controls and pictures as nothing. So the first time one is
+   * read or driven, it is drawn once, beneath the page the person is looking
+   * at, at that page's size (#drawUnderCover): the size then sticks, and
+   * captures of it stay live while it is hidden again. With nothing opaque on
+   * screen to draw it under — a shell-drawn page like the home page, an
+   * overlay — the page gets an emulated viewport of the pane's size instead,
+   * which is enough to lay out, read and drive it but not to picture it; a
+   * `drawn` caller (a screenshot) tries the draw again first.
+   *
+   * Cheap when there is nothing to do: one round trip to ask the page its
+   * size. It asks every time because a navigation to another site swaps the
+   * page's renderer, which does not carry an emulated viewport across.
+   */
+  async #ensureViewport(tab: ManagedTab, options: { drawn?: boolean } = {}): Promise<void> {
+    const contents = tab.view.webContents;
+    if (contents.isDestroyed() || tab.view.getVisible()) return;
+    if (!(options.drawn === true && tab.offscreenViewport)) {
+      const size: unknown = await contents.executeJavaScript("[innerWidth, innerHeight]").catch(() => null);
+      if (!Array.isArray(size) || (Number(size[0]) > 0 && Number(size[1]) > 0)) return;
+    }
+    if (await this.#drawUnderCover(tab)) {
+      if (tab.offscreenViewport) this.#releaseOffscreenViewport(tab);
+      return;
+    }
+    const pane = this.#offscreenViewportSize();
+    contents.enableDeviceEmulation({
+      screenPosition: "desktop",
+      screenSize: { width: 0, height: 0 },
+      viewPosition: { x: 0, y: 0 },
+      deviceScaleFactor: 0,
+      viewSize: pane,
+      scale: 1,
+    });
+    tab.offscreenViewport = true;
+  }
+
+  /**
+   * Draw a hidden tab's view for a frame, directly beneath the view the
+   * person is looking at and in exactly its box, so the page takes that size
+   * without anything showing. False when there is no such view to hide it
+   * under: the active tab is a shell-drawn page or not live, an overlay has
+   * the panes down, or the desk stacks and masks its pages.
+   */
+  async #drawUnderCover(tab: ManagedTab): Promise<boolean> {
+    const cover = this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
+    if (
+      cover === undefined ||
+      cover === tab ||
+      !cover.view.getVisible() ||
+      this.#layout.stacked === true ||
+      this.#deskMasks.has(cover.info.id)
+    )
+      return false;
+    const bounds = cover.view.getBounds();
+    const children = this.#window.contentView.children;
+    const at = children.indexOf(cover.view);
+    if (at < 0 || bounds.width < 1 || bounds.height < 1) return false;
+    // Re-adding a child takes it out before inserting it at the index, so
+    // only a view above the cover moves — into the cover's slot, which puts
+    // it directly beneath. One already below is covered where it is, and
+    // moving it would land it one place above the cover.
+    if (children.indexOf(tab.view) > at) this.#window.contentView.addChildView(tab.view, at);
+    settleViewBounds(tab.view, bounds);
+    tab.view.setVisible(true);
+    try {
+      await this.#settleFrame(tab);
+    } finally {
+      // The layout decides what is shown: the person may have switched to
+      // this very tab meanwhile.
+      this.#applyLayout();
+    }
+    return true;
+  }
+
+  /** The size a page laid out off screen is given: the pane the person is looking at, else the window's content box. */
+  #offscreenViewportSize(): { width: number; height: number } {
+    const pane = this.#activeTabId === null ? undefined : this.#paneSizes.get(this.#activeTabId);
+    if (pane !== undefined && pane.width > 0 && pane.height > 0) return pane;
+    const { width, height } = this.#window.getContentBounds();
+    return { width: Math.max(1, width), height: Math.max(1, height) };
+  }
+
+  /** Take off the emulated viewport #ensureViewport gave a page, unless the sidebar card's presentation owns the emulation now. */
+  #releaseOffscreenViewport(tab: ManagedTab): void {
+    tab.offscreenViewport = false;
+    if (tab.view.webContents.isDestroyed() || this.#presentation?.tabId === tab.info.id) return;
+    tab.view.webContents.disableDeviceEmulation();
   }
 
   async applyFormState(

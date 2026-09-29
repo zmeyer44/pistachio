@@ -58,6 +58,7 @@ import { useDeskStore } from "../lib/desk/store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { Favicon, TabMark } from "./Favicon";
 import { TabGroupRow } from "./TabGroupRow";
+import { useAgentWorkingIn } from "./useAgentTab";
 
 /**
  * The sidebar's tab column — the `tabs` feature in its vertical orientation
@@ -182,6 +183,7 @@ function TabRow({
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const closeTab = useAppStore((s) => s.closeTab);
+  const working = useAgentWorkingIn(tab.id);
 
   return (
     <div
@@ -218,7 +220,7 @@ function TabRow({
         selected && "bg-green-100 text-green-1000 ring-1 ring-inset ring-green-400",
       )}
     >
-      {selected ? <SelectionMark /> : <TabMark tab={tab} />}
+      {selected ? <SelectionMark /> : <TabMark tab={tab} working={working} />}
       <TabReaderMark tab={tab} />
       <span className="min-w-0 flex-1 truncate">
         <TabTitle tab={tab} />
@@ -245,6 +247,7 @@ function SplitHalf({
   onContextMenu: (event: React.MouseEvent) => void;
 }) {
   const closeTab = useAppStore((s) => s.closeTab);
+  const working = useAgentWorkingIn(tab.id);
 
   return (
     <span
@@ -274,7 +277,7 @@ function SplitHalf({
         selected && "bg-green-100 text-green-1000 ring-1 ring-inset ring-green-400",
       )}
     >
-      {selected ? <SelectionMark /> : <TabMark tab={tab} />}
+      {selected ? <SelectionMark /> : <TabMark tab={tab} working={working} />}
       <TabReaderMark tab={tab} />
       <span className="min-w-0 flex-1 truncate">
         <TabTitle tab={tab} />
@@ -406,6 +409,7 @@ function PinRow({
 }) {
   const closeTab = useAppStore((s) => s.closeTab);
   const sidebarCommand = useAppStore((s) => s.sidebarCommand);
+  const working = useAgentWorkingIn(live?.id ?? null);
   const active = live?.active === true;
   const title = live?.title || pin.title || prettyUrl(pin.url);
   const wandered = live !== null && !live.loading && live.url !== pin.url;
@@ -459,7 +463,7 @@ function PinRow({
           className="opacity-60"
         />
       ) : (
-        <TabMark tab={live} fallbackFaviconUrl={pin.faviconUrl} />
+        <TabMark tab={live} fallbackFaviconUrl={pin.faviconUrl} working={working} />
       )}
       {live === null ? null : <TabReaderMark tab={live} />}
       <span className="min-w-0 flex-1 truncate">

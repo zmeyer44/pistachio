@@ -467,6 +467,31 @@ export function resizedRect(start: Rect, edges: Edges, dx: number, dy: number, b
 }
 
 /**
+ * A mask's region being edited, in its page's box: the edges in hand moved
+ * by the pointer's travel (`edges` null: the whole region moved), the
+ * opposite edges holding still, never smaller than `min` either way, never
+ * off the page.
+ */
+export function editedMaskRegion(start: Rect, edges: Edges | null, dx: number, dy: number, page: { w: number; h: number }, min: number): Rect {
+  if (edges === null) {
+    return {
+      ...start,
+      x: Math.min(page.w - start.w, Math.max(0, start.x + dx)),
+      y: Math.min(page.h - start.h, Math.max(0, start.y + dy)),
+    };
+  }
+  let left = start.x;
+  let right = rightOf(start);
+  let top = start.y;
+  let bottom = bottomOf(start);
+  if (edges.left) left = Math.min(right - min, Math.max(0, start.x + dx));
+  if (edges.right) right = Math.max(left + min, Math.min(page.w, rightOf(start) + dx));
+  if (edges.top) top = Math.min(bottom - min, Math.max(0, start.y + dy));
+  if (edges.bottom) bottom = Math.max(top + min, Math.min(page.h, bottomOf(start) + dy));
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+/**
  * A resize that keeps the content's shape, as a picture is resized — a
  * masked window, whose region is a picture of part of its page. The content
  * is the window less a header `top` px tall. Whichever edge the pointer holds

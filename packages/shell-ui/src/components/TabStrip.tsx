@@ -15,6 +15,7 @@ import { useAppStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
 import { TabMark } from "./Favicon";
 import { SiteInfoButton } from "./SiteInfoPopover";
+import { useAgentWorkingIn } from "./useAgentTab";
 
 /**
  * The horizontal tab row of the top layout — the `tabs` feature in its
@@ -190,6 +191,7 @@ function Tab({
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const closeTab = useAppStore((s) => s.closeTab);
+  const working = useAgentWorkingIn(tab.id);
 
   const inactiveShape =
     activeSide !== null
@@ -229,7 +231,7 @@ function Tab({
       <span className="relative flex min-w-0 flex-1 items-center gap-2 self-stretch">
         {/* The active tab is the omnibox, so Chrome's site-info button leads it (the `siteInfo` feature). */}
         {tab.active ? <SiteInfoButton variant="tab" /> : null}
-        {tab.active ? <TabNavCluster tab={tab} /> : <TabMark tab={tab} />}
+        {tab.active ? <TabNavCluster tab={tab} /> : <TabMark tab={tab} working={working} />}
         <TabReaderMark tab={tab} />
         {tab.active ? (
           <ActiveTabLabel tab={tab} onEdit={onEditAddress} />

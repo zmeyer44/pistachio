@@ -7,7 +7,9 @@
  * dock: a click opens a tab where the layout has room, and an icon dragged
  * clear of it becomes the tab's window, held by the title bar. And a window
  * may lie behind the dock, which floats over it — stepping aside for it
- * when it is the window in use.
+ * when it is the window in use. And the desk passing to another group in
+ * place: the old group's windows go home, the new group's come out where
+ * they were left, and main never hears of more windows than it accepts.
  *
  * The engine runs a frame at a time outside React; here the frames are
  * driven by hand, and the only DOM it needs is a stage box.
@@ -24,6 +26,16 @@ import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/sto
 
 let frames: Array<(now: number) => void> = [];
 let clock = 0;
+
+/** Run `count` animation frames (or fewer, if the engine stops asking). */
+function step(count: number): void {
+  for (let i = 0; i < count && frames.length > 0; i += 1) {
+    const due = frames;
+    frames = [];
+    clock += 16;
+    for (const frame of due) frame(clock);
+  }
+}
 
 /** Run animation frames until the engine stops asking for them. */
 function settle(): void {
@@ -67,6 +79,7 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     select: () => undefined,
     close: () => undefined,
     save: () => undefined,
+    switchGroup: () => undefined,
     leaveDone: () => undefined,
     ...host,
   });
@@ -112,13 +125,13 @@ describe("the desk's first layout", () => {
 });
 
 describe("the desk's window limit", () => {
-  it("gathers only as many windows as main accepts", () => {
+  it("has only as many windows out as main accepts", () => {
     const { desks } = native();
     const desk = engine();
     const ids = tabIds(MAX_DESK_WINDOWS + 6);
     desk.start([], "tab-0", ids);
     settle();
-    desk.gather(ids);
+    for (const tabId of ids) desk.add(tabId, { focus: false });
     settle();
     expect(desk.windowTabIds()).toHaveLength(MAX_DESK_WINDOWS);
     expect(desks.length).toBeGreaterThan(0);
@@ -132,7 +145,7 @@ describe("the desk's window limit", () => {
     const ids = tabIds(MAX_DESK_WINDOWS + 1);
     desk.start([], "tab-0", ids);
     settle();
-    desk.gather(ids);
+    for (const tabId of ids.slice(0, MAX_DESK_WINDOWS)) desk.add(tabId, { focus: false });
     settle();
     const bottom = desk.windowTabIds()[0]!;
     const extra = ids.find((tabId) => !desk.windowTabIds().includes(tabId))!;
@@ -929,6 +942,206 @@ describe("a masked window", () => {
     expect(view.mask).toEqual(saved[0]!.mask);
     expectRect(rectOf(win), at, 1.5);
     expect(desks.at(-1)!.masks?.map((page) => page.tabId)).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+});
+
+describe("passing the desk to another group", () => {
+  const rect = (x: number): Rect => ({ x, y: 0.1, w: 0.3, h: 0.5 });
+
+  it("sends the old group's windows home, and brings the new group's out where they were left, its top one in use", () => {
+    const { desks } = native();
+    const saves: string[][] = [];
+    const selected: string[] = [];
+    const desk = engine({ save: (windows) => saves.push(windows.map((window) => window.tabId)), select: (tabId) => selected.push(tabId) });
+    desk.start([], "tab-0", tabIds(3));
+    settle();
+    desk.add("tab-1", { focus: false });
+    settle();
+    saves.length = 0;
+    const saved: SavedDeskWindow[] = [
+      { tabId: "b-0", rect: rect(0.05) },
+      { tabId: "b-1", rect: rect(0.5) },
+    ];
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0", "b-1", "b-2"], saved, entry: null });
+    // The group left is saved as it was left, before anything moves.
+    expect(saves[0]).toEqual(["tab-0", "tab-1"]);
+    expect(desk.focusedTabId()).toBe("b-1");
+    expect(selected.at(-1)).toBe("b-1");
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-0", "b-1"]);
+    // Once it has all landed, the new group's arrangement is the one saved.
+    expect(saves.at(-1)).toEqual(["b-0", "b-1"]);
+    for (const state of desks) expect(isDeskState(state)).toBe(true);
+    desk.destroy();
+  });
+
+  it("brings a group never on a desk out as its tab used last, alone", () => {
+    native();
+    const desk = engine();
+    desk.start([], "tab-0", tabIds(2));
+    settle();
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0", "b-1"], saved: [], entry: "b-1" });
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-1"]);
+    expect(desk.focusedTabId()).toBe("b-1");
+    desk.destroy();
+  });
+
+  it("keeps the old group's windows through the new group's tabs arriving, until they are home", () => {
+    native();
+    const desk = engine();
+    desk.start([], "tab-0", tabIds(2));
+    settle();
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [], entry: "b-0" });
+    // The surface hears of the new group's tabs at once: the old windows are on their way, not gone.
+    desk.syncTabs(["b-0"]);
+    expect(desk.windowTabIds()).toContain("tab-0");
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-0"]);
+    desk.destroy();
+  });
+
+  it("takes a group's windows back, where they were left, when the desk returns to it before they are home", () => {
+    native();
+    const saves: SavedDeskWindow[][] = [];
+    const desk = engine({ save: (windows) => saves.push(windows) });
+    desk.start([], "tab-0", tabIds(2));
+    settle();
+    desk.add("tab-1", { focus: false });
+    settle();
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [], entry: "b-0" });
+    const leftA = saves.at(-1)!;
+    expect(leftA.map((window) => window.tabId)).toEqual(["tab-0", "tab-1"]);
+    // A's windows are on their way home when the desk comes back to A.
+    step(4);
+    desk.switchGroup({ from: "B", groupId: "A", tabIds: tabIds(2), saved: leftA, entry: null });
+    settle();
+    expect([...desk.windowTabIds()].sort()).toEqual(["tab-0", "tab-1"]);
+    expect(desk.focusedTabId()).toBe("tab-1");
+    expect((saves.at(-1) ?? []).map((window) => window.tabId).sort()).toEqual(["tab-0", "tab-1"]);
+    desk.destroy();
+  });
+
+  it("gives main the incoming group's masks first, while the outgoing group's windows fly home", () => {
+    const { desks } = native();
+    const desk = engine();
+    const mask = { x: 10, y: 10, width: 200, height: 120, pageWidth: 1000, pageHeight: 700 };
+    const masked = (prefix: string): SavedDeskWindow[] =>
+      Array.from({ length: MAX_DESK_WINDOWS }, (_, index) => ({ tabId: `${prefix}-${index}`, rect: rect((index % 10) / 20), mask }));
+    const a = masked("a");
+    desk.start(a, null, a.map((window) => window.tabId));
+    settle();
+    const b = masked("b");
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: b.map((window) => window.tabId), saved: b, entry: null });
+    step(3);
+    const state = desks.at(-1)!;
+    expect(isDeskState(state)).toBe(true);
+    expect(state!.masks!.map((page) => page.tabId).sort()).toEqual(b.map((window) => window.tabId).sort());
+    desk.destroy();
+  });
+
+  it("sketches another group's desk as passing to it lays it out: each window where it lands, the one it comes up on on top", () => {
+    native();
+    const desk = engine();
+    desk.start([], "tab-0", tabIds(2));
+    settle();
+    const ids = ["b-0", "b-1", "b-2"];
+    // (A tab since gone from the group is not on its desk.)
+    const saved: SavedDeskWindow[] = [
+      { tabId: "b-1", rect: rect(0.5) },
+      { tabId: "gone", rect: rect(0.3) },
+      { tabId: "b-0", rect: rect(0.05) },
+    ];
+    const sketch = desk.sketchGroup(ids, saved, "b-1");
+    expect(sketch).toMatchObject({ width: 1600, height: 1000 });
+    expect(sketch.windows.map((window) => [window.tabId, window.focused])).toEqual([
+      ["b-0", false],
+      ["b-1", true],
+    ]);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ids, saved, entry: "b-1" });
+    const els = new Map(sketch.windows.map((window) => [window.tabId, element()]));
+    for (const [tabId, el] of els) desk.attachWindow(tabId, el as unknown as HTMLElement);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-0", "b-1"]);
+    for (const window of sketch.windows) expectRect(rectOf(els.get(window.tabId)!), window.rect);
+    desk.destroy();
+  });
+
+  it("sketches a group never on a desk as its tab used last, alone in the middle", () => {
+    native();
+    const desk = engine();
+    desk.start([], "tab-0", tabIds(2));
+    settle();
+    const sketch = desk.sketchGroup(["b-0", "b-1"], [], "b-1");
+    expect(sketch.windows).toHaveLength(1);
+    expect(sketch.windows[0]).toMatchObject({ tabId: "b-1", focused: true, mask: null, still: null, stillShows: "none" });
+    expectRect(sketch.windows[0]!.rect, centeredRect(usable));
+    desk.destroy();
+  });
+
+  it("sketches each window with the latest picture of its page — a masked one's whole page, to be cropped to its region", async () => {
+    native({ stills: true });
+    const desk = engine({ hasLivePage: () => true });
+    desk.start([], "tab-0", tabIds(2));
+    settle();
+    const mask = { x: 10, y: 10, width: 200, height: 120, pageWidth: 1000, pageHeight: 700 };
+    const saved: SavedDeskWindow[] = [{ tabId: "b-0", rect: rect(0.05), mask }, { tabId: "b-1", rect: rect(0.5) }];
+    desk.peekGroup("B", ["b-0", "b-1"]);
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    const sketch = desk.sketchGroup(["b-0", "b-1"], saved, null);
+    expect(sketch.windows.map((window) => [window.tabId, window.still, window.stillShows])).toEqual([
+      ["b-0", "data:image/jpeg;base64,b-0", "page"],
+      ["b-1", "data:image/jpeg;base64,b-1", "page"],
+    ]);
+    // Masked, it keeps its region's shape.
+    const masked = sketch.windows[0]!;
+    expect(masked.mask).toEqual(mask);
+    expect((masked.rect.h - 18) / masked.rect.w).toBeCloseTo(120 / 200, 2);
+    desk.destroy();
+  });
+
+  it("never tells main of more windows than it accepts, with both groups' out at once", () => {
+    const { desks } = native();
+    const desk = engine();
+    const ids = tabIds(MAX_DESK_WINDOWS);
+    desk.start([], "tab-0", ids);
+    settle();
+    for (const tabId of ids) desk.add(tabId, { focus: false });
+    settle();
+    expect(desk.windowTabIds()).toHaveLength(MAX_DESK_WINDOWS);
+    const next = Array.from({ length: MAX_DESK_WINDOWS }, (_, index) => `b-${index}`);
+    desk.switchGroup({
+      from: "A",
+      groupId: "B",
+      tabIds: next,
+      saved: next.map((tabId, index) => ({ tabId, rect: rect((index % 10) / 20) })),
+      entry: null,
+    });
+    settle();
+    expect(desk.windowTabIds()).toHaveLength(MAX_DESK_WINDOWS);
+    expect(desk.windowTabIds().every((tabId) => tabId.startsWith("b-"))).toBe(true);
+    for (const state of desks) expect(isDeskState(state)).toBe(true);
+    desk.destroy();
+  });
+});
+
+describe("editing a mask", () => {
+  it("asks main for a whole-page picture no larger than it accepts, however far the region is enlarged", () => {
+    const { desks } = native();
+    const desk = engine({ hasLivePage: () => true });
+    // A 32px square of a 1200 × 800 page, shown most of the desk's height.
+    const mask = { x: 40, y: 40, width: 32, height: 32, pageWidth: 1200, pageHeight: 800 };
+    desk.start([{ tabId: "tab-1", rect: { x: 0.2, y: 0.05, w: 0.6, h: 0.9 }, mask }], "tab-0", tabIds(2));
+    settle();
+    desk.editMask("tab-1");
+    step(2);
+    const state = desks.at(-1)!;
+    expect(isDeskState(state)).toBe(true);
+    const page = state!.masks!.find((candidate) => candidate.tabId === "tab-1")!;
+    // The whole page, its shape kept.
+    expect(page.mask).toMatchObject({ x: 0, y: 0, width: 1200, height: 800 });
+    expect(Math.abs(page.width / page.height - 1.5)).toBeLessThan(0.01);
     desk.destroy();
   });
 });

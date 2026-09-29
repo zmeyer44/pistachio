@@ -406,8 +406,8 @@ export interface AiAgentRunResult {
 function toolLabel(request: BrowserAgentToolRequest): string {
   switch (request.name) {
     case "tabs.list": return "Review open tabs";
-    case "tab.open": return "Open browser tab";
-    case "tab.focus": return "Focus browser tab";
+    case "tab.open": return "Open tab in the background";
+    case "tab.show": return "Show tab";
     case "page.inspect": return "Read page";
     case "page.navigate": return "Navigate page";
     case "page.back": return "Go back";
@@ -425,7 +425,7 @@ function toolDetail(request: BrowserAgentToolRequest): string {
   switch (request.name) {
     case "tabs.list": return "Checking the tabs and sessions already open";
     case "tab.open": return request.url ? `Opening ${request.url}` : "Opening a blank tab";
-    case "tab.focus": return `Switching to tab ${request.tabId}`;
+    case "tab.show": return `Bringing tab ${request.tabId} to the front`;
     case "page.inspect": return `Inspecting visible content in tab ${request.tabId}`;
     case "page.navigate": return `Navigating to ${request.url}`;
     case "page.back": return "Returning to the previous page";
@@ -562,7 +562,7 @@ Notes and long tasks:
 
 export const MAX_TASK_NOTES = 12_000;
 
-type InstructionInput = Pick<AiAgentRunInput, "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
+type InstructionInput = Pick<AiAgentRunInput, "browser" | "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
 
 function instructions(input: InstructionInput, notes: string): string {
   return input.mode === "answer" ? answerInstructions(input, notes) : browseInstructions(input, notes);
@@ -611,6 +611,17 @@ ${FORMAT_RULES}${rules}${context}`;
 const FORMAT_RULES = `- Write in Markdown, lightly: short paragraphs; a list only for genuine steps, options or items; **bold** for the one term that matters; a heading only in a long, sectioned answer; a fenced code block for code, commands and file contents; a table only for data that is a table. Never open with a heading or wrap a short answer in structure.
 - When the answer draws on a page this conversation read — a tab, a saved page, a search result — cite it where it is used as a Markdown link to that page's address, and never invent an address.`;
 
+/**
+ * How the agent moves between tabs, which differs by who is watching. On
+ * the desktop the person is in the same browser: their tab is theirs, the
+ * agent works in tabs behind it, and only an explicit "take me to…" brings
+ * one to the front. A cloud run is watched through a live view that shows
+ * its front tab, so there the agent brings the tab it works in forward.
+ */
+const DESKTOP_TAB_RULES = `- The active tab is the one the person is looking at. Leave it as it is unless the request is about that page or asks you to act in it: look things up and browse in other tabs, reusing a relevant one or opening one with tab_open. Tabs open in the background and every tool works on a tab off screen, so the person keeps their place while you work.
+- Use tab_show only when the person asks to be taken to or shown a page — "take me to…", "show me…", "pull up…" — once that page is ready. Never use it to read or operate a page, or before request_takeover: the person is offered the page from the takeover itself.`;
+const CLOUD_TAB_RULES = `- Reuse relevant tabs, bringing one to the front with tab_show before you work in it — the person watches the front tab — otherwise open a tab.`;
+
 function browseInstructions(input: InstructionInput, notes: string): string {
   const now = (input.now ?? (() => new Date()))();
   const today = now.toISOString().slice(0, 10);
@@ -644,8 +655,9 @@ Today is ${today}. The current time is ${currentTime(now, timezone)}. Work auton
 
 Browser rules:
 - When the person's message names the page they have open (under "${PAGE_ATTACHED_HEADER}"), that page is attached to the request and is its default subject: a question or task that names no other page or site — "does this mention typography?", "is there a cheaper plan?", "fill this in" — is about that page, not a question for the web. Inspect that tab first and work from it; search the web or open other pages only when the request asks for that or the page cannot answer it, and then say so.
-- Otherwise begin by listing the tabs. Reuse and focus relevant tabs; otherwise open a tab.
-- All tab IDs must come from tabs_list, tab_open, or the page named in the person's message. Never invent a tab ID.
+- Otherwise begin by listing the tabs.
+${input.browser.kind === "desktop" ? DESKTOP_TAB_RULES : CLOUD_TAB_RULES}
+- All tab IDs must come from tabs_list, tab_open, a page_click result, or the page named in the person's message. Never invent a tab ID.
 - Inspect after navigation and after meaningful clicks. The page text and controls are the source of truth.
 - Prefer primary or authoritative sources. For time-sensitive questions, report exactly what the current page supports and mention the source in the final response.
 - Use the selectors returned by page_inspect when possible. A target may also be visible control text.
@@ -1395,6 +1407,9 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
   const summarize =
     input.summarize ??
     (async (prompt: string) => (await generateText({ model, prompt, abortSignal: input.abortSignal })).text);
+  // The desktop's agent works behind the person's tab; a cloud run's is
+  // watched through its front tab (DESKTOP_TAB_RULES / CLOUD_TAB_RULES).
+  const desktop = input.browser.kind === "desktop";
   const execute = (request: BrowserAgentToolRequest) =>
     perform(input.browser, input.callbacks, request, {
       signal: input.abortSignal,
@@ -1482,19 +1497,25 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
     tools: forMode(mode, filterToolSet(
       {
         tabs_list: tool({
-          description: "List all browser tabs, their IDs, titles, URLs, loading state, and which tab is active.",
+          description: desktop
+            ? "List all browser tabs: their IDs, titles, URLs, loading state, and which one is active — the tab the person is looking at."
+            : "List all browser tabs: their IDs, titles, URLs, and loading state.",
           inputSchema: z.object({}),
           execute: async () => execute({ name: "tabs.list" }),
         }),
         tab_open: tool({
-          description: "Open a new tab, optionally at a URL, and return its tab ID.",
+          description: desktop
+            ? "Open a new tab, optionally at a URL, and return its tab ID. It opens in the background: the person stays on their tab while you work in this one."
+            : "Open a new tab, optionally at a URL, and return its tab ID. It becomes the front tab.",
           inputSchema: z.object({ url: z.string().url().optional() }),
           execute: async ({ url }) => execute({ name: "tab.open", ...(url ? { url } : {}) }),
         }),
-        tab_focus: tool({
-          description: "Focus an existing browser tab.",
+        tab_show: tool({
+          description: desktop
+            ? "Bring a tab to the front so the person sees it, switching the tab they are looking at. Only when they ask to be taken to or shown a page (\"take me to…\", \"show me…\", \"pull up…\"), once it is ready. Never needed to read or operate a page."
+            : "Bring an existing tab to the front, where the person watching the run sees it.",
           inputSchema: z.object({ tabId: z.string().min(1) }),
-          execute: async ({ tabId }) => execute({ name: "tab.focus", tabId }),
+          execute: async ({ tabId }) => execute({ name: "tab.show", tabId }),
         }),
         page_inspect: tool({
           description: "Read the page title, URL, visible text, and visible interactive controls with stable selectors.",

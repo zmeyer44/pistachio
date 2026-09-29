@@ -41,11 +41,13 @@ export function agentIsDriving(run: Pick<RunSummary, "control" | "status"> | nul
  * The one tab in THIS browser the agent is driving, or null.
  *
  * The light is not a busy indicator: it marks the page the agent is acting
- * on, and only while the person is looking at that page. So the answer is a
- * tab, not a boolean, and the callers put the light on that tab alone —
- * main lights only its pane (browser-controller.ts `setAgentGlow`), and only
- * when that pane is on screen; the shell rings only that pane
- * (components/ContentArea.tsx).
+ * on. So the answer is a tab, not a boolean, and the callers mark that tab
+ * alone — main lights only its pane (browser-controller.ts `setAgentGlow`),
+ * and only when that pane is on screen; the shell rings only that pane
+ * (components/ContentArea.tsx). Off screen — the agent opens its tabs in the
+ * background — the shell marks it where the person can see it instead: the
+ * tab's own mark (components/Favicon.tsx `TabMark`) and a line in the chat
+ * (components/chat/AgentTabChip.tsx).
  *
  * The agent works tab by tab: every browser tool names the tab it touches
  * (`AgentToolCall.tabId`), and it can open others and move between them
@@ -55,7 +57,17 @@ export function agentIsDriving(run: Pick<RunSummary, "control" | "status"> | nul
  * here however busy it is — its live view is where that run is watched.
  */
 export function agentDrivenTabId(run: RunSummary | null): string | null {
-  if (run === null || !agentIsDriving(run) || run.executor?.kind === "cloud") return null;
+  if (run === null || !agentIsDriving(run)) return null;
+  return agentTabId(run);
+}
+
+/**
+ * The tab in THIS browser the run is working in, driving or not: the one its
+ * latest browser tool touched, else the tab it started in. A paused run's
+ * is the page it wants the person in (a takeover); null for a cloud run.
+ */
+export function agentTabId(run: RunSummary | null): string | null {
+  if (run === null || run.executor?.kind === "cloud") return null;
   for (let index = run.toolCalls.length - 1; index >= 0; index -= 1) {
     const tabId = run.toolCalls[index]?.tabId ?? null;
     if (tabId !== null) return tabId;

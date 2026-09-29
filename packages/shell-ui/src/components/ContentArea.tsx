@@ -173,14 +173,16 @@ function SurfacePage({
  */
 export function BrowserSurface() {
   const deskGroupId = useDeskStore((state) => state.groupId);
+  const deskInstance = useDeskStore((state) => state.instance);
   const native = useSurface().kind === "native";
   // A tab group's desk takes the surface's place while it is up: same box,
   // same gutter, its own windows over it (components/desk). Keyed by the
-  // group, so another group's desk is a fresh one.
+  // desk, not the group: a desk opened afresh is a fresh surface, while one
+  // passed to another group (from its dock) stays, and runs the passing.
   if (deskGroupId !== null && native)
     return (
       <Suspense fallback={null}>
-        <DeskSurface key={deskGroupId} groupId={deskGroupId} />
+        <DeskSurface key={deskInstance} groupId={deskGroupId} />
       </Suspense>
     );
   return <BrowserSurfaceImpl />;

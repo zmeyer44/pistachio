@@ -15,13 +15,18 @@ export function deskAvailable(): boolean {
 /**
  * Open the group's desk, or put it away if it is the one up. The sidebar is
  * put away while a desk is up (layouts/SidebarLayout.tsx), and in the
- * sidebar layout the desk opens once it has gone.
+ * sidebar layout the desk opens once it has gone. Another group's desk
+ * up, it passes to this group in place.
  */
 export function toggleDesk(groupId: string): void {
   if (!deskAvailable()) return;
   const desk = useDeskStore.getState();
   if (desk.groupId === groupId || desk.opening === groupId) {
     desk.leave();
+    return;
+  }
+  if (desk.groupId !== null && !desk.leaving) {
+    desk.switchTo(groupId);
     return;
   }
   if (desk.groupId !== null) desk.leave({ immediate: true });

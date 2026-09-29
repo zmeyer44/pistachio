@@ -142,10 +142,7 @@ test("settings open with ⌘,, every section renders, and a change persists to d
     await expect(root.getByRole("button", { name: "Privacy & security", exact: true })).toHaveClass(/shadow-small/);
     await captureShell(app, "05d-privacy-back.png");
 
-    // A deep link into the group's prefix opens its menu — the open menu is a
-    // function of the address, not of click history.
-    await page.getByRole("button", { name: "General", exact: true }).click();
-    await expect(page.getByTestId("settings-menu-root")).toBeVisible();
+    // Closed on a sub-page, Settings reopens at its root, not where it was left.
     await shell.keyboard.press("Escape");
     await expect(page).toBeHidden();
     // Settings now lives in the active layout's chrome: a row of the sidebar footer's menu.

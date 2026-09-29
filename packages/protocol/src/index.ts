@@ -153,7 +153,7 @@ export interface AgentToolCall {
   name:
     | "tabs.list"
     | "tab.open"
-    | "tab.focus"
+    | "tab.show"
     | "page.inspect"
     | "page.navigate"
     | "page.back"
@@ -262,7 +262,7 @@ export type AgentPressableKey = (typeof AGENT_PRESSABLE_KEYS)[number];
 export type BrowserAgentToolRequest =
   | { name: "tabs.list" }
   | { name: "tab.open"; url?: string }
-  | { name: "tab.focus"; tabId: string }
+  | { name: "tab.show"; tabId: string }
   | { name: "page.inspect"; tabId: string }
   | { name: "page.navigate"; tabId: string; url: string }
   | { name: "page.back" | "page.forward" | "page.reload"; tabId: string }

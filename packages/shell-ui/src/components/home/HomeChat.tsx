@@ -353,6 +353,9 @@ const HomeComposer = memo(function HomeComposer({ tabKey, run, active }: { tabKe
           ))}
         </div>
       )}
+      {/* The buttons ride the field's last line: bottom-aligned, and lifted
+          by half of what the one-line field (44px) has over them (32px), so
+          they sit centred on it however many lines the field grows to. */}
       <div className="flex items-end gap-2 pr-2.5 pl-2.5 pt-2 pb-2">
         <input
           ref={fileRef}
@@ -366,7 +369,7 @@ const HomeComposer = memo(function HomeComposer({ tabKey, run, active }: { tabKe
             event.currentTarget.value = "";
           }}
         />
-        <Button variant="tertiary" size="sm" shape="circle" svgOnly aria-label="Attach files" data-testid="home-attach-button" className="mb-0.5 shrink-0" onClick={() => fileRef.current?.click()}>
+        <Button variant="tertiary" size="sm" shape="circle" svgOnly aria-label="Attach files" data-testid="home-attach-button" className="mb-1.5 shrink-0" onClick={() => fileRef.current?.click()}>
           <Paperclip aria-hidden="true" />
         </Button>
         <Textarea
@@ -387,11 +390,11 @@ const HomeComposer = memo(function HomeComposer({ tabKey, run, active }: { tabKe
           rows={1}
         />
         {acting ? (
-          <Button size="sm" shape="circle" svgOnly aria-label="Stop" title="Stop" data-testid="home-chat-stop" className="mb-0.5 shrink-0" onClick={() => void interrupt()}>
+          <Button size="sm" shape="circle" svgOnly aria-label="Stop" title="Stop" data-testid="home-chat-stop" className="mb-1.5 shrink-0" onClick={() => void interrupt()}>
             <Square className="fill-current" aria-hidden="true" />
           </Button>
         ) : (
-          <Button size="sm" shape="circle" svgOnly aria-label="Send" title="Send" data-testid="home-chat-send" className="mb-0.5 shrink-0" disabled={empty || starting} onClick={submit}>
+          <Button size="sm" shape="circle" svgOnly aria-label="Send" title="Send" data-testid="home-chat-send" className="mb-1.5 shrink-0" disabled={empty || starting} onClick={submit}>
             <ArrowUp aria-hidden="true" />
           </Button>
         )}

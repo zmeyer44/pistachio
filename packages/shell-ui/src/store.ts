@@ -1110,13 +1110,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   installUpdate: () => nativeApi()?.installUpdate(),
   dismissUpdate: () => set((state) => ({ updateDismissed: updateVersion(state.update) })),
+  // Opened without a section, Settings starts at its root rather than the
+  // sub-page it was last closed on.
   openSettings: (section) =>
-    set((state) => ({
+    set({
       overlay: "settings",
-      settingsSection: section ?? state.settingsSection,
+      settingsSection: section ?? "",
       urlBarTabId: null,
       urlBarNew: false,
-    })),
+    }),
   closeSettings: () => set((state) => (state.overlay === "settings" ? { overlay: "none" } : {})),
   openReminders: (occurrenceId) =>
     set({ overlay: "reminders", remindersFocus: occurrenceId ?? null, urlBarTabId: null, urlBarNew: false }),

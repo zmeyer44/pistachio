@@ -1542,11 +1542,11 @@ export class RunController {
             this.#completeTool(toolId, toolResult.summary);
             const toolCall = this.#requireRun().toolCalls.find((item) => item.id === toolId);
             // A tab.open names no tab when it starts — the tab does not exist
-            // yet — and the browser makes the new tab active as it opens. Its
-            // id is in the result, so the call records it: the agent's light
-            // (@pistachio/shell-contracts/agent-glow `agentDrivenTabId`) moves to the tab the
-            // person is now looking at, rather than staying on the old one
-            // through the model's next think.
+            // yet. Its id is in the result, so the call records it: the
+            // agent's marks (@pistachio/shell-contracts/agent-glow
+            // `agentDrivenTabId`) move to the new tab, which opened in the
+            // background, rather than staying on the old one through the
+            // model's next think.
             if (toolCall !== undefined && toolCall.tabId === null) {
               const opened = openedTabId(toolResult.data);
               if (opened !== null) toolCall.tabId = opened;

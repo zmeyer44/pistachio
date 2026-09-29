@@ -117,9 +117,24 @@ export interface SavedDesk {
   windows: SavedDeskWindow[];
 }
 
+/**
+ * The tab a group's desk comes up on when the desk passes to it: its top
+ * window as it was left, or, none of those still the group's, its tab used last.
+ */
+export function passedEntry(saved: readonly SavedDeskWindow[], tabs: ReadonlyArray<{ id: string; lastActiveAt: number }>): string | null {
+  const top = [...saved].reverse().find((window) => tabs.some((tab) => tab.id === window.tabId))?.tabId;
+  return top ?? [...tabs].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id ?? null;
+}
+
 interface DeskStore {
   /** The group whose desk is up, or null. */
   groupId: string | null;
+  /**
+   * Which desk this is: a desk opened afresh is a new one (the surface is
+   * mounted anew), while one passed to another group in place (switchTo)
+   * stays the same desk, which runs the passing itself.
+   */
+  instance: number;
   /**
    * The group whose desk is waiting for the sidebar to go (sidebarGone): the
    * sidebar is put away while a desk is up, and the desk opens over the
@@ -134,6 +149,8 @@ interface DeskStore {
   open(groupId: string, options?: { afterSidebar?: boolean }): void;
   /** The sidebar has gone: the desk waiting for it opens. */
   sidebarGone(): void;
+  /** The desk that is up passes to another group, in place: its surface runs the passing (DeskEngine.switchGroup). */
+  switchTo(groupId: string): void;
   /** Put the desk away — with its closing motion unless `immediate`. */
   leave(options?: { immediate?: boolean }): void;
   /** The surface's closing motion is done. */
@@ -200,15 +217,25 @@ const initial = readPersisted();
 
 export const useDeskStore = create<DeskStore>((set, get) => ({
   groupId: null,
+  instance: 0,
   opening: null,
   leaving: false,
   variants: initial.variants,
   saved: initial.saved,
   open: (groupId, options) =>
-    set(options?.afterSidebar === true ? { opening: groupId, groupId: null, leaving: false } : { groupId, opening: null, leaving: false }),
+    set(
+      options?.afterSidebar === true
+        ? { opening: groupId, groupId: null, leaving: false }
+        : { groupId, instance: get().instance + 1, opening: null, leaving: false },
+    ),
   sidebarGone: () => {
     const opening = get().opening;
-    if (opening !== null) set({ groupId: opening, opening: null, leaving: false });
+    if (opening !== null) set({ groupId: opening, instance: get().instance + 1, opening: null, leaving: false });
+  },
+  switchTo: (groupId) => {
+    const state = get();
+    if (state.groupId === null || state.leaving || state.groupId === groupId) return;
+    set({ groupId });
   },
   leave: (options) => {
     // Still waiting for the sidebar: it never opened.

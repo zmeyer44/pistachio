@@ -6,7 +6,7 @@ import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
-import { useDeskStore, type DeskVariants } from "../../lib/desk/store";
+import { passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay } from "../GlanceOverlay";
 import { DeskEngine } from "./desk-engine";
@@ -19,8 +19,13 @@ const EMPTY_IDS: readonly string[] = [];
 /** The group's tabs in the group's order, keeping each tab object's identity (the store shares structure). */
 function groupTabs(snapshot: ShellSnapshot | null, group: TabGroupInfo | null): readonly BrowserTabInfo[] {
   if (snapshot === null || group === null) return EMPTY_TABS;
+  return tabsOf(snapshot, group.tabIds);
+}
+
+function tabsOf(snapshot: ShellSnapshot | null, tabIds: readonly string[]): readonly BrowserTabInfo[] {
+  if (snapshot === null || tabIds.length === 0) return EMPTY_TABS;
   const byId = new Map(snapshot.tabs.map((tab) => [tab.id, tab]));
-  return group.tabIds.map((tabId) => byId.get(tabId)).filter((tab): tab is BrowserTabInfo => tab !== undefined);
+  return tabIds.map((tabId) => byId.get(tabId)).filter((tab): tab is BrowserTabInfo => tab !== undefined);
 }
 
 /**
@@ -33,6 +38,11 @@ function groupTabs(snapshot: ShellSnapshot | null, group: TabGroupInfo | null): 
  * The motion is the engine's (desk-engine.ts); this component keeps it fed
  * with what the browser says — the group's tabs, which one is active,
  * which are asleep — and draws what the engine says is on the desk.
+ *
+ * The desk can pass to another of the Space's groups in place (from its
+ * dock: useDeskStore's switchTo): `groupId` changes under the same engine,
+ * which sends the old group's windows into its icon and brings the new
+ * group's out (DeskEngine.switchGroup).
  */
 export default function DeskSurface({ groupId }: { groupId: string }) {
   const group = useAppStore((state) => state.snapshot?.tabGroups.find((candidate) => candidate.id === groupId) ?? null);
@@ -54,6 +64,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   // What the engine asks of the browser, always answered from the latest render.
   const latest = useRef({ tabs, wakingTabIds, variants });
   latest.current = { tabs, wakingTabIds, variants };
+  /** The group the engine's windows are of: it moves on only once the engine has passed to the next (and saved this one under its own id). */
+  const shownGroup = useRef(groupId);
 
   const [engine, setEngine] = useState<DeskEngine | null>(null);
   // The tab in view when the desk opened, not one of the group's: it stays
@@ -65,7 +77,9 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     const created = new DeskEngine({
       variants: (): DeskVariants => latest.current.variants,
       hasLivePage: (tabId) => {
-        const tab = latest.current.tabs.find((candidate) => candidate.id === tabId);
+        // Any tab, not only the group's: a window of a group the desk has
+        // passed from is still live until its still is up.
+        const tab = latest.current.tabs.find((candidate) => candidate.id === tabId) ?? useAppStore.getState().snapshot?.tabs.find((candidate) => candidate.id === tabId);
         return tab !== undefined && tab.lifecycle === "live" && !latest.current.wakingTabIds.includes(tabId) && !isShellPageUrl(tab.url);
       },
       select: (tabId) => {
@@ -73,7 +87,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         if (store.snapshot?.activeTabId !== tabId) void store.selectTab(tabId);
       },
       close: (tabId) => void useAppStore.getState().closeTab(tabId),
-      save: (windows) => useDeskStore.getState().save(groupId, { windows }),
+      save: (windows) => useDeskStore.getState().save(shownGroup.current, { windows }),
+      switchGroup: (next) => useDeskStore.getState().switchTo(next),
       leaveDone: () => useDeskStore.getState().finishLeave(),
     });
     created.attachStage(stage);
@@ -136,9 +151,24 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       created.destroy();
       setEngine(null);
     };
-    // One engine per desk: the group is the component's key.
+    // One engine per desk (the component's key); a group passed to later is the engine's to run (below).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Passed to another group: the engine sends this group's windows into
+  // its icon, and brings the new one's out to where they were left — its
+  // top window then in use, or with none left, its tab used last.
+  useLayoutEffect(() => {
+    const from = shownGroup.current;
+    if (engine === null || from === groupId) return;
+    const groupTabIds = latest.current.tabs.map((tab) => tab.id);
+    const saved = useDeskStore.getState().saved[groupId]?.windows ?? [];
+    const entry = passedEntry(saved, latest.current.tabs);
+    // The old group's tab stays the active one until the new one's is selected: no reason to leave.
+    opener.current = useAppStore.getState().snapshot?.activeTabId ?? null;
+    engine.switchGroup({ from, groupId, tabIds: groupTabIds, saved, entry });
+    shownGroup.current = groupId;
+  }, [engine, groupId]);
 
   const view = useSyncExternalStore(
     useCallback((listener: () => void) => engine?.subscribe(listener) ?? (() => undefined), [engine]),
@@ -215,7 +245,13 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   }, [variants.grab]);
 
   const stillByTab = useMemo(() => new Map(paneStills.map((still) => [still.tabId, still.dataUrl])), [paneStills]);
-  const tabsById = useMemo(() => new Map(tabs.map((tab) => [tab.id, tab])), [tabs]);
+  // The windows' tabs: the group's, and a moment after passing to another group, the old one's on their way home.
+  const strayKey = view?.windows
+    .map((window) => window.tabId)
+    .filter((tabId) => !tabIds.includes(tabId))
+    .join(" ");
+  const strays = useAppStore(useShallow((state) => tabsOf(state.snapshot, strayKey === undefined || strayKey === "" ? EMPTY_IDS : strayKey.split(" "))));
+  const tabsById = useMemo(() => new Map([...tabs, ...strays].map((tab) => [tab.id, tab])), [tabs, strays]);
   const attachZone = useCallback((el: HTMLDivElement | null) => engine?.attachZone(el), [engine]);
   const attachGuides = useCallback((el: HTMLDivElement | null) => engine?.attachGuides(el), [engine]);
 

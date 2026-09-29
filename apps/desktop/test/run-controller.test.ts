@@ -397,10 +397,11 @@ describe("a thread from the composer", () => {
     expect(controller.threads().map((item) => [item.runId, item.status, item.turns])).toEqual([[run!.runId, "completed", 1]]);
   });
 
-  it("records the tab a tab.open made, so the agent's light follows it there", async () => {
+  it("opens a tab.open's tab in the background, and records it so the agent's marks follow it there", async () => {
     // The call names no tab when it starts — the tab does not exist yet —
-    // and the browser makes the new tab active as it opens. Until the model
-    // touches it, the light would otherwise stay on the tab the run began in.
+    // and the tab opens behind the person's, who stays where they are.
+    // Until the model touches it, the marks would otherwise stay on the tab
+    // the run began in.
     const { model, script } = scriptedModel([tabOpen]);
     const { controller, browser } = build({ model });
     let drivenWhileThinking: string | null = null;
@@ -410,7 +411,7 @@ describe("a thread from the composer", () => {
     });
     await controller.start("Open the shop");
 
-    expect(browser.createTab).toHaveBeenCalledWith("https://shop.example/");
+    expect(browser.createTab).toHaveBeenCalledWith("https://shop.example/", { activate: false });
     const opened = controller.snapshot()!.toolCalls.find((tool) => tool.name === "tab.open");
     expect(opened).toMatchObject({ status: "completed", tabId: "tab-2" });
     expect(drivenWhileThinking).toBe("tab-2");
