@@ -51,3 +51,22 @@ export function arrangeDesk(kind: "tile" | "cascade"): boolean {
   arrangeUp(kind);
   return true;
 }
+
+/**
+ * ⌘I on a desk puts the keyboard in its Bar (docs/desk-agent.md §1) rather
+ * than opening the sidebar's chat: the desk's surface lends its Bar here
+ * while it is mounted (lendDeskAsk).
+ */
+let askUp: (() => void) | null = null;
+
+export function lendDeskAsk(ask: (() => void) | null): void {
+  askUp = ask;
+}
+
+/** The Bar takes the keyboard; false with no desk up (⌘I then toggles the chat as ever). */
+export function askDesk(): boolean {
+  const desk = useDeskStore.getState();
+  if (askUp === null || desk.groupId === null || desk.leaving) return false;
+  askUp();
+  return true;
+}

@@ -30,6 +30,7 @@ export const LiveReply = memo(function LiveReply({
   density = "panel",
   links = "glance",
   trailing = null,
+  tabChip = true,
   className,
 }: {
   run: RunSummary;
@@ -39,6 +40,8 @@ export const LiveReply = memo(function LiveReply({
   links?: "glance" | "tab";
   /** Drawn at the end of the status line — the console's context meter. */
   trailing?: React.ReactNode;
+  /** Where the agent works, when off screen (AgentTabChip); a desk shows it on the window itself. */
+  tabChip?: boolean;
   className?: string;
 }) {
   const draft = run.draft ?? null;
@@ -70,7 +73,7 @@ export const LiveReply = memo(function LiveReply({
       ) : (
         <Markdown text={text} streaming sources={sources} links={links} density={density} />
       )}
-      <AgentTabChip run={run} density={density} />
+      {tabChip ? <AgentTabChip run={run} density={density} /> : null}
     </div>
   );
 });

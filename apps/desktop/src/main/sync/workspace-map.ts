@@ -18,6 +18,8 @@ import {
   type DeviceWorkspaceDoc,
   type Hlc,
   type MemoryRecord,
+  type GroupBlobRecord,
+  type GroupContextRecord,
   type NoteBlobRecord,
   type NoteRecord,
   type ReminderRecord,
@@ -39,22 +41,25 @@ export const DEVICE_ACTIVITY_KEY_PREFIX = "device-activity:";
  * is remembered for. One register per record — and for memory, one per
  * VERSION — so two devices editing different bookmarks never contend.
  */
-export const WORKSPACE_RECORD_KINDS = ["bookmark", "reminder", "memory", "artifact", "note", "noteBlob"] as const;
+export const WORKSPACE_RECORD_KINDS = ["bookmark", "reminder", "memory", "artifact", "note", "noteBlob", "groupContext", "groupBlob"] as const;
 export type WorkspaceRecordKind = (typeof WORKSPACE_RECORD_KINDS)[number];
 
 /**
- * The key prefix each kind lives under, and the field its doc carries the
- * record in. Only notes need saying: `noteBlob` is `note-blob:` on the wire
- * and `blob` inside its doc, so neither can be derived from the kind's name
- * the way the first four are.
+ * The key prefix each kind lives under, the field its doc carries the
+ * record in, and — for a record not keyed by its `id` — the field that is
+ * its key. Notes and group contexts need saying: `noteBlob` is `note-blob:`
+ * on the wire and `blob` inside its doc, and a group's context is keyed by
+ * the group it belongs to (docs/desk-agent.md §3).
  */
-const RECORD_KIND_KEYS: Record<WorkspaceRecordKind, { prefix: (typeof RECORD_KEY_PREFIXES)[number]; field: string }> = {
+const RECORD_KIND_KEYS: Record<WorkspaceRecordKind, { prefix: (typeof RECORD_KEY_PREFIXES)[number]; field: string; idField?: string }> = {
   bookmark: { prefix: "bookmark:", field: "bookmark" },
   reminder: { prefix: "reminder:", field: "reminder" },
   memory: { prefix: "memory:", field: "memory" },
   artifact: { prefix: "artifact:", field: "artifact" },
   note: { prefix: "note:", field: "note" },
   noteBlob: { prefix: "note-blob:", field: "blob" },
+  groupContext: { prefix: "group-context:", field: "context", idField: "groupId" },
+  groupBlob: { prefix: "group-blob:", field: "blob" },
 };
 
 /** The globally synchronized categories: Spaces and the per-field settings. */
@@ -110,6 +115,10 @@ export function recordDocFor(kind: WorkspaceRecordKind, record: unknown): Worksp
       return { kind: "note", note: record as NoteRecord };
     case "noteBlob":
       return { kind: "noteBlob", blob: record as NoteBlobRecord };
+    case "groupContext":
+      return { kind: "groupContext", context: record as GroupContextRecord };
+    case "groupBlob":
+      return { kind: "groupBlob", blob: record as GroupBlobRecord };
   }
 }
 
@@ -128,6 +137,10 @@ export function recordOfDoc(doc: WorkspaceDoc): unknown {
       return doc.note;
     case "noteBlob":
       return doc.blob;
+    case "groupContext":
+      return doc.context;
+    case "groupBlob":
+      return doc.blob;
     default:
       return null;
   }
@@ -145,7 +158,7 @@ export function recordKeyParts(key: string): { kind: WorkspaceRecordKind; id: st
 
 /** The doc key a record of `kind` with `id` lives under. */
 export function recordKeyOf(kind: WorkspaceRecordKind, id: string): string {
-  return workspaceKeyFor(recordDocFor(kind, { id }));
+  return workspaceKeyFor(recordDocFor(kind, { [RECORD_KIND_KEYS[kind].idField ?? "id"]: id }));
 }
 
 /**
@@ -156,7 +169,7 @@ export function recordKeyOf(kind: WorkspaceRecordKind, id: string): string {
 export function readRecordDoc(kind: WorkspaceRecordKind, id: string, value: unknown): WorkspaceDoc | undefined {
   if (!isRecord(value) || value["kind"] !== kind) return undefined;
   const inner = value[RECORD_KIND_KEYS[kind].field];
-  if (!isRecord(inner) || inner["id"] !== id) return undefined;
+  if (!isRecord(inner) || inner[RECORD_KIND_KEYS[kind].idField ?? "id"] !== id) return undefined;
   return recordDocFor(kind, inner);
 }
 

@@ -36,6 +36,10 @@ import type {
   MemoryKind as MemoryKindRecord,
   MemoryRecord,
   MemoryReview as MemoryReviewRecord,
+  GroupBlobRecord,
+  GroupContextItemRecord,
+  GroupContextMediaTypeRecord,
+  GroupContextRecord,
   NoteBlobMediaType as NoteBlobMediaTypeRecord,
   NoteBlobRecord,
   NoteRecord,
@@ -51,6 +55,7 @@ import type {
 import type { Bookmark, BookmarkKind, BookmarkStatus } from "../src/bookmarks.js";
 import type { MemoryBucket, MemoryEntry, MemoryKind, MemoryReview } from "../src/memory.js";
 import type { Note, NoteBlob, NoteBlobMediaType } from "../src/notes.js";
+import type { GroupBlob, GroupContext, GroupContextItem, GroupContextMediaType } from "../src/desk-agent.js";
 import type { Reminder, ReminderAction, ReminderSchedule, ReminderStatus } from "../src/reminders.js";
 import type { AppearanceSettings } from "../src/appearance.js";
 import { DEFAULT_SETTINGS, type DesktopSettings } from "../src/settings.js";
@@ -73,6 +78,9 @@ const _memoryShape: Mutual<MemoryEntry, MemoryRecord> = true;
  */
 const _noteShape: Mutual<Note, NoteRecord> = true;
 const _noteBlobShape: Mutual<NoteBlob, NoteBlobRecord> = true;
+const _groupContextShape: Mutual<GroupContext, GroupContextRecord> = true;
+const _groupContextItemShape: Mutual<GroupContextItem, GroupContextItemRecord> = true;
+const _groupBlobShape: Mutual<GroupBlob, GroupBlobRecord> = true;
 /**
  * The browser session record (web-browser-design.md §9) is the same copy in
  * the other direction: the protocol declares the wire shape, the shell states
@@ -105,6 +113,7 @@ const _memoryKinds: Mutual<MemoryKind, MemoryKindRecord> = true;
 const _memoryBuckets: Mutual<MemoryBucket, MemoryBucketRecord> = true;
 const _memoryReviews: Mutual<MemoryReview, MemoryReviewRecord> = true;
 const _noteBlobMediaTypes: Mutual<NoteBlobMediaType, NoteBlobMediaTypeRecord> = true;
+const _groupContextMediaTypes: Mutual<GroupContextMediaType, GroupContextMediaTypeRecord> = true;
 
 /* ------------------------------- fixtures -------------------------------- */
 
@@ -393,6 +402,10 @@ describe("the record types the protocol re-declares", () => {
       _noteShape,
       _noteBlobShape,
       _noteBlobMediaTypes,
+      _groupContextShape,
+      _groupContextItemShape,
+      _groupBlobShape,
+      _groupContextMediaTypes,
       _browserSessionShape,
       _browserSessionTabShape,
       _browserSessionShelfShape,
@@ -400,6 +413,6 @@ describe("the record types the protocol re-declares", () => {
       _shellAppearanceShape,
       _shellShortcutsShape,
       _shellShortcutActions,
-    ]).toEqual(Array.from({ length: 21 }, () => true));
+    ]).toEqual(Array.from({ length: 25 }, () => true));
   });
 });

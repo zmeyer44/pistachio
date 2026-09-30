@@ -34,6 +34,7 @@ import { ArtifactStore } from "../src/main/artifact-store";
 import { BookmarkStore } from "../src/main/bookmark-store";
 import { MemoryStore } from "../src/main/memory-store";
 import { NoteStore } from "../src/main/note-store";
+import { GroupContextStore } from "../src/main/group-context-store";
 import { ReminderStore } from "../src/main/reminder-store";
 import { SpaceStore } from "../src/main/space-store";
 import { WorkspaceRecords } from "../src/main/sync/records";
@@ -73,6 +74,7 @@ interface Harness {
   memory: MemoryStore;
   artifacts: ArtifactStore;
   notes: NoteStore;
+  groupContexts: GroupContextStore;
   keys: SpaceKeys;
   publicKey: CryptoKey;
   /** The one enrolled peer whose docs verify; "device-z" is nobody. */
@@ -105,6 +107,7 @@ async function harness(): Promise<Harness> {
     memory: new MemoryStore(dir),
     artifacts: new ArtifactStore(dir),
     notes: new NoteStore(dir),
+    groupContexts: new GroupContextStore(dir),
     keys,
     publicKey: keypair.publicKey,
     peer,
@@ -162,6 +165,26 @@ async function harness(): Promise<Harness> {
         onRecordChange: (listener) =>
           h.notes.onRecordChange((kind, id) => {
             if (kind === "noteBlob") listener(id);
+          }),
+      },
+      groupContext: {
+        all: () => h.groupContexts.syncAll("groupContext"),
+        get: (id) => h.groupContexts.get(id),
+        applyRemote: (value) => h.groupContexts.applyRemote("groupContext", value),
+        removeRemote: (id) => h.groupContexts.removeRemote("groupContext", id),
+        onRecordChange: (listener) =>
+          h.groupContexts.onRecordChange((kind, id) => {
+            if (kind === "groupContext") listener(id);
+          }),
+      },
+      groupBlob: {
+        all: () => h.groupContexts.syncAll("groupBlob"),
+        get: (id) => h.groupContexts.getBlob(id),
+        applyRemote: (value) => h.groupContexts.applyRemote("groupBlob", value),
+        removeRemote: (id) => h.groupContexts.removeRemote("groupBlob", id),
+        onRecordChange: (listener) =>
+          h.groupContexts.onRecordChange((kind, id) => {
+            if (kind === "groupBlob") listener(id);
           }),
       },
     }),
@@ -563,6 +586,40 @@ describe("the personal records (bookmarks, reminders, memory, artifacts, notes)"
     expect(h.published.map((wire) => wire.key)).not.toEqual(
       expect.arrayContaining(["note:aaaabbbbcccc", `note-blob:${remoteBlobId}`]),
     );
+  });
+
+  it("publishes a group's context and its file as two registers, keyed by the group and the bytes, and takes both back (docs/desk-agent.md §3)", async () => {
+    const h = await hydrated();
+    h.published.length = 0;
+    const bytes = Buffer.from("%PDF-1.7 boarding pass");
+    const [file] = h.groupContexts.addFiles("7c1e2d4f-group", "Lisbon", [{ name: "pass.pdf", mediaType: "application/pdf", bytes }], "person").added;
+    await sleep(RESTORE_POINT_DEBOUNCE_MS + 60);
+    const contextWires = h.published.filter((wire) => wire.key === "group-context:7c1e2d4f-group");
+    const blobWires = h.published.filter((wire) => wire.key === `group-blob:${file!.blobId}`);
+    expect(contextWires).toHaveLength(1);
+    expect(blobWires).toHaveLength(1);
+    expect(await h.openDoc(contextWires[0]!)).toEqual({ kind: "groupContext", context: h.groupContexts.get("7c1e2d4f-group") });
+    expect(await h.openDoc(blobWires[0]!)).toEqual({ kind: "groupBlob", blob: h.groupContexts.getBlob(file!.blobId) });
+
+    // Another Mac's group, which is not on this one: its context arrives by the group's id.
+    h.published.length = 0;
+    await h.service.handleRemoteDocs([
+      await h.wire("group-context:9f00aa11-group", {
+        kind: "groupContext",
+        context: {
+          groupId: "9f00aa11-group",
+          title: "Groceries",
+          items: [{ id: "0123456789ab", kind: "fact", text: "Oat milk", addedAt: "2026-09-30T08:00:00.000Z", addedBy: "person" }],
+          updatedAt: "2026-09-30T08:00:00.000Z",
+        },
+      }),
+    ]);
+    expect(h.groupContexts.items("9f00aa11-group")).toEqual([expect.objectContaining({ text: "Oat milk" })]);
+    await sleep(RESTORE_POINT_DEBOUNCE_MS + 60);
+    expect(h.published.map((wire) => wire.key)).not.toContain("group-context:9f00aa11-group");
+
+    await h.service.handleRemoteDocs([await h.wire("group-context:9f00aa11-group", null, later())]);
+    expect(h.groupContexts.get("9f00aa11-group")).toBeNull();
   });
 
   it("publishes the tombstone of a picture the deleted note was the last to name", async () => {

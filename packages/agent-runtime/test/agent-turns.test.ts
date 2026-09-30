@@ -25,6 +25,7 @@ import {
   type AiAgentRunCallbacks,
   type BrowserBackend,
   type CredentialCaptureToolHost,
+  type DeskToolHost,
   type MemoryToolHost,
   type NotesToolHost,
   type NoteToolHost,
@@ -316,6 +317,7 @@ async function turn(options: {
   mode?: AgentTurnMode;
   memory?: { prompt: string; host: MemoryToolHost };
   userNotes?: { host: NoteToolHost };
+  desk?: { host: DeskToolHost };
 }) {
   const callbacks = options.callbacks ?? recorder();
   const summarize = options.summarize ?? vi.fn(async () => "SUMMARY: nothing much yet");
@@ -323,6 +325,7 @@ async function turn(options: {
     ...(options.mode === undefined ? {} : { mode: options.mode }),
     ...(options.memory === undefined ? {} : { memory: options.memory }),
     ...(options.userNotes === undefined ? {} : { userNotes: options.userNotes }),
+    ...(options.desk === undefined ? {} : { desk: options.desk }),
     messages: options.messages ?? [TASK],
     browser: options.browser ?? fakeBrowser().browser,
     callbacks,
@@ -1356,5 +1359,98 @@ describe("streamed turns", () => {
       }),
     });
     await expect(turn({ model, callbacks })).rejects.toThrow("upstream closed");
+  });
+});
+
+describe("the desk", () => {
+  function deskHost() {
+    const host = {
+      state: vi.fn(async () => "Desk: the tab group “Lisbon”.\n- tab tab-1 “Flight” — 0 0 50 100 — in use"),
+      arrange: vi.fn(async () => "Desk: the tab group “Lisbon”, arranged."),
+      note: vi.fn(async () => {}),
+      ungroup: vi.fn(async () => {}),
+      read: vi.fn(async (id: string) =>
+        id === "a1b2c3d4e5f6"
+          ? { text: "Confirmation QX7F2L" }
+          : { file: { dataUrl: "data:application/pdf;base64,JVBERi0=", mediaType: "application/pdf", name: "boarding-pass.pdf" } },
+      ),
+      save: vi.fn(async () => ({ id: "0f1e2d3c4b5a" })),
+    } satisfies DeskToolHost;
+    return host;
+  }
+
+  it("arranges, notes, reads and saves through the host, with the desk rules in the prompt", async () => {
+    const host = deskHost();
+    const model = scriptedModel([
+      calls({
+        name: "desk_arrange",
+        input: {
+          layout: null,
+          place: [
+            { tabId: "tab-1", zone: "left", box: null },
+            { tabId: "tab-2", zone: null, box: { x: 50, y: 0, w: 50, h: 100 } },
+          ],
+          bringOut: null,
+          putAway: ["tab-3"],
+        },
+      }),
+      calls({ name: "desk_note", input: { tabId: "tab-1", text: "  Lands 11:05  " } }),
+      calls({ name: "context_read", input: { id: "a1b2c3d4e5f6" } }),
+      calls({ name: "context_save", input: { kind: "fact", text: "Hotel check-in from 15:00", url: null, title: null } }),
+      answer("Side by side, and saved."),
+    ]);
+    const { result, callbacks } = await turn({ model, desk: { host } });
+
+    expect(result.outcome).toBe("final");
+    // Nulls never reach the host: the plan carries only what was asked.
+    expect(host.arrange).toHaveBeenCalledWith({
+      place: [
+        { tabId: "tab-1", zone: "left" },
+        { tabId: "tab-2", box: { x: 50, y: 0, w: 50, h: 100 } },
+      ],
+      putAway: ["tab-3"],
+    });
+    expect(host.note).toHaveBeenCalledWith("tab-1", "Lands 11:05");
+    expect(host.save).toHaveBeenCalledWith({ kind: "fact", text: "Hotel check-in from 15:00" });
+    expect(callbacks.toolStarted).toHaveBeenCalledWith({ name: "desk.arrange", summary: "placed 2 windows, put away 1" }, "Arranging the desk", "placed 2 windows, put away 1");
+    expect(callbacks.toolStarted).toHaveBeenCalledWith({ name: "context.save", kind: "fact", text: "Hotel check-in from 15:00" }, "Saving a fact", "Hotel check-in from 15:00");
+    const system = systemText(model.doGenerateCalls[0]!.prompt);
+    expect(system).toContain("Desk rules:");
+    const offered = (model.doGenerateCalls[0]!.tools ?? []).map((item) => item.name);
+    expect(offered).toEqual(expect.arrayContaining(["desk_state", "desk_arrange", "desk_note", "desk_ungroup", "context_read", "context_save"]));
+  });
+
+  it("hands a context file to the model as a file right after the result, never inside it", async () => {
+    const host = deskHost();
+    const model = scriptedModel([calls({ name: "context_read", input: { id: "0f1e2d3c4b5a" } }), answer("Seat 14C.")]);
+    await turn({ model, desk: { host } });
+
+    const prompt = model.doGenerateCalls[1]!.prompt;
+    expect(JSON.stringify(toolResultsIn(prompt))).not.toContain("JVBERi0");
+    const index = prompt.findIndex((message) => message.role === "tool");
+    const next = prompt[index + 1];
+    expect(next?.role).toBe("user");
+    const parts = next?.role === "user" ? next.content : [];
+    expect(parts).toEqual([
+      expect.objectContaining({ type: "text", text: expect.stringContaining("boarding-pass.pdf") }),
+      expect.objectContaining({ type: "file", mediaType: "application/pdf", filename: "boarding-pass.pdf" }),
+    ]);
+  });
+
+  it("offers no desk tool and no desk rule off a desk", async () => {
+    const model = scriptedModel([answer("Done.")]);
+    await turn({ model });
+    expect(systemText(model.doGenerateCalls[0]!.prompt)).not.toContain("Desk rules:");
+    expect((model.doGenerateCalls[0]!.tools ?? []).map((item) => item.name)).not.toContain("desk_arrange");
+  });
+
+  it("reports a host's refusal as a result the model can recover from", async () => {
+    const host = deskHost();
+    host.arrange.mockRejectedValueOnce(new Error("tab tab-9 is not on this desk"));
+    const model = scriptedModel([calls({ name: "desk_arrange", input: { layout: "tile", place: null, bringOut: null, putAway: null } }), answer("Tiled.")]);
+    const { result, callbacks } = await turn({ model, desk: { host } });
+    expect(result.outcome).toBe("final");
+    expect(callbacks.toolFailed).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(toolResultsIn(model.doGenerateCalls[1]!.prompt))).toContain("not on this desk");
   });
 });

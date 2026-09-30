@@ -235,6 +235,70 @@ export interface NoteBlobRecord {
   createdAt: string;
 }
 
+/* --------------------------------- group context -------------------------------- */
+
+/** What a group's context may hold a file of (mirrors `GROUP_CONTEXT_MEDIA_TYPES` in shell-contracts). */
+export type GroupContextMediaTypeRecord =
+  | "image/png"
+  | "image/jpeg"
+  | "image/webp"
+  | "image/gif"
+  | "application/pdf"
+  | "text/plain"
+  | "text/markdown"
+  | "text/csv"
+  | "text/calendar"
+  | "application/json";
+
+/** A file in a group's context; its bytes are a `group-blob:` register of their own. */
+export interface GroupContextFileRecord {
+  id: string;
+  kind: "file";
+  name: string;
+  mediaType: GroupContextMediaTypeRecord;
+  byteLength: number;
+  blobId: string;
+  addedAt: string;
+  addedBy: "person" | "agent";
+}
+
+/** A fact, a snippet of a page, or a link, kept as text. */
+export interface GroupContextTextRecord {
+  id: string;
+  kind: "fact" | "snippet" | "link";
+  text: string;
+  title?: string;
+  url?: string;
+  addedAt: string;
+  addedBy: "person" | "agent";
+}
+
+export type GroupContextItemRecord = GroupContextFileRecord | GroupContextTextRecord;
+
+/**
+ * A tab group's context (docs/desk-agent.md §3): the task's files and facts,
+ * one LWW register per group, keyed by the group's id. Tab groups do not sync
+ * live between devices, so the group's title rides along for a device that
+ * does not have the group to name it by.
+ */
+export interface GroupContextRecord {
+  groupId: string;
+  title: string;
+  items: GroupContextItemRecord[];
+  updatedAt: string;
+}
+
+/** One file of a group's context: immutable and content-addressed, as a note's image is. */
+export interface GroupBlobRecord {
+  /** Twenty-four hex characters: the SHA-256 prefix of the bytes. */
+  id: string;
+  mediaType: GroupContextMediaTypeRecord;
+  byteLength: number;
+  /** base64 */
+  data: string;
+  createdAt: string;
+}
+
 /* ------------------------------- browser session -------------------------------- */
 
 /**

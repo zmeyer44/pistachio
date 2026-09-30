@@ -21,6 +21,7 @@ import type { ModelMessage } from "ai";
 import { modelMessageSchema } from "ai";
 import type { EvidenceEntry } from "@pistachio/evidence";
 import { TASK_STATUSES, type RunSummary, type ThreadListItem } from "@pistachio/protocol";
+import { isTabGroupId } from "@pistachio/shell-contracts/tab-groups";
 
 export interface ThreadRecord {
   version: 1;
@@ -78,6 +79,7 @@ export function threadListItem(run: RunSummary): ThreadListItem {
     // must not become a second handle on the live run's own origin.
     ...(run.origin === undefined ? {} : { origin: structuredClone(run.origin) }),
     ...(run.executor === undefined ? {} : { executor: structuredClone(run.executor) }),
+    ...(run.groupId === undefined ? {} : { groupId: run.groupId }),
   });
 }
 
@@ -374,6 +376,7 @@ export class ThreadStore {
           messageCount: typeof item["messageCount"] === "number" ? item["messageCount"] : 0,
           ...(isRecord(item["origin"]) ? { origin: item["origin"] as ThreadListItem["origin"] } : {}),
           ...(isRecord(item["executor"]) ? { executor: item["executor"] as ThreadListItem["executor"] } : {}),
+          ...(typeof item["groupId"] === "string" && isTabGroupId(item["groupId"]) ? { groupId: item["groupId"] } : {}),
         }));
       }
       return items.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));

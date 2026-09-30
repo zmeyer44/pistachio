@@ -4,13 +4,15 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Crop, Expand, Maximize2, Minimize2, Minus } from "lucide-react";
+import { Crop, Expand, Maximize2, Minimize2, Minus, X } from "lucide-react";
+import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
 import { MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
@@ -59,6 +61,9 @@ export const DeskWindow = memo(function DeskWindow({
   still,
   waking,
   engine,
+  agent = null,
+  note = null,
+  onDismissNote,
 }: {
   view: DeskWindowView;
   tab: BrowserTabInfo | null;
@@ -68,6 +73,11 @@ export const DeskWindow = memo(function DeskWindow({
   still: string | null;
   waking: boolean;
   engine: DeskEngine;
+  /** The agent is working in this window: what it is doing, in a word (docs/desk-agent.md §1). */
+  agent?: string | null;
+  /** A short note the agent pinned to the window's frame. */
+  note?: string | null;
+  onDismissNote?: (tabId: string) => void;
 }) {
   const tabId = view.tabId;
   const attach = useCallback((el: HTMLDivElement | null) => engine.attachWindow(tabId, el), [engine, tabId]);
@@ -81,6 +91,35 @@ export const DeskWindow = memo(function DeskWindow({
   const shellPage = tab !== null && pageKind(tab.url) !== null;
   /** Only a web page can be masked: the shell draws its own pages. */
   const canMask = tab !== null && !shellPage && !masked;
+  const working = agent !== null;
+  // Phased on the wall clock like every other ring, taken as this one goes on.
+  const ringDelay = useMemo(() => (working ? `${String(agentRingDelayMs(Date.now()))}ms` : undefined), [working]);
+  // The agent's word and its note ride the frame: in the bar's title row, or above a tab or handle.
+  const marks =
+    agent === null && note === null ? null : (
+      <span className="desk-window-marks" data-testid="desk-window-marks">
+        {agent === null ? null : (
+          <span className="desk-window-agent" data-testid="desk-window-agent">
+            <span className="agent-thinking-dots" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+            {agent}
+          </span>
+        )}
+        {note === null ? null : (
+          <span className="desk-window-note" data-testid="desk-window-note" title={note}>
+            <span className="truncate">{note}</span>
+            {onDismissNote === undefined ? null : (
+              <button type="button" aria-label="Dismiss note" className="desk-window-note-close" onMouseDown={(event) => event.preventDefault()} onClick={() => onDismissNote(tabId)}>
+                <X aria-hidden="true" />
+              </button>
+            )}
+          </span>
+        )}
+      </span>
+    );
 
   /** A press on the frame: a grab, a move once it travels, a click, a double click — or on the title, a click edits the address. */
   const onFrameDown = (event: ReactPointerEvent) => {
@@ -161,6 +200,7 @@ export const DeskWindow = memo(function DeskWindow({
       data-into-dock={view.intoDock ? "" : undefined}
       data-flight={view.flight ?? undefined}
       data-framed={view.framed ? undefined : "off"}
+      data-agent={working ? "" : undefined}
       className="desk-window"
       style={{ zIndex: view.carried || view.flight !== null ? 60 + view.z : 10 + view.z }}
     >
@@ -193,7 +233,11 @@ export const DeskWindow = memo(function DeskWindow({
           {controls}
         </div>
       ) : null}
-      <div className="desk-window-card" style={{ top: cardTop }}>
+      {frame === "bar" || marks === null ? null : <div className="desk-window-marks-float">{marks}</div>}
+      <div
+        className={cn("desk-window-card", working && "agent-ring")}
+        style={{ top: cardTop, "--agent-ring-delay": ringDelay, "--agent-ring-radius": "calc(var(--radius-md) + 4px)" } as CSSProperties}
+      >
         {frame === "bar" ? (
           <div className="desk-window-chrome desk-window-bar" style={{ height: insets.top }} onPointerDown={onFrameDown}>
             {/* Clicked, the address palette opens on this tab; dragged, it is the bar. */}
@@ -203,6 +247,7 @@ export const DeskWindow = memo(function DeskWindow({
               {host !== "" && host !== title ? <span className="desk-window-host min-w-0 shrink-[2] truncate">{host}</span> : null}
             </span>
             <span className="flex-1" />
+            {marks}
             {controls}
           </div>
         ) : null}

@@ -117,6 +117,8 @@ const iconSelector = (tabId: string): string => `[data-testid="desk-dock-icon"][
 
 /** The dock's column (DOCK_W) and the gap beside it: the desk's windows start this far into the stage. */
 const DOCK_COLUMN = 60 + 8;
+/** The agent's Bar at the desk's foot and the gap above it (DeskBar's BAR_BAND): the desk's windows stop this far above the stage's foot. */
+const BAR_BAND = 52 + 8;
 
 /** The desk is at rest: nothing entering, nothing in hand, nothing still flying or settling. */
 async function settled(shell: Page): Promise<void> {
@@ -373,7 +375,7 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
     const half = await box(shell, windowSelector(ids[1]!));
     expect(Math.abs(half.x - usableLeft)).toBeLessThan(2);
     expect(Math.abs(half.width - (stage.x + stage.width - usableLeft - 8) / 2)).toBeLessThan(2);
-    expect(Math.abs(half.height - stage.height)).toBeLessThan(2);
+    expect(Math.abs(half.height - (stage.height - BAR_BAND))).toBeLessThan(2);
     await expectLiveIn(app, shell, urls[1]!, ids[1]!);
     await capture(app, shell, "04-left-half.png");
 
@@ -596,7 +598,7 @@ test("a window filling the desk lets go of it as it is dragged, and Shift lands 
     await settled(shell);
 
     const stage = await box(shell, ".desk-stage");
-    const usable = { x: stage.x + DOCK_COLUMN, y: stage.y, width: stage.width - DOCK_COLUMN, height: stage.height };
+    const usable = { x: stage.x + DOCK_COLUMN, y: stage.y, width: stage.width - DOCK_COLUMN, height: stage.height - BAR_BAND };
     const half = (usable.width - 8) / 2;
 
     // ── 1. Fill the desk ────────────────────────────────────────────────────
@@ -805,7 +807,7 @@ test("the dock: app icons, a preview on hover, a click opens where there is room
     await expect(shell.locator(`[data-testid="desk-dock-icon"][data-tab-id="${ids[0]!}"][data-focused]`)).toHaveCount(1);
 
     const stage = await box(shell, ".desk-stage");
-    const usable = { x: stage.x + DOCK_COLUMN, y: stage.y, width: stage.width - DOCK_COLUMN, height: stage.height };
+    const usable = { x: stage.x + DOCK_COLUMN, y: stage.y, width: stage.width - DOCK_COLUMN, height: stage.height - BAR_BAND };
     const half = (usable.width - 8) / 2;
     await shell.locator(`${windowSelector(ids[0]!)} button[aria-label="Fill the desk"]`).click();
     await settled(shell);

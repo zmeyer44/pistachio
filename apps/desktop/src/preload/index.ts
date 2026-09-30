@@ -3,6 +3,7 @@ import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive"
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
 import { isDeskPageInput, type DeskGrab, type DeskPageInput, type DeskState } from "@pistachio/shell-contracts/desk";
+import type { DeskRequest, GroupContextResult, GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CredentialCapture,
@@ -289,6 +290,25 @@ const api: PistachioApi = {
     ipcRenderer.on(IPC.deskPageInput, handler);
     return () => ipcRenderer.removeListener(IPC.deskPageInput, handler);
   },
+  // The desk's agent (docs/desk-agent.md §3): which conversation the desk
+  // opens, main's questions about the desk and their answers, and the
+  // group's context.
+  deskConversation: (command) => ipcRenderer.invoke(IPC.deskConversation, command) as Promise<void>,
+  onDeskRequest(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, id: unknown, request: DeskRequest): void => {
+      if (typeof id === "string") listener(id, request);
+    };
+    ipcRenderer.on(IPC.deskRequest, handler);
+    return () => ipcRenderer.removeListener(IPC.deskRequest, handler);
+  },
+  deskReply: (id, reply) => ipcRenderer.send(IPC.deskReply, id, reply),
+  getGroupContexts: () => ipcRenderer.invoke(IPC.groupContextsGet) as Promise<GroupContextView[]>,
+  onGroupContexts(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, contexts: GroupContextView[]): void => listener(contexts);
+    ipcRenderer.on(IPC.groupContextsChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.groupContextsChanged, handler);
+  },
+  groupContext: (command) => ipcRenderer.invoke(IPC.groupContextCommand, command) as Promise<GroupContextResult>,
   getTabSwitcherPreviews: (limit) =>
     ipcRenderer.invoke(IPC.tabSwitcherPreviewsGet, limit) as Promise<
       TabSwitcherPreview[]

@@ -56,9 +56,24 @@ import {
   type TurnRouteExchange,
   type TurnRouteRequest,
   type IntegrationToolHost,
+  type DeskToolHost,
 } from "@pistachio/agent-runtime";
+import {
+  deskStateLines,
+  groupContextLines,
+  type DeskAgentState,
+  type DeskConversationCommand,
+  type DeskRequest,
+  type GroupContextAuthor,
+  type GroupContextItem,
+  type GroupContextText,
+} from "@pistachio/shell-contracts/desk-agent";
 import { evaluateTurnRoute } from "@pistachio/agent-runtime/turn-route";
 import { DesktopBrowserBackend } from "./agent-browser-tools";
+import type { DeskBridge } from "./desk-bridge";
+import type { DeskConversationStore } from "./desk-conversations";
+import { DeskScope, type DeskScopeBrowser } from "./desk-scope";
+import type { GroupContextReading } from "./group-context-store";
 import { buildArtifactHtml, type ArtifactBuildRequest } from "./artifact-builder";
 import type { ArtifactStore } from "./artifact-store";
 import type { BookmarkStore } from "./bookmark-store";
@@ -141,8 +156,32 @@ export interface NoteRecordStore {
   remove(id: string): void;
 }
 
+/**
+ * What the desk agent needs from the rest of main (docs/desk-agent.md §3):
+ * the line to the shell's desk, which conversation each group opens, the
+ * browser's hold on groups, and the groups' context.
+ */
+export interface DeskAgentHost {
+  bridge: Pick<DeskBridge, "request" | "cancelAll">;
+  bindings: Pick<DeskConversationStore, "get" | "bind" | "unbind" | "forgetRun">;
+  browser: DeskScopeBrowser & {
+    ungroupTabs(groupId: string, tabIds: readonly string[]): string[];
+    /** A desk turn is working in the group: pages its tabs open join it until the release (BrowserController.holdGroup). */
+    holdGroup(groupId: string): () => void;
+  };
+  context: {
+    items(groupId: string): GroupContextItem[];
+    read(groupId: string, itemId: string): GroupContextReading;
+    addText(groupId: string, title: string, input: { kind: GroupContextText["kind"]; text: string; url?: string; title?: string }, addedBy: GroupContextAuthor): GroupContextText;
+  };
+}
+
+/** A desk request before the group it is for is named (#deskToolHost names it). */
+type DeskRequestFor = DeskRequest extends infer Request ? (Request extends DeskRequest ? Omit<Request, "groupId"> : never) : never;
+
 /** Which surface a tool call touched, for the trace and the evidence chain. */
-function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "integration" {
+function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "desk" | "integration" {
+  if (name.startsWith("desk.") || name.startsWith("context.")) return "desk";
   if (name.startsWith("memory.")) return "memory";
   if (name.startsWith("reminder.")) return "reminder";
   if (name.startsWith("artifact.")) return "artifact";
@@ -366,6 +405,13 @@ export class RunController {
   readonly #spaceId: () => string;
   /** The account's web origin, or null when this Mac has no account to render on. */
   readonly #artifactWebUrl: () => string | null;
+  readonly #deskHost: DeskAgentHost | null;
+  /**
+   * The desk in view, while one is up (docs/desk-agent.md §3): its group,
+   * and the conversation that was open before it came up, which leaving
+   * the desk goes back to. The open thread is the group's while it is up.
+   */
+  #desk: { groupId: string; before: string | null } | null = null;
   #run: RunSummary | null = null;
   /** The open thread's model history: what the next turn continues from. */
   #history: ModelMessage[] = [];
@@ -454,6 +500,8 @@ export class RunController {
      * enrollment comes and goes while the controller lives.
      */
     artifactWebUrl?: () => string | null;
+    /** The desk agent's pieces; absent where no desk is drawn (tests that do not need one). */
+    desk?: DeskAgentHost | null;
   }) {
     this.#settings = options.settings ?? (() => DEFAULT_SETTINGS);
     this.#threads = options.threads ?? null;
@@ -466,6 +514,7 @@ export class RunController {
     this.#budget = options.budget ?? contextBudget();
     this.#spaceId = options.spaceId ?? (() => "work");
     this.#artifactWebUrl = options.artifactWebUrl ?? (() => null);
+    this.#deskHost = options.desk ?? null;
     this.#memory = options.memory ?? null;
     this.#reminders = options.reminders ?? null;
     this.#artifacts = options.artifacts ?? null;
@@ -674,11 +723,139 @@ export class RunController {
       this.#storedEvidence = [];
     this.#storedSigningKey = null;
     }
+    this.#deskHost?.bindings.forgetRun(runId);
     // A cloud run keeps streaming after the row is gone: without this its
     // next folded event re-saves the thread and the conversation returns.
     this.#cloud?.forget(runId);
     this.#threads?.remove(runId);
     this.#onChange();
+  }
+
+  /**
+   * The desk tells main what is in view (docs/desk-agent.md §1,
+   * "Conversations"): a desk came up or passed to another group, left, or
+   * the person chose a conversation to continue here or asked for a new one.
+   * A thread still acting keeps the console through any of it — the agent
+   * is not stopped because the person moved.
+   */
+  async deskConversation(command: DeskConversationCommand): Promise<void> {
+    const host = this.#deskHost;
+    if (host === null) return;
+    switch (command.type) {
+      case "enter": {
+        if (this.#desk?.groupId === command.groupId) return;
+        // Passing the desk to another group keeps what was open before the first.
+        const before = this.#desk === null ? (this.#run?.runId ?? null) : this.#desk.before;
+        this.#desk = { groupId: command.groupId, before };
+        this.#openForDesk(host, command.groupId);
+        break;
+      }
+      case "leave": {
+        const desk = this.#desk;
+        if (desk === null) return;
+        this.#desk = null;
+        host.bridge.cancelAll();
+        if (!this.#active()) this.#reopen(desk.before);
+        break;
+      }
+      case "choose": {
+        if (this.#desk?.groupId !== command.groupId) throw new Error("that desk is not open");
+        if (this.#run?.runId !== command.runId) {
+          if (this.#active()) throw new Error("pause or end the current task before continuing another conversation");
+          const record = this.#threads?.get(command.runId) ?? null;
+          if (record === null) throw new Error("that conversation is no longer available");
+          this.#adopt(record);
+        }
+        // This group's from now on; the group it came from keeps it too.
+        host.bindings.bind(command.groupId, command.runId);
+        break;
+      }
+      case "new": {
+        if (this.#desk?.groupId !== command.groupId) throw new Error("that desk is not open");
+        host.bindings.unbind(command.groupId);
+        // The next message from the Bar starts the group's new conversation (#startFresh binds it).
+        await this.newThread();
+        return;
+      }
+    }
+    this.#onChange();
+  }
+
+  /** The group whose desk is up, when the open thread is its conversation and runs here. */
+  #deskTurn(run: RunSummary): { groupId: string; host: DeskAgentHost } | null {
+    const desk = this.#desk;
+    const host = this.#deskHost;
+    if (desk === null || host === null || isCloudRun(run)) return null;
+    return host.bindings.get(desk.groupId) === run.runId ? { groupId: desk.groupId, host } : null;
+  }
+
+  /** A desk came up: open its group's conversation, or an empty console for a new one. */
+  #openForDesk(host: DeskAgentHost, groupId: string): void {
+    if (this.#active()) return;
+    const bound = host.bindings.get(groupId);
+    if (bound !== null && this.#run?.runId === bound) return;
+    const record = bound === null ? null : (this.#threads?.get(bound) ?? null);
+    if (record !== null) {
+      this.#adopt(record);
+      return;
+    }
+    // A thread deleted since it was bound leaves nothing to open.
+    if (bound !== null) host.bindings.unbind(groupId);
+    this.#clearOpen();
+  }
+
+  /** Back to the conversation that was open before the desk came up (none: an empty console). */
+  #reopen(runId: string | null): void {
+    if (runId !== null && this.#run?.runId === runId) return;
+    const record = runId === null ? null : (this.#threads?.get(runId) ?? null);
+    if (record !== null) this.#adopt(record);
+    else this.#clearOpen();
+  }
+
+  /** Nothing open: the thread that was is saved and set aside. */
+  #clearOpen(): void {
+    if (this.#run === null) return;
+    this.#setAside();
+    this.#run = null;
+    this.#runSpaceId = null;
+    this.#history = [];
+    this.#chain = null;
+    this.#storedEvidence = [];
+    this.#storedSigningKey = null;
+  }
+
+  /**
+   * The desk tools for a turn at `groupId`'s desk: the layout through the
+   * shell, which answers from its engine, and the context from its store.
+   * Every answer from the shell is checked to be this group's desk — the
+   * person may have passed the desk to another group mid-turn.
+   */
+  #deskToolHost(host: DeskAgentHost, groupId: string, title: () => string, sawState: (state: DeskAgentState) => void): DeskToolHost {
+    // Each request names this group's desk: the shell refuses one for a desk no longer in view before it changes anything.
+    const ask = async (request: DeskRequestFor): Promise<DeskAgentState> => {
+      const reply = await host.bridge.request({ ...request, groupId } as DeskRequest);
+      if (!reply.ok) throw new Error(reply.error);
+      if (reply.state.groupId !== groupId) throw new Error("the desk in view is another group's now; nothing was changed");
+      sawState(reply.state);
+      return reply.state;
+    };
+    const block = (state: DeskAgentState): string => [...deskStateLines(state), ...groupContextLines(host.context.items(groupId))].join("\n");
+    return {
+      state: async () => block(await ask({ type: "state" })),
+      arrange: async (plan) => block(await ask({ type: "arrange", plan })),
+      note: async (tabId, text) => {
+        await ask({ type: "note", tabId, text });
+      },
+      ungroup: async (tabIds) => {
+        const left = host.browser.ungroupTabs(groupId, tabIds);
+        if (left.length === 0) throw new Error("none of those tabs are on this desk");
+      },
+      read: async (itemId) => {
+        const reading = host.context.read(groupId, itemId);
+        return "text" in reading ? { text: reading.text } : { file: reading.file };
+      },
+      save: async (input) => ({ id: host.context.addText(groupId, title(), input, "agent").id }),
+    };
   }
 
   /** Write the open thread now — the app is quitting. */
@@ -1009,7 +1186,10 @@ export class RunController {
       ],
       result: null,
       executor: { kind: "desktop" },
+      // Started at a desk: the conversation is that group's (docs/desk-agent.md §1).
+      ...(this.#desk === null || this.#deskHost === null ? {} : { groupId: this.#desk.groupId }),
     };
+    if (this.#desk !== null) this.#deskHost?.bindings.bind(this.#desk.groupId, runId);
     this.#chain.append("interaction.started", {
       tabId: activeTab.id,
       url: activeTab.url,
@@ -1427,8 +1607,24 @@ export class RunController {
 
     // A callback from a turn that has since been replaced touches nothing.
     const current = (): boolean => generation === this.#aiGeneration && this.#run?.runId === runId;
+    /** The desk turn's hold on its group in the browser, released when the turn ends however it ends. */
+    let releaseGroup: (() => void) | null = null;
 
     try {
+      // A turn at a desk works on the desk (docs/desk-agent.md §2): the
+      // group's tabs only, the desk tools, and the desk as it stands now,
+      // read from the shell before the model is. It holds the group for as
+      // long as it runs, which may outlast the desk: a page opened from the
+      // group's tabs joins the group even after the person has left it.
+      const desk = this.#deskTurn(run);
+      if (desk !== null) releaseGroup = desk.host.browser.holdGroup(desk.groupId);
+      let deskState: DeskAgentState | null = null;
+      if (desk !== null) {
+        const reply = await desk.host.bridge.request({ type: "state", groupId: desk.groupId });
+        if (reply.ok && reply.state.groupId === desk.groupId) deskState = reply.state;
+      }
+      if (!current() || abort.signal.aborted) return;
+      let deskTitle = deskState?.title ?? "";
       // Read at run time, not at construction: an edit in Settings applies
       // to the next run without restarting anything. Read once for the turn:
       // the browser path that follows a hand-off works from the same inputs.
@@ -1440,14 +1636,24 @@ export class RunController {
         ...this.#noteInput(run),
         ...this.#watchtowerInput(),
         ...(await this.#integrationInput()),
+        ...(desk === null
+          ? {}
+          : {
+              desk: {
+                host: this.#deskToolHost(desk.host, desk.groupId, () => deskTitle, (state) => {
+                  deskTitle = state.title;
+                }),
+              },
+            }),
       };
       if (!current() || abort.signal.aborted) return;
 
       // Which path: the router's call for a new request, the browser's for
-      // everything else. Recorded before a model step is spent, so the
-      // trace says why a turn went the way it did.
+      // everything else — and always the browser's at a desk, whose tools
+      // and pages are the point of it. Recorded before a model step is
+      // spent, so the trace says why a turn went the way it did.
       const attachments = turn.kind === "start" || turn.kind === "message" ? turn.attachments : [];
-      const decision = await this.#route(run, turn, attachments, extras, abort.signal);
+      const decision: TurnRouteDecision = desk !== null ? { route: "browse", basis: "skipped", evaluation: null } : await this.#route(run, turn, attachments, extras, abort.signal);
       if (!current() || abort.signal.aborted) return;
       this.#chain?.append("turn.routed", {
         route: decision.route,
@@ -1473,7 +1679,8 @@ export class RunController {
       // whether it is the subject — it reads pages itself, so a line, not
       // the text. Fixed for the turn: a hand-off carries the same line.
       const pointer = newRequest && (turn.kind === "start" || turn.kind === "message") ? pageContextLine(turn.page, this.#browser.activeTab(), this.#noteInView()) : "";
-      if (mode === "browse" && run.messages.filter((message) => message.role === "assistant").length === 0) {
+      // (Not at a desk: the agent is seen working there, on the windows.)
+      if (mode === "browse" && desk === null && run.messages.filter((message) => message.role === "assistant").length === 0) {
         this.#message("assistant", BROWSE_INTRO);
       }
       const fromPage = decision.route === "page" ? page : null;
@@ -1494,7 +1701,15 @@ export class RunController {
       // the thread before this turn — what a hand-off restarts from, with
       // no page carried: the browser path reads pages itself.
       const base = this.#history;
-      const pageBlock = page !== null ? `\n\n${pageInViewBlock(page)}` : mode === "browse" ? pointer : "";
+      // At a desk the desk block takes the pointer's place: it names every
+      // window and which is in use, on every turn, since the desk moves.
+      const deskBlock = desk === null
+        ? null
+        : `\n\n[${[
+            ...(deskState === null ? ["Desk: the desk's layout could not be read just now; call desk_state before arranging anything."] : deskStateLines(deskState)),
+            ...groupContextLines(desk.host.context.items(desk.groupId)),
+          ].join("\n")}]`;
+      const pageBlock = page !== null ? `\n\n${pageInViewBlock(page)}` : mode === "browse" ? (deskBlock ?? pointer) : "";
       this.#history = [...base, userMessage(`${turnText(turn, run.origin, mode)}${pageBlock}`, attachments)];
       this.#persistNow();
       this.#onChange();
@@ -1510,10 +1725,18 @@ export class RunController {
         },
       };
 
+      // A tab the agent brings onto the desk comes out beside the window in
+      // use, never taking the keyboard; a desk that cannot is no failure of
+      // the tool that opened it.
+      const browser = desk === null
+        ? this.#tools
+        : new DeskScope(this.#tools, desk.host.browser, desk.groupId, (tabId) => {
+            void desk.host.bridge.request({ type: "bringOut", groupId: desk.groupId, tabId });
+          });
       const runTurn = (turnMode: AgentTurnMode) => runAiBrowserAgent({
         mode: turnMode,
         messages: this.#history,
-        browser: this.#tools,
+        browser,
         abortSignal: abort.signal,
         notes,
         budget: this.#budget,
@@ -1700,6 +1923,8 @@ export class RunController {
       this.#aiAbort = null;
       this.#turnUsage = { inputTokens: 0, outputTokens: 0 };
       await this.#failRun(runId, error);
+    } finally {
+      releaseGroup?.();
     }
   }
 
@@ -2194,6 +2419,8 @@ export class RunController {
 
   #shouldUseAi(): boolean {
     if (process.env["PISTACHIO_AGENT_LIVE"] === "1") return true;
+    // A spec that scripts the model (scripted-agent-model.ts) runs the real turn on it.
+    if ((process.env["PISTACHIO_AGENT_SCRIPT"] ?? "").trim() !== "") return true;
     return process.env["PISTACHIO_E2E"] !== "1";
   }
 

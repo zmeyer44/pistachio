@@ -111,6 +111,21 @@ describe("workspaceKeyFor (D24: raw ids, no URL encoding)", () => {
     expect(recordKeyId("note:0a1b2c3d4e5f", "note:")).toBe("0a1b2c3d4e5f");
   });
 
+  it("keeps a group's context and its files on prefixes of their own", () => {
+    // `group-blob:` does not start with `group-context:`: listing contexts never picks up a file's bytes.
+    expect(RECORD_KEY_PREFIXES).toContain("group-context:");
+    expect(RECORD_KEY_PREFIXES).toContain("group-blob:");
+    for (const prefix of RECORD_KEY_PREFIXES) {
+      for (const other of RECORD_KEY_PREFIXES) if (prefix !== other) expect(other.startsWith(prefix)).toBe(false);
+      // The hub fences `device-` keys to the device that wrote them.
+      expect(prefix.startsWith("device-")).toBe(false);
+    }
+    const context = { groupId: "3f2a9c1e-7b4d-4e8a-9c1f-2d3e4f5a6b7c", title: "Lisbon", items: [], updatedAt: "2026-09-30T10:00:00.000Z" };
+    expect(workspaceKeyFor({ kind: "groupContext", context })).toBe("group-context:3f2a9c1e-7b4d-4e8a-9c1f-2d3e4f5a6b7c");
+    const blob = { id: "0123456789abcdef01234567", mediaType: "application/pdf" as const, byteLength: 3, data: "AAAA", createdAt: "2026-09-30T10:00:00.000Z" };
+    expect(workspaceKeyFor({ kind: "groupBlob", blob })).toBe("group-blob:0123456789abcdef01234567");
+  });
+
   it("never URL-encodes or otherwise rewrites the id segment", () => {
     const odd = "id with space/and:colon";
     const doc: WorkspaceDoc = {

@@ -19,6 +19,7 @@ import {
   protocol,
   screen,
   session,
+  shell,
   systemPreferences,
   type WebContents,
 } from "electron";
@@ -95,6 +96,10 @@ import { EgressService } from "./egress/egress-service";
 import { spacesFileHasIdentitySpace } from "./egress/egress-state";
 import { featureHandlers, installFeatureHandlers } from "./feature-handlers";
 import { WorkspaceRecords } from "./sync/records";
+import { DeskBridge } from "./desk-bridge";
+import { DeskConversationStore } from "./desk-conversations";
+import { GroupContextStore } from "./group-context-store";
+import { scriptedAgentModel } from "./scripted-agent-model";
 import { SyncService } from "./sync/service";
 import { CloudRunService } from "./cloud/cloud-run-service";
 import { LiveViewClient } from "./cloud/live-view-client";
@@ -206,6 +211,7 @@ import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
 import { isDeskState } from "@pistachio/shell-contracts/desk";
+import { isDeskConversationCommand, isGroupContextCommand, type GroupContextCommand, type GroupContextResult } from "@pistachio/shell-contracts/desk-agent";
 import {
   menuKeepsKey,
   passedKeystroke,
@@ -269,6 +275,10 @@ let reminderScheduler: ReminderScheduler | null = null;
 let artifacts: ArtifactStore | null = null;
 /** The person's own writing (docs/notes.md §3); local on a signed-out Mac, synced on an enrolled one. */
 let notes: NoteStore | null = null;
+/** Each tab group's context: the files and facts its desk keeps (docs/desk-agent.md §3). */
+let groupContexts: GroupContextStore | null = null;
+/** Which conversation each group's desk opens. */
+let deskConversations: DeskConversationStore | null = null;
 /** Every write from the notes page is the person's own; the agent's carry its run. */
 const USER_NOTE_SOURCE: NoteSource = { kind: "user", runId: null };
 /**
@@ -1225,6 +1235,55 @@ function sendToShell(channel: string, payload: unknown): void {
     shellWindow.webContents.send(channel, payload);
 }
 
+/** Main's questions to the desk the shell draws, answered on IPC.deskReply (docs/desk-agent.md §3). */
+const deskBridge = new DeskBridge((id, request) => {
+  if (shellWindow === null || shellWindow.isDestroyed()) return false;
+  shellWindow.webContents.send(IPC.deskRequest, id, request);
+  return true;
+});
+
+function requireGroupContexts(): GroupContextStore {
+  if (groupContexts === null) throw new Error("group context store is not ready");
+  return groupContexts;
+}
+
+/** One of the Stack's commands. The files arrive as base64 from the drop; a person's additions say so. */
+async function handleGroupContextCommand(command: GroupContextCommand): Promise<GroupContextResult> {
+  const store = requireGroupContexts();
+  switch (command.type) {
+    case "addFiles": {
+      const files = command.files.map((file) => ({ name: file.name, mediaType: file.mediaType, bytes: Buffer.from(file.data, "base64") }));
+      return { rejected: store.addFiles(command.groupId, command.title, files, "person").rejected };
+    }
+    case "addText":
+      store.addText(
+        command.groupId,
+        command.title,
+        {
+          kind: command.kind,
+          text: command.text,
+          ...(command.url === undefined ? {} : { url: command.url }),
+          ...(command.sourceTitle === undefined ? {} : { title: command.sourceTitle }),
+        },
+        "person",
+      );
+      return { rejected: [] };
+    case "remove":
+      store.remove(command.groupId, command.itemId);
+      return { rejected: [] };
+    case "open": {
+      const path = store.openablePath(command.groupId, command.itemId);
+      if (path === null) throw new Error("that file is not on this Mac");
+      const failure = await shell.openPath(path);
+      if (failure !== "") throw new Error(failure);
+      return { rejected: [] };
+    }
+    case "adopt":
+      store.adopt(command.groupId, command.title, command.fromGroupId);
+      return { rejected: [] };
+  }
+}
+
 function publishAccount(state: AccountState): void {
   sendToShell(IPC.accountChanged, state);
   // The pin and the enabled Spaces ride on the cloud status too.
@@ -1547,6 +1606,28 @@ async function initializeAccountServices(): Promise<void> {
         onRecordChange: (listener) =>
           notes?.onRecordChange((kind, id) => {
             if (kind === "note") listener(id);
+          }) ?? (() => undefined),
+      },
+      // A group's context is one register and each file in it another, as
+      // with notes; a file too large to sync stays where it was dropped.
+      groupContext: {
+        all: () => groupContexts?.syncAll("groupContext") ?? [],
+        get: (id) => groupContexts?.get(id) ?? null,
+        applyRemote: (value) => groupContexts?.applyRemote("groupContext", value) ?? null,
+        removeRemote: (id) => groupContexts?.removeRemote("groupContext", id) ?? false,
+        onRecordChange: (listener) =>
+          groupContexts?.onRecordChange((kind, id) => {
+            if (kind === "groupContext") listener(id);
+          }) ?? (() => undefined),
+      },
+      groupBlob: {
+        all: () => groupContexts?.syncAll("groupBlob") ?? [],
+        get: (id) => groupContexts?.getBlob(id) ?? null,
+        applyRemote: (value) => groupContexts?.applyRemote("groupBlob", value) ?? null,
+        removeRemote: (id) => groupContexts?.removeRemote("groupBlob", id) ?? false,
+        onRecordChange: (listener) =>
+          groupContexts?.onRecordChange((kind, id) => {
+            if (kind === "groupBlob") listener(id);
           }) ?? (() => undefined),
       },
       noteBlob: {
@@ -2135,6 +2216,14 @@ async function createWindow(): Promise<void> {
     artifactWebUrl: artifactWebOrigin,
     // Read per run: a connection made in Settings applies to the next turn.
     integrations: { hostsFor: (spaceId) => integrationService?.hostsFor(spaceId) ?? Promise.resolve([]) },
+    // Under E2E, a spec may script the model (docs/desk-agent.md §4).
+    ...(scriptedAgentModel() === null ? {} : { model: scriptedAgentModel()! }),
+    desk: {
+      bridge: deskBridge,
+      bindings: deskConversations ?? new DeskConversationStore(null),
+      browser,
+      context: requireGroupContexts(),
+    },
     onRunEnded: () => {
       // The turn is over and its answer is out: take the light off the pages
       // here rather than leave it to the publish that follows. The glow is
@@ -2170,6 +2259,15 @@ async function createWindow(): Promise<void> {
   // reaches an open editor.
   const offNotes = requireNotes().onChange((next) => {
     if (!window.isDestroyed()) window.webContents.send(IPC.notesChanged, next);
+  });
+  const offGroupContexts = requireGroupContexts().onChange((next) => {
+    if (!window.isDestroyed()) window.webContents.send(IPC.groupContextsChanged, next);
+  });
+  // A shell that reloads has no desk until it says so again, and nothing it
+  // was asked before the reload will be answered.
+  window.webContents.on("did-start-loading", () => {
+    deskBridge.cancelAll("the desk reloaded");
+    void runs?.deskConversation({ type: "leave" });
   });
   sidebarController = new SidebarController({
     store: requireSidebar(),
@@ -2258,6 +2356,8 @@ async function createWindow(): Promise<void> {
     offReminders();
     offBookmarks();
     offNotes();
+    offGroupContexts();
+    deskBridge.cancelAll("the window closed");
     offSidebar();
     browser?.shutdown();
     sidebarController = null;
@@ -2831,6 +2931,24 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.deskFocus, (event, tabId: unknown) => {
     if (isShell(event.sender) && typeof tabId === "string") void requireBrowser().focusTab(tabId);
+  });
+  // ── The desk's agent (docs/desk-agent.md §3) ───────────────────────────
+  ipcMain.handle(IPC.deskConversation, (event, command: unknown) => {
+    shellOnly(event, "the desk's conversation");
+    if (!isDeskConversationCommand(command)) throw new Error("not a desk conversation command");
+    return requireRuns().deskConversation(command);
+  });
+  ipcMain.on(IPC.deskReply, (event, id: unknown, reply: unknown) => {
+    if (isShell(event.sender)) deskBridge.reply(id, reply);
+  });
+  ipcMain.handle(IPC.groupContextsGet, (event) => {
+    shellOnly(event, "the groups' context");
+    return requireGroupContexts().list();
+  });
+  ipcMain.handle(IPC.groupContextCommand, (event, command: unknown) => {
+    shellOnly(event, "the groups' context");
+    if (!isGroupContextCommand(command)) throw new Error("not a group context command");
+    return handleGroupContextCommand(command);
   });
   ipcMain.handle(IPC.tabSwitcherPreviewsGet, (event, limit: unknown) => {
     if (!isShell(event.sender)) return [];
@@ -4251,6 +4369,19 @@ app.whenReady().then(async () => {
   powerMonitor.on("unlock-screen", () => void tabTidy?.sweep());
   artifacts = new ArtifactStore(app.getPath("userData"), { webUrl: artifactWebOrigin });
   notes = new NoteStore(app.getPath("userData"));
+  groupContexts = new GroupContextStore(app.getPath("userData"));
+  deskConversations = new DeskConversationStore(app.getPath("userData"));
+  // A context's file no context names any more is kept a day, as a note's picture is.
+  const sweepGroupBlobs = (): void => {
+    try {
+      const swept = groupContexts?.sweepOrphanBlobs() ?? 0;
+      if (swept > 0) console.log(`[group-context] collected ${String(swept)} unreferenced file(s)`);
+    } catch (error) {
+      console.error("[group-context] could not collect unreferenced files", error);
+    }
+  };
+  setTimeout(sweepGroupBlobs, NOTE_BLOB_SWEEP_DELAY_MS).unref();
+  setInterval(sweepGroupBlobs, NOTE_BLOB_SWEEP_INTERVAL_MS).unref();
   // A picture an edit orphaned is collected a day later, not at once: ⌘Z puts
   // the image node back, and a blob taken the moment its last reference went
   // would come back as a broken box. Idle timers, unref'd, so a sweep never

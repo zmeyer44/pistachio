@@ -4546,6 +4546,585 @@ body:not([data-chrome-view])::after {
   }
 }
 
+/* ── The desk's agent (docs/desk-agent.md, components/desk/DeskBar.tsx, DeskStack.tsx) ──
+
+   The Bar at the desk's foot is the dock's glass laid on its side: the same
+   material and edge light, rising from below as the dock slides in from the
+   side, and going with it when the desk leaves. What it opens above it — the
+   answer, the conversations — is drawn once the pages there have given way
+   (the engine's covers), as the dock's cards are. */
+.desk-bar-lane {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  pointer-events: none;
+}
+@keyframes desk-bar-in {
+  from {
+    transform: translateY(calc(100% + 16px));
+    opacity: 0;
+  }
+}
+.desk-bar {
+  position: relative;
+  display: flex;
+  width: min(680px, calc(100% - 24px));
+  min-height: 52px;
+  border-radius: 20px;
+  background: color-mix(in oklch, var(--color-background-100) 80%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 12px 32px -14px oklch(0 0 0 / 0.35);
+  pointer-events: auto;
+  animation: desk-bar-in 420ms cubic-bezier(0.2, 0.9, 0.25, 1) 90ms backwards;
+  transition:
+    transform 380ms cubic-bezier(0.2, 0.9, 0.25, 1.05),
+    opacity 240ms ease,
+    box-shadow 200ms ease;
+}
+.desk-bar:focus-within {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--tg-solid) 45%, var(--color-alpha-300)),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 14px 36px -14px oklch(0 0 0 / 0.4);
+}
+.desk-stage[data-phase="leaving"] .desk-bar,
+.desk-stage[data-phase="leaving"] .desk-answer,
+.desk-stage[data-phase="leaving"] .desk-conversations {
+  transform: translateY(calc(100% + 16px));
+  opacity: 0;
+}
+.desk-bar-row {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 8px 8px 8px 10px;
+}
+.desk-bar-mark {
+  position: relative;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  margin: 0 2px 4px 0;
+  place-items: center;
+  border-radius: 8px;
+}
+.agent-ring.agent-ring-mark.desk-bar-mark {
+  --agent-ring-radius: 7px;
+}
+.desk-bar-group {
+  display: inline-flex;
+  max-width: 150px;
+  height: 24px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 6px 0;
+  padding: 0 9px 0 8px;
+  border-radius: 999px;
+  background: var(--tg-tint);
+  color: var(--tg-text);
+  font-size: 12px;
+  font-weight: 500;
+}
+.desk-bar-group-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--tg-solid);
+}
+.desk-bar-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  margin-bottom: 3px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--color-gray-800);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
+}
+.desk-bar-button:hover,
+.desk-bar-button[aria-pressed="true"] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.desk-bar-button:active {
+  transform: scale(0.94);
+}
+.desk-bar-button:focus-visible,
+.desk-bar-send:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-bar-button svg {
+  width: 16px;
+  height: 16px;
+}
+.desk-bar-send {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  margin: 0 0 2px 2px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-gray-1000);
+  color: var(--color-background-100);
+  cursor: pointer;
+  outline: none;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+}
+.desk-bar-send:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.desk-bar-send:not(:disabled):active {
+  transform: scale(0.94);
+}
+.desk-bar-send svg {
+  width: 16px;
+  height: 16px;
+}
+.desk-bar-send[data-testid="desk-bar-stop"] svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* The answer, and the conversations: cards above the Bar, grown from it. */
+.desk-answer,
+.desk-conversations {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0 auto;
+  border-radius: 18px;
+  background: color-mix(in oklch, var(--color-background-100) 94%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 22px 48px -18px oklch(0 0 0 / 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px) scale(0.98);
+  transform-origin: bottom center;
+  transition:
+    opacity 150ms ease,
+    transform 240ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.desk-answer {
+  width: min(720px, calc(100% - 24px));
+  min-height: 120px;
+}
+/* Beside the conversations button: its right edge the Bar's. */
+.desk-conversations {
+  left: auto;
+  right: calc((100% - min(680px, calc(100% - 24px))) / 2);
+  z-index: 1;
+  width: min(440px, calc(100% - 24px));
+  margin: 0;
+}
+.desk-answer[data-shown],
+.desk-conversations[data-shown] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+.desk-answer-action {
+  display: inline-flex;
+  height: 24px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: var(--color-gray-900);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 150ms ease;
+}
+.desk-answer-action:hover,
+.desk-answer-action[aria-pressed="true"] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.desk-answer-action:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-answer-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.desk-answer-action svg {
+  width: 13px;
+  height: 13px;
+}
+.desk-conversation {
+  display: flex;
+  height: 34px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 120ms ease;
+}
+.desk-conversation:hover:not(:disabled) {
+  background: var(--color-alpha-100);
+}
+.desk-conversation[data-open] {
+  background: var(--color-alpha-200);
+}
+.desk-conversation:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-ring);
+}
+.desk-conversation:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.desk-conversation-group {
+  max-width: 128px;
+  flex-shrink: 0;
+  overflow: hidden;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--color-alpha-200);
+  color: var(--color-gray-900);
+  font-size: 10.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desk-conversation-group[data-toned] {
+  background: var(--tg-tint-strong);
+  color: var(--tg-text);
+}
+
+/* The agent at a window: its word, and a note it pinned, on the frame — in
+   the bar's title row, or above a tab or a handle. Never over the page: that
+   is a native view, and would paint over them. */
+.desk-window-marks {
+  display: inline-flex;
+  min-width: 0;
+  flex-shrink: 1;
+  align-items: center;
+  gap: 6px;
+  margin-right: 6px;
+}
+.desk-window-marks-float {
+  position: absolute;
+  bottom: 100%;
+  left: 12px;
+  z-index: 1;
+  display: flex;
+  max-width: calc(100% - 24px);
+  margin-bottom: 4px;
+}
+.desk-window-agent {
+  display: inline-flex;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--theme-accent) 18%, var(--color-background-100));
+  color: color-mix(in oklch, var(--theme-accent) 55%, var(--color-gray-1000));
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  animation: agent-ring-in 260ms ease-out both;
+}
+.desk-window-note {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 260px;
+  height: 20px;
+  align-items: center;
+  gap: 2px;
+  padding: 0 3px 0 8px;
+  border-radius: 999px;
+  background: var(--tg-tint-strong);
+  color: var(--tg-text);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  animation: desk-note-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+}
+@keyframes desk-note-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.92);
+  }
+}
+.desk-window-note-close {
+  display: grid;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 999px;
+  opacity: 0.55;
+  cursor: pointer;
+}
+.desk-window-note-close:hover {
+  background: var(--color-alpha-200);
+  opacity: 1;
+}
+.desk-window-note-close svg {
+  width: 10px;
+  height: 10px;
+}
+.agent-ring.agent-ring-mark.desk-dock-tile-ring {
+  position: relative;
+  --agent-ring-radius: 10px;
+}
+
+/* The Stack: the group's context in the dock, a pile of cards with a count. */
+.desk-dock-stack {
+  display: flex;
+  width: 100%;
+  flex-shrink: 0;
+  justify-content: center;
+}
+.desk-stack-item {
+  cursor: pointer;
+}
+.desk-stack-tile {
+  position: relative;
+  display: block;
+  width: 40px;
+  height: 40px;
+  transform-origin: left center;
+  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1.25);
+}
+.desk-stack-item:hover .desk-stack-tile,
+.desk-stack-item[data-open] .desk-stack-tile {
+  transform: translateX(2px) scale(1.12);
+}
+.desk-stack-item[data-dropping] .desk-stack-tile {
+  transform: translateX(2px) scale(1.22);
+}
+.desk-stack-item:focus-visible .desk-stack-tile {
+  border-radius: 10px;
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-stack-tile[data-received] {
+  animation: desk-dock-receive 520ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+.desk-stack-card {
+  position: absolute;
+  inset: 5px 9px;
+  border-radius: 5px;
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-400),
+    0 1px 3px oklch(0 0 0 / 0.1);
+  transition: transform 220ms cubic-bezier(0.2, 0.9, 0.3, 1.25);
+}
+.desk-stack-card[data-layer="3"] {
+  background: color-mix(in oklch, var(--tg-solid) 30%, var(--color-background-100));
+  transform: translate(-5px, 1px) rotate(-13deg);
+}
+.desk-stack-card[data-layer="2"] {
+  background: color-mix(in oklch, var(--tg-solid) 14%, var(--color-background-100));
+  transform: translate(5px, 0) rotate(9deg);
+}
+/* The top sheet: the group's tab, and a few lines of writing. */
+.desk-stack-card[data-layer="1"] {
+  display: grid;
+  place-items: center;
+  color: var(--color-gray-700);
+  background:
+    linear-gradient(var(--color-alpha-500), var(--color-alpha-500)) 5px 12px / 12px 1.5px no-repeat,
+    linear-gradient(var(--color-alpha-500), var(--color-alpha-500)) 5px 16.5px / 9px 1.5px no-repeat,
+    linear-gradient(var(--color-alpha-500), var(--color-alpha-500)) 5px 21px / 11px 1.5px no-repeat,
+    var(--color-background-100);
+}
+.desk-stack-card[data-layer="1"]::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  width: 8px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--tg-solid);
+}
+/* Empty, it is a place to drop things: one sheet, dashed, waiting. */
+.desk-stack-item[data-count="0"] .desk-stack-card:not([data-layer="1"]) {
+  opacity: 0;
+}
+.desk-stack-item[data-count="0"] .desk-stack-card[data-layer="1"] {
+  background: color-mix(in oklch, var(--color-background-100) 60%, transparent);
+  box-shadow: none;
+  outline: 1.5px dashed var(--color-alpha-600);
+  outline-offset: -1.5px;
+}
+.desk-stack-item[data-count="0"] .desk-stack-card[data-layer="1"]::before {
+  display: none;
+}
+.desk-stack-card svg {
+  width: 13px;
+  height: 13px;
+}
+/* A drop coming in: the pile fans a little, and the top sheet takes the group's colour. */
+.desk-stack-item:is(:hover, [data-dropping]) .desk-stack-card[data-layer="3"] {
+  transform: translate(-7px, 0) rotate(-18deg);
+}
+.desk-stack-item:is(:hover, [data-dropping]) .desk-stack-card[data-layer="2"] {
+  transform: translate(7px, -1px) rotate(14deg);
+}
+.desk-stack-item[data-dropping] .desk-stack-card[data-layer="1"] {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--tg-solid);
+}
+.desk-stack-count {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  display: grid;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--tg-solid);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-background-100) 80%, transparent);
+}
+.desk-stack-card-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.desk-stack-card-panel[data-dropping] {
+  box-shadow:
+    var(--shadow-menu),
+    inset 0 0 0 2px var(--tg-solid);
+}
+.desk-stack-file {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  border-radius: 10px;
+  background: var(--color-alpha-100);
+  transition: background-color 120ms ease;
+}
+.desk-stack-file > button {
+  cursor: pointer;
+  outline: none;
+  border-radius: 10px;
+}
+.desk-stack-file > button:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-stack-file:hover {
+  background: var(--color-alpha-200);
+}
+.desk-stack-file:not([data-here]) {
+  opacity: 0.55;
+}
+.desk-stack-file:not([data-here]) > button {
+  cursor: default;
+}
+.desk-stack-glyph {
+  display: grid;
+  width: 32px;
+  height: 38px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--color-background-100);
+  color: var(--color-gray-800);
+  box-shadow: 0 0 0 1px var(--color-alpha-300);
+}
+.desk-stack-glyph[data-kind="pdf"] {
+  color: var(--color-red-900);
+}
+.desk-stack-glyph[data-kind="image"] {
+  color: var(--color-blue-900);
+}
+.desk-stack-glyph svg {
+  width: 16px;
+  height: 16px;
+}
+.desk-stack-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 8px;
+  transition: background-color 120ms ease;
+}
+.desk-stack-line:hover {
+  background: var(--color-alpha-100);
+}
+.desk-stack-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-gray-1000);
+  color: var(--color-background-100);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.desk-stack-line .desk-stack-remove {
+  position: static;
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--color-gray-700);
+}
+.desk-stack-line .desk-stack-remove:hover {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.desk-stack-file:hover .desk-stack-remove,
+.desk-stack-line:hover .desk-stack-remove,
+.desk-stack-remove:focus-visible {
+  opacity: 1;
+}
+.desk-stack-remove svg {
+  width: 10px;
+  height: 10px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .desk-dock,
   .desk-dock-shelf,
@@ -4564,7 +5143,11 @@ body:not([data-chrome-view])::after {
   .desk-dock-rename,
   .desk-window,
   .desk-zone,
-  .desk-variant-value {
+  .desk-variant-value,
+  .desk-bar,
+  .desk-answer,
+  .desk-conversations,
+  .desk-stack-tile {
     animation: none;
     transition: none;
   }

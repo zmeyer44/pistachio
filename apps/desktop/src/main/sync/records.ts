@@ -15,7 +15,7 @@
 import type { Bookmark } from "@pistachio/shell-contracts/bookmarks";
 import type { MemoryEntry } from "@pistachio/shell-contracts/memory";
 import type { Reminder } from "@pistachio/shell-contracts/reminders";
-import type { ArtifactRecord, NoteBlobRecord, NoteRecord } from "@pistachio/sync-protocol";
+import type { ArtifactRecord, GroupBlobRecord, GroupContextRecord, NoteBlobRecord, NoteRecord } from "@pistachio/sync-protocol";
 import { WORKSPACE_RECORD_KINDS, type WorkspaceRecordKind, type WorkspaceRecordStore } from "./workspace-sync";
 
 /** What each of the three stores offers this lane. */
@@ -36,6 +36,10 @@ export interface WorkspaceRecordSources {
   note?: RecordSource<NoteRecord>;
   /** One image a note references, in a register of its own (N3). */
   noteBlob?: RecordSource<NoteBlobRecord>;
+  /** A tab group's context, keyed by the group (docs/desk-agent.md §3). */
+  groupContext?: RecordSource<GroupContextRecord>;
+  /** One file of a group's context, in a register of its own. */
+  groupBlob?: RecordSource<GroupBlobRecord>;
 }
 
 export class WorkspaceRecords implements WorkspaceRecordStore {

@@ -238,7 +238,12 @@ describe("a window in hand", () => {
       drag.sample?.({ x: 0, y: 0, phase: "cancel" });
       settle();
     };
-    return { desk, zone, win, move, release };
+    /** Let go, and only a frame or two pass: whatever it was let go into is still under way. */
+    const letGo = (): void => {
+      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+      run(2);
+    };
+    return { desk, zone, win, move, release, letGo };
   }
 
   it("lets go of the whole desk once dragged: back to its own size, still held by its title bar", () => {
@@ -446,6 +451,25 @@ describe("a window in hand", () => {
     expect(desk.windowTabIds()).toEqual([]);
     expect(close).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledWith("tab-0");
+    desk.destroy();
+  });
+
+  it("closes a window let go on the lower pad even when the agent, or Undo layout, asks for it on its way there", () => {
+    const close = vi.fn();
+    const { desk, win, move, letGo } = open({ close });
+    const before = desk.layoutSnapshot();
+    const start = rectOf(win);
+    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
+    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 170) / 8), 300 + step * 80);
+    expect(desk.getView().dockDrop).toBe("close");
+    letGo();
+    // Going into the Close pad is the person's: a placement or an Undo does not bring it back.
+    desk.arrangeFor({ place: [{ tabId: "tab-0", zone: "left" }] });
+    desk.restoreLayout(before);
+    settle();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledWith("tab-0");
+    expect(desk.windowTabIds()).toEqual([]);
     desk.destroy();
   });
 

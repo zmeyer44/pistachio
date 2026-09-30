@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   AppWindow,
@@ -18,6 +18,8 @@ import {
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
+import type { GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import type { DockDrop, DockDrops } from "../../lib/desk/geometry";
 import { nativeApi } from "../../api";
 import { useNewGroupNaming, useTabGroupMenu } from "../../chrome/tab-group-menu";
@@ -47,6 +49,7 @@ import {
   type DockDragView,
 } from "./desk-engine";
 import { cropStyle, pageKind } from "./DeskWindow";
+import { StackCard, StackTile } from "./DeskStack";
 
 /** The preview beside a hovered icon, and the gap between it and the dock. */
 const PREVIEW_W = 232;
@@ -149,11 +152,20 @@ export const DeskDock = memo(function DeskDock({
   tabs,
   view,
   engine,
+  context,
+  otherContexts,
+  agentTabId,
 }: {
   group: TabGroupInfo;
   tabs: readonly BrowserTabInfo[];
   view: DeskView;
   engine: DeskEngine;
+  /** The group's context, which its Stack holds (docs/desk-agent.md §1). */
+  context: GroupContextView | null;
+  /** Contexts of groups not in this Space's list, which the Stack offers to bring in. */
+  otherContexts: readonly GroupContextView[];
+  /** The tab the agent is working in: its icon wears the agent's ring. */
+  agentTabId: string | null;
 }) {
   const dockRef = useRef<HTMLElement>(null);
   const clipRef = useRef<HTMLDivElement>(null);
@@ -185,6 +197,11 @@ export const DeskDock = memo(function DeskDock({
   const moreTimer = useRef(0);
   /** A press inside the card (a slider in hand): it stays up until the press ends, wherever the pointer goes. */
   const morePressed = useRef(false);
+  /** The Stack's card, open beside it: the Stack's middle, from the dock's top. Until a press elsewhere or Escape. */
+  const [stack, setStack] = useState<{ center: number } | null>(null);
+  /** What a drop on the Stack could not take, said on its card. */
+  const [stackRejection, setStackRejection] = useState<string | null>(null);
+  const stackRef = useRef<HTMLDivElement>(null);
   const onDesk = new Set(view.windows.map((window) => window.tabId));
   const focused = view.windows.find((window) => window.focused)?.tabId ?? null;
   // In the order a drop in the dock made, until the browser's says the same.
@@ -200,6 +217,9 @@ export const DeskDock = memo(function DeskDock({
   // The More card goes when something is taken in hand, or a right-click menu opens.
   if (more !== null && (busy || menuOpen)) setMore(null);
   const moreOpen = more !== null && !busy && !menuOpen;
+  // So does the Stack's, and when the More card opens.
+  if (stack !== null && (busy || menuOpen || moreOpen)) setStack(null);
+  const stackOpen = stack !== null && !busy && !menuOpen && !moreOpen;
   /** Another group whose name is being edited beside its icon: its menu's Rename, or a group just made that the host could not name. */
   const [renaming, setRenaming] = useState<string | null>(null);
   const tabMenu = useTabMenu({
@@ -265,12 +285,53 @@ export const DeskDock = memo(function DeskDock({
   useEffect(() => {
     engine.holdDock("menu", menuOpen);
   }, [engine, menuOpen]);
+  useEffect(() => {
+    engine.holdDock("stack", stackOpen);
+  }, [engine, stackOpen]);
+
+  // The Stack's card, where it is drawn, and the gap between it and the dock.
+  useLayoutEffect(() => {
+    const card = stackRef.current;
+    if (!stackOpen || card === null) {
+      engine.setCover("stack", null);
+      return;
+    }
+    const measure = (): void => engine.setCover("stack", { x: DOCK_W, y: card.offsetTop, w: card.offsetLeft + card.offsetWidth - DOCK_W, h: card.offsetHeight });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [engine, stackOpen, stack?.center]);
+  useEffect(() => () => engine.setCover("stack", null), [engine]);
+
+  // The Stack's card goes on a press anywhere else (a live page's too, which main relays), or Escape.
+  useEffect(() => {
+    if (!stackOpen) return;
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input !== "dock") setStack(null);
+    });
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target as Node | null;
+      const onStack = target instanceof Element && target.closest("[data-testid='desk-stack']") !== null;
+      if (!onStack && stackRef.current?.contains(target) !== true) setStack(null);
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setStack(null);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      offPage?.();
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [stackOpen]);
 
   // An icon is hovered: the band beside the dock, where its preview (and the
   // next icon's) appears, is cleared of live pages for as long as the
   // pointer stays on the icons — moving between them, the preview never
   // waits. A group's card is wider than a tab's preview.
-  const peeking = hovered !== null && inside && !busy && !moreOpen && !menuOpen;
+  const peeking = hovered !== null && inside && !busy && !moreOpen && !menuOpen && !stackOpen;
   const peekWidth = hovered?.kind === "group" ? GROUP_CARD_W : PREVIEW_W;
   useEffect(() => {
     const height = dockRef.current?.clientHeight ?? 0;
@@ -488,10 +549,38 @@ export const DeskDock = memo(function DeskDock({
                   leaving={view.dockDrag?.kind === "tab" && view.dockDrag.id === tab.id && view.dockDrag.into !== null}
                   shift={dockShift(view.dockDrag, "tab", tab.id)}
                   engine={engine}
+                  working={agentTabId === tab.id}
                   onHover={onHover}
                   onMenu={openTabMenu}
                 />
               ))}
+            </div>
+            {/* The group's context, between its tabs and the other groups (docs/desk-agent.md §1). */}
+            <div className="desk-dock-stack" onPointerEnter={() => setHovered(null)}>
+              <StackTile
+                group={group}
+                context={context}
+                open={stackOpen}
+                onRejected={(line) => {
+                  setStackRejection(line);
+                  // What could not be taken is said on the card: it opens to say so.
+                  if (line !== null && dockRef.current !== null) {
+                    const tile = dockRef.current.querySelector<HTMLElement>("[data-testid='desk-stack']");
+                    if (tile !== null) setStack({ center: tile.getBoundingClientRect().top + tile.offsetHeight / 2 - dockRef.current.getBoundingClientRect().top });
+                  }
+                }}
+                onToggle={(el) => {
+                  const dock = dockRef.current;
+                  if (stackOpen || dock === null) {
+                    setStack(null);
+                    return;
+                  }
+                  setHovered(null);
+                  setMore(null);
+                  const box = el.getBoundingClientRect();
+                  setStack({ center: box.top + box.height / 2 - dock.getBoundingClientRect().top });
+                }}
+              />
             </div>
             <div className="desk-dock-lower">
               <DockGroups groupId={group.id} view={view} engine={engine} onHover={onHover} onChoose={() => setHovered(null)} onMenu={openGroupMenu} />
@@ -562,6 +651,19 @@ export const DeskDock = memo(function DeskDock({
             onDone={() => setRenaming(null)}
           />
         )}
+        {stackOpen ? (
+          <StackCard
+            ref={stackRef}
+            group={group}
+            context={context}
+            others={otherContexts}
+            center={stack.center}
+            dockHeight={dockHeight}
+            shown={view.clearCovers.has("stack")}
+            rejection={stackRejection}
+            onRejected={setStackRejection}
+          />
+        ) : null}
         {moreOpen ? (
           <DockMoreCard
             ref={moreRef}
@@ -693,6 +795,7 @@ function DockIcon({
   leaving,
   shift,
   engine,
+  working,
   onHover,
   onMenu,
 }: {
@@ -707,11 +810,14 @@ function DockIcon({
   /** Making room for an icon in hand (dockShift). */
   shift: number;
   engine: DeskEngine;
+  /** The agent is working in this tab: its icon wears the agent's ring, phased on the wall clock like every other. */
+  working: boolean;
   onHover: DockHover;
   onMenu: DockMenu;
 }) {
   const attach = useCallback((el: HTMLSpanElement | null) => engine.attachIcon(tab.id, el), [engine, tab.id]);
   const title = tab.title || displayHost(tab.url) || "Untitled";
+  const ringDelay = useMemo(() => (working ? `${String(agentRingDelayMs(Date.now()))}ms` : undefined), [working]);
   return (
     <div
       role="listitem"
@@ -723,6 +829,7 @@ function DockIcon({
       data-focused={focused ? "" : undefined}
       data-in-hand={inHand ? "" : undefined}
       data-leaving={leaving ? "" : undefined}
+      data-agent={working ? "" : undefined}
       className="desk-dock-item"
       style={{ "--i": index, translate: shift === 0 ? undefined : `0 ${shift}px` } as CSSProperties}
       onPointerEnter={(event) => onHover("tab", tab.id, event.currentTarget)}
@@ -739,7 +846,7 @@ function DockIcon({
       }}
     >
       <span className="desk-dock-dot" aria-hidden="true" />
-      <span ref={attach} className="desk-dock-tile">
+      <span ref={attach} className={cn("desk-dock-tile", working && "agent-ring agent-ring-mark desk-dock-tile-ring")} style={{ "--agent-ring-delay": ringDelay } as CSSProperties}>
         <AppIcon tab={tab} />
       </span>
     </div>

@@ -1,0 +1,71 @@
+# The desk's agent
+
+A tab group's desk is a task, and the agent can work at it with the person. The desk is the agent's context and its bounds: it sees every window and the tabs in the dock, keeps the task's own files and facts, and works in the group's tabs, where the person can watch it. Concepts and the choice between them: the "Desk Companion" study (claude.ai artifact, 30 Sep 2026). Chosen: the **Co-worker**, in the **Bar**, with the context as a **Stack** in the dock; the agent may rearrange windows; one conversation per group, any conversation can be continued in a group; the group's context syncs.
+
+Desktop only (the desk is). Builds on `docs/desk.md` (the desk itself), `docs/console-routing.md` (turns) and `docs/notes.md` (the sync pattern the context follows).
+
+## 1. What a person does
+
+**The Bar.** A glass bar at the foot of the desk, in the dock's material, centred on the desk beside the dock: Pistachio's mark (wearing the agent's ring while it works), the group's chip (its colour and name), the message field, attach, the conversations button, the answer chevron and send (stop while the agent works; the field then steers). It rises from below as the dock slides in from the side, and goes with it when the desk leaves. The desk keeps a band for it (`BAR_BAND`, 60px): windows tile, fill and rest above it, never under it. ⌘I puts the keyboard in it (on a desk, ⌘I is the Bar's, not the sidebar chat's — also from inside a page, which main relays).
+
+**The answer.** A card of the same glass above the Bar shows the latest exchange: what was asked, the agent's steps as it takes them, its reply as it streams, and anything it asks (a question, an approval, a takeover). It opens when a turn starts (the person's message, or the agent asking something) and stays until closed (× or Escape); the Bar's chevron brings it back. "Whole conversation" in its header shows every turn, scrolled to the end. While the card is up, the windows under it are stills (it is a cover). No "I'm on it" intro and no "browsing in another tab" chip at a desk: the agent is seen on the windows.
+
+**The agent at the desk.**
+- *Where it is*: the window whose tab it is working in (`agentDrivenTabId`) wears the agent's comet ring on its frame and a chip saying what it is doing (Reading, Clicking, Typing, Opening, Arranging, Noting, Thinking between steps) — in the bar frame's title row, or above a tab or handle frame. The tab's icon in the dock wears the ring too. The page itself glows while the agent drives it (the glow main already injects).
+- *Windows it opens* join the group and come out onto the desk beside the window in use, under it in the stack, never taking the keyboard or the selection.
+- *Arranging*: it may place, tile, cascade, put away and bring out windows. After a turn that moved windows, the answer card offers **Undo layout**, which puts every window back where it was before the turn.
+- *Notes on windows*: it may pin a short note (80 characters) to a window's frame ("Lands 11:05, before check-in"), beside the chip. Notes stay until the next turn starts or the person dismisses them (×). A note needs the window out on the desk.
+- *Leaving the group*: moving a tab out of the group is asked first.
+
+**Conversations.** Each group has its own. Opening the desk opens the group's conversation (or a new, empty one); passing the desk to another group opens that group's; leaving the desk goes back to the conversation that was open before. The conversations button lists every conversation, each marked with where it started (This desk, another group by name, Another group when that group is not here, Sidebar, Reminder): choosing one continues it here, and from then on it is this group's (the group it came from keeps it too). New starts an empty one for the group. While the agent is acting, the console is its: nothing can be chosen, and a desk that comes up then leaves that conversation open.
+
+**The Stack.** The group's context: a fanned pile of sheets in the dock, between the tabs and the other groups, with a count (empty, a dashed sheet with +). Drop files from Finder on it (images, PDFs, text, CSV, calendar, JSON), or text and links dragged out of a page; it bounces when something comes in. Click it to open its card beside the dock: the files as tiles, the facts, snippets and links as lines, **Add files…**, a field to type a fact, and × on each. A file opens in its own app (a private temporary copy). What the agent saved is marked (✦, "Pistachio ·"). Contexts of groups not in this Space's list — another Mac's, synced, or another Space's — are offered under **From another Mac or Space**, to bring into this group (a copy).
+
+## 2. What the agent gets
+
+**Scope.** While a desk is up, a turn in its conversation runs on a scoped browser: `tabs_list` lists only the group's tabs, `tab_open` opens a tab into the group (in the background, as always, and out onto the desk quietly), a page a click opens comes out too, and every page tool refuses a tab outside the group with an error that says to ask the person and open its address with `tab_open`. The scope is the controller's, not the prompt's: `DeskScope` wraps `DesktopBrowserBackend`. (A page's own `window.open` or `target="_blank"` from one of the desk's tabs — a window or one in its dock, the person's click or the agent's — opens beside it in its group, before it is shown: `BrowserController`'s window-open handler, `#onDesk`, `createTab({ beside })`. A desk turn holds its group for as long as it runs (`holdGroup`), so this goes on after the person leaves the desk or passes it to another group mid-turn. Otherwise the desk would see an active tab not its own and leave. That is also the only way a new tab joins the group on a click: the scope brings out a new tab only if the browser put it in the group, and never takes in a tab that merely appeared while the click settled — the person's own, say.)
+
+**The desk block.** Each turn's message carries the desk as it stands, read from the shell at the turn's start: the group's name, every window (tab id, title, address, box as percent of the desk, stacking, which is in use), the tabs in the dock, and the context's items (id, kind, name or text). A few hundred tokens; pages are read with the page tools as ever.
+
+**Desk tools** (group `desk`, host-supplied, only on a desk turn):
+
+| Tool | Does |
+| --- | --- |
+| `desk_state` | The desk block, fresh. |
+| `desk_arrange` | Tile or cascade every window; place windows in a zone (halves, quarters, center, full) or a box; put windows away into the dock; bring docked tabs out. Focus and the keyboard never move. |
+| `desk_note` | Pin a short note to a window's frame, or clear it. |
+| `desk_ungroup` | Move tabs out of the group (they stay open). Asked of the person first. |
+| `context_read` | Read a context item: a fact's text, a text file's text, an image or PDF as a file the model sees. |
+| `context_save` | Save a fact or snippet to the group's context. |
+
+Desk turns always take the browser path (no answer-path routing, route basis `skipped`): the desk tools and pages are the point of a desk. `DESK_RULES` join the browse prompt: work from the desk block, stay on the desk, arrange confidently (Undo exists) and say so, note sparingly, read and save context, ask before ungrouping, name windows by title.
+
+## 3. How it works
+
+**Desk session** (`RunController`). The shell tells main when a desk is up and for which group (`deskConversation` enter/leave, passing on a switch; `choose`, `new`). While a session is up: the open thread is the group's (bound in `desk-conversations.json`, group → thread, `DeskConversationStore`), every turn in it is desk-scoped, a thread started in it is marked with the group (`RunSummary.groupId`, on `ThreadListItem` too) and bound to it. A turn is desk-scoped when a desk is up and its group is bound to the open thread (never a cloud run). Main keeps one open thread, as always; the desk only chooses which. A shell that reloads leaves the desk (`did-start-loading`).
+
+**Desk bridge** (`desk-bridge.ts`). Main asks the shell for what only the shell knows (the desk's layout) and to change it: a request with an id on `pistachio:desk-request`, the reply by `deskReply(id, …)`, with a 5 s timeout (a failed reply is an ordinary tool error). Every request names the group whose desk it is for, and the shell refuses one for a desk no longer in view before it changes anything (the person may pass the desk to another group mid-turn). The shell answers from the desk's engine (`desk-requests.ts`, fed by `DeskSurface`), trimming titles and addresses to the reply's bounds (`MAX_DESK_TITLE`, `MAX_DESK_URL`, `MAX_DESK_DOCKED`): `state` (`agentLayout`), `arrange` (`arrangeFor`, which refuses strangers, putting away the window in use, or a person's gesture in progress, and then moves nothing), `bringOut` (waits up to 2 s for the tab to reach the shell's group, then `bringOutQuietly` — under the window in use, no selection), `note`. Each reply is checked in main to be the same group's desk. Before the first change of a turn the shell keeps `layoutSnapshot()`; the answer card's **Undo layout** is `restoreLayout` for that turn. A window still on its way into the dock when it is wanted back (Undo, or the agent placing or bringing it out again) turns back (`#recall`, making room first on a full desk) rather than being lost to the dock; one on its way into the Close pad or another group's icon goes on — that was the person's doing.
+
+**The Bar's band** (`DeskEngine.setBarBand`). The engine's `#usable` and `#reach` stop above the Bar's band, as `#usable` stops beside the dock; windows spring into the smaller desk when the band changes. Set before `start`, so a desk opens already above it. The agent's zones and boxes are percents of `#usable` (`lib/desk/agent.ts`: `deskZoneRect`, `percentBox`, `boxRect`).
+
+**Group context** (`group-context-store.ts`). One index file and content-addressed files in user data (`group-context.json`, `group-blobs/<sha24>`, owner-only permissions). Synced as two record kinds, sealed with the account's workspace key like notes: `group-context:<groupId>` (LWW: the group's title when written, its items, and the files' ids) and `group-blob:<sha24>` (a file's bytes, only files up to `MAX_GROUP_BLOB_BYTES`; bigger ones stay on the Mac they were dropped on and are listed elsewhere as not here). Tab groups do not sync live between Macs; a group pulled from another Mac keeps its id, so its context is there with it.
+
+## 4. Files
+
+- Contracts: `packages/shell-contracts/src/desk-agent.ts` (desk block, bridge requests, context items and commands); `ipc.ts` (`deskConversation`, `deskReply`, `onDeskRequest`, `getGroupContexts`, `onGroupContexts`, `groupContext`); `packages/protocol` (`DeskToolRequest`, `RunSummary.groupId`, `ThreadListItem.groupId`); `packages/sync-protocol` (`GroupContextRecord`, `GroupBlobRecord`, keys `group-context:` / `group-blob:`).
+- Agent: `packages/agent-runtime/src/desk-tools.ts` (`DeskToolHost`, the tools, `DESK_RULES`; tool group `desk`); `runner.ts` (`AiAgentRunInput.desk`; a file `context_read` returns rides after the result, as a screenshot does).
+- Main: `run-controller.ts` (`DeskAgentHost`, desk session, binding, scope, the block, `#deskToolHost`), `desk-scope.ts`, `desk-bridge.ts`, `desk-conversations.ts`, `group-context-store.ts`, `browser-controller.ts` (`tabGroupMembers`, `openTabInGroup`, `addTabsToGroup`, `ungroupTabs`, ⌘I to the shell on a desk), IPC and sync wiring in `index.ts` and `sync/`, `scripted-agent-model.ts`.
+- Shell: `components/desk/DeskBar.tsx` (the Bar, the answer, the conversations), `DeskStack.tsx` (the Stack), `DeskSurface.tsx` (conversation enter/leave, notes, Undo, presence), `desk-requests.ts` (the answers to main), `DeskWindow.tsx` (ring, chip, notes), `DeskDock.tsx` (the Stack's place, the icon ring), `desk-engine.ts` (`setBarBand`, `agentLayout`, `arrangeFor`, `bringOutQuietly`, `layoutSnapshot`, `restoreLayout`, `#addQuiet`), `lib/desk/agent.ts`, `lib/desk/group-context.ts`, `lib/desk/open.ts` (`askDesk`).
+- Tests: `packages/agent-runtime/test/agent-turns.test.ts` ("the desk"), `packages/shell-ui/test/desk-agent.test.ts`, `apps/desktop/test/desk-agent.test.ts` (bridge, scope, bindings, a desk turn through the controller, the scripted model), `apps/desktop/test/group-context-store.test.ts`, `workspace-attachment.test.ts` (the registers round trip).
+- E2E: `PISTACHIO_AGENT_SCRIPT` (under `PISTACHIO_E2E=1`) scripts the agent's model — a queue of steps, one per model call, tab and item ids named by what the prompt shows (`{{tab:Atlas}}`, `{{item:boarding}}`); `apps/desktop/e2e/tests/desk-agent.spec.ts`.
+
+## 5. Not done / open questions
+
+- Masking a region of a page (`window_mask`), pointing at an element in a page, and closing tabs are not desk tools yet.
+- Cloud runs have no desk: a cloud conversation opened on a desk is not desk-scoped.
+- The context's files are read by the model as they are (a PDF as a PDF); nothing is summarised when it is dropped.
+- A context brought from another Mac is a copy: the two groups' contexts go their own ways afterwards.
+- The Stack's files show as type glyphs, not previews.
+- A text or link dragged out of a live page onto the Stack is untested against real pages (the e2e drops a file synthetically).
+- No live-model measurement yet of how well the agent uses the desk tools (the e2e and unit tests script the model).
+- The cloud browser's record allow-list does not carry group contexts (by design: it has no desk).

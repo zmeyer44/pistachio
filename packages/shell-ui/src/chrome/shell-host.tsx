@@ -12,6 +12,7 @@ import { RUN_SHORTCUT_EVENT } from "@pistachio/shell-contracts/shortcuts";
 import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
+import { askDesk } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
 import { useAppStore, type AppState } from "../store";
 import { nextSplitMode } from "./split-mode";
@@ -132,6 +133,8 @@ export function runShellCommand(command: ShellCommand): void {
   const s = useAppStore.getState();
   switch (command.type) {
     case "toggleConsole":
+      // On a desk, the agent is in its Bar.
+      if (askDesk()) break;
       s.toggleConsole();
       break;
     case "openConsole":

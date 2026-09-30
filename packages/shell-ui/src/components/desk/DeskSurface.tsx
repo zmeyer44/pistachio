@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import { SURFACE_GUTTER } from "@pistachio/shell-contracts/chrome";
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
@@ -7,16 +8,22 @@ import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
 import { groupMoveIndex } from "../../lib/desk/dock-order";
-import { lendDeskArrange } from "../../lib/desk/open";
+import { agentActivity } from "../../lib/desk/agent";
+import { useGroupContexts } from "../../lib/desk/group-context";
+import { lendDeskArrange, lendDeskAsk } from "../../lib/desk/open";
 import { passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay } from "../GlanceOverlay";
-import { DeskEngine } from "./desk-engine";
+import { BAR_BAND, DeskBar } from "./DeskBar";
+import { DeskEngine, type DeskLayoutSnapshot } from "./desk-engine";
+import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDock } from "./DeskDock";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
 
 const EMPTY_TABS: readonly BrowserTabInfo[] = [];
 const EMPTY_IDS: readonly string[] = [];
+const EMPTY_GROUPS: readonly TabGroupInfo[] = [];
+const EMPTY_THREADS: NonNullable<ShellSnapshot["threads"]> = [];
 
 /** The group's tabs in the group's order, keeping each tab object's identity (the store shares structure). */
 function groupTabs(snapshot: ShellSnapshot | null, group: TabGroupInfo | null): readonly BrowserTabInfo[] {
@@ -57,6 +64,10 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const glance = useAppStore((state) => state.glance);
   const sidebarLayout = useAppStore((state) => state.settings.layout.mode === "sidebar");
   const setContentBounds = useAppStore((state) => state.setContentBounds);
+  const run = useAppStore((state) => state.snapshot?.run ?? null);
+  const threads = useAppStore((state) => state.snapshot?.threads ?? EMPTY_THREADS);
+  const groups = useAppStore((state) => state.snapshot?.tabGroups ?? EMPTY_GROUPS);
+  const contexts = useGroupContexts();
   const variants = useDeskStore((state) => state.variants);
   const leaving = useDeskStore((state) => state.leaving);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -64,8 +75,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const tabKey = tabIds.join(" ");
 
   // What the engine asks of the browser, always answered from the latest render.
-  const latest = useRef({ tabs, wakingTabIds, variants });
-  latest.current = { tabs, wakingTabIds, variants };
+  const latest = useRef({ tabs, wakingTabIds, variants, group });
+  latest.current = { tabs, wakingTabIds, variants, group };
   /** The group the engine's windows are of: it moves on only once the engine has passed to the next (and saved this one under its own id). */
   const shownGroup = useRef(groupId);
 
@@ -116,6 +127,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       leaveDone: () => useDeskStore.getState().finishLeave(),
     });
     created.attachStage(stage);
+    // The Bar's band at the foot, before any window is laid out: they keep above it.
+    created.setBarBand(BAR_BAND);
     const snapshot = useAppStore.getState().snapshot;
     const ids = latest.current.tabs.map((tab) => tab.id);
     const active = snapshot?.activeTabId ?? null;
@@ -200,6 +213,87 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     lendDeskArrange((kind) => engine.arrange(kind));
     return () => lendDeskArrange(null);
   }, [engine]);
+
+  // ── The desk's agent (docs/desk-agent.md) ──────────────────────────────
+
+  // Main opens the group's conversation while its desk is up, and goes back
+  // to the one before when it leaves; passing to another group, that one's.
+  useEffect(() => {
+    void nativeApi()?.deskConversation({ type: "enter", groupId }).catch(() => undefined);
+  }, [groupId]);
+  useEffect(() => () => void nativeApi()?.deskConversation({ type: "leave" }).catch(() => undefined), []);
+
+  // ⌘I puts the keyboard in the Bar.
+  const [askSignal, setAskSignal] = useState(0);
+  useEffect(() => {
+    lendDeskAsk(() => setAskSignal((count) => count + 1));
+    return () => lendDeskAsk(null);
+  }, []);
+
+  // The notes the agent pinned to windows, until the next turn starts; and
+  // where every window was before the agent first moved one this turn, for
+  // Undo layout.
+  const [notes, setNotes] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const [undo, setUndo] = useState<{ runId: string; turn: number; layout: DeskLayoutSnapshot } | null>(null);
+  const turnKey = run === null ? "" : `${run.runId}:${String(run.turns)}`;
+  useEffect(() => {
+    setNotes((current) => (current.size === 0 ? current : new Map()));
+  }, [turnKey]);
+  const dismissNote = useCallback((tabId: string) => {
+    setNotes((current) => {
+      if (!current.has(tabId)) return current;
+      const next = new Map(current);
+      next.delete(tabId);
+      return next;
+    });
+  }, []);
+  const undoShown = undo !== null && run !== null && undo.runId === run.runId && undo.turn === run.turns;
+  const onUndo = useCallback(() => {
+    if (engine === null || undo === null) return;
+    engine.restoreLayout(undo.layout);
+    setUndo(null);
+  }, [engine, undo]);
+
+  // Main's questions about the desk (the agent's desk tools, a tab it
+  // opened): answered from the engine, as the desk stands now (desk-requests.ts).
+  useEffect(() => {
+    const api = nativeApi();
+    if (engine === null || api === null) return;
+    const deps: DeskAnswerDeps = {
+      engine,
+      groupId: () => shownGroup.current,
+      title: () => latest.current.group?.title ?? "",
+      tab: (tabId) => useAppStore.getState().snapshot?.tabs.find((tab) => tab.id === tabId),
+      turn: () => {
+        const current = useAppStore.getState().snapshot?.run ?? null;
+        return current === null ? null : { runId: current.runId, turns: current.turns };
+      },
+      remember: (turn, layout) =>
+        setUndo((before) => (before !== null && before.runId === turn.runId && before.turn === turn.turns ? before : { runId: turn.runId, turn: turn.turns, layout })),
+      note: (tabId, text) =>
+        setNotes((current) => {
+          const next = new Map(current);
+          if (text === null) next.delete(tabId);
+          else next.set(tabId, text);
+          return next;
+        }),
+    };
+    return api.onDeskRequest((id, request) => {
+      answerDeskRequest(deps, request).then(
+        (reply) => api.deskReply(id, reply),
+        (error: unknown) => api.deskReply(id, { ok: false, error: error instanceof Error ? error.message : "the desk could not do that" }),
+      );
+    });
+  }, [engine]);
+
+  // Where the agent is: the window whose tab it works in wears its ring, and says what it is doing.
+  const agentTab = agentDrivenTabId(run);
+  const activity = agentActivity(run);
+  const context = contexts.find((candidate) => candidate.groupId === groupId) ?? null;
+  const otherContexts = useMemo(
+    () => contexts.filter((candidate) => candidate.groupId !== groupId && candidate.items.length > 0 && !groups.some((other) => other.id === candidate.groupId)),
+    [contexts, groupId, groups],
+  );
 
   const view = useSyncExternalStore(
     useCallback((listener: () => void) => engine?.subscribe(listener) ?? (() => undefined), [engine]),
@@ -342,10 +436,18 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
                   still={overlayStill ?? window.still}
                   waking={wakingTabIds.includes(window.tabId)}
                   engine={engine}
+                  agent={agentTab === window.tabId ? activity : null}
+                  note={notes.get(window.tabId) ?? null}
+                  onDismissNote={dismissNote}
                 />
               );
             })}
-        {engine === null || view === null || group === null ? null : <DeskDock group={group} tabs={tabs} view={view} engine={engine} />}
+        {engine === null || view === null || group === null ? null : (
+          <DeskDock group={group} tabs={tabs} view={view} engine={engine} context={context} otherContexts={otherContexts} agentTabId={agentTab} />
+        )}
+        {engine === null || view === null || group === null ? null : (
+          <DeskBar group={group} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} />
+        )}
         {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} />}
       </div>
     </section>

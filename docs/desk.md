@@ -4,6 +4,8 @@ An experiment in a different browser. A tab group can open as a **desk**: its ta
 
 Desktop only (it needs native page views to move). Branch `desk`.
 
+The desk has an agent: the Co-worker in a Bar at the desk's foot, with the group's context as a Stack in the dock — `docs/desk-agent.md`. The Bar's band shrinks the room windows have (`#usable` and `#reach` stop above it).
+
 ## 1. What a person does
 
 **Open it.** Hover a tab group's row in the sidebar and press the window button (or right-click the group → *Open as desk*; the top layout's group chip has the same menu item). The sidebar goes first: pinned or compact, it slides away as the compact sidebar does, and the page reflows to fill the row. The macOS window buttons stay where they are, over the top of the dock's column; the dock's shelf keeps clear of them (and of as much at its foot, so it stays centred), and the drop rail starts below them. Then the page in view lifts off into a window without a flicker, and the dock slides in from the left. The group's last arrangement comes back if there is one. The sidebar stays away, with no edge to bring it out, until the desk is left.

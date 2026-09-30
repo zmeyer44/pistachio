@@ -204,7 +204,13 @@ export interface AgentToolCall {
     | "google_calendar.create"
     | "google_calendar.update"
     | "google_calendar.delete"
-    | "google_calendar.respond";
+    | "google_calendar.respond"
+    | "desk.state"
+    | "desk.arrange"
+    | "desk.note"
+    | "desk.ungroup"
+    | "context.read"
+    | "context.save";
   label: string;
   detail: string;
   status: "running" | "completed" | "paused" | "failed";
@@ -316,6 +322,19 @@ export type NoteToolRequest =
 /** The agent's working notes for the thread (its plan, progress, and facts to keep). */
 export type NotesToolRequest = { name: "notes.update"; content: string };
 
+/**
+ * The desk's tools (docs/desk-agent.md §2): the tab group's desk as the
+ * agent's workspace, and the group's context. A request naming one window
+ * carries its `tabId`, so the agent's marks move to that window.
+ */
+export type DeskToolRequest =
+  | { name: "desk.state" }
+  | { name: "desk.arrange"; summary: string }
+  | { name: "desk.note"; tabId: string; text: string | null }
+  | { name: "desk.ungroup"; tabIds: string[] }
+  | { name: "context.read"; id: string }
+  | { name: "context.save"; kind: "fact" | "snippet"; text: string };
+
 /** Secret fields the cloud agent can ask a person to supply out of band. */
 export const CREDENTIAL_FIELD_TYPES = ["text", "email", "password", "otp"] as const;
 export type CredentialFieldType = (typeof CREDENTIAL_FIELD_TYPES)[number];
@@ -387,7 +406,8 @@ export type AgentToolRequest =
   | WatchtowerToolRequest
   | CredentialToolRequest
   | IntegrationToolRequest
-  | NotesToolRequest;
+  | NotesToolRequest
+  | DeskToolRequest;
 
 /**
  * A reminder the person or the agent scheduled earlier, firing as a turn of
@@ -523,6 +543,8 @@ export interface RunSummary {
   origin?: RunOrigin;
   /** Absent means this desktop runs it (see RunExecutor). */
   executor?: RunExecutor;
+  /** The tab group whose desk the conversation started at (docs/desk-agent.md); absent for one started elsewhere. */
+  groupId?: string;
   pendingApproval: PendingApproval | null;
   pendingQuestion: AgentQuestion | null;
   pendingTakeover: AgentTakeover | null;
@@ -564,6 +586,8 @@ export interface ThreadListItem {
   origin?: RunOrigin;
   /** Absent means this desktop runs it (see RunExecutor). */
   executor?: RunExecutor;
+  /** The tab group whose desk the conversation started at, if one did. */
+  groupId?: string;
 }
 
 export function normalizeOrigin(value: string): string {

@@ -104,6 +104,8 @@ import type {
   BookmarkRecord,
   BrowserSessionRecord,
   MemoryRecord,
+  GroupBlobRecord,
+  GroupContextRecord,
   NoteBlobRecord,
   NoteRecord,
   ReminderRecord,
@@ -203,6 +205,18 @@ export interface NoteBlobDoc {
   blob: NoteBlobRecord;
 }
 
+/** A tab group's context (docs/desk-agent.md §3), one register per group. */
+export interface GroupContextDoc {
+  kind: "groupContext";
+  context: GroupContextRecord;
+}
+
+/** One file of a group's context, in a register of its own so the context re-seals without the bytes. */
+export interface GroupBlobDoc {
+  kind: "groupBlob";
+  blob: GroupBlobRecord;
+}
+
 /**
  * A persistent browser session's durable state, one per Space
  * (web-browser-design.md §9). Account-global rather than device-owned: the
@@ -241,6 +255,8 @@ export type WorkspaceDoc =
   | ArtifactDoc
   | NoteDoc
   | NoteBlobDoc
+  | GroupContextDoc
+  | GroupBlobDoc
   | BrowserSessionDoc
   | ShellSettingsDoc;
 
@@ -270,6 +286,10 @@ export function workspaceKeyFor(doc: WorkspaceDoc): string {
       return `note:${doc.note.id}`;
     case "noteBlob":
       return `note-blob:${doc.blob.id}`;
+    case "groupContext":
+      return `group-context:${doc.context.groupId}`;
+    case "groupBlob":
+      return `group-blob:${doc.blob.id}`;
     case "browserSession":
       return `browser-session:${doc.session.spaceId}`;
     case "shellSettings":
@@ -281,7 +301,7 @@ export function workspaceKeyFor(doc: WorkspaceDoc): string {
 export const SHELL_SETTINGS_KEY = "shell-settings:default";
 
 /** Key prefixes that are account-global personal records (§17). */
-export const RECORD_KEY_PREFIXES = ["bookmark:", "reminder:", "memory:", "artifact:", "note:", "note-blob:"] as const;
+export const RECORD_KEY_PREFIXES = ["bookmark:", "reminder:", "memory:", "artifact:", "note:", "note-blob:", "group-context:", "group-blob:"] as const;
 
 /** The record id a personal-record key names, or null for any other key. */
 export function recordKeyId(key: string, prefix: (typeof RECORD_KEY_PREFIXES)[number]): string | null {

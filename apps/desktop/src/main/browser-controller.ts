@@ -3540,6 +3540,8 @@ export class BrowserController {
       activate?: boolean;
       spaceId?: string;
       unlisted?: boolean;
+      /** Placed after this tab, and in its group, before anything hears of it. */
+      beside?: string;
     } = {},
   ): Promise<string> {
     const spaceId = options.spaceId ?? this.activeSpaceId();
@@ -3553,6 +3555,7 @@ export class BrowserController {
       anchorId: options.anchorId ?? null,
       spaceId,
       unlisted: options.unlisted ?? false,
+      ...(options.beside === undefined ? {} : { beside: options.beside }),
     });
   }
 
@@ -4308,6 +4311,11 @@ export class BrowserController {
       void this.createTab(details.url, {
         spaceId: tab.info.spaceId,
         activate: this.#visibleTabIds().includes(tab.info.id),
+        // From one of the desk's tabs — a window, or one in its dock — the
+        // new tab is the desk's too: it joins the group before it is shown,
+        // so the desk is never left standing on a tab not its own, and the
+        // desk's agent may use it (docs/desk-agent.md §2).
+        ...(this.#onDesk(tab.info.id) ? { beside: tab.info.id } : {}),
       });
       return { action: "deny" };
     });
@@ -5499,7 +5507,8 @@ export class BrowserController {
     // Hand it over now rather than at the next layout pass: letters typed
     // in the meantime would land in the page, not in the field they were
     // meant for.
-    if (action === "editAddress" || action === "newTab") this.#hooks.focusShell?.();
+    // On a desk, ⌘I is the Bar's (docs/desk-agent.md §1): its field is the shell's too.
+    if (action === "editAddress" || action === "newTab" || (action === "toggleConsole" && this.#desk !== null)) this.#hooks.focusShell?.();
     switch (action) {
       case "back":
         void this.goBack(tab.info.id);
@@ -6567,6 +6576,71 @@ export class BrowserController {
 
   dissolveTabGroups(groupIds: readonly string[]): void {
     for (const groupId of groupIds) this.#tabGroups.delete(groupId);
+  }
+
+  // The desk agent's hold on a group (docs/desk-agent.md §2, desk-scope.ts).
+
+  /** Groups a desk turn is working in, and how many turns hold each (holdGroup). */
+  readonly #heldGroups = new Map<string, number>();
+
+  /**
+   * A desk turn is working in this group: until the returned release, a page
+   * opened from one of its tabs joins it, whether the desk is still up or
+   * the person has left it or passed it to another group meanwhile (the turn
+   * goes on — RunController). Released once, however often it is called.
+   */
+  holdGroup(groupId: string): () => void {
+    this.#heldGroups.set(groupId, (this.#heldGroups.get(groupId) ?? 0) + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      const count = (this.#heldGroups.get(groupId) ?? 1) - 1;
+      if (count <= 0) this.#heldGroups.delete(groupId);
+      else this.#heldGroups.set(groupId, count);
+    };
+  }
+
+  /**
+   * The tab is one of a desk's: of the group whose desk is up (a window on
+   * it, or in its dock), or of a group a desk turn holds (holdGroup).
+   */
+  #onDesk(tabId: string): boolean {
+    const group = tabGroupOf([...this.#tabGroups.values()], tabId);
+    if (group === null) return false;
+    if (this.#heldGroups.has(group.id)) return true;
+    const desk = this.#desk;
+    return desk !== null && desk.tabIds.some((windowTabId) => group.tabIds.includes(windowTabId));
+  }
+
+  /** A group's tabs, in whatever Space it lives; null when there is no such group. */
+  tabGroupMembers(groupId: string): readonly string[] | null {
+    const group = this.#tabGroups.get(groupId);
+    return group === undefined ? null : [...group.tabIds];
+  }
+
+  /** Open a tab into a group, behind the person's tab. Null when the group is gone. */
+  async openTabInGroup(groupId: string, url?: string): Promise<string | null> {
+    const group = this.#tabGroups.get(groupId);
+    const spaceId = group === undefined ? null : this.#tabGroupSpaceId(group);
+    if (group === undefined || spaceId === null) return null;
+    const tabId = await this.createTab(url ?? this.#homeUrl(), { spaceId, activate: false });
+    // The agent's addition leaves the group as it was: Tidy's own group stays Tidy's.
+    this.addToTabGroup(groupId, [tabId], { byPerson: false });
+    this.#reconcileTabGroups();
+    this.#onChange();
+    return tabId;
+  }
+
+  /** Take tabs out of a group, after the person agreed; each stays open beside it. */
+  ungroupTabs(groupId: string, tabIds: readonly string[]): string[] {
+    const members = new Set(this.#tabGroups.get(groupId)?.tabIds ?? []);
+    const leaving = tabIds.filter((tabId) => members.has(tabId));
+    if (leaving.length === 0) return [];
+    this.removeFromTabGroups(leaving);
+    this.#reconcileTabGroups();
+    this.#onChange();
+    return leaving;
   }
 
   /**

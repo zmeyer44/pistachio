@@ -123,6 +123,8 @@ import {
   type SpringConfig,
 } from "../../lib/desk/motion";
 import type { DeskChrome, DeskVariants, SavedDeskWindow } from "../../lib/desk/store";
+import type { DeskArrangePlan, DeskPercentBox } from "@pistachio/shell-contracts/desk-agent";
+import { boxRect, deskZoneRect, percentBox } from "../../lib/desk/agent";
 
 export interface Insets {
   top: number;
@@ -329,6 +331,17 @@ export interface DockSettleView {
   gone: string | null;
 }
 
+/** The desk as the agent reads it (agentLayout): the windows out, bottom to top, and the group's tabs in the dock. */
+export interface DeskAgentLayout {
+  windows: Array<{ tabId: string; box: DeskPercentBox; focused: boolean; masked: boolean }>;
+  docked: string[];
+}
+
+/** Where every window was (layoutSnapshot), bottom to top: what Undo layout puts back. */
+export interface DeskLayoutSnapshot {
+  windows: Array<{ tabId: string; rect: Rect }>;
+}
+
 /** A window of another group's desk, drawn small (sketchGroup). */
 export interface DeskSketchWindow {
   tabId: string;
@@ -425,6 +438,12 @@ interface Win {
   unmasking: Unmasking | null;
   /** Its element carries the `--reveal-*` properties (#write). */
   revealed: boolean;
+  /**
+   * Flying into its own icon in the dock (#sendAway with nowhere else to
+   * go) — the one flight that can be turned back (#recall). Not into the
+   * Close pad, which closes its tab on arrival, nor into another group.
+   */
+  homeward: boolean;
 }
 
 /**
@@ -623,6 +642,8 @@ export class DeskEngine {
   /** DeskView.dockSettle, and the timer that gives up on it. */
   #dockSettle: DockSettleView | null = null;
   #settleTimer = 0;
+  /** The Bar's band at the desk's foot (setBarBand): windows keep above it. */
+  #barBand = 0;
 
   constructor(host: DeskHost) {
     this.#host = host;
@@ -1538,6 +1559,198 @@ export class DeskEngine {
     if (kind === "cascade") this.#order = [...this.#order.filter((tabId) => !ids.includes(tabId)), ...ids];
     this.#emit();
     this.#kick();
+  }
+
+  // ── The agent's hand (docs/desk-agent.md §2) ──────────────────────────
+
+  /**
+   * The Bar's band at the desk's foot, or 0: the desk stops above it, as it
+   * stops beside the dock, and the windows spring into the smaller desk.
+   */
+  setBarBand(height: number): void {
+    const band = Math.max(0, Math.round(height));
+    if (band === this.#barBand) return;
+    const before = this.#usable();
+    this.#barBand = band;
+    const after = this.#usable();
+    const reach = this.#reach();
+    if (this.#phase === "open") {
+      for (const win of this.#wins.values()) {
+        if (this.#gesture?.tabId === win.tabId || win.flight !== null) continue;
+        const from = win.target ?? win.rect;
+        if (win.mask !== null) {
+          // A picture keeps its size; only where it is follows the desk.
+          const moved = denormalizeRect(normalizeRect(from, before), after);
+          win.target = clampRect({ ...from, x: moved.x, y: moved.y }, reach, MASK_MIN);
+        } else {
+          win.target = clampRect(denormalizeRect(normalizeRect(from, before), after), reach);
+          if (win.restore !== null) win.restore = clampRect(denormalizeRect(normalizeRect(win.restore, before), after), reach);
+        }
+        win.coasting = false;
+      }
+    }
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /** The tab is one of the group's (a tab the agent just opened may not be yet). */
+  hasGroupTab(tabId: string): boolean {
+    return this.#groupTabIds.includes(tabId);
+  }
+
+  /** The desk as the agent reads it: every window out, bottom to top, where it is going, as percents of the desk. */
+  agentLayout(): DeskAgentLayout {
+    const usable = this.#usable();
+    const out = this.#staying();
+    return {
+      windows: out.map((tabId) => {
+        const win = this.#wins.get(tabId)!;
+        return { tabId, box: percentBox(win.target ?? win.rect, usable), focused: tabId === this.#focused, masked: win.mask !== null };
+      }),
+      docked: this.#groupTabIds.filter((tabId) => !out.includes(tabId)),
+    };
+  }
+
+  /**
+   * The agent's arrangement, all at once, moving as the person's do: tabs
+   * brought out of the dock, windows put away, a tile or cascade, windows
+   * placed in zones or boxes. The window in use keeps the keyboard and
+   * stays out; a new window comes out under it. An error says what could
+   * not be done, and then nothing moved.
+   */
+  arrangeFor(plan: DeskArrangePlan): string | null {
+    if (this.#phase !== "open") return "the desk is not open yet";
+    if (this.#gesture !== null) return "the person has a window in hand; try again in a moment";
+    const members = new Set(this.#groupTabIds);
+    const named = [...(plan.place ?? []).map((entry) => entry.tabId), ...(plan.putAway ?? []), ...(plan.bringOut ?? [])];
+    const stranger = named.find((tabId) => !members.has(tabId));
+    if (stranger !== undefined) return `tab ${stranger} is not on this desk`;
+    if (this.#focused !== null && plan.putAway?.includes(this.#focused) === true) return "the window in use stays out: the person is using it";
+    if ((plan.place ?? []).some((entry) => entry.zone === undefined && entry.box === undefined)) return "each window placed needs a zone or a box";
+    const placed = new Set((plan.place ?? []).map((entry) => entry.tabId));
+    if ((plan.putAway ?? []).some((tabId) => placed.has(tabId))) return "a window cannot be placed and put away at once";
+    for (const tabId of plan.bringOut ?? []) if (!placed.has(tabId)) this.#addQuiet(tabId);
+    for (const tabId of plan.putAway ?? []) {
+      const win = this.#wins.get(tabId);
+      if (win !== undefined && win.flight !== "away") this.#sendAway(win, false);
+    }
+    if (plan.layout !== undefined) this.arrange(plan.layout);
+    const usable = this.#usable();
+    const reach = this.#reach();
+    (plan.place ?? []).forEach((entry, index) => {
+      const rect = entry.zone !== undefined ? deskZoneRect(entry.zone, usable) : boxRect(entry.box!, usable);
+      const win = this.#wins.get(entry.tabId);
+      if (win === undefined) {
+        this.#addQuiet(entry.tabId, rect);
+        return;
+      }
+      // Still on its way into the dock (put away a moment ago): it turns back. On its way to be closed, or to another group, it goes on.
+      if (win.flight === "away" && !this.#recall(win)) return;
+      // A masked window is a picture: it keeps its size, in the middle of its place.
+      win.target = win.mask !== null ? clampRect({ ...win.rect, x: rect.x + (rect.w - win.rect.w) / 2, y: rect.y + (rect.h - win.rect.h) / 2 }, reach, MASK_MIN) : rect;
+      win.restore = null;
+      win.coasting = false;
+      win.delay = index * 0.035;
+    });
+    this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
+    return null;
+  }
+
+  /** A tab the agent opened in the group: out onto the desk beside the window in use, without the keyboard. */
+  bringOutQuietly(tabId: string): void {
+    if (this.#phase !== "open" || !this.#groupTabIds.includes(tabId) || this.#wins.has(tabId)) return;
+    this.#addQuiet(tabId);
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /** Where every window is going now: what Undo layout puts back. */
+  layoutSnapshot(): DeskLayoutSnapshot {
+    return { windows: this.#staying().map((tabId) => ({ tabId, rect: { ...(this.#wins.get(tabId)!.target ?? this.#wins.get(tabId)!.rect) } })) };
+  }
+
+  /**
+   * Every window back where a snapshot had it: the ones it did not have go
+   * into the dock (the window in use excepted), the ones it had come out,
+   * and the stack is its order again — the window in use on top.
+   */
+  restoreLayout(snapshot: DeskLayoutSnapshot): void {
+    if (this.#phase !== "open" || this.#gesture !== null) return;
+    const wanted = snapshot.windows.filter((entry) => this.#groupTabIds.includes(entry.tabId));
+    const keep = new Set(wanted.map((entry) => entry.tabId));
+    for (const tabId of this.#staying()) {
+      if (keep.has(tabId) || tabId === this.#focused) continue;
+      this.#sendAway(this.#wins.get(tabId)!, false);
+    }
+    for (const entry of wanted) {
+      const win = this.#wins.get(entry.tabId);
+      if (win === undefined) {
+        this.#addQuiet(entry.tabId, entry.rect);
+        continue;
+      }
+      // Still on its way into the dock (put away a moment ago): it turns back, rather than being lost to it.
+      // On its way to be closed, or to another group, it goes on: that was the person's doing.
+      if (win.flight === "away" && !this.#recall(win)) continue;
+      win.target = { ...entry.rect };
+      win.restore = null;
+      win.coasting = false;
+      win.delay = 0;
+    }
+    const order = wanted.map((entry) => entry.tabId).filter((tabId) => this.#wins.has(tabId));
+    const rest = this.#order.filter((tabId) => !order.includes(tabId));
+    const stack = [...rest, ...order];
+    const focused = this.#focused;
+    this.#order = focused !== null && stack.includes(focused) ? [...stack.filter((tabId) => tabId !== focused), focused] : stack;
+    this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * Out of the dock without taking the keyboard or the selection: into
+   * `rect`, or where the desk has room (placeNewWindow, as a click in the
+   * dock places one), and under the window in use in the stack.
+   */
+  #addQuiet(tabId: string, rect?: Rect): void {
+    if (this.#phase !== "open") return;
+    // Out already — unless it is on its way into the dock, when it turns back instead (#recall makes room for it).
+    const returning = this.#wins.get(tabId);
+    if (returning !== undefined && (returning.flight !== "away" || !returning.homeward)) return;
+    if (returning === undefined) this.#makeRoom();
+    let target = rect;
+    if (target === undefined) {
+      const staying = this.#staying();
+      const rects = staying.map((id) => this.#wins.get(id)!.target ?? this.#wins.get(id)!.rect);
+      const inUse = this.#focused === null || this.#wins.get(this.#focused)?.mask != null ? -1 : staying.indexOf(this.#focused);
+      const placed = placeNewWindow(rects, this.#usable(), inUse < 0 ? null : inUse);
+      if (placed.split !== null) {
+        const giving = this.#wins.get(staying[placed.split.index]!)!;
+        giving.target = placed.split.rect;
+        giving.restore = null;
+        giving.coasting = false;
+        giving.delay = 0;
+      }
+      target = placed.rect;
+    }
+    if (returning !== undefined) {
+      this.#recall(returning);
+      returning.target = target;
+      returning.restore = null;
+      returning.coasting = false;
+      returning.delay = 0;
+      return;
+    }
+    this.#wins.set(tabId, this.#flyingIn(tabId, target));
+    const under = this.#focused === null ? -1 : this.#order.indexOf(this.#focused);
+    if (under < 0) this.#order.push(tabId);
+    else this.#order.splice(under, 0, tabId);
+    this.#dirtyView = true;
   }
 
   // ── Presses and gestures ───────────────────────────────────────────────
@@ -3000,6 +3213,7 @@ export class DeskEngine {
       maskWanted: null,
       unmasking: null,
       revealed: false,
+      homeward: false,
     };
   }
 
@@ -3061,6 +3275,7 @@ export class DeskEngine {
     if (this.#editing === win.tabId) this.#editing = null;
     if (win.still !== null) this.#thumbs.set(win.tabId, win.still);
     const intoIcon = to === undefined;
+    win.homeward = intoIcon;
     win.onArrive = () => {
       this.#remove(win.tabId);
       if (intoIcon) this.#receive(win.tabId);
@@ -3073,6 +3288,27 @@ export class DeskEngine {
       this.#emit();
     };
     if (this.#focused === win.tabId) this.#focused = null;
+  }
+
+  /**
+   * A window on its way into its icon in the dock turns back (Undo layout,
+   * or the agent bringing it out again): its arrival — which would take it
+   * off the desk — is called off, and it grows back to full size as a
+   * window coming out does. A desk already full sends its bottom window
+   * home first, as for any window coming out (#makeRoom). The caller gives
+   * it its place. False, and nothing changes, for any other flight: one
+   * into the Close pad or another group's icon was the person's doing.
+   */
+  #recall(win: Win): boolean {
+    if (win.flight !== "away" || !win.homeward) return false;
+    this.#makeRoom();
+    win.onArrive = null;
+    win.flight = "in";
+    win.homeward = false;
+    win.lift = { scale: 1, tilt: 0 };
+    win.written = "";
+    this.#dirtyView = true;
+    return true;
   }
 
   /** The dock's icon for this tab gives a little bounce: its window has just come back into it. */
@@ -3254,13 +3490,13 @@ export class DeskEngine {
    */
   #usable(): Rect {
     const { width, height } = this.#stageBox;
-    return { x: DOCK_W + DESK_GAP, y: 0, w: Math.max(1, width - DOCK_W - DESK_GAP), h: Math.max(1, height) };
+    return { x: DOCK_W + DESK_GAP, y: 0, w: Math.max(1, width - DOCK_W - DESK_GAP), h: Math.max(1, height - this.#barBand) };
   }
 
-  /** Where a window may be: the whole stage — behind the dock too, as far as the desk's leading edge. */
+  /** Where a window may be: the whole stage above the Bar — behind the dock too, as far as the desk's leading edge. */
   #reach(): Rect {
     const { width, height } = this.#stageBox;
-    return { x: 0, y: 0, w: Math.max(1, width), h: Math.max(1, height) };
+    return { x: 0, y: 0, w: Math.max(1, width), h: Math.max(1, height - this.#barBand) };
   }
 
   /**

@@ -28,6 +28,8 @@ export const TOOL_GROUPS = {
   notes: ["task_notes"],
   /** The person's own notes (docs/notes.md N7). `notes` above is the run's scratchpad. */
   user_notes: ["note_list", "note_search", "note_read", "note_create", "note_update", "note_delete"],
+  /** The desk a turn works at and its group's context (docs/desk-agent.md §2); host-supplied, desktop only. */
+  desk: ["desk_state", "desk_arrange", "desk_note", "desk_ungroup", "context_read", "context_save"],
   // Each dedicated integration is a group of its own, named for its
   // provider, so a policy can allow the browser and memory but not mail.
   gmail: GMAIL_TOOL_NAMES,

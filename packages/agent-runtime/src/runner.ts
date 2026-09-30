@@ -73,6 +73,7 @@ import { executeBrowserTool, type BrowserBackend } from "./browser-backend.js";
 import { integrationRules, integrationTools } from "./integrations/index.js";
 import type { IntegrationToolDeps, IntegrationToolHost } from "./integrations/host.js";
 import { ALL_TOOL_GROUPS, filterToolSet } from "./tool-groups.js";
+import { DESK_RULES, deskTools, type DeskToolHost } from "./desk-tools.js";
 import {
   applyCompaction,
   closeDanglingToolCalls,
@@ -335,6 +336,12 @@ export interface AiAgentRunInput {
   userNotes?: { host: NoteToolHost };
   watchtower?: { host: import("./views/watchtower.js").WatchtowerToolHost };
   /**
+   * The desk this turn works at (docs/desk-agent.md §2): the tools that
+   * read and arrange it and its group's context. Absent off a desk; the
+   * desk runs on the browse path, so the answer path never sees it.
+   */
+  desk?: { host: DeskToolHost };
+  /**
    * The dedicated integrations the person connected for this run's Space —
    * one host per provider, each minting API tokens from its sealed grant
    * (integrations/index.ts). Absent, or empty, when nothing is connected:
@@ -562,7 +569,7 @@ Notes and long tasks:
 
 export const MAX_TASK_NOTES = 12_000;
 
-type InstructionInput = Pick<AiAgentRunInput, "browser" | "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
+type InstructionInput = Pick<AiAgentRunInput, "browser" | "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "desk" | "integrations" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
 
 function instructions(input: InstructionInput, notes: string): string {
   return input.mode === "answer" ? answerInstructions(input, notes) : browseInstructions(input, notes);
@@ -647,7 +654,7 @@ function browseInstructions(input: InstructionInput, notes: string): string {
     : `- For passwords, authentication codes, payment details, recovery secrets, and other sensitive editable fields on a cloud tab, use request_credentials. Include only the minimum fields needed and copy each target from page_inspect. The encrypted values are inserted without being shown to you; inspect the page after the run resumes and continue the task. When the person's vault already holds those fields for the site, they are entered at once and the run does not pause; if the site rejects them, call request_credentials again and the person is asked for fresh values.
 - Do not request takeover merely because a step involves login, MFA, or a consent you can give with a page control. Operate every usable page control yourself. Use request_takeover only when the page requires a person-bound action that the available tools technically cannot perform, such as a CAPTCHA, hardware passkey, or bot check with no operable control${lastStep}. Explain the specific technical blocker and stop interacting until they resume you.`;
   const integrations = input.integrations === undefined ? "" : integrationRules(input.integrations.hosts);
-  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("browse")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${integrations}${input.scheduled === undefined ? "" : SCHEDULED_RULES}${NOTES_RULES}`;
+  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("browse")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${input.desk === undefined ? "" : DESK_RULES}${integrations}${input.scheduled === undefined ? "" : SCHEDULED_RULES}${NOTES_RULES}`;
   const context = `${memory === undefined || memory.prompt === "" ? "" : `\n\n${memory.prompt}`}\n\nYour notes for this thread:\n${notes.trim() === "" ? "(none yet — write them with task_notes once you have a plan)" : notes.trim()}`;
   return `You are Pistachio, a browser-operating agent working collaboratively in the person's real browser.
 
@@ -1291,13 +1298,21 @@ function notesTools(host: NotesToolHost, callbacks: AiAgentRunCallbacks) {
   };
 }
 
+/** A file a tool produced, waiting to follow its result: a screenshot unless labelled otherwise. */
+interface Picture {
+  dataUrl: string;
+  mediaType: string;
+  label?: string;
+  filename?: string;
+}
+
 /**
- * Screenshots ride as their own user message with an image part, placed
+ * Screenshots (and files a tool read, such as a desk context item) ride as their own user message with a file part, placed
  * right after the tool message that took them; every provider renders a
  * user image, while tool-result content parts are JSON text on some. Each
  * picture is attached once; trimming later stubs it like any attachment.
  */
-function attachPictures(messages: ModelMessage[], pictures: Map<string, { dataUrl: string; mediaType: string }>): ModelMessage[] {
+function attachPictures(messages: ModelMessage[], pictures: Map<string, Picture>): ModelMessage[] {
   if (pictures.size === 0) return messages;
   const out: ModelMessage[] = [];
   for (const message of messages) {
@@ -1311,8 +1326,8 @@ function attachPictures(messages: ModelMessage[], pictures: Map<string, { dataUr
       out.push({
         role: "user",
         content: [
-          { type: "text", text: `[Screenshot from page_screenshot (${part.toolCallId})]` },
-          { type: "file", data: picture.dataUrl, mediaType: picture.mediaType, filename: "screenshot" },
+          { type: "text", text: picture.label === undefined ? `[Screenshot from page_screenshot (${part.toolCallId})]` : `[${picture.label} (${part.toolCallId})]` },
+          { type: "file", data: picture.dataUrl, mediaType: picture.mediaType, filename: picture.filename ?? "screenshot" },
         ],
       });
     }
@@ -1429,7 +1444,7 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
   let history: ModelMessage[] = closeDanglingToolCalls(input.messages, TURN_CUT_SHORT);
   let lastSent: ModelMessage[] = history;
   /** Screenshots taken this turn, by tool call, until each is attached to the history. */
-  const pictures = new Map<string, { dataUrl: string; mediaType: string }>();
+  const pictures = new Map<string, Picture>();
   // What the model said it read on the latest step — the true size of
   // `lastSent` plus the prompt. Null until a step reports, and again after
   // a compaction changes what is sent.
@@ -1711,6 +1726,11 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
         ...(input.bookmarks === undefined ? {} : bookmarkTools(input.bookmarks.host, input.callbacks)),
         ...(input.userNotes === undefined ? {} : noteTools(input.userNotes.host, input.callbacks)),
         ...(input.watchtower === undefined ? {} : watchtowerTools(input.watchtower.host, input.callbacks)),
+        ...(input.desk === undefined
+          ? {}
+          : deskTools(input.desk.host, input.callbacks, (toolCallId, file) => {
+              pictures.set(toolCallId, { dataUrl: file.dataUrl, mediaType: file.mediaType, label: `File “${file.name}” from context_read`, filename: file.name });
+            })),
         ...(input.integrations === undefined
           ? {}
           : integrationTools(input.integrations.hosts, input.callbacks, {

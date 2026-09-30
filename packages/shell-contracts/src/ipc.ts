@@ -50,6 +50,7 @@ import type {
 } from "./reminders.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
 import type { DeskGrab, DeskPageInput, DeskState } from "./desk.js";
+import type { DeskConversationCommand, DeskReply, DeskRequest, GroupContextCommand, GroupContextResult, GroupContextView } from "./desk-agent.js";
 import type {
   DragCursor,
   DragSample,
@@ -1117,6 +1118,16 @@ export interface NativeSurfaceApi {
   onDeskShift(listener: (held: boolean) => void): () => void;
   /** A desk page took a press, or Escape was struck, while a desk is up: its menus close. */
   onDeskPageInput(listener: (input: DeskPageInput) => void): () => void;
+  // ── The desk's agent (@pistachio/shell-contracts/desk-agent) ─────────────────
+  /** A desk is up for a group (again for each group it passes to), or left; or the person chose its conversation. */
+  deskConversation(command: DeskConversationCommand): Promise<void>;
+  /** Main asks the desk for its layout, or to change it; the answer goes back by deskReply with the same id. */
+  onDeskRequest(listener: (id: string, request: DeskRequest) => void): () => void;
+  deskReply(id: string, reply: DeskReply): void;
+  /** Every group's context this Mac holds, other Macs' included. */
+  getGroupContexts(): Promise<GroupContextView[]>;
+  onGroupContexts(listener: (contexts: GroupContextView[]) => void): () => void;
+  groupContext(command: GroupContextCommand): Promise<GroupContextResult>;
   /**
    * The owner's still is painted under its live view: main can now hide the
    * view without a blank frame, and the renderer starts the opening motion.
@@ -1254,6 +1265,12 @@ export const NATIVE_SURFACE_MEMBERS = {
   onDeskGrab: "Fires from main's mouse hook on a native page view.",
   onDeskShift: "Fires from main's relay of every view's keys, native page views included.",
   onDeskPageInput: "Fires from main's mouse hook on native page views and its relay of their keys.",
+  deskConversation: "The desk runs only over native page views; its conversation follows it.",
+  onDeskRequest: "Main's agent asks the desk, which exists only over native page views, for its layout.",
+  deskReply: "Answers main's agent from the desk's engine, which places native page views.",
+  getGroupContexts: "A group's context belongs to the desk, which exists only over native page views.",
+  onGroupContexts: "The desk's context store lives in main beside the native desk.",
+  groupContext: "Files dropped on the desk's Stack are stored by main for the native desk's agent.",
   recedeGlanceOwner: "Coordinates the owner tab's native view with the glance view.",
   setGlanceBounds: "Places the native glance preview view at the shell's frame.",
   prepareGlanceClose: "Captures the native glance view's last frame before it hides.",
@@ -1389,6 +1406,12 @@ export const IPC = {
   deskGrab: "pistachio:desk-grab",
   deskShift: "pistachio:desk-shift",
   deskPageInput: "pistachio:desk-page-input",
+  deskConversation: "pistachio:desk-conversation",
+  deskRequest: "pistachio:desk-request",
+  deskReply: "pistachio:desk-reply",
+  groupContextsGet: "pistachio:group-contexts-get",
+  groupContextsChanged: "pistachio:group-contexts-changed",
+  groupContextCommand: "pistachio:group-context-command",
   tabSwitcherPreviewsGet: "pistachio:tab-switcher-previews-get",
   tabSwitcherInput: "pistachio:tab-switcher-input",
   tabSwitcherThumbnail: "pistachio:tab-switcher-thumbnail",
