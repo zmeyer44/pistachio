@@ -61,6 +61,7 @@ import {
 } from "@pistachio/shell-contracts/shortcuts";
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
+import { arrangeDesk } from "../lib/desk/open";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
 import { useSurface } from "../surface";
 import { useShell, type ShellHost } from "./shell-host";
@@ -514,6 +515,11 @@ export function runConfiguredShortcut(
       if (tab === null) return false;
       void store.browserControl({ type: "zoomReset" });
       return true;
+    // A desk's (lib/desk/open.ts); with none up, the key is no one's.
+    case "tileDesk":
+      return arrangeDesk("tile");
+    case "cascadeDesk":
+      return arrangeDesk("cascade");
   }
 }
 

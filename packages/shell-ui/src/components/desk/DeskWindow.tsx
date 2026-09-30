@@ -82,12 +82,13 @@ export const DeskWindow = memo(function DeskWindow({
   /** Only a web page can be masked: the shell draws its own pages. */
   const canMask = tab !== null && !shellPage && !masked;
 
-  /** A press on the frame: a grab, a move once it travels, a click, a double click. */
+  /** A press on the frame: a grab, a move once it travels, a click, a double click — or on the title, a click edits the address. */
   const onFrameDown = (event: ReactPointerEvent) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button") !== null) return;
+    const target = event.target as HTMLElement;
+    if (event.button !== 0 || target.closest("button") !== null) return;
     event.preventDefault();
     if (holdsGrab(event, grab)) engine.grab(tabId, { x: event.clientX, y: event.clientY }, event.shiftKey);
-    else engine.press(tabId, event, "frame");
+    else engine.press(tabId, event, target.closest(".desk-window-address") !== null ? "title" : "frame");
   };
   /** A press on the page area — which the shell only hears while the page is drawn. */
   const onPageDown = (event: ReactPointerEvent) => {
@@ -180,8 +181,10 @@ export const DeskWindow = memo(function DeskWindow({
       ) : null}
       {frame === "tab" ? (
         <div className="desk-window-chrome desk-window-tab" onPointerDown={onFrameDown}>
-          <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5" />
-          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span className="desk-window-address flex-1" data-testid="desk-window-address" title={tab?.url}>
+            <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
+            <span className="min-w-0 truncate">{title}</span>
+          </span>
           {controls}
         </div>
       ) : frame === "bare" ? (
@@ -193,9 +196,12 @@ export const DeskWindow = memo(function DeskWindow({
       <div className="desk-window-card" style={{ top: cardTop }}>
         {frame === "bar" ? (
           <div className="desk-window-chrome desk-window-bar" style={{ height: insets.top }} onPointerDown={onFrameDown}>
-            <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5" />
-            <span className="min-w-0 truncate font-medium text-gray-1000">{title}</span>
-            {host !== "" && host !== title ? <span className="desk-window-host min-w-0 shrink-[2] truncate">{host}</span> : null}
+            {/* Clicked, the address palette opens on this tab; dragged, it is the bar. */}
+            <span className="desk-window-address" data-testid="desk-window-address" title={tab?.url}>
+              <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate font-medium text-gray-1000">{title}</span>
+              {host !== "" && host !== title ? <span className="desk-window-host min-w-0 shrink-[2] truncate">{host}</span> : null}
+            </span>
             <span className="flex-1" />
             {controls}
           </div>
@@ -207,7 +213,15 @@ export const DeskWindow = memo(function DeskWindow({
           style={{ top: insets.top - cardTop, left: insets.left, right: insets.right, bottom: insets.bottom }}
         >
           {tab === null ? null : (
-            <WindowPage tab={tab} still={still} stillShows={view.stillShows} mask={view.mask} waking={waking} focused={view.focused} />
+            <WindowPage
+              tab={tab}
+              still={still}
+              stillShows={view.stillShows}
+              mask={view.mask}
+              unmasking={view.unmasking}
+              waking={waking}
+              focused={view.focused}
+            />
           )}
           {/* Its page frozen (drawn), a region can be drawn over it. */}
           {view.selecting && view.drawn ? <MaskSelector tabId={tabId} engine={engine} /> : null}
@@ -231,6 +245,7 @@ function WindowPage({
   still,
   stillShows,
   mask,
+  unmasking,
   waking,
   focused,
 }: {
@@ -238,6 +253,7 @@ function WindowPage({
   still: string | null;
   stillShows: DeskWindowView["stillShows"];
   mask: DeskMask | null;
+  unmasking: DeskMask | null;
   waking: boolean;
   focused: boolean;
 }) {
@@ -250,6 +266,13 @@ function WindowPage({
         <NotesPage tabId={tab.id} noteId={notesUrlId(tab.url.trim()) ?? null} active={focused} />
       </Suspense>
     );
+  if (still !== null && unmasking !== null) {
+    // Growing back from a mask: the whole page where it stands now (the
+    // engine moves the box each frame), or the region, where it is in it.
+    if (stillShows === "page") return <img className="desk-still-crop" src={still} alt="" draggable={false} style={REVEAL_STYLE} />;
+    if (stillShows === "region") return <img className="desk-still-crop" src={still} alt="" draggable={false} style={revealRegionStyle(unmasking)} />;
+    return null;
+  }
   if (still !== null && mask !== null) {
     // A picture of the region, stretched to the window as it is resized; or,
     // taken before the mask, the whole page, cropped to the region.
@@ -267,6 +290,19 @@ function WindowPage({
       </PanePlaceholder>
     </div>
   );
+}
+
+/** The whole page, where a window growing back from its mask shows it (its `--reveal-*` properties, the engine's #revealBox). */
+const REVEAL_STYLE: CSSProperties = { left: "var(--reveal-x)", top: "var(--reveal-y)", width: "var(--reveal-w)", height: "var(--reveal-h)" };
+
+/** The region a window is growing back from, where it lies in the page the engine reveals around it. */
+function revealRegionStyle(mask: DeskMask): CSSProperties {
+  return {
+    left: `calc(var(--reveal-x) + var(--reveal-w) * ${mask.x / mask.pageWidth})`,
+    top: `calc(var(--reveal-y) + var(--reveal-h) * ${mask.y / mask.pageHeight})`,
+    width: `calc(var(--reveal-w) * ${mask.width / mask.pageWidth})`,
+    height: `calc(var(--reveal-h) * ${mask.height / mask.pageHeight})`,
+  };
 }
 
 /** A still of the whole page box, placed so only the mask's region falls in the window's page: as fractions, whatever the window's size. */

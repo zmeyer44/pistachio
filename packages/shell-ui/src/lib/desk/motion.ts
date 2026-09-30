@@ -57,6 +57,19 @@ export const GLIDE_STOP_SPEED = 40;
 /** The share of its speed a window keeps when it bounces off an edge. */
 export const BOUNCE_RESTITUTION = 0.42;
 
+/**
+ * Glide's deceleration as a person sets it (the dock's Feel settings): the
+ * share of its speed a coasting window loses every 100 ms, in percent.
+ * The default, 28, is a coast of about GLIDE_TAU_S.
+ */
+export const GLIDE_DECELERATION = { min: 6, max: 60, default: 28 } as const;
+
+/** The coast's time constant (seconds to lose 63% of its speed) for a deceleration in percent per 100 ms. */
+export function glideTauFor(deceleration: number): number {
+  const lost = clamp(deceleration, GLIDE_DECELERATION.min, GLIDE_DECELERATION.max) / 100;
+  return -0.1 / Math.log(1 - lost);
+}
+
 /** Speed after `dt` seconds of coasting. */
 export function glideDecay(v: number, dt: number, tau = GLIDE_TAU_S): number {
   return v * Math.exp(-dt / tau);

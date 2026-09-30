@@ -10,6 +10,7 @@ import { create } from "zustand";
 import { isDeskMask, type DeskGrabModifier, type DeskMask } from "@pistachio/shell-contracts/desk";
 import { writeStorageLater } from "../deferred-storage";
 import { isFiniteRect, type Rect } from "./geometry";
+import { GLIDE_DECELERATION } from "./motion";
 
 export type DeskPhysics = "glide" | "snap" | "free";
 export type DeskSpringFeel = "snappy" | "bouncy" | "smooth";
@@ -28,7 +29,12 @@ export interface DeskVariants {
   chrome: DeskChrome;
   /** The key that grabs a window from anywhere on its page. */
   grab: DeskGrab;
+  /** Glide's deceleration: the share of its speed a thrown window loses every 100 ms, in percent (GLIDE_DECELERATION). */
+  deceleration: number;
 }
+
+/** The variants chosen from a list of options (DESK_AXES); `deceleration` is a number instead. */
+export type DeskAxisKey = Exclude<keyof DeskVariants, "deceleration">;
 
 interface AxisOption<T extends string> {
   id: T;
@@ -36,7 +42,7 @@ interface AxisOption<T extends string> {
   hint: string;
 }
 
-interface Axis<K extends keyof DeskVariants> {
+interface Axis<K extends DeskAxisKey> {
   key: K;
   label: string;
   options: ReadonlyArray<AxisOption<DeskVariants[K]>>;
@@ -103,6 +109,7 @@ export const DEFAULT_DESK_VARIANTS: DeskVariants = {
   motion: "lifted",
   chrome: "bar",
   grab: "shift",
+  deceleration: GLIDE_DECELERATION.default,
 };
 
 /** One window as it was left: its tab and its box as fractions of the desk — and, masked, its mask. */
@@ -156,7 +163,7 @@ interface DeskStore {
   /** The surface's closing motion is done. */
   finishLeave(): void;
   setVariant<K extends keyof DeskVariants>(key: K, value: DeskVariants[K]): void;
-  cycleVariant(key: keyof DeskVariants): void;
+  cycleVariant(key: DeskAxisKey): void;
   save(groupId: string, desk: SavedDesk): void;
 }
 
@@ -182,12 +189,23 @@ function readPersisted(): Persisted {
 
 export function sanitizeVariants(value: unknown): DeskVariants {
   const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-  const pick = <K extends keyof DeskVariants>(key: K): DeskVariants[K] => {
+  const pick = <K extends DeskAxisKey>(key: K): DeskVariants[K] => {
     const axis = DESK_AXES.find((candidate) => candidate.key === key)!;
     const chosen = axis.options.find((option) => option.id === raw[key]);
     return (chosen?.id ?? DEFAULT_DESK_VARIANTS[key]) as DeskVariants[K];
   };
-  return { physics: pick("physics"), spring: pick("spring"), motion: pick("motion"), chrome: pick("chrome"), grab: pick("grab") };
+  const deceleration = raw["deceleration"];
+  return {
+    physics: pick("physics"),
+    spring: pick("spring"),
+    motion: pick("motion"),
+    chrome: pick("chrome"),
+    grab: pick("grab"),
+    deceleration:
+      typeof deceleration === "number" && Number.isFinite(deceleration)
+        ? Math.min(GLIDE_DECELERATION.max, Math.max(GLIDE_DECELERATION.min, Math.round(deceleration)))
+        : GLIDE_DECELERATION.default,
+  };
 }
 
 export function sanitizeSaved(value: unknown): Record<string, SavedDesk> {

@@ -121,6 +121,13 @@ export interface DeskState {
    * shell never hears: main tells it (DeskPageInput "dock").
    */
   dock?: DeskBox | null;
+  /**
+   * A tab's icon in the dock is under the pointer: ⇧⌫ closes that tab,
+   * wherever the keyboard is (isDockCloseKey). Main takes the key from the
+   * view it was struck in and tells the shell (DeskPageInput "close"),
+   * which knows the tab. Absent or false while no tab's icon is.
+   */
+  dockHover?: boolean;
   /** The desk's masked pages (DeskMask); absent or empty when none is. */
   masks?: DeskMaskedPage[];
 }
@@ -137,6 +144,7 @@ export function isDeskState(value: unknown): value is DeskState {
     tabIds.every((tabId) => typeof tabId === "string" && tabId.length > 0 && tabId.length <= 128) &&
     (state["grab"] === null || isDeskGrabModifier(state["grab"])) &&
     (state["dock"] === undefined || state["dock"] === null || isDeskBox(state["dock"])) &&
+    (state["dockHover"] === undefined || typeof state["dockHover"] === "boolean") &&
     (state["masks"] === undefined ||
       (Array.isArray(state["masks"]) && state["masks"].length <= MAX_DESK_WINDOWS && state["masks"].every(isDeskMaskedPage)))
   );
@@ -185,11 +193,28 @@ export function isDeskGrab(value: unknown): value is DeskGrab {
  * Feel menu) is told here to close, as it closes on a press anywhere else.
  * "dock": the pointer, over a desk page, came to where the dock stands
  * aside (DeskState.dock) — told once as it comes, and it brings the dock back.
+ * "close": ⇧⌫ was struck in any of the window's views with a tab's icon in
+ * the dock under the pointer (DeskState.dockHover): the shell closes that tab.
  */
-export type DeskPageInput = "press" | "escape" | "dock";
+export type DeskPageInput = "press" | "escape" | "dock" | "close";
 
 export function isDeskPageInput(value: unknown): value is DeskPageInput {
-  return value === "press" || value === "escape" || value === "dock";
+  return value === "press" || value === "escape" || value === "dock" || value === "close";
+}
+
+/** A key event, as Electron's `before-input-event` has it. */
+export interface DeskKeyInput {
+  type: string;
+  key: string;
+  shift: boolean;
+  control: boolean;
+  alt: boolean;
+  meta: boolean;
+}
+
+/** ⇧⌫ going down, no other modifier with it: with a tab's icon in the dock under the pointer, it closes that tab (DeskState.dockHover). */
+export function isDockCloseKey(input: DeskKeyInput): boolean {
+  return input.type === "keyDown" && input.key === "Backspace" && input.shift && !input.control && !input.alt && !input.meta;
 }
 
 /** Whether an input event's modifier list holds the desk's grab key. */

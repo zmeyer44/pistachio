@@ -19,6 +19,8 @@ export interface SliderProps {
   suffix?: string;
   disabled?: boolean;
   className?: string;
+  /** The label's type, where the slider sits among rows of another size (the desk's Feel settings). */
+  labelClassName?: string;
 }
 
 const TRACK =
@@ -37,11 +39,12 @@ export function Slider({
   suffix = "%",
   disabled = false,
   className,
+  labelClassName,
 }: SliderProps) {
   const fill = max === min ? 0 : ((value - min) / (max - min)) * 100;
   return (
     <label className={cn("grid grid-cols-[84px_minmax(80px,1fr)_44px] items-center gap-3 py-1.5", className)}>
-      <span className="truncate text-label-12 text-gray-900">{label}</span>
+      <span className={cn("truncate text-label-12 text-gray-900", labelClassName)}>{label}</span>
       <input
         type="range"
         aria-label={label}

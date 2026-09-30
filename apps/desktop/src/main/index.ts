@@ -656,8 +656,13 @@ function relayChromeInput(
   // Shift tapped while a drag holds the pointer is a snap key being tried
   // (a desk window's move), never a double-Shift bookmark.
   if (dragLayer?.shown === true) doubleShift.reset();
-  // The detector must see even the events consumed by another shortcut.
-  return relayDoubleShift(input) || relayTabSwitcherInput(event, input, source);
+  // The detector must see even the events consumed by another shortcut
+  // (and the switcher every key before the desk takes one).
+  return (
+    relayDoubleShift(input) ||
+    relayTabSwitcherInput(event, input, source) ||
+    browser?.takeDeskDockKey(event, input) === true
+  );
 }
 
 /** The compact sidebar: the column hides itself, and the window buttons with it. */
@@ -685,8 +690,9 @@ function syncSidebarEntryWatch(): void {
  * On close they remain through the CSS retreat rather than popping away from
  * a toolbar that is still visible. A reversal cancels that pending hide.
  *
- * The same goes for a sidebar put away while a tab group's desk is up
- * (ShellState.sidebarAway), pinned or not.
+ * A sidebar put away while a tab group's desk is up (ShellState.sidebarAway)
+ * is another matter: the desk takes the whole row, and the buttons stay,
+ * over the top of the dock's column (which keeps its shelf clear of them).
  *
  * In native fullscreen they stay on: macOS then keeps them in the titlebar
  * that slides down with the menu bar when the pointer reaches the top edge,
@@ -703,9 +709,9 @@ function applyWindowButtons(immediate = false): void {
   const window = shellWindow;
   const shouldShow = () =>
     window.isFullScreen() ||
-    (!shellState.sidebarAway &&
-      (!isCompactSidebar(requireSettings().get()) ||
-        shellState.sidebarRevealed));
+    shellState.sidebarAway ||
+    !isCompactSidebar(requireSettings().get()) ||
+    shellState.sidebarRevealed;
   if (shouldShow()) {
     if (windowButtonHideTimer !== null) clearTimeout(windowButtonHideTimer);
     windowButtonHideTimer = null;

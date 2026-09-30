@@ -11,7 +11,8 @@ import { useDeskStore } from "../lib/desk/store";
  * A tab group's menu and its close, declared once for both layouts — the
  * sidebar's group row (components/TabGroupRow.tsx) and the strip's chip
  * (components/TabStrip.tsx) — the way chrome/tab-menu.tsx is for one tab
- * (docs/tab-tidy.md §3.3).
+ * (docs/tab-tidy.md §3.3). A desk's dock opens it for another group's icon
+ * (components/desk/DeskDock.tsx: `desk`).
  */
 
 /** The colours in the order the menu lays them out, with the words a screen reader says. */
@@ -61,7 +62,15 @@ export function useNewGroupNaming(startRenaming: (groupId: string) => void): (gr
   };
 }
 
-export function useTabGroupMenu(options: { onRename: (groupId: string) => void }): {
+export function useTabGroupMenu(options: {
+  onRename: (groupId: string) => void;
+  /**
+   * Opened from a desk's dock, for another of the Space's groups: its desk
+   * is `open`ed in place of this one (a new tab in it comes out there), and
+   * holding the sidebar's row open has no row to hold.
+   */
+  desk?: { open(groupId: string): void };
+}): {
   menu: (group: TabGroupInfo) => MenuEntry[];
   /** Close a group; it is filed in the archive, so the notice that says so can take it back (§3.5). */
   close: (group: TabGroupInfo) => void;
@@ -69,7 +78,7 @@ export function useTabGroupMenu(options: { onRename: (groupId: string) => void }
   const tabGroupCommand = useAppStore((s) => s.tabGroupCommand);
   const showNotice = useAppStore((s) => s.showNotice);
   const deskGroupId = useDeskStore((s) => s.groupId);
-  const { onRename } = options;
+  const { onRename, desk } = options;
 
   const close = (group: TabGroupInfo): void => {
     const count = group.tabIds.length;
@@ -98,7 +107,11 @@ export function useTabGroupMenu(options: { onRename: (groupId: string) => void }
     {
       label: "New tab in group",
       icon: <Plus aria-hidden="true" />,
-      onSelect: () => void tabGroupCommand({ type: "newTab", groupId: group.id }),
+      onSelect: () => {
+        // On a desk, the new tab is chosen in a group not the desk's: the desk passes to that group first, and it comes out there.
+        desk?.open(group.id);
+        void tabGroupCommand({ type: "newTab", groupId: group.id });
+      },
     },
     {
       label: group.tabIds.length > 4 ? "Open 4 most recent as split view" : "Open as split view",
@@ -111,15 +124,19 @@ export function useTabGroupMenu(options: { onRename: (groupId: string) => void }
           {
             label: deskGroupId === group.id ? "Leave the desk" : "Open as desk",
             icon: <AppWindow aria-hidden="true" />,
-            onSelect: () => toggleDesk(group.id),
+            onSelect: () => (desk !== undefined ? desk.open(group.id) : toggleDesk(group.id)),
           },
         ]
       : []),
-    {
-      label: "Keep open",
-      checked: group.open,
-      onSelect: () => void tabGroupCommand({ type: "setOpen", groupId: group.id, open: !group.open }),
-    },
+    ...(desk !== undefined
+      ? []
+      : [
+          {
+            label: "Keep open",
+            checked: group.open,
+            onSelect: () => void tabGroupCommand({ type: "setOpen", groupId: group.id, open: !group.open }),
+          },
+        ]),
     { separator: true },
     {
       label: "Ungroup tabs",

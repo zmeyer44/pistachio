@@ -1,19 +1,12 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { MessageScroller } from "@shadcn/react/message-scroller";
 import { ArrowDown, ArrowUp, FileText, House, PanelRight, Paperclip, Square, SquarePen, TextQuote, X } from "lucide-react";
 import type { RunSummary } from "@pistachio/protocol";
-import {
-  formatAttachmentText,
-  formatSelectionText,
-  MAX_COMPOSER_ATTACHMENTS,
-  readComposerAttachment,
-  selectionChipLabel,
-  toAgentAttachments,
-  type ComposerAttachment,
-} from "../../lib/chat-attachments";
+import { formatAttachmentText, formatSelectionText, selectionChipLabel, toAgentAttachments, type ComposerAttachment } from "../../lib/chat-attachments";
 import { cn } from "../../lib/cn";
 import { agentIsActing } from "../../lib/run";
 import { useAppStore, type HomeChat as HomeChatState } from "../../store";
+import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
 import { ApprovalCard, ClarificationCard, CompletionMeta, MessageRow, TERMINAL, TaskNotes, WorkTrace } from "../chat/parts";
 import { useThreadLayout } from "../chat/use-thread-layout";
@@ -42,6 +35,9 @@ const FLIGHT_EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
  * `chat` is the tab's entry in the store: its run, or a pending question
  * while main is starting the run. `onLeave` gives the tab back to the home
  * page; the conversation itself goes on in the console.
+ *
+ * The whole page is a drop zone: files let go anywhere on it — thread,
+ * header or composer — are staged in the composer for the next message.
  */
 export function HomeChat({
   tabKey,
@@ -63,6 +59,9 @@ export function HomeChat({
   const composerRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const flownFrom = useRef<DOMRect | null>(origin);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const focusInput = useCallback(() => inputRef.current?.focus({ preventScroll: true }), []);
+  const drop = useAttachmentDrop(focusInput);
 
   // The flight: the composer is laid out where it lives, then made to look
   // like the pill it came from and released. One compositor animation, no
@@ -96,7 +95,13 @@ export function HomeChat({
   const live = run !== null && !TERMINAL.has(run.status);
   const title = run?.title ?? chat.prompt;
   return (
-    <div data-testid="home-chat" data-run-id={run?.runId ?? undefined} className="@container absolute inset-0 flex flex-col bg-background-200 text-gray-1000">
+    <div
+      {...drop.handlers}
+      data-testid="home-chat"
+      data-run-id={run?.runId ?? undefined}
+      className="@container absolute inset-0 flex flex-col bg-background-200 text-gray-1000"
+    >
+      {drop.dragging ? <AttachmentDropVeil data-testid="home-chat-drop-veil" className="inset-3 rounded-[20px]" /> : null}
       <header className="flex h-14 shrink-0 items-center justify-between gap-4 px-5 @3xl:px-8">
         <div className="flex min-w-0 items-center gap-2.5 text-gray-700">
           <PistachioMark size={20} tone="muted" />
@@ -128,7 +133,17 @@ export function HomeChat({
         <Thread chat={chat} run={run} layout={layout} />
       </div>
       <div ref={composerRef} className={cn(COLUMN, "shrink-0 pt-2 pb-5 [transform-origin:center]")} data-testid="home-composer">
-        <HomeComposer tabKey={tabKey} run={run} active={active} />
+        <HomeComposer
+          tabKey={tabKey}
+          run={run}
+          active={active}
+          inputRef={inputRef}
+          staged={drop.staged}
+          setStaged={drop.setStaged}
+          addFiles={drop.addFiles}
+          rejection={drop.rejection}
+          dismissRejection={drop.dismissRejection}
+        />
       </div>
     </div>
   );
@@ -247,15 +262,33 @@ function Thread({ chat, run, layout }: { chat: HomeChatState; run: RunSummary | 
 /**
  * The chat's composer: the search pill, grown a line taller and given the
  * chat's controls — attach, send, and stop while the agent works. A
- * follow-up continues the thread; while the agent acts it steers it.
+ * follow-up continues the thread; while the agent acts it steers it. The
+ * files it carries are the page's (HomeChat's drop zone stages them too).
  */
-const HomeComposer = memo(function HomeComposer({ tabKey, run, active }: { tabKey: string; run: RunSummary | null; active: boolean }) {
+const HomeComposer = memo(function HomeComposer({
+  tabKey,
+  run,
+  active,
+  inputRef,
+  staged,
+  setStaged,
+  addFiles,
+  rejection,
+  dismissRejection,
+}: {
+  tabKey: string;
+  run: RunSummary | null;
+  active: boolean;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  staged: ComposerAttachment[];
+  setStaged: Dispatch<SetStateAction<ComposerAttachment[]>>;
+  addFiles: (files: FileList) => Promise<void>;
+  rejection: string | null;
+  dismissRejection: () => void;
+}) {
   const sendMessage = useAppStore((state) => state.sendAgentMessage);
   const interrupt = useAppStore((state) => state.interruptAgent);
   const [value, setValue] = useState("");
-  const [staged, setStaged] = useState<ComposerAttachment[]>([]);
-  const [rejection, setRejection] = useState<string | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const acting = agentIsActing(run);
   const starting = run === null;
@@ -263,39 +296,17 @@ const HomeComposer = memo(function HomeComposer({ tabKey, run, active }: { tabKe
   // The keyboard lands here as the chat shows, and comes back after a reply.
   useEffect(() => {
     if (active) inputRef.current?.focus({ preventScroll: true });
-  }, [active, tabKey]);
+  }, [active, tabKey, inputRef]);
   useEffect(() => {
     if (active && run !== null && TERMINAL.has(run.status)) inputRef.current?.focus({ preventScroll: true });
-  }, [active, run?.status, run]);
+  }, [active, run?.status, run, inputRef]);
 
   useLayoutEffect(() => {
     const el = inputRef.current;
     if (el === null) return;
     el.style.height = "auto";
     el.style.height = `${String(el.scrollHeight)}px`;
-  }, [value]);
-
-  const addFiles = async (list: FileList): Promise<void> => {
-    let room = MAX_COMPOSER_ATTACHMENTS - staged.length;
-    if (room <= 0) {
-      setRejection(`At most ${String(MAX_COMPOSER_ATTACHMENTS)} files per message`);
-      return;
-    }
-    setRejection(null);
-    for (const file of Array.from(list)) {
-      if (room <= 0) break;
-      try {
-        const result = await readComposerAttachment(file);
-        if (result.ok) {
-          room -= 1;
-          setStaged((prev) => [...prev, result.attachment]);
-        } else setRejection(result.reason);
-      } catch {
-        setRejection(`Could not read ${file.name}`);
-      }
-    }
-    inputRef.current?.focus({ preventScroll: true });
-  };
+  }, [value, inputRef]);
 
   const empty = value.trim() === "" && staged.length === 0;
   const submit = (): void => {
@@ -311,7 +322,7 @@ const HomeComposer = memo(function HomeComposer({ tabKey, run, active }: { tabKe
     const attachments = toAgentAttachments(staged);
     setValue("");
     setStaged([]);
-    setRejection(null);
+    dismissRejection();
     void sendMessage(blocks.join("\n\n"), attachments, { page: false });
   };
 
@@ -323,7 +334,7 @@ const HomeComposer = memo(function HomeComposer({ tabKey, run, active }: { tabKe
       {rejection === null ? null : (
         <div role="status" className="mx-4 mt-3 flex items-start gap-1.5 rounded-md bg-amber-100 px-2 py-1.5 text-[11px] leading-4 text-amber-900">
           <span className="min-w-0 flex-1">{rejection}</span>
-          <button type="button" aria-label="Dismiss" onClick={() => setRejection(null)} className="shrink-0 cursor-pointer rounded-xs p-0.5 hover:bg-amber-400">
+          <button type="button" aria-label="Dismiss" onClick={dismissRejection} className="shrink-0 cursor-pointer rounded-xs p-0.5 hover:bg-amber-400">
             <X className="size-3" aria-hidden="true" />
           </button>
         </div>

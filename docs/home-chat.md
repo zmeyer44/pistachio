@@ -92,7 +92,8 @@ and for citations as links to pages the thread read (`FORMAT_RULES`).
 | `Sources.tsx` + `lib/chat-sources.ts` | `AgentToolCall.source` (a `page.inspect`, a `watchtower.read`) gathered per turn, numbered, as cards under the reply; a link to one of them draws as a citation chip, and the parentheses the model wraps it in are dropped. |
 | `LiveReply.tsx` | The in-progress turn: reasoning, then status or streaming words. |
 | `parts.tsx`, `use-thread-layout.ts` | The message rows, trace, cards and grouping the console and the home chat share, at `panel` or `page` density. |
-| `home/HomeChat.tsx` | The page: header, thread, composer, and the pill-to-composer flight (one WAAPI transform from the pill's box). |
+| `home/HomeChat.tsx` | The page: header, thread, composer, and the pill-to-composer flight (one WAAPI transform from the pill's box). The whole page is a drop zone: files let go anywhere on it are staged in the composer for the next message. |
+| `attachment-drop.tsx` | The staged files and the drop zone that stages them (`useAttachmentDrop`), and the veil shown while files are held over it — the console's panel and the home chat's page each use one. |
 
 The motion follows the transitions.dev recipes for streaming text,
 reasoning stream and thinking states, tuned to the shell; every animation
@@ -105,7 +106,8 @@ is off under `prefers-reduced-motion`.
   `apps/desktop/test/run-controller.test.ts` ("a streamed reply").
 - App: `apps/desktop/e2e/tests/home-chat.spec.ts` drives the demo
   executor from the home page — the row, the flight, the trace, the
-  approval, the sidebar mirror, and the way back. `search-providers.spec.ts`
+  approval, the sidebar mirror, files dropped on the page and on the
+  panel, and the way back. `search-providers.spec.ts`
   covers the row's wording beside the address bar's.
 - Live: the same journey with a model, from a new tab — a knowledge
   question streams with a reasoning block; "find the cheapest …" goes to

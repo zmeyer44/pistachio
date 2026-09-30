@@ -1,27 +1,39 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
+  AppWindow,
   ArrowLeftToLine,
+  ArrowUpToLine,
   ChevronsUpDown,
+  Ellipsis,
   House,
   Layers2,
   LayoutGrid,
+  Minus,
   Newspaper,
   NotebookPen,
   Plus,
-  SlidersHorizontal,
   X,
 } from "lucide-react";
+import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import type { DockDrop, DockDrops } from "../../lib/desk/geometry";
 import { nativeApi } from "../../api";
-import { DESK_AXES, passedEntry, useDeskStore, type DeskChrome, type DeskVariants, type SavedDeskWindow } from "../../lib/desk/store";
+import { useNewGroupNaming, useTabGroupMenu } from "../../chrome/tab-group-menu";
+import { useTabMenu } from "../../chrome/tab-menu";
+import { chromeTabs } from "../../lib/chrome-tabs";
+import { groupsInRowOrder, settledOrder } from "../../lib/desk/dock-order";
+import { GLIDE_DECELERATION } from "../../lib/desk/motion";
+import { DESK_AXES, passedEntry, useDeskStore, type DeskAxisKey, type DeskChrome, type DeskVariants, type SavedDeskWindow } from "../../lib/desk/store";
 import { tabIcon } from "../../lib/desk/tab-icon";
 import { cn } from "../../lib/cn";
 import { displayHost } from "../../lib/url";
 import { useAppStore } from "../../store";
-import { FaviconCluster } from "../TabGroupRow";
+import { useContextMenu, type MenuEntry } from "../ContextMenu";
+import { FaviconCluster, GroupTitleInput } from "../TabGroupRow";
+import { Kbd } from "../ui/kbd";
+import { Slider } from "../ui/slider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import {
   CHROME_CARD_TOP,
@@ -32,6 +44,7 @@ import {
   type DeskEngine,
   type DeskSketchWindow,
   type DeskView,
+  type DockDragView,
 } from "./desk-engine";
 import { cropStyle, pageKind } from "./DeskWindow";
 
@@ -51,6 +64,9 @@ const CARD_PAD = 6;
 const CARD_CAPTION_H = 50;
 const GROUP_CARD_W = SKETCH_W + CARD_PAD * 2;
 const POPOVER_GAP = 12;
+/** A group's name edited beside its icon (DockRename). */
+const RENAME_W = 220;
+const RENAME_H = 38;
 /** A drop rail's segment sits this far inside the rail. */
 const SEGMENT_INSET = 4;
 /**
@@ -72,6 +88,9 @@ const TIP_BAND_SLACK = 8;
 const TIP_DELAY_MS = 350;
 /** The band stays covered this long after a tooltip closes, so moving to the next tool the pages there stay stills. */
 const TIP_LINGER_MS = 200;
+/** The More card stays this long after the pointer leaves it or its button: long enough to cross the gap between. */
+const MORE_LINGER_MS = 300;
+const PLATFORM: ShortcutPlatform = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
 const NO_GROUPS: readonly TabGroupInfo[] = [];
 const NO_TABS: readonly BrowserTabInfo[] = [];
 const NO_WINDOWS: readonly SavedDeskWindow[] = [];
@@ -83,21 +102,32 @@ const NO_IDS: readonly string[] = [];
  * its favicon on a tile), a dot beside those out on the desk, a longer one
  * in the group's colour beside the window in use.
  *
- * - Hover an icon: a preview of the tab beside it.
+ * - Hover an icon: a preview of the tab beside it. ⇧⌫ then closes the tab,
+ *   wherever the keyboard is (main takes the key: DeskState.dockHover).
  * - Click: its window comes to the top — or, not out, it comes out where the
  *   desk's layout has room for it (placeNewWindow).
- * - Drag: the icon comes away in hand, and once it is pulled clear of the
- *   dock it becomes the tab's window, held by its title bar (the engine's
- *   #takeInHand). A window let go over the dock goes into it.
+ * - Right-click: the sidebar's menu for the tab (chrome/tab-menu.tsx), after
+ *   what the desk does with its window (out onto the desk, to the front,
+ *   put away) — without a split view, which a desk has no place for.
+ * - Drag: the icon comes away in hand. Up and down the dock, the other
+ *   icons make room for it, and let go it takes that place among the
+ *   group's tabs; let go on another group's icon, as an app is dropped into
+ *   a folder, the tab goes into that group (the engine's #dropInDock).
+ *   Pulled clear of the dock it becomes the tab's window, held by its title
+ *   bar (the engine's #takeInHand). A window let go over the dock goes into it.
  *
- * Below a divider: the Space's other tab groups, each a pile of its tabs'
- * icons as the sidebar draws a group (DockGroups). Hovered, one shows its
- * desk beside it, drawn small, as it would come out (DockGroupCard); a
- * click passes the desk to that group in place — this group's windows fly
- * into its own icon there, and the other's come out of the icon clicked
- * (the engine's switchGroup). Below another: a new tab in the group (it comes out onto
- * the desk as the window in use), the arrangements, the variants this
- * experiment is for (Feel), and the way out.
+ * Below a divider: the Space's other tab groups, in the sidebar's order, each
+ * a pile of its tabs' icons as the sidebar draws a group (DockGroups).
+ * Hovered, one shows its desk beside it, drawn small, as it would come out
+ * (DockGroupCard); a click passes the desk to that group in place — this
+ * group's windows fly into its own icon there, and the other's come out of
+ * the icon clicked (the engine's switchGroup); dragged up or down, it moves
+ * among the groups; right-clicked, the sidebar's menu for the group
+ * (chrome/tab-group-menu.tsx), its Rename a field beside the icon
+ * (DockRename). Below another: a new tab in the group (it comes out onto
+ * the desk as the window in use), and More, whose card (DockMoreCard),
+ * open while the pointer is on it, holds the arrangements, the variants
+ * this experiment is for (Feel), and the way out.
  *
  * While a window is carried, the dock slides away off the desk's edge, and a
  * rail of the same glass slides in in its place as the pointer nears the
@@ -109,7 +139,7 @@ const NO_IDS: readonly string[] = [];
  * for it and comes back when the pointer comes to its place (the engine's
  * `dockAside`); it tells the engine where its shelf stands for that.
  *
- * The previews, the Feel menu and the tools' tooltips are drawn over the
+ * The previews, the More card and the tools' tooltips are drawn over the
  * desk, where live pages would paint over them: the engine is told where
  * they go (setCover), the pages there give way to their stills, and each
  * shows once that is done.
@@ -133,8 +163,8 @@ export const DeskDock = memo(function DeskDock({
   const [tip, setTip] = useState<string | null>(null);
   /** The group the dock opened on: another's tabs, once passed to it, come in with a little pop. */
   const [firstGroup] = useState(group.id);
-  const feelButtonRef = useRef<HTMLButtonElement>(null);
-  const feelRef = useRef<HTMLDivElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
   /** The icon under the pointer — a tab's, or another group's — and its middle's height in the dock. */
   const [hovered, setHovered] = useState<{
     kind: "tab" | "group";
@@ -142,15 +172,46 @@ export const DeskDock = memo(function DeskDock({
     center: number;
   } | null>(null);
   const [inside, setInside] = useState(false);
-  const [feelOpen, setFeelOpen] = useState(false);
-  /** The Feel button's foot, from the dock's top: the menu's foot is level with it. */
-  const [feelTop, setFeelTop] = useState(0);
+  /**
+   * The More card: up while the pointer is on its button or on it (with a
+   * moment's grace to cross the gap between), or, `pinned` by a click on the
+   * button, until a press elsewhere or Escape.
+   */
+  const [more, setMore] = useState<{ pinned: boolean } | null>(null);
+  /** The More button's foot, from the dock's top: the card's foot is level with it. */
+  const [moreFoot, setMoreFoot] = useState(0);
+  /** The card's height, once drawn: in a short window it may not reach above the dock's top. */
+  const [moreHeight, setMoreHeight] = useState(0);
+  const moreTimer = useRef(0);
+  /** A press inside the card (a slider in hand): it stays up until the press ends, wherever the pointer goes. */
+  const morePressed = useRef(false);
   const onDesk = new Set(view.windows.map((window) => window.tabId));
   const focused = view.windows.find((window) => window.focused)?.tabId ?? null;
-  const tabIds = tabs.map((tab) => tab.id);
+  // In the order a drop in the dock made, until the browser's says the same.
+  const shownTabs = settledOrder(tabs, view.dockSettle?.tabs ?? null, view.dockSettle?.gone ?? null);
+  const tabIds = shownTabs.map((tab) => tab.id);
+  const reordering = view.dockDrag?.kind === "tab";
   const busy = view.gesture !== null;
-  /** The tooltip open now: none while the dock is busy or away, nor the Feel button's under its own menu. */
-  const openTip = tip === null || busy || view.dockAside || (tip === "Feel" && feelOpen) ? null : tip;
+  // Right-click menus (the sidebar's, for a tab and for a group). The menu
+  // is a shell overlay: the live pages give way to their stills while it is
+  // up, as for the address palette.
+  const menu = useContextMenu();
+  const menuOpen = menu.isOpen;
+  // The More card goes when something is taken in hand, or a right-click menu opens.
+  if (more !== null && (busy || menuOpen)) setMore(null);
+  const moreOpen = more !== null && !busy && !menuOpen;
+  /** Another group whose name is being edited beside its icon: its menu's Rename, or a group just made that the host could not name. */
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const tabMenu = useTabMenu({
+    onNewGroup: useNewGroupNaming(setRenaming),
+    desk: {
+      onDesk: (tabId) => engine.windowTabIds().includes(tabId),
+      moveToGroup: (tabId, groupId) => engine.moveTabToGroup(tabId, groupId),
+    },
+  });
+  const { menu: groupMenu } = useTabGroupMenu({ onRename: setRenaming, desk: { open: (groupId) => engine.chooseGroup(groupId) } });
+  /** The tooltip open now: none while the dock is busy or away, nor with the More card or a right-click menu up. */
+  const openTip = tip === null || busy || menuOpen || moreOpen || view.dockAside ? null : tip;
   /** A window in hand: the dock is out of the way, its pads in its place. */
   const carrying = view.gesture === "move" || view.gesture === "spawn";
 
@@ -177,7 +238,7 @@ export const DeskDock = memo(function DeskDock({
       observer.disconnect();
       engine.setDockShelf(null);
     };
-  }, [engine]);
+  }, [engine, view.dockClear]);
 
   // A tool's tooltip is open: the band beside the tools is a cover, and
   // stays one a moment after it closes — moving from one tool to the next,
@@ -197,16 +258,19 @@ export const DeskDock = memo(function DeskDock({
   }, [engine, openTip]);
   useEffect(() => () => engine.setCover("tip", null), [engine]);
 
-  // The Feel menu open beside it: the dock stands, whatever it would step aside for.
+  // The More card up beside it, or a right-click menu: the dock stands, whatever it would step aside for.
   useEffect(() => {
-    engine.holdDock("feel", feelOpen);
-  }, [engine, feelOpen]);
+    engine.holdDock("more", moreOpen);
+  }, [engine, moreOpen]);
+  useEffect(() => {
+    engine.holdDock("menu", menuOpen);
+  }, [engine, menuOpen]);
 
   // An icon is hovered: the band beside the dock, where its preview (and the
   // next icon's) appears, is cleared of live pages for as long as the
   // pointer stays on the icons — moving between them, the preview never
   // waits. A group's card is wider than a tab's preview.
-  const peeking = hovered !== null && inside && !busy && !feelOpen;
+  const peeking = hovered !== null && inside && !busy && !moreOpen && !menuOpen;
   const peekWidth = hovered?.kind === "group" ? GROUP_CARD_W : PREVIEW_W;
   useEffect(() => {
     const height = dockRef.current?.clientHeight ?? 0;
@@ -214,47 +278,62 @@ export const DeskDock = memo(function DeskDock({
   }, [engine, peeking, peekWidth]);
   useEffect(() => () => engine.setCover("preview", null), [engine]);
 
-  // The Feel menu, where it is drawn, for as long as it is open.
+  // The More card, where it is drawn, for as long as it is up — and the gap
+  // between it and the dock, so the pointer crossing it is the shell's.
   useLayoutEffect(() => {
-    const menu = feelRef.current;
-    const dock = dockRef.current;
-    if (!feelOpen || menu === null || dock === null) {
-      engine.setCover("feel", null);
+    const card = moreRef.current;
+    if (!moreOpen || card === null) {
+      engine.setCover("more", null);
       return;
     }
+    if (card.offsetHeight !== moreHeight) setMoreHeight(card.offsetHeight);
     // Its laid-out box (not the transformed one it opens from): the dock is at the stage's corner.
-    engine.setCover("feel", {
-      x: menu.offsetLeft,
-      y: menu.offsetTop,
-      w: menu.offsetWidth,
-      h: menu.offsetHeight,
+    engine.setCover("more", {
+      x: DOCK_W,
+      y: card.offsetTop,
+      w: card.offsetLeft + card.offsetWidth - DOCK_W,
+      h: card.offsetHeight,
     });
-  }, [engine, feelOpen, feelTop]);
-  useEffect(() => () => engine.setCover("feel", null), [engine]);
+  }, [engine, moreOpen, moreFoot, moreHeight]);
+  useEffect(
+    () => () => {
+      engine.setCover("more", null);
+      window.clearTimeout(moreTimer.current);
+    },
+    [engine],
+  );
 
-  // The Feel menu closes on a press anywhere else, or Escape — on a live
-  // page too, which the shell never hears itself (main relays it).
+  // The More card goes on a press anywhere else, or Escape — on a live page
+  // too, which the shell never hears itself (main relays it). A press held
+  // in it (a slider in hand) keeps it up until it ends.
   useEffect(() => {
-    if (!feelOpen) return;
+    if (!moreOpen) return;
     const offPage = nativeApi()?.onDeskPageInput((input) => {
-      if (input !== "dock") setFeelOpen(false);
+      if (input !== "dock") setMore(null);
     });
+    const within = (target: EventTarget | null): boolean =>
+      moreRef.current?.contains(target as Node | null) === true || moreButtonRef.current?.contains(target as Node | null) === true;
     const onDown = (event: PointerEvent): void => {
-      const target = event.target as Node | null;
-      if (feelRef.current?.contains(target) === true || feelButtonRef.current?.contains(target) === true) return;
-      setFeelOpen(false);
+      if (!within(event.target)) setMore(null);
+    };
+    const onUp = (): void => {
+      if (!morePressed.current) return;
+      morePressed.current = false;
+      if (moreRef.current?.matches(":hover") !== true) hideMoreSoon();
     };
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setFeelOpen(false);
+      if (event.key === "Escape") setMore(null);
     };
     window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointerup", onUp, true);
     window.addEventListener("keydown", onKey);
     return () => {
       offPage?.();
       window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("keydown", onKey);
     };
-  }, [feelOpen]);
+  }, [moreOpen]);
 
   const onHover = useCallback(
     (kind: "tab" | "group", id: string, el: HTMLElement) => {
@@ -271,23 +350,80 @@ export const DeskDock = memo(function DeskDock({
     [engine],
   );
 
-  const openFeel = (): void => {
-    const button = feelButtonRef.current;
+  /** The More card up — `pinned`, it stays until a press elsewhere or Escape. */
+  const showMore = (pinned: boolean): void => {
+    window.clearTimeout(moreTimer.current);
+    const button = moreButtonRef.current;
     const dock = dockRef.current;
-    if (button !== null && dock !== null) {
-      const box = button.getBoundingClientRect();
-      setFeelTop(box.bottom - dock.getBoundingClientRect().top);
-    }
-    setFeelOpen(!feelOpen);
+    if (button !== null && dock !== null) setMoreFoot(button.getBoundingClientRect().bottom - dock.getBoundingClientRect().top);
+    setHovered(null);
+    setMore((current) => ({ pinned: pinned || current?.pinned === true }));
+  };
+  /** The pointer left the card or its button: unless it comes back (or the card is pinned, or a press is held in it), the card goes. */
+  const hideMoreSoon = (): void => {
+    window.clearTimeout(moreTimer.current);
+    moreTimer.current = window.setTimeout(() => {
+      if (morePressed.current || moreRef.current?.matches(":hover") === true || moreButtonRef.current?.matches(":hover") === true) return;
+      setMore((current) => (current?.pinned === true ? current : null));
+    }, MORE_LINGER_MS);
+  };
+  /** One of the card's actions was chosen: it goes at once. */
+  const fromMore = (action: () => void): (() => void) => () => {
+    window.clearTimeout(moreTimer.current);
+    setMore(null);
+    action();
   };
 
   const attachGhost = useCallback((el: HTMLDivElement | null) => engine.attachGhost(el), [engine]);
   const hoveredTab = hovered?.kind !== "tab" ? null : (tabs.find((tab) => tab.id === hovered.id) ?? null);
+
+  // A tab's icon under the pointer: ⇧⌫ closes the tab. The keyboard is as
+  // often a page's as the shell's, so main takes the key from whichever view
+  // has it while the engine says an icon is hovered, and says when it is struck.
+  // (Not while a group's name is typed, whose ⇧⌫ is the field's.)
+  const closable = hoveredTab !== null && inside && !busy && !menuOpen && renaming === null && !view.dockAside ? hoveredTab.id : null;
+  useEffect(() => {
+    engine.setDockHover(closable !== null);
+    if (closable === null) return;
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "close") void useAppStore.getState().closeTab(closable);
+    });
+    return () => offPage?.();
+  }, [engine, closable]);
+  useEffect(() => () => engine.setDockHover(false), [engine]);
   // (Chosen, a group is the desk's own: no card for it.)
   const hoveredGroup = hovered?.kind === "group" && hovered.id !== group.id ? hovered.id : null;
   const dockHeight = dockRef.current?.clientHeight ?? 0;
   const previewShown = hovered !== null && peeking && view.clearCovers.has("preview");
-  const draggedTab = view.iconDrag === null ? null : (tabs.find((tab) => tab.id === view.iconDrag) ?? null);
+  // (Looked for among all the tabs: let go into another group, it is that group's before it lands.)
+  const draggedTab = useAppStore((state) => (view.iconDrag === null ? null : (state.snapshot?.tabs.find((tab) => tab.id === view.iconDrag) ?? null)));
+  /**
+   * A tab's icon right-clicked: what the desk does with its window, then
+   * the sidebar's menu for the tab.
+   */
+  const openTabMenu = (tabId: string, event: React.MouseEvent): void => {
+    event.preventDefault();
+    const tab = chromeTabs(useAppStore.getState().snapshot).find((candidate) => candidate.id === tabId);
+    if (tab === undefined || busy) return;
+    setHovered(null);
+    const out = view.windows.find((window) => window.tabId === tabId && window.flight !== "away");
+    const deskEntries: MenuEntry[] =
+      out === undefined
+        ? [{ label: "Open on the desk", icon: <AppWindow aria-hidden="true" />, onSelect: () => engine.add(tabId, { focus: true }) }]
+        : [
+            ...(out.focused ? [] : [{ label: "Bring to front", icon: <ArrowUpToLine aria-hidden="true" />, onSelect: () => engine.add(tabId, { focus: true }) }]),
+            { label: "Put away", icon: <Minus aria-hidden="true" />, onSelect: () => engine.putAway(tabId) },
+          ];
+    menu.open(event, [...deskEntries, { separator: true }, ...tabMenu(tab)]);
+  };
+  /** Another group's icon right-clicked: the sidebar's menu for the group. */
+  const openGroupMenu = (groupId: string, event: React.MouseEvent): void => {
+    event.preventDefault();
+    const target = useAppStore.getState().snapshot?.tabGroups.find((candidate) => candidate.id === groupId);
+    if (target === undefined || busy) return;
+    setHovered(null);
+    menu.open(event, groupMenu(target));
+  };
   /** A tool's tooltip: open as Base UI says, seen once no live page is left under it, none while the dock is busy or away. */
   const toolTip = (label: string, off = false): DockTip => ({
     open: openTip === label,
@@ -311,6 +447,9 @@ export const DeskDock = memo(function DeskDock({
           ref={clipRef}
           className="desk-dock-clip"
           style={{
+            // Clear of the window's buttons over the column's top, and as far from its foot: centred still.
+            top: view.dockClear,
+            bottom: view.dockClear,
             left: -CLIP_MARGIN,
             width: DOCK_W + CLIP_MARGIN + CLIP_ROOM,
             paddingLeft: CLIP_MARGIN,
@@ -331,8 +470,14 @@ export const DeskDock = memo(function DeskDock({
               title={`${group.title} · ${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}`}
               aria-hidden="true"
             />
-            <div key={group.id} className="desk-dock-icons" role="list" data-fresh={group.id === firstGroup ? undefined : ""}>
-              {tabs.map((tab, index) => (
+            <div
+              key={group.id}
+              className="desk-dock-icons"
+              role="list"
+              data-fresh={group.id === firstGroup ? undefined : ""}
+              data-reordering={reordering ? "" : undefined}
+            >
+              {shownTabs.map((tab, index) => (
                 <DockIcon
                   key={tab.id}
                   index={index}
@@ -340,13 +485,16 @@ export const DeskDock = memo(function DeskDock({
                   onDesk={onDesk.has(tab.id)}
                   focused={focused === tab.id}
                   inHand={view.iconDrag === tab.id}
+                  leaving={view.dockDrag?.kind === "tab" && view.dockDrag.id === tab.id && view.dockDrag.into !== null}
+                  shift={dockShift(view.dockDrag, "tab", tab.id)}
                   engine={engine}
                   onHover={onHover}
+                  onMenu={openTabMenu}
                 />
               ))}
             </div>
             <div className="desk-dock-lower">
-              <DockGroups groupId={group.id} engine={engine} onHover={onHover} onChoose={() => setHovered(null)} />
+              <DockGroups groupId={group.id} view={view} engine={engine} onHover={onHover} onChoose={() => setHovered(null)} onMenu={openGroupMenu} />
               <TooltipProvider delay={TIP_DELAY_MS}>
                 {/* Off the icons, there is no preview to show. */}
                 <div ref={toolsRef} className="desk-dock-tools" onPointerEnter={() => setHovered(null)}>
@@ -360,26 +508,25 @@ export const DeskDock = memo(function DeskDock({
                   >
                     <Plus aria-hidden="true" />
                   </DockButton>
-                  <DockButton label="Tile the windows" tip={toolTip("Tile the windows")} onClick={() => engine.arrange("tile", tabIds)}>
-                    <LayoutGrid aria-hidden="true" />
-                  </DockButton>
-                  <DockButton label="Cascade the windows" tip={toolTip("Cascade the windows")} onClick={() => engine.arrange("cascade", tabIds)}>
-                    <Layers2 aria-hidden="true" />
-                  </DockButton>
-                  {/* Its menu open beside it, where the tooltip would be: no tooltip. */}
-                  <DockButton
-                    ref={feelButtonRef}
-                    label="Feel"
-                    testId="desk-feel"
-                    pressed={feelOpen}
-                    tip={toolTip("Feel", feelOpen)}
-                    onClick={openFeel}
+                  {/* No tooltip: its card, beside it, is what it says. A click pins the card up (the keyboard's way in). */}
+                  <button
+                    ref={moreButtonRef}
+                    type="button"
+                    aria-label="More"
+                    aria-expanded={moreOpen}
+                    aria-pressed={moreOpen}
+                    data-testid="desk-more"
+                    className="desk-dock-button"
+                    // A press leaves the keyboard where it was (a window's page).
+                    onMouseDown={(event) => event.preventDefault()}
+                    onPointerEnter={() => {
+                      if (!busy && !menuOpen) showMore(false);
+                    }}
+                    onPointerLeave={hideMoreSoon}
+                    onClick={() => (more?.pinned === true ? setMore(null) : showMore(true))}
                   >
-                    <SlidersHorizontal aria-hidden="true" />
-                  </DockButton>
-                  <DockButton label="Leave the desk" testId="desk-leave" tip={toolTip("Leave the desk")} onClick={() => useDeskStore.getState().leave()}>
-                    <X aria-hidden="true" />
-                  </DockButton>
+                    <Ellipsis aria-hidden="true" />
+                  </button>
                 </div>
               </TooltipProvider>
             </div>
@@ -405,31 +552,40 @@ export const DeskDock = memo(function DeskDock({
             shown={previewShown}
           />
         )}
-        {feelOpen ? (
-          <div
-            ref={feelRef}
-            role="dialog"
-            aria-label="Feel"
-            data-testid="desk-variants"
-            data-shown={view.clearCovers.has("feel") ? "" : undefined}
-            className="desk-dock-menu"
-            // Its foot level with the Feel button's.
-            style={{
-              left: DOCK_W + POPOVER_GAP,
-              bottom: Math.max(8, dockHeight - feelTop),
+        {renaming === null ? null : (
+          <DockRename
+            key={renaming}
+            groupId={renaming}
+            engine={engine}
+            dockRef={dockRef}
+            shown={view.clearCovers.has("rename")}
+            onDone={() => setRenaming(null)}
+          />
+        )}
+        {moreOpen ? (
+          <DockMoreCard
+            ref={moreRef}
+            shown={view.clearCovers.has("more")}
+            // Its foot level with the More button's (or, too tall for that, its top 8px down the dock).
+            foot={Math.max(8, Math.min(dockHeight - moreFoot, dockHeight - moreHeight - 8))}
+            onPointerEnter={() => window.clearTimeout(moreTimer.current)}
+            onPointerLeave={() => {
+              if (!morePressed.current) hideMoreSoon();
             }}
-          >
-            <div className="px-1.5 pt-0.5 pb-1 text-[10.5px] font-semibold tracking-wide text-gray-700 uppercase">Feel</div>
-            {DESK_AXES.map((axis) => (
-              <VariantRow key={axis.key} axisKey={axis.key} label={axis.label} />
-            ))}
-          </div>
+            onPointerDown={() => {
+              morePressed.current = true;
+            }}
+            onTile={fromMore(() => engine.arrange("tile", tabIds))}
+            onCascade={fromMore(() => engine.arrange("cascade", tabIds))}
+            onLeave={fromMore(() => useDeskStore.getState().leave())}
+          />
         ) : null}
       </aside>
       <DropRail engine={engine} drops={view.drops} shown={carrying && view.dropsShown} drop={carrying ? view.dockDrop : null} />
+      {menu.menu}
       {/* The icon in hand, above everything on the desk (the engine moves it). */}
       <div ref={attachGhost} className="desk-dock-ghost" aria-hidden="true">
-        {draggedTab === null ? null : <AppIcon tab={draggedTab} />}
+        {draggedTab !== null ? <AppIcon tab={draggedTab} /> : view.groupDrag !== null ? <GroupGhost groupId={view.groupDrag} /> : null}
       </div>
     </>
   );
@@ -534,8 +690,11 @@ function DockIcon({
   onDesk,
   focused,
   inHand,
+  leaving,
+  shift,
   engine,
   onHover,
+  onMenu,
 }: {
   /** Its place in the dock: a group's tabs come in one after another. */
   index: number;
@@ -543,8 +702,13 @@ function DockIcon({
   onDesk: boolean;
   focused: boolean;
   inHand: boolean;
+  /** In hand over another group's icon: let go, it leaves the dock for that group. */
+  leaving: boolean;
+  /** Making room for an icon in hand (dockShift). */
+  shift: number;
   engine: DeskEngine;
   onHover: DockHover;
+  onMenu: DockMenu;
 }) {
   const attach = useCallback((el: HTMLSpanElement | null) => engine.attachIcon(tab.id, el), [engine, tab.id]);
   const title = tab.title || displayHost(tab.url) || "Untitled";
@@ -558,14 +722,16 @@ function DockIcon({
       data-on-desk={onDesk ? "" : undefined}
       data-focused={focused ? "" : undefined}
       data-in-hand={inHand ? "" : undefined}
+      data-leaving={leaving ? "" : undefined}
       className="desk-dock-item"
-      style={{ "--i": index } as CSSProperties}
+      style={{ "--i": index, translate: shift === 0 ? undefined : `0 ${shift}px` } as CSSProperties}
       onPointerEnter={(event) => onHover("tab", tab.id, event.currentTarget)}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.preventDefault();
         engine.pressIcon(tab.id, event);
       }}
+      onContextMenu={(event) => onMenu(tab.id, event)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
@@ -589,65 +755,241 @@ function tabsOf(snapshot: ShellSnapshot | null, tabIds: readonly string[]): read
 
 /** An icon came under the pointer: its preview (a tab's) or card (a group's) shows beside it. */
 type DockHover = (kind: "tab" | "group", id: string, el: HTMLElement) => void;
+/** An icon right-clicked (a tab's, or another group's): its menu, where the pointer is. */
+type DockMenu = (id: string, event: React.MouseEvent) => void;
 
 /**
- * The Space's other tab groups, under the group's tabs: each as the sidebar
- * draws a group — a small pile of its tabs' icons (FaviconCluster) — made
- * large, on a tile in the group's colour. Under the pointer, its card shows
- * beside it (DockGroupCard), and its tabs' pictures are fetched, so the card
- * shows them and its windows come out as themselves; a click passes the
- * desk to it (the engine's chooseGroup).
+ * How far an icon moves to make room for the one in hand in its section
+ * (DeskView.dockDrag), in px: a place up or down for those between where
+ * the icon in hand was and where it would go (it goes there too, unseen:
+ * its place is the gap). A tab's icon over another group leaves its
+ * section, which closes up behind it.
  */
-function DockGroups({ groupId, engine, onHover, onChoose }: { groupId: string; engine: DeskEngine; onHover: DockHover; onChoose: () => void }) {
-  const groups = useAppStore(useShallow((state) => (state.snapshot?.tabGroups ?? NO_GROUPS).filter((candidate) => candidate.id !== groupId)));
-  if (groups.length === 0) return null;
+function dockShift(drag: DockDragView | null, kind: "tab" | "group", id: string): number {
+  if (drag === null || drag.kind !== kind) return 0;
+  const at = drag.order.indexOf(id);
+  const from = drag.order.indexOf(drag.id);
+  if (at < 0 || from < 0) return 0;
+  if (drag.to === null) return drag.into !== null && at > from ? -drag.pitch : 0;
+  if (at === from) return (drag.to - from) * drag.pitch;
+  if (drag.to > from && at > from && at <= drag.to) return -drag.pitch;
+  if (drag.to < from && at >= drag.to && at < from) return drag.pitch;
+  return 0;
+}
+
+/**
+ * The Space's other tab groups, under the group's tabs, in the order the
+ * sidebar lists them: each as the sidebar draws a group — a small pile of
+ * its tabs' icons (FaviconCluster) — made large, on a tile in the group's
+ * colour. Under the pointer, its card shows beside it (DockGroupCard), and
+ * its tabs' pictures are fetched, so the card shows them and its windows
+ * come out as themselves; a click passes the desk to it (the engine's
+ * chooseGroup). Dragged up or down, it moves among the groups, the others
+ * making room for it; a tab's icon let go on it goes into the group.
+ */
+function DockGroups({
+  groupId,
+  view,
+  engine,
+  onHover,
+  onChoose,
+  onMenu,
+}: {
+  groupId: string;
+  view: DeskView;
+  engine: DeskEngine;
+  onHover: DockHover;
+  onChoose: () => void;
+  onMenu: DockMenu;
+}) {
+  const groups = useAppStore(
+    useShallow((state) =>
+      state.snapshot === null ? NO_GROUPS : groupsInRowOrder(state.snapshot.tabGroups.filter((candidate) => candidate.id !== groupId), state.snapshot.tabs),
+    ),
+  );
+  // In the order a drop in the dock made, until the browser's says the same.
+  const shown = settledOrder(groups, view.dockSettle?.groups ?? null, null);
+  const drag = view.dockDrag;
+  if (shown.length === 0) return null;
   return (
     <>
       <span className="desk-dock-divider" aria-hidden="true" />
-      <div className="desk-dock-groups" role="list" aria-label="Other tab groups" data-testid="desk-dock-groups">
-        {groups.map((group) => (
-          <DockGroup key={group.id} group={group} engine={engine} onHover={onHover} onChoose={onChoose} />
+      <div
+        className="desk-dock-groups"
+        role="list"
+        aria-label="Other tab groups"
+        data-testid="desk-dock-groups"
+        data-reordering={drag?.kind === "group" ? "" : undefined}
+      >
+        {shown.map((group) => (
+          <DockGroup
+            key={group.id}
+            group={group}
+            inHand={view.groupDrag === group.id}
+            target={drag?.into === group.id}
+            shift={dockShift(drag, "group", group.id)}
+            engine={engine}
+            onHover={onHover}
+            onChoose={onChoose}
+            onMenu={onMenu}
+          />
         ))}
       </div>
     </>
   );
 }
 
-function DockGroup({ group, engine, onHover, onChoose }: { group: TabGroupInfo; engine: DeskEngine; onHover: DockHover; onChoose: () => void }) {
+function DockGroup({
+  group,
+  inHand,
+  target,
+  shift,
+  engine,
+  onHover,
+  onChoose,
+  onMenu,
+}: {
+  group: TabGroupInfo;
+  /** Its icon is in hand, moved among the groups (its place is the gap). */
+  inHand: boolean;
+  /** A tab's icon is over it: let go, the tab goes into this group. */
+  target: boolean;
+  /** Making room for a group's icon in hand (dockShift). */
+  shift: number;
+  engine: DeskEngine;
+  onHover: DockHover;
+  onChoose: () => void;
+  onMenu: DockMenu;
+}) {
   const tabs = useAppStore(useShallow((state) => tabsOf(state.snapshot, group.tabIds)));
   const attach = useCallback((el: HTMLSpanElement | null) => engine.attachGroupIcon(group.id, el), [engine, group.id]);
+  const choose = (): void => {
+    onChoose();
+    engine.chooseGroup(group.id);
+  };
   return (
-    <div role="listitem" className="desk-dock-group-slot">
+    <div role="listitem" className="desk-dock-group-slot" style={shift === 0 ? undefined : { translate: `0 ${shift}px` }}>
       <button
         type="button"
         aria-label={`${group.title}, ${tabCount(tabs.length)}: open its desk`}
         data-testid="desk-dock-group"
         data-group-id={group.id}
         data-group-color={group.color}
+        data-in-hand={inHand ? "" : undefined}
+        data-drop-target={target ? "" : undefined}
         className="desk-dock-item desk-dock-group-icon tab-group-tone"
         // A press leaves the keyboard where it was, as the tools' do.
         onMouseDown={(event) => event.preventDefault()}
+        // A click passes the desk to it; a drag moves it among the groups.
+        onPointerDown={(event) => engine.pressGroup(group.id, event, choose)}
+        onContextMenu={(event) => onMenu(group.id, event)}
         onPointerEnter={(event) => {
           engine.peekGroup(group.id, group.tabIds);
           onHover("group", group.id, event.currentTarget);
         }}
-        onClick={() => {
-          onChoose();
-          engine.chooseGroup(group.id);
+        // (A pointer's click is the press's; this is the keyboard's.)
+        onClick={(event) => {
+          if (event.detail === 0) choose();
         }}
       >
-        <span ref={attach} className="desk-dock-tile desk-group-tile">
-          <span className="desk-group-pile">
-            <FaviconCluster tabs={tabs} />
-          </span>
-        </span>
+        <GroupTile tabs={tabs} attach={attach} />
       </button>
     </div>
   );
 }
 
+/** A group as an icon: its tabs' icons in a small pile, as the sidebar draws a group, made large on a tile in its colour. */
+function GroupTile({ tabs, attach }: { tabs: readonly BrowserTabInfo[]; attach?: (el: HTMLSpanElement | null) => void }) {
+  return (
+    <span ref={attach} className="desk-dock-tile desk-group-tile">
+      <span className="desk-group-pile">
+        <FaviconCluster tabs={tabs} />
+      </span>
+    </span>
+  );
+}
+
+/** Another group's icon in hand: drawn as the dock draws it. */
+function GroupGhost({ groupId }: { groupId: string }) {
+  const group = useAppStore((state) => state.snapshot?.tabGroups.find((candidate) => candidate.id === groupId) ?? null);
+  const tabs = useAppStore(useShallow((state) => tabsOf(state.snapshot, group?.tabIds ?? NO_IDS)));
+  if (group === null) return null;
+  return (
+    <span className="desk-dock-ghost-group tab-group-tone" data-group-color={group.color}>
+      <GroupTile tabs={tabs} />
+    </span>
+  );
+}
+
 function tabCount(count: number): string {
   return `${count} ${count === 1 ? "tab" : "tabs"}`;
+}
+
+/**
+ * Another group's name, edited beside its icon (its menu's Rename, or a
+ * group just made that the host could not name): the sidebar's own field,
+ * on a card as a preview is. It is drawn over the desk, so it is a cover,
+ * seen once no live page is left under it, and the dock stands meanwhile.
+ */
+function DockRename({
+  groupId,
+  engine,
+  dockRef,
+  shown,
+  onDone,
+}: {
+  groupId: string;
+  engine: DeskEngine;
+  dockRef: React.RefObject<HTMLElement | null>;
+  shown: boolean;
+  onDone: () => void;
+}) {
+  const group = useAppStore((state) => state.snapshot?.tabGroups.find((candidate) => candidate.id === groupId) ?? null);
+  const tabGroupCommand = useAppStore((state) => state.tabGroupCommand);
+  const [top, setTop] = useState<number | null>(null);
+  const finished = useRef(false);
+  // Level with the group's icon, in the dock.
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    const icon = dock?.querySelector<HTMLElement>(`[data-testid="desk-dock-group"][data-group-id="${CSS.escape(groupId)}"]`) ?? null;
+    if (dock == null || icon === null) return;
+    const box = icon.getBoundingClientRect();
+    const middle = box.top + box.height / 2 - dock.getBoundingClientRect().top;
+    setTop(Math.max(8, Math.min(dock.clientHeight - RENAME_H - 8, middle - RENAME_H / 2)));
+  }, [dockRef, groupId, group]);
+  useEffect(() => {
+    if (top === null) return;
+    engine.setCover("rename", { x: DOCK_W, y: top - 6, w: POPOVER_GAP + RENAME_W + 12, h: RENAME_H + 12 });
+    return () => engine.setCover("rename", null);
+  }, [engine, top]);
+  useEffect(() => {
+    engine.holdDock("rename", true);
+    return () => engine.holdDock("rename", false);
+  }, [engine]);
+  // Gone meanwhile (closed, ungrouped): there is nothing to name.
+  useEffect(() => {
+    if (group === null) onDone();
+  }, [group, onDone]);
+  if (group === null || top === null) return null;
+  const done = (title: string | null): void => {
+    if (finished.current) return;
+    finished.current = true;
+    onDone();
+    if (title !== null && title.trim() !== "" && title !== group.title) void tabGroupCommand({ type: "rename", groupId, title });
+  };
+  return (
+    <div
+      data-testid="desk-dock-rename"
+      data-group-id={groupId}
+      data-group-color={group.color}
+      data-shown={shown ? "" : undefined}
+      className="desk-dock-rename tab-group-tone"
+      style={{ left: DOCK_W + POPOVER_GAP, top, width: RENAME_W, height: RENAME_H }}
+    >
+      <span className="desk-sketch-swatch" aria-hidden="true" />
+      <GroupTitleInput title={group.title} onDone={done} />
+    </div>
+  );
 }
 
 /**
@@ -875,6 +1217,119 @@ function SketchPage({ tab, window }: { tab: BrowserTabInfo; window: DeskSketchWi
   );
 }
 
+/**
+ * The More card, beside the dock's More button: the arrangements (each with
+ * its keyboard shortcut, from Settings), the variants this experiment is
+ * for (Feel), and the way out. Drawn over the desk, so it is a cover, seen
+ * once no live page is under it.
+ */
+function DockMoreCard({
+  ref,
+  shown,
+  foot,
+  onPointerEnter,
+  onPointerLeave,
+  onPointerDown,
+  onTile,
+  onCascade,
+  onLeave,
+}: {
+  ref: React.Ref<HTMLDivElement>;
+  shown: boolean;
+  /** From the dock's foot to the card's. */
+  foot: number;
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
+  onPointerDown: () => void;
+  onTile: () => void;
+  onCascade: () => void;
+  onLeave: () => void;
+}) {
+  const tile = useAppStore((state) => shortcutLabel(state.settings.shortcuts.tileDesk, PLATFORM));
+  const cascade = useAppStore((state) => shortcutLabel(state.settings.shortcuts.cascadeDesk, PLATFORM));
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="More"
+      data-testid="desk-more-card"
+      data-shown={shown ? "" : undefined}
+      className="desk-dock-menu desk-dock-more"
+      style={{ left: DOCK_W + POPOVER_GAP, bottom: foot }}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onPointerDown={onPointerDown}
+    >
+      <MoreItem label="Tile the windows" hint={tile} testId="desk-tile" onClick={onTile}>
+        <LayoutGrid aria-hidden="true" />
+      </MoreItem>
+      <MoreItem label="Cascade the windows" hint={cascade} testId="desk-cascade" onClick={onCascade}>
+        <Layers2 aria-hidden="true" />
+      </MoreItem>
+      <span className="desk-more-divider" aria-hidden="true" />
+      <div role="group" aria-label="Feel" data-testid="desk-variants" className="flex flex-col gap-px">
+        <div className="px-1.5 pt-0.5 pb-1 text-[10.5px] font-semibold tracking-wide text-gray-700 uppercase">Feel</div>
+        {DESK_AXES.map((axis) => (
+          <Fragment key={axis.key}>
+            <VariantRow axisKey={axis.key} label={axis.label} />
+            {/* Glide's own setting, under the throw it belongs to. */}
+            {axis.key === "physics" ? <DecelerationRow /> : null}
+          </Fragment>
+        ))}
+      </div>
+      <span className="desk-more-divider" aria-hidden="true" />
+      <MoreItem label="Leave the desk" testId="desk-leave" onClick={onLeave}>
+        <X aria-hidden="true" />
+      </MoreItem>
+    </div>
+  );
+}
+
+/** One of the More card's actions: its icon, its words, and its shortcut if it has one. */
+function MoreItem({ label, hint, testId, onClick, children }: { label: string; hint?: string | null; testId: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      className="flex h-7 w-full cursor-pointer items-center gap-2 rounded-md px-1.5 text-left text-[12px] text-gray-1000 outline-none transition-colors duration-150 hover:bg-alpha-100 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-gray-900"
+    >
+      {children}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {hint === undefined || hint === null ? null : <Kbd small>{hint}</Kbd>}
+    </button>
+  );
+}
+
+/**
+ * Glide's deceleration: how quickly a thrown window slows, as the share of
+ * its speed it loses every 100 ms. Only a Glide throw coasts, so it waits,
+ * dimmed, under any other.
+ */
+function DecelerationRow() {
+  const deceleration = useDeskStore((state) => state.variants.deceleration);
+  const glide = useDeskStore((state) => state.variants.physics === "glide");
+  return (
+    <div
+      data-testid="desk-variant-deceleration"
+      data-value={deceleration}
+      title={glide ? "How quickly a thrown window slows down: the share of its speed it loses every 100 ms" : "Only a Glide throw coasts: choose Glide above"}
+    >
+      <Slider
+        label="Deceleration"
+        value={deceleration}
+        min={GLIDE_DECELERATION.min}
+        max={GLIDE_DECELERATION.max}
+        disabled={!glide}
+        onChange={(value) => useDeskStore.getState().setVariant("deceleration", value)}
+        className={cn("grid-cols-[76px_minmax(60px,1fr)_30px] gap-2 px-1.5 py-1", !glide && "opacity-60")}
+        labelClassName="text-[12px] text-gray-700"
+      />
+    </div>
+  );
+}
+
 /** A tool's tooltip, as the dock runs it (DeskDock's `toolTip`). */
 interface DockTip {
   open: boolean;
@@ -935,7 +1390,7 @@ function DockButton({
  * One variant axis. A click moves to the next choice (shift-click to the
  * previous); the hint says what it changes.
  */
-function VariantRow({ axisKey, label }: { axisKey: keyof DeskVariants; label: string }) {
+function VariantRow({ axisKey, label }: { axisKey: DeskAxisKey; label: string }) {
   const value = useDeskStore((state) => state.variants[axisKey]);
   const axis = DESK_AXES.find((candidate) => candidate.key === axisKey)!;
   const options = axis.options as ReadonlyArray<{
@@ -962,7 +1417,7 @@ function VariantRow({ axisKey, label }: { axisKey: keyof DeskVariants; label: st
       }}
       className="group/variant flex h-7 cursor-pointer items-center gap-1 rounded-md px-1.5 text-[12px] outline-none transition-colors duration-150 hover:bg-alpha-100 focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <span className="w-16 shrink-0 text-left text-gray-700">{label}</span>
+      <span className="w-[76px] shrink-0 text-left text-gray-700">{label}</span>
       <span key={option.id} className="desk-variant-value min-w-0 flex-1 truncate text-left font-medium text-gray-1000">
         {option.label}
       </span>

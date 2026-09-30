@@ -47,7 +47,6 @@ import {
   formatSelectionText,
   selectionChipLabel,
   MAX_COMPOSER_ATTACHMENTS,
-  readComposerAttachment,
   toAgentAttachments,
   type ComposerAttachment,
 } from "../lib/chat-attachments";
@@ -63,6 +62,7 @@ import {
 } from "../lib/run";
 import { cloudReadiness, isCloudRun } from "../lib/cloud";
 import { selectActiveTab, useAppStore } from "../store";
+import { AttachmentDropVeil, useAttachmentDrop } from "./chat/attachment-drop";
 import { LiveReply } from "./chat/LiveReply";
 import { useThreadLayout } from "./chat/use-thread-layout";
 import {
@@ -135,7 +135,7 @@ const AgentPanel = memo(function AgentPanel({
   const evidence = useAppStore((state) => state.evidence);
   const closeEvidence = useAppStore((state) => state.closeEvidence);
   const newThread = useAppStore((state) => state.newThread);
-  const drop = useAttachmentDrop();
+  const drop = useConsoleAttachments();
 
   // A fresh conversation starts from a clean console: no replay left open,
   // nothing staged from the one before.
@@ -155,18 +155,8 @@ const AgentPanel = memo(function AgentPanel({
           {...drop.handlers}
           className="relative grid min-h-0 min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-background-100"
         >
-          {/* Drop feedback. pointer-events-none so the drop still lands on
-              the panel underneath rather than on this veil. */}
           {drop.dragging ? (
-            <div
-              data-testid="attachment-drop-veil"
-              className="animate-backdrop-in pointer-events-none absolute inset-2 z-20 grid place-items-center rounded-lg border-2 border-dashed border-blue-700 bg-blue-100/70"
-            >
-              <span className="flex items-center gap-1.5 rounded-full bg-background-100 px-3 py-1.5 text-label-13 font-medium text-blue-900 shadow-menu">
-                <Paperclip className="size-3.5" aria-hidden="true" />
-                Drop files to attach
-              </span>
-            </div>
+            <AttachmentDropVeil data-testid="attachment-drop-veil" />
           ) : null}
           <Conversation run={run} threads={threads} activeTab={activeTab} />
           <Composer
@@ -185,20 +175,18 @@ const AgentPanel = memo(function AgentPanel({
   );
 });
 
+/** The console's field, found by id: the Composer below owns it. */
+function focusIntent(): void {
+  document.getElementById("delegation-intent")?.focus({ preventScroll: true });
+}
+
 /**
- * Files dropped anywhere on the panel, staged for the next message.
- *
- * `depth` counts enter/leave pairs — dragging across the panel's children
- * fires leave/enter at every element boundary, and a plain boolean would
- * flicker the veil off each time. Rejections surface in the composer rather
- * than as a global error: the shell's error banner has no dismissal and
- * pushes the native tab views down, which is far too much for "that file is
- * too big".
+ * Files dropped anywhere on the panel, staged for the next message
+ * (chat/attachment-drop.tsx) — and the page's "Add … to Chat" items too.
  */
-function useAttachmentDrop() {
-  const [staged, setStaged] = useState<ComposerAttachment[]>([]);
-  const [depth, setDepth] = useState(0);
-  const [rejection, setRejection] = useState<string | null>(null);
+function useConsoleAttachments() {
+  const drop = useAttachmentDrop(focusIntent);
+  const { staged, setStaged, reject } = drop;
   const chatInbox = useAppStore((state) => state.chatInbox);
   const takeChatInbox = useAppStore((state) => state.takeChatInbox);
 
@@ -210,9 +198,9 @@ function useAttachmentDrop() {
     const inbox = takeChatInbox();
     const room = Math.max(0, MAX_COMPOSER_ATTACHMENTS - staged.length);
     const accepted = inbox.inserts.slice(0, room);
-    if (inbox.rejection !== null) setRejection(inbox.rejection);
+    if (inbox.rejection !== null) reject(inbox.rejection);
     else if (accepted.length < inbox.inserts.length)
-      setRejection(
+      reject(
         `At most ${String(MAX_COMPOSER_ATTACHMENTS)} files per message`,
       );
     if (accepted.length > 0)
@@ -220,79 +208,10 @@ function useAttachmentDrop() {
         ...prev,
         ...accepted.map(composerAttachmentFromInsert),
       ]);
-    document
-      .getElementById("delegation-intent")
-      ?.focus({ preventScroll: true });
-  }, [chatInbox, staged.length, takeChatInbox]);
+    focusIntent();
+  }, [chatInbox, staged.length, takeChatInbox, reject, setStaged]);
 
-  const addFiles = async (list: FileList): Promise<void> => {
-    const dropped = Array.from(list);
-    // Read against the count at drop time; `staged` is stale inside the loop.
-    let room = MAX_COMPOSER_ATTACHMENTS - staged.length;
-    if (room <= 0) {
-      setRejection(
-        `At most ${String(MAX_COMPOSER_ATTACHMENTS)} files per message`,
-      );
-      return;
-    }
-    setRejection(
-      dropped.length > room
-        ? `Attached the first ${String(room)} — at most ${String(MAX_COMPOSER_ATTACHMENTS)} files per message`
-        : null,
-    );
-    for (const file of dropped) {
-      if (room <= 0) break;
-      try {
-        const result = await readComposerAttachment(file);
-        if (result.ok) {
-          room -= 1;
-          setStaged((prev) => [...prev, result.attachment]);
-        } else {
-          setRejection(result.reason);
-        }
-      } catch {
-        setRejection(`Could not read ${file.name}`);
-      }
-    }
-    document
-      .getElementById("delegation-intent")
-      ?.focus({ preventScroll: true });
-  };
-
-  const carriesFiles = (event: React.DragEvent): boolean =>
-    event.dataTransfer.types.includes("Files");
-
-  return {
-    staged,
-    setStaged,
-    addFiles,
-    rejection,
-    reject: (message: string) => setRejection(message),
-    dismissRejection: () => setRejection(null),
-    dragging: depth > 0,
-    handlers: {
-      onDragEnter: (event: React.DragEvent) => {
-        if (!carriesFiles(event)) return;
-        event.preventDefault();
-        setDepth((current) => current + 1);
-      },
-      onDragOver: (event: React.DragEvent) => {
-        if (!carriesFiles(event)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-      },
-      onDragLeave: (event: React.DragEvent) => {
-        if (!carriesFiles(event)) return;
-        setDepth((current) => Math.max(0, current - 1));
-      },
-      onDrop: (event: React.DragEvent) => {
-        if (!carriesFiles(event)) return;
-        event.preventDefault();
-        setDepth(0);
-        void addFiles(event.dataTransfer.files);
-      },
-    },
-  };
+  return drop;
 }
 
 function AgentHeader({

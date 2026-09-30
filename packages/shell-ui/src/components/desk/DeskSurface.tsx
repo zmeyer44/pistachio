@@ -6,6 +6,8 @@ import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
+import { groupMoveIndex } from "../../lib/desk/dock-order";
+import { lendDeskArrange } from "../../lib/desk/open";
 import { passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay } from "../GlanceOverlay";
@@ -87,8 +89,30 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         if (store.snapshot?.activeTabId !== tabId) void store.selectTab(tabId);
       },
       close: (tabId) => void useAppStore.getState().closeTab(tabId),
+      editAddress: (tabId) => useAppStore.getState().openUrlBar(tabId),
       save: (windows) => useDeskStore.getState().save(shownGroup.current, { windows }),
       switchGroup: (next) => useDeskStore.getState().switchTo(next),
+      // A drop in the dock: the browser holds the order, of the group's tabs and of the groups.
+      reorderTab: (tabId, index) => void useAppStore.getState().tabGroupCommand({ type: "addTab", groupId: shownGroup.current, tabId, index }),
+      moveTabToGroup: (tabId, groupId, next) => {
+        void (async () => {
+          const store = useAppStore.getState();
+          // The desk never stands on a tab that is not its group's: another
+          // of them is in use first — the window left on top, or with none,
+          // the tab used last, which comes out.
+          if (store.snapshot?.activeTabId === tabId) {
+            const others = latest.current.tabs.filter((tab) => tab.id !== tabId);
+            const other = next ?? [...others].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id ?? null;
+            if (other !== null) await store.selectTab(other);
+          }
+          await store.tabGroupCommand({ type: "addTab", groupId, tabId });
+        })();
+      },
+      reorderGroup: (groupId, order) => {
+        const store = useAppStore.getState();
+        const index = store.snapshot === null ? null : groupMoveIndex(store.snapshot, groupId, order);
+        if (index !== null) void store.tabGroupCommand({ type: "move", groupId, index });
+      },
       leaveDone: () => useDeskStore.getState().finishLeave(),
     });
     created.attachStage(stage);
@@ -170,6 +194,13 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     shownGroup.current = groupId;
   }, [engine, groupId]);
 
+  // The keyboard's Tile and Cascade (chrome/actions.tsx) reach this desk's engine.
+  useEffect(() => {
+    if (engine === null) return;
+    lendDeskArrange((kind) => engine.arrange(kind));
+    return () => lendDeskArrange(null);
+  }, [engine]);
+
   const view = useSyncExternalStore(
     useCallback((listener: () => void) => engine?.subscribe(listener) ?? (() => undefined), [engine]),
     () => engine?.getView() ?? null,
@@ -180,6 +211,25 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     engine?.syncTabs(tabIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, tabKey]);
+
+  // The group lost the tab in use, and it is still open (pinned, made a
+  // favorite, taken out of the group or put in another — from its icon's
+  // menu, say): the desk never stands on a tab not its own, so another of
+  // the group's is in use — the window left on top, or with none out, the
+  // tab used last, which comes out. (The group gone altogether ends the desk, below.)
+  // (Passed to another group, the desk chooses the tab it comes up on itself.)
+  const groupBefore = useRef({ groupId, tabIds });
+  useEffect(() => {
+    const before = groupBefore.current;
+    groupBefore.current = { groupId, tabIds };
+    const active = useAppStore.getState().snapshot?.activeTabId ?? null;
+    if (engine === null || leaving || before.groupId !== groupId || active === null || tabIds.length === 0) return;
+    if (tabIds.includes(active) || !before.tabIds.includes(active)) return;
+    const top = engine.windowTabIds().filter((tabId) => tabIds.includes(tabId)).at(-1);
+    const next = top ?? [...latest.current.tabs].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id;
+    if (next !== undefined) void useAppStore.getState().selectTab(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, groupId, tabKey]);
 
   // A tab woke, a variant changed, the overlay rose or fell: re-decide what is live.
   useEffect(() => {
@@ -276,20 +326,25 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         </div>
         {engine === null || view === null
           ? null
-          : view.windows.map((window) => (
-              <DeskWindow
-                key={window.tabId}
-                view={window}
-                tab={tabsById.get(window.tabId) ?? null}
-                chrome={variants.chrome}
-                grab={variants.grab}
-                // Under a raised overlay the live pages are down: paint what they were showing
-                // (not for a masked window: that still would be the whole page's, with nothing to say so).
-                still={(overlayActive && window.mask === null ? stillByTab.get(window.tabId) : undefined) ?? window.still}
-                waking={wakingTabIds.includes(window.tabId)}
-                engine={engine}
-              />
-            ))}
+          : view.windows.map((window) => {
+              // Under a raised overlay (a menu, the address palette) the live pages are down: paint
+              // what they were showing, a picture of the whole page — whether or not the engine had
+              // one of its own (the window in use, live since it landed, often has none). Not for a
+              // masked window: that still would be the whole page's, with nothing to say so.
+              const overlayStill = overlayActive && window.mask === null ? stillByTab.get(window.tabId) : undefined;
+              return (
+                <DeskWindow
+                  key={window.tabId}
+                  view={overlayStill === undefined || window.stillShows === "page" ? window : { ...window, stillShows: "page" }}
+                  tab={tabsById.get(window.tabId) ?? null}
+                  chrome={variants.chrome}
+                  grab={variants.grab}
+                  still={overlayStill ?? window.still}
+                  waking={wakingTabIds.includes(window.tabId)}
+                  engine={engine}
+                />
+              );
+            })}
         {engine === null || view === null || group === null ? null : <DeskDock group={group} tabs={tabs} view={view} engine={engine} />}
         {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} />}
       </div>

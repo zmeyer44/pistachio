@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deskMaskKey, holdsDeskModifier, inDeskBox, isDeskGrab, isDeskMask, isDeskPageInput, isDeskState, MAX_DESK_WINDOWS } from "../src/desk.js";
+import { deskMaskKey, holdsDeskModifier, inDeskBox, isDeskGrab, isDeskMask, isDeskPageInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
 import { isDragCursor, isDragSample } from "../src/chrome.js";
 
 describe("the desk's contract", () => {
@@ -44,10 +44,28 @@ describe("the desk's contract", () => {
     expect(isDeskGrab({ x: 1, y: 2 })).toBe(false);
   });
 
-  it("relays a desk page's press, Escape, or the pointer coming to the dock, and nothing else", () => {
+  it("takes whether a tab's icon in the dock is under the pointer only as a boolean, or its absence", () => {
+    expect(isDeskState({ tabIds: ["a"], grab: null, dockHover: true })).toBe(true);
+    expect(isDeskState({ tabIds: ["a"], grab: null, dockHover: false })).toBe(true);
+    expect(isDeskState({ tabIds: ["a"], grab: null, dockHover: "a" })).toBe(false);
+  });
+
+  it("closes a hovered dock icon's tab on ⇧⌫ going down, and on no other key", () => {
+    const key = { type: "keyDown", key: "Backspace", shift: true, control: false, alt: false, meta: false };
+    expect(isDockCloseKey(key)).toBe(true);
+    expect(isDockCloseKey({ ...key, type: "keyUp" })).toBe(false);
+    expect(isDockCloseKey({ ...key, shift: false })).toBe(false);
+    expect(isDockCloseKey({ ...key, meta: true })).toBe(false);
+    expect(isDockCloseKey({ ...key, alt: true })).toBe(false);
+    expect(isDockCloseKey({ ...key, control: true })).toBe(false);
+    expect(isDockCloseKey({ ...key, key: "Delete" })).toBe(false);
+  });
+
+  it("relays a desk page's press, Escape, the pointer coming to the dock, or ⇧⌫ on a dock icon, and nothing else", () => {
     expect(isDeskPageInput("press")).toBe(true);
     expect(isDeskPageInput("escape")).toBe(true);
     expect(isDeskPageInput("dock")).toBe(true);
+    expect(isDeskPageInput("close")).toBe(true);
     expect(isDeskPageInput("keyDown")).toBe(false);
     expect(isDeskPageInput(null)).toBe(false);
   });

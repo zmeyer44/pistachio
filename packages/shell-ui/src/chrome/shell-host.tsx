@@ -238,6 +238,13 @@ export function runShellCommand(command: ShellCommand): void {
       s.openUrlBar(command.tabId);
       break;
     case "newTab": {
+      // On a desk, a new tab is a new window there, as its dock's + makes one:
+      // in the desk's group, on the home page, brought out as the window in use.
+      const desk = useDeskStore.getState();
+      if (desk.groupId !== null && !desk.leaving) {
+        void s.tabGroupCommand({ type: "newTab", groupId: desk.groupId });
+        break;
+      }
       const general = s.settings.general;
       if (general.newTab === "url" && general.newTabUrl !== "") void s.createTab(general.newTabUrl);
       else if (general.newTab === "address") s.openNewTabBar();

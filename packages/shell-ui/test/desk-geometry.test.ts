@@ -16,6 +16,7 @@ import {
   freeSpot,
   isTile,
   largestEmptyRect,
+  letGoSize,
   magnetize,
   magnetizeEdges,
   normalizeRect,
@@ -23,6 +24,7 @@ import {
   rectsOverlap,
   resizedRect,
   rubberBand,
+  SNAP_TOP_SHARE,
   splitRect,
   thirdsCell,
   thirdsZone,
@@ -34,7 +36,7 @@ import {
   zoneRect,
   type Rect,
 } from "../src/lib/desk/geometry";
-import { SPRING_PRESETS, springAtRest, stepSpring, VelocityTracker } from "../src/lib/desk/motion";
+import { GLIDE_DECELERATION, GLIDE_TAU_S, glideDecay, glideTauFor, SPRING_PRESETS, springAtRest, stepSpring, VelocityTracker } from "../src/lib/desk/motion";
 import { sanitizeVariants, DEFAULT_DESK_VARIANTS } from "../src/lib/desk/store";
 
 const desk: Rect = { x: 184, y: 0, w: 1000, h: 700 };
@@ -92,6 +94,34 @@ describe("edge zones", () => {
     expect(thirdsZone({ x: desk.x + desk.w + 400, y: desk.h / 2 }, desk)).toBe("right");
   });
 
+  it("fills the desk from the middle only at its top edge: the rest of the middle is the centre", () => {
+    const middle = desk.x + desk.w / 2;
+    // A window held by its title bar where the centre tile would put it: its bar is a tenth of the way down.
+    const bar = centeredRect(desk).y + 17;
+    expect(thirdsZone({ x: middle, y: bar }, desk)).toBe("center");
+    expect(thirdsZone({ x: middle, y: desk.h * 0.2 }, desk)).toBe("center");
+    expect(thirdsZone({ x: middle, y: desk.h * (SNAP_TOP_SHARE - 0.01) }, desk)).toBe("maximize");
+    // Pushed up past the desk's top edge: the whole desk.
+    expect(thirdsZone({ x: middle, y: -40 }, desk)).toBe("maximize");
+    // The sides keep their thirds: the top corners are quarters.
+    expect(thirdsZone({ x: desk.x + 10, y: desk.h * 0.2 }, desk)).toBe("top-left");
+    expect(thirdsZone({ x: desk.x + desk.w - 10, y: desk.h * 0.3 }, desk)).toBe("top-right");
+  });
+
+  it("holds the whole desk until the pointer is well below the top band, and the centre until well into it", () => {
+    const middle = desk.x + desk.w / 2;
+    const line = desk.y + desk.h * SNAP_TOP_SHARE;
+    const top = thirdsCell({ x: middle, y: line - 4 }, desk);
+    expect(cellZone(top)).toBe("maximize");
+    expect(cellZone(thirdsCell({ x: middle, y: line + 10 }, desk, top, 16))).toBe("maximize");
+    const centre = thirdsCell({ x: middle, y: line + 20 }, desk, top, 16);
+    expect(cellZone(centre)).toBe("center");
+    expect(cellZone(thirdsCell({ x: middle, y: line - 10 }, desk, centre, 16))).toBe("center");
+    expect(cellZone(thirdsCell({ x: middle, y: line - 20 }, desk, centre, 16))).toBe("maximize");
+    // Across into a side column above the band, the top third there is its corner's quarter.
+    expect(cellZone(thirdsCell({ x: desk.x + 10, y: desk.y + desk.h * 0.2 }, desk, centre, 16))).toBe("top-left");
+  });
+
   it("holds a snap tile until the pointer is well past the line, so a resting pointer does not flicker", () => {
     const third = desk.x + desk.w / 3;
     const left = thirdsCell({ x: third - 4, y: 350 }, desk);
@@ -129,6 +159,19 @@ describe("letting go of the whole desk", () => {
     expect(fillsDesk({ ...desk, w: desk.w * 0.95, h: desk.h * 0.94 }, desk)).toBe(true);
     expect(fillsDesk(zoneRect("left", desk), desk)).toBe(false);
     expect(fillsDesk(centeredRect(desk), desk)).toBe(false);
+  });
+
+  it("lets go of a span as it is dragged: a tall window of its height, a wide one of its width, one filling the desk of both", () => {
+    const size = windowSize(desk);
+    const left = zoneRect("left", desk);
+    expect(letGoSize(left, null, desk)).toEqual({ w: left.w, h: size.h });
+    const topHalf = { x: desk.x, y: desk.y, w: desk.w, h: (desk.h - DESK_GAP) / 2 };
+    expect(letGoSize(topHalf, null, desk)).toEqual({ w: size.w, h: topHalf.h });
+    expect(letGoSize(desk, null, desk)).toEqual(size);
+    expect(letGoSize(desk, { x: 300, y: 80, w: 520, h: 400 }, desk)).toEqual({ w: 520, h: 400 });
+    // Neither way: it keeps its size.
+    expect(letGoSize(zoneRect("top-left", desk), null, desk)).toBeNull();
+    expect(letGoSize(centeredRect(desk), null, desk)).toBeNull();
   });
 
   it("goes back to the size it had before it filled the desk, or to the size windows come out at", () => {
@@ -271,6 +314,33 @@ describe("variants", () => {
       grab: "alt",
     });
   });
+
+  it("keeps Glide's deceleration a whole percent within its range, and the default for anything else", () => {
+    expect(sanitizeVariants({ deceleration: 44.6 }).deceleration).toBe(45);
+    expect(sanitizeVariants({ deceleration: 2 }).deceleration).toBe(GLIDE_DECELERATION.min);
+    expect(sanitizeVariants({ deceleration: 99 }).deceleration).toBe(GLIDE_DECELERATION.max);
+    expect(sanitizeVariants({ deceleration: "fast" }).deceleration).toBe(GLIDE_DECELERATION.default);
+    expect(sanitizeVariants({ deceleration: Number.NaN }).deceleration).toBe(GLIDE_DECELERATION.default);
+  });
+});
+
+describe("Glide's deceleration", () => {
+  it("is the share of its speed a coasting window loses every 100 ms", () => {
+    for (const deceleration of [10, 28, 60]) {
+      expect(glideDecay(1_000, 0.1, glideTauFor(deceleration))).toBeCloseTo(1_000 * (1 - deceleration / 100), 6);
+    }
+  });
+
+  it("by default coasts as the desk always has", () => {
+    expect(Math.abs(glideTauFor(GLIDE_DECELERATION.default) - GLIDE_TAU_S)).toBeLessThan(0.01);
+  });
+
+  it("coasts for less time the higher it is, and holds to its range", () => {
+    expect(glideTauFor(60)).toBeLessThan(glideTauFor(28));
+    expect(glideTauFor(28)).toBeLessThan(glideTauFor(10));
+    expect(glideTauFor(0)).toBe(glideTauFor(GLIDE_DECELERATION.min));
+    expect(glideTauFor(100)).toBe(glideTauFor(GLIDE_DECELERATION.max));
+  });
 });
 
 describe("where a window brought out of the dock goes", () => {
@@ -336,6 +406,11 @@ describe("the dock's pads", () => {
     const short = dockDrops(260, 60);
     expect(short.close.h).toBeGreaterThan(40);
     expect(short.away.h).toBeGreaterThan(40);
+    // The window's buttons over the column's top: the rail starts below them, and ends where it did.
+    const clear = dockDrops(880, 60, 6, DESK_GAP, 34);
+    expect(clear.away.y).toBe(34);
+    expect(clear.close.y + clear.close.h).toBe(874);
+    expect(clear.close.y - (clear.away.y + clear.away.h)).toBe(DESK_GAP);
   });
 
   it("take a pointer left of the desk, split where they meet; the desk's own edge band is the left half's", () => {

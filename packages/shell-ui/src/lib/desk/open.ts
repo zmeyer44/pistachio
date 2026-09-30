@@ -32,3 +32,22 @@ export function toggleDesk(groupId: string): void {
   if (desk.groupId !== null) desk.leave({ immediate: true });
   useDeskStore.getState().open(groupId, { afterSidebar: useAppStore.getState().settings.layout.mode === "sidebar" });
 }
+
+/**
+ * The desk that is up arranges its windows (its dock's More card, or a
+ * keyboard shortcut, which can come from anywhere in the shell). The desk's
+ * surface lends its engine here while it is mounted (lendDeskArrange).
+ */
+let arrangeUp: ((kind: "tile" | "cascade") => void) | null = null;
+
+export function lendDeskArrange(arrange: ((kind: "tile" | "cascade") => void) | null): void {
+  arrangeUp = arrange;
+}
+
+/** Tile or cascade the desk's windows; false with no desk up (the shortcut is then no one's). */
+export function arrangeDesk(kind: "tile" | "cascade"): boolean {
+  const desk = useDeskStore.getState();
+  if (arrangeUp === null || desk.groupId === null || desk.leaving) return false;
+  arrangeUp(kind);
+  return true;
+}

@@ -410,7 +410,9 @@ export type ShellShortcutAction =
   | "tidyTabs"
   | "smartFind"
   | "newNote"
-  | "openNotes";
+  | "openNotes"
+  | "tileDesk"
+  | "cascadeDesk";
 
 export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 

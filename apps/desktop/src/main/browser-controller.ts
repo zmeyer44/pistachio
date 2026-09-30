@@ -68,6 +68,7 @@ import {
   deskMaskKey,
   holdsDeskModifier,
   inDeskBox,
+  isDockCloseKey,
   MAX_DESK_STILL_WIDTH,
   MAX_DESK_WINDOWS,
   type DeskGrab,
@@ -666,6 +667,15 @@ function rounded(value: number): number {
  * when the region, its scale or the view's size change afterwards.
  */
 const DESK_MASK_WORLD = "pistachio-desk-mask";
+/**
+ * A page whose mask came off goes on laying out at its box until its view
+ * is shown at that box (DeskMaskRelease). Shown at another size — the
+ * window was resized meanwhile — it takes that size once it has held this
+ * long, as any window resized does.
+ */
+const DESK_RELEASE_SETTLE_MS = 250;
+/** A still of a masked page is taken again, a frame apart, this many times until it comes at its view's size. */
+const DESK_STILL_SIZE_TRIES = 8;
 const DESK_MASK_BINDING = "__pistachioDeskMaskScroll";
 const DESK_MASK_SCRIPT = `(() => {
   if (window !== window.top) return [0, 0];
@@ -702,6 +712,33 @@ interface DeskMaskState {
   suspended: boolean;
   scriptId: string | null;
   onMessage: (event: Electron.Event, method: string, params: unknown) => void;
+}
+
+/**
+ * A page whose mask was taken off. Its override stays, at the page's own
+ * box with no region, until its view is shown at that box: the view came
+ * down at the region's size, and a page given no override there would lay
+ * out at that size — and at every size between as its window grows back —
+ * before the view reached its box. The mask is a picture made of the page,
+ * never a size the page is given.
+ */
+interface DeskMaskRelease {
+  contents: WebContents;
+  width: number;
+  height: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * The override that holds a masked page at its own box. It never sets the
+ * view's "visible size": Chromium would note the view's size when the
+ * override began, and put THAT back when it is cleared — for a mask set up
+ * again after its page left fullscreen, the whole screen's size, so the
+ * unmasked page would lay out a screen wide (probed in Electron 43; with
+ * this, clearing leaves the view at the size it is).
+ */
+function deskMaskMetrics(width: number, height: number): { width: number; height: number; deviceScaleFactor: 0; mobile: false; dontSetVisibleSize: true } {
+  return { width: Math.round(width), height: Math.round(height), deviceScaleFactor: 0, mobile: false, dontSetVisibleSize: true };
 }
 
 function settleViewBounds(view: WebContentsView, bounds: ContentBounds): void {
@@ -877,6 +914,8 @@ export class BrowserController {
   readonly #deskMasks = new Map<string, DeskMaskState>();
   /** The latest work on a tab's mask (set up, re-aim, clear): a still of the tab waits for it. */
   readonly #deskMaskWork = new Map<string, Promise<void>>();
+  /** Pages whose masks came off, laying out at their own box until shown there (DeskMaskRelease), by tab. */
+  readonly #deskReleases = new Map<string, DeskMaskRelease>();
   /** A masked page's mouse event is being re-sent at the page's own point: it goes to the page as it is. */
   #deskMaskForwarding = false;
   /** The modifier keys down, as the keyboard last said: a mouse event reaching `before-mouse-event` carries none. */
@@ -3542,16 +3581,20 @@ export class BrowserController {
       activate,
       spaceId: info.spaceId,
       history,
+      beside: tabId,
     });
-    // reorderTab counts the position with the moved tab lifted out, so the
-    // slot right after the original is its index plus one.
-    const siblings = this.#spaceTabIds(info.spaceId).filter(
-      (id) => id !== duplicateId,
-    );
-    const originalIndex = siblings.indexOf(tabId);
-    if (originalIndex >= 0) this.reorderTab(duplicateId, originalIndex + 1);
     this.#onChange();
     return duplicateId;
+  }
+
+  /** A new tab set straight after `beside` in the row, and into its tab group, after it (#createManagedTab's `beside`). */
+  #setBeside(tabId: string, beside: string): void {
+    if (!this.#tabOrder.includes(beside)) return;
+    const order = this.#tabOrder.filter((id) => id !== tabId);
+    order.splice(order.indexOf(beside) + 1, 0, tabId);
+    this.#tabOrder.splice(0, this.#tabOrder.length, ...order);
+    const group = tabGroupOf([...this.#tabGroups.values()], beside);
+    if (group !== null) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: true });
   }
 
   async createAgentTab(
@@ -3618,6 +3661,13 @@ export class BrowserController {
      * caller, which needs the awaited load to happen.
      */
     awaitLoad?: boolean;
+    /**
+     * Opened beside this tab (a duplicate): straight after it in the row,
+     * and in its tab group beside it — before it is ever shown, so it is
+     * never seen elsewhere first (a desk would take a tab come up outside
+     * its group for the person leaving it).
+     */
+    beside?: string;
   }): Promise<string> {
     const id = options.restoredInfo?.id ?? randomUUID();
     const partition = options.partition ?? spacePartition(options.spaceId);
@@ -3710,6 +3760,7 @@ export class BrowserController {
     this.#tabs.set(id, tab);
     if (options.restoredInfo !== undefined) this.#beginWake(id);
     if (!this.#tabOrder.includes(id)) this.#tabOrder.push(id);
+    if (options.beside !== undefined) this.#setBeside(id, options.beside);
     if (options.activate || this.#activeTabId === null) this.#activateTab(id);
     const refresh = this.#wireManagedTab(tab);
     // A tab waking from suspension takes its forced focus back up — and, out on the desk, its mask.
@@ -6481,6 +6532,17 @@ export class BrowserController {
     const moving = new Set(placed);
     const added = placed.filter((tabId) => !target.tabIds.includes(tabId));
     const members = target.tabIds.filter((tabId) => !moving.has(tabId));
+    // A tab brought in from elsewhere in the row joins the group where the
+    // group is: it is set down beside the members first, since a group sits
+    // where its first tab in the row does (groupedTabOrder) and would
+    // otherwise move to where the tab was.
+    const last = Math.max(-1, ...members.map((tabId) => this.#tabOrder.indexOf(tabId)));
+    if (added.length > 0 && last >= 0) {
+      const after = this.#tabOrder[last]!;
+      const order = this.#tabOrder.filter((tabId) => !added.includes(tabId));
+      order.splice(order.indexOf(after) + 1, 0, ...added);
+      this.#tabOrder.splice(0, this.#tabOrder.length, ...order);
+    }
     members.splice(Math.min(options.index ?? members.length, members.length), 0, ...placed);
     // The others lose what came from them (and an emptied one dissolves); the
     // target is rebuilt by hand, since it is never emptied by its own tabs.
@@ -7078,7 +7140,13 @@ export class BrowserController {
     this.#desk =
       state === null
         ? null
-        : { tabIds: state.tabIds.slice(0, MAX_DESK_WINDOWS), grab: state.grab, dock: state.dock ?? null, masks: state.masks ?? [] };
+        : {
+            tabIds: state.tabIds.slice(0, MAX_DESK_WINDOWS),
+            grab: state.grab,
+            dock: state.dock ?? null,
+            dockHover: state.dockHover === true,
+            masks: state.masks ?? [],
+          };
     // A pointer already at the dock's place says so again on its next move.
     this.#deskAtDock = false;
     this.#syncDeskMasks(state?.masks ?? []);
@@ -7131,8 +7199,13 @@ export class BrowserController {
         // A mask being set up, re-aimed or taken off first: the still is of the page as it then stands.
         await this.#deskMaskWork.get(tabId);
         if (tab.view.webContents.isDestroyed()) return null;
-        const image = await tab.view.webContents.capturePage();
-        if (image.isEmpty()) return null;
+        // A masked page's view is resized for what it is to show (the
+        // region, the whole page while the mask is edited or comes off), and
+        // is drawn at that size a frame or so later: a picture taken before
+        // is the wrong part of the page at the wrong scale.
+        const sized = this.#deskMasks.has(tabId) || this.#deskReleases.has(tabId);
+        const image = sized ? await this.#captureAtViewSize(tab) : await tab.view.webContents.capturePage();
+        if (image === null || image.isEmpty()) return null;
         const masked = this.#deskMasks.get(tabId);
         const still: PaneStill = { tabId, dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}` };
         return masked?.applied != null ? { ...still, mask: masked.applied.key } : still;
@@ -7141,6 +7214,20 @@ export class BrowserController {
       }
     });
     return (await Promise.all(captures)).filter((still): still is PaneStill => still !== null);
+  }
+
+  /** A picture of the tab's page at its view's size, taken again a frame apart until it is (null if it never is). */
+  async #captureAtViewSize(tab: ManagedTab): Promise<NativeImage | null> {
+    for (let attempt = 1; ; attempt += 1) {
+      if (tab.view.webContents.isDestroyed()) return null;
+      const image = await tab.view.webContents.capturePage();
+      if (image.isEmpty()) return null;
+      const size = image.getSize();
+      const { width, height } = tab.view.getBounds();
+      if (Math.abs(size.width - width) <= 2 && Math.abs(size.height - height) <= 2) return image;
+      if (attempt >= DESK_STILL_SIZE_TRIES) return null;
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
   }
 
   /** Select a desk window's tab and hand its page the keyboard once it is on screen. */
@@ -7176,6 +7263,19 @@ export class BrowserController {
       if (tab === undefined || this.#deskGrab?.tabId === tabId) continue;
       this.#setDeskCursor(tab, held ? "grab" : null);
     }
+  }
+
+  /**
+   * ⇧⌫ with a tab's icon in the dock under the pointer (DeskState.dockHover),
+   * from whichever view has the keyboard: that view never sees it, and the
+   * shell closes the tab (DeskPageInput "close"). Held down, it closes one
+   * tab, not one per repeat.
+   */
+  takeDeskDockKey(event: Electron.Event, input: Electron.Input): boolean {
+    if (this.#desk?.dockHover !== true || !isDockCloseKey(input)) return false;
+    event.preventDefault();
+    if (!input.isAutoRepeat) this.#hooks.onDeskPageInput?.("close");
+    return true;
   }
 
   #noteDeskShift(held: boolean): void {
@@ -7308,6 +7408,11 @@ export class BrowserController {
       this.#deskMasks.delete(tabId);
       if (!state.contents.isDestroyed()) state.contents.debugger.removeListener("message", state.onMessage);
     }
+    for (const [tabId, release] of [...this.#deskReleases]) {
+      if (this.#tabs.get(tabId)?.view.webContents === release.contents) continue;
+      if (release.timer !== null) clearTimeout(release.timer);
+      this.#deskReleases.delete(tabId);
+    }
     for (const [tabId, state] of [...this.#deskMasks]) {
       const page = wanted.get(tabId);
       if (page === undefined || !this.#tabs.has(tabId)) {
@@ -7353,6 +7458,13 @@ export class BrowserController {
   #startDeskMask(tab: ManagedTab, mask: DeskMask): DeskMaskState {
     const tabId = tab.info.id;
     const contents = tab.view.webContents;
+    // Masked again before its last mask had quite come off: the override in
+    // place (its box, no region) is where a new one starts anyway.
+    const release = this.#deskReleases.get(tabId);
+    if (release !== undefined) {
+      if (release.timer !== null) clearTimeout(release.timer);
+      this.#deskReleases.delete(tabId);
+    }
     const state: DeskMaskState = {
       contents,
       mask,
@@ -7426,7 +7538,7 @@ export class BrowserController {
       if (contents.isDestroyed() || this.#deskMasks.get(tabId) !== state || !state.ready) return;
       const aim = target();
       const { mask } = state;
-      const metrics = { width: Math.round(mask.pageWidth), height: Math.round(mask.pageHeight), deviceScaleFactor: 0, mobile: false };
+      const metrics = deskMaskMetrics(mask.pageWidth, mask.pageHeight);
       // Turned on at the page's own box before any region is set: sent
       // with a viewport first, it would lay the page out at the region's
       // size for a frame (see DESK_MASK_WORLD).
@@ -7491,7 +7603,13 @@ export class BrowserController {
     });
   }
 
-  /** Take a page's mask off: its old box back first (so it never lays out at the region's size), then the override. */
+  /**
+   * Take a page's mask off. The page shows all of itself again, still
+   * laid out at its own box by the override (no region now): its view is
+   * down at the region's size, and its window grows back through every
+   * size between, none of which the page is to be given. The override
+   * comes off once the view is shown at that box (#settleDeskRelease).
+   */
   #clearDeskMask(tabId: string): void {
     const state = this.#deskMasks.get(tabId);
     if (state === undefined) return;
@@ -7501,21 +7619,59 @@ export class BrowserController {
     const contents = tab.view.webContents;
     contents.debugger.removeListener("message", state.onMessage);
     this.#deskMaskButtons.clear();
-    // Down while it changes back, and at its old box: shown at the region's
-    // size without the override, it would reflow there for a frame.
+    const width = Math.round(state.mask.pageWidth);
+    const height = Math.round(state.mask.pageHeight);
+    // Down, at its box: a still taken meanwhile is of the whole page as it will be.
     settleViewVisible(tab.view, false);
     const bounds = tab.view.getBounds();
-    settleViewBounds(tab.view, { x: bounds.x, y: bounds.y, width: Math.round(state.mask.pageWidth), height: Math.round(state.mask.pageHeight) });
+    settleViewBounds(tab.view, { x: bounds.x, y: bounds.y, width, height });
+    const release: DeskMaskRelease = { contents, width, height, timer: null };
+    this.#deskReleases.set(tabId, release);
     void this.#deskMaskStep(tabId, async () => {
       if (contents.isDestroyed() || !contents.debugger.isAttached()) return;
       const session = contents.debugger;
-      await session.sendCommand("Emulation.clearDeviceMetricsOverride").catch(() => undefined);
+      await session.sendCommand("Emulation.setDeviceMetricsOverride", deskMaskMetrics(width, height));
       if (state.scriptId !== null) await session.sendCommand("Page.removeScriptToEvaluateOnNewDocument", { identifier: state.scriptId }).catch(() => undefined);
       await session.sendCommand("Runtime.removeBinding", { name: DESK_MASK_BINDING }).catch(() => undefined);
-      releaseDebugger(contents, "desk-mask");
     }).then(() => {
       // Placed meanwhile as a plain page: its box is the layout's again.
       if (this.#tabs.get(tabId) === tab && !this.#deskMasks.has(tabId)) this.#applyLayout();
+    });
+  }
+
+  /**
+   * Where the layout put a page whose mask came off (null: not on screen).
+   * Shown at its box, the override comes off a frame later, and the page —
+   * laid out at that box all along — never knows. Shown at another size, it
+   * comes off once that size has held a moment: the window was resized,
+   * and the page is resized with it, as any is. Not shown, it waits.
+   */
+  #settleDeskRelease(tab: ManagedTab, shownAt: ContentBounds | null): void {
+    const release = this.#deskReleases.get(tab.info.id);
+    if (release === undefined) return;
+    if (release.timer !== null) clearTimeout(release.timer);
+    release.timer = null;
+    if (shownAt === null) return;
+    const atBox = Math.abs(shownAt.width - release.width) <= 1 && Math.abs(shownAt.height - release.height) <= 1;
+    release.timer = setTimeout(() => this.#endDeskRelease(tab, atBox), atBox ? 0 : DESK_RELEASE_SETTLE_MS);
+  }
+
+  /** The override off a page whose mask came off: it lays out at its view's size again. */
+  #endDeskRelease(tab: ManagedTab, settle = false): void {
+    const tabId = tab.info.id;
+    const release = this.#deskReleases.get(tabId);
+    if (release === undefined) return;
+    if (release.timer !== null) clearTimeout(release.timer);
+    release.timer = null;
+    const { contents } = release;
+    void this.#deskMaskStep(tabId, async () => {
+      // Shown at its box just now: a frame for the view to be drawn at it first.
+      if (settle) await this.#settleFrame(tab);
+      if (this.#deskReleases.get(tabId) !== release) return;
+      this.#deskReleases.delete(tabId);
+      if (contents.isDestroyed()) return;
+      if (contents.debugger.isAttached()) await contents.debugger.sendCommand("Emulation.clearDeviceMetricsOverride").catch(() => undefined);
+      releaseDebugger(contents, "desk-mask");
     });
   }
 
@@ -7718,6 +7874,7 @@ export class BrowserController {
       // A masked page gone fullscreen (the player's own button) is the whole page for as long as it is.
       const maskedFullscreen = this.#deskMasks.get(fullscreen.info.id);
       if (maskedFullscreen !== undefined) this.#suspendDeskMask(fullscreen, maskedFullscreen);
+      this.#endDeskRelease(fullscreen);
       if (this.#glance !== null) settleViewVisible(this.#glance.tab.view, false);
       settleViewBounds(fullscreen.view, {
         x: 0,
@@ -7754,6 +7911,7 @@ export class BrowserController {
           masked.want = null;
           this.#placeMaskedView(tab, masked);
         }
+        this.#settleDeskRelease(tab, null);
         continue;
       }
       const bounds = {
@@ -7793,6 +7951,7 @@ export class BrowserController {
             visible.has(tabId)
           : previewPlacement !== null);
       settleViewVisible(tab.view, shown);
+      this.#settleDeskRelease(tab, shown ? bounds : null);
       // Drawn at a real size now: a viewport emulated while it was off
       // screen (#ensureViewport) gives way to the pane's own.
       if (shown && tab.offscreenViewport) this.#releaseOffscreenViewport(tab);

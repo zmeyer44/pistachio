@@ -217,23 +217,35 @@ const THIRDS_GRID: ReadonlyArray<ReadonlyArray<TileZone>> = [
 ];
 
 /**
+ * The middle column's top cell — the whole desk — is only this much of the
+ * desk's height, a band along its top edge: a window has to be taken up to
+ * the top to fill the desk. A window carried by its title bar through the
+ * middle of the desk has the pointer well up in the top third, and that
+ * lands it centred.
+ */
+export const SNAP_TOP_SHARE = 0.07;
+
+const THIRDS: readonly [number, number] = [1 / 3, 2 / 3];
+const MIDDLE_ROWS: readonly [number, number] = [SNAP_TOP_SHARE, 2 / 3];
+
+/**
  * The cell of the desk in thirds a point is in (past an edge, the cell at
- * that edge). Given the cell it was in before, it stays there until it is
- * `hysteresis` px past that cell's edge — a pointer resting on a line must
- * not flicker between the two tiles either side of it.
+ * that edge) — in the middle column, the top cell is the band along the top
+ * edge (SNAP_TOP_SHARE). Given the cell it was in before, it stays there
+ * until it is `hysteresis` px past that cell's edge — a pointer resting on
+ * a line must not flicker between the two tiles either side of it.
  */
 export function thirdsCell(point: Point, bounds: Rect, previous: ThirdsCell | null = null, hysteresis = 0): ThirdsCell {
-  const band = (at: number, start: number, size: number, before: number | undefined): number => {
+  const band = (at: number, start: number, size: number, before: number | undefined, cuts: readonly [number, number]): number => {
     const f = (at - start) / Math.max(1, size);
-    const plain = f < 1 / 3 ? 0 : f > 2 / 3 ? 2 : 1;
+    const plain = f < cuts[0] ? 0 : f > cuts[1] ? 2 : 1;
     if (before === undefined || plain === before) return plain;
+    const edges = [0, cuts[0], cuts[1], 1];
     const slack = hysteresis / Math.max(1, size);
-    return f >= before / 3 - slack && f <= (before + 1) / 3 + slack ? before : plain;
+    return f >= edges[before]! - slack && f <= edges[before + 1]! + slack ? before : plain;
   };
-  return {
-    column: band(point.x, bounds.x, bounds.w, previous?.column),
-    row: band(point.y, bounds.y, bounds.h, previous?.row),
-  };
+  const column = band(point.x, bounds.x, bounds.w, previous?.column, THIRDS);
+  return { column, row: band(point.y, bounds.y, bounds.h, previous?.row, column === 1 ? MIDDLE_ROWS : THIRDS) };
 }
 
 /** The tile a cell of the desk in thirds stands for. */
@@ -247,9 +259,9 @@ function clampBand(index: number): number {
 
 /**
  * The tiles a window can be put in, by where on the desk: the desk in
- * thirds. The corners are quarters, the sides halves, the top middle the
- * whole desk, and the middle and bottom middle a comfortable window in the
- * centre. Read where a THROW would carry the pointer (the Snap throw), and
+ * thirds. The corners are quarters, the sides halves, the band along the
+ * top edge of the middle column the whole desk, and the rest of the middle
+ * column a comfortable window in the centre. Read where a THROW would carry the pointer (the Snap throw), and
  * where the pointer is while Shift is held (snap mode, tileRect).
  */
 export function thirdsZone(point: Point, bounds: Rect): TileZone {
@@ -263,7 +275,7 @@ export function tileRect(zone: TileZone, bounds: Rect, gap = DESK_GAP): Rect {
 
 /**
  * The size a window comes out onto the desk at — pulled from the inventory,
- * or let go of the whole desk as it is dragged (unfilledSize): big enough
+ * or let go of the whole desk as it is dragged (letGoSize): big enough
  * to read, small enough to carry to a half or a quarter.
  */
 export function windowSize(bounds: Rect): { w: number; h: number } {
@@ -290,6 +302,22 @@ export function unfilledSize(restore: Rect | null, bounds: Rect): { w: number; h
     return { w: kept.w, h: kept.h };
   }
   return windowSize(bounds);
+}
+
+/**
+ * The size a window spanning the desk takes as it is dragged, so it can be
+ * carried about: filling it both ways, its size from before it filled the
+ * desk (unfilledSize); only its whole height (a tall half), as wide as it
+ * is and as tall as windows come out; only its whole width, as tall as it
+ * is and as wide as windows come out. Null: it spans neither way, and keeps
+ * its size.
+ */
+export function letGoSize(rect: Rect, restore: Rect | null, bounds: Rect, share = 0.9): { w: number; h: number } | null {
+  if (fillsDesk(rect, bounds, share)) return unfilledSize(restore, bounds);
+  const size = windowSize(bounds);
+  if (rect.h >= bounds.h * share) return { w: rect.w, h: size.h };
+  if (rect.w >= bounds.w * share) return { w: size.w, h: rect.h };
+  return null;
 }
 
 /**
@@ -728,14 +756,15 @@ export interface DockDrops {
  * The two pads that stand in the dock's column while a window is carried
  * (the dock slides away to make room): back into the dock above, and its
  * tab closed below — where the Dock keeps its Trash — the smaller of the
- * two, since closing is the one to mean.
+ * two, since closing is the one to mean. From `top` down: above it, the
+ * window's own buttons may sit over the column.
  */
-export function dockDrops(height: number, dockW: number, inset = 6, gap = DESK_GAP): DockDrops {
-  const inner = Math.max(0, height - inset * 2);
+export function dockDrops(height: number, dockW: number, inset = 6, gap = DESK_GAP, top = inset): DockDrops {
+  const inner = Math.max(0, height - top - inset);
   const closeH = Math.min(Math.round(inner * 0.4), Math.max(120, Math.min(220, Math.round(inner * 0.28))));
   const w = Math.max(1, dockW - inset * 2 + 4);
-  const close = { x: inset, y: inset + inner - closeH, w, h: closeH };
-  return { away: { x: inset, y: inset, w, h: Math.max(0, close.y - gap - inset) }, close };
+  const close = { x: inset, y: top + inner - closeH, w, h: closeH };
+  return { away: { x: inset, y: top, w, h: Math.max(0, close.y - gap - top) }, close };
 }
 
 /**

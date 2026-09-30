@@ -21,7 +21,7 @@ import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
 import { CHROME_INSETS, DeskEngine, DOCK_ICON, DOCK_W, type DeskHost } from "../src/components/desk/desk-engine";
-import { carrySize, centeredRect, denormalizeRect, DESK_GAP, windowSize, zoneRect, type Rect } from "../src/lib/desk/geometry";
+import { carrySize, centeredRect, denormalizeRect, DESK_GAP, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
 let frames: Array<(now: number) => void> = [];
@@ -78,8 +78,12 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     hasLivePage: () => false,
     select: () => undefined,
     close: () => undefined,
+    editAddress: () => undefined,
     save: () => undefined,
     switchGroup: () => undefined,
+    reorderTab: () => undefined,
+    moveTabToGroup: () => undefined,
+    reorderGroup: () => undefined,
     leaveDone: () => undefined,
     ...host,
   });
@@ -179,7 +183,13 @@ const usable: Rect = { x: DOCK_W + DESK_GAP, y: 0, w: 1600 - DOCK_W - DESK_GAP, 
 
 /** A stand-in for an element the engine writes to: a window's box is its translate and size. */
 function element() {
-  return { style: {} as Record<string, string>, dataset: {} as Record<string, string> };
+  const style: Record<string, string> = {};
+  // The custom properties the engine writes (a window's `--reveal-*`), kept with the rest.
+  Object.defineProperties(style, {
+    setProperty: { value: (name: string, value: string) => (style[name] = value) },
+    removeProperty: { value: (name: string) => delete style[name] },
+  });
+  return { style, dataset: {} as Record<string, string> };
 }
 
 function rectOf(el: ReturnType<typeof element>): Rect {
@@ -259,6 +269,28 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
+  it("coasts a shorter way, thrown alike, the more Glide decelerates", () => {
+    const thrownWith = (deceleration: number): number => {
+      const { desk, win, move, release } = open({ variants: () => ({ ...DEFAULT_DESK_VARIANTS, deceleration }) });
+      const start = rectOf(win);
+      const at = { x: start.x + 200, y: start.y + 17 };
+      desk.grab("tab-0", at);
+      // 8px a frame, let go on the move: 500px/s.
+      for (let step = 1; step <= 10; step += 1) move(at.x + step * 8, at.y);
+      release();
+      const travelled = rectOf(win).x - start.x;
+      desk.destroy();
+      return travelled;
+    };
+    const usual = thrownWith(DEFAULT_DESK_VARIANTS.deceleration);
+    const quick = thrownWith(60);
+    const gentle = thrownWith(12);
+    // Past where the pointer let go, by the coast.
+    expect(quick).toBeGreaterThan(80);
+    expect(quick).toBeLessThan(usual - 40);
+    expect(gentle).toBeGreaterThan(usual + 40);
+  });
+
   it("with no size of its own to go back to, takes the size windows come out at", () => {
     const { drag } = native();
     const desk = engine();
@@ -278,6 +310,49 @@ describe("a window in hand", () => {
     drag.sample?.({ x: 0, y: 0, phase: "cancel" });
     settle();
     desk.destroy();
+  });
+
+  /** One window out where it was saved (fractions of the desk beside the dock), dragged by its title bar `by` a step at a time. */
+  function dragSaved(saved: Rect, by: { x: number; y: number }) {
+    const { drag } = native();
+    const desk = engine();
+    const win = element();
+    desk.start([{ tabId: "tab-0", rect: saved }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const before = rectOf(win);
+    const at = { x: before.x + 200, y: before.y + 17 };
+    desk.grab("tab-0", at);
+    for (let step = 1; step <= 40; step += 1) {
+      drag.sample?.({ x: at.x + (by.x * step) / 40, y: at.y + (by.y * step) / 40, phase: "move" });
+      run(1);
+    }
+    const carried = rectOf(win);
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    settle();
+    desk.destroy();
+    return { before, carried, at: { x: at.x + by.x, y: at.y + by.y } };
+  }
+
+  it("lets go of the desk's height once dragged, a tall half keeping its width, still held by its title bar", () => {
+    const { before, carried, at } = dragSaved({ x: 0, y: 0, w: 0.5, h: 1 }, { x: 160, y: 80 });
+    expect(before.h).toBeGreaterThan(usable.h * 0.95);
+    expect(Math.abs(carried.w - before.w)).toBeLessThan(2);
+    expect(Math.abs(carried.h - windowSize(usable).h)).toBeLessThan(2);
+    expect(Math.abs(at.y - (carried.y + 17))).toBeLessThan(3);
+  });
+
+  it("lets go of the desk's width once dragged, a wide half keeping its height", () => {
+    const { before, carried } = dragSaved({ x: 0, y: 0, w: 1, h: 0.5 }, { x: 60, y: 160 });
+    expect(before.w).toBeGreaterThan(usable.w * 0.95);
+    expect(Math.abs(carried.h - before.h)).toBeLessThan(2);
+    expect(Math.abs(carried.w - windowSize(usable).w)).toBeLessThan(2);
+  });
+
+  it("keeps its size, dragged, when it spans the desk neither way", () => {
+    const { before, carried } = dragSaved({ x: 0, y: 0, w: 0.5, h: 0.5 }, { x: 160, y: 80 });
+    expect(Math.abs(carried.w - before.w)).toBeLessThan(2);
+    expect(Math.abs(carried.h - before.h)).toBeLessThan(2);
   });
 
   it("with Shift held, lights the tile under the pointer and lands in it", () => {
@@ -386,6 +461,71 @@ describe("a window in hand", () => {
   });
 });
 
+/* --------------------------- a window's title --------------------------- */
+
+describe("a window's title", () => {
+  let restoreNow: () => void = () => undefined;
+  let listeners: Map<string, Set<(event: unknown) => void>>;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+    listeners = new Map();
+    vi.stubGlobal("window", {
+      setInterval: () => 0,
+      clearInterval: () => undefined,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      addEventListener: (type: string, listener: (event: unknown) => void) => {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type)!.add(listener);
+      },
+      removeEventListener: (type: string, listener: (event: unknown) => void) => listeners.get(type)?.delete(listener),
+      matchMedia: () => ({ matches: false }),
+      devicePixelRatio: 1,
+    });
+  });
+  afterEach(() => restoreNow());
+
+  const dispatch = (type: string, x: number, y: number): void => {
+    for (const listener of [...(listeners.get(type) ?? [])]) listener({ clientX: x, clientY: y, shiftKey: false });
+  };
+
+  function titled() {
+    native();
+    const edited: string[] = [];
+    const desk = engine({ editAddress: (tabId) => edited.push(tabId) });
+    const win = element();
+    desk.start([], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const title = { x: rectOf(win).x + 60, y: rectOf(win).y + 17 };
+    return { desk, win, edited, title };
+  }
+
+  it("clicked, opens the tab's address to edit; twice, never fills the desk", () => {
+    const { desk, edited, title } = titled();
+    desk.press("tab-0", { clientX: title.x, clientY: title.y, button: 0 }, "title");
+    dispatch("pointerup", title.x, title.y);
+    expect(edited).toEqual(["tab-0"]);
+    desk.press("tab-0", { clientX: title.x, clientY: title.y, button: 0 }, "title");
+    dispatch("pointerup", title.x, title.y);
+    settle();
+    expect(edited).toEqual(["tab-0", "tab-0"]);
+    expect(desk.getView().windows[0]!.maximized).toBe(false);
+    desk.destroy();
+  });
+
+  it("dragged, moves the window, as the rest of the bar does, and opens nothing", () => {
+    const { desk, edited, title } = titled();
+    desk.press("tab-0", { clientX: title.x, clientY: title.y, button: 0 }, "title");
+    dispatch("pointermove", title.x + 40, title.y + 30);
+    expect(desk.getView().windows[0]!.carried).toBe(true);
+    dispatch("pointerup", title.x + 40, title.y + 30);
+    expect(edited).toEqual([]);
+    desk.destroy();
+  });
+});
+
 /* ------------------------------ the dock ------------------------------ */
 
 describe("the dock", () => {
@@ -416,18 +556,24 @@ describe("the dock", () => {
     for (const listener of [...(listeners.get(type) ?? [])]) listener({ clientX: x, clientY: y, shiftKey: false });
   };
 
-  /** Tab 0 out as a window; tab 1 in the dock. Icons sit in the dock's column, 40px square. */
-  function dock() {
+  /**
+   * Tab 0 out as a window; the rest in the dock (two tabs, unless said).
+   * Icons sit in the dock's column, 40px square, 46px apart — and under
+   * them, the other groups' icons, 50px apart.
+   */
+  function dock(options: { tabs?: number; groups?: readonly string[]; host?: Partial<DeskHost> } = {}) {
     const { drag } = native();
-    const desk = engine();
+    const desk = engine(options.host);
     const ghost = element();
     const windows = new Map<string, ReturnType<typeof element>>();
+    const count = options.tabs ?? 2;
     desk.attachGhost(ghost as unknown as HTMLElement);
-    desk.start([], "tab-0", tabIds(2));
-    for (const [index, tabId] of tabIds(2).entries()) {
-      const top = 400 + index * 46;
-      desk.attachIcon(tabId, { isConnected: true, getBoundingClientRect: () => ({ left: 10, top, width: DOCK_ICON, height: DOCK_ICON }) } as unknown as HTMLElement);
-    }
+    desk.start([], "tab-0", tabIds(count));
+    const icon = (top: number): HTMLElement =>
+      ({ isConnected: true, getBoundingClientRect: () => ({ left: 10, top, width: DOCK_ICON, height: DOCK_ICON }) }) as unknown as HTMLElement;
+    for (const [index, tabId] of tabIds(count).entries()) desk.attachIcon(tabId, icon(400 + index * 46));
+    const groupTop = (index: number): number => 400 + count * 46 + 20 + index * 50;
+    for (const [index, groupId] of (options.groups ?? []).entries()) desk.attachGroupIcon(groupId, icon(groupTop(index)));
     const attach = (tabId: string): ReturnType<typeof element> => {
       const win = element();
       windows.set(tabId, win);
@@ -450,7 +596,13 @@ describe("the dock", () => {
       desk.pressIcon(`tab-${index}`, { clientX: at.x, clientY: at.y, button: 0 });
       dispatch("pointermove", at.x + 8, at.y);
     };
-    return { desk, ghost, attach, move, release, pull };
+    /** The same for another group's icon; a click there calls `onClick`. */
+    const pullGroup = (index: number, onClick: () => void = () => undefined): void => {
+      const at = { x: 30, y: groupTop(index) + 20 };
+      desk.pressGroup(options.groups![index]!, { clientX: at.x, clientY: at.y, button: 0 }, onClick);
+      dispatch("pointermove", at.x, at.y + 8);
+    };
+    return { desk, ghost, attach, move, release, pull, pullGroup, groupTop };
   }
 
   it("brings a tab out where the layout has room: filling the desk, the window in use gives up half", () => {
@@ -502,6 +654,115 @@ describe("the dock", () => {
     expect(ghost.dataset["on"]).toBeUndefined();
     expect(desk.getView().iconDrag).toBeNull();
     expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+
+  it("makes room among the group's tabs for an icon moved down the dock, and let go, the tab takes that place", () => {
+    const reordered: Array<[string, number]> = [];
+    const { desk, ghost, move, release, pull } = dock({ tabs: 3, host: { reorderTab: (tabId, index) => reordered.push([tabId, index]) } });
+    pull(0);
+    // Past tab 1's middle (466), not tab 2's (512): the place after tab 1.
+    move(30, 480);
+    expect(desk.getView().dockDrag).toEqual({ kind: "tab", id: "tab-0", order: ["tab-0", "tab-1", "tab-2"], to: 1, into: null, pitch: 46 });
+    move(34, 530);
+    expect(desk.getView().dockDrag?.to).toBe(2);
+    release();
+    expect(reordered).toEqual([["tab-0", 2]]);
+    // Shown in its place at once, before the browser has said so, and the icon has flown there (the last place, 492).
+    expect(desk.getView().dockSettle).toEqual({ tabs: ["tab-1", "tab-2", "tab-0"], groups: null, gone: null });
+    expect(ghost.style["transform"]).toContain("translate3d(10.0px, 492.0px, 0)");
+    expect(ghost.dataset["on"]).toBeUndefined();
+    expect(desk.getView().iconDrag).toBeNull();
+    expect(desk.getView().dockDrag).toBeNull();
+    // The browser's order catches up: the dock shows its own again. Nothing on the desk moved.
+    desk.syncTabs(["tab-1", "tab-2", "tab-0"]);
+    expect(desk.getView().dockSettle).toBeNull();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+
+  it("moves an icon up the dock too, and let go where it started, changes nothing", () => {
+    const reordered: Array<[string, number]> = [];
+    const { desk, move, release, pull } = dock({ tabs: 3, host: { reorderTab: (tabId, index) => reordered.push([tabId, index]) } });
+    pull(2);
+    move(30, 440);
+    expect(desk.getView().dockDrag?.to).toBe(1);
+    move(30, 400);
+    expect(desk.getView().dockDrag?.to).toBe(0);
+    move(30, 520);
+    expect(desk.getView().dockDrag?.to).toBe(2);
+    release();
+    expect(reordered).toEqual([]);
+    expect(desk.getView().dockSettle).toBeNull();
+    desk.destroy();
+  });
+
+  it("lets a tab's icon go into another group, as an app into a folder: its window flies into that group's icon, the one under it taking over", () => {
+    const moved: Array<[string, string, string | null]> = [];
+    const selected: string[] = [];
+    const { desk, attach, move, release, pull, groupTop } = dock({
+      tabs: 3,
+      groups: ["group-1", "group-2"],
+      host: { moveTabToGroup: (tabId, groupId, next) => moved.push([tabId, groupId, next]), select: (tabId) => selected.push(tabId) },
+    });
+    desk.add("tab-1", { focus: true });
+    attach("tab-1");
+    settle();
+    expect(desk.focusedTabId()).toBe("tab-1");
+    pull(1);
+    move(30, groupTop(1) + 22);
+    // Over a group: it is not among the tabs any more, and the tabs close up behind it.
+    expect(desk.getView().dockDrag).toMatchObject({ id: "tab-1", to: null, into: "group-2" });
+    move(30, groupTop(0) + 18);
+    expect(desk.getView().dockDrag?.into).toBe("group-1");
+    release();
+    expect(moved).toEqual([["tab-1", "group-1", "tab-0"]]);
+    expect(selected.at(-1)).toBe("tab-0");
+    expect(desk.getView().dockSettle).toEqual({ tabs: ["tab-0", "tab-2"], groups: null, gone: "tab-1" });
+    // The tab has left the group, and its window has gone into the other's icon.
+    desk.syncTabs(["tab-0", "tab-2"]);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    expect(desk.focusedTabId()).toBe("tab-0");
+    desk.destroy();
+  });
+
+  it("pulled clear of the dock, a tab's icon is its window again, and its section closes up as it was", () => {
+    const { desk, move, pull } = dock({ tabs: 3 });
+    pull(0);
+    move(30, 480);
+    expect(desk.getView().dockDrag?.to).toBe(1);
+    move(DOCK_W + 60, 480);
+    expect(desk.getView().dockDrag).toBeNull();
+    expect(desk.getView().gesture).toBe("move");
+    desk.destroy();
+  });
+
+  it("moves another group's icon among the groups, never out of the dock; a click passes the desk to it", () => {
+    const reordered: Array<[string, readonly string[]]> = [];
+    const { desk, ghost, move, release, pullGroup, groupTop } = dock({
+      groups: ["group-1", "group-2", "group-3"],
+      host: { reorderGroup: (groupId, order) => reordered.push([groupId, order]) },
+    });
+    pullGroup(0);
+    expect(desk.getView().groupDrag).toBe("group-1");
+    expect(desk.getView().iconDrag).toBeNull();
+    // Far out over the desk: still its icon, in the dock, and it follows the pointer only a little way out.
+    move(DOCK_W + 300, groupTop(1) + 30);
+    expect(desk.getView().gesture).toBe("icon");
+    expect(desk.getView().dockDrag).toMatchObject({ kind: "group", id: "group-1", to: 1, into: null, pitch: 50 });
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    const x = Number(/translate3d\((-?[\d.]+)px/.exec(ghost.style["transform"]!)![1]);
+    expect(x).toBeLessThan(DOCK_W + 40);
+    release();
+    expect(reordered).toEqual([["group-1", ["group-2", "group-1", "group-3"]]]);
+    expect(desk.getView().dockSettle).toEqual({ tabs: null, groups: ["group-2", "group-1", "group-3"], gone: null });
+    expect(desk.getView().groupDrag).toBeNull();
+    let clicked = 0;
+    desk.pressGroup("group-3", { clientX: 30, clientY: groupTop(2) + 20, button: 0 }, () => (clicked += 1));
+    dispatch("pointerup", 30, groupTop(2) + 20);
+    expect(clicked).toBe(1);
+    expect(reordered).toHaveLength(1);
     desk.destroy();
   });
 
@@ -857,6 +1118,48 @@ describe("a masked window", () => {
     expectRect(rectOf(win), before);
     expect(desk.getView().windows[0]!.mask).toBeNull();
     expect(lastMasks()).toEqual([]);
+    desk.destroy();
+  });
+
+  it("unmasked, is drawn all the way back: its page is never live at a size between, and its region never moves", async () => {
+    const { desk, win, before, region, layouts } = await masked();
+    const regionAt = { x: rectOf(win).x, y: rectOf(win).y + 18 };
+    const page = { x: before.x + bar.left, y: before.y + bar.top, w: before.w - bar.left - bar.right, h: before.h - bar.top - bar.bottom };
+    const sent = layouts.length;
+    desk.unmask("tab-0");
+    run(1);
+    // At once: drawn, its whole page stood where it will land, its region where it was.
+    expect(desk.getView().windows[0]!.drawn).toBe(true);
+    expect(desk.getView().windows[0]!.unmasking).toMatchObject({ x: region.x, y: region.y, width: region.w, height: region.h });
+    const reveal = (): Rect => ({
+      x: Number.parseFloat(win.style["--reveal-x"]!),
+      y: Number.parseFloat(win.style["--reveal-y"]!),
+      w: Number.parseFloat(win.style["--reveal-w"]!),
+      h: Number.parseFloat(win.style["--reveal-h"]!),
+    });
+    const pageArea = (): Point => ({ x: rectOf(win).x + bar.left, y: rectOf(win).y + bar.top });
+    // Frame by frame: the region stays put (the page moving, if at all, only as far as the window has grown).
+    const first = reveal();
+    expect(Math.abs(pageArea().x + first.x + region.x - regionAt.x)).toBeLessThan(1.5);
+    expect(Math.abs(pageArea().y + first.y + region.y - regionAt.y)).toBeLessThan(1.5);
+    for (let frame = 0; frame < 6; frame += 1) {
+      run(1);
+      const box = reveal();
+      expect(Math.abs(pageArea().x + box.x - page.x)).toBeLessThan(1.5);
+      expect(Math.abs(box.w - page.w)).toBeLessThan(1.5);
+    }
+    await flush();
+    // Landed: live again, at its page's own box — the first box main is given for it since it came off.
+    expectRect(rectOf(win), before);
+    expect(desk.getView().windows[0]!.drawn).toBe(false);
+    expect(desk.getView().windows[0]!.unmasking).toBeNull();
+    expect(win.style["--reveal-x"]).toBeUndefined();
+    const boxes = layouts.slice(sent).flatMap((layout) => layout.views.filter((view) => view.tabId === "tab-0").map((view) => view.bounds));
+    expect(boxes.length).toBeGreaterThan(0);
+    for (const bounds of boxes) {
+      expect(bounds.width).toBe(Math.round(page.w));
+      expect(bounds.height).toBe(Math.round(page.h));
+    }
     desk.destroy();
   });
 

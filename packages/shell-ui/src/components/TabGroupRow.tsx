@@ -138,9 +138,10 @@ function HeaderButton({ label, testId, onClick, disabled = false, children }: { 
  * exactly where the title was, in the group's own colour and weight, with no
  * box around them. What says "you are typing" is the row (its ring, below),
  * the caret, and the selection — all in the group's colour, so nothing about
- * it is a different material from the sidebar it sits in.
+ * it is a different material from the sidebar it sits in. A desk's dock
+ * edits a group's name with it too, on a card beside the group's icon.
  */
-function GroupTitleInput({ title, onDone }: { title: string; onDone: (title: string | null) => void }) {
+export function GroupTitleInput({ title, onDone }: { title: string; onDone: (title: string | null) => void }) {
   const [value, setValue] = useState(title);
   return (
     <input

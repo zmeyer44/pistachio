@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
+import { CHROME_VIEW_HASHES, TRAFFIC_LIGHTS_H } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { pageFirst, shellReady } from "./windows";
 
@@ -127,6 +127,18 @@ async function settled(shell: Page): Promise<void> {
   await shell.waitForTimeout(900);
 }
 
+/** The dock's More card up: its button hovered, and the card drawn once the pages under it have given way. */
+async function openMore(shell: Page): Promise<void> {
+  await shell.getByTestId("desk-more").hover();
+  await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
+}
+
+/** Leave the desk: its way out is on the More card. */
+async function leaveDesk(shell: Page): Promise<void> {
+  await openMore(shell);
+  await shell.getByTestId("desk-leave").click();
+}
+
 /** A slow drag: the pointer stops before letting go, so it is a placement, not a throw. */
 async function place(shell: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
   await shell.mouse.move(from.x, from.y);
@@ -150,6 +162,27 @@ async function fling(shell: Page, from: { x: number; y: number }, by: { x: numbe
     await shell.waitForTimeout(12);
   }
   await shell.mouse.up();
+}
+
+/**
+ * Move the window off the real cursor, if it rests over it. A drag's native
+ * layer relays where the REAL pointer is, and Playwright's pointer is not
+ * that one: a real cursor over the window would pull a drag to it.
+ */
+async function clearOfCursor(app: ElectronApplication): Promise<void> {
+  await app.evaluate(({ BrowserWindow, screen }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (window === undefined) return;
+    const cursor = screen.getCursorScreenPoint();
+    const bounds = window.getBounds();
+    const inside = cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width && cursor.y >= bounds.y && cursor.y < bounds.y + bounds.height;
+    if (!inside) return;
+    const area = screen.getDisplayNearestPoint(cursor).workArea;
+    const x = cursor.x - area.x > bounds.width + 20 ? area.x : cursor.x + 20 + bounds.width <= area.x + area.width ? cursor.x + 20 : null;
+    const y = cursor.y - area.y > bounds.height + 20 ? area.y : cursor.y + 20 + bounds.height <= area.y + area.height ? cursor.y + 20 : null;
+    if (x !== null) window.setPosition(x, bounds.y);
+    else if (y !== null) window.setPosition(bounds.x, y);
+  });
 }
 
 function center(rect: Box): { x: number; y: number } {
@@ -273,6 +306,7 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
       const window = BrowserWindow.getAllWindows()[0];
       window?.setContentSize(1440, 900);
     });
+    await clearOfCursor(app);
     const shell = await shellReady(app);
     const urls = [
       "pistachio://demo/invoices",
@@ -452,10 +486,11 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
         { url: urls[0]!, events },
       );
     for (const input of ["press", "escape"] as const) {
-      await shell.getByTestId("desk-feel").click();
-      await expect(shell.locator('[data-testid="desk-variants"][data-shown]')).toHaveCount(1);
+      // (Clicked up, it stays up until something closes it.)
+      await shell.getByTestId("desk-more").click();
+      await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
       await pageInput([input]);
-      await expect(shell.getByTestId("desk-variants")).toHaveCount(0);
+      await expect(shell.getByTestId("desk-more-card")).toHaveCount(0);
     }
 
     // ── 10. New tab: it joins the group, and comes out onto the desk in use ────
@@ -470,15 +505,14 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
     await settled(shell);
     await capture(app, shell, "07c-new-tab.png");
 
-    // ── 11. The variants (under Feel): Snap tiles every throw; the frames change ─
-    await shell.getByTestId("desk-feel").click();
-    await expect(shell.locator('[data-testid="desk-variants"][data-shown]')).toHaveCount(1);
+    // ── 11. The variants (Feel, on the More card): Snap tiles every throw; the frames change ─
+    await openMore(shell);
     await shell.waitForTimeout(200);
     await capture(app, shell, "07b-feel-menu.png");
     await shell.getByTestId("desk-variant-physics").click();
     await expect(shell.getByTestId("desk-variant-physics")).toHaveAttribute("data-value", "snap");
     await shell.keyboard.press("Escape");
-    await expect(shell.getByTestId("desk-variants")).toHaveCount(0);
+    await expect(shell.getByTestId("desk-more-card")).toHaveCount(0);
     // Every tab out, by its icon, then tiled.
     for (const tabId of ids) {
       if ((await shell.locator(windowSelector(tabId)).count()) > 0) continue;
@@ -487,26 +521,27 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
       await settled(shell);
     }
     await expect(shell.getByTestId("desk-window")).toHaveCount(5);
-    await shell.getByRole("button", { name: "Tile the windows" }).click();
+    await openMore(shell);
+    await shell.getByTestId("desk-tile").click();
+    await expect(shell.getByTestId("desk-more-card")).toHaveCount(0);
     await settled(shell);
     await capture(app, shell, "08-all-out-tiled.png");
     for (const chrome of ["tab", "bare"]) {
-      await shell.getByTestId("desk-feel").click();
-      await expect(shell.locator('[data-testid="desk-variants"][data-shown]')).toHaveCount(1);
+      await openMore(shell);
       await shell.getByTestId("desk-variant-chrome").click();
       await expect(shell.getByTestId("desk-variant-chrome")).toHaveAttribute("data-value", chrome);
       await shell.keyboard.press("Escape");
       await settled(shell);
       await capture(app, shell, `09-frame-${chrome}.png`);
     }
-    await shell.getByTestId("desk-feel").click();
+    await openMore(shell);
     await shell.getByTestId("desk-variant-chrome").click();
     await expect(shell.getByTestId("desk-variant-chrome")).toHaveAttribute("data-value", "bar");
-    await shell.getByTestId("desk-feel").click();
+    await shell.keyboard.press("Escape");
 
     // ── 12. Leave: the window in use becomes the pane again ────────────────────
     const inUse = (await snapshot(shell)).activeTabId!;
-    await shell.getByTestId("desk-leave").click();
+    await leaveDesk(shell);
     await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
     await expect(shell.getByTestId("browser-surface")).toBeVisible();
     await expect.poll(async () => (await liveViews(app!)).length).toBe(1);
@@ -659,6 +694,65 @@ test("a window filling the desk lets go of it as it is dragged, and Shift lands 
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
     await expectLiveIn(app, shell, urls[1]!, ids[1]!);
     await capture(app, shell, "15-split.png");
+
+    // ── 6. A tall half, dragged by its bar: it lets go of the desk's height, its width kept ─
+    const tallBar = await box(shell, `${windowSelector(ids[0]!)} .desk-window-bar`);
+    const grip = { x: tallBar.x + tallBar.width * 0.5, y: tallBar.y + tallBar.height / 2 };
+    await shell.mouse.move(grip.x, grip.y);
+    await shell.mouse.down();
+    await shell.mouse.move(grip.x - 6, grip.y + 4, { steps: 2 });
+    const lowered = { x: grip.x - 80, y: grip.y + 120 };
+    for (let step = 1; step <= 12; step += 1) {
+      await shell.mouse.move(grip.x + ((lowered.x - grip.x) * step) / 12, grip.y + ((lowered.y - grip.y) * step) / 12);
+      await shell.waitForTimeout(16);
+    }
+    await shell.waitForTimeout(500);
+    // (Lifted in hand: drawn a little larger than it is.)
+    const tallCarried = await box(shell, `${windowSelector(ids[0]!)} .desk-window-card`);
+    expect(tallCarried.height).toBeGreaterThan(usable.height * 0.7);
+    expect(tallCarried.height).toBeLessThan(usable.height * 0.8);
+    expect(tallCarried.width).toBeGreaterThan(half * 0.97);
+    expect(tallCarried.width).toBeLessThan(half * 1.06);
+    await capture(app, shell, "15b-tall-half-let-go.png");
+
+    // ── 7. Shift through the middle: the centre tile, even with the pointer high in the
+    //      top third (where a centred window's bar is); only at the top, the whole desk ─
+    await pressShift("keyDown");
+    await shell.keyboard.down("Shift");
+    const centred = { x: usable.x + usable.width * 0.5, y: usable.y + usable.height * 0.11 };
+    for (let step = 1; step <= 12; step += 1) {
+      await shell.mouse.move(lowered.x + ((centred.x - lowered.x) * step) / 12, lowered.y + ((centred.y - lowered.y) * step) / 12);
+      await shell.waitForTimeout(16);
+    }
+    await shell.waitForTimeout(260);
+    await expect(shell.locator(".desk-zone[data-on][data-snap]")).toHaveCount(1);
+    const centreTile = await box(shell, ".desk-zone");
+    expect(Math.abs(centreTile.width - usable.width * 0.66)).toBeLessThan(3);
+    expect(Math.abs(centreTile.x + centreTile.width / 2 - (usable.x + usable.width / 2))).toBeLessThan(3);
+    await capture(app, shell, "15c-snap-centre.png");
+    const top = { x: centred.x, y: usable.y + 12 };
+    for (let step = 1; step <= 8; step += 1) {
+      await shell.mouse.move(centred.x, centred.y + ((top.y - centred.y) * step) / 8);
+      await shell.waitForTimeout(16);
+    }
+    await shell.waitForTimeout(260);
+    const wholeTile = await box(shell, ".desk-zone");
+    expect(Math.abs(wholeTile.width - usable.width)).toBeLessThan(3);
+    expect(Math.abs(wholeTile.height - usable.height)).toBeLessThan(3);
+    await capture(app, shell, "15d-snap-top.png");
+    // Back down into the middle, and let go: centred.
+    for (let step = 1; step <= 8; step += 1) {
+      await shell.mouse.move(centred.x, top.y + ((centred.y + 60 - top.y) * step) / 8);
+      await shell.waitForTimeout(16);
+    }
+    await shell.waitForTimeout(260);
+    await shell.mouse.up();
+    await shell.keyboard.up("Shift");
+    await pressShift("keyUp");
+    await settled(shell);
+    const landed = await box(shell, windowSelector(ids[0]!));
+    expect(Math.abs(landed.width - usable.width * 0.66)).toBeLessThan(3);
+    expect(Math.abs(landed.x + landed.width / 2 - (usable.x + usable.width / 2))).toBeLessThan(3);
   } finally {
     await app.close();
   }
@@ -834,6 +928,238 @@ test("the dock: app icons, a preview on hover, a click opens where there is room
   }
 });
 
+test("⇧⌫ with the pointer on a dock icon closes that tab, wherever the keyboard is, and the page never hears it", async () => {
+  test.setTimeout(120_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-dock-close-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    const shell = await shellReady(app);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === "pistachio://demo/invoices")).toBe(true);
+    const origin = await serveDockSites(app);
+    const urls = ["pistachio://demo/invoices", `${origin}/app`, `${origin}/plain`, `${origin}/player`];
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(4);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const ids = urls.map((url) => byUrl.get(url)!);
+    const [invoices, atlas, plain, player] = ids as [string, string, string, string];
+    await shell.evaluate((tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-close", tabIds, title: "Close", color: "blue" }), ids);
+    // The desk opens on the app's page: its window is in use, and its page has the keyboard.
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), atlas);
+    const group = shell.getByTestId("tab-group");
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(4);
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[1]!, atlas);
+
+    /** A page's webContents, by its address. */
+    const inPage = <T,>(url: string, run: string): Promise<T> =>
+      app.evaluate(({ webContents }, { url, run }) => webContents.getAllWebContents().find((contents) => contents.getURL() === url)!.executeJavaScript(run), { url, run }) as Promise<T>;
+    // Every key the app's page hears, from here on; and the keyboard is the page's.
+    await inPage(urls[1]!, `window.heard = []; addEventListener("keydown", (event) => heard.push((event.shiftKey ? "⇧" : "") + event.key), true); 0`);
+    await app.evaluate(({ webContents }, url) => webContents.getAllWebContents().find((contents) => contents.getURL() === url)!.focus(), urls[1]!);
+    /** ⇧⌫ struck in a view: a page's (by its address), or the shell's own. */
+    const shiftBackspace = (into: string | "shell", repeat = false): Promise<void> =>
+      app.evaluate(
+        ({ BrowserWindow, webContents }, { into, repeat }) => {
+          const contents = into === "shell" ? BrowserWindow.getAllWindows()[0]!.webContents : webContents.getAllWebContents().find((candidate) => candidate.getURL() === into)!;
+          const modifiers: Array<"shift" | "isautorepeat"> = repeat ? ["shift", "isautorepeat"] : ["shift"];
+          contents.sendInputEvent({ type: "keyDown", keyCode: "Backspace", modifiers });
+          contents.sendInputEvent({ type: "keyUp", keyCode: "Backspace", modifiers: ["shift"] });
+        },
+        { into, repeat },
+      );
+    const hoverIcon = async (tabId: string): Promise<void> => {
+      const icon = center(await box(shell, iconSelector(tabId)));
+      await shell.mouse.move(icon.x, icon.y);
+      // Shown once the pages beside the dock have given way: main has long heard the icon is hovered.
+      await expect(shell.locator(`[data-testid="desk-dock-preview"][data-tab-id="${tabId}"][data-shown]`)).toHaveCount(1);
+    };
+    const tabIdsNow = async (): Promise<string[]> => (await snapshot(shell)).tabs.map((tab) => tab.id);
+
+    // ── 1. On a tab only in the dock, the keyboard the page's: that tab closes, and the page hears nothing ─
+    await hoverIcon(plain);
+    await capture(app, shell, "44-dock-close-hover.png");
+    await shiftBackspace(urls[1]!);
+    await expect.poll(tabIdsNow).not.toContain(plain);
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await expect(shell.locator(`[data-testid="desk-dock-icon"][data-tab-id="${plain}"]`)).toHaveCount(0);
+    expect(await inPage<string[]>(urls[1]!, "heard")).toEqual([]);
+
+    // ── 2. Held down, it closes one tab, not one per repeat (the repeats never reach the page either) ─
+    await hoverIcon(invoices);
+    await shiftBackspace(urls[1]!, true);
+    await shell.waitForTimeout(400);
+    expect(await tabIdsNow()).toContain(invoices);
+    expect(await inPage<string[]>(urls[1]!, "heard")).toEqual([]);
+    await shiftBackspace(urls[1]!);
+    await expect.poll(tabIdsNow).not.toContain(invoices);
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+
+    // ── 3. On a tab out on the desk, struck in the shell: its window goes with it, and the desk stays up ─
+    await shell.locator(iconSelector(player)).click();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell);
+    await hoverIcon(player);
+    await shiftBackspace("shell");
+    await expect.poll(tabIdsNow).not.toContain(player);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(atlas);
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await capture(app, shell, "45-dock-closed.png");
+
+    // ── 4. Off the icons, ⇧⌫ is the page's again, and closes nothing ─────────────────
+    const stage = await box(shell, ".desk-stage");
+    await shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.5);
+    await expect(shell.locator('[data-testid="desk-dock-preview"]')).toHaveCount(0);
+    await shell.waitForTimeout(300);
+    await app.evaluate(({ webContents }, url) => webContents.getAllWebContents().find((contents) => contents.getURL() === url)!.focus(), urls[1]!);
+    await shiftBackspace(urls[1]!);
+    await expect.poll(() => inPage<string[]>(urls[1]!, "heard")).toEqual(["⇧Backspace"]);
+    expect(await tabIdsNow()).toContain(atlas);
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(1);
+  } finally {
+    await app.close();
+  }
+});
+
+test("on a desk the window buttons stay, ⌘T brings a new tab out as a window, and ⌘L or a click on a window's title edits its address", async () => {
+  test.setTimeout(120_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-keys-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    const shell = await shellReady(app);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === "pistachio://demo/invoices")).toBe(true);
+    const origin = await serveDockSites(app);
+    const urls = [`${origin}/app`, `${origin}/plain`];
+    for (const url of urls) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(2);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const [atlas, plain] = urls.map((url) => byUrl.get(url)!) as [string, string];
+    await shell.evaluate((tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-keys", tabIds, title: "Keys", color: "green" }), [atlas, plain]);
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), atlas);
+    // Every time main shows or hides the window's buttons, from here on.
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]!;
+      const record = globalThis as unknown as { buttons: boolean[] };
+      record.buttons = [];
+      const set = window.setWindowButtonVisibility.bind(window);
+      window.setWindowButtonVisibility = (visible: boolean) => {
+        record.buttons.push(visible);
+        set(visible);
+      };
+    });
+    const group = shell.getByTestId("tab-group");
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await settled(shell);
+
+    // ── 1. The sidebar is away, the window's buttons are not; the dock keeps clear of them ─
+    await shell.waitForTimeout(400);
+    expect(await app.evaluate(() => (globalThis as unknown as { buttons: boolean[] }).buttons)).not.toContain(false);
+    const clip = await box(shell, ".desk-dock-clip");
+    expect(clip.y).toBeGreaterThanOrEqual(TRAFFIC_LIGHTS_H - 1);
+    await capture(app, shell, "46-desk-buttons.png");
+
+    /** A shortcut struck in a page, as a person's keys reach it (main's relay of the page's keys). */
+    const strike = (url: string, keyCode: string): Promise<void> =>
+      app.evaluate(
+        ({ webContents }, { url, keyCode }) => {
+          const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
+          contents.focus();
+          contents.sendInputEvent({ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] });
+          contents.sendInputEvent({ type: "keyDown", keyCode, modifiers: ["meta"] });
+          contents.sendInputEvent({ type: "keyUp", keyCode, modifiers: ["meta"] });
+          contents.sendInputEvent({ type: "keyUp", keyCode: "Meta", modifiers: [] });
+        },
+        { url, keyCode },
+      );
+    const address = shell.getByTestId("address-input");
+    /** The palette up over the desk: the pages under it put down (drawn by the shell), its entrance done. */
+    const paletteShown = async (): Promise<void> => {
+      await expect(shell.getByTestId("url-bar")).toBeVisible();
+      await expect.poll(async () => (await liveViews(app)).length).toBe(0);
+      await shell.waitForTimeout(400);
+    };
+
+    // ── 2. ⌘L in the window's page: the address palette, on its tab ─────────────
+    await strike(urls[0]!, "l");
+    await paletteShown();
+    await expect(address).toHaveValue(urls[0]!);
+    await capture(app, shell, "47-desk-cmd-l.png");
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("url-bar")).toHaveCount(0);
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+
+    // ── 3. ⌘T: a new tab in the group, out on the desk as the window in use (the dock's +) ─
+    await expectLiveIn(app, shell, urls[0]!, atlas);
+    await strike(urls[0]!, "t");
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-keys")?.tabIds.length).toBe(3);
+    const added = await snapshot(shell);
+    const fresh = added.tabGroups.find((candidate) => candidate.id === "desk-keys")!.tabIds.find((tabId) => tabId !== atlas && tabId !== plain)!;
+    expect(added.tabs.find((tab) => tab.id === fresh)?.url).toBe("pistachio://demo/invoices");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(fresh);
+    await expect(shell.getByTestId("url-bar")).toHaveCount(0);
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await settled(shell);
+    await capture(app, shell, "48-desk-cmd-t.png");
+
+    // ── 4. A click on the other window's title: that tab in use, and its address to edit ─
+    // (Tiled first: the new window came out over it.)
+    await openMore(shell);
+    await shell.getByTestId("desk-tile").click();
+    await settled(shell);
+    await shell.locator(`${windowSelector(atlas)} [data-testid="desk-window-address"]`).click();
+    await paletteShown();
+    await expect(address).toHaveValue(urls[0]!);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(atlas);
+    await capture(app, shell, "49-desk-title-click.png");
+    // Typed and entered, the window's page goes there, and the desk stays up.
+    await address.fill(`${origin}/plain`);
+    await address.press("Enter");
+    await expect(shell.getByTestId("url-bar")).toHaveCount(0);
+    await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => tab.id === atlas)?.url).toBe(`${origin}/plain`);
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+  } finally {
+    await app.close();
+  }
+});
+
 test("a window may lie behind the dock: its still under the dock's glass, and the dock steps aside for it in use; the dock's tools have tooltips; the sidebar is away meanwhile", async () => {
   test.setTimeout(120_000);
   const executablePath = resolveElectronExecutable();
@@ -885,12 +1211,14 @@ test("a window may lie behind the dock: its still under the dock's glass, and th
     await settled(shell);
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
     const stage = await box(shell, ".desk-stage");
-    // The sidebar is put away while the desk is up — the window buttons with it — and the desk has the whole row.
+    // The sidebar is put away while the desk is up — the window buttons stay, the dock clear of them — and the desk has the whole row.
     await expect(sidebarAway).toHaveCount(1);
     expect((await box(shell, '[data-testid="sidebar-motion-slot"]')).width).toBeLessThan(12);
     expect(stage.x).toBeLessThan(paneBefore.x - 100);
     expect(stage.x).toBeLessThan(12);
-    await expect.poll(windowButtons).toBe(false);
+    await shell.waitForTimeout(400);
+    expect(await windowButtons()).toBe(true);
+    expect((await box(shell, ".desk-dock-clip")).y).toBeGreaterThanOrEqual(TRAFFIC_LIGHTS_H - 1);
     await capture(app, shell, "24a-sidebar-away.png");
     // Where the dock's shelf and its icons rest (they slide away when it steps aside).
     const shelf = await box(shell, ".desk-dock-shelf");
@@ -973,41 +1301,50 @@ test("a window may lie behind the dock: its still under the dock's glass, and th
     expect(Math.abs(filled.x - (stage.x + DOCK_COLUMN))).toBeLessThan(2);
     await capture(app, shell, "27-dock-over-the-window-behind.png");
 
-    // ── 6. The dock's tools say what they do: a tooltip beside the dock, over the live page ─
-    const tipAt = async (label: string): Promise<{ x: number; y: number }> =>
+    // ── 6. The dock's tools: New tab says what it does in a tooltip beside the dock, over the
+    //      live page; More shows its card there for as long as the pointer is on it ─
+    const toolAt = async (label: string): Promise<{ x: number; y: number }> =>
       center(await box(shell, `.desk-dock-tools button[aria-label="${label}"]`));
     const shownTip = (label: string) => shell.locator('[data-testid="desk-dock-tip"][data-shown]', { hasText: label });
-    const tile = await tipAt("Tile the windows");
-    await shell.mouse.move(tile.x, tile.y);
-    await expect(shownTip("Tile the windows")).toHaveCount(1);
+    const plus = await toolAt("New tab");
+    await shell.mouse.move(plus.x, plus.y);
+    await expect(shownTip("New tab")).toHaveCount(1);
     const tipBox = await box(shell, '[data-testid="desk-dock-tip"][data-shown]');
     // Clear of the shelf, level with its button.
     expect(tipBox.x).toBeGreaterThan(shelf.x + shelf.width + 4);
-    expect(Math.abs(tipBox.y + tipBox.height / 2 - tile.y)).toBeLessThan(3);
+    expect(Math.abs(tipBox.y + tipBox.height / 2 - plus.y)).toBeLessThan(3);
     // The page it is drawn over gave way to its still, or it would paint over the tooltip.
     await expect.poll(() => isLive(urls[1]!)).toBe(false);
     await shell.waitForTimeout(250);
     await capture(app, shell, "28-dock-tooltip.png");
-    // The next tool along: its tooltip at once.
-    const cascade = await tipAt("Cascade the windows");
-    await shell.mouse.move(cascade.x, cascade.y);
-    await expect(shownTip("Cascade the windows")).toHaveCount(1);
-    await expect(shownTip("Tile the windows")).toHaveCount(0);
-    // Off the dock: no tooltip, and the page is live again.
+    // More: no tooltip, its card instead, beside the dock, its foot level with the button's.
+    const more = await toolAt("More");
+    await shell.mouse.move(more.x, more.y);
+    const card = shell.locator('[data-testid="desk-more-card"][data-shown]');
+    await expect(card).toHaveCount(1);
+    await expect(shell.getByTestId("desk-dock-tip")).toHaveCount(0);
+    const cardBox = await box(shell, '[data-testid="desk-more-card"]');
+    const moreButton = await box(shell, '.desk-dock-tools button[aria-label="More"]');
+    expect(cardBox.x).toBeGreaterThan(shelf.x + shelf.width + 4);
+    expect(Math.abs(cardBox.y + cardBox.height - (moreButton.y + moreButton.height))).toBeLessThan(3);
+    for (const name of ["Tile the windows", "Cascade the windows", "Leave the desk"]) await expect(card).toContainText(name);
+    await expect(card.getByTestId("desk-variants")).toContainText("Deceleration");
+    await expect.poll(() => isLive(urls[1]!)).toBe(false);
+    await shell.waitForTimeout(250);
+    await capture(app, shell, "28b-dock-more-card.png");
+    // Across the gap and onto the card, it stays; off it, it goes, and the page is live again.
+    const tileItem = center(await box(shell, '[data-testid="desk-tile"]'));
+    await shell.mouse.move(cardBox.x - 4, more.y, { steps: 3 });
+    await shell.mouse.move(tileItem.x, tileItem.y, { steps: 4 });
+    await shell.waitForTimeout(450);
+    await expect(card).toHaveCount(1);
     await shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.5);
-    await expect(shell.getByTestId("desk-dock-tip")).toHaveCount(0);
+    await expect(shell.getByTestId("desk-more-card")).toHaveCount(0);
     await expectLiveIn(app, shell, urls[1]!, ids[1]!);
-    // The buttons still do what they say: Feel opens its menu, where its tooltip would be, so the tooltip goes.
-    const feel = await tipAt("Feel");
-    await shell.mouse.move(feel.x, feel.y);
-    await expect(shownTip("Feel")).toHaveCount(1);
-    await shell.mouse.click(feel.x, feel.y);
-    await expect(shell.locator('[data-testid="desk-variants"][data-shown]')).toHaveCount(1);
-    await expect(shell.getByTestId("desk-dock-tip")).toHaveCount(0);
-    await shell.mouse.click(feel.x, feel.y);
-    await expect(shell.getByTestId("desk-variants")).toHaveCount(0);
     // And Tile tiles: the window behind the dock comes out beside it.
-    await shell.mouse.click(tile.x, tile.y);
+    await openMore(shell);
+    await shell.getByTestId("desk-tile").click();
+    await expect(shell.getByTestId("desk-more-card")).toHaveCount(0);
     await settled(shell);
     const tiledBehind = await box(shell, windowSelector(ids[0]!));
     const tiledFilled = await box(shell, windowSelector(ids[1]!));
@@ -1015,7 +1352,7 @@ test("a window may lie behind the dock: its still under the dock's glass, and th
 
     // ── 7. Leave: the row goes back to panes, and the sidebar comes back beside them ─
     await shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.5);
-    await shell.getByTestId("desk-leave").click();
+    await leaveDesk(shell);
     await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
     await expect(sidebarAway).toHaveCount(0);
     await expect(shell.getByTestId("sidebar-pane")).toBeVisible();
@@ -1212,7 +1549,7 @@ test("a mask: a region chosen from a page is all the window shows, live and stil
     await settled(shell);
     const leftAt = await box(shell, win);
     await shell.mouse.move(10, 10);
-    await shell.getByTestId("desk-leave").click();
+    await leaveDesk(shell);
     await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
     await expect
       .poll(async () => {
@@ -1231,9 +1568,9 @@ test("a mask: a region chosen from a page is all the window shows, live and stil
       await group.getByTestId("tab-group-desk").click();
       await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
     };
-    const leaveDesk = async (): Promise<void> => {
+    const leaveAndWait = async (): Promise<void> => {
       await shell.mouse.move(10, 10);
-      await shell.getByTestId("desk-leave").click();
+      await leaveDesk(shell);
       await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
       await expect(shell.locator('[data-testid="sidebar-pane"]:not([data-hidden])')).toHaveCount(1);
     };
@@ -1260,7 +1597,7 @@ test("a mask: a region chosen from a page is all the window shows, live and stil
     await capture(app, shell, "35-reopened-masked.png");
 
     // ── 8. Reopened on the masked window itself: it lifts off whole, is masked again, and goes where it was left ─
-    await leaveDesk();
+    await leaveAndWait();
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), ids[0]!);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(ids[0]);
     await openDesk();
@@ -1378,6 +1715,19 @@ test("a mask never lets its page see a resize, and its region can be edited: the
     await expect(editor).toHaveAttribute("data-shown", "");
     await expect(editor).toHaveAttribute("data-whole", "");
     await expect(shell.locator(`${win}[data-editing="shown"]`)).toHaveCount(1);
+    // Every picture the editor shows is of the whole page, in the page's shape: never one
+    // taken before its view had the size for it (the region's box, scaled up and cropped).
+    const shapes: number[] = [];
+    for (let sample = 0; sample < 16; sample += 1) {
+      const shape = await shell.evaluate((selector) => {
+        const image = document.querySelector<HTMLImageElement>(selector);
+        return image !== null && image.complete && image.naturalHeight > 0 ? image.naturalWidth / image.naturalHeight : null;
+      }, `${win} [data-testid="desk-mask-editor"][data-shown] .desk-mask-editor-shot img`);
+      if (shape !== null) shapes.push(shape);
+      await shell.waitForTimeout(40);
+    }
+    expect(shapes.length).toBeGreaterThan(0);
+    for (const shape of shapes) expect(Math.abs(shape - pageWidth / pageHeight)).toBeLessThan(0.03);
     // The page's own view is down meanwhile; the editor's region is where the window's was.
     await expect.poll(async () => (await liveViews(app)).some((view) => view.url === urls[0])).toBe(false);
     const editRegion = await box(shell, `${win} [data-testid="desk-mask-editor-region"]`);
@@ -1434,6 +1784,24 @@ test("a mask never lets its page see a resize, and its region can be edited: the
     expect(Math.abs(kept.x - edited.x)).toBeLessThan(2);
     expect(Math.abs(kept.width - edited.width)).toBeLessThan(2);
     expect(await inPage<string[]>("window.__sizes")).toEqual([]);
+
+    // ── 6. Unmask: the whole page back around the region — and the page, laid out at its
+    //      own box all along, never sees its size change, not for a frame of the way back ─
+    await shell.locator(`${win} [data-testid="desk-unmask"]`).click();
+    await expect(shell.locator(`${win}[data-masked]`)).toHaveCount(0);
+    await capture(app, shell, "39b-unmasking.png");
+    await shell.waitForTimeout(120);
+    await capture(app, shell, "39c-unmasking-later.png");
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[0]!, ids[0]!);
+    await shell.waitForTimeout(300);
+    expect(await inPage<string[]>("window.__sizes")).toEqual([]);
+    expect(await inPage<number>("innerWidth")).toBe(pageWidth);
+    expect(await inPage<number>("innerHeight")).toBe(pageHeight);
+    const whole = await box(shell, `${win} [data-testid="desk-window-page"]`);
+    expect(Math.abs(whole.width - pageWidth)).toBeLessThan(2);
+    expect(Math.abs(whole.height - pageHeight)).toBeLessThan(2);
+    await capture(app, shell, "39d-unmasked.png");
   } finally {
     await app.close();
   }
@@ -1609,10 +1977,489 @@ test("the dock lists the Space's other groups; choosing one passes the desk to i
     await expectLiveIn(app, shell, urls[2]!, b0);
 
     // ── 5. Leave: the window in use is the pane, and the desk is gone ──────────
-    await shell.getByTestId("desk-leave").click();
+    await leaveDesk(shell);
     await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
     await expect(shell.getByTestId("browser-surface")).toBeVisible();
     expect((await snapshot(shell)).activeTabId).toBe(b0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("the dock rearranges: a tab's icon among the group's tabs, a group's among the groups, and a tab let go on another group's icon goes into it", async () => {
+  test.setTimeout(150_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-rearrange-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await clearOfCursor(app);
+    const shell = await shellReady(app);
+    const urls = [
+      "pistachio://demo/invoices",
+      "pistachio://demo/vendors/atlas-medical",
+      "pistachio://demo/invoices?page=north",
+      "pistachio://demo/invoices?page=south",
+      "pistachio://demo/invoices?page=east",
+    ];
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[0])).toBe(true);
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(urls.length);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const [a0, a1, a2, b0, c0] = urls.map((url) => byUrl.get(url)!) as [string, string, string, string, string];
+    const create = (id: string, tabIds: string[], title: string, color: string): Promise<unknown> =>
+      shell.evaluate(
+        ({ id, tabIds, title, color }) =>
+          (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id, tabIds, title, color } as never),
+        { id, tabIds, title, color },
+      );
+    // The row: Research, then Regions, then Vendors.
+    await create("desk-a", [a0, a1, a2], "Research", "blue");
+    await create("desk-b", [b0], "Regions", "orange");
+    await create("desk-c", [c0], "Vendors", "green");
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), a0);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
+    const research = shell.locator('[data-testid="tab-group"]').filter({ hasText: "Research" });
+    await research.getByTestId("tab-group-header").hover();
+    await research.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await settled(shell);
+
+    const groupIcon = (id: string) => shell.locator(`[data-testid="desk-dock-group"][data-group-id="${id}"]`);
+    const groupTile = (id: string): string => `[data-testid="desk-dock-group"][data-group-id="${id}"] .desk-dock-tile`;
+    const dockTabs = (): Promise<Array<string | null>> =>
+      shell.getByTestId("desk-dock-icon").evaluateAll((els) => els.map((el) => el.getAttribute("data-tab-id")));
+    const dockGroups = (): Promise<Array<string | null>> =>
+      shell.getByTestId("desk-dock-group").evaluateAll((els) => els.map((el) => el.getAttribute("data-group-id")));
+    const members = async (id: string): Promise<string[] | null> => (await snapshot(shell)).tabGroups.find((group) => group.id === id)?.tabIds ?? null;
+    /** The groups as the sidebar lists them: where their tabs sit in the row. */
+    const rowGroups = async (): Promise<string[]> => {
+      const { tabs, tabGroups } = await snapshot(shell);
+      const at = (tabIds: string[]): number => Math.min(...tabIds.map((tabId) => tabs.findIndex((tab) => tab.id === tabId)));
+      return [...tabGroups].sort((a, b) => at(a.tabIds) - at(b.tabIds)).map((group) => group.id);
+    };
+    /** Press an icon and carry it slowly to `to`, in the dock; `whileHeld` runs before it is let go. */
+    const carry = async (from: { x: number; y: number }, to: { x: number; y: number }, whileHeld: () => Promise<void>): Promise<void> => {
+      await shell.mouse.move(from.x, from.y);
+      await shell.mouse.down();
+      await shell.mouse.move(from.x, from.y + 6, { steps: 2 });
+      for (let step = 1; step <= 12; step += 1) {
+        await shell.mouse.move(from.x + ((to.x - from.x) * step) / 12, from.y + ((to.y - from.y) * step) / 12);
+        await shell.waitForTimeout(16);
+      }
+      // The icons have made room.
+      await shell.waitForTimeout(300);
+      await whileHeld();
+      await shell.mouse.up();
+    };
+    const stage = await box(shell, ".desk-stage");
+    const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
+    expect(await dockTabs()).toEqual([a0, a1, a2]);
+    expect(await dockGroups()).toEqual(["desk-b", "desk-c"]);
+
+    // ── 1. A tab's icon down the dock: the others make room, and let go, it takes that place ─
+    const pitch = center(await box(shell, iconSelector(a1))).y - center(await box(shell, iconSelector(a0))).y;
+    await carry(center(await box(shell, iconSelector(a0))), { x: center(await box(shell, iconSelector(a2))).x, y: center(await box(shell, iconSelector(a2))).y + 10 }, async () => {
+      await expect(shell.locator(".desk-dock-icons[data-reordering]")).toHaveCount(1);
+      await expect(shell.locator(".desk-dock-ghost[data-on]")).toHaveCount(1);
+      // Its neighbours each moved up a place, into the room it left.
+      for (const tabId of [a1, a2]) {
+        const shift = await shell.locator(`[data-testid="desk-dock-icon"][data-tab-id="${tabId}"]`).evaluate((el) => getComputedStyle(el).translate);
+        expect(Number.parseFloat(shift.split(" ")[1] ?? "0")).toBeCloseTo(-pitch, 0);
+      }
+      await capture(app, shell, "50-dock-tab-reordering.png");
+    });
+    await expect.poll(() => members("desk-a")).toEqual([a1, a2, a0]);
+    await expect.poll(dockTabs).toEqual([a1, a2, a0]);
+    await expect(shell.locator(".desk-dock-ghost[data-on]")).toHaveCount(0);
+    // At rest where it went, and nothing on the desk moved.
+    expect(center(await box(shell, iconSelector(a0))).y).toBeGreaterThan(center(await box(shell, iconSelector(a2))).y);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(a0))).toHaveCount(1);
+    await awayFromDock();
+    await settled(shell);
+    await capture(app, shell, "51-dock-tab-reordered.png");
+
+    // ── 2. A group's icon up among the groups: Vendors above Regions, in the sidebar too ─
+    await carry(center(await box(shell, groupTile("desk-c"))), { x: center(await box(shell, groupTile("desk-b"))).x, y: center(await box(shell, groupTile("desk-b"))).y - 10 }, async () => {
+      await expect(shell.locator(".desk-dock-groups[data-reordering]")).toHaveCount(1);
+      await expect(groupIcon("desk-c")).toHaveAttribute("data-in-hand", "");
+      await capture(app, shell, "52-dock-group-reordering.png");
+    });
+    await expect.poll(dockGroups).toEqual(["desk-c", "desk-b"]);
+    await expect.poll(rowGroups).toEqual(["desk-a", "desk-c", "desk-b"]);
+    // A drag is not a click: the desk is still Research's.
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await awayFromDock();
+    await settled(shell);
+    await capture(app, shell, "53-dock-groups-reordered.png");
+
+    // ── 3. A tab's icon let go on another group's, as an app into a folder: it goes into that group ─
+    await carry(center(await box(shell, iconSelector(a2))), center(await box(shell, groupTile("desk-b"))), async () => {
+      await expect(groupIcon("desk-b")).toHaveAttribute("data-drop-target", "");
+      await expect(shell.locator(".desk-dock-ghost[data-into]")).toHaveCount(1);
+      // Grown and ringed, the group's icon is whole: the groups' scroll box, which clips, has room for it.
+      const reach = await shell.locator(groupTile("desk-b")).evaluate((tile) => {
+        const ring = 2;
+        const box = tile.getBoundingClientRect();
+        const clip = tile.closest(".desk-dock-groups")!.getBoundingClientRect();
+        return Math.min(box.left - ring - clip.left, clip.right - (box.right + ring), box.top - ring - clip.top, clip.bottom - (box.bottom + ring));
+      });
+      expect(reach).toBeGreaterThanOrEqual(0);
+      await capture(app, shell, "54-dock-tab-over-group.png");
+    });
+    await expect.poll(() => members("desk-b")).toEqual([b0, a2]);
+    await expect.poll(() => members("desk-a")).toEqual([a1, a0]);
+    await expect.poll(dockTabs).toEqual([a1, a0]);
+    // The group took it where it stands: it did not move to where the tab was.
+    expect(await dockGroups()).toEqual(["desk-c", "desk-b"]);
+    expect(await rowGroups()).toEqual(["desk-a", "desk-c", "desk-b"]);
+    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+    expect((await snapshot(shell)).activeTabId).toBe(a0);
+    await awayFromDock();
+    await settled(shell);
+    await capture(app, shell, "55-dock-tab-in-group.png");
+
+    // ── 4. The icon of the window in use, into another group: its window flies into that
+    //      group's icon, and the group's other tab takes over, out on the desk ─
+    await carry(center(await box(shell, iconSelector(a0))), center(await box(shell, groupTile("desk-c"))), async () => {
+      await expect(groupIcon("desk-c")).toHaveAttribute("data-drop-target", "");
+    });
+    await shell.waitForTimeout(120);
+    await capture(app, shell, "56-dock-window-into-group.png");
+    await expect.poll(() => members("desk-c")).toEqual([c0, a0]);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a1);
+    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(1);
+    await awayFromDock();
+    await settled(shell);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(a1))).toHaveCount(1);
+    await expectLiveIn(app, shell, urls[1]!, a1);
+    // Its card: the tab is among the group's now.
+    await groupIcon("desk-c").hover();
+    await expect(shell.locator('[data-testid="desk-dock-group-card"][data-group-id="desk-c"][data-shown]')).toContainText("2 tabs");
+    await shell.waitForTimeout(250);
+    await capture(app, shell, "57-dock-window-in-group.png");
+
+    // ── 5. A click on a group's icon still passes the desk to it ────────────────
+    await groupIcon("desk-c").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await expect(groupIcon("desk-a")).toBeVisible();
+    await awayFromDock();
+    await settled(shell);
+  } finally {
+    await app.close();
+  }
+});
+
+test("the dock's icons have the sidebar's menus: a tab's, after what the desk does with its window, and a group's, its name edited beside its icon", async () => {
+  test.setTimeout(150_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-menus-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await clearOfCursor(app);
+    const shell = await shellReady(app);
+    const urls = [
+      "pistachio://demo/invoices",
+      "pistachio://demo/vendors/atlas-medical",
+      "pistachio://demo/invoices?page=north",
+      "pistachio://demo/invoices?page=south",
+    ];
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[0])).toBe(true);
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(urls.length);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const [a0, a1, a2, b0] = urls.map((url) => byUrl.get(url)!) as [string, string, string, string];
+    const create = (id: string, tabIds: string[], title: string, color: string): Promise<unknown> =>
+      shell.evaluate(
+        ({ id, tabIds, title, color }) =>
+          (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id, tabIds, title, color } as never),
+        { id, tabIds, title, color },
+      );
+    await create("desk-a", [a0, a1, a2], "Research", "blue");
+    await create("desk-b", [b0], "Regions", "orange");
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), a0);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
+    const research = shell.locator('[data-testid="tab-group"]').filter({ hasText: "Research" });
+    await research.getByTestId("tab-group-header").hover();
+    await research.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await settled(shell);
+
+    const menu = shell.getByTestId("context-menu");
+    const item = (name: string) => menu.getByRole("menuitem", { name, exact: true });
+    const groupIcon = (id: string) => shell.locator(`[data-testid="desk-dock-group"][data-group-id="${id}"]`);
+    const members = async (id: string): Promise<string[] | null> => (await snapshot(shell)).tabGroups.find((group) => group.id === id)?.tabIds ?? null;
+    const stage = await box(shell, ".desk-stage");
+    const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
+    /** A right-click on an icon, and its menu up (drawn once the pages have given way to their stills). */
+    const menuOn = async (selector: string): Promise<void> => {
+      await shell.locator(selector).click({ button: "right" });
+      await expect(menu).toBeVisible();
+      await expect(menu).not.toHaveClass(/opacity-0/);
+    };
+    const choose = async (name: string): Promise<void> => {
+      await item(name).click();
+      await expect(menu).toHaveCount(0);
+    };
+
+    // ── 1. A tab in the dock: out onto the desk, then the sidebar's own entries, with no split view ─
+    await menuOn(iconSelector(a1));
+    await expect(item("Open on the desk")).toBeVisible();
+    for (const name of ["Pin tab", "Add to favorites", "Remove from “Research”", "New group with this tab", "Add to “Regions”", "Duplicate tab", "Suspend tab", "Close tab"]) {
+      await expect(item(name)).toBeVisible();
+    }
+    await expect(menu.getByRole("menuitem", { name: /split/i })).toHaveCount(0);
+    await expect(item("Put away")).toHaveCount(0);
+    await shell.waitForTimeout(200);
+    await capture(app, shell, "58-dock-tab-menu.png");
+    await choose("Open on the desk");
+    await expect(shell.locator(windowSelector(a1))).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a1);
+    await awayFromDock();
+    await settled(shell);
+
+    // ── 2. A tab out on the desk: put away, or (not the window in use) brought to the front; it cannot be suspended ─
+    await menuOn(iconSelector(a1));
+    await expect(item("Put away")).toBeVisible();
+    await expect(item("Bring to front")).toHaveCount(0);
+    await expect(item("Suspend tab")).toBeDisabled();
+    await shell.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await menuOn(iconSelector(a0));
+    await expect(item("Bring to front")).toBeVisible();
+    await choose("Bring to front");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
+    await menuOn(iconSelector(a1));
+    await choose("Put away");
+    await expect(shell.locator(windowSelector(a1))).toHaveCount(0);
+    await awayFromDock();
+    await settled(shell);
+
+    // ── 3. Into another group from the menu: gone from the dock, into that group ─
+    await menuOn(iconSelector(a2));
+    await choose("Add to “Regions”");
+    await expect.poll(() => members("desk-b")).toEqual([b0, a2]);
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+
+    // ── 4. The tab in use taken out of the group: the desk stays, on another of its tabs ─
+    await menuOn(iconSelector(a1));
+    await choose("Open on the desk");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a1);
+    await awayFromDock();
+    await settled(shell);
+    await menuOn(iconSelector(a1));
+    await choose("Remove from “Research”");
+    await expect.poll(() => members("desk-a")).toEqual([a0]);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
+    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await awayFromDock();
+    await settled(shell);
+
+    // ── 5. Duplicated: the copy joins the group beside it and comes out on the desk, in use ─
+    await menuOn(iconSelector(a0));
+    await choose("Duplicate tab");
+    await expect.poll(async () => (await members("desk-a"))?.length).toBe(2);
+    const copy = (await members("desk-a"))![1]!;
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(copy);
+    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+    await expect(shell.locator(windowSelector(copy))).toHaveCount(1);
+    await awayFromDock();
+    await settled(shell);
+
+    // ── 6. Another group's icon: the sidebar's menu for the group (no "Keep open": a desk has no row to hold) ─
+    await menuOn(`[data-testid="desk-dock-group"][data-group-id="desk-b"] .desk-dock-tile`);
+    for (const name of ["Rename", "New tab in group", "Open as split view", "Open as desk", "Ungroup tabs", "Close group"]) {
+      await expect(item(name)).toBeVisible();
+    }
+    await expect(item("Keep open")).toHaveCount(0);
+    // Under the menu the pages are down; the window in use shows the picture main took of it, never a blank.
+    await expect(shell.locator(`${windowSelector(copy)} [data-testid="desk-window-page"] img.desk-still`)).toHaveCount(1);
+    await shell.waitForTimeout(200);
+    await capture(app, shell, "59-dock-group-menu.png");
+    // Rename: a field beside its icon, which has the keyboard.
+    await choose("Rename");
+    const rename = shell.locator('[data-testid="desk-dock-rename"][data-group-id="desk-b"][data-shown]');
+    await expect(rename).toBeVisible();
+    await expect(rename.getByTestId("tab-group-name-input")).toBeFocused();
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.isFocused())).toBe(true);
+    const iconMiddle = center(await box(shell, `[data-testid="desk-dock-group"][data-group-id="desk-b"]`)).y;
+    expect(Math.abs(center(await box(shell, '[data-testid="desk-dock-rename"]')).y - iconMiddle)).toBeLessThan(2);
+    await shell.keyboard.type("Places");
+    await shell.waitForTimeout(250);
+    await capture(app, shell, "60-dock-group-rename.png");
+    await shell.keyboard.press("Enter");
+    await expect(rename).toHaveCount(0);
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === "desk-b")?.title).toBe("Places");
+    // Its colour, from the swatches.
+    await menuOn(`[data-testid="desk-dock-group"][data-group-id="desk-b"] .desk-dock-tile`);
+    await menu.getByTestId("group-color-green").click();
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === "desk-b")?.color).toBe("green");
+    await expect(groupIcon("desk-b")).toHaveAttribute("data-group-color", "green");
+
+    // ── 7. Open as desk: the desk passes to it in place ─────────────────────────
+    await menuOn(`[data-testid="desk-dock-group"][data-group-id="desk-b"] .desk-dock-tile`);
+    await choose("Open as desk");
+    await expect(groupIcon("desk-a")).toBeVisible();
+    await expect(groupIcon("desk-b")).toHaveCount(0);
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test("the More card holds the arrangements, with keyboard shortcuts struck in a page or the shell, and Glide's deceleration", async () => {
+  test.setTimeout(120_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-more-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await clearOfCursor(app);
+    const shell = await shellReady(app);
+    const urls = ["pistachio://demo/invoices", "pistachio://demo/vendors/atlas-medical", "pistachio://demo/invoices?page=north"];
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[0])).toBe(true);
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(urls.length);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const ids = urls.map((url) => byUrl.get(url)!);
+    await shell.evaluate((tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-more", tabIds, title: "More", color: "purple" }), ids);
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), ids[0]!);
+    const group = shell.getByTestId("tab-group");
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await settled(shell);
+    const stage = await box(shell, ".desk-stage");
+    const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
+    for (const tabId of ids.slice(1)) {
+      await shell.locator(iconSelector(tabId)).click();
+      await expect(shell.locator(windowSelector(tabId))).toHaveCount(1);
+    }
+    await awayFromDock();
+    await settled(shell);
+
+    // ── 1. The dock's tools are the new tab and More; the arrangements are on More's card, with their keys ─
+    await expect(shell.locator(".desk-dock-tools button")).toHaveCount(2);
+    await openMore(shell);
+    await expect(shell.getByTestId("desk-tile")).toContainText("⌘⌥T");
+    await expect(shell.getByTestId("desk-cascade")).toContainText("⌘⌥C");
+    await awayFromDock();
+    await expect(shell.getByTestId("desk-more-card")).toHaveCount(0);
+
+    /** ⌘⌥ and a key, struck where the keyboard is: the window in use's page, or the shell. */
+    const strike = (target: "page" | "shell", keyCode: string, url?: string): Promise<void> =>
+      app.evaluate(
+        ({ BrowserWindow, webContents }, { target, keyCode, url }) => {
+          const contents =
+            target === "shell" ? BrowserWindow.getAllWindows()[0]!.webContents : webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
+          contents.focus();
+          contents.sendInputEvent({ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] });
+          contents.sendInputEvent({ type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] });
+          contents.sendInputEvent({ type: "keyDown", keyCode, modifiers: ["meta", "alt"] });
+          contents.sendInputEvent({ type: "keyUp", keyCode, modifiers: ["meta", "alt"] });
+          contents.sendInputEvent({ type: "keyUp", keyCode: "Alt", modifiers: ["meta"] });
+          contents.sendInputEvent({ type: "keyUp", keyCode: "Meta", modifiers: [] });
+        },
+        { target, keyCode, url },
+      );
+    const boxes = async (): Promise<Box[]> => Promise.all(ids.map((tabId) => box(shell, windowSelector(tabId))));
+    const overlap = (a: Box, b: Box): boolean => a.x < b.x + b.width - 1 && b.x < a.x + a.width - 1 && a.y < b.y + b.height - 1 && b.y < a.y + a.height - 1;
+
+    // ── 2. ⌘⌥C in the window's page: the windows cascade, each a step down and along from the last ─
+    const inUse = (await snapshot(shell)).activeTabId!;
+    await strike("page", "c", urls[ids.indexOf(inUse)]);
+    await settled(shell);
+    const cascaded = (await boxes()).sort((a, b) => a.x - b.x);
+    for (let index = 1; index < cascaded.length; index += 1) {
+      expect(cascaded[index]!.x).toBeGreaterThan(cascaded[index - 1]!.x + 8);
+      expect(cascaded[index]!.y).toBeGreaterThan(cascaded[index - 1]!.y + 8);
+      expect(overlap(cascaded[index]!, cascaded[index - 1]!)).toBe(true);
+    }
+    await capture(app, shell, "61-desk-cascade-key.png");
+
+    // ── 3. ⌘⌥T with the shell holding the keyboard: tiled, side by side, beside the dock ─
+    await strike("shell", "t");
+    await settled(shell);
+    const tiled = await boxes();
+    for (const a of tiled) {
+      expect(a.x).toBeGreaterThan(stage.x + DOCK_COLUMN - 2);
+      for (const b of tiled) if (a !== b) expect(overlap(a, b)).toBe(false);
+    }
+    await capture(app, shell, "62-desk-tile-key.png");
+
+    // ── 4. Glide's deceleration, on the card under the throw: kept on this device, and idle under another throw ─
+    await openMore(shell);
+    const deceleration = shell.getByTestId("desk-variant-deceleration");
+    await expect(deceleration).toHaveAttribute("data-value", "28");
+    await deceleration.locator('input[type="range"]').fill("50");
+    await expect(deceleration).toHaveAttribute("data-value", "50");
+    await expect(deceleration).toContainText("50%");
+    await expect
+      .poll(() => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.v1") ?? "{}") as { variants?: { deceleration?: number } }).variants?.deceleration))
+      .toBe(50);
+    await shell.waitForTimeout(200);
+    await capture(app, shell, "63-desk-more-deceleration.png");
+    await shell.getByTestId("desk-variant-physics").click();
+    await expect(shell.getByTestId("desk-variant-physics")).toHaveAttribute("data-value", "snap");
+    await expect(deceleration.locator('input[type="range"]')).toBeDisabled();
+    // The card stayed up through all of that: the pointer is on it.
+    await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
+    await shell.getByTestId("desk-variant-physics").click({ modifiers: ["Shift"] });
+    await expect(shell.getByTestId("desk-variant-physics")).toHaveAttribute("data-value", "glide");
+    await expect(deceleration.locator('input[type="range"]')).toBeEnabled();
+
+    // ── 5. The way out is on the card too ─────────────────────────────────────
+    await shell.getByTestId("desk-leave").click();
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
+    // With no desk up, the keys are no one's: nothing happens.
+    await strike("shell", "t");
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
   } finally {
     await app.close();
   }

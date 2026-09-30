@@ -317,8 +317,9 @@ export interface ShellState {
   sidebarRevealed: boolean;
   /**
    * The sidebar's column is put away entirely, pinned or compact, until a
-   * tab group's desk is left (docs/desk.md): nothing is under the traffic
-   * lights, so they hide, and the compact sidebar's edge brings nothing out.
+   * tab group's desk is left (docs/desk.md): the traffic lights stay, over
+   * the top of the desk's dock column, and the compact sidebar's edge brings
+   * nothing out.
    * Always false in the top layout.
    */
   sidebarAway: boolean;

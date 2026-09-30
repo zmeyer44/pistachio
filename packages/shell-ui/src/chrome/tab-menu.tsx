@@ -18,7 +18,8 @@ export { moveToFolderEntries } from "./tab-menu-entries";
  * moving to a folder, duplicating, splitting and closing can never be
  * available in one layout and missing from the other. The sidebar keeps
  * its own multi-selection and pin/folder menus, which have no strip
- * equivalent; a single tab's menu is this.
+ * equivalent; a single tab's menu is this. A desk's dock opens it too, for
+ * a tab's icon (components/desk/DeskDock.tsx: TabMenuOptions.desk).
  */
 
 /** The active Space's folders, off the shelf snapshot. */
@@ -39,6 +40,7 @@ function groupEntries(
   groups: readonly TabGroupInfo[],
   command: ReturnType<typeof useAppStore.getState>["tabGroupCommand"],
   onNewGroup: ((groupId: string) => void) | undefined,
+  moveTo: (groupId: string) => void,
 ): MenuEntry[] {
   if (tab.kind !== "human" || tab.anchorId !== null) return [];
   const own = tabGroupOf(groups, tab.id);
@@ -68,16 +70,32 @@ function groupEntries(
       .map<MenuEntry>((group) => ({
         label: `Add to “${group.title}”`,
         icon: <Layers aria-hidden="true" />,
-        onSelect: () => void command({ type: "addTab", groupId: group.id, tabId: tab.id }),
+        onSelect: () => moveTo(group.id),
       })),
   ];
 }
 
-export function useTabMenu(options: { onNewGroup?: (groupId: string) => void } = {}): (tab: ChromeTab) => MenuEntry[] {
+export interface TabMenuOptions {
+  /** A group made from the tab: the chrome names it, or starts its rename (useNewGroupNaming). */
+  onNewGroup?: (groupId: string) => void;
+  /**
+   * Opened from a desk's dock, which shows the group's tabs as windows: a
+   * split view means nothing there (its entry goes), a tab whose window is
+   * out is on screen and cannot be suspended, and a tab added to another
+   * group goes the way the dock sends it (its window flying into that
+   * group's icon).
+   */
+  desk?: {
+    onDesk(tabId: string): boolean;
+    moveToGroup(tabId: string, groupId: string): void;
+  };
+}
+
+export function useTabMenu(options: TabMenuOptions = {}): (tab: ChromeTab) => MenuEntry[] {
   const folders = useShelfFolders();
   const groups = useAppStore((s) => s.snapshot?.tabGroups ?? NO_GROUPS);
   const tabGroupCommand = useAppStore((s) => s.tabGroupCommand);
-  const { onNewGroup } = options;
+  const { onNewGroup, desk } = options;
   const selectTab = useAppStore((s) => s.selectTab);
   const closeTab = useAppStore((s) => s.closeTab);
   const suspendTab = useAppStore((s) => s.suspendTab);
@@ -119,7 +137,9 @@ export function useTabMenu(options: { onNewGroup?: (groupId: string) => void } =
           index: 10_000,
         }),
     ),
-    ...groupEntries(tab, groups, tabGroupCommand, onNewGroup),
+    ...groupEntries(tab, groups, tabGroupCommand, onNewGroup, (groupId) =>
+      desk !== undefined ? desk.moveToGroup(tab.id, groupId) : void tabGroupCommand({ type: "addTab", groupId, tabId: tab.id }),
+    ),
     { separator: true },
     {
       label: "Duplicate tab",
@@ -133,18 +153,23 @@ export function useTabMenu(options: { onNewGroup?: (groupId: string) => void } =
       disabled: tab.kind !== "human" || !canReadUrl(tab.url),
       onSelect: () => void toggleReaderView(tab.id),
     },
-    {
-      label: tab.splitGroup !== null ? "Close split view" : tab.active ? "Open in split view" : "Split with active tab",
-      icon: <Columns2 aria-hidden="true" />,
-      onSelect: () => {
-        if (tab.splitGroup !== null) {
-          void (async () => {
-            if (!tab.active && !tab.split) await selectTab(tab.id);
-            await setSplit("single");
-          })();
-        } else void splitWith(tab.id, "right");
-      },
-    },
+    // (A desk shows no split views: its windows are laid out by hand.)
+    ...(desk !== undefined
+      ? []
+      : [
+          {
+            label: tab.splitGroup !== null ? "Close split view" : tab.active ? "Open in split view" : "Split with active tab",
+            icon: <Columns2 aria-hidden="true" />,
+            onSelect: () => {
+              if (tab.splitGroup !== null) {
+                void (async () => {
+                  if (!tab.active && !tab.split) await selectTab(tab.id);
+                  await setSplit("single");
+                })();
+              } else void splitWith(tab.id, "right");
+            },
+          },
+        ]),
     {
       label: "Ask Pistachio about this tab",
       icon: <Sparkles aria-hidden="true" />,
@@ -154,7 +179,7 @@ export function useTabMenu(options: { onNewGroup?: (groupId: string) => void } =
     {
       label: tab.lifecycle === "suspended" ? "Suspended" : "Suspend tab",
       icon: <Moon aria-hidden="true" />,
-      disabled: tab.kind !== "human" || tab.lifecycle === "suspended" || tab.active || tab.split,
+      disabled: tab.kind !== "human" || tab.lifecycle === "suspended" || tab.active || tab.split || desk?.onDesk(tab.id) === true,
       onSelect: () => void suspendTab(tab.id),
     },
     // Only a host that can hold a page in focus reports the flag at all.
