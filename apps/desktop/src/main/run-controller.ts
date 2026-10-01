@@ -171,7 +171,7 @@ export interface DeskAgentHost {
   };
   context: {
     items(groupId: string): GroupContextItem[];
-    read(groupId: string, itemId: string): GroupContextReading;
+    read(groupId: string, itemId: string): Promise<GroupContextReading>;
     addText(groupId: string, title: string, input: { kind: GroupContextText["kind"]; text: string; url?: string; title?: string }, addedBy: GroupContextAuthor): GroupContextText;
   };
 }
@@ -851,7 +851,7 @@ export class RunController {
         if (left.length === 0) throw new Error("none of those tabs are on this desk");
       },
       read: async (itemId) => {
-        const reading = host.context.read(groupId, itemId);
+        const reading = await host.context.read(groupId, itemId);
         return "text" in reading ? { text: reading.text } : { file: reading.file };
       },
       save: async (input) => ({ id: host.context.addText(groupId, title(), input, "agent").id }),

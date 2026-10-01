@@ -541,3 +541,10 @@ describe("the index is the store's own", () => {
     expect(Object.isFrozen(live.origin)).toBe(false);
   });
 });
+
+describe("a conversation's title", () => {
+  it("is the person's own words, not the text a message carried", () => {
+    expect(titleFor("What's left to pack in @notes.md ?\n\nAttached file “notes.md”:\n````\n# Trip notes\n````")).toBe("What's left to pack in @notes.md ?");
+    expect(titleFor("Summarize this\n\nSelected on Hotel (https://hotel.example/):\n````\nCheck-in\n````")).toBe("Summarize this");
+  });
+});

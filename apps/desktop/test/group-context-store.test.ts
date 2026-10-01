@@ -6,7 +6,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -49,7 +49,7 @@ describe("a group's context", () => {
       ["boarding-pass.pdf", "application/pdf"],
       ["itinerary.md", "text/markdown"],
     ]);
-    expect(rejected).toEqual([{ name: "song.mp3", reason: "Pistachio can read images, PDFs and text files" }]);
+    expect(rejected).toEqual([{ name: "song.mp3", reason: "Pistachio can open pictures, PDFs, text, Word and Excel files" }]);
     expect(statSync(join(dir, "group-context.json")).mode & 0o777).toBe(0o600);
     expect(statSync(join(dir, "group-blobs", blobId(PDF))).mode & 0o777).toBe(0o600);
 
@@ -67,7 +67,7 @@ describe("a group's context", () => {
     expect(() => store.addText("g1", "Lisbon", { kind: "fact", text: "one too many" }, "person")).toThrow(/already holds 60/);
   });
 
-  it("reads a fact, a text file as text, and an image or PDF as a file the model looks at", () => {
+  it("reads a fact, a text file as text, and an image or PDF as a file the model looks at", async () => {
     const store = new GroupContextStore(scratch());
     const fact = store.addText("g1", "Lisbon", { kind: "snippet", text: "Check-in from 15:00", url: "https://hotel.example/", title: "Hotel Avenida" }, "agent");
     const [pdf, notes, picture] = store.addFiles(
@@ -80,12 +80,12 @@ describe("a group's context", () => {
       ],
       "person",
     ).added;
-    expect(store.read("g1", fact.id)).toMatchObject({ text: "Check-in from 15:00\n(from “Hotel Avenida” https://hotel.example/)" });
-    expect(store.read("g1", notes!.id)).toMatchObject({ text: "Gate closes 09:10" });
-    expect(store.read("g1", pdf!.id)).toMatchObject({ file: { mediaType: "application/pdf", name: "pass.pdf", dataUrl: `data:application/pdf;base64,${PDF.toString("base64")}` } });
-    expect(store.read("g1", picture!.id)).toMatchObject({ file: { mediaType: "image/png" } });
-    expect(() => store.read("g1", "000000000000")).toThrow(/no item/);
-    expect(() => store.read("g2", fact.id)).toThrow(/no item/);
+    await expect(store.read("g1", fact.id)).resolves.toMatchObject({ text: "Check-in from 15:00\n(from “Hotel Avenida” https://hotel.example/)" });
+    await expect(store.read("g1", notes!.id)).resolves.toMatchObject({ text: "Gate closes 09:10" });
+    await expect(store.read("g1", pdf!.id)).resolves.toMatchObject({ file: { mediaType: "application/pdf", name: "pass.pdf", dataUrl: `data:application/pdf;base64,${PDF.toString("base64")}` } });
+    await expect(store.read("g1", picture!.id)).resolves.toMatchObject({ file: { mediaType: "image/png" } });
+    await expect(store.read("g1", "000000000000")).rejects.toThrow(/no item/);
+    await expect(store.read("g2", fact.id)).rejects.toThrow(/no item/);
   });
 
   it("copies another group's context in, as new items", () => {
@@ -130,7 +130,7 @@ describe("a group's context in sync", () => {
     expect(changes).toEqual(["groupContext:g1", `groupBlob:${blobId(PDF)}`, "groupContext:g1"]);
   });
 
-  it("takes another Mac's context whole, keeps its files only when their bytes hash to their key, and says which are here", () => {
+  it("takes another Mac's context whole, keeps its files only when their bytes hash to their key, and says which are here", async () => {
     const mine = new GroupContextStore(scratch());
     const theirs = new GroupContextStore(scratch());
     theirs.addFiles("g1", "Lisbon", [{ name: "pass.pdf", mediaType: "application/pdf", bytes: PDF }], "person");
@@ -150,7 +150,7 @@ describe("a group's context in sync", () => {
     expect(mine.applyRemote("groupBlob", { ...blob, data: Buffer.from("tampered").toString("base64") })).toBeNull();
     expect(mine.applyRemote("groupBlob", blob)).toMatchObject({ id: blobId(PDF) });
     expect(mine.list()[0]?.items.map((item) => item.here)).toEqual([true, true]);
-    expect(mine.read("g1", mine.items("g1")[0]!.id)).toMatchObject({ file: { name: "pass.pdf" } });
+    await expect(mine.read("g1", mine.items("g1")[0]!.id)).resolves.toMatchObject({ file: { name: "pass.pdf" } });
 
     expect(mine.removeRemote("groupContext", "g1")).toBe(true);
     expect(mine.list()).toEqual([]);
@@ -166,5 +166,127 @@ describe("a group's context in sync", () => {
     now = new Date("2026-10-02T10:00:00Z");
     expect(store.sweepOrphanBlobs()).toBe(1);
     expect(store.getBlob(pass!.blobId)).toBeNull();
+  });
+});
+
+describe("a group's documents (docs/desk-documents.md)", () => {
+  const DOCX = readFileSync(join(import.meta.dirname, "../../../packages/documents/test/files/cocoa-trip.docx"));
+  /** A converter that says what it was asked, for the conversions macOS makes. */
+  function converter() {
+    return {
+      docToDocx: vi.fn(async () => DOCX),
+      docxToDoc: vi.fn(async (bytes: Buffer) => Buffer.concat([Buffer.from("DOC:"), bytes.subarray(0, 8)])),
+      docText: vi.fn(async () => "Lisbon trip, as text"),
+      imageToPng: vi.fn(async () => PNG),
+    };
+  }
+
+  it("takes Word, Excel and more pictures by their extension, and says which items a drop came to", () => {
+    const store = new GroupContextStore(scratch());
+    const first = store.addFiles(
+      "g1",
+      "Lisbon",
+      [
+        { name: "trip.docx", mediaType: "", bytes: DOCX },
+        { name: "budget.XLSX", mediaType: "application/octet-stream", bytes: Buffer.from("PK xlsx") },
+        { name: "photo.heic", mediaType: "", bytes: Buffer.from("heic") },
+        { name: "old.doc", mediaType: "application/msword", bytes: Buffer.from("doc") },
+      ],
+      "person",
+    );
+    expect(first.added.map((item) => item.mediaType)).toEqual([
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "image/heic",
+      "application/msword",
+    ]);
+    // The same bytes again: nothing new, but the drop comes to the item that has them.
+    const again = store.addFiles("g1", "Lisbon", [{ name: "trip copy.docx", mediaType: "", bytes: DOCX }], "person");
+    expect(again.added).toEqual([]);
+    expect(again.kept.map((item) => item.id)).toEqual([first.added[0]!.id]);
+  });
+
+  it("gives a window a file's bytes, and what macOS makes of a .doc or a HEIC to show instead", async () => {
+    const convert = converter();
+    const store = new GroupContextStore(scratch(), { convert });
+    const [doc, heic, pdf] = store.addFiles(
+      "g1",
+      "Lisbon",
+      [
+        { name: "old.doc", mediaType: "", bytes: Buffer.from("doc bytes") },
+        { name: "photo.heic", mediaType: "", bytes: Buffer.from("heic bytes") },
+        { name: "pass.pdf", mediaType: "", bytes: PDF },
+      ],
+      "person",
+    ).added;
+    const shownDoc = await store.fileContent("g1", doc!.id);
+    expect(Buffer.from(shownDoc!.bytes).toString()).toBe("doc bytes");
+    expect(shownDoc!.shown?.mediaType).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    expect(Buffer.from(shownDoc!.shown!.bytes).equals(DOCX)).toBe(true);
+    expect((await store.fileContent("g1", heic!.id))!.shown?.mediaType).toBe("image/png");
+    expect((await store.fileContent("g1", pdf!.id))!.shown).toBeUndefined();
+    // Converted once: opened again, the window does not wait for macOS.
+    await store.fileContent("g1", doc!.id);
+    expect(convert.docToDocx).toHaveBeenCalledTimes(1);
+    expect(await store.fileContent("g1", "000000000000")).toBeNull();
+  });
+
+  it("saves an edit over the version it was made to, tells another Mac, and lets the old version go", async () => {
+    const store = new GroupContextStore(scratch());
+    const records: Array<[string, string]> = [];
+    store.onRecordChange((kind, id) => records.push([kind, id]));
+    const [notes] = store.addFiles("g1", "Lisbon", [{ name: "notes.md", mediaType: "text/markdown", bytes: Buffer.from("# Trip\n") }], "person").added;
+    records.length = 0;
+    const edited = Buffer.from("# Trip\n\nPack the adapter\n");
+    const saved = await store.writeFile({ groupId: "g1", itemId: notes!.id, baseBlobId: notes!.blobId, bytes: new Uint8Array(edited) });
+    expect(saved).toMatchObject({ ok: true, item: { id: notes!.id, blobId: blobId(edited), byteLength: edited.byteLength } });
+    expect(saved.ok && saved.item.editedAt).toBeTruthy();
+    await expect(store.read("g1", notes!.id)).resolves.toMatchObject({ text: "# Trip\n\nPack the adapter\n" });
+    // The new bytes, the context, and the old bytes' register gone everywhere.
+    expect(records).toEqual([
+      ["groupBlob", notes!.blobId],
+      ["groupBlob", blobId(edited)],
+      ["groupContext", "g1"],
+    ]);
+    expect(store.getBlob(notes!.blobId)).toBeNull();
+    // An edit made to the old version is refused — unless the person chose to keep theirs.
+    const stale = await store.writeFile({ groupId: "g1", itemId: notes!.id, baseBlobId: notes!.blobId, bytes: new Uint8Array(Buffer.from("# Mine\n")) });
+    expect(stale).toMatchObject({ ok: false, reason: "changed" });
+    const forced = await store.writeFile({ groupId: "g1", itemId: notes!.id, baseBlobId: notes!.blobId, bytes: new Uint8Array(Buffer.from("# Mine\n")), force: true });
+    expect(forced.ok).toBe(true);
+    expect(await store.writeFile({ groupId: "g1", itemId: "000000000000", baseBlobId: notes!.blobId, bytes: new Uint8Array(1) })).toMatchObject({ ok: false, reason: "gone" });
+  });
+
+  it("keeps a .doc a .doc: its edits come as a .docx and are written back through macOS", async () => {
+    const convert = converter();
+    const store = new GroupContextStore(scratch(), { convert });
+    const [doc] = store.addFiles("g1", "Lisbon", [{ name: "old.doc", mediaType: "", bytes: Buffer.from("doc bytes") }], "person").added;
+    const saved = await store.writeFile({ groupId: "g1", itemId: doc!.id, baseBlobId: doc!.blobId, bytes: new Uint8Array(DOCX), as: "docx" });
+    expect(convert.docxToDoc).toHaveBeenCalledTimes(1);
+    expect(saved).toMatchObject({ ok: true, item: { mediaType: "application/msword" } });
+    expect(store.getBlob(saved.ok ? saved.item.blobId : "")?.data).toBe(Buffer.concat([Buffer.from("DOC:"), DOCX.subarray(0, 8)]).toString("base64"));
+  });
+
+  it("reads Word documents, workbooks and pictures the model cannot look at as they are, for the agent and for a mention", async () => {
+    const convert = converter();
+    const store = new GroupContextStore(scratch(), { convert });
+    const [docx, doc, heic, big] = store.addFiles(
+      "g1",
+      "Lisbon",
+      [
+        { name: "trip.docx", mediaType: "", bytes: DOCX },
+        { name: "old.doc", mediaType: "", bytes: Buffer.from("doc") },
+        { name: "photo.heic", mediaType: "", bytes: Buffer.from("heic") },
+        { name: "scan.pdf", mediaType: "", bytes: Buffer.alloc(5 * 1024 * 1024, 1) },
+      ],
+      "person",
+    ).added;
+    await expect(store.read("g1", docx!.id)).resolves.toMatchObject({ text: expect.stringContaining("We land at 11:05 on Friday") });
+    await expect(store.read("g1", doc!.id)).resolves.toMatchObject({ text: "Lisbon trip, as text" });
+    await expect(store.read("g1", heic!.id)).resolves.toMatchObject({ file: { mediaType: "image/png", dataUrl: `data:image/png;base64,${PNG.toString("base64")}` } });
+    await expect(store.forMessage("g1", docx!.id)).resolves.toMatchObject({ kind: "text", name: "trip.docx" });
+    await expect(store.forMessage("g1", heic!.id)).resolves.toMatchObject({ kind: "file", mediaType: "image/png" });
+    // Too large to ride with a message: the agent is told where it is.
+    await expect(store.forMessage("g1", big!.id)).resolves.toMatchObject({ kind: "reference", name: "scan.pdf", reason: "too large to attach" });
   });
 });

@@ -9,9 +9,11 @@ import {
   House,
   Layers2,
   LayoutGrid,
+  Maximize2,
   Minus,
   Newspaper,
   NotebookPen,
+  PictureInPicture2,
   Plus,
   X,
 } from "lucide-react";
@@ -471,10 +473,17 @@ export const DeskDock = memo(function DeskDock({
     const deskEntries: MenuEntry[] =
       out === undefined
         ? [{ label: "Open on the desk", icon: <AppWindow aria-hidden="true" />, onSelect: () => engine.add(tabId, { focus: true }) }]
-        : [
-            ...(out.focused ? [] : [{ label: "Bring to front", icon: <ArrowUpToLine aria-hidden="true" />, onSelect: () => engine.add(tabId, { focus: true }) }]),
-            { label: "Put away", icon: <Minus aria-hidden="true" />, onSelect: () => engine.putAway(tabId) },
-          ];
+        : out.mini !== null
+          ? [
+              { label: "Expand", icon: <Maximize2 aria-hidden="true" />, onSelect: () => engine.expand(tabId) },
+              { label: "Collapse", icon: <Minus aria-hidden="true" />, onSelect: () => engine.putAway(tabId) },
+            ]
+          : [
+              ...(out.focused ? [] : [{ label: "Bring to front", icon: <ArrowUpToLine aria-hidden="true" />, onSelect: () => engine.add(tabId, { focus: true }) }]),
+              // (A masked window is a picture of part of its page: it is not minimized.)
+              ...(out.mask !== null ? [] : [{ label: "Minimize", icon: <PictureInPicture2 aria-hidden="true" />, onSelect: () => engine.minimize(tabId) }]),
+              { label: "Collapse", icon: <Minus aria-hidden="true" />, onSelect: () => engine.putAway(tabId) },
+            ];
     menu.open(event, [...deskEntries, { separator: true }, ...tabMenu(tab)]);
   };
   /** Another group's icon right-clicked: the sidebar's menu for the group. */
@@ -561,6 +570,7 @@ export const DeskDock = memo(function DeskDock({
                 group={group}
                 context={context}
                 open={stackOpen}
+                engine={engine}
                 onRejected={(line) => {
                   setStackRejection(line);
                   // What could not be taken is said on the card: it opens to say so.
@@ -662,6 +672,9 @@ export const DeskDock = memo(function DeskDock({
             shown={view.clearCovers.has("stack")}
             rejection={stackRejection}
             onRejected={setStackRejection}
+            engine={engine}
+            openIds={onDesk}
+            onOpened={() => setStack(null)}
           />
         ) : null}
         {moreOpen ? (
@@ -696,7 +709,7 @@ export const DeskDock = memo(function DeskDock({
 /**
  * What stands in the dock's column while a window is carried: a rail of the
  * dock's own glass, sliding in from where the dock went as the pointer
- * nears the desk's edge, cut in two by a hairline — Minimize above, Close
+ * nears the desk's edge, cut in two by a hairline — Collapse above, Close
  * below (the smaller, where the Dock keeps its Trash). Nothing on it is
  * coloured until a release would go somewhere: then that segment fills
  * with its colour, and its mark — filled, a little larger — follows the
@@ -727,7 +740,7 @@ function DropRail({ engine, drops, shown, drop }: { engine: DeskEngine; drops: D
       }}
     >
       <div className="desk-drop-rail" style={{ left: CLIP_MARGIN, width: DOCK_W }}>
-        <DropSegment kind="away" top={SEGMENT_INSET} height={split - SEGMENT_INSET * 2} lit={lit === "away"} label="Minimize" railTop={top}>
+        <DropSegment kind="away" top={SEGMENT_INSET} height={split - SEGMENT_INSET * 2} lit={lit === "away"} label="Collapse" railTop={top}>
           <ArrowLeftToLine />
         </DropSegment>
         <span className="desk-drop-divider" style={{ top: split }} />

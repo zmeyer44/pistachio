@@ -40,6 +40,7 @@ const MEDIA_PREVIEW_HOVER_REPORT_CHANNEL = "pistachio:media-preview-hover-report
 const DATA_POLICY_CHANNEL = "pistachio:tab-data-policy";
 const POLICY_BLOCKED_CHANNEL = "pistachio:tab-policy-blocked";
 const EMPTY_COPY_CHANNEL = "pistachio:tab-empty-copy";
+const FILE_DRAG_CHANNEL = "pistachio:tab-file-drag";
 const PASSKEY_SUPPORT_REPORT_CHANNEL = "pistachio:tab-passkey-support-report";
 const SCREEN_SHARE_REPORT_CHANNEL = "pistachio:screen-share-report";
 const SCREEN_SHARE_STOP_CHANNEL = "pistachio:screen-share-stop";
@@ -126,6 +127,31 @@ window.addEventListener(
     setTimeout(() => {
       if (!event.defaultPrevented) ipcRenderer.send(EMPTY_COPY_CHANNEL);
     }, 0);
+  },
+  true,
+);
+
+// Files dragged in from outside the page (Finder, another window) over a
+// desk window: main tells the desk, which puts up its drop targets while
+// the page gives way to its still, so the drag comes to the shell
+// (docs/desk-documents.md §1). A drag the page began itself (an image of
+// its own, say) is the page's; so is anything a script dispatched.
+let fileDragReportedAt = 0;
+let dragStartedHere = false;
+window.addEventListener("dragstart", () => {
+  dragStartedHere = true;
+}, true);
+window.addEventListener("dragend", () => {
+  dragStartedHere = false;
+}, true);
+window.addEventListener(
+  "dragenter",
+  (event) => {
+    if (!event.isTrusted || dragStartedHere || event.dataTransfer === null || !event.dataTransfer.types.includes("Files")) return;
+    const now = Date.now();
+    if (now - fileDragReportedAt < 400) return;
+    fileDragReportedAt = now;
+    ipcRenderer.send(FILE_DRAG_CHANNEL);
   },
   true,
 );

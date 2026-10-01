@@ -20,11 +20,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { docxText, xlsxText } from "@pistachio/documents";
+import { MAX_CHAT_ATTACHMENT_BYTES } from "@pistachio/shell-contracts/chat-insert";
 import {
+  DOC_MEDIA_TYPE,
+  DOCX_MEDIA_TYPE,
+  groupContextMediaTypeOf,
   isGroupBlobId,
   isGroupContextMediaType,
   isTextMediaType,
   sanitizeGroupContext,
+  XLSX_MEDIA_TYPE,
   MAX_GROUP_BLOB_BYTES,
   MAX_GROUP_CONTEXT_ITEMS,
   MAX_GROUP_FILE_BYTES,
@@ -37,8 +43,13 @@ import {
   type GroupContextMediaType,
   type GroupContextText,
   type GroupContextView,
+  type GroupFileContent,
+  type GroupFileForMessage,
+  type GroupFileWrite,
+  type GroupFileWriteResult,
 } from "@pistachio/shell-contracts/desk-agent";
 import type { GroupBlobRecord, GroupContextRecord } from "@pistachio/sync-protocol";
+import { noDocumentConverter, type DocumentConverter } from "./document-convert";
 
 /** The two registers a context's life is spread over (`group-context:`, `group-blob:`). */
 export type GroupContextRecordKind = "groupContext" | "groupBlob";
@@ -59,6 +70,12 @@ interface GroupContextDocument {
 
 /** A file the agent reads as a file (an image, a PDF) is sent to the model only up to this size. */
 export const MAX_AGENT_FILE_BYTES = 8 * 1024 * 1024;
+/** Pictures the model looks at as they are; the others it is shown as a PNG. */
+const MODEL_IMAGE_TYPES = new Set<string>(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+/** Pictures the shell cannot draw either (Chromium decodes neither): their window shows a PNG. */
+const UNDRAWN_IMAGE_TYPES = new Set<string>(["image/heic", "image/heif", "image/tiff"]);
+/** How many conversions (a .doc as .docx, a picture as PNG) are kept, so a window reopened does not wait on one again. */
+const CONVERSION_CACHE = 12;
 /** A text file's text is handed to the model up to this many characters. */
 const MAX_AGENT_TEXT_CHARS = 60_000;
 /** How long a file no context names is kept before it is collected. */
@@ -67,7 +84,7 @@ export const DEFAULT_BLOB_SWEEP_MS = 24 * 60 * 60 * 1_000;
 /** What the agent reads of one item: text, or a file it looks at. */
 export type GroupContextReading =
   | { item: GroupContextItem; text: string }
-  | { item: GroupContextFile; file: { dataUrl: string; mediaType: GroupContextMediaType; name: string } };
+  | { item: GroupContextFile; file: { dataUrl: string; mediaType: string; name: string } };
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -101,13 +118,17 @@ export class GroupContextStore {
   readonly #now: () => Date;
   readonly #listeners = new Set<(contexts: GroupContextView[]) => void>();
   readonly #recordListeners = new Set<(kind: GroupContextRecordKind, id: string) => void>();
+  readonly #convert: DocumentConverter;
+  /** Conversions made lately, by the bytes they were made from and what they were made into. */
+  readonly #converted = new Map<string, Promise<Buffer>>();
   #contexts: GroupContext[];
   #blobs: BlobMeta[];
 
-  constructor(userDataDir: string, options: { now?: () => Date } = {}) {
+  constructor(userDataDir: string, options: { now?: () => Date; convert?: DocumentConverter } = {}) {
     this.#path = join(userDataDir, "group-context.json");
     this.#blobsDir = join(userDataDir, "group-blobs");
     this.#now = options.now ?? (() => new Date());
+    this.#convert = options.convert ?? noDocumentConverter();
     const document = this.#read();
     this.#contexts = document.contexts;
     this.#blobs = document.blobs;
@@ -135,8 +156,12 @@ export class GroupContextStore {
     return this.get(groupId)?.items ?? [];
   }
 
-  /** One item as the agent reads it: a fact's or a text file's text, or an image or PDF to look at. */
-  read(groupId: string, itemId: string): GroupContextReading {
+  /**
+   * One item as the agent reads it: a fact's text; a text file's, a Word
+   * document's or a workbook's text; an image or a PDF to look at (a
+   * picture the model cannot look at as it is, as a PNG).
+   */
+  async read(groupId: string, itemId: string): Promise<GroupContextReading> {
     const item = this.items(groupId).find((candidate) => candidate.id === itemId);
     if (item === undefined) throw new Error(`no item ${itemId} in this group's context; the desk block lists what is there`);
     if (item.kind !== "file") {
@@ -145,12 +170,130 @@ export class GroupContextStore {
     }
     const bytes = this.#readBlob(item.blobId);
     if (bytes === null) throw new Error(`“${item.name}” was added on another Mac and is too large to sync here`);
-    if (isTextMediaType(item.mediaType)) {
-      const text = bytes.toString("utf8");
-      return { item, text: text.length > MAX_AGENT_TEXT_CHARS ? `${text.slice(0, MAX_AGENT_TEXT_CHARS)}\n[… cut at ${String(MAX_AGENT_TEXT_CHARS)} characters]` : text };
+    const cut = (text: string): string => (text.length > MAX_AGENT_TEXT_CHARS ? `${text.slice(0, MAX_AGENT_TEXT_CHARS)}\n[… cut at ${String(MAX_AGENT_TEXT_CHARS)} characters]` : text);
+    if (isTextMediaType(item.mediaType) || item.mediaType === "image/svg+xml") return { item, text: cut(bytes.toString("utf8")) };
+    try {
+      if (item.mediaType === DOCX_MEDIA_TYPE) return { item, text: docxText(bytes, MAX_AGENT_TEXT_CHARS) };
+      if (item.mediaType === XLSX_MEDIA_TYPE) return { item, text: xlsxText(bytes, MAX_AGENT_TEXT_CHARS) };
+      if (item.mediaType === DOC_MEDIA_TYPE) return { item, text: cut(await this.#convert.docText(bytes)) };
+    } catch {
+      throw new Error(`“${item.name}” could not be read: it may be damaged, or protected by a password`);
     }
-    if (bytes.byteLength > MAX_AGENT_FILE_BYTES) throw new Error(`“${item.name}” is too large for the model to read (${String(Math.round(bytes.byteLength / 1024 / 1024))} MB)`);
-    return { item, file: { dataUrl: `data:${item.mediaType};base64,${bytes.toString("base64")}`, mediaType: item.mediaType, name: item.name } };
+    let shown = bytes;
+    let mediaType: string = item.mediaType;
+    if (item.mediaType.startsWith("image/") && !MODEL_IMAGE_TYPES.has(item.mediaType)) {
+      shown = await this.#conversion(item, "png");
+      mediaType = "image/png";
+    }
+    if (shown.byteLength > MAX_AGENT_FILE_BYTES) throw new Error(`“${item.name}” is too large for the model to read (${String(Math.round(shown.byteLength / 1024 / 1024))} MB)`);
+    return { item, file: { dataUrl: `data:${mediaType};base64,${shown.toString("base64")}`, mediaType, name: item.name } };
+  }
+
+  /** A conversion of a file's bytes (a .doc as .docx, a picture as PNG), made once and kept a while. */
+  #conversion(item: GroupContextFile, into: "docx" | "png"): Promise<Buffer> {
+    const key = `${item.blobId}:${into}`;
+    const cached = this.#converted.get(key);
+    if (cached !== undefined) {
+      // Most recently used last.
+      this.#converted.delete(key);
+      this.#converted.set(key, cached);
+      return cached;
+    }
+    const bytes = this.#readBlob(item.blobId);
+    if (bytes === null) return Promise.reject(new Error(`“${item.name}” is not on this Mac`));
+    const extension = item.name.toLowerCase().split(".").pop() ?? "";
+    const made = into === "docx" ? this.#convert.docToDocx(bytes) : this.#convert.imageToPng(bytes, extension);
+    this.#converted.set(key, made);
+    made.catch(() => this.#converted.delete(key));
+    while (this.#converted.size > CONVERSION_CACHE) this.#converted.delete(this.#converted.keys().next().value!);
+    return made;
+  }
+
+  /**
+   * A file's bytes for its window on the desk (docs/desk-documents.md), and
+   * what the window draws instead when the shell cannot draw it: a .doc as
+   * a .docx, a HEIC or TIFF picture as a PNG. Null when the bytes are not
+   * on this Mac.
+   */
+  async fileContent(groupId: string, itemId: string): Promise<GroupFileContent | null> {
+    const item = this.items(groupId).find((candidate): candidate is GroupContextFile => candidate.id === itemId && candidate.kind === "file");
+    if (item === undefined) return null;
+    const bytes = this.#readBlob(item.blobId);
+    if (bytes === null) return null;
+    const content: GroupFileContent = { itemId, blobId: item.blobId, name: item.name, mediaType: item.mediaType, bytes: new Uint8Array(bytes) };
+    if (item.mediaType === DOC_MEDIA_TYPE) content.shown = { mediaType: DOCX_MEDIA_TYPE, bytes: new Uint8Array(await this.#conversion(item, "docx")) };
+    else if (UNDRAWN_IMAGE_TYPES.has(item.mediaType)) content.shown = { mediaType: "image/png", bytes: new Uint8Array(await this.#conversion(item, "png")) };
+    return content;
+  }
+
+  /**
+   * A document edited in its window: its new bytes become the file, over
+   * the version it was edited from — refused when the file has changed
+   * since, unless the person chose to keep theirs (`force`). A .doc is
+   * edited as a .docx and written back as a .doc. The version it replaces
+   * goes once nothing names it, here and on the person's other Macs.
+   */
+  async writeFile(write: GroupFileWrite): Promise<GroupFileWriteResult> {
+    const find = (): GroupContextFile | undefined =>
+      this.#contexts.find((context) => context.groupId === write.groupId)?.items.find((candidate): candidate is GroupContextFile => candidate.id === write.itemId && candidate.kind === "file");
+    const before = find();
+    if (before === undefined) return { ok: false, reason: "gone", message: "That file is no longer in this desk's context" };
+    if (write.force !== true && before.blobId !== write.baseBlobId) return { ok: false, reason: "changed", message: `“${before.name}” was changed elsewhere since it was opened` };
+    let bytes: Buffer = Buffer.from(write.bytes);
+    if (write.as === "docx") {
+      if (before.mediaType === DOC_MEDIA_TYPE) {
+        try {
+          bytes = await this.#convert.docxToDoc(bytes);
+        } catch {
+          return { ok: false, reason: "failed", message: `“${before.name}” could not be written as a Word 97–2004 document` };
+        }
+      } else if (before.mediaType !== DOCX_MEDIA_TYPE) return { ok: false, reason: "failed", message: "Only a Word document can be written as one" };
+    }
+    if (bytes.byteLength > MAX_GROUP_FILE_BYTES) return { ok: false, reason: "too-large", message: `“${before.name}” would be larger than ${String(MAX_GROUP_FILE_BYTES / 1024 / 1024)} MB` };
+    // Looked up again: the conversion took a moment, and the file may have gone or changed meanwhile.
+    const item = find();
+    if (item === undefined) return { ok: false, reason: "gone", message: "That file is no longer in this desk's context" };
+    if (write.force !== true && item.blobId !== write.baseBlobId) return { ok: false, reason: "changed", message: `“${item.name}” was changed elsewhere since it was opened` };
+    const context = this.#contexts.find((candidate) => candidate.groupId === write.groupId)!;
+    const blobId = createHash("sha256").update(bytes).digest("hex").slice(0, 24);
+    const changed: Array<[GroupContextRecordKind, string]> = [];
+    if (!this.#blobs.some((blob) => blob.id === blobId)) {
+      this.#writeBlob(blobId, bytes);
+      this.#blobs.push({ id: blobId, mediaType: item.mediaType, byteLength: bytes.byteLength, createdAt: this.#now().toISOString() });
+      if (bytes.byteLength <= MAX_GROUP_BLOB_BYTES) changed.push(["groupBlob", blobId]);
+    }
+    const old = item.blobId;
+    const oldLength = item.byteLength;
+    item.blobId = blobId;
+    item.byteLength = bytes.byteLength;
+    item.editedAt = this.#now().toISOString();
+    this.#touch(context);
+    changed.push(["groupContext", write.groupId]);
+    if (old !== blobId && !this.#referenced(old)) {
+      this.#blobs = this.#blobs.filter((blob) => blob.id !== old);
+      this.#removeBlob(old);
+      if (oldLength <= MAX_GROUP_BLOB_BYTES) changed.unshift(["groupBlob", old]);
+    }
+    this.#commit(...changed);
+    return { ok: true, item: structuredClone(item) };
+  }
+
+  /**
+   * A file as a message carries it when the person @mentions it: its text
+   * (a Word document's and a workbook's too), or the file for the model to
+   * look at — too large to attach, a note that it is in the context.
+   */
+  async forMessage(groupId: string, itemId: string): Promise<GroupFileForMessage> {
+    const item = this.items(groupId).find((candidate) => candidate.id === itemId);
+    const name = item?.kind === "file" ? item.name : "that file";
+    try {
+      const reading = await this.read(groupId, itemId);
+      if ("text" in reading) return { kind: "text", name, text: reading.text };
+      if (reading.file.dataUrl.length > Math.ceil(MAX_CHAT_ATTACHMENT_BYTES / 3) * 4 + 64) return { kind: "reference", name, reason: "too large to attach" };
+      return { kind: "file", name, mediaType: reading.file.mediaType, dataUrl: reading.file.dataUrl };
+    } catch (error) {
+      return { kind: "reference", name, reason: error instanceof Error ? error.message : "it could not be read" };
+    }
   }
 
   /** A copy of a file under its own name, in a private temporary folder, for the Mac to open in its own app. */
@@ -178,15 +321,17 @@ export class GroupContextStore {
     title: string,
     files: ReadonlyArray<{ name: string; mediaType: string; bytes: Buffer }>,
     addedBy: GroupContextAuthor = "person",
-  ): { added: GroupContextFile[]; rejected: Array<{ name: string; reason: string }> } {
+  ): { added: GroupContextFile[]; kept: GroupContextFile[]; rejected: Array<{ name: string; reason: string }> } {
     const context = this.#contextFor(groupId, title);
     const added: GroupContextFile[] = [];
+    // What the drop comes to: the files added, and those already here (the same bytes dropped again).
+    const kept: GroupContextFile[] = [];
     const rejected: Array<{ name: string; reason: string }> = [];
     const blobsChanged: string[] = [];
     for (const file of files) {
-      const mediaType = normalizeMediaType(file.name, file.mediaType);
+      const mediaType = groupContextMediaTypeOf(file.name, file.mediaType);
       if (mediaType === null) {
-        rejected.push({ name: file.name, reason: "Pistachio can read images, PDFs and text files" });
+        rejected.push({ name: file.name, reason: "Pistachio can open pictures, PDFs, text, Word and Excel files" });
         continue;
       }
       if (file.bytes.byteLength > MAX_GROUP_FILE_BYTES) {
@@ -204,7 +349,11 @@ export class GroupContextStore {
         // Too large to sync, it stays on this Mac, and there is no register to write.
         if (file.bytes.byteLength <= MAX_GROUP_BLOB_BYTES) blobsChanged.push(blobId);
       }
-      if (context.items.some((item) => item.kind === "file" && item.blobId === blobId)) continue;
+      const existing = context.items.find((item): item is GroupContextFile => item.kind === "file" && item.blobId === blobId);
+      if (existing !== undefined) {
+        kept.push(existing);
+        continue;
+      }
       const item: GroupContextFile = {
         id: newItemId(),
         kind: "file",
@@ -217,12 +366,13 @@ export class GroupContextStore {
       };
       context.items.push(item);
       added.push(item);
+      kept.push(item);
     }
     if (added.length > 0 || blobsChanged.length > 0) {
       this.#touch(context);
       this.#commit(...blobsChanged.map((id): [GroupContextRecordKind, string] => ["groupBlob", id]), ["groupContext", groupId]);
     }
-    return { added: structuredClone(added), rejected };
+    return { added: structuredClone(added), kept: structuredClone(kept), rejected };
   }
 
   /** A fact, a snippet of a page, or a link. */
@@ -503,31 +653,4 @@ export class GroupContextStore {
 
 function newItemId(): string {
   return randomBytes(6).toString("hex");
-}
-
-/**
- * The media type a file is kept as: the one the drop reported when it is a
- * kind the agent reads, else one named by its extension (Finder reports
- * nothing for many text files).
- */
-function normalizeMediaType(name: string, reported: string): GroupContextMediaType | null {
-  const type = reported.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (isGroupContextMediaType(type)) return type;
-  const extension = name.toLowerCase().split(".").pop() ?? "";
-  const byExtension: Record<string, GroupContextMediaType> = {
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    webp: "image/webp",
-    gif: "image/gif",
-    pdf: "application/pdf",
-    txt: "text/plain",
-    text: "text/plain",
-    md: "text/markdown",
-    markdown: "text/markdown",
-    csv: "text/csv",
-    ics: "text/calendar",
-    json: "application/json",
-  };
-  return byExtension[extension] ?? null;
 }

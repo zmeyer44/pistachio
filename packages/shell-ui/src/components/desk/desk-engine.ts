@@ -35,6 +35,22 @@
  *   dock's glass — except the window in use, which must be live. For that
  *   one the dock steps aside, and comes back once the pointer comes to its
  *   place (#yielding).
+ * - a window need not be a tab's (lib/desk/windows.ts): a DOCUMENT, one of
+ *   the group's context files open in its viewer, is the shell's own DOM
+ *   through and through. It is always drawn — it never has a native page —
+ *   so it covers the pages under it like any drawn window, and moves,
+ *   lifts and tilts as it is. Its home is the dock's Stack, not an icon of
+ *   its own (attachHome): it is put away into the Stack and comes out of it.
+ *   Main is never told of it; the pane the desk leaves as is always a tab's.
+ * - a window can be MINIMIZED: small (the least a window may be), its page
+ *   shown as if zoomed out (DESK_MINI_ZOOM — main's zoom, or for a page
+ *   the shell draws, a CSS scale), and PARKED in the shelf at the desk's
+ *   foot, each peeking up half its height beside the one before, the next
+ *   to the right overlapping it by half. While any is parked, the desk
+ *   keeps above their band (#footBand), so no window is ever under one.
+ *   The pointer on a parked window raises it into full view (hoverMini);
+ *   dragged away it is a minimized window like any other, and let go at
+ *   the desk's foot it parks again. Expand gives it back the box it had.
  * - the dock's icons can be REARRANGED: a tab's among the group's tabs, a
  *   group's among the other groups (each in its own section, the icons
  *   there making room for it), and a tab's let go on another group's icon
@@ -56,6 +72,7 @@
 
 import { TRAFFIC_LIGHTS_H, TRAFFIC_LIGHTS_W, type DragCursor } from "@pistachio/shell-contracts/chrome";
 import {
+  DESK_MINI_ZOOM,
   deskMaskKey,
   MAX_DESK_STILL_WIDTH,
   MAX_DESK_WINDOWS,
@@ -63,6 +80,7 @@ import {
   type DeskGrab as NativeDeskGrab,
   type DeskMask,
   type DeskMaskedPage,
+  type DeskZoomedPage,
 } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "../../api";
 import { movedOrder } from "../../lib/desk/dock-order";
@@ -112,6 +130,13 @@ import {
 import {
   BOUNCE_RESTITUTION,
   clamp,
+  CARD_RESIZE_MS,
+  DURATION_FAST_MS,
+  DURATION_MICRO_MS,
+  DURATION_QUICK_MS,
+  DURATION_STAGGER_MS,
+  EASE_SMOOTH_OUT,
+  STAGGER_TOTAL_MS,
   GLIDE_STOP_SPEED,
   glideDecay,
   glideReach,
@@ -125,6 +150,7 @@ import {
 import type { DeskChrome, DeskVariants, SavedDeskWindow } from "../../lib/desk/store";
 import type { DeskArrangePlan, DeskPercentBox } from "@pistachio/shell-contracts/desk-agent";
 import { boxRect, deskZoneRect, percentBox } from "../../lib/desk/agent";
+import { isTabWindow, windowKind, type DeskWindowKind } from "../../lib/desk/windows";
 
 export interface Insets {
   top: number;
@@ -155,6 +181,56 @@ const MASK_BACK_WAIT_MS = 1_500;
 /** Editing a mask: its bar (Cancel, Done) stands this far above the page shown around the region. */
 export const MASK_EDIT_BAR = { w: 236, h: 34 };
 const MASK_EDIT_BAR_GAP = 8;
+
+/** A minimized window's size: the least a window may be (its page shown zoomed out, DESK_MINI_ZOOM). */
+export const MINI_SIZE = { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
+/** Parked at the desk's foot, a minimized window peeks up this share of its height; the next one along overlaps it by this share of its width. */
+const MINI_PEEK = 0.5;
+const MINI_OVERLAP = 0.5;
+/**
+ * A raised parked window the pointer has left goes back down after this
+ * long: an intent gate (transitions.dev's micro duration), so the pointer
+ * crossing between its frame and its live page is not leaving.
+ */
+const MINI_LOWER_MS = DURATION_MICRO_MS;
+/**
+ * The shelf's own motions are timed, on the smooth ease-out, never past
+ * their place, whatever the Feel's spring (transitions.dev's motion
+ * tokens, by usage): rising into view is a hover lift in, quick and direct;
+ * going back down is a close, quicker still; moving along the shelf as it
+ * closes up is a position change.
+ */
+const SHELF_RISE_MS = DURATION_FAST_MS;
+const SHELF_LOWER_MS = DURATION_QUICK_MS;
+const SHELF_MOVE_MS = DURATION_FAST_MS;
+/** Leaving, the window in use grows back into the pane in this long, on the smooth ease-out (a resize, by the motion tokens). */
+const LEAVE_GROW_MS = DURATION_FAST_MS;
+
+/**
+ * Eased, the Feel's fourth Spring: the windows' motions are timed eases on
+ * transitions.dev's motion tokens, all on the smooth ease-out, matched by
+ * what each motion does (its transitions-polish skill: usage, never the
+ * nearest number), instead of springs:
+ * - a window come to rest elsewhere at its own size (let go, stuck to an
+ *   edge, the end of a throw) is a position change, `--duration-fast`;
+ * - one whose size changes (filled, tiled, arranged, let go of the desk,
+ *   unmasked, expanded) is the card resize transition, its 300ms;
+ * - one out of the dock, growing from its icon, is a dropdown opening from
+ *   its trigger, `--duration-fast`; into the dock, the Close pad or another
+ *   group's icon, a dropdown closing into it — quicker than it opened
+ *   (`--duration-quick`), as every close is;
+ * - the windows of an arrangement, or of a desk coming out, set off a
+ *   stagger apart, the whole run under its total;
+ * - nothing overshoots: a throw that meets an edge comes to rest against it
+ *   rather than rebounding, and a window in hand lifts and settles
+ *   critically damped (it follows the pointer, so it keeps a spring).
+ */
+const EASED_MOVE_MS = DURATION_FAST_MS;
+const EASED_RESIZE_MS = CARD_RESIZE_MS;
+const EASED_OPEN_MS = DURATION_FAST_MS;
+const EASED_CLOSE_MS = DURATION_QUICK_MS;
+/** Eased: what still follows the pointer (a window letting go of the desk in hand, flying to the hand, its lift and tilt) settles critically damped. */
+const EASED_SPRING: SpringConfig = { response: 0.25, damping: 1 };
 
 /** Passing to another group: a live window waits at most this long for the still it flies home as. */
 const SWITCH_STILL_WAIT_MS = 400;
@@ -234,6 +310,10 @@ export interface DeskWindowView {
   /** The frame is showing — false while the window is the whole surface, entering or leaving. */
   framed: boolean;
   maximized: boolean;
+  /** Minimized: parked in the shelf at the desk's foot, or out on the desk ("free"); null for a window at its own size. */
+  mini: "parked" | "free" | null;
+  /** A parked window raised into full view: the pointer is on it. */
+  raised: boolean;
   /** Masked: only this region of its page shows (DeskMask). */
   mask: DeskMask | null;
   /** What `still` is a picture of: the whole page box, the mask's region, or nothing it can stand for now. */
@@ -331,15 +411,21 @@ export interface DockSettleView {
   gone: string | null;
 }
 
-/** The desk as the agent reads it (agentLayout): the windows out, bottom to top, and the group's tabs in the dock. */
+/** The desk as the agent reads it (agentLayout): the windows out, bottom to top (documents among them), and the group's tabs in the dock. */
 export interface DeskAgentLayout {
-  windows: Array<{ tabId: string; box: DeskPercentBox; focused: boolean; masked: boolean }>;
+  windows: Array<{ tabId: string; kind: DeskWindowKind; box: DeskPercentBox; focused: boolean; masked: boolean; minimized: boolean }>;
   docked: string[];
 }
 
 /** Where every window was (layoutSnapshot), bottom to top: what Undo layout puts back. */
 export interface DeskLayoutSnapshot {
-  windows: Array<{ tabId: string; rect: Rect }>;
+  windows: Array<{ tabId: string; rect: Rect; mini: Minimized | null }>;
+}
+
+/** A minimized window's state: the box it grows back to, and whether it is parked in the shelf at the desk's foot. */
+export interface Minimized {
+  restore: Rect;
+  parked: boolean;
 }
 
 /** A window of another group's desk, drawn small (sketchGroup). */
@@ -366,8 +452,10 @@ export interface DeskHost {
   variants(): DeskVariants;
   /** A native page can be on screen for this tab right now: awake, not shell-drawn. */
   hasLivePage(tabId: string): boolean;
-  /** Make this tab the active one (it wakes if it sleeps). */
+  /** Make this tab the active one (it wakes if it sleeps). Called for every window raised; a document's is the host's to ignore. */
   select(tabId: string): void;
+  /** A window of the shell's own (a document) was chosen: its content takes the keyboard. */
+  focusWindow?(id: string): void;
   /** Close this tab (a window let go on the dock's Close pad). */
   close(tabId: string): void;
   /** Edit this tab's address: the address palette, over the desk (a click on a window's title). */
@@ -428,6 +516,27 @@ interface Win {
   drawn: boolean;
   /** Masked (DeskMask): a picture of part of its page. */
   mask: DeskMask | null;
+  /** Minimized: small, its page zoomed out; parked in the shelf, or out on the desk. */
+  mini: Minimized | null;
+  /**
+   * Shrinking into minimized ("in") or growing back from it ("out"): drawn
+   * until it lands. Its page is zoomed out from the start of the one, and,
+   * through the other, held at the size it grows to (DeskZoomedPage zoom 1),
+   * so it never lays out at a size between.
+   */
+  miniMotion: "in" | "out" | null;
+  /** A timed move to `target` (the shelf's: #layShelf), eased on --ease-smooth-out; the spring takes over if its target changes some other way. */
+  tween: { from: Rect; to: Rect; start: number; ms: number; scale?: { from: number; to: number } } | null;
+  /**
+   * Settling into a larger box than it had (filled, tiled, an edge zone, an
+   * arrangement, expanded): `to` is that box, `from` where it set out. Its
+   * page is laid out at `to` from the start (DeskZoomedPage at zoom 1) and it
+   * grows there live, revealing the page — never its still, a picture of the
+   * smaller window stretched to the larger, nor laid out anew once there.
+   * It goes no further than `to` on the way (#step), so the page never shows
+   * past what it is laid out at.
+   */
+  growTo: { from: Rect; to: Rect } | null;
   /**
    * A mask to put back (the desk reopened on this masked window): it lands
    * whole, and once a still of it as it now stands is painted it is masked
@@ -644,6 +753,29 @@ export class DeskEngine {
   #settleTimer = 0;
   /** The Bar's band at the desk's foot (setBarBand): windows keep above it. */
   #barBand = 0;
+  /**
+   * The windows of the shell's own this desk may show (the group's
+   * documents: setShellWindows), or null until the host knows — windows
+   * saved with the desk then come out, and go if they turn out not to be.
+   */
+  #shellIds: readonly string[] | null = null;
+  /** Where each kind of shell window lives in the dock (attachHome): a document's is the Stack. */
+  readonly #homeEls = new Map<DeskWindowKind, HTMLElement>();
+  /** The minimized windows parked in the shelf at the desk's foot, left to right. */
+  #parked: string[] = [];
+  /** Leaving, the window in use growing back into the pane as its live page, laid out at the pane's box already (leave). */
+  #leaveTop: string | null = null;
+  /**
+   * How far the desk's surface runs below the stage (its gutter, down to
+   * the window's edge): a parked window peeks up from that edge, the
+   * window's own, not the stage's, so nothing shows between it and the edge.
+   */
+  #underStage = 0;
+  /** The parked window raised into full view, for the pointer on it. */
+  #raised: string | null = null;
+  /** Where the pointer is said to be on a minimized window: its frame (the shell's own pointer), or its live page (main's word). */
+  #miniHover: { tabId: string; frame: boolean; page: boolean } | null = null;
+  #lowerTimer = 0;
 
   constructor(host: DeskHost) {
     this.#host = host;
@@ -707,6 +839,34 @@ export class DeskEngine {
     else this.#groupIconEls.set(groupId, el);
   }
 
+  /** Where a kind of shell window lives in the dock — a document's, the Stack: it is put away into it, and comes out of it. */
+  attachHome(kind: DeskWindowKind, el: HTMLElement | null): void {
+    if (el === null) this.#homeEls.delete(kind);
+    else this.#homeEls.set(kind, el);
+  }
+
+  /**
+   * The shell windows this desk may show (the group's documents), or null
+   * while the host does not know yet. One out whose document has gone
+   * (taken out of the context) goes too.
+   */
+  setShellWindows(ids: readonly string[] | null): void {
+    this.#shellIds = ids;
+    if (ids === null) return;
+    let changed = false;
+    for (const [id, win] of [...this.#wins]) {
+      if (isTabWindow(id) || ids.includes(id) || this.#departing.has(id) || win.flight === "away") continue;
+      if (this.#gesture?.tabId === id) this.#cancelGesture();
+      this.#remove(id);
+      changed = true;
+    }
+    if (changed) {
+      this.#save();
+      this.#emit();
+    }
+    this.#render();
+  }
+
   /** Another group's icon is under the pointer: its tabs' pictures are fetched, so its windows come out as themselves. */
   peekGroup(groupId: string, tabIds: readonly string[]): void {
     const now = performance.now();
@@ -745,7 +905,8 @@ export class DeskEngine {
    * for the dock to draw it small beside the group's icon.
    */
   sketchGroup(tabIds: readonly string[], saved: readonly SavedDeskWindow[], entry: string | null): DeskSketch {
-    const { windows, entry: top } = this.#laidOut(saved, tabIds, entry);
+    // (Its documents are left out: the card draws pages.)
+    const { windows, entry: top } = this.#laidOut(saved, tabIds, entry, []);
     return {
       width: this.#stageBox.width,
       height: this.#stageBox.height,
@@ -1103,6 +1264,10 @@ export class DeskEngine {
     const before = this.#usable();
     const resized = this.#stageBox.width > 0 && (box.width !== this.#stageBox.width || box.height !== this.#stageBox.height);
     this.#stageBox = { left: box.left, top: box.top, width: box.width, height: box.height };
+    const surface = typeof stage.closest === "function" ? stage.closest(".desk-surface") : null;
+    const under = surface === null ? 0 : Math.max(0, Math.round(surface.getBoundingClientRect().bottom - box.bottom));
+    const underMoved = under !== this.#underStage;
+    this.#underStage = under;
     // The window's buttons over the top of the dock's column (the stage at the window's top-left corner).
     const clear = box.left < TRAFFIC_LIGHTS_W ? Math.max(0, Math.round(TRAFFIC_LIGHTS_H - box.top)) : 0;
     if (clear !== this.#dockClear) {
@@ -1118,18 +1283,21 @@ export class DeskEngine {
       const after = this.#usable();
       const reach = this.#reach();
       for (const win of this.#wins.values()) {
-        if (this.#gesture?.tabId === win.tabId || win.flight !== null) continue;
-        if (win.mask !== null) {
-          // A picture keeps its size; only where it is follows the desk.
+        // (A parked window is the shelf's to place.)
+        if (this.#gesture?.tabId === win.tabId || win.flight !== null || win.mini?.parked === true) continue;
+        if (win.mask !== null || win.mini !== null) {
+          // A picture — or a minimized window — keeps its size; only where it is follows the desk.
           const moved = denormalizeRect(normalizeRect(win.rect, before), after);
-          win.rect = clampRect({ ...win.rect, x: moved.x, y: moved.y }, reach, MASK_MIN);
+          win.rect = clampRect({ ...win.rect, x: moved.x, y: moved.y }, reach, this.#minSize(win));
+          if (win.mini !== null) win.mini.restore = clampRect(denormalizeRect(normalizeRect(win.mini.restore, before), after), reach);
           continue;
         }
         win.rect = clampRect(denormalizeRect(normalizeRect(win.rect, before), after), reach);
         if (win.target !== null) win.target = clampRect(denormalizeRect(normalizeRect(win.target, before), after), reach);
         if (win.restore !== null) win.restore = clampRect(denormalizeRect(normalizeRect(win.restore, before), after), reach);
       }
-    }
+      this.#layShelf();
+    } else if (underMoved && this.#phase === "open") this.#reband(before);
     this.#render();
   }
 
@@ -1168,6 +1336,7 @@ export class DeskEngine {
     window.clearInterval(this.#coveredTimer);
     window.clearTimeout(this.#retryTimer);
     window.clearTimeout(this.#settleTimer);
+    window.clearTimeout(this.#lowerTimer);
     nativeApi()?.setDesk(null);
     this.#listeners.clear();
   }
@@ -1180,9 +1349,11 @@ export class DeskEngine {
    * and, once its still can stand in, shrinks into its place on the desk.
    * The others fly out of the inventory a beat apart.
    */
-  start(saved: readonly SavedDeskWindow[], entryTabId: string | null, groupTabIds: readonly string[]): void {
+  start(saved: readonly SavedDeskWindow[], entryTabId: string | null, groupTabIds: readonly string[], shellIds: readonly string[] | null = null): void {
+    this.#shellIds = shellIds;
     // The window in view goes on top.
     const { windows, entry } = this.#laidOut(saved, groupTabIds, entryTabId);
+    this.#parked = windows.filter((window) => window.mini?.parked === true).map((window) => window.tabId);
     const now = performance.now();
     windows.forEach((window, index) => {
       const isEntry = window.tabId === entry;
@@ -1209,11 +1380,14 @@ export class DeskEngine {
         win = this.#flyingIn(window.tabId, window.rect);
         // It comes back masked: main shows only the region, and its stills are of it.
         win.mask = window.mask;
-        win.delay = 0.06 + index * 0.04;
+        // Or minimized: small, zoomed out, and parked where it was, or out on the desk.
+        win.mini = window.mini;
+        win.delay = this.#beat(index, windows.length, 0.06, 0.04);
       }
       this.#wins.set(window.tabId, win);
       this.#order.push(window.tabId);
     });
+    this.#stackShelf();
     this.#focused = entry;
     this.#phase = windows.length === 0 ? "open" : "entering";
     this.#groupTabIds = groupTabIds;
@@ -1241,6 +1415,8 @@ export class DeskEngine {
     from: string;
     groupId: string;
     tabIds: readonly string[];
+    /** Its documents (setShellWindows), or null while they are not known. */
+    shellIds?: readonly string[] | null;
     saved: readonly SavedDeskWindow[];
     entry: string | null;
   }): void {
@@ -1259,7 +1435,12 @@ export class DeskEngine {
       this.#departing.set(tabId, { groupId: next.from, since: now });
     }
     if (this.#pendingFocus !== null && this.#departing.has(this.#pendingFocus)) this.#pendingFocus = null;
+    // The shelf is the next group's: this one's parked windows wait where they are to fly home.
+    this.#parked = [];
+    this.#raised = null;
+    this.#miniHover = null;
     this.#groupTabIds = next.tabIds;
+    this.#shellIds = next.shellIds ?? null;
     const from = this.#groupPress?.groupId === next.groupId ? this.#groupPress.rect : this.#dockMiddle();
     this.#groupPress = null;
     // The window in use on top. (A window of this group may still be on its
@@ -1270,14 +1451,19 @@ export class DeskEngine {
       const homing = this.#wins.get(window.tabId);
       if (homing !== undefined) {
         this.#takeBack(homing, window.rect);
+        homing.mini = window.mini;
+        if (window.mini?.parked === true) this.#parked.push(window.tabId);
         return;
       }
       const win = this.#flyingIn(window.tabId, window.rect, from);
       win.mask = window.mask;
-      win.delay = 0.03 + index * 0.035;
+      win.mini = window.mini;
+      if (window.mini?.parked === true) this.#parked.push(window.tabId);
+      win.delay = this.#beat(index, windows.length, 0.03, 0.035);
       this.#wins.set(window.tabId, win);
       this.#order.push(window.tabId);
     });
+    this.#stackShelf();
     // Nothing is flying into its icon now: it is the desk's group again, with no icon in the dock.
     this.#folding.delete(next.groupId);
     this.#focused = entry;
@@ -1319,20 +1505,31 @@ export class DeskEngine {
     saved: readonly SavedDeskWindow[],
     tabIds: readonly string[],
     entryTabId: string | null,
-  ): { windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null }>; entry: string | null } {
-    const usable = this.#usable();
-    const reach = this.#reach();
-    const windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null }> = saved
-      .filter((window) => tabIds.includes(window.tabId))
-      .map((window) =>
-        window.mask !== undefined
-          ? { tabId: window.tabId, rect: this.#maskedRectFrom(window.rect, window.mask), mask: window.mask }
-          : { tabId: window.tabId, rect: clampRect(denormalizeRect(window.rect, usable), reach), mask: null },
-      );
-    const entry = entryTabId !== null && tabIds.includes(entryTabId) ? entryTabId : (windows[windows.length - 1]?.tabId ?? null);
+    shellIds: readonly string[] | null = this.#shellIds,
+  ): { windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null; mini: Minimized | null }>; entry: string | null } {
+    const member = (id: string): boolean => (isTabWindow(id) ? tabIds.includes(id) : shellIds === null || shellIds.includes(id));
+    const kept = saved.filter((window) => member(window.tabId));
+    // The desk comes up on a tab: the pane it lifts off is a tab's page, and comes out at its own size, minimized or not.
+    const entry = entryTabId !== null && tabIds.includes(entryTabId) ? entryTabId : (kept.filter((window) => isTabWindow(window.tabId)).at(-1)?.tabId ?? null);
+    // The shelf's band first: the rest are laid out above it.
+    const parkedIds = kept.filter((window) => window.mini?.parked === true && window.mask === undefined && window.tabId !== entry).map((window) => window.tabId);
+    const usable = this.#usableFor(parkedIds.length);
+    const reach = this.#reachFor(parkedIds.length);
+    const windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null; mini: Minimized | null }> = kept.map((window) => {
+      if (window.mask !== undefined) return { tabId: window.tabId, rect: this.#maskedRectFrom(window.rect, window.mask), mask: window.mask, mini: null };
+      const rect = clampRect(denormalizeRect(window.rect, usable), reach);
+      if (window.mini === undefined) return { tabId: window.tabId, rect, mask: null, mini: null };
+      const restore = clampRect(denormalizeRect(window.mini.restore, usable), reach);
+      if (window.tabId === entry) return { tabId: window.tabId, rect: restore, mask: null, mini: null };
+      const parked = parkedIds.indexOf(window.tabId);
+      return parked >= 0
+        ? { tabId: window.tabId, rect: this.#shelfRect(parked, parkedIds.length, false), mask: null, mini: { restore, parked: true } }
+        : { tabId: window.tabId, rect: { ...rect, w: MINI_SIZE.w, h: MINI_SIZE.h }, mask: null, mini: { restore, parked: false } };
+    });
     if (entry !== null && !windows.some((window) => window.tabId === entry)) {
-      const rect = windows.length === 0 ? centeredRect(usable) : freeSpot(windows.map((window) => window.rect), { w: usable.w * 0.6, h: usable.h * 0.76 }, usable);
-      windows.push({ tabId: entry, rect, mask: null });
+      const out = windows.filter((window) => window.mini?.parked !== true).map((window) => window.rect);
+      const rect = out.length === 0 ? centeredRect(usable) : freeSpot(out, { w: usable.w * 0.6, h: usable.h * 0.76 }, usable);
+      windows.push({ tabId: entry, rect, mask: null, mini: null });
     }
     windows.sort((a, b) => Number(a.tabId === entry) - Number(b.tabId === entry));
     windows.splice(0, Math.max(0, windows.length - MAX_DESK_WINDOWS));
@@ -1371,25 +1568,43 @@ export class DeskEngine {
     this.#departing.clear();
     this.#save();
     this.#phase = "leaving";
-    const top = this.#focused !== null && this.#wins.has(this.#focused) ? this.#focused : this.#order[this.#order.length - 1] ?? null;
+    this.#parked = [];
+    this.#raised = null;
+    this.#miniHover = null;
+    // The pane the surface goes back to is a tab's: the window in use, or with a document in use, the top tab's.
+    const top =
+      this.#focused !== null && this.#wins.has(this.#focused) && isTabWindow(this.#focused) ? this.#focused : ([...this.#order].reverse().find(isTabWindow) ?? null);
+    // Its live page is laid out at the pane's box from the start (DeskZoomedPage at zoom 1), and it grows there as
+    // itself — never as a picture of its window stretched to the pane, nor laid out anew once it is there. (A masked
+    // page grows back whole as it does when unmasked: main keeps it at its own box until it is shown there.)
+    const topWin = top === null ? undefined : this.#wins.get(top);
+    this.#leaveTop = top !== null && topWin !== undefined && topWin.mask === null && topWin.maskWanted === null && this.#host.hasLivePage(top) ? top : null;
     for (const win of this.#wins.values()) {
       win.coasting = false;
       win.delay = 0;
       win.lift = { scale: 1, tilt: 0 };
       if (win.tabId === top) {
-        // It becomes the pane again: all of its page.
+        // It becomes the pane again: all of its page, minimized or not.
+        win.mini = null;
+        win.miniMotion = null;
         win.mask = null;
         win.maskWanted = null;
         win.flight = null;
         win.framed = false;
         win.target = this.#fullRect();
         win.onArrive = null;
+        // On a timed ease, never past the pane (a live page swinging past it would paint beyond the desk).
+        win.tween = { from: { ...win.rect }, to: win.target, start: performance.now(), ms: reducedMotion() ? 0 : LEAVE_GROW_MS };
       } else {
         this.#sendAway(win, false);
       }
     }
+    // Over everything going home, the shelf's windows included.
+    if (top !== null) this.#order = [...this.#order.filter((id) => id !== top), top];
     if (top === null) window.setTimeout(() => this.#host.leaveDone(), 220);
     this.#emit();
+    // Main hears at once: the page is laid out at the pane's box before the window has grown at all.
+    this.#render();
     this.#kick();
   }
 
@@ -1406,8 +1621,8 @@ export class DeskEngine {
     }
     let changed = false;
     for (const [tabId, win] of [...this.#wins]) {
-      // (A window of a group the desk has passed from is on its way into that group's icon.)
-      if (groupTabIds.includes(tabId) || this.#departing.has(tabId) || win.flight === "away") continue;
+      // (A window of a group the desk has passed from is on its way into that group's icon; a document is setShellWindows'.)
+      if (groupTabIds.includes(tabId) || !isTabWindow(tabId) || this.#departing.has(tabId) || win.flight === "away") continue;
       if (this.#gesture?.tabId === tabId) this.#cancelGesture();
       this.#remove(tabId);
       changed = true;
@@ -1454,6 +1669,11 @@ export class DeskEngine {
   /** Bring a tab out of the inventory — or, if its window is out, to the top. */
   add(tabId: string, options: { focus?: boolean; rect?: Rect } = {}): void {
     if (this.#phase === "leaving") return;
+    // Chosen from the dock (or the sidebar, a shortcut) while minimized: it grows back, and is in use.
+    if (options.focus === true && this.#wins.get(tabId)?.mini != null && this.#wins.get(tabId)!.flight === null) {
+      this.expand(tabId);
+      return;
+    }
     if (this.#wins.has(tabId)) {
       this.#raise(tabId);
       if (options.focus === true) {
@@ -1467,10 +1687,11 @@ export class DeskEngine {
     }
     this.#makeRoom();
     const usable = this.#usable();
-    const staying = this.#staying();
+    // (The shelf's windows are at the desk's foot, below where windows go.)
+    const staying = this.#staying().filter((id) => this.#wins.get(id)!.mini?.parked !== true);
     const rects = staying.map((id) => this.#wins.get(id)!.target ?? this.#wins.get(id)!.rect);
-    // A masked window is a picture: it is never cut in two for a new one.
-    const inUse = this.#focused === null || this.#wins.get(this.#focused)?.mask != null ? -1 : staying.indexOf(this.#focused);
+    // A masked window is a picture, and a minimized one small: neither is cut in two for a new one.
+    const inUse = this.#focused === null || this.#wins.get(this.#focused)?.mask != null || this.#wins.get(this.#focused)?.mini != null ? -1 : staying.indexOf(this.#focused);
     // Where it goes is read from the desk as it is (placeNewWindow): a tiled
     // desk's hole, or half of the window in use, or a free spot.
     const placed = options.rect !== undefined ? { rect: options.rect, split: null } : placeNewWindow(rects, usable, inUse < 0 ? null : inUse);
@@ -1488,6 +1709,45 @@ export class DeskEngine {
     this.#focused = tabId;
     if (options.focus !== false) this.#pendingFocus = tabId;
     this.#host.select(tabId);
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * A shell window brought out where something was let go (a file dropped
+   * on the desk): centred on the point, at `share` of the desk (no wider
+   * than its most), growing out of the point, in use. One already out comes
+   * to the top instead.
+   */
+  openAt(id: string, client: Point, share: { w: number; h: number; maxW: number }): void {
+    if (this.#phase !== "open") return;
+    if (this.#wins.has(id) && this.#wins.get(id)!.flight !== "away") {
+      this.add(id, { focus: true });
+      return;
+    }
+    const usable = this.#usable();
+    const at = this.#toStage(client);
+    const w = Math.min(usable.w, Math.max(MIN_WINDOW_W, Math.min(share.maxW, usable.w * share.w)));
+    const h = Math.min(usable.h, Math.max(MIN_WINDOW_H, usable.h * share.h));
+    const rect = clampRect({ x: at.x - w / 2, y: at.y - h / 2, w, h }, usable);
+    const returning = this.#wins.get(id);
+    if (returning !== undefined) {
+      // On its way into the Stack a moment ago: it turns back, to here.
+      this.#recall(returning);
+      returning.target = rect;
+      returning.restore = null;
+      returning.coasting = false;
+      returning.delay = 0;
+      this.#raise(id);
+    } else {
+      this.#makeRoom();
+      this.#wins.set(id, this.#flyingIn(id, rect, { x: at.x - 24, y: at.y - 24, w: 48, h: 48 }));
+      this.#order.push(id);
+    }
+    this.#focused = id;
+    this.#pendingFocus = id;
+    this.#host.select(id);
     this.#emit();
     this.#render();
     this.#kick();
@@ -1524,6 +1784,11 @@ export class DeskEngine {
   toggleMaximize(tabId: string): void {
     const win = this.#wins.get(tabId);
     if (win === undefined || win.flight !== null || this.#phase !== "open" || win.mask !== null) return;
+    // Minimized, a double click on its frame expands it.
+    if (win.mini !== null) {
+      this.expand(tabId);
+      return;
+    }
     const usable = this.#usable();
     const current = win.target ?? win.rect;
     if (sameRect(current, usable, 2)) {
@@ -1540,12 +1805,198 @@ export class DeskEngine {
     this.#kick();
   }
 
+  /**
+   * Minimize: the window shrinks to a minimized window's size, its page
+   * zoomed out (DESK_MINI_ZOOM), and parks in the shelf at the desk's foot,
+   * after the ones already there, peeking up half its height. It keeps the
+   * box it had, to grow back to (expand). The window in use, it passes the
+   * keyboard to the window under it. A masked window is a picture of part
+   * of a page and is not minimized.
+   */
+  minimize(tabId: string): void {
+    const win = this.#wins.get(tabId);
+    if (win === undefined || win.flight !== null || win.mini !== null || win.mask !== null || this.#phase !== "open") return;
+    if (this.#gesture?.tabId === tabId) this.#cancelGesture();
+    if (this.#selecting === tabId) this.#selecting = null;
+    if (this.#editing === tabId) this.#editing = null;
+    win.miniMotion = "in";
+    win.coasting = false;
+    win.delay = 0;
+    win.lift = { scale: 1, tilt: 0 };
+    this.#setMinimized(win, { restore: { ...(win.target ?? win.rect) }, parked: true });
+    win.restore = null;
+    if (this.#focused === tabId) {
+      const next = this.#topWindow();
+      this.#focused = next;
+      if (next !== null) {
+        this.#pendingFocus = next;
+        this.#host.select(next);
+      }
+    }
+    this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /** Expand a minimized window: it grows back to the box it had, its page at its own size again, on top and in use. */
+  expand(tabId: string): void {
+    const win = this.#wins.get(tabId);
+    if (win === undefined || win.mini === null || win.flight !== null || this.#phase !== "open") return;
+    if (this.#gesture?.tabId === tabId) this.#cancelGesture();
+    const restore = win.mini.restore;
+    this.#unminimize(win);
+    win.target = clampRect(restore, this.#reach());
+    win.coasting = false;
+    win.delay = 0;
+    this.#raise(tabId);
+    this.#pendingFocus = tabId;
+    this.#asideFor = tabId;
+    this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * The pointer came onto a minimized window, or left it — told by the
+   * shell's own pointer on its frame (and its drawn page), or by main while
+   * it is on the window's live page, which the shell never hears. A parked
+   * window rises into full view while the pointer is on it, and goes back
+   * down a moment after it has left both (MINI_LOWER_MS).
+   */
+  hoverMini(tabId: string, from: "frame" | "page", over: boolean): void {
+    const hover = this.#miniHover;
+    if (over) {
+      if (this.#wins.get(tabId)?.mini == null) return;
+      const next = hover !== null && hover.tabId === tabId ? hover : { tabId, frame: false, page: false };
+      next[from] = true;
+      this.#miniHover = next;
+      window.clearTimeout(this.#lowerTimer);
+      this.#lowerTimer = 0;
+      this.#raiseParked(tabId);
+      return;
+    }
+    if (hover === null || hover.tabId !== tabId) return;
+    hover[from] = false;
+    if (hover.frame || hover.page) return;
+    window.clearTimeout(this.#lowerTimer);
+    this.#lowerTimer = window.setTimeout(() => {
+      this.#lowerTimer = 0;
+      if (this.#miniHover !== hover || hover.frame || hover.page) return;
+      this.#miniHover = null;
+      this.#raiseParked(null);
+    }, MINI_LOWER_MS);
+  }
+
+  /** Raise this parked window into full view (the others down), or put the raised one back down (null). */
+  #raiseParked(tabId: string | null): void {
+    const next = tabId !== null && this.#parked.includes(tabId) ? tabId : null;
+    // A window in hand is the pointer's business first.
+    if (next === this.#raised || (this.#gesture !== null && next !== null)) return;
+    this.#raised = next;
+    this.#layShelf();
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /** Make a window minimized — parked in the shelf, or out on the desk — the band at the desk's foot following. */
+  #setMinimized(win: Win, mini: Minimized): void {
+    const before = this.#usable();
+    win.mini = { restore: { ...mini.restore }, parked: mini.parked };
+    const at = this.#parked.indexOf(win.tabId);
+    if (mini.parked && at < 0) this.#parked.push(win.tabId);
+    if (!mini.parked && at >= 0) this.#parked.splice(at, 1);
+    this.#reband(before);
+  }
+
+  /** A minimized window at its own size again (the caller gives it its box): out of the shelf, its page held at that box as it grows there. */
+  #unminimize(win: Win): void {
+    if (win.mini === null) return;
+    this.#unpark(win);
+    win.mini = null;
+    win.miniMotion = "out";
+    this.#dirtyView = true;
+  }
+
+  /** Out of the shelf, the ones after it closing up, the band at the desk's foot following; still minimized, out on the desk. */
+  #unpark(win: Win): void {
+    const at = this.#parked.indexOf(win.tabId);
+    if (win.mini !== null) win.mini.parked = false;
+    if (at < 0) return;
+    const before = this.#usable();
+    this.#parked.splice(at, 1);
+    if (this.#raised === win.tabId) this.#raised = null;
+    if (this.#miniHover?.tabId === win.tabId) this.#miniHover = null;
+    this.#reband(before);
+    this.#dirtyView = true;
+  }
+
+  /** A minimized window in hand is over the shelf's band at the desk's foot: let go, it parks there. */
+  #overShelf(win: Win, point: Point): boolean {
+    return win.mini !== null && point.y >= this.#reachFor(this.#parked.length + (win.mini.parked ? 0 : 1)).h;
+  }
+
+  /** Where the shelf's `index`th of `count` parked windows goes: at the desk's foot, from beside the dock, peeking up — or, raised, in full view. */
+  #shelfRect(index: number, count: number, raised: boolean): Rect {
+    const { width, height } = this.#stageBox;
+    const left = DOCK_W + DESK_GAP;
+    const { w, h } = MINI_SIZE;
+    // Each overlaps the one before by half, closer still when that would run past the desk.
+    const room = Math.max(0, width - left - w - DESK_GAP);
+    const step = count <= 1 ? 0 : Math.min(w * (1 - MINI_OVERLAP), room / (count - 1));
+    return { x: left + index * step, y: raised ? height - h - DESK_GAP : height + this.#underStage - h * MINI_PEEK, w, h };
+  }
+
+  /** The shelf's windows to their places (a parked window in hand goes where the hand takes it), and above the rest, left to right. */
+  #layShelf(): void {
+    this.#parked = this.#parked.filter((id) => this.#wins.get(id)?.mini?.parked === true);
+    this.#parked.forEach((tabId, index) => {
+      const win = this.#wins.get(tabId)!;
+      if (this.#gesture?.tabId === tabId || win.flight !== null) return;
+      const target = this.#shelfRect(index, this.#parked.length, this.#raised === tabId);
+      if (sameRect(win.target ?? win.rect, target, 0.5)) return;
+      win.target = target;
+      win.coasting = false;
+      win.delay = 0;
+      // Shrinking into the shelf, it rides the Feel's spring; once there, its moves along and up and down are timed.
+      if (win.miniMotion !== null) return;
+      const ms = reducedMotion() ? 0 : target.y < win.rect.y - 0.5 ? SHELF_RISE_MS : target.y > win.rect.y + 0.5 ? SHELF_LOWER_MS : SHELF_MOVE_MS;
+      win.tween = { from: { ...win.rect }, to: target, start: performance.now(), ms };
+    });
+    this.#stackShelf();
+  }
+
+  /** The stack with the shelf on top: its windows left to right, each over the one before it, the raised one over all. */
+  #stackShelf(): void {
+    const shelf = this.#parked.filter((id) => id !== this.#raised && this.#order.includes(id));
+    if (this.#raised !== null && this.#order.includes(this.#raised)) shelf.push(this.#raised);
+    const next = [...this.#order.filter((id) => !this.#parked.includes(id)), ...shelf];
+    if (next.length === this.#order.length && next.every((id, index) => id === this.#order[index])) return;
+    this.#order = next;
+    this.#dirtyView = true;
+  }
+
+  /** The top window that is not parked in the shelf (and not flying off the desk), or null. */
+  #topWindow(): string | null {
+    for (let index = this.#order.length - 1; index >= 0; index -= 1) {
+      const id = this.#order[index]!;
+      const win = this.#wins.get(id)!;
+      if (win.flight !== "away" && win.mini?.parked !== true) return id;
+    }
+    return null;
+  }
+
   /** Every window on the desk tiled, or fanned, in the inventory's order — each a beat after the last. */
   arrange(kind: "tile" | "cascade", groupTabIds: readonly string[] = this.#groupTabIds): void {
     if (this.#phase !== "open") return;
     this.#cancelGesture();
-    // Masked windows are pictures: tiling would stretch them, so they stay where they are.
-    const ids = groupTabIds.filter((tabId) => this.#wins.has(tabId) && this.#wins.get(tabId)!.flight !== "away" && this.#wins.get(tabId)!.mask === null);
+    // Masked windows are pictures: tiling would stretch them, so they stay where they are; minimized ones stay minimized.
+    const arranged = (id: string): boolean =>
+      this.#wins.has(id) && this.#wins.get(id)!.flight !== "away" && this.#wins.get(id)!.mask === null && this.#wins.get(id)!.mini === null;
+    // The tabs in the dock's order, then the documents out, bottom to top.
+    const ids = [...groupTabIds.filter(arranged), ...this.#order.filter((id) => !isTabWindow(id) && arranged(id))];
     const usable = this.#usable();
     const rects = kind === "tile" ? tileRects(ids.length, usable) : cascadeRects(ids.length, usable);
     ids.forEach((tabId, index) => {
@@ -1553,7 +2004,7 @@ export class DeskEngine {
       win.target = rects[index]!;
       win.restore = null;
       win.coasting = false;
-      win.delay = index * 0.035;
+      win.delay = this.#beat(index, ids.length, 0, 0.035);
     });
     // A cascade reads front to back in the inventory's order.
     if (kind === "cascade") this.#order = [...this.#order.filter((tabId) => !ids.includes(tabId)), ...ids];
@@ -1572,16 +2023,28 @@ export class DeskEngine {
     if (band === this.#barBand) return;
     const before = this.#usable();
     this.#barBand = band;
+    this.#reband(before);
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * The band at the desk's foot changed (the Bar's, or the shelf's as
+   * windows are parked there and leave it): the windows spring into the
+   * desk as it is now, in proportion, and the shelf is laid out afresh.
+   */
+  #reband(before: Rect): void {
     const after = this.#usable();
     const reach = this.#reach();
-    if (this.#phase === "open") {
+    if (this.#phase === "open" && !sameRect(before, after, 0.5)) {
       for (const win of this.#wins.values()) {
-        if (this.#gesture?.tabId === win.tabId || win.flight !== null) continue;
+        if (this.#gesture?.tabId === win.tabId || win.flight !== null || win.mini?.parked === true) continue;
         const from = win.target ?? win.rect;
-        if (win.mask !== null) {
-          // A picture keeps its size; only where it is follows the desk.
+        if (win.mask !== null || win.mini !== null) {
+          // A picture — or a minimized window — keeps its size; only where it is follows the desk.
           const moved = denormalizeRect(normalizeRect(from, before), after);
-          win.target = clampRect({ ...from, x: moved.x, y: moved.y }, reach, MASK_MIN);
+          win.target = clampRect({ ...from, x: moved.x, y: moved.y }, reach, this.#minSize(win));
         } else {
           win.target = clampRect(denormalizeRect(normalizeRect(from, before), after), reach);
           if (win.restore !== null) win.restore = clampRect(denormalizeRect(normalizeRect(win.restore, before), after), reach);
@@ -1589,14 +2052,17 @@ export class DeskEngine {
         win.coasting = false;
       }
     }
-    this.#emit();
-    this.#render();
-    this.#kick();
+    this.#layShelf();
   }
 
   /** The tab is one of the group's (a tab the agent just opened may not be yet). */
   hasGroupTab(tabId: string): boolean {
     return this.#groupTabIds.includes(tabId);
+  }
+
+  /** A window this desk may show: one of the group's tabs, or one of its documents (known to be one: the agent names only what is there). */
+  #isMember(id: string): boolean {
+    return isTabWindow(id) ? this.#groupTabIds.includes(id) : this.#shellIds !== null && this.#shellIds.includes(id);
   }
 
   /** The desk as the agent reads it: every window out, bottom to top, where it is going, as percents of the desk. */
@@ -1606,7 +2072,14 @@ export class DeskEngine {
     return {
       windows: out.map((tabId) => {
         const win = this.#wins.get(tabId)!;
-        return { tabId, box: percentBox(win.target ?? win.rect, usable), focused: tabId === this.#focused, masked: win.mask !== null };
+        return {
+          tabId,
+          kind: windowKind(tabId),
+          box: percentBox(win.target ?? win.rect, usable),
+          focused: tabId === this.#focused,
+          masked: win.mask !== null,
+          minimized: win.mini !== null,
+        };
       }),
       docked: this.#groupTabIds.filter((tabId) => !out.includes(tabId)),
     };
@@ -1622,10 +2095,9 @@ export class DeskEngine {
   arrangeFor(plan: DeskArrangePlan): string | null {
     if (this.#phase !== "open") return "the desk is not open yet";
     if (this.#gesture !== null) return "the person has a window in hand; try again in a moment";
-    const members = new Set(this.#groupTabIds);
     const named = [...(plan.place ?? []).map((entry) => entry.tabId), ...(plan.putAway ?? []), ...(plan.bringOut ?? [])];
-    const stranger = named.find((tabId) => !members.has(tabId));
-    if (stranger !== undefined) return `tab ${stranger} is not on this desk`;
+    const stranger = named.find((id) => !this.#isMember(id));
+    if (stranger !== undefined) return isTabWindow(stranger) ? `tab ${stranger} is not on this desk` : `${stranger} is not one of this desk's documents`;
     if (this.#focused !== null && plan.putAway?.includes(this.#focused) === true) return "the window in use stays out: the person is using it";
     if ((plan.place ?? []).some((entry) => entry.zone === undefined && entry.box === undefined)) return "each window placed needs a zone or a box";
     const placed = new Set((plan.place ?? []).map((entry) => entry.tabId));
@@ -1647,11 +2119,13 @@ export class DeskEngine {
       }
       // Still on its way into the dock (put away a moment ago): it turns back. On its way to be closed, or to another group, it goes on.
       if (win.flight === "away" && !this.#recall(win)) return;
+      // Minimized, it grows back into its place.
+      if (win.mini !== null) this.#unminimize(win);
       // A masked window is a picture: it keeps its size, in the middle of its place.
       win.target = win.mask !== null ? clampRect({ ...win.rect, x: rect.x + (rect.w - win.rect.w) / 2, y: rect.y + (rect.h - win.rect.h) / 2 }, reach, MASK_MIN) : rect;
       win.restore = null;
       win.coasting = false;
-      win.delay = index * 0.035;
+      win.delay = this.#beat(index, (plan.place ?? []).length, 0, 0.035);
     });
     this.#save();
     this.#emit();
@@ -1671,7 +2145,12 @@ export class DeskEngine {
 
   /** Where every window is going now: what Undo layout puts back. */
   layoutSnapshot(): DeskLayoutSnapshot {
-    return { windows: this.#staying().map((tabId) => ({ tabId, rect: { ...(this.#wins.get(tabId)!.target ?? this.#wins.get(tabId)!.rect) } })) };
+    return {
+      windows: this.#staying().map((tabId) => {
+        const win = this.#wins.get(tabId)!;
+        return { tabId, rect: { ...(win.target ?? win.rect) }, mini: win.mini === null ? null : { restore: { ...win.mini.restore }, parked: win.mini.parked } };
+      }),
+    };
   }
 
   /**
@@ -1681,7 +2160,7 @@ export class DeskEngine {
    */
   restoreLayout(snapshot: DeskLayoutSnapshot): void {
     if (this.#phase !== "open" || this.#gesture !== null) return;
-    const wanted = snapshot.windows.filter((entry) => this.#groupTabIds.includes(entry.tabId));
+    const wanted = snapshot.windows.filter((entry) => this.#isMember(entry.tabId));
     const keep = new Set(wanted.map((entry) => entry.tabId));
     for (const tabId of this.#staying()) {
       if (keep.has(tabId) || tabId === this.#focused) continue;
@@ -1696,11 +2175,15 @@ export class DeskEngine {
       // Still on its way into the dock (put away a moment ago): it turns back, rather than being lost to it.
       // On its way to be closed, or to another group, it goes on: that was the person's doing.
       if (win.flight === "away" && !this.#recall(win)) continue;
+      // Minimized or not, as it was.
+      if (entry.mini === null && win.mini !== null) this.#unminimize(win);
+      else if (entry.mini !== null) this.#setMinimized(win, entry.mini);
       win.target = { ...entry.rect };
       win.restore = null;
       win.coasting = false;
       win.delay = 0;
     }
+    this.#layShelf();
     const order = wanted.map((entry) => entry.tabId).filter((tabId) => this.#wins.has(tabId));
     const rest = this.#order.filter((tabId) => !order.includes(tabId));
     const stack = [...rest, ...order];
@@ -1725,9 +2208,9 @@ export class DeskEngine {
     if (returning === undefined) this.#makeRoom();
     let target = rect;
     if (target === undefined) {
-      const staying = this.#staying();
+      const staying = this.#staying().filter((id) => this.#wins.get(id)!.mini?.parked !== true);
       const rects = staying.map((id) => this.#wins.get(id)!.target ?? this.#wins.get(id)!.rect);
-      const inUse = this.#focused === null || this.#wins.get(this.#focused)?.mask != null ? -1 : staying.indexOf(this.#focused);
+      const inUse = this.#focused === null || this.#wins.get(this.#focused)?.mask != null || this.#wins.get(this.#focused)?.mini != null ? -1 : staying.indexOf(this.#focused);
       const placed = placeNewWindow(rects, this.#usable(), inUse < 0 ? null : inUse);
       if (placed.split !== null) {
         const giving = this.#wins.get(staying[placed.split.index]!)!;
@@ -1820,11 +2303,13 @@ export class DeskEngine {
   /** A press on a resize edge or corner. */
   resize(tabId: string, edges: Edges, event: PressEvent): void {
     const win = this.#wins.get(tabId);
-    if (event.button !== 0 || win === undefined || this.#phase !== "open" || this.#gesture !== null || win.flight !== null) return;
+    // (A parked window is resized once it is out on the desk: half of it is below the desk's edge.)
+    if (event.button !== 0 || win === undefined || this.#phase !== "open" || this.#gesture !== null || win.flight !== null || win.mini?.parked === true) return;
     this.#raise(tabId);
     const start = this.#toStage({ x: event.clientX, y: event.clientY });
     win.coasting = false;
     win.target = null;
+    win.tween = null;
     win.vel = { ...ZERO_RECT };
     win.restore = null;
     this.#gesture = {
@@ -1901,11 +2386,18 @@ export class DeskEngine {
   #beginMove(tabId: string, start: Point, current: Point | null): void {
     const win = this.#wins.get(tabId);
     if (win === undefined || win.flight !== null) return;
+    // Taken from the shelf: out on the desk, still minimized (let go at the desk's foot, it parks again).
+    if (win.mini?.parked === true) {
+      window.clearTimeout(this.#lowerTimer);
+      this.#lowerTimer = 0;
+      this.#unpark(win);
+    }
     const origin = this.#toStage(start);
     // In hand, the dock is out of the way for it; let go behind the dock, the dock comes back over it.
     this.#asideFor = null;
     win.coasting = false;
     win.target = null;
+    win.tween = null;
     win.delay = 0;
     win.vel = { ...ZERO_RECT };
     const lifted = this.#host.variants().motion === "lifted";
@@ -1934,7 +2426,7 @@ export class DeskEngine {
       lag: null,
       // Spanning the desk (both ways, or its whole height or width): once it
       // is really moving, it lets go of the span, so it can be carried about.
-      unfill: win.mask === null ? letGoSize(win.rect, win.restore, usable) : null,
+      unfill: win.mask === null && win.mini === null ? letGoSize(win.rect, win.restore, usable) : null,
       size: null,
       dock: null,
       end: null,
@@ -2026,6 +2518,7 @@ export class DeskEngine {
     const out = this.#wins.get(gesture.tabId);
     if (out !== undefined) {
       if (out.flight !== null) this.#land(out);
+      if (out.mini?.parked === true) this.#unpark(out);
       // Its own size, or scaled to be carried, its shape kept.
       const fit = carrySize(out.rect, usable);
       const size = fit.w < out.rect.w - 0.5 ? fit : null;
@@ -2069,6 +2562,7 @@ export class DeskEngine {
     win.flight = null;
     win.onArrive = null;
     win.target = null;
+    win.tween = null;
     win.written = "";
     this.#dirtyView = true;
   }
@@ -2144,12 +2638,15 @@ export class DeskEngine {
     gesture.drop = dockDropAt(point, this.#drops, DOCK_W + DESK_GAP / 2, this.#stageBox.height);
     gesture.overDock = gesture.drop !== null;
     // Snap mode: Shift held, the desk is in thirds and the tile under the pointer is lit.
-    // (Not for a masked window: a tile would stretch the picture.)
+    // (Not for a masked window: a tile would stretch the picture. A minimized one snaps as any
+    // window does, and is a window at its own size once in the tile — but over the shelf's band
+    // at the desk's foot, where it parks again when let go, no tile is lit for it.)
     const picture = win.mask !== null;
-    const snapping = this.#shift && !gesture.overDock && !picture;
+    const overShelf = this.#overShelf(win, point);
+    const snapping = this.#shift && !gesture.overDock && !picture && !overShelf;
     gesture.cell = snapping ? thirdsCell(point, usable, gesture.cell, SNAP_HYSTERESIS) : null;
     const zone =
-      gesture.cell !== null ? cellZone(gesture.cell) : gesture.overDock || picture ? null : edgeZone(point, usable, 18, 96, LEFT_EDGE_BAND);
+      gesture.cell !== null ? cellZone(gesture.cell) : gesture.overDock || picture || overShelf ? null : edgeZone(point, usable, 18, 96, LEFT_EDGE_BAND);
     if ((zone === null) !== (gesture.zone === null) || snapping !== gesture.snapping) this.#dirtyView = true;
     gesture.zone = zone;
     gesture.snapping = snapping;
@@ -2278,14 +2775,34 @@ export class DeskEngine {
             w: size.w,
             h: size.h,
           };
+    // A minimized window let go at the desk's foot parks again, at the place in the shelf nearest the pointer.
+    if (win.mini !== null && this.#overShelf(win, gesture.pointer)) {
+      const step = MINI_SIZE.w * (1 - MINI_OVERLAP);
+      const at = clamp(Math.round((gesture.pointer.x - DOCK_W - DESK_GAP - MINI_SIZE.w / 2) / step), 0, this.#parked.length);
+      const before = this.#usable();
+      win.mini.parked = true;
+      this.#parked.splice(at, 0, win.tabId);
+      this.#reband(before);
+      this.#save();
+      this.#emit();
+      this.#render();
+      this.#kick();
+      return;
+    }
     win.vel = { x: velocity.x, y: velocity.y, w: win.vel.w, h: win.vel.h };
     const inside = sameRect(clampRect(basis, this.#reach(), this.#minSize(win)), basis, 2);
     if (gesture.zone !== null) {
+      // A minimized window snapped into a tile is a window at its own size again;
+      // filling the desk, it can be given back the box it had before it was minimized.
+      const mini = win.mini;
+      if (mini !== null) this.#unminimize(win);
       // Filling the desk again, it can be given back the size it had — which,
       // for a window that let go of the desk on the way, is no size of its own.
-      if (gesture.zone === "maximize") win.restore = gesture.size === null ? { ...gesture.startRect } : null;
+      if (gesture.zone === "maximize") win.restore = mini !== null ? clampRect(mini.restore, this.#reach()) : gesture.size === null ? { ...gesture.startRect } : null;
       win.target = tileRect(gesture.zone, usable);
     } else if (variants.physics === "snap" && win.mask === null) {
+      // Every release lands in a tile: a minimized window, too, which is then at its own size again.
+      if (win.mini !== null) this.#unminimize(win);
       const aim = { x: gesture.pointer.x + velocity.x * 0.16, y: gesture.pointer.y + velocity.y * 0.16 };
       win.target = tileRect(thirdsZone(aim, usable), usable);
     } else if (variants.physics === "glide" && Math.hypot(velocity.x, velocity.y) > 220 && inside && size === null) {
@@ -2562,16 +3079,20 @@ export class DeskEngine {
     // drawn window, and grows in from flat once the still is up.
     const scaleTarget = win.drawn ? win.lift.scale : 1;
     if (!win.drawn) tiltTarget = 0;
-    // A flight's scale is its size, so it rides the same spring as its position.
-    const scale = stepSpring(win.scale, win.scaleV, scaleTarget, win.flight === null ? LIFT_SPRING : this.#spring(), dt);
-    const tilt = stepSpring(win.tilt, win.tiltV, tiltTarget, LIFT_SPRING, dt);
+    const eased = variants.spring === "eased";
+    // Eased, a flight's scale is eased with its position (the tween, below); otherwise it rides the same spring.
+    const easedFlight = eased && win.flight !== null && win.target !== null;
+    const liftSpring = eased ? EASED_SPRING : LIFT_SPRING;
+    const scale = easedFlight ? { x: win.scale, v: 0 } : stepSpring(win.scale, win.scaleV, scaleTarget, win.flight === null ? liftSpring : this.#spring(), dt);
+    const tilt = stepSpring(win.tilt, win.tiltV, tiltTarget, liftSpring, dt);
     win.scale = scale.x;
     win.scaleV = scale.v;
     win.tilt = tilt.x;
     win.tiltV = tilt.v;
-    if (!springAtRest(win.scale, win.scaleV, scaleTarget, 0.0005, 0.01) || !springAtRest(win.tilt, win.tiltV, tiltTarget, 0.05, 0.5)) moving = true;
+    const scaled = easedFlight || springAtRest(win.scale, win.scaleV, scaleTarget, 0.0005, 0.01);
+    if (!scaled || !springAtRest(win.tilt, win.tiltV, tiltTarget, 0.05, 0.5)) moving = true;
     else {
-      win.scale = scaleTarget;
+      if (!easedFlight) win.scale = scaleTarget;
       win.tilt = tiltTarget;
       win.scaleV = 0;
       win.tiltV = 0;
@@ -2593,7 +3114,7 @@ export class DeskEngine {
       // Taken by its icon: on its way to the hand.
       const lag = gesture.lag;
       if (lag !== null) {
-        const spring = reducedMotion() ? REDUCED_SPRING : CATCH_SPRING;
+        const spring = reducedMotion() ? REDUCED_SPRING : eased ? EASED_SPRING : CATCH_SPRING;
         const x = stepSpring(lag.x, lag.vx, 0, spring, dt);
         const y = stepSpring(lag.y, lag.vy, 0, spring, dt);
         gesture.lag = springAtRest(x.x, x.v, 0) && springAtRest(y.x, y.v, 0) ? null : { x: x.x, y: y.x, vx: x.v, vy: y.v };
@@ -2623,6 +3144,32 @@ export class DeskEngine {
         win.delay -= dt;
         return true;
       }
+      // Eased (the Feel's Spring), whatever set the target: a timed ease there, by what the motion does.
+      // (Begun a frame back: this frame is its first step, not a frame standing still.)
+      if (eased && (win.tween === null || !sameRect(win.tween.to, win.target, 0.01))) this.#easeTo(win, win.target, now - dt * 1_000);
+      // A timed move (the shelf's, a leave's, or Eased's): eased along to its place, and arrived there once its time is up.
+      const tween = win.tween;
+      if (tween !== null && !sameRect(tween.to, win.target, 0.01)) win.tween = null;
+      else if (tween !== null) {
+        const t = tween.ms <= 0 ? 1 : clamp((now - tween.start) / tween.ms, 0, 1);
+        const along = EASE_SMOOTH_OUT(t);
+        win.vel = { ...ZERO_RECT };
+        if (tween.scale !== undefined) {
+          win.scale = t < 1 ? tween.scale.from + (tween.scale.to - tween.scale.from) * along : tween.scale.to;
+          win.scaleV = 0;
+        }
+        if (t < 1) {
+          win.rect = {
+            x: tween.from.x + (tween.to.x - tween.from.x) * along,
+            y: tween.from.y + (tween.to.y - tween.from.y) * along,
+            w: tween.from.w + (tween.to.w - tween.from.w) * along,
+            h: tween.from.h + (tween.to.h - tween.from.h) * along,
+          };
+          return true;
+        }
+        win.rect = { ...tween.to };
+        win.tween = null;
+      }
       const spring = this.#spring();
       const target = win.target;
       const x = stepSpring(win.rect.x, win.vel.x, target.x, spring, dt);
@@ -2631,11 +3178,13 @@ export class DeskEngine {
       const h = stepSpring(win.rect.h, win.vel.h, target.h, spring, dt);
       win.rect = { x: x.x, y: y.x, w: Math.max(1, w.x), h: Math.max(1, h.x) };
       win.vel = { x: x.v, y: y.v, w: w.v, h: h.v };
+      // Growing, it goes no further than the box it grows to (its page is laid out at that box, and nothing past it).
+      if (win.growTo !== null && sameRect(win.growTo.to, target, 0.01)) this.#keepInGrowth(win, win.growTo);
       if (
-        springAtRest(x.x, x.v, target.x) &&
-        springAtRest(y.x, y.v, target.y) &&
-        springAtRest(w.x, w.v, target.w) &&
-        springAtRest(h.x, h.v, target.h) &&
+        springAtRest(win.rect.x, win.vel.x, target.x) &&
+        springAtRest(win.rect.y, win.vel.y, target.y) &&
+        springAtRest(win.rect.w, win.vel.w, target.w) &&
+        springAtRest(win.rect.h, win.vel.h, target.h) &&
         // A flight is a picture growing or shrinking: it has arrived when its scale has too.
         (win.flight === null || !moving)
       ) {
@@ -2646,6 +3195,11 @@ export class DeskEngine {
         win.onArrive = null;
         if (win.flight === "in") {
           win.flight = null;
+          this.#dirtyView = true;
+        }
+        // Minimized, or grown back from it: its page is live again, at the zoom it now has.
+        if (win.miniMotion !== null) {
+          win.miniMotion = null;
           this.#dirtyView = true;
         }
         if (this.#phase === "open") this.#save();
@@ -2755,7 +3309,9 @@ export class DeskEngine {
     } else if (fade !== null) covers.set("\u0000maskfade", fade.from);
     // While a window is carried, the drop rail stands in its column once it shows.
     if (this.#dropsNear && (gesture?.kind === "move" || gesture?.kind === "spawn")) covers.set("\u0000drops", this.#railCover());
-    if (covers.size > 0) {
+    // Leaving, nothing of the desk stays over the window becoming the pane (the dock, the Bar, a card closing): it
+    // waits on none of them, and goes live as it grows (leave).
+    if (covers.size > 0 && this.#phase !== "leaving") {
       order = [...order];
       for (const [key, rect] of covers) {
         order.push(`\u0000cover:${key}`);
@@ -2770,6 +3326,7 @@ export class DeskEngine {
         win.unmasking = null;
         this.#dirtyView = true;
       }
+      this.#latchGrowth(win);
       const wants = !uncovered.has(win.tabId) || this.#wantsStillForMotion(win);
       if (wants) {
         // Only a still asked for from now on will do: ask at once, however recently one was.
@@ -2782,8 +3339,13 @@ export class DeskEngine {
       const native = this.#host.hasLivePage(win.tabId);
       // A mask being edited is drawn at once: main shows its whole page meanwhile, into a view sized for that, never over the region's box.
       // So is a window growing back from its mask: live, its page would be shown at every size it passes through.
+      // So is a window shrinking into minimized: its page is laid out at the size it ends at. (Growing back from it, it is live: growTo.)
       const forced =
-        win.flight !== null || (this.#gesture?.kind === "spawn" && this.#gesture.tabId === win.tabId) || this.#editing === win.tabId || win.unmasking !== null;
+        win.flight !== null ||
+        (this.#gesture?.kind === "spawn" && this.#gesture.tabId === win.tabId) ||
+        this.#editing === win.tabId ||
+        win.unmasking !== null ||
+        win.miniMotion === "in";
       const drawn = !native || forced || (wants && this.#fresh(win));
       if (drawn !== win.drawn) {
         win.drawn = drawn;
@@ -2827,20 +3389,123 @@ export class DeskEngine {
   }
 
   #spring(): SpringConfig {
-    return reducedMotion() ? REDUCED_SPRING : SPRING_PRESETS[this.#host.variants().spring];
+    const feel = this.#host.variants().spring;
+    return reducedMotion() ? REDUCED_SPRING : feel === "eased" ? EASED_SPRING : SPRING_PRESETS[feel];
   }
 
   #wantsStillForMotion(win: Win): boolean {
-    if (win.flight !== null || win.hold || win.unmasking !== null || this.#selecting === win.tabId || this.#editing === win.tabId || this.#departing.has(win.tabId))
+    // Leaving, the window in use grows into the pane as its live page: its page is laid out at the pane's box already.
+    if (this.#phase === "leaving" && this.#leaveTop === win.tabId) return false;
+    // So does any window growing into a larger box (growTo), once it is let go.
+    if (win.growTo !== null && this.#gesture?.tabId !== win.tabId) return false;
+    if (
+      win.flight !== null ||
+      win.hold ||
+      win.unmasking !== null ||
+      win.miniMotion === "in" ||
+      this.#selecting === win.tabId ||
+      this.#editing === win.tabId ||
+      this.#departing.has(win.tabId)
+    )
       return true;
     const gesture = this.#gesture;
     const carried = gesture?.tabId === win.tabId ? gesture : null;
+    // A parked window rising into view, or going back down, stays live: its page never changes size (main holds it at its zoomed box).
+    if (win.mini?.parked === true && carried === null) return false;
     if (carried?.kind === "spawn") return true;
     // A picture being resized is its still, stretched.
     if (carried?.kind === "resize" && win.mask !== null) return true;
     if (this.#host.variants().motion === "live") return false;
     if (carried?.kind === "move") return true;
     return win.coasting || win.target !== null || win.scale !== 1 || win.tilt !== 0;
+  }
+
+  /** Eased: a timed ease from where the window is to `target`, for as long as what it does takes (EASED_*), its scale along with it in flight. */
+  #easeTo(win: Win, target: Rect, now: number): void {
+    const resized = Math.abs(target.w - win.rect.w) > 1 || Math.abs(target.h - win.rect.h) > 1;
+    const ms = reducedMotion() ? 0 : win.flight === "in" ? EASED_OPEN_MS : win.flight === "away" ? EASED_CLOSE_MS : resized ? EASED_RESIZE_MS : EASED_MOVE_MS;
+    win.tween = {
+      from: { ...win.rect },
+      to: { ...target },
+      start: now,
+      ms,
+      ...(win.flight !== null ? { scale: { from: win.scale, to: win.drawn ? win.lift.scale : 1 } } : {}),
+    };
+    win.vel = { ...ZERO_RECT };
+  }
+
+  /**
+   * A beat between the windows of an arrangement, or of a desk coming out:
+   * `lead` then `each` per window — or, Eased, the stagger token per window,
+   * the whole run of `count` within its total. Seconds.
+   */
+  #beat(index: number, count: number, lead: number, each: number): number {
+    if (this.#host.variants().spring !== "eased") return lead + index * each;
+    return (index * Math.min(DURATION_STAGGER_MS, STAGGER_TOTAL_MS / Math.max(1, count))) / 1000;
+  }
+
+  /**
+   * Whether a window is growing into a larger box (growTo), read as it sets
+   * out — and kept until it gets there, or is sent somewhere else. Only a
+   * tab's live page, at its own size and its own zoom: a masked one, a
+   * minimized one and one coming off its mask have their own ways, a window
+   * in hand or in flight is a picture anyway, and leaving, only the window
+   * becoming the pane.
+   */
+  #latchGrowth(win: Win): void {
+    const target = win.target;
+    const latched = win.growTo;
+    if (latched !== null && target !== null && sameRect(latched.to, target, 0.5)) return;
+    win.growTo = null;
+    if (
+      target === null ||
+      win.flight !== null ||
+      win.coasting ||
+      win.mask !== null ||
+      win.maskWanted !== null ||
+      win.unmasking !== null ||
+      win.mini !== null ||
+      win.miniMotion === "in" ||
+      this.#gesture?.tabId === win.tabId ||
+      (this.#phase === "leaving" && this.#leaveTop !== win.tabId) ||
+      !isTabWindow(win.tabId) ||
+      !this.#host.hasLivePage(win.tabId)
+    )
+      return;
+    if (target.w <= win.rect.w + 2 && target.h <= win.rect.h + 2) return;
+    win.growTo = { from: { ...win.rect }, to: { ...target } };
+    this.#dirtyView = true;
+  }
+
+  /** A growing window held inside where it set out from and where it is going: its springs stop at the edge they would pass. */
+  #keepInGrowth(win: Win, grow: { from: Rect; to: Rect }): void {
+    const { from, to } = grow;
+    const left = Math.min(from.x, to.x);
+    const top = Math.min(from.y, to.y);
+    const right = Math.max(from.x + from.w, to.x + to.w);
+    const bottom = Math.max(from.y + from.h, to.y + to.h);
+    let { x, y, w, h } = win.rect;
+    const vel = { ...win.vel };
+    if (x < left) {
+      w -= left - x;
+      x = left;
+      vel.x = 0;
+    }
+    if (y < top) {
+      h -= top - y;
+      y = top;
+      vel.y = 0;
+    }
+    if (x + w > right) {
+      w = right - x;
+      vel.w = 0;
+    }
+    if (y + h > bottom) {
+      h = bottom - y;
+      vel.h = 0;
+    }
+    win.rect = { x, y, w: Math.max(1, w), h: Math.max(1, h) };
+    win.vel = vel;
   }
 
   #fresh(win: Win): boolean {
@@ -2861,9 +3526,12 @@ export class DeskEngine {
       : `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
     const reveal = win.unmasking === null ? null : this.#revealBox(win, win.unmasking);
     const revealKey = reveal === null ? "" : `${reveal.x.toFixed(1)},${reveal.y.toFixed(1)},${reveal.w.toFixed(1)},${reveal.h.toFixed(1)}`;
-    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}`;
+    // A window peeking from the desk's foot is cut off at the window's edge (its page's view is cut short there too, #report).
+    const below = transformed ? 0 : Math.max(0, y + h - this.#stageBox.height - this.#underStage);
+    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${below.toFixed(1)}`;
     if (key === win.written) return;
     win.written = key;
+    el.style.clipPath = below > 0 ? `inset(-40px -40px ${below.toFixed(1)}px -40px)` : "";
     el.style.transform = transform;
     el.style.width = `${w.toFixed(1)}px`;
     el.style.height = `${h.toFixed(1)}px`;
@@ -2914,11 +3582,18 @@ export class DeskEngine {
       const win = this.#wins.get(tabId)!;
       if (win.drawn) continue;
       const insets = this.#insets(win);
+      const y = Math.round(top + win.rect.y + insets.top);
+      // Peeking from the desk's foot, its view is cut short at the window's edge: main shows the top of its (zoomed) page.
+      const foot = Math.round(top + this.#stageBox.height + this.#underStage);
+      // Growing, its view is never larger than the page it is laid out at (growTo): one dimension may be shrinking meanwhile.
+      const grow = win.growTo?.to ?? null;
+      const width = Math.round(win.rect.w - insets.left - insets.right);
+      const height = Math.round(win.rect.h - insets.top - insets.bottom);
       const bounds = {
         x: Math.round(left + win.rect.x + insets.left),
-        y: Math.round(top + win.rect.y + insets.top),
-        width: Math.max(1, Math.round(win.rect.w - insets.left - insets.right)),
-        height: Math.max(1, Math.round(win.rect.h - insets.top - insets.bottom)),
+        y,
+        width: Math.max(1, grow === null ? width : Math.min(width, Math.round(grow.w - insets.left - insets.right))),
+        height: Math.max(1, Math.min(grow === null ? height : Math.min(height, Math.round(grow.h - insets.top - insets.bottom)), foot - y)),
       };
       views.push({ tabId, bounds });
     }
@@ -2960,11 +3635,42 @@ export class DeskEngine {
     }
     // A window on its way into the inventory is drawn, with no page to grab.
     masks.splice(MAX_DESK_WINDOWS);
+    // Minimized pages, laid out at their box zoomed out; and a page growing back from minimized, held at the box it grows to.
+    const zoomed: DeskZoomedPage[] = [];
+    for (const tabId of leavingLast(this.#order)) {
+      const win = this.#wins.get(tabId)!;
+      if (!isTabWindow(tabId) || (win.mini === null && win.miniMotion !== "out")) continue;
+      const insets = this.#insets(win);
+      const box = win.target ?? win.rect;
+      zoomed.push({
+        tabId,
+        width: Math.max(1, Math.round(box.w - insets.left - insets.right)),
+        height: Math.max(1, Math.round(box.h - insets.top - insets.bottom)),
+        zoom: win.mini !== null ? DESK_MINI_ZOOM : 1,
+      });
+    }
+    // Growing into a larger box: laid out at it at once, as it grows there (growTo).
+    for (const tabId of leavingLast(this.#order)) {
+      const grow = this.#wins.get(tabId)!.growTo;
+      if (grow === null || zoomed.some((page) => page.tabId === tabId)) continue;
+      const insets = this.#insets(this.#wins.get(tabId)!);
+      zoomed.push({
+        tabId,
+        width: Math.max(1, Math.round(grow.to.w - insets.left - insets.right)),
+        height: Math.max(1, Math.round(grow.to.h - insets.top - insets.bottom)),
+        zoom: 1,
+      });
+    }
+    // Leaving, the window in use: laid out at the pane's box at once, as it grows there.
+    if (this.#leaveTop !== null && this.#wins.has(this.#leaveTop) && !zoomed.some((page) => page.tabId === this.#leaveTop))
+      zoomed.push({ tabId: this.#leaveTop, width: Math.max(1, Math.round(this.#stageBox.width)), height: Math.max(1, Math.round(this.#stageBox.height)), zoom: 1 });
+    zoomed.splice(MAX_DESK_WINDOWS);
     const dockHover = this.#dockHover;
-    const desk = { tabIds: leavingLast(this.#staying()).slice(0, MAX_DESK_WINDOWS), grab: grab === "off" ? null : grab, dock, dockHover, masks };
+    // Main hears of tabs' windows only: a document has no page of its own.
+    const desk = { tabIds: leavingLast(this.#staying().filter(isTabWindow)).slice(0, MAX_DESK_WINDOWS), grab: grab === "off" ? null : grab, dock, dockHover, masks, zoomed };
     const deskKey = `${desk.tabIds.join(" ")}|${desk.grab ?? ""}|${dock === null ? "" : `${dock.x},${dock.y},${dock.width},${dock.height}`}|${dockHover ? "hover" : ""}|${masks
       .map((page) => `${page.tabId}:${deskMaskKey(page.mask)}:${page.width}x${page.height}`)
-      .join(" ")}`;
+      .join(" ")}|${zoomed.map((page) => `${page.tabId}:${page.width}x${page.height}@${page.zoom}`).join(" ")}`;
     if (deskKey !== this.#sentDesk) {
       this.#sentDesk = deskKey;
       api.setDesk(desk);
@@ -2978,6 +3684,12 @@ export class DeskEngine {
     const win = this.#wins.get(tabId);
     if (win === undefined) {
       this.#pendingFocus = null;
+      return;
+    }
+    // A document's own content takes the keyboard, in the shell.
+    if (!isTabWindow(tabId)) {
+      this.#pendingFocus = null;
+      this.#host.focusWindow?.(tabId);
       return;
     }
     if (!this.#host.hasLivePage(tabId)) {
@@ -3015,7 +3727,9 @@ export class DeskEngine {
           flight: win.flight,
           framed: win.framed,
           // Letting go of the desk in hand, it is no longer the desk's size, whatever size it has reached.
-          maximized: win.mask === null && !(carried && gesture.size !== null) && sameRect(win.target ?? win.rect, usable, 2),
+          maximized: win.mask === null && win.mini === null && !(carried && gesture.size !== null) && sameRect(win.target ?? win.rect, usable, 2),
+          mini: win.mini === null ? null : win.mini.parked ? "parked" : "free",
+          raised: this.#raised === tabId,
           mask: win.mask,
           stillShows: stillShows(win.still ?? this.#thumbs.get(tabId) ?? null, win.mask ?? win.unmasking?.mask ?? null),
           unmasking: win.unmasking?.mask ?? null,
@@ -3210,6 +3924,10 @@ export class DeskEngine {
       framed: true,
       drawn: true,
       mask: null,
+      mini: null,
+      miniMotion: null,
+      tween: null,
+      growTo: null,
       maskWanted: null,
       unmasking: null,
       revealed: false,
@@ -3242,6 +3960,8 @@ export class DeskEngine {
     if (index !== this.#order.length - 1) {
       this.#order.splice(index, 1);
       this.#order.push(tabId);
+      // The shelf stays over the rest: nothing else reaches the desk's foot, save the window raised from it.
+      this.#stackShelf();
       this.#save();
     }
     this.#dirtyView = true;
@@ -3269,6 +3989,12 @@ export class DeskEngine {
     win.coasting = false;
     win.delay = 0;
     win.hold = false;
+    // Minimized, it goes as it is; the shelf closes up behind it.
+    if (win.mini !== null) {
+      this.#unpark(win);
+      win.mini = null;
+    }
+    win.miniMotion = null;
     win.lift = { scale: Math.max(0.05, home.w / Math.max(1, win.rect.w)), tilt: 0 };
     win.vel = { ...win.vel, w: 0, h: 0 };
     win.target = { x: home.x, y: home.y, w: win.rect.w, h: win.rect.h };
@@ -3280,7 +4006,7 @@ export class DeskEngine {
       this.#remove(win.tabId);
       if (intoIcon) this.#receive(win.tabId);
       if (focusNext && this.#focused === null) {
-        const next = this.#order[this.#order.length - 1] ?? null;
+        const next = this.#topWindow();
         this.#focused = next;
         if (next !== null) this.#pendingFocus = next;
       }
@@ -3311,9 +4037,9 @@ export class DeskEngine {
     return true;
   }
 
-  /** The dock's icon for this tab gives a little bounce: its window has just come back into it. */
+  /** The dock's icon for this tab gives a little bounce: its window has just come back into it (a document's, the Stack). */
   #receive(tabId: string): void {
-    this.#bounce(this.#iconEls.get(tabId));
+    this.#bounce(isTabWindow(tabId) ? this.#iconEls.get(tabId) : this.#homeEls.get(windowKind(tabId)));
   }
 
   #bounce(el: HTMLElement | undefined): void {
@@ -3364,12 +4090,14 @@ export class DeskEngine {
   }
 
   #remove(tabId: string): void {
+    const win = this.#wins.get(tabId);
+    if (win !== undefined) this.#unpark(win);
     this.#wins.delete(tabId);
     this.#order = this.#order.filter((id) => id !== tabId);
     if (this.#asideFor === tabId) this.#asideFor = null;
     if (this.#selecting === tabId) this.#selecting = null;
     if (this.#editing === tabId) this.#editing = null;
-    if (this.#focused === tabId) this.#focused = this.#order[this.#order.length - 1] ?? null;
+    if (this.#focused === tabId) this.#focused = this.#topWindow();
     this.#dirtyView = true;
   }
 
@@ -3390,7 +4118,8 @@ export class DeskEngine {
     for (const id of this.#order) {
       if (id === tabId) continue;
       const win = this.#wins.get(id)!;
-      if (win.flight === "away") continue;
+      // (The shelf is below where windows go: nothing sticks to it.)
+      if (win.flight === "away" || win.mini?.parked === true) continue;
       rects.push(win.target ?? win.rect);
     }
     return rects;
@@ -3409,10 +4138,14 @@ export class DeskEngine {
       const mask = win.mask ?? win.maskWanted?.mask ?? null;
       const rect = win.mask === null && win.maskWanted !== null ? win.maskWanted.rect : (win.target ?? win.rect);
       const min = mask !== null ? MASK_MIN : undefined;
+      // A minimized window is kept minimized, with the box it grows back to (parked, where it is is the shelf's to say).
+      const mini = win.mini === null ? undefined : { restore: normalizeRect(clampRect(win.mini.restore, this.#reach()), usable), parked: win.mini.parked };
       windows.push(
         mask !== null
           ? { tabId, rect: normalizeRect(clampRect(rect, this.#reach(), min), usable), mask }
-          : { tabId, rect: normalizeRect(clampRect(rect, this.#reach()), usable) },
+          : mini !== undefined
+            ? { tabId, rect: normalizeRect(clampRect(rect, this.#reach()), usable), mini }
+            : { tabId, rect: normalizeRect(clampRect(rect, this.#reach()), usable) },
       );
     }
     this.#host.save(windows);
@@ -3489,14 +4222,29 @@ export class DeskEngine {
    * clear of; a window put somewhere by hand may go further (#reach).
    */
   #usable(): Rect {
-    const { width, height } = this.#stageBox;
-    return { x: DOCK_W + DESK_GAP, y: 0, w: Math.max(1, width - DOCK_W - DESK_GAP), h: Math.max(1, height - this.#barBand) };
+    return this.#usableFor(this.#parked.length);
   }
 
-  /** Where a window may be: the whole stage above the Bar — behind the dock too, as far as the desk's leading edge. */
+  /** Where a window may be: the whole stage above the band at its foot — behind the dock too, as far as the desk's leading edge. */
   #reach(): Rect {
+    return this.#reachFor(this.#parked.length);
+  }
+
+  /** #usable, with this many windows parked in the shelf. */
+  #usableFor(parked: number): Rect {
     const { width, height } = this.#stageBox;
-    return { x: 0, y: 0, w: Math.max(1, width), h: Math.max(1, height - this.#barBand) };
+    return { x: DOCK_W + DESK_GAP, y: 0, w: Math.max(1, width - DOCK_W - DESK_GAP), h: Math.max(1, height - this.#footBand(parked)) };
+  }
+
+  /** #reach, with this many windows parked in the shelf. */
+  #reachFor(parked: number): Rect {
+    const { width, height } = this.#stageBox;
+    return { x: 0, y: 0, w: Math.max(1, width), h: Math.max(1, height - this.#footBand(parked)) };
+  }
+
+  /** The band at the desk's foot that windows keep above: the Bar's, or while windows are parked there, the shelf's where they peek up. */
+  #footBand(parked: number): number {
+    return Math.max(this.#barBand, parked > 0 ? Math.ceil(MINI_SIZE.h * MINI_PEEK) - this.#underStage + DESK_GAP : 0);
   }
 
   /**
@@ -3553,7 +4301,8 @@ export class DeskEngine {
    * letting go flies to its icon as the dock slides back.
    */
   #iconRect(tabId: string): Rect | null {
-    const el = this.#iconEls.get(tabId);
+    // A document's is the Stack's: it has no icon of its own.
+    const el = isTabWindow(tabId) ? this.#iconEls.get(tabId) : this.#homeEls.get(windowKind(tabId));
     return el === undefined ? null : this.#restingRect(el);
   }
 

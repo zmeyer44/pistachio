@@ -246,7 +246,7 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
   const state = (groupId: string): DeskAgentState => ({
     groupId,
     title: groupId === "g1" ? "Lisbon" : "Groceries",
-    windows: [{ tabId: "tab-1", title: "Flight TP 1234", url: "https://tab-1.example/", box: { x: 0, y: 0, w: 50, h: 100 }, focused: true, masked: false }],
+    windows: [{ tabId: "tab-1", kind: "tab", title: "Flight TP 1234", url: "https://tab-1.example/", box: { x: 0, y: 0, w: 50, h: 100 }, focused: true, masked: false }],
     docked: [{ tabId: "tab-2", title: "Hotel Avenida", url: "https://tab-2.example/" }],
   });
   let shown = "g1";

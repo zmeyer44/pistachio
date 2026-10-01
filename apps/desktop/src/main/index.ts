@@ -99,6 +99,7 @@ import { WorkspaceRecords } from "./sync/records";
 import { DeskBridge } from "./desk-bridge";
 import { DeskConversationStore } from "./desk-conversations";
 import { GroupContextStore } from "./group-context-store";
+import { macDocumentConverter } from "./document-convert";
 import { scriptedAgentModel } from "./scripted-agent-model";
 import { SyncService } from "./sync/service";
 import { CloudRunService } from "./cloud/cloud-run-service";
@@ -211,7 +212,14 @@ import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
 import { isDeskState } from "@pistachio/shell-contracts/desk";
-import { isDeskConversationCommand, isGroupContextCommand, type GroupContextCommand, type GroupContextResult } from "@pistachio/shell-contracts/desk-agent";
+import {
+  isDeskConversationCommand,
+  isGroupContextCommand,
+  isGroupContextItemId,
+  isGroupFileWrite,
+  type GroupContextCommand,
+  type GroupContextResult,
+} from "@pistachio/shell-contracts/desk-agent";
 import {
   menuKeepsKey,
   passedKeystroke,
@@ -1253,7 +1261,8 @@ async function handleGroupContextCommand(command: GroupContextCommand): Promise<
   switch (command.type) {
     case "addFiles": {
       const files = command.files.map((file) => ({ name: file.name, mediaType: file.mediaType, bytes: Buffer.from(file.data, "base64") }));
-      return { rejected: store.addFiles(command.groupId, command.title, files, "person").rejected };
+      const result = store.addFiles(command.groupId, command.title, files, "person");
+      return { rejected: result.rejected, added: result.kept.map((item) => ({ id: item.id, name: item.name })) };
     }
     case "addText":
       store.addText(
@@ -2166,6 +2175,9 @@ async function createWindow(): Promise<void> {
       onDeskPageInput: (input) => {
         if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskPageInput, input);
       },
+      onDeskHover: (hover) => {
+        if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskHover, hover);
+      },
       onTabSwitcherThumbnail: (thumbnail) => {
         if (shellWindow === null || shellWindow.isDestroyed()) return;
         shellWindow.webContents.send(IPC.tabSwitcherThumbnail, thumbnail);
@@ -2832,6 +2844,9 @@ function installIpc(): void {
   ipcMain.on(IPC.tabEmptyCopy, (event) => {
     requireBrowser().acceptEmptyCopy(event.sender.id);
   });
+  ipcMain.on(IPC.tabFileDrag, (event) => {
+    requireBrowser().acceptFileDrag(event.sender.id);
+  });
   ipcMain.on(IPC.tabPasskeySupportReport, (event, report: unknown) => {
     requireBrowser().acceptPasskeySupport(event.sender.id, report);
   });
@@ -2949,6 +2964,22 @@ function installIpc(): void {
     shellOnly(event, "the groups' context");
     if (!isGroupContextCommand(command)) throw new Error("not a group context command");
     return handleGroupContextCommand(command);
+  });
+  // A document window's file, and its edits (docs/desk-documents.md).
+  ipcMain.handle(IPC.groupFileRead, (event, groupId: unknown, itemId: unknown) => {
+    shellOnly(event, "the groups' context");
+    if (typeof groupId !== "string" || !isGroupContextItemId(itemId)) throw new Error("not a context file");
+    return requireGroupContexts().fileContent(groupId, itemId);
+  });
+  ipcMain.handle(IPC.groupFileWrite, (event, write: unknown) => {
+    shellOnly(event, "the groups' context");
+    if (!isGroupFileWrite(write)) throw new Error("not a context file's new bytes");
+    return requireGroupContexts().writeFile(write);
+  });
+  ipcMain.handle(IPC.groupFileForMessage, (event, groupId: unknown, itemId: unknown) => {
+    shellOnly(event, "the groups' context");
+    if (typeof groupId !== "string" || !isGroupContextItemId(itemId)) throw new Error("not a context file");
+    return requireGroupContexts().forMessage(groupId, itemId);
   });
   ipcMain.handle(IPC.tabSwitcherPreviewsGet, (event, limit: unknown) => {
     if (!isShell(event.sender)) return [];
@@ -4369,7 +4400,7 @@ app.whenReady().then(async () => {
   powerMonitor.on("unlock-screen", () => void tabTidy?.sweep());
   artifacts = new ArtifactStore(app.getPath("userData"), { webUrl: artifactWebOrigin });
   notes = new NoteStore(app.getPath("userData"));
-  groupContexts = new GroupContextStore(app.getPath("userData"));
+  groupContexts = new GroupContextStore(app.getPath("userData"), { convert: macDocumentConverter() });
   deskConversations = new DeskConversationStore(app.getPath("userData"));
   // A context's file no context names any more is kept a day, as a note's picture is.
   const sweepGroupBlobs = (): void => {

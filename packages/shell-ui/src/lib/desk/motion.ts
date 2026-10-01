@@ -137,3 +137,68 @@ export class VelocityTracker {
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
+
+/*
+ * Timed motion, for the desk's smaller moves (a minimized window raised
+ * from the shelf, going back down, moving along it): a duration and an
+ * easing curve, as CSS has them, rather than a spring. The values are
+ * transitions.dev's motion tokens (its transitions-polish skill), matched
+ * by what the motion does: a hover lift in is quick and direct, a close
+ * quicker still, a position change as quick as a lift — all on the smooth
+ * ease-out, which never overshoots.
+ */
+
+/** `--duration-fast`: a hover lift in, a position change. */
+export const DURATION_FAST_MS = 250;
+/** `--duration-quick`: a close (the lift going back down). */
+export const DURATION_QUICK_MS = 150;
+/** `--duration-micro`: an intent gate, filtering what is not meant (the pointer crossing between a window's frame and its page). */
+export const DURATION_MICRO_MS = 80;
+/** `--duration-stagger`: one item of a sequence after the one before. */
+export const DURATION_STAGGER_MS = 40;
+/** A stagger's whole run (offset × items) stays under this, so the last one is never late (transitions-polish). */
+export const STAGGER_TOTAL_MS = 300;
+/** transitions.dev's card resize: a box tweened from one size to another (its 300ms, on the smooth ease-out). */
+export const CARD_RESIZE_MS = 300;
+
+/**
+ * A CSS cubic-bézier timing function: progress through the motion (0–1)
+ * to progress along it, solved for x by Newton's method, by bisection
+ * where that stalls (as browsers do).
+ */
+export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
+  const cx = 3 * x1;
+  const bx = 3 * (x2 - x1) - cx;
+  const ax = 1 - cx - bx;
+  const cy = 3 * y1;
+  const by = 3 * (y2 - y1) - cy;
+  const ay = 1 - cy - by;
+  const sampleX = (t: number): number => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t: number): number => ((ay * t + by) * t + cy) * t;
+  const slopeX = (t: number): number => (3 * ax * t + 2 * bx) * t + cx;
+  const solveX = (x: number): number => {
+    let t = x;
+    for (let i = 0; i < 8; i += 1) {
+      const error = sampleX(t) - x;
+      if (Math.abs(error) < 1e-6) return t;
+      const slope = slopeX(t);
+      if (Math.abs(slope) < 1e-6) break;
+      t -= error / slope;
+    }
+    let low = 0;
+    let high = 1;
+    t = x;
+    while (high - low > 1e-7) {
+      const value = sampleX(t);
+      if (Math.abs(value - x) < 1e-6) return t;
+      if (x > value) low = t;
+      else high = t;
+      t = (low + high) / 2;
+    }
+    return t;
+  };
+  return (x: number): number => (x <= 0 ? 0 : x >= 1 ? 1 : sampleY(solveX(x)));
+}
+
+/** `--ease-smooth-out`, cubic-bezier(0.22, 1, 0.36, 1): fast away, a long soft settle, never past the end. */
+export const EASE_SMOOTH_OUT = cubicBezier(0.22, 1, 0.36, 1);

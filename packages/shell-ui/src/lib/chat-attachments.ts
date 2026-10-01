@@ -61,6 +61,11 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+/** A file the composer can stage itself: a picture it sends as it is, a PDF, or text. */
+export function composerAccepts(file: Pick<File, "name" | "type">): boolean {
+  return IMAGE_TYPES.has(file.type) || file.type === "application/pdf" || /\.pdf$/i.test(file.name) || file.type.startsWith("text/") || file.type === "application/json" || TEXT_FILE_RE.test(file.name);
+}
+
 /** Classify and read one dropped file; refusals carry a display-ready reason. */
 export async function readComposerAttachment(file: File): Promise<AttachmentResult> {
   const name = file.name === "" ? "file" : file.name;
@@ -104,6 +109,34 @@ function fenced(text: string): string {
 /** The fenced block a sent message carries for one dropped text file. */
 export function formatAttachmentText(name: string, text: string): string {
   return `Attached file “${name}”:\n${fenced(text)}`;
+}
+
+/** Text a message carries after the person's own words: a file's (attached, or @mentioned on a desk), or words selected on a page. */
+export interface AttachedText {
+  kind: "file" | "selection";
+  /** The file's name, or where the words were selected. */
+  name: string;
+  text: string;
+}
+
+const ATTACHED_BLOCK = /\n\n(Attached file “([^”\n]*)”|Selected on ([^\n]*)):\n````\n([\s\S]*?)\n````(?=\n\n|$)/g;
+
+/**
+ * A sent message as the person wrote it, and the text it carried with it
+ * (formatAttachmentText, formatSelectionText), each block its own — so the
+ * thread shows the words, and each file as a chip rather than its whole text.
+ */
+export function splitAttachedText(content: string): { text: string; attached: AttachedText[] } {
+  const attached: AttachedText[] = [];
+  let first = -1;
+  for (const match of content.matchAll(ATTACHED_BLOCK)) {
+    if (first < 0) first = match.index;
+    attached.push(match[2] !== undefined ? { kind: "file", name: match[2], text: match[4] ?? "" } : { kind: "selection", name: match[3] ?? "", text: match[4] ?? "" });
+  }
+  if (first < 0) return { text: content, attached };
+  // Words written between blocks (a note that a file could not be attached) stay with the person's.
+  const rest = content.slice(first).replace(ATTACHED_BLOCK, "").trim();
+  return { text: [content.slice(0, first).trim(), rest].filter((part) => part !== "").join("\n\n"), attached };
 }
 
 /** The fenced block a sent message carries for words selected on a page. */

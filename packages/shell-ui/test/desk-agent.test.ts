@@ -280,6 +280,7 @@ describe("the desk's answers to main", () => {
       groupId: () => "desk-a",
       title: () => "Lisbon",
       tab: (tabId) => ({ title: `Tab ${tabId}`, url: `https://${tabId}.example/` }),
+      file: (itemId) => ({ name: `${itemId}.pdf` }),
       turn: () => ({ runId: "run-1", turns: 1 }),
       remember: vi.fn(),
       note: vi.fn(),

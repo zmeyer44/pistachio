@@ -10,6 +10,7 @@ const nextConfig = {
   transpilePackages: [
     "@pistachio/browser-client",
     "@pistachio/agent-runtime",
+    "@pistachio/documents",
     "@pistachio/live-view",
     "@pistachio/notes",
     "@pistachio/protocol",

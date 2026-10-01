@@ -154,7 +154,9 @@ export const MAX_THREAD_TITLE = 80;
 
 /** A thread's name: its first request, on one line, cut to fit the list. */
 export function titleFor(purpose: string): string {
-  const flat = purpose.replace(/\s+/g, " ").trim();
+  // The person's own words: what a message carried after them (a file's text, a selection) is no title.
+  const own = purpose.split(/\n\n(?=Attached file “|Selected on )/)[0] ?? purpose;
+  const flat = own.replace(/\s+/g, " ").trim();
   if (flat === "") return "Conversation";
   return flat.length > MAX_THREAD_TITLE ? `${flat.slice(0, MAX_THREAD_TITLE - 1).trimEnd()}…` : flat;
 }

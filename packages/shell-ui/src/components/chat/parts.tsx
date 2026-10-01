@@ -24,10 +24,12 @@ import {
   Plug,
   RotateCcw,
   ShieldCheck,
+  TextQuote,
   Volume2,
   X,
 } from "lucide-react";
 import type { AgentAttachment, AgentToolCall, AgentToolOutput, RunSummary } from "@pistachio/protocol";
+import { selectionChipLabel, splitAttachedText } from "../../lib/chat-attachments";
 import { cn } from "../../lib/cn";
 import type { CitedSource } from "../../lib/chat-sources";
 import { currentFamily, toolFamily, traceLabel, type ToolFamily, type TraceTurn } from "../../lib/run";
@@ -165,19 +167,34 @@ export const MessageRow = memo(function MessageRow({
     );
   }
   if (message.role === "user") {
+    // The text a message carried (a file's, a selection) shows as a chip, not as its whole text in the bubble.
+    const { text, attached } = splitAttachedText(message.content);
     return (
       <div className={cn("grid min-w-0 justify-items-end gap-1.5", page ? "pl-16" : "pl-10")} data-testid="user-message">
-        {attachments.length === 0 ? null : (
-          <MessageAttachments attachments={attachments} align="end" />
+        {attachments.length === 0 && attached.length === 0 ? null : (
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {attachments.length === 0 ? null : <MessageAttachments attachments={attachments} align="end" />}
+            {attached.map((block, index) => (
+              <span
+                key={`${block.name}-${String(index)}`}
+                title={block.text.length > 400 ? `${block.text.slice(0, 400)}…` : block.text}
+                data-testid="message-attached-text"
+                className="my-1 flex max-w-full items-center gap-1.5 rounded-md bg-background-200 px-2 py-1.5 text-label-12 text-gray-900 shadow-border"
+              >
+                {block.kind === "selection" ? <TextQuote className="size-3.5 shrink-0 text-gray-700" aria-hidden="true" /> : <FileText className="size-3.5 shrink-0 text-gray-700" aria-hidden="true" />}
+                <span className="truncate">{block.kind === "selection" ? selectionChipLabel(block.text) : block.name}</span>
+              </span>
+            ))}
+          </div>
         )}
-        {message.content === "" ? null : (
+        {text === "" ? null : (
           <div
             className={cn(
               "max-w-[88%] wrap-anywhere whitespace-pre-wrap text-background-100 shadow-small select-text",
               page ? "rounded-[22px_22px_6px_22px] bg-gray-1000 px-4.5 py-3 text-[15px] leading-[1.5]" : "rounded-[17px_17px_4px_17px] bg-gray-1000 px-3.5 py-2.5 text-copy-14",
             )}
           >
-            <MessageText text={message.content} links={links} />
+            <MessageText text={text} links={links} />
           </div>
         )}
       </div>

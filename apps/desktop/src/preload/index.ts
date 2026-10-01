@@ -2,8 +2,15 @@ import type { WatchtowerResponse } from "@pistachio/shell-contracts/watchtower";
 import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
-import { isDeskPageInput, type DeskGrab, type DeskPageInput, type DeskState } from "@pistachio/shell-contracts/desk";
-import type { DeskRequest, GroupContextResult, GroupContextView } from "@pistachio/shell-contracts/desk-agent";
+import { isDeskHover, isDeskPageInput, type DeskGrab, type DeskHover, type DeskPageInput, type DeskState } from "@pistachio/shell-contracts/desk";
+import type {
+  DeskRequest,
+  GroupContextResult,
+  GroupContextView,
+  GroupFileContent,
+  GroupFileForMessage,
+  GroupFileWriteResult,
+} from "@pistachio/shell-contracts/desk-agent";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   CredentialCapture,
@@ -290,6 +297,13 @@ const api: PistachioApi = {
     ipcRenderer.on(IPC.deskPageInput, handler);
     return () => ipcRenderer.removeListener(IPC.deskPageInput, handler);
   },
+  onDeskHover(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, hover: DeskHover): void => {
+      if (isDeskHover(hover)) listener(hover);
+    };
+    ipcRenderer.on(IPC.deskHover, handler);
+    return () => ipcRenderer.removeListener(IPC.deskHover, handler);
+  },
   // The desk's agent (docs/desk-agent.md §3): which conversation the desk
   // opens, main's questions about the desk and their answers, and the
   // group's context.
@@ -309,6 +323,9 @@ const api: PistachioApi = {
     return () => ipcRenderer.removeListener(IPC.groupContextsChanged, handler);
   },
   groupContext: (command) => ipcRenderer.invoke(IPC.groupContextCommand, command) as Promise<GroupContextResult>,
+  readGroupFile: (groupId, itemId) => ipcRenderer.invoke(IPC.groupFileRead, groupId, itemId) as Promise<GroupFileContent | null>,
+  writeGroupFile: (write) => ipcRenderer.invoke(IPC.groupFileWrite, write) as Promise<GroupFileWriteResult>,
+  groupFileForMessage: (groupId, itemId) => ipcRenderer.invoke(IPC.groupFileForMessage, groupId, itemId) as Promise<GroupFileForMessage>,
   getTabSwitcherPreviews: (limit) =>
     ipcRenderer.invoke(IPC.tabSwitcherPreviewsGet, limit) as Promise<
       TabSwitcherPreview[]

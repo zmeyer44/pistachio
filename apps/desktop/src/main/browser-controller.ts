@@ -72,10 +72,12 @@ import {
   MAX_DESK_STILL_WIDTH,
   MAX_DESK_WINDOWS,
   type DeskGrab,
+  type DeskHover,
   type DeskMask,
   type DeskMaskedPage,
   type DeskPageInput,
   type DeskState,
+  type DeskZoomedPage,
 } from "@pistachio/shell-contracts/desk";
 import {
   gridLayoutForSide,
@@ -495,6 +497,8 @@ export interface BrowserControllerHooks {
    * open over the desk (@pistachio/shell-contracts/desk DeskPageInput).
    */
   onDeskPageInput?: (input: DeskPageInput) => void;
+  /** The pointer came onto a zoomed desk page (a minimized window's), or went off it (@pistachio/shell-contracts/desk DeskHover). */
+  onDeskHover?: (hover: DeskHover) => void;
   /** A fresher capture of a card the open tab switcher shows. */
   onTabSwitcherThumbnail?: (thumbnail: TabSwitcherThumbnail) => void;
   /**
@@ -687,6 +691,36 @@ const DESK_MASK_SCRIPT = `(() => {
   }
   return [scrollX, scrollY];
 })()`;
+
+/**
+ * A desk page shown at a zoom (@pistachio/shell-contracts/desk
+ * DeskZoomedPage): a minimized window's, laid out at its page box over the
+ * zoom and drawn scaled into its view by Chromium's device emulation —
+ * Electron's, not the debugger's, so it holds no debugger session and
+ * leaves the zoom factor (⌘+, per site) alone. PROBED (Electron 43): the
+ * page lays out at the emulated size and its media queries follow it; input
+ * on the view is mapped to the page by Chromium itself; a view cut shorter
+ * than the page box (a window peeking from the desk's foot) changes nothing
+ * the page can see; another tab of the same site is untouched. A document
+ * loaded afresh in another renderer does not carry the emulation over, so
+ * it is set again on every navigation.
+ */
+interface DeskZoomState {
+  /** The page it is set on: a tab that slept and woke has another. */
+  contents: WebContents;
+  width: number;
+  height: number;
+  zoom: number;
+  /** What the emulation in place was set for (`deskZoomKey`), or null while none is. */
+  applied: string | null;
+  /** The page has gone fullscreen: its emulation is off until it comes back. */
+  suspended: boolean;
+  onNavigate: () => void;
+}
+
+function deskZoomKey(zoom: { width: number; height: number; zoom: number }): string {
+  return `${String(Math.round(zoom.width))}x${String(Math.round(zoom.height))}@${String(zoom.zoom)}`;
+}
 
 interface DeskMaskState {
   /** The page it is set up on: a tab that slept and woke has another, set up afresh. */
@@ -912,6 +946,10 @@ export class BrowserController {
   #deskAtDock = false;
   /** The desk's masked pages (DeskMaskState), by tab. */
   readonly #deskMasks = new Map<string, DeskMaskState>();
+  /** The desk's zoomed pages (DeskZoomState), by tab. */
+  readonly #deskZooms = new Map<string, DeskZoomState>();
+  /** The zoomed desk page the pointer is on, as main last told the shell (onDeskHover). */
+  #deskHovered: string | null = null;
   /** The latest work on a tab's mask (set up, re-aim, clear): a still of the tab waits for it. */
   readonly #deskMaskWork = new Map<string, Promise<void>>();
   /** Pages whose masks came off, laying out at their own box until shown there (DeskMaskRelease), by tab. */
@@ -3769,6 +3807,7 @@ export class BrowserController {
     // A tab waking from suspension takes its forced focus back up — and, out on the desk, its mask.
     if (info.forcedFocus === true) void this.#applyForcedFocus(tab).catch(() => undefined);
     if (this.#desk?.masks?.some((page) => page.tabId === id) === true) this.#syncDeskMasks(this.#desk.masks);
+    if (this.#desk?.zoomed?.some((page) => page.tabId === id) === true) this.#syncDeskZooms(this.#desk.zoomed);
     const restored = options.restoredInfo;
     if (
       (restored !== undefined && options.awaitLoad === false) ||
@@ -5037,6 +5076,18 @@ export class BrowserController {
    * page's address is copied instead, as ⌘⇧C would. A copy nobody pressed
    * ⌘C for — Edit › Copy, a script's execCommand — leaves the clipboard be.
    */
+  /**
+   * A desk window's page reports files dragged over it from outside
+   * (its preload, on a trusted dragenter): the shell puts up the desk's
+   * drop targets (docs/desk-documents.md §1). Any other tab's is its own.
+   */
+  acceptFileDrag(senderId: number): void {
+    const tab = this.#tabForWebContents(senderId);
+    const desk = this.#desk;
+    if (tab === undefined || desk === null || !desk.tabIds.includes(tab.info.id)) return;
+    this.#hooks.onDeskPageInput?.("fileDrag");
+  }
+
   acceptEmptyCopy(senderId: number): void {
     const keystroke = this.#copyKeystroke;
     this.#copyKeystroke = null;
@@ -7220,10 +7271,12 @@ export class BrowserController {
             dock: state.dock ?? null,
             dockHover: state.dockHover === true,
             masks: state.masks ?? [],
+            zoomed: state.zoomed ?? [],
           };
     // A pointer already at the dock's place says so again on its next move.
     this.#deskAtDock = false;
     this.#syncDeskMasks(state?.masks ?? []);
+    this.#syncDeskZooms(state?.zoomed ?? []);
     const desk = this.#desk;
     for (const tabId of [...this.#deskCursors.keys()]) {
       const tab = this.#tabs.get(tabId);
@@ -7278,8 +7331,16 @@ export class BrowserController {
         // is drawn at that size a frame or so later: a picture taken before
         // is the wrong part of the page at the wrong scale.
         const sized = this.#deskMasks.has(tabId) || this.#deskReleases.has(tabId);
-        const image = sized ? await this.#captureAtViewSize(tab) : await tab.view.webContents.capturePage();
-        if (image === null || image.isEmpty()) return null;
+        // A zoomed page's view, resized while down (#applyLayout), draws at its box a frame or so later too.
+        const zoomed = this.#deskZooms.get(tabId);
+        const taken =
+          zoomed !== undefined
+            ? ((await this.#captureAtViewSize(tab)) ?? (await tab.view.webContents.capturePage()))
+            : sized
+              ? await this.#captureAtViewSize(tab)
+              : await tab.view.webContents.capturePage();
+        if (taken === null || taken.isEmpty()) return null;
+        const image = zoomed === undefined || zoomed.applied === null ? taken : zoomedStill(taken, zoomed);
         const masked = this.#deskMasks.get(tabId);
         const still: PaneStill = { tabId, dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}` };
         return masked?.applied != null ? { ...still, mask: masked.applied.key } : still;
@@ -7398,11 +7459,13 @@ export class BrowserController {
       case "mouseEnter":
         this.#setDeskCursor(tab, armed ? "grab" : null);
         this.#noteDeskDock(tab, mouse);
+        this.#noteDeskHover(tabId, true);
         this.#forwardMaskedMouse(tab, event, mouse);
         return;
       case "mouseLeave":
         this.#setDeskCursor(tab, null);
         this.#deskAtDock = false;
+        this.#noteDeskHover(tabId, false);
         this.#forwardMaskedMouse(tab, event, mouse);
         return;
       case "mouseDown":
@@ -7749,6 +7812,104 @@ export class BrowserController {
     });
   }
 
+  // ── Desk zooms (DeskZoomState) ────────────────────────────────────────────
+
+  /** The desk's zoomed pages now: new ones zoomed, sizes followed, the rest set back to their views. */
+  #syncDeskZooms(pages: readonly DeskZoomedPage[]): void {
+    const wanted = new Map(pages.map((page) => [page.tabId, page]));
+    for (const [tabId, state] of [...this.#deskZooms]) {
+      const tab = this.#tabs.get(tabId);
+      // Gone from the list, or its page is another now (it slept, and woke): set back, or forgotten.
+      if (!wanted.has(tabId) || tab === undefined || tab.view.webContents !== state.contents) this.#clearDeskZoom(tabId);
+    }
+    if (this.#deskHovered !== null && !wanted.has(this.#deskHovered)) this.#noteDeskHover(this.#deskHovered, false);
+    for (const page of pages) {
+      const tab = this.#tabs.get(page.tabId);
+      if (tab === undefined || tab.view.webContents.isDestroyed()) continue;
+      let state = this.#deskZooms.get(page.tabId);
+      if (state === undefined) {
+        const contents = tab.view.webContents;
+        const created: DeskZoomState = {
+          contents,
+          width: page.width,
+          height: page.height,
+          zoom: page.zoom,
+          applied: null,
+          suspended: false,
+          // A new document may be another renderer's, which knows nothing of the emulation.
+          onNavigate: () => {
+            if (this.#deskZooms.get(page.tabId) !== created) return;
+            created.applied = null;
+            this.#applyDeskZoom(tab, created);
+          },
+        };
+        contents.on("did-navigate", created.onNavigate);
+        this.#deskZooms.set(page.tabId, created);
+        state = created;
+      }
+      state.width = Math.max(1, Math.round(page.width));
+      state.height = Math.max(1, Math.round(page.height));
+      state.zoom = page.zoom;
+      this.#applyDeskZoom(tab, state);
+    }
+  }
+
+  /** Emulate the page's zoomed box, unless that is what is in place (or it is fullscreen). */
+  #applyDeskZoom(tab: ManagedTab, state: DeskZoomState): void {
+    const contents = tab.view.webContents;
+    if (state.suspended || contents.isDestroyed() || contents !== state.contents) return;
+    const key = deskZoomKey(state);
+    if (state.applied === key) return;
+    contents.enableDeviceEmulation({
+      screenPosition: "desktop",
+      screenSize: { width: 0, height: 0 },
+      viewPosition: { x: 0, y: 0 },
+      deviceScaleFactor: 0,
+      viewSize: { width: Math.max(1, Math.round(state.width / state.zoom)), height: Math.max(1, Math.round(state.height / state.zoom)) },
+      scale: state.zoom,
+    });
+    state.applied = key;
+    // The emulation is this one now: an off-screen viewport the page had is gone with it.
+    tab.offscreenViewport = false;
+  }
+
+  /** A page no longer zoomed: it lays out at its view's own size again. */
+  #clearDeskZoom(tabId: string): void {
+    const state = this.#deskZooms.get(tabId);
+    if (state === undefined) return;
+    this.#deskZooms.delete(tabId);
+    if (this.#deskHovered === tabId) this.#noteDeskHover(tabId, false);
+    if (state.contents.isDestroyed()) return;
+    state.contents.removeListener("did-navigate", state.onNavigate);
+    if (state.applied !== null && this.#presentation?.tabId !== tabId) state.contents.disableDeviceEmulation();
+  }
+
+  /** A zoomed page gone fullscreen (a player's own button) is the page itself on the whole screen, until it comes back. */
+  #suspendDeskZoom(tab: ManagedTab, state: DeskZoomState): void {
+    if (state.suspended) return;
+    state.suspended = true;
+    if (state.applied !== null && !tab.view.webContents.isDestroyed()) tab.view.webContents.disableDeviceEmulation();
+    state.applied = null;
+  }
+
+  /**
+   * The pointer came onto a zoomed desk page, or went off it: a minimized
+   * window peeking from the desk's foot rises while it is on it, and over
+   * its live page the shell hears no pointer (onDeskHover). Told once each way.
+   */
+  #noteDeskHover(tabId: string, over: boolean): void {
+    if (over) {
+      if (this.#deskHovered === tabId || !this.#deskZooms.has(tabId)) return;
+      if (this.#deskHovered !== null) this.#hooks.onDeskHover?.({ tabId: this.#deskHovered, over: false });
+      this.#deskHovered = tabId;
+      this.#hooks.onDeskHover?.({ tabId, over: true });
+      return;
+    }
+    if (this.#deskHovered !== tabId) return;
+    this.#deskHovered = null;
+    this.#hooks.onDeskHover?.({ tabId, over: false });
+  }
+
   /**
    * The dock steps aside for the window in use when that window lies behind
    * it, and comes back as the pointer comes to its place — over that
@@ -7948,6 +8109,8 @@ export class BrowserController {
       // A masked page gone fullscreen (the player's own button) is the whole page for as long as it is.
       const maskedFullscreen = this.#deskMasks.get(fullscreen.info.id);
       if (maskedFullscreen !== undefined) this.#suspendDeskMask(fullscreen, maskedFullscreen);
+      const zoomedFullscreen = this.#deskZooms.get(fullscreen.info.id);
+      if (zoomedFullscreen !== undefined) this.#suspendDeskZoom(fullscreen, zoomedFullscreen);
       this.#endDeskRelease(fullscreen);
       if (this.#glance !== null) settleViewVisible(this.#glance.tab.view, false);
       settleViewBounds(fullscreen.view, {
@@ -7974,6 +8137,11 @@ export class BrowserController {
         masked.suspended = false;
         masked.applied = null;
       }
+      const zoomed = this.#deskZooms.get(tabId);
+      if (zoomed !== undefined && zoomed.suspended) {
+        zoomed.suspended = false;
+        this.#applyDeskZoom(tab, zoomed);
+      }
       if (
         placement === undefined ||
         placement === null ||
@@ -7984,6 +8152,11 @@ export class BrowserController {
         if (masked !== undefined) {
           masked.want = null;
           this.#placeMaskedView(tab, masked);
+        }
+        // Down, a zoomed page is captured for its window's still: all of its box, not the part a peeking window shows.
+        if (zoomed !== undefined) {
+          const down = tab.view.getBounds();
+          settleViewBounds(tab.view, { x: down.x, y: down.y, width: zoomed.width, height: zoomed.height });
         }
         this.#settleDeskRelease(tab, null);
         continue;
@@ -8535,7 +8708,8 @@ export class BrowserController {
    */
   async #ensureViewport(tab: ManagedTab, options: { drawn?: boolean } = {}): Promise<void> {
     const contents = tab.view.webContents;
-    if (contents.isDestroyed() || tab.view.getVisible()) return;
+    // (A zoomed desk page lays out at its emulated box already.)
+    if (contents.isDestroyed() || tab.view.getVisible() || this.#deskZooms.has(tab.info.id)) return;
     if (!(options.drawn === true && tab.offscreenViewport)) {
       const size: unknown = await contents.executeJavaScript("[innerWidth, innerHeight]").catch(() => null);
       if (!Array.isArray(size) || (Number(size[0]) > 0 && Number(size[1]) > 0)) return;
@@ -8606,6 +8780,13 @@ export class BrowserController {
   #releaseOffscreenViewport(tab: ManagedTab): void {
     tab.offscreenViewport = false;
     if (tab.view.webContents.isDestroyed() || this.#presentation?.tabId === tab.info.id) return;
+    // A zoomed desk page's emulation is its zoom's (#applyDeskZoom): set again, whatever was in place.
+    const zoom = this.#deskZooms.get(tab.info.id);
+    if (zoom !== undefined) {
+      zoom.applied = null;
+      this.#applyDeskZoom(tab, zoom);
+      return;
+    }
     tab.view.webContents.disableDeviceEmulation();
   }
 
@@ -8993,6 +9174,19 @@ export function mediaInfoChanged(
  * occupies. Nothing that shows these stills paints them larger than the view,
  * so the extra pixels of a HiDPI capture only cost encode and decode time.
  */
+/**
+ * A zoomed page's picture: its page box, from the top. The emulation draws
+ * the page scaled into the corner of whatever the view's surface is, so a
+ * view still at a larger size (just resized while down, not yet drawn at
+ * it) has the page in its top-left and nothing past it; one cut short (a
+ * window peeking from the desk's foot) has the top of it.
+ */
+function zoomedStill(image: NativeImage, zoom: { width: number; height: number }): NativeImage {
+  const { width, height } = image.getSize();
+  if (width <= zoom.width + 1 && height <= zoom.height + 1) return image;
+  return image.crop({ x: 0, y: 0, width: Math.min(width, zoom.width), height: Math.min(height, zoom.height) });
+}
+
 function fitStillToView(image: NativeImage, cssWidth: number): NativeImage {
   const { width } = image.getSize();
   return cssWidth > 0 && width > cssWidth

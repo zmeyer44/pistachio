@@ -243,12 +243,21 @@ export type GroupContextMediaTypeRecord =
   | "image/jpeg"
   | "image/webp"
   | "image/gif"
+  | "image/svg+xml"
+  | "image/bmp"
+  | "image/avif"
+  | "image/heic"
+  | "image/heif"
+  | "image/tiff"
   | "application/pdf"
   | "text/plain"
   | "text/markdown"
   | "text/csv"
   | "text/calendar"
-  | "application/json";
+  | "application/json"
+  | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  | "application/msword"
+  | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 /** A file in a group's context; its bytes are a `group-blob:` register of their own. */
 export interface GroupContextFileRecord {
@@ -260,6 +269,8 @@ export interface GroupContextFileRecord {
   blobId: string;
   addedAt: string;
   addedBy: "person" | "agent";
+  /** When its bytes were last changed on a desk (a document edited in its window). */
+  editedAt?: string;
 }
 
 /** A fact, a snippet of a page, or a link, kept as text. */

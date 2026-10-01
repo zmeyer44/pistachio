@@ -18,7 +18,19 @@ import { cn } from "../../lib/cn";
  * shell's error banner has no dismissal and pushes the native tab views
  * down, which is far too much for "that file is too big".
  */
-export function useAttachmentDrop(focusComposer: () => void) {
+export function useAttachmentDrop(
+  focusComposer: () => void,
+  options: {
+    /**
+     * Files the composer hands elsewhere rather than staging (the desk's Bar
+     * takes a Word or Excel file into the group's context and mentions it):
+     * given what was dropped or chosen, it returns what is left to stage.
+     * Pass a stable function.
+     */
+    divert?: (files: File[]) => File[];
+  } = {},
+) {
+  const divert = options.divert;
   const [staged, setStaged] = useState<ComposerAttachment[]>([]);
   const [rejection, setRejection] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -28,7 +40,12 @@ export function useAttachmentDrop(focusComposer: () => void) {
     async (list: FileList): Promise<void> => {
       // Taken before the first await: a drop's FileList empties once its
       // event returns, and a file input's is cleared right after this call.
-      const dropped = Array.from(list);
+      const all = Array.from(list);
+      const dropped = divert === undefined ? all : divert(all);
+      if (dropped.length === 0) {
+        focusComposer();
+        return;
+      }
       // Read against the count at drop time; `staged` is stale inside the loop.
       let room = MAX_COMPOSER_ATTACHMENTS - staged.length;
       if (room <= 0) {
@@ -54,7 +71,7 @@ export function useAttachmentDrop(focusComposer: () => void) {
       }
       focusComposer();
     },
-    [staged.length, focusComposer],
+    [staged.length, focusComposer, divert],
   );
 
   const handlers = useMemo(() => {

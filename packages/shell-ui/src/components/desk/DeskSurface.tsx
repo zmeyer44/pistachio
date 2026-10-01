@@ -9,7 +9,10 @@ import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
 import { groupMoveIndex } from "../../lib/desk/dock-order";
 import { agentActivity } from "../../lib/desk/agent";
-import { useGroupContexts } from "../../lib/desk/group-context";
+import { useGroupContexts, useGroupContextsLoaded } from "../../lib/desk/group-context";
+import { useFileWindows } from "../../lib/desk/group-files";
+import { documentWindowIds, fileOf } from "../../lib/desk/documents";
+import { fileItemOf, isTabWindow } from "../../lib/desk/windows";
 import { lendDeskArrange, lendDeskAsk } from "../../lib/desk/open";
 import { passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
@@ -18,7 +21,9 @@ import { BAR_BAND, DeskBar } from "./DeskBar";
 import { DeskEngine, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDock } from "./DeskDock";
+import { DeskDropZone } from "./DeskDropZone";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
+import type { ShellWindowSubject } from "./window-kinds";
 
 const EMPTY_TABS: readonly BrowserTabInfo[] = [];
 const EMPTY_IDS: readonly string[] = [];
@@ -68,6 +73,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const threads = useAppStore((state) => state.snapshot?.threads ?? EMPTY_THREADS);
   const groups = useAppStore((state) => state.snapshot?.tabGroups ?? EMPTY_GROUPS);
   const contexts = useGroupContexts();
+  const contextsLoaded = useGroupContextsLoaded();
   const variants = useDeskStore((state) => state.variants);
   const leaving = useDeskStore((state) => state.leaving);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -75,8 +81,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const tabKey = tabIds.join(" ");
 
   // What the engine asks of the browser, always answered from the latest render.
-  const latest = useRef({ tabs, wakingTabIds, variants, group });
-  latest.current = { tabs, wakingTabIds, variants, group };
+  const latest = useRef({ tabs, wakingTabIds, variants, group, contexts, contextsLoaded });
+  latest.current = { tabs, wakingTabIds, variants, group, contexts, contextsLoaded };
   /** The group the engine's windows are of: it moves on only once the engine has passed to the next (and saved this one under its own id). */
   const shownGroup = useRef(groupId);
 
@@ -90,17 +96,27 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     const created = new DeskEngine({
       variants: (): DeskVariants => latest.current.variants,
       hasLivePage: (tabId) => {
+        // A document is the shell's own, drawn always.
+        if (!isTabWindow(tabId)) return false;
         // Any tab, not only the group's: a window of a group the desk has
         // passed from is still live until its still is up.
         const tab = latest.current.tabs.find((candidate) => candidate.id === tabId) ?? useAppStore.getState().snapshot?.tabs.find((candidate) => candidate.id === tabId);
         return tab !== undefined && tab.lifecycle === "live" && !latest.current.wakingTabIds.includes(tabId) && !isShellPageUrl(tab.url);
       },
       select: (tabId) => {
+        // A document is no tab: the browser's tab in use stays as it was.
+        if (!isTabWindow(tabId)) return;
         const store = useAppStore.getState();
         if (store.snapshot?.activeTabId !== tabId) void store.selectTab(tabId);
       },
-      close: (tabId) => void useAppStore.getState().closeTab(tabId),
-      editAddress: (tabId) => useAppStore.getState().openUrlBar(tabId),
+      focusWindow: (id) => useFileWindows.getState().requestFocus(id),
+      // A document's window let go on Close only closes the window: the file stays in the Stack.
+      close: (tabId) => {
+        if (isTabWindow(tabId)) void useAppStore.getState().closeTab(tabId);
+      },
+      editAddress: (tabId) => {
+        if (isTabWindow(tabId)) useAppStore.getState().openUrlBar(tabId);
+      },
       save: (windows) => useDeskStore.getState().save(shownGroup.current, { windows }),
       switchGroup: (next) => useDeskStore.getState().switchTo(next),
       // A drop in the dock: the browser holds the order, of the group's tabs and of the groups.
@@ -138,7 +154,9 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       active !== null && ids.includes(active)
         ? active
         : ([...latest.current.tabs].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id ?? null);
-    created.start(useDeskStore.getState().saved[groupId]?.windows ?? [], entry, ids);
+    // Its documents, once main has said what the context holds (until then the saved ones come out, and go if they are gone).
+    const documents = latest.current.contextsLoaded ? documentWindowIds(latest.current.contexts.find((candidate) => candidate.groupId === groupId)) : null;
+    created.start(useDeskStore.getState().saved[groupId]?.windows ?? [], entry, ids, documents);
     if (entry !== null && entry !== active) {
       opener.current = active;
       useAppStore.getState().selectTab(entry).catch(() => undefined);
@@ -172,8 +190,19 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     const offPointer = (): void => created.notePointer(null);
     stage.addEventListener("pointermove", onPointer);
     stage.addEventListener("pointerleave", offPointer);
+    // The pointer on a minimized window's live page, which the shell never hears: main's word (a parked one rises into view).
+    const offHover = nativeApi()?.onDeskHover((hover) => created.hoverMini(hover.tabId, "page", hover.over));
     const offPage = nativeApi()?.onDeskPageInput((input) => {
       if (input === "dock") created.pointerAtDock();
+      // A press on a live page while a document was in use: that page is in use now. (Pressed, a page
+      // the browser had not selected is selected, and comes up that way; the one it had, only here.)
+      if (input === "press") {
+        window.setTimeout(() => {
+          const focused = created.focusedTabId();
+          const active = useAppStore.getState().snapshot?.activeTabId ?? null;
+          if (focused !== null && !isTabWindow(focused) && active !== null && created.windowTabIds().includes(active)) created.activeChanged(active);
+        }, 150);
+      }
     });
     return () => {
       observer.disconnect();
@@ -184,6 +213,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       stage.removeEventListener("pointerleave", offPointer);
       offGrab?.();
       offShift?.();
+      offHover?.();
       offPage?.();
       created.destroy();
       setEngine(null);
@@ -203,7 +233,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     const entry = passedEntry(saved, latest.current.tabs);
     // The old group's tab stays the active one until the new one's is selected: no reason to leave.
     opener.current = useAppStore.getState().snapshot?.activeTabId ?? null;
-    engine.switchGroup({ from, groupId, tabIds: groupTabIds, saved, entry });
+    const shellIds = latest.current.contextsLoaded ? documentWindowIds(latest.current.contexts.find((candidate) => candidate.groupId === groupId)) : null;
+    engine.switchGroup({ from, groupId, tabIds: groupTabIds, shellIds, saved, entry });
     shownGroup.current = groupId;
   }, [engine, groupId]);
 
@@ -264,6 +295,10 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       groupId: () => shownGroup.current,
       title: () => latest.current.group?.title ?? "",
       tab: (tabId) => useAppStore.getState().snapshot?.tabs.find((tab) => tab.id === tabId),
+      file: (itemId) => {
+        const item = latest.current.contexts.find((candidate) => candidate.groupId === shownGroup.current)?.items.find((entry) => entry.id === itemId);
+        return item?.kind === "file" ? { name: item.name } : undefined;
+      },
       turn: () => {
         const current = useAppStore.getState().snapshot?.run ?? null;
         return current === null ? null : { runId: current.runId, turns: current.turns };
@@ -290,6 +325,12 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const agentTab = agentDrivenTabId(run);
   const activity = agentActivity(run);
   const context = contexts.find((candidate) => candidate.groupId === groupId) ?? null;
+  // The documents this desk may show: a window whose file has gone from the context goes too.
+  const documentKey = documentWindowIds(context).join(" ");
+  useEffect(() => {
+    engine?.setShellWindows(contextsLoaded ? (documentKey === "" ? [] : documentKey.split(" ")) : null);
+  }, [engine, contextsLoaded, documentKey]);
+
   const otherContexts = useMemo(
     () => contexts.filter((candidate) => candidate.groupId !== groupId && candidate.items.length > 0 && !groups.some((other) => other.id === candidate.groupId)),
     [contexts, groupId, groups],
@@ -345,9 +386,9 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     }
     // Still the tab from before the desk, its own on the way: no reason to leave.
     if (activeTabId === opener.current) return;
-    const closedWindow = before.activeTabId !== null && !allTabIds.includes(before.activeTabId) && engine.windowTabIds().length > 0;
+    const closedWindow = before.activeTabId !== null && !allTabIds.includes(before.activeTabId) && engine.windowTabIds().some(isTabWindow);
     if (closedWindow) {
-      const top = engine.windowTabIds().at(-1);
+      const top = engine.windowTabIds().filter(isTabWindow).at(-1);
       if (top !== undefined) void useAppStore.getState().selectTab(top);
       return;
     }
@@ -397,6 +438,28 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const strays = useAppStore(useShallow((state) => tabsOf(state.snapshot, strayKey === undefined || strayKey === "" ? EMPTY_IDS : strayKey.split(" "))));
   const tabsById = useMemo(() => new Map([...tabs, ...strays].map((tab) => [tab.id, tab])), [tabs, strays]);
   const attachZone = useCallback((el: HTMLDivElement | null) => engine?.attachZone(el), [engine]);
+  // What a shell window shows (a document's file), one object per file so its window only re-renders when the file changes.
+  // The file is found in whichever group's context holds it: a window of the group the desk has
+  // just passed from keeps its own file while it goes home, and saves an edit there.
+  const subjects = useRef(new Map<string, ShellWindowSubject>());
+  const shellSubject = (windowId: string): ShellWindowSubject | null => {
+    const itemId = fileItemOf(windowId);
+    if (itemId === null) return null;
+    const before = subjects.current.get(windowId);
+    const found = fileOf(contexts, itemId);
+    // Not found (the context not loaded yet, or the file just removed): the window keeps what it had.
+    const owner = found?.groupId ?? before?.groupId ?? groupId;
+    const item = found?.item ?? null;
+    if (before !== undefined && before.item === item && before.groupId === owner) return before;
+    const subject: ShellWindowSubject = {
+      kind: "file",
+      groupId: owner,
+      item,
+      openElsewhere: () => void nativeApi()?.groupContext({ type: "open", groupId: owner, itemId }).catch(() => undefined),
+    };
+    subjects.current.set(windowId, subject);
+    return subject;
+  };
   const attachGuides = useCallback((el: HTMLDivElement | null) => engine?.attachGuides(el), [engine]);
 
   return (
@@ -439,6 +502,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
                   agent={agentTab === window.tabId ? activity : null}
                   note={notes.get(window.tabId) ?? null}
                   onDismissNote={dismissNote}
+                  shell={shellSubject(window.tabId)}
                 />
               );
             })}
@@ -446,7 +510,10 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
           <DeskDock group={group} tabs={tabs} view={view} engine={engine} context={context} otherContexts={otherContexts} agentTabId={agentTab} />
         )}
         {engine === null || view === null || group === null ? null : (
-          <DeskBar group={group} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} />
+          <DeskDropZone group={group} engine={engine} view={view} />
+        )}
+        {engine === null || view === null || group === null ? null : (
+          <DeskBar group={group} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} context={context} />
         )}
         {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} />}
       </div>

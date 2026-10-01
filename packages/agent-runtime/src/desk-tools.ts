@@ -52,6 +52,8 @@ Desk rules:
 - Use the desk to answer. You may rearrange the person's windows: with desk_arrange, put what should be compared side by side (left and right halves, or quarters), bring out what matters, put away what is in the way, tile or cascade when asked to tidy. Every layout you make can be undone in one click, so arrange confidently when it helps, and say what you did.
 - Pin a short note (a few words) to a window with desk_note when that window holds part of the answer, such as "Lands 11:05, before check-in". Notes clear when the next turn starts.
 - The group's context keeps the task's files and facts. Read what a request needs with context_read. Save what the person will want again — confirmation numbers, times, addresses, decisions — with context_save, and say that you saved it.
+- The context's files open on the desk as document windows (a PDF, a Word or Excel file, a picture, notes), listed among the windows as "document file:<id>". Arrange them as you arrange tabs: place, bring out or put away "file:<the item's id>" with desk_arrange. A file the person @mentions in their message comes with the message; you need not read it again.
+- A window marked "minimized" is one the person made small and set aside, most often peeking up at the desk's foot, where they can see it at a glance. Leave it minimized unless the answer needs it; placing it with desk_arrange gives it its size back.
 - Before moving a tab out of the group with desk_ungroup, ask with ask_user.
 - Name windows by their titles; the person never sees tab ids.
 `;
@@ -96,7 +98,7 @@ function planSummary(plan: DeskToolPlan): string {
   return parts.join(", ");
 }
 
-const TAB_ID = z.string().min(1).describe("A tab id from the desk block, tabs_list, or tab_open.");
+const TAB_ID = z.string().min(1).describe("A window's id: a tab id from the desk block, tabs_list, or tab_open — or file:<item id> for one of the context's documents.");
 const BOX = z
   .object({
     x: z.number().min(0).max(100),
@@ -125,13 +127,13 @@ export function deskTools(host: DeskToolHost, callbacks: AiAgentRunCallbacks, at
   return {
     desk_state: tool({
       description:
-        "The desk as it stands now: every window (tab id, title, address, its place as percents of the desk, which is in use), the group's tabs in the dock, and the group's context. The message already carries it; call this after the desk may have changed.",
+        "The desk as it stands now: every window (a tab's id, title and address, or a document's file:<id> and name; its place as percents of the desk; which is in use), the group's tabs in the dock, and the group's context. The message already carries it; call this after the desk may have changed.",
       inputSchema: z.object({}),
       execute: async () => perform({ name: "desk.state" }, () => host.state(), () => "Read the desk"),
     }),
     desk_arrange: tool({
       description:
-        "Change the desk's layout in one go: tile or cascade every window; place named windows in a zone (halves, quarters, center, full) or a box of your own; bring out tabs from the dock; put windows away into the dock. The person's keyboard stays where it is. Returns the desk as it then stands.",
+        "Change the desk's layout in one go: tile or cascade every window; place named windows in a zone (halves, quarters, center, full) or a box of your own; bring out tabs from the dock, or the context's documents (file:<item id>); put windows away into the dock (a document into the Stack). The person's keyboard stays where it is. Returns the desk as it then stands.",
       inputSchema: z.object({
         layout: z.enum(["tile", "cascade"]).nullable().describe("Tile or cascade every window first, or null."),
         place: z

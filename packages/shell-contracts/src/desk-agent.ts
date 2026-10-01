@@ -18,16 +18,25 @@ export interface DeskPercentBox {
   h: number;
 }
 
-/** One window on the desk, as the agent is told of it. */
+/**
+ * One window on the desk, as the agent is told of it: a tab's page, or one
+ * of the group's context files open as a document (docs/desk-documents.md),
+ * whose id is `file:<the item's id>` (fileWindowId).
+ */
 export interface DeskAgentWindow {
+  /** The window's id: its tab's, or `file:<item id>` for a document. */
   tabId: string;
+  kind: "tab" | "file";
   title: string;
+  /** The tab's address; "" for a document. */
   url: string;
   box: DeskPercentBox;
   /** The window in use (it has the keyboard when the person is in a page). */
   focused: boolean;
   /** Only part of its page shows (the desk's mask). */
   masked: boolean;
+  /** Minimized: small, its page zoomed out, most often parked at the desk's foot. Placing it gives it its size back. */
+  minimized?: boolean;
 }
 
 /** The desk as it stands: windows bottom to top, and the group's tabs that are in the dock. */
@@ -44,6 +53,21 @@ export type DeskZone = (typeof DESK_ZONES)[number];
 
 export function isDeskZone(value: unknown): value is DeskZone {
   return typeof value === "string" && (DESK_ZONES as readonly string[]).includes(value);
+}
+
+/**
+ * A document's window on the desk (docs/desk-documents.md): a context
+ * file's, named `file:<its item id>` — never a tab id, which are UUIDs.
+ */
+export const FILE_WINDOW_PREFIX = "file:";
+
+export function fileWindowId(itemId: string): string {
+  return `${FILE_WINDOW_PREFIX}${itemId}`;
+}
+
+/** The context item a document window shows, or null for a tab's window. */
+export function fileItemOf(windowId: string): string | null {
+  return windowId.startsWith(FILE_WINDOW_PREFIX) ? windowId.slice(FILE_WINDOW_PREFIX.length) : null;
 }
 
 /**
@@ -116,7 +140,13 @@ export function isDeskAgentState(value: unknown): value is DeskAgentState {
     windows.every((window: unknown) => {
       if (!isTabRef(window)) return false;
       const entry = window as unknown as Record<string, unknown>;
-      return isDeskPercentBox(entry["box"]) && typeof entry["focused"] === "boolean" && typeof entry["masked"] === "boolean";
+      return (
+        (entry["kind"] === "tab" || entry["kind"] === "file") &&
+        isDeskPercentBox(entry["box"]) &&
+        typeof entry["focused"] === "boolean" &&
+        typeof entry["masked"] === "boolean" &&
+        (entry["minimized"] === undefined || typeof entry["minimized"] === "boolean")
+      );
     }) && docked.every(isTabRef)
   );
 }
@@ -140,8 +170,9 @@ export function deskStateLines(state: DeskAgentState): string[] {
   else {
     lines.push("Windows, bottom to top (x y w h as % of the desk):");
     for (const window of state.windows) {
-      const marks = [window.focused ? "in use" : "", window.masked ? "masked" : ""].filter((mark) => mark !== "").join(", ");
-      lines.push(`- tab ${window.tabId} “${window.title}” ${window.url} — ${box(window.box)}${marks === "" ? "" : ` — ${marks}`}`);
+      const marks = [window.focused ? "in use" : "", window.masked ? "masked" : "", window.minimized === true ? "minimized" : ""].filter((mark) => mark !== "").join(", ");
+      const what = window.kind === "file" ? `document ${window.tabId} “${window.title}”` : `tab ${window.tabId} “${window.title}” ${window.url}`;
+      lines.push(`- ${what} — ${box(window.box)}${marks === "" ? "" : ` — ${marks}`}`);
     }
   }
   if (state.docked.length > 0) {
@@ -194,18 +225,37 @@ export const MAX_GROUP_TEXT_CHARS = 4_000;
 export const MAX_GROUP_FILE_BYTES = 20 * 1024 * 1024;
 /** A file syncs to the person's other Macs only up to this size (it must fit the sync hub's frame budget once sealed). */
 export const MAX_GROUP_BLOB_BYTES = 2 * 1024 * 1024;
-/** What the agent can read, and so what the Stack takes. */
+/** Word and Excel files, as the Stack keeps them (docs/desk-documents.md). */
+export const DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+export const DOC_MEDIA_TYPE = "application/msword";
+export const XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+/**
+ * What the Stack takes: what the agent can read, and what the desk opens as
+ * a document window (docs/desk-documents.md). Pictures the model cannot
+ * look at as they are (SVG, BMP, AVIF, HEIC, TIFF) and Word and Excel
+ * files are turned into what it can read when it reads them.
+ */
 export const GROUP_CONTEXT_MEDIA_TYPES = [
   "image/png",
   "image/jpeg",
   "image/webp",
   "image/gif",
+  "image/svg+xml",
+  "image/bmp",
+  "image/avif",
+  "image/heic",
+  "image/heif",
+  "image/tiff",
   "application/pdf",
   "text/plain",
   "text/markdown",
   "text/csv",
   "text/calendar",
   "application/json",
+  DOCX_MEDIA_TYPE,
+  DOC_MEDIA_TYPE,
+  XLSX_MEDIA_TYPE,
 ] as const;
 export type GroupContextMediaType = (typeof GROUP_CONTEXT_MEDIA_TYPES)[number];
 
@@ -216,6 +266,47 @@ export function isGroupContextMediaType(value: unknown): value is GroupContextMe
 /** Text the agent reads as text; the rest (images, PDFs) it sees as files. */
 export function isTextMediaType(mediaType: string): boolean {
   return mediaType.startsWith("text/") || mediaType === "application/json";
+}
+
+const MEDIA_TYPE_BY_EXTENSION: Record<string, GroupContextMediaType> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  avif: "image/avif",
+  heic: "image/heic",
+  heif: "image/heif",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  text: "text/plain",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  csv: "text/csv",
+  ics: "text/calendar",
+  json: "application/json",
+  docx: DOCX_MEDIA_TYPE,
+  doc: DOC_MEDIA_TYPE,
+  xlsx: XLSX_MEDIA_TYPE,
+};
+
+/**
+ * The media type a file is kept as: its extension's when it names a kind
+ * the Stack takes (Finder reports nothing for many text files, and the
+ * extension is what the person sees), else the one the drop reported, when
+ * that is such a kind. Null for anything else.
+ */
+export function groupContextMediaTypeOf(name: string, reported: string): GroupContextMediaType | null {
+  const extension = name.toLowerCase().split(".").pop() ?? "";
+  const byName = name.includes(".") ? MEDIA_TYPE_BY_EXTENSION[extension] : undefined;
+  if (byName !== undefined) return byName;
+  const type = reported.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (type === "image/jpg") return "image/jpeg";
+  return isGroupContextMediaType(type) ? type : null;
 }
 
 export type GroupContextAuthor = "person" | "agent";
@@ -231,6 +322,8 @@ export interface GroupContextFile {
   blobId: string;
   addedAt: string;
   addedBy: GroupContextAuthor;
+  /** When its bytes were last changed on the desk (a document edited in its window). */
+  editedAt?: string;
 }
 
 /** A fact, a snippet of a page, or a link, kept as text. */
@@ -287,6 +380,8 @@ export type GroupContextCommand =
 export interface GroupContextResult {
   /** Files that were not taken, and why (too large, not a kind the agent can read). */
   rejected: Array<{ name: string; reason: string }>;
+  /** The files taken, as items — one already in the context (the same bytes dropped again) is that item. */
+  added?: Array<{ id: string; name: string }>;
 }
 
 const ITEM_ID = /^[a-f0-9]{12}$/;
@@ -356,7 +451,17 @@ function sanitizeItem(value: unknown): GroupContextItem | null {
       !isGroupBlobId(item["blobId"])
     )
       return null;
-    return { id: item["id"], kind: "file", name: item["name"], mediaType: item["mediaType"], byteLength, blobId: item["blobId"], addedAt: item["addedAt"], addedBy };
+    return {
+      id: item["id"],
+      kind: "file",
+      name: item["name"],
+      mediaType: item["mediaType"],
+      byteLength,
+      blobId: item["blobId"],
+      addedAt: item["addedAt"],
+      addedBy,
+      ...(typeof item["editedAt"] === "string" ? { editedAt: item["editedAt"] } : {}),
+    };
   }
   if (item["kind"] !== "fact" && item["kind"] !== "snippet" && item["kind"] !== "link") return null;
   if (!isString(item["text"], MAX_GROUP_TEXT_CHARS) || item["text"].trim() === "") return null;
@@ -395,7 +500,7 @@ export function sanitizeGroupContext(value: unknown): GroupContext | null {
 /** The context's items as the model reads them in the desk block: id, kind, and what each is. */
 export function groupContextLines(items: readonly GroupContextItem[]): string[] {
   if (items.length === 0) return ["The group's context is empty (the person can drop files and facts on the dock's Stack; save useful facts with context_save)."];
-  const lines = ["The group's context (files and facts kept for this task; read one with context_read):"];
+  const lines = ["The group's context (files and facts kept for this task; read one with context_read; a file opens on the desk as the document file:<its id>):"];
   for (const item of items) {
     if (item.kind === "file") lines.push(`- ${item.id} file “${item.name}” (${item.mediaType}, ${String(Math.max(1, Math.round(item.byteLength / 1024)))} KB)`);
     else {
@@ -404,4 +509,77 @@ export function groupContextLines(items: readonly GroupContextItem[]): string[] 
     }
   }
   return lines;
+}
+
+/* ---------------------------- document windows ---------------------------- */
+
+/**
+ * A context file's bytes, for its window on the desk (docs/desk-documents.md).
+ * `shown` is what the window draws instead when the shell cannot draw the
+ * file itself: a Word 97–2004 document as a .docx, a HEIC or TIFF picture as
+ * a PNG (macOS converts them).
+ */
+export interface GroupFileContent {
+  itemId: string;
+  blobId: string;
+  name: string;
+  mediaType: GroupContextMediaType;
+  bytes: Uint8Array;
+  shown?: { mediaType: string; bytes: Uint8Array };
+}
+
+/**
+ * A document edited in its window, saved: its new bytes, over the version
+ * it was edited from (`baseBlobId`) — refused if the file has changed since
+ * (another Mac, another window), so nobody's edit is silently lost. `as`
+ * says the bytes are a .docx to be kept as the item's own kind (a .doc).
+ */
+export interface GroupFileWrite {
+  groupId: string;
+  itemId: string;
+  baseBlobId: string;
+  bytes: Uint8Array;
+  as?: "docx";
+  /** Write over a version changed since, the person having chosen to keep theirs. */
+  force?: boolean;
+}
+
+export type GroupFileWriteResult =
+  | { ok: true; item: GroupContextFile }
+  | { ok: false; reason: "changed" | "gone" | "too-large" | "failed"; message: string };
+
+export function isGroupFileWrite(value: unknown): value is GroupFileWrite {
+  if (typeof value !== "object" || value === null) return false;
+  const write = value as Record<string, unknown>;
+  return (
+    isId(write["groupId"]) &&
+    isGroupContextItemId(write["itemId"]) &&
+    isGroupBlobId(write["baseBlobId"]) &&
+    write["bytes"] instanceof Uint8Array &&
+    (write["as"] === undefined || write["as"] === "docx") &&
+    (write["force"] === undefined || typeof write["force"] === "boolean")
+  );
+}
+
+/**
+ * A context file as a message carries it when the person @mentions it in
+ * the Bar: its text, or the file itself for the model to look at — or, too
+ * large to attach, neither (the agent can still read it with context_read).
+ */
+export type GroupFileForMessage =
+  | { kind: "text"; name: string; text: string }
+  | { kind: "file"; name: string; mediaType: string; dataUrl: string }
+  | { kind: "reference"; name: string; reason: string };
+
+/** How a document window draws a context file (docs/desk-documents.md §2). */
+export type FileViewerKind = "text" | "markdown" | "document" | "sheet" | "image" | "pdf";
+
+export function fileViewerKind(mediaType: string): FileViewerKind | null {
+  if (mediaType === "text/markdown") return "markdown";
+  if (mediaType === "text/plain" || mediaType === "application/json" || mediaType === "text/calendar") return "text";
+  if (mediaType === DOCX_MEDIA_TYPE || mediaType === DOC_MEDIA_TYPE) return "document";
+  if (mediaType === XLSX_MEDIA_TYPE || mediaType === "text/csv") return "sheet";
+  if (mediaType === "application/pdf") return "pdf";
+  if (mediaType.startsWith("image/")) return "image";
+  return null;
 }

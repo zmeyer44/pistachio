@@ -449,7 +449,7 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
     await capture(app, shell, "06-grabbed-from-page.png");
 
-    // ── 8. Put a window away: the dock slides off, and its Minimize pad takes it ─
+    // ── 8. Put a window away: the dock slides off, and its Collapse pad takes it ─
     const bar4 = await box(shell, `${windowSelector(ids[1]!)} .desk-window-bar`);
     const rail = await box(shell, '[data-testid="desk-drop-away"]');
     await shell.mouse.move(bar4.x + 60, bar4.y + bar4.height / 2);
@@ -1182,6 +1182,8 @@ test("a window may lie behind the dock: its still under the dock's glass, and th
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
     });
+    // A real cursor resting over the dock's place would bring the dock back over the window it steps aside for.
+    await clearOfCursor(app);
     const shell = await shellReady(app);
     const urls = ["pistachio://demo/invoices", "pistachio://demo/vendors/atlas-medical"];
     await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[0])).toBe(true);
@@ -2241,7 +2243,7 @@ test("the dock's icons have the sidebar's menus: a tab's, after what the desk do
       await expect(item(name)).toBeVisible();
     }
     await expect(menu.getByRole("menuitem", { name: /split/i })).toHaveCount(0);
-    await expect(item("Put away")).toHaveCount(0);
+    await expect(item("Collapse")).toHaveCount(0);
     await shell.waitForTimeout(200);
     await capture(app, shell, "58-dock-tab-menu.png");
     await choose("Open on the desk");
@@ -2252,7 +2254,7 @@ test("the dock's icons have the sidebar's menus: a tab's, after what the desk do
 
     // ── 2. A tab out on the desk: put away, or (not the window in use) brought to the front; it cannot be suspended ─
     await menuOn(iconSelector(a1));
-    await expect(item("Put away")).toBeVisible();
+    await expect(item("Collapse")).toBeVisible();
     await expect(item("Bring to front")).toHaveCount(0);
     await expect(item("Suspend tab")).toBeDisabled();
     await shell.keyboard.press("Escape");
@@ -2262,7 +2264,7 @@ test("the dock's icons have the sidebar's menus: a tab's, after what the desk do
     await choose("Bring to front");
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
     await menuOn(iconSelector(a1));
-    await choose("Put away");
+    await choose("Collapse");
     await expect(shell.locator(windowSelector(a1))).toHaveCount(0);
     await awayFromDock();
     await settled(shell);
@@ -2455,6 +2457,79 @@ test("the More card holds the arrangements, with keyboard shortcuts struck in a 
     await shell.getByTestId("desk-variant-physics").click({ modifiers: ["Shift"] });
     await expect(shell.getByTestId("desk-variant-physics")).toHaveAttribute("data-value", "glide");
     await expect(deceleration.locator('input[type="range"]')).toBeEnabled();
+
+    // ── 4b. Spring: Eased — timed eases on transitions.dev's motion tokens: tiled, every window lands within its
+    //        300ms resize and the 40ms stagger, where the springs take longer and swing past ─
+    const spring = shell.getByTestId("desk-variant-spring");
+    for (const value of ["bouncy", "smooth", "eased"]) {
+      await spring.click();
+      await expect(spring).toHaveAttribute("data-value", value);
+    }
+    await expect(spring).toContainText("Eased");
+    await expect
+      .poll(() => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.v1") ?? "{}") as { variants?: { spring?: string } }).variants?.spring))
+      .toBe("eased");
+    await capture(app, shell, "63b-desk-more-eased.png");
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(0);
+    /**
+     * What the windows do after a key, read from the shell's own frames: how
+     * long they move for (to the last frame that moved one), and how far any
+     * went past its place — beyond both where it set out from and where it
+     * came to rest, in px.
+     */
+    const motionAfter = async (key: string): Promise<{ ms: number; past: number }> => {
+      await shell.evaluate(() => {
+        const read = (): number[][] =>
+          [...document.querySelectorAll<HTMLElement>('[data-testid="desk-window"]')].map((el) => {
+            const [x, y] = (/translate3d\((-?[\d.]+)px, (-?[\d.]+)px/.exec(el.style.transform) ?? ["", "0", "0"]).slice(1).map(Number);
+            return [x!, y!, Number.parseFloat(el.style.width), Number.parseFloat(el.style.height)];
+          });
+        const state = { start: performance.now(), last: performance.now(), frames: [read()] };
+        (window as unknown as { __motion: typeof state }).__motion = state;
+        const tick = (): void => {
+          const now = read();
+          if (JSON.stringify(now) !== JSON.stringify(state.frames.at(-1))) {
+            state.frames.push(now);
+            state.last = performance.now();
+          }
+          if (performance.now() - state.start < 2_000) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      });
+      await strike("shell", key);
+      await shell.waitForTimeout(2_100);
+      return shell.evaluate(() => {
+        const state = (window as unknown as { __motion: { start: number; last: number; frames: number[][][] } }).__motion;
+        const first = state.frames[0]!;
+        const final = state.frames.at(-1)!;
+        let past = 0;
+        for (const frame of state.frames)
+          frame.forEach((rect, index) =>
+            rect.forEach((value, axis) => {
+              const a = first[index]![axis]!;
+              const b = final[index]![axis]!;
+              past = Math.max(past, value - Math.max(a, b), Math.min(a, b) - value);
+            }),
+          );
+        return { ms: state.last - state.start, past };
+      });
+    };
+    await motionAfter("c");
+    const eased = await motionAfter("t");
+    // Three windows: the last sets off 80ms in, and takes its 300ms (and a frame or two of the key's way here) —
+    expect(eased.ms).toBeLessThan(300 + 80 + 120);
+    expect(eased.ms).toBeGreaterThan(250);
+    // — and none goes past its place on the way.
+    expect(eased.past).toBeLessThan(0.5);
+    // Back to the default, for the rest.
+    for (let index = 0; index < 3; index += 1) {
+      await openMore(shell);
+      await spring.click({ modifiers: ["Shift"] });
+      await shell.keyboard.press("Escape");
+    }
+    await openMore(shell);
+    await expect(spring).toHaveAttribute("data-value", "snappy");
 
     // ── 5. The way out is on the card too ─────────────────────────────────────
     await shell.getByTestId("desk-leave").click();

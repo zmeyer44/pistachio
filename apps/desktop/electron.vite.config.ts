@@ -8,6 +8,7 @@ const workspacePackages = [
   "@pistachio/reports",
   "@pistachio/adapters",
   "@pistachio/agent-runtime",
+  "@pistachio/documents",
   "@pistachio/egress-policy",
   "@pistachio/evidence",
   // Value-imported by main (cloud/live-view-client.ts) and published as raw

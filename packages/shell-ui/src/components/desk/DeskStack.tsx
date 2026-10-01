@@ -1,12 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react";
-import { FileImage, FileSpreadsheet, FileText, CalendarDays, FileJson, Lightbulb, Link2, Plus, Quote, Sparkles, X, Import } from "lucide-react";
+import { ArrowUpRight, Lightbulb, Link2, Plus, Quote, Sparkles, X, Import } from "lucide-react";
 import type { GroupContextItem, GroupContextResult, GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { addContextFiles, droppedText, fileSize } from "../../lib/desk/group-context";
+import { useDeskFileDrag } from "../../lib/desk/file-drag";
 import { cn } from "../../lib/cn";
 import { displayHost } from "../../lib/url";
-import { DOCK_W } from "./desk-engine";
+import { fileWindowId } from "../../lib/desk/windows";
+import { DOCK_W, type DeskEngine } from "./desk-engine";
+import { FileGlyph } from "./files/FileGlyph";
 
 /** The Stack's card beside the dock: its width, and the gap between them (the dock's popovers'). */
 const CARD_W = 312;
@@ -54,18 +57,26 @@ export function StackTile({
   group,
   context,
   open,
+  engine,
   onToggle,
   onRejected,
 }: {
   group: TabGroupInfo;
   context: GroupContextView | null;
   open: boolean;
+  /** The Stack is its documents' home: their windows are put away into it, and come out of it. */
+  engine: DeskEngine;
   onToggle: (el: HTMLElement) => void;
   onRejected: (line: string | null) => void;
 }) {
   const count = context?.items.length ?? 0;
   const tileRef = useRef<HTMLSpanElement>(null);
   const [dropping, setDropping] = useState(false);
+  const fileDrag = useDeskFileDrag((state) => state.active);
+  useLayoutEffect(() => {
+    engine.attachHome("file", tileRef.current);
+    return () => engine.attachHome("file", null);
+  }, [engine]);
   const depth = useRef(0);
   const before = useRef(count);
   useEffect(() => {
@@ -91,6 +102,7 @@ export function StackTile({
       data-count={count}
       data-open={open ? "" : undefined}
       data-dropping={dropping ? "" : undefined}
+      data-drop-target={fileDrag && !dropping ? "" : undefined}
       className="desk-dock-item desk-stack-item"
       onMouseDown={(event) => event.preventDefault()}
       onClick={(event) => onToggle(event.currentTarget)}
@@ -150,10 +162,19 @@ export function StackCard({
   shown,
   rejection,
   onRejected,
+  engine,
+  openIds,
+  onOpened,
 }: {
   ref: React.Ref<HTMLDivElement>;
   group: TabGroupInfo;
   context: GroupContextView | null;
+  /** A file opens on the desk, out of the Stack. */
+  engine: DeskEngine;
+  /** The windows out on the desk: a file's that is out says so. */
+  openIds: ReadonlySet<string>;
+  /** A file was opened: the card goes, so its window can be seen coming out. */
+  onOpened: () => void;
   /** Contexts of groups not in this Space's list: another Mac's, or another Space's. */
   others: readonly GroupContextView[];
   /** The Stack's middle, from the dock's top: the card is centred on it where it fits. */
@@ -191,8 +212,13 @@ export function StackCard({
   const remove = (item: GroupContextItem): void => {
     api?.groupContext({ type: "remove", groupId: group.id, itemId: item.id }).catch(() => undefined);
   };
-  const open = (item: GroupContextItem): void => {
+  const openElsewhere = (item: GroupContextItem): void => {
     api?.groupContext({ type: "open", groupId: group.id, itemId: item.id }).catch((error: unknown) => onRejected(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : "That file could not be opened"));
+  };
+  /** On the desk, out of the Stack — or, out already, to the top. */
+  const open = (item: GroupContextItem): void => {
+    engine.add(fileWindowId(item.id), { focus: true });
+    onOpened();
   };
   return (
     <div
@@ -232,7 +258,7 @@ export function StackCard({
       </div>
       {items.length === 0 ? (
         <p className="px-3 pb-2 text-[12px] leading-[17px] text-gray-800">
-          Drop files here — a booking, a boarding pass, a PDF — or add a fact. Pistachio reads them when you ask about this desk, and saves what it finds here too.
+          Drop files here — a booking, a PDF, a Word or Excel file — or add a fact. Each file opens on the desk; Pistachio reads them when you ask about this desk (@mention one in the Bar), and saves what it finds here too.
         </p>
       ) : null}
       {rejection === null ? null : (
@@ -247,22 +273,45 @@ export function StackCard({
         {files.length === 0 ? null : (
           <div className="grid grid-cols-3 gap-1.5" role="list" aria-label="Files">
             {files.map((item) => (
-              <div key={item.id} role="listitem" className="desk-stack-file group/file" data-testid="desk-stack-file" data-here={item.here ? "" : undefined}>
+              <div
+                key={item.id}
+                role="listitem"
+                className="desk-stack-file group/file"
+                data-testid="desk-stack-file"
+                data-here={item.here ? "" : undefined}
+                data-open={openIds.has(fileWindowId(item.id)) ? "" : undefined}
+              >
                 <button
                   type="button"
                   className="flex min-w-0 flex-col items-center gap-1 px-1 pt-2 pb-1.5"
-                  title={item.here ? `Open ${item.name}` : `${item.name} is on another Mac (too large to sync)`}
+                  title={item.here ? (openIds.has(fileWindowId(item.id)) ? `${item.name} is on the desk: bring it to the front` : `Open ${item.name} on the desk`) : `${item.name} is on another Mac (too large to sync)`}
                   disabled={!item.here}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => open(item)}
                 >
-                  <FileGlyph mediaType={item.mediaType} />
+                  <FileGlyph mediaType={item.mediaType} className="desk-stack-glyph" />
                   <span className="w-full truncate text-center text-[11px] leading-[14px] text-gray-1000">{item.name}</span>
                   <span className="text-[10px] leading-3 text-gray-700">
                     {item.addedBy === "agent" ? "Pistachio · " : ""}
                     {item.here ? fileSize(item.byteLength) : "Other Mac"}
                   </span>
                 </button>
+                {item.here ? (
+                  <button
+                    type="button"
+                    aria-label={`Open ${item.name} in its app`}
+                    title="Open in its app"
+                    data-testid="desk-stack-open-elsewhere"
+                    className="desk-stack-elsewhere"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openElsewhere(item);
+                    }}
+                  >
+                    <ArrowUpRight aria-hidden="true" />
+                  </button>
+                ) : null}
                 <RemoveButton label={`Remove ${item.name}`} onClick={() => remove(item)} />
               </div>
             ))}
@@ -361,22 +410,5 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
     >
       <X aria-hidden="true" />
     </button>
-  );
-}
-
-function FileGlyph({ mediaType }: { mediaType: string }) {
-  const Glyph = mediaType.startsWith("image/")
-    ? FileImage
-    : mediaType === "text/csv"
-      ? FileSpreadsheet
-      : mediaType === "text/calendar"
-        ? CalendarDays
-        : mediaType === "application/json"
-          ? FileJson
-          : FileText;
-  return (
-    <span className="desk-stack-glyph" data-kind={mediaType === "application/pdf" ? "pdf" : mediaType.startsWith("image/") ? "image" : "text"}>
-      <Glyph aria-hidden="true" />
-    </span>
   );
 }

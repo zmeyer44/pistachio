@@ -11,9 +11,9 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Crop, Expand, Maximize2, Minimize2, Minus, X } from "lucide-react";
+import { Crop, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, X } from "lucide-react";
 import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
-import { MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
+import { DESK_MINI_ZOOM, MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
@@ -21,6 +21,7 @@ import { briefUrlDate } from "@pistachio/shell-contracts/reports";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
 import { editedMaskRegion, type Edges, type Rect } from "../../lib/desk/geometry";
+
 import type { DeskChrome, DeskGrab } from "../../lib/desk/store";
 import { displayHost } from "../../lib/url";
 import { Favicon } from "../Favicon";
@@ -28,6 +29,7 @@ import { PanePlaceholder } from "../PanePlaceholder";
 import { HomePage } from "../home/HomePage";
 import { BriefPage } from "../reports/BriefPage";
 import { CHROME_CARD_TOP, CHROME_INSETS, MASK_CARD_TOP, MASK_INSETS, type DeskEngine, type DeskWindowView } from "./desk-engine";
+import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
 
 const NotesPage = lazy(() => import("../notes/NotesPage").then((m) => ({ default: m.NotesPage })));
 
@@ -49,9 +51,14 @@ export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: 
  * Masked (DeskMask), the window is a region of its page, shown alone and
  * scaled like a picture — still the live page, used as it always is: the
  * bare frame's handle above the region and nothing else, its controls
- * Unmask and Put away, and, in use, Edit mask. Choosing the region, its
+ * Unmask and Collapse, and, in use, Edit mask. Choosing the region, its
  * page is frozen under a MaskSelector; editing it, the whole page is shown
  * around it under a MaskEditor.
+ *
+ * Minimized, the window is small and its page zoomed out (DESK_MINI_ZOOM):
+ * a web page by main, a page the shell draws by a CSS scale here. Its
+ * controls are Expand and Collapse. Parked at the desk's foot, the pointer
+ * on it raises it into view: its frame says so here, its live page by main.
  */
 export const DeskWindow = memo(function DeskWindow({
   view,
@@ -64,9 +71,12 @@ export const DeskWindow = memo(function DeskWindow({
   agent = null,
   note = null,
   onDismissNote,
+  shell = null,
 }: {
   view: DeskWindowView;
   tab: BrowserTabInfo | null;
+  /** A window the shell draws itself (a document's, `file:<item id>`): what it shows (window-kinds.tsx). */
+  shell?: ShellWindowSubject | null;
   chrome: DeskChrome;
   grab: DeskGrab;
   /** What to paint where the page goes when it is not live. */
@@ -86,11 +96,14 @@ export const DeskWindow = memo(function DeskWindow({
   const frame: DeskChrome = masked ? "bare" : chrome;
   const insets = masked ? MASK_INSETS : CHROME_INSETS[chrome];
   const cardTop = masked ? MASK_CARD_TOP : CHROME_CARD_TOP[chrome];
-  const title = tab?.title || displayHost(tab?.url ?? "") || "Untitled";
-  const host = displayHost(tab?.url ?? "");
-  const shellPage = tab !== null && pageKind(tab.url) !== null;
+  const parts = shell === null ? null : shellWindowParts(shell, tabId, view.focused);
+  const title = parts !== null ? parts.name : tab?.title || displayHost(tab?.url ?? "") || "Untitled";
+  const host = parts !== null ? "" : displayHost(tab?.url ?? "");
+  // A shell window's page is the shell's own working page, as home and a note are.
+  const shellPage = parts !== null || (tab !== null && pageKind(tab.url) !== null);
   /** Only a web page can be masked: the shell draws its own pages. */
-  const canMask = tab !== null && !shellPage && !masked;
+  const canMask = tab !== null && !shellPage && !masked && view.mini === null;
+  const mini = view.mini !== null;
   const working = agent !== null;
   // Phased on the wall clock like every other ring, taken as this one goes on.
   const ringDelay = useMemo(() => (working ? `${String(agentRingDelayMs(Date.now()))}ms` : undefined), [working]);
@@ -127,7 +140,8 @@ export const DeskWindow = memo(function DeskWindow({
     if (event.button !== 0 || target.closest("button") !== null) return;
     event.preventDefault();
     if (holdsGrab(event, grab)) engine.grab(tabId, { x: event.clientX, y: event.clientY }, event.shiftKey);
-    else engine.press(tabId, event, target.closest(".desk-window-address") !== null ? "title" : "frame");
+    // (A shell window's title is the frame's: it has no address to edit.)
+    else engine.press(tabId, event, parts === null && target.closest(".desk-window-address") !== null ? "title" : "frame");
   };
   /** A press on the page area — which the shell only hears while the page is drawn. */
   const onPageDown = (event: ReactPointerEvent) => {
@@ -146,6 +160,11 @@ export const DeskWindow = memo(function DeskWindow({
     engine.press(tabId, event, "content");
   };
 
+  const collapse = (
+    <FrameButton label="Collapse" testId="desk-collapse" onClick={() => engine.putAway(tabId)}>
+      <Minus aria-hidden="true" />
+    </FrameButton>
+  );
   const controls = masked ? (
     <span className="desk-window-controls flex items-center">
       {view.focused && tab !== null && !shellPage ? (
@@ -156,12 +175,22 @@ export const DeskWindow = memo(function DeskWindow({
       <FrameButton label="Unmask" testId="desk-unmask" onClick={() => engine.unmask(tabId)}>
         <Expand aria-hidden="true" />
       </FrameButton>
-      <FrameButton label="Put away" onClick={() => engine.putAway(tabId)}>
-        <Minus aria-hidden="true" />
+      {collapse}
+    </span>
+  ) : mini ? (
+    <span className="desk-window-controls flex items-center">
+      <FrameButton label="Expand" testId="desk-expand" onClick={() => engine.expand(tabId)}>
+        <Maximize2 aria-hidden="true" />
       </FrameButton>
+      {collapse}
     </span>
   ) : (
     <span className="desk-window-controls flex items-center">
+      {parts?.actions.map((action) => (
+        <FrameButton key={action.testId} label={action.label} testId={action.testId} onClick={action.run}>
+          {action.icon}
+        </FrameButton>
+      ))}
       {canMask ? (
         <FrameButton
           label={view.selecting ? "Cancel mask" : "Mask: keep part of the page"}
@@ -175,9 +204,10 @@ export const DeskWindow = memo(function DeskWindow({
       <FrameButton label={view.maximized ? "Restore" : "Fill the desk"} onClick={() => engine.toggleMaximize(tabId)}>
         {view.maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
       </FrameButton>
-      <FrameButton label="Put away" onClick={() => engine.putAway(tabId)}>
-        <Minus aria-hidden="true" />
+      <FrameButton label="Minimize" testId="desk-minimize" onClick={() => engine.minimize(tabId)}>
+        <PictureInPicture2 aria-hidden="true" />
       </FrameButton>
+      {collapse}
     </span>
   );
 
@@ -188,8 +218,11 @@ export const DeskWindow = memo(function DeskWindow({
       aria-label={title}
       data-testid="desk-window"
       data-tab-id={tabId}
+      data-window-kind={shell?.kind ?? "tab"}
       data-chrome={frame}
       data-masked={masked ? "" : undefined}
+      data-mini={view.mini ?? undefined}
+      data-raised={view.raised ? "" : undefined}
       data-selecting={view.selecting ? "" : undefined}
       data-editing={view.editing === null ? undefined : view.editing.shown ? "shown" : "waiting"}
       data-focused={view.focused ? "" : undefined}
@@ -203,6 +236,9 @@ export const DeskWindow = memo(function DeskWindow({
       data-agent={working ? "" : undefined}
       className="desk-window"
       style={{ zIndex: view.carried || view.flight !== null ? 60 + view.z : 10 + view.z }}
+      // Parked at the desk's foot, the pointer on it raises it into view (over its live page, main says so instead).
+      onPointerEnter={mini ? () => engine.hoverMini(tabId, "frame", true) : undefined}
+      onPointerLeave={mini ? () => engine.hoverMini(tabId, "frame", false) : undefined}
     >
       {view.maskFade !== null && view.stillShows === "page" && still !== null ? (
         <MaskFade from={view.maskFade} insets={view.maskFade.framed ? CHROME_INSETS[chrome] : NO_INSETS} still={still} />
@@ -221,10 +257,14 @@ export const DeskWindow = memo(function DeskWindow({
       ) : null}
       {frame === "tab" ? (
         <div className="desk-window-chrome desk-window-tab" onPointerDown={onFrameDown}>
-          <span className="desk-window-address flex-1" data-testid="desk-window-address" title={tab?.url}>
-            <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
-            <span className="min-w-0 truncate">{title}</span>
-          </span>
+          {parts !== null ? (
+            parts.title("flex-1")
+          ) : (
+            <span className="desk-window-address flex-1" data-testid="desk-window-address" title={tab?.url}>
+              <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate">{title}</span>
+            </span>
+          )}
           {controls}
         </div>
       ) : frame === "bare" ? (
@@ -241,11 +281,15 @@ export const DeskWindow = memo(function DeskWindow({
         {frame === "bar" ? (
           <div className="desk-window-chrome desk-window-bar" style={{ height: insets.top }} onPointerDown={onFrameDown}>
             {/* Clicked, the address palette opens on this tab; dragged, it is the bar. */}
-            <span className="desk-window-address" data-testid="desk-window-address" title={tab?.url}>
-              <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
-              <span className="min-w-0 truncate font-medium text-gray-1000">{title}</span>
-              {host !== "" && host !== title ? <span className="desk-window-host min-w-0 shrink-[2] truncate">{host}</span> : null}
-            </span>
+            {parts !== null ? (
+              parts.title()
+            ) : (
+              <span className="desk-window-address" data-testid="desk-window-address" title={tab?.url}>
+                <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
+                <span className="min-w-0 truncate font-medium text-gray-1000">{title}</span>
+                {host !== "" && host !== title ? <span className="desk-window-host min-w-0 shrink-[2] truncate">{host}</span> : null}
+              </span>
+            )}
             <span className="flex-1" />
             {marks}
             {controls}
@@ -257,17 +301,22 @@ export const DeskWindow = memo(function DeskWindow({
           onPointerDown={onPageDown}
           style={{ top: insets.top - cardTop, left: insets.left, right: insets.right, bottom: insets.bottom }}
         >
-          {tab === null ? null : (
-            <WindowPage
-              tab={tab}
-              still={still}
-              stillShows={view.stillShows}
-              mask={view.mask}
-              unmasking={view.unmasking}
-              waking={waking}
-              focused={view.focused}
-            />
-          )}
+          {/* A page the shell draws is zoomed out here when minimized (a web page is main's to zoom); always this box, so nothing in it is made anew. */}
+          <div className="desk-window-zoom" style={mini && shellPage ? ZOOMED_STYLE : undefined}>
+            {parts !== null ? (
+              parts.page
+            ) : tab === null ? null : (
+              <WindowPage
+                tab={tab}
+                still={still}
+                stillShows={view.stillShows}
+                mask={view.mask}
+                unmasking={view.unmasking}
+                waking={waking}
+                focused={view.focused}
+              />
+            )}
+          </div>
           {/* Its page frozen (drawn), a region can be drawn over it. */}
           {view.selecting && view.drawn ? <MaskSelector tabId={tabId} engine={engine} /> : null}
         </div>
@@ -276,6 +325,14 @@ export const DeskWindow = memo(function DeskWindow({
     </div>
   );
 });
+
+/** A minimized window's page the shell draws: laid out at its box over the zoom, and scaled down into it. */
+const ZOOMED_STYLE: CSSProperties = {
+  width: `${String(100 / DESK_MINI_ZOOM)}%`,
+  height: `${String(100 / DESK_MINI_ZOOM)}%`,
+  transform: `scale(${String(DESK_MINI_ZOOM)})`,
+  transformOrigin: "0 0",
+};
 
 /** The shell's own pages, drawn by the shell in a window rather than by a live view. */
 export function pageKind(url: string): "home" | "brief" | "notes" | null {

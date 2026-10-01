@@ -2998,6 +2998,31 @@ body:not([data-chrome-view])::after {
   cursor: default;
 }
 
+/* Minimized (the engine's MINI_SIZE; docs/desk.md): small, its page zoomed
+   out — a web page by main, a page the shell draws by desk-window-zoom's
+   scale. Its still is the page as its view shows it, at the page's own
+   shape from the top: a still taken while it peeked from the desk's foot
+   is its top half, and is never stretched to the window. Parked, half of
+   it is below the desk's edge, so it is resized once it is out on the desk.
+   Raised into view by the pointer, it stands above the windows it covers. */
+.desk-window-zoom {
+  position: absolute;
+  inset: 0;
+}
+.desk-window[data-mini] .desk-still {
+  bottom: auto;
+  height: auto;
+}
+.desk-window[data-mini="parked"] .desk-window-edge {
+  display: none;
+}
+.desk-window[data-raised] .desk-window-card {
+  box-shadow:
+    0 0 0 1px var(--color-alpha-400),
+    0 2px 4px oklch(0 0 0 / 0.06),
+    0 18px 40px -16px oklch(0 0 0 / 0.36);
+}
+
 /* Masks (DeskWindow's MaskSelector; a masked window). Choosing, the page is
    frozen and dims; the region being drawn is cut out of the dimming, as a
    screenshot's selection is. Masked, the window is its region with the bare
@@ -4563,6 +4588,21 @@ body:not([data-chrome-view])::after {
   justify-content: flex-end;
   align-items: center;
   pointer-events: none;
+  /* The answer's height is a share of the desk's (cqh). */
+  container-type: size;
+}
+/* The Bar's width, the answer resting on the Bar however tall the Bar grows. */
+.desk-bar-column {
+  position: relative;
+  display: flex;
+  width: min(680px, calc(100% - 24px));
+  max-height: calc(100cqh - 8px);
+  flex-direction: column;
+  gap: 8px;
+}
+.desk-bar-anchor {
+  position: relative;
+  flex: none;
 }
 @keyframes desk-bar-in {
   from {
@@ -4573,9 +4613,10 @@ body:not([data-chrome-view])::after {
 .desk-bar {
   position: relative;
   display: flex;
-  width: min(680px, calc(100% - 24px));
+  width: 100%;
   min-height: 52px;
-  border-radius: 20px;
+  /* A pill at one line (half its height); the same round ends as it grows. */
+  border-radius: 26px;
   background: color-mix(in oklch, var(--color-background-100) 80%, transparent);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
   backdrop-filter: blur(24px) saturate(1.5);
@@ -4592,7 +4633,7 @@ body:not([data-chrome-view])::after {
 }
 .desk-bar:focus-within {
   box-shadow:
-    0 0 0 1px color-mix(in oklch, var(--tg-solid) 45%, var(--color-alpha-300)),
+    0 0 0 1px var(--color-alpha-600),
     inset 0 1px 0 var(--desk-glass-edge),
     0 14px 36px -14px oklch(0 0 0 / 0.4);
 }
@@ -4602,48 +4643,14 @@ body:not([data-chrome-view])::after {
   transform: translateY(calc(100% + 16px));
   opacity: 0;
 }
+/* The field starts clear of the pill's round end. */
 .desk-bar-row {
   display: flex;
   min-width: 0;
   flex: 1;
   align-items: flex-end;
   gap: 4px;
-  padding: 8px 8px 8px 10px;
-}
-.desk-bar-mark {
-  position: relative;
-  display: grid;
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  margin: 0 2px 4px 0;
-  place-items: center;
-  border-radius: 8px;
-}
-.agent-ring.agent-ring-mark.desk-bar-mark {
-  --agent-ring-radius: 7px;
-}
-.desk-bar-group {
-  display: inline-flex;
-  max-width: 150px;
-  height: 24px;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 6px;
-  margin: 0 4px 6px 0;
-  padding: 0 9px 0 8px;
-  border-radius: 999px;
-  background: var(--tg-tint);
-  color: var(--tg-text);
-  font-size: 12px;
-  font-weight: 500;
-}
-.desk-bar-group-dot {
-  width: 7px;
-  height: 7px;
-  flex-shrink: 0;
-  border-radius: 999px;
-  background: var(--tg-solid);
+  padding: 8px 10px 8px 18px;
 }
 .desk-bar-button {
   display: grid;
@@ -4652,7 +4659,7 @@ body:not([data-chrome-view])::after {
   flex-shrink: 0;
   margin-bottom: 3px;
   place-items: center;
-  border-radius: 9px;
+  border-radius: 999px;
   color: var(--color-gray-800);
   cursor: pointer;
   outline: none;
@@ -4693,11 +4700,11 @@ body:not([data-chrome-view])::after {
     opacity 150ms ease,
     transform 150ms ease;
 }
-.desk-bar-send:disabled {
+.desk-bar-send[aria-disabled="true"] {
   opacity: 0.3;
   cursor: default;
 }
-.desk-bar-send:not(:disabled):active {
+.desk-bar-send:not([aria-disabled="true"]):active {
   transform: scale(0.94);
 }
 .desk-bar-send svg {
@@ -4712,12 +4719,8 @@ body:not([data-chrome-view])::after {
 /* The answer, and the conversations: cards above the Bar, grown from it. */
 .desk-answer,
 .desk-conversations {
-  position: absolute;
-  left: 0;
-  right: 0;
   display: flex;
   flex-direction: column;
-  margin: 0 auto;
   border-radius: 18px;
   background: color-mix(in oklch, var(--color-background-100) 94%, transparent);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
@@ -4734,17 +4737,21 @@ body:not([data-chrome-view])::after {
     opacity 150ms ease,
     transform 240ms cubic-bezier(0.2, 0.9, 0.3, 1);
 }
+/* In the column, on the Bar: as wide as it, at most a share of the desk's height, giving way to a tall Bar. */
 .desk-answer {
-  width: min(720px, calc(100% - 24px));
-  min-height: 120px;
+  position: relative;
+  width: 100%;
+  min-height: 0;
+  max-height: 62cqh;
+  flex: 0 1 auto;
 }
-/* Beside the conversations button: its right edge the Bar's. */
+/* On the Bar's top edge by the conversations button, its right edge the Bar's, over the answer. */
 .desk-conversations {
-  left: auto;
-  right: calc((100% - min(680px, calc(100% - 24px))) / 2);
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
   z-index: 1;
-  width: min(440px, calc(100% - 24px));
-  margin: 0;
+  width: min(440px, 100%);
 }
 .desk-answer[data-shown],
 .desk-conversations[data-shown] {
@@ -4783,23 +4790,31 @@ body:not([data-chrome-view])::after {
   width: 13px;
   height: 13px;
 }
+/* Its rows: New conversation first, then every conversation. */
 .desk-conversation {
   display: flex;
+  width: 100%;
   height: 34px;
   flex-shrink: 0;
   align-items: center;
   gap: 8px;
-  padding: 0 8px;
-  border-radius: 8px;
+  padding: 0 10px;
+  border-radius: 10px;
   text-align: left;
   cursor: pointer;
   outline: none;
   transition: background-color 120ms ease;
 }
 .desk-conversation:hover:not(:disabled) {
-  background: var(--color-alpha-100);
+  background: var(--color-alpha-200);
 }
 .desk-conversation[data-open] {
+  background: var(--color-alpha-200);
+}
+.desk-conversations-rule {
+  height: 1px;
+  flex: none;
+  margin: 6px 12px;
   background: var(--color-alpha-200);
 }
 .desk-conversation:focus-visible {
@@ -5233,4 +5248,791 @@ body:not([data-chrome-view])::after {
   .home-leave {
     opacity: 0;
   }
+}
+
+/* ── Documents on the desk (docs/desk-documents.md) ──────────────────────────
+   A context file open in its viewer, in a window of its own: the shell's DOM
+   through and through, so it is always drawn, and covers the pages under it
+   as any drawn window does. Word pages and PDFs are paper, white in the dark
+   too; the rest follow the theme. */
+.desk-window-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+.desk-window-title .desk-window-host[data-save="error"],
+.desk-window-title .desk-window-host[data-save="conflict"] {
+  color: var(--color-amber-900);
+}
+.desk-file-glyph {
+  display: inline-grid;
+  place-items: center;
+  color: var(--color-gray-800);
+}
+.desk-file-glyph > svg {
+  width: 100%;
+  height: 100%;
+}
+.desk-file-glyph[data-kind="pdf"] {
+  color: var(--color-red-900);
+}
+.desk-file-glyph[data-kind="image"] {
+  color: var(--color-purple-900, var(--color-blue-900));
+}
+.desk-file-glyph[data-kind="word"] {
+  color: var(--color-blue-900);
+}
+.desk-file-glyph[data-kind="sheet"] {
+  color: var(--color-green-900);
+}
+.desk-file-glyph[data-kind="markdown"],
+.desk-file-glyph[data-kind="json"] {
+  color: var(--color-gray-900);
+}
+.desk-file-glyph.desk-stack-glyph > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.desk-file-window {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background-100);
+  /* A document is being read and written: selection is back, as in a note. */
+  user-select: text;
+}
+.desk-file-conflict {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--color-alpha-300);
+  background: var(--color-amber-100);
+  color: var(--color-amber-900);
+  font-size: 11.5px;
+}
+.desk-viewer-column {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.desk-viewer-toolbar {
+  display: flex;
+  height: 34px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--color-alpha-200);
+  background: var(--color-background-100);
+}
+.desk-segmented {
+  display: flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--color-alpha-100);
+}
+.desk-segmented > button {
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: var(--color-gray-800);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.desk-segmented > button[aria-checked="true"] {
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 1px 2px oklch(0 0 0 / 0.08);
+}
+/* A markdown file reads as a note does, a little smaller in its window. */
+.desk-md-prose {
+  padding-left: 0;
+  font-size: 15px;
+  line-height: 25px;
+  outline: none;
+}
+.desk-md-prose h1 {
+  font-size: 26px;
+  line-height: 32px;
+}
+.desk-md-prose h2 {
+  font-size: 21px;
+  line-height: 28px;
+}
+.desk-md-prose h3 {
+  font-size: 18px;
+  line-height: 24px;
+}
+
+/* A Word document: its page, on the desk's grey, as wide as the file says and zoomed to fit. */
+.docx-desk {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 20px 20px 28px;
+  background: var(--color-gray-200);
+}
+.docx-page {
+  margin: 0 auto;
+  min-height: 60%;
+  background: #fff;
+  color: #000;
+  color-scheme: light;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 11pt;
+  line-height: 1.3;
+  box-shadow:
+    0 0 0 1px oklch(0 0 0 / 0.08),
+    0 1px 3px oklch(0 0 0 / 0.08),
+    0 12px 30px -16px oklch(0 0 0 / 0.3);
+  user-select: text;
+  cursor: text;
+}
+.docx-body {
+  outline: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  tab-size: 36px;
+}
+.docx-body .docx-p {
+  min-height: 1lh;
+  margin: 0;
+  font-weight: inherit;
+}
+.docx-body h1.docx-p,
+.docx-body h2.docx-p,
+.docx-body h3.docx-p,
+.docx-body h4.docx-p,
+.docx-body h5.docx-p,
+.docx-body h6.docx-p {
+  font-weight: 700;
+}
+.docx-marker {
+  display: inline-block;
+  min-width: 18px;
+  padding-right: 6px;
+  text-indent: 0;
+  user-select: none;
+}
+.docx-table {
+  border-collapse: collapse;
+  max-width: 100%;
+}
+.docx-table td {
+  vertical-align: top;
+}
+.docx-table td > .docx-p {
+  text-indent: 0;
+}
+.docx-image {
+  display: inline-block;
+  max-width: 100%;
+  height: auto;
+  vertical-align: bottom;
+}
+.docx-image.ProseMirror-selectednode,
+.docx-locked.ProseMirror-selectednode,
+.docx-locked-block.ProseMirror-selectednode {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+.docx-locked {
+  border-radius: 3px;
+  background: oklch(0.6 0.02 250 / 0.12);
+  cursor: default;
+}
+.docx-locked-block {
+  margin: 4px 0;
+  padding: 4px 8px;
+  border-left: 2px solid oklch(0.6 0.02 250 / 0.4);
+  background: oklch(0.6 0.02 250 / 0.07);
+  white-space: pre-wrap;
+  cursor: default;
+}
+.docx-page-break {
+  display: block;
+  height: 0;
+  margin: 12px 0;
+  border-top: 1px dashed oklch(0 0 0 / 0.25);
+}
+
+/* A sheet: letters above, numbers beside, both staying as the cells scroll under them. */
+.desk-sheet {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  outline: none;
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.desk-sheet-heads {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  background: var(--color-background-200);
+  box-shadow: inset 0 -1px 0 var(--color-alpha-300);
+}
+.desk-sheet-corner {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  flex-shrink: 0;
+  background: var(--color-background-200);
+  box-shadow:
+    inset -1px 0 0 var(--color-alpha-300),
+    inset 0 -1px 0 var(--color-alpha-300);
+}
+.desk-sheet-head {
+  position: absolute;
+  top: 0;
+  display: grid;
+  height: 24px;
+  place-items: center;
+  box-shadow: inset -1px 0 0 var(--color-alpha-200);
+  color: var(--color-gray-700);
+  font-size: 11px;
+}
+.desk-sheet-head[data-on],
+.desk-sheet-rowhead[data-on] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.desk-sheet-rowheads {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  flex-shrink: 0;
+  background: var(--color-background-200);
+  box-shadow: inset -1px 0 0 var(--color-alpha-300);
+}
+.desk-sheet-rowhead {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  padding-right: 7px;
+  box-shadow: inset 0 -1px 0 var(--color-alpha-200);
+  color: var(--color-gray-700);
+  font-size: 11px;
+  line-height: 24px;
+  text-align: right;
+}
+.desk-sheet-body {
+  position: relative;
+  flex-shrink: 0;
+  /* The grid's rows, drawn under the cells (a cell's own right edge is its column's line). */
+  background-image: linear-gradient(to bottom, transparent 23px, var(--color-alpha-200) 23px);
+  background-size: 100% 24px;
+}
+.desk-sheet-cell {
+  position: absolute;
+  display: flex;
+  overflow: hidden;
+  padding: 3px 6px;
+  box-shadow:
+    inset -1px 0 0 var(--color-alpha-200),
+    inset 0 -1px 0 var(--color-alpha-200);
+  line-height: 17px;
+}
+.desk-sheet-merged {
+  z-index: 1;
+  background: var(--color-background-100);
+}
+.desk-sheet-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.desk-sheet-selection {
+  position: absolute;
+  z-index: 2;
+  border: 2px solid var(--color-blue-700);
+  border-radius: 1px;
+  pointer-events: none;
+}
+.desk-sheet-input {
+  position: absolute;
+  z-index: 3;
+  padding: 2px 6px;
+  border: 2px solid var(--color-blue-700);
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  font: inherit;
+  outline: none;
+  box-shadow: 0 6px 16px -8px oklch(0 0 0 / 0.3);
+}
+.desk-sheet-tabs {
+  display: flex;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: stretch;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 0 8px;
+  border-top: 1px solid var(--color-alpha-300);
+  background: var(--color-background-200);
+}
+.desk-sheet-tab {
+  flex-shrink: 0;
+  padding: 0 12px;
+  border-radius: 0 0 7px 7px;
+  color: var(--color-gray-800);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.desk-sheet-tab[aria-selected="true"] {
+  background: var(--color-background-100);
+  color: var(--color-gray-1000);
+  box-shadow: 0 1px 0 0 var(--color-alpha-300);
+}
+
+/* A picture, on a chequerboard where it is transparent. */
+.desk-image-stage {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  outline: none;
+  background-color: var(--color-background-200);
+  background-image:
+    linear-gradient(45deg, var(--color-alpha-100) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--color-alpha-100) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--color-alpha-100) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--color-alpha-100) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.desk-image-stage[data-draggable] {
+  cursor: grab;
+}
+.desk-image-stage[data-draggable]:active {
+  cursor: grabbing;
+}
+.desk-image {
+  flex-shrink: 0;
+  margin: auto;
+  user-select: none;
+  image-rendering: auto;
+}
+
+/* A PDF: its pages one under another on the desk's grey. */
+.desk-pdf-stage {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  outline: none;
+  background: var(--color-gray-200);
+}
+.desk-pdf-pages {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  flex-direction: column;
+  align-items: center;
+}
+.desk-pdf-page {
+  position: relative;
+  flex-shrink: 0;
+  background: #fff;
+  color-scheme: light;
+  box-shadow:
+    0 0 0 1px oklch(0 0 0 / 0.08),
+    0 8px 22px -14px oklch(0 0 0 / 0.35);
+}
+.desk-pdf-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+/* pdf.js's text layer (web/pdf_viewer.css), the parts selection needs. */
+.desk-pdf-page .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.desk-pdf-page .textLayer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.desk-pdf-page .textLayer > :not(.markedContent),
+.desk-pdf-page .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.desk-pdf-page .textLayer .markedContent {
+  display: contents;
+}
+.desk-pdf-page .textLayer ::selection {
+  background: color-mix(in srgb, AccentColor, transparent 50%);
+  color: transparent;
+}
+.desk-pdf-page .textLayer br::selection {
+  background: transparent;
+}
+.desk-pdf-page .textLayer .endOfContent {
+  position: absolute;
+  inset: 100% 0 0;
+  display: block;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.desk-pdf-page .textLayer.selecting .endOfContent {
+  top: 0;
+}
+
+/* A picture's or a PDF's zoom, a glass pill at the foot of its window. */
+.desk-zoom-bar {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  z-index: 5;
+  display: flex;
+  white-space: nowrap;
+  height: 32px;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--color-background-100) 86%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  backdrop-filter: blur(16px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 8px 22px -12px oklch(0 0 0 / 0.35);
+  transform: translateX(-50%);
+  opacity: 0.4;
+  transition: opacity 160ms ease;
+}
+.desk-viewer-column:hover .desk-zoom-bar,
+.desk-zoom-bar:focus-within {
+  opacity: 1;
+}
+.desk-zoom-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--color-gray-900);
+  cursor: pointer;
+}
+.desk-zoom-button:hover,
+.desk-zoom-button[aria-pressed="true"] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.desk-zoom-button svg {
+  width: 14px;
+  height: 14px;
+}
+.desk-zoom-label {
+  min-width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  color: var(--color-gray-1000);
+  font-size: 11.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.desk-zoom-label:hover {
+  background: var(--color-alpha-200);
+}
+.desk-zoom-pages {
+  padding: 0 8px 0 6px;
+  border-right: 1px solid var(--color-alpha-300);
+  color: var(--color-gray-800);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Files dragged over the desk: the workspace is a target, in the group's colour, and the pages under it are stills. */
+.desk-drop-zone {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 48;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+.desk-drop-zone[data-up] {
+  pointer-events: auto;
+}
+.desk-drop-zone[data-shown] {
+  opacity: 1;
+}
+.desk-drop-zone-frame {
+  position: absolute;
+  inset: 8px 8px 8px 0;
+  border: 2px dashed color-mix(in oklch, var(--tg-solid) 55%, transparent);
+  border-radius: 16px;
+  background: color-mix(in oklch, var(--tg-solid) 7%, transparent);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+.desk-drop-zone[data-inside] .desk-drop-zone-frame {
+  border-color: var(--tg-solid);
+  background: color-mix(in oklch, var(--tg-solid) 15%, transparent);
+}
+.desk-drop-zone-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px 14px 16px;
+  border-radius: 16px;
+  background: color-mix(in oklch, var(--color-background-100) 90%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  backdrop-filter: blur(20px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 18px 40px -18px oklch(0 0 0 / 0.4);
+  pointer-events: none;
+  transform: scale(0.97);
+  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.desk-drop-zone[data-inside] .desk-drop-zone-card {
+  transform: scale(1);
+}
+.desk-drop-zone-card > svg {
+  width: 22px;
+  height: 22px;
+  color: var(--tg-solid);
+}
+/* The Bar and the Stack take files too: while a drag is over the desk, they say so. */
+.desk-bar[data-drop-target] {
+  box-shadow:
+    0 0 0 1.5px color-mix(in oklch, var(--color-blue-700) 70%, transparent),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 12px 32px -14px oklch(0 0 0 / 0.35);
+}
+.desk-stack-item[data-drop-target] .desk-stack-card[data-layer="1"] {
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--tg-solid) 60%, transparent);
+}
+.desk-stack-file[data-open]::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--tg-solid);
+}
+.desk-stack-elsewhere {
+  position: absolute;
+  top: 3px;
+  right: 22px;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-background-100);
+  color: var(--color-gray-900);
+  box-shadow: 0 0 0 1px var(--color-alpha-400);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.desk-stack-file:hover .desk-stack-elsewhere,
+.desk-stack-elsewhere:focus-visible {
+  opacity: 1;
+}
+.desk-stack-elsewhere svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* @mentions in the Bar: lit behind the field's own text, the field on top. */
+.desk-bar-field {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+.desk-bar-mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  pointer-events: none;
+}
+.desk-bar-mention {
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--tg-solid) 22%, transparent);
+  box-shadow: 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 22%, transparent);
+  color: transparent;
+}
+
+/* Dictation in the Bar: while the microphone listens, the field gives way
+   to what it hears, scrolling in from the trailing end, and the clock. */
+.desk-bar-field[hidden] {
+  display: none;
+}
+/* Discard leads the row then, as far from the pill's end as Done is from the other. */
+.desk-bar-row[data-listening] {
+  padding-left: 10px;
+}
+.desk-bar-dictation {
+  display: flex;
+  min-width: 0;
+  height: 36px;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px 0 2px;
+}
+.desk-bar-wave {
+  display: flex;
+  min-width: 0;
+  height: 26px;
+  flex: 1;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+  /* The oldest samples fade out at the leading edge. */
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 64px);
+  mask-image: linear-gradient(to right, transparent, #000 64px);
+  transition: opacity 200ms ease;
+}
+.desk-bar-wave > span {
+  width: 3px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--color-gray-1000);
+}
+/* Coming up, and being transcribed: held, and quieter. */
+.desk-bar-dictation:not([data-phase="recording"]) .desk-bar-wave {
+  opacity: 0.35;
+}
+.desk-bar-dictation-clock {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-gray-800);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.desk-bar-dictation-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-gray-600);
+}
+.desk-bar-dictation-dot[data-live] {
+  background: var(--color-red-700);
+  animation: desk-dictation-live 1.6s ease-in-out infinite;
+}
+@keyframes desk-dictation-live {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-bar-dictation-dot[data-live] {
+    animation: none;
+  }
+}
+.desk-mentions {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 1;
+  display: flex;
+  width: min(360px, 100%);
+  flex-direction: column;
+  border-radius: 18px;
+  background: color-mix(in oklch, var(--color-background-100) 94%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 22px 48px -18px oklch(0 0 0 / 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.98);
+  transform-origin: bottom left;
+  transition:
+    opacity 120ms ease,
+    transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.desk-mentions[data-shown] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+/* Rows as the conversations' are. */
+.desk-mention {
+  display: flex;
+  min-width: 0;
+  height: 34px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.desk-mention[aria-selected="true"] {
+  background: var(--color-alpha-200);
+}
+.desk-sheet-colline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-alpha-200);
+  pointer-events: none;
 }

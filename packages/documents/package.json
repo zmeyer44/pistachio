@@ -1,0 +1,28 @@
+{
+  "name": "@pistachio/documents",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Office documents and spreadsheets, read and written without a DOM: .docx (read, edited text written back in place), .xlsx (read), CSV, and the text the agent reads of each (docs/desk-documents.md).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.0",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

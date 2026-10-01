@@ -17,6 +17,10 @@
  * - which pages are MASKED (DeskMask): cut down to a region the person
  *   chose, which main shows alone and scaled like a picture while the page
  *   goes on laying out at its old size.
+ * - which pages are ZOOMED (DeskZoomedPage): a MINIMIZED window's, shown as
+ *   if the page were zoomed out, so a small window still shows the page as
+ *   it lays out on a desk-sized one — and a window growing back from
+ *   minimized, held at its new size until it lands there.
  *
  * Pure on purpose — no Electron, no DOM — so vitest pins it under node.
  */
@@ -107,6 +111,65 @@ function isDeskMaskedPage(value: unknown): value is DeskMaskedPage {
   );
 }
 
+/**
+ * A MINIMIZED desk window shows its page as if the page were zoomed to
+ * this: laid out at its page box over this, and drawn scaled down into
+ * it. A small window would otherwise show a responsive page's narrowest
+ * layout (its navbar, and little else).
+ */
+export const DESK_MINI_ZOOM = 0.5;
+
+/**
+ * A desk page shown at a zoom: its window's page box (`width` × `height`,
+ * the view's size at rest — all of it, though the view may be cut short
+ * where a minimized window peeks from the desk's foot), and the zoom it is
+ * shown at. Main lays the page out at the box over the zoom and draws it
+ * scaled into the view (Chromium's device emulation, which maps input
+ * itself), whatever the view's own size: a view cut short shows the top of
+ * the page, and the page never learns of it. A zoom of 1 holds a page
+ * growing back from minimized at the size it is growing to, so it lays
+ * out once, there, not at every size between; its emulation comes off
+ * once the page is no longer listed.
+ */
+export interface DeskZoomedPage {
+  tabId: string;
+  width: number;
+  height: number;
+  zoom: number;
+}
+
+function isDeskZoomedPage(value: unknown): value is DeskZoomedPage {
+  if (typeof value !== "object" || value === null) return false;
+  const page = value as Record<string, unknown>;
+  return (
+    typeof page["tabId"] === "string" &&
+    page["tabId"].length > 0 &&
+    page["tabId"].length <= 128 &&
+    (["width", "height"] as const).every((key) => typeof page[key] === "number" && Number.isFinite(page[key]) && page[key] >= 1 && page[key] <= MAX_DESK_PAGE) &&
+    typeof page["zoom"] === "number" &&
+    Number.isFinite(page["zoom"]) &&
+    page["zoom"] >= 0.25 &&
+    page["zoom"] <= 1
+  );
+}
+
+/**
+ * Main → shell: the pointer came onto a zoomed desk page (`over`), or went
+ * off it. A minimized window peeking from the desk's foot rises into view
+ * while the pointer is on it, and over its live page the shell hears no
+ * pointer of its own.
+ */
+export interface DeskHover {
+  tabId: string;
+  over: boolean;
+}
+
+export function isDeskHover(value: unknown): value is DeskHover {
+  if (typeof value !== "object" || value === null) return false;
+  const hover = value as Record<string, unknown>;
+  return typeof hover["tabId"] === "string" && hover["tabId"].length > 0 && typeof hover["over"] === "boolean";
+}
+
 /** Shell → main: the desk that is up, or null when none is. */
 export interface DeskState {
   /** The tabs shown as desk windows right now. */
@@ -130,6 +193,8 @@ export interface DeskState {
   dockHover?: boolean;
   /** The desk's masked pages (DeskMask); absent or empty when none is. */
   masks?: DeskMaskedPage[];
+  /** The desk's zoomed pages (DeskZoomedPage): its minimized windows', and any growing back from minimized; absent or empty when none is. */
+  zoomed?: DeskZoomedPage[];
 }
 
 export const MAX_DESK_WINDOWS = 24;
@@ -146,7 +211,9 @@ export function isDeskState(value: unknown): value is DeskState {
     (state["dock"] === undefined || state["dock"] === null || isDeskBox(state["dock"])) &&
     (state["dockHover"] === undefined || typeof state["dockHover"] === "boolean") &&
     (state["masks"] === undefined ||
-      (Array.isArray(state["masks"]) && state["masks"].length <= MAX_DESK_WINDOWS && state["masks"].every(isDeskMaskedPage)))
+      (Array.isArray(state["masks"]) && state["masks"].length <= MAX_DESK_WINDOWS && state["masks"].every(isDeskMaskedPage))) &&
+    (state["zoomed"] === undefined ||
+      (Array.isArray(state["zoomed"]) && state["zoomed"].length <= MAX_DESK_WINDOWS && state["zoomed"].every(isDeskZoomedPage)))
   );
 }
 
@@ -195,11 +262,14 @@ export function isDeskGrab(value: unknown): value is DeskGrab {
  * aside (DeskState.dock) — told once as it comes, and it brings the dock back.
  * "close": ⇧⌫ was struck in any of the window's views with a tab's icon in
  * the dock under the pointer (DeskState.dockHover): the shell closes that tab.
+ * "fileDrag": files from outside the app were dragged over a desk page
+ * (docs/desk-documents.md §1): the shell puts up the desk's drop targets,
+ * and the page gives way to its still, so the drag comes to the shell.
  */
-export type DeskPageInput = "press" | "escape" | "dock" | "close";
+export type DeskPageInput = "press" | "escape" | "dock" | "close" | "fileDrag";
 
 export function isDeskPageInput(value: unknown): value is DeskPageInput {
-  return value === "press" || value === "escape" || value === "dock" || value === "close";
+  return value === "press" || value === "escape" || value === "dock" || value === "close" || value === "fileDrag";
 }
 
 /** A key event, as Electron's `before-input-event` has it. */

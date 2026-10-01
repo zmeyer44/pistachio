@@ -49,8 +49,19 @@ import type {
   ReminderSnapshot,
 } from "./reminders.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
-import type { DeskGrab, DeskPageInput, DeskState } from "./desk.js";
-import type { DeskConversationCommand, DeskReply, DeskRequest, GroupContextCommand, GroupContextResult, GroupContextView } from "./desk-agent.js";
+import type { DeskGrab, DeskHover, DeskPageInput, DeskState } from "./desk.js";
+import type {
+  DeskConversationCommand,
+  DeskReply,
+  DeskRequest,
+  GroupContextCommand,
+  GroupContextResult,
+  GroupContextView,
+  GroupFileContent,
+  GroupFileForMessage,
+  GroupFileWrite,
+  GroupFileWriteResult,
+} from "./desk-agent.js";
 import type {
   DragCursor,
   DragSample,
@@ -1118,6 +1129,8 @@ export interface NativeSurfaceApi {
   onDeskShift(listener: (held: boolean) => void): () => void;
   /** A desk page took a press, or Escape was struck, while a desk is up: its menus close. */
   onDeskPageInput(listener: (input: DeskPageInput) => void): () => void;
+  /** The pointer came onto a zoomed desk page (a minimized window's), or went off it. */
+  onDeskHover(listener: (hover: DeskHover) => void): () => void;
   // ── The desk's agent (@pistachio/shell-contracts/desk-agent) ─────────────────
   /** A desk is up for a group (again for each group it passes to), or left; or the person chose its conversation. */
   deskConversation(command: DeskConversationCommand): Promise<void>;
@@ -1128,6 +1141,12 @@ export interface NativeSurfaceApi {
   getGroupContexts(): Promise<GroupContextView[]>;
   onGroupContexts(listener: (contexts: GroupContextView[]) => void): () => void;
   groupContext(command: GroupContextCommand): Promise<GroupContextResult>;
+  /** A context file's bytes, for its document window (docs/desk-documents.md); null when they are not on this Mac. */
+  readGroupFile(groupId: string, itemId: string): Promise<GroupFileContent | null>;
+  /** A document edited in its window, saved into the context. */
+  writeGroupFile(write: GroupFileWrite): Promise<GroupFileWriteResult>;
+  /** A context file as a message carries it, @mentioned in the Bar: its text, or the file for the model to look at. */
+  groupFileForMessage(groupId: string, itemId: string): Promise<GroupFileForMessage>;
   /**
    * The owner's still is painted under its live view: main can now hide the
    * view without a blank frame, and the renderer starts the opening motion.
@@ -1265,12 +1284,16 @@ export const NATIVE_SURFACE_MEMBERS = {
   onDeskGrab: "Fires from main's mouse hook on a native page view.",
   onDeskShift: "Fires from main's relay of every view's keys, native page views included.",
   onDeskPageInput: "Fires from main's mouse hook on native page views and its relay of their keys.",
+  onDeskHover: "Fires from main's mouse hook on native page views.",
   deskConversation: "The desk runs only over native page views; its conversation follows it.",
   onDeskRequest: "Main's agent asks the desk, which exists only over native page views, for its layout.",
   deskReply: "Answers main's agent from the desk's engine, which places native page views.",
   getGroupContexts: "A group's context belongs to the desk, which exists only over native page views.",
   onGroupContexts: "The desk's context store lives in main beside the native desk.",
   groupContext: "Files dropped on the desk's Stack are stored by main for the native desk's agent.",
+  readGroupFile: "A document window's file is kept by main's context store beside the native desk.",
+  writeGroupFile: "A document edited on the native desk is saved into main's context store.",
+  groupFileForMessage: "Reads a context file as the native desk's agent reads it, converted by main.",
   recedeGlanceOwner: "Coordinates the owner tab's native view with the glance view.",
   setGlanceBounds: "Places the native glance preview view at the shell's frame.",
   prepareGlanceClose: "Captures the native glance view's last frame before it hides.",
@@ -1406,12 +1429,18 @@ export const IPC = {
   deskGrab: "pistachio:desk-grab",
   deskShift: "pistachio:desk-shift",
   deskPageInput: "pistachio:desk-page-input",
+  deskHover: "pistachio:desk-hover",
   deskConversation: "pistachio:desk-conversation",
   deskRequest: "pistachio:desk-request",
   deskReply: "pistachio:desk-reply",
   groupContextsGet: "pistachio:group-contexts-get",
   groupContextsChanged: "pistachio:group-contexts-changed",
   groupContextCommand: "pistachio:group-context-command",
+  groupFileRead: "pistachio:group-file-read",
+  groupFileWrite: "pistachio:group-file-write",
+  groupFileForMessage: "pistachio:group-file-for-message",
+  /** A tab's isolated preload → main: files from outside the app were dragged over its page (docs/desk-documents.md §1). */
+  tabFileDrag: "pistachio:tab-file-drag",
   tabSwitcherPreviewsGet: "pistachio:tab-switcher-previews-get",
   tabSwitcherInput: "pistachio:tab-switcher-input",
   tabSwitcherThumbnail: "pistachio:tab-switcher-thumbnail",

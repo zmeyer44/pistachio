@@ -209,7 +209,18 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     // ── 1. The Bar at the desk's foot, the windows above it; the Stack in the dock, empty ─
     const bar = shell.getByTestId("desk-bar");
     await expect(bar).toBeVisible();
-    await expect(shell.getByTestId("desk-bar-group")).toHaveText("Northstar");
+    // Just the field and its buttons: it asks about the group by name.
+    await expect(shell.getByTestId("desk-bar-input")).toHaveAttribute("placeholder", "Ask about Northstar…");
+    // A pill at one line.
+    expect(await shell.getByTestId("desk-bar").evaluate((el) => getComputedStyle(el).borderTopLeftRadius)).toBe("26px");
+    // Every button says what it does.
+    await shell.getByTestId("desk-bar-attach").hover();
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Attach files");
+    await capture(app, shell, "01b-desk-bar-tooltip.png");
+    await shell.getByTestId("desk-bar-send").hover();
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]', { hasText: "Send" })).toBeVisible();
+    await away();
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveCount(0);
     const barBox = await box(shell, '[data-testid="desk-bar"]');
     expect(barBox.y + barBox.height).toBeGreaterThan(stage.y + stage.height - 4);
     const entry = await box(shell, windowSelector(invoice));
@@ -274,6 +285,21 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     expect(run.toolCalls.map((call) => call.name)).toEqual(["desk.arrange", "page.inspect", "desk.note", "context.save"]);
     await capture(app, shell, "04-desk-agent-answer.png");
 
+    // The answer is as wide as the Bar and rests on it, however tall the Bar grows; it collapses with a chevron.
+    const card = await box(shell, '[data-testid="desk-answer"]');
+    const barNow = await box(shell, '[data-testid="desk-bar"]');
+    expect(Math.abs(card.width - barNow.width)).toBeLessThan(1);
+    expect(Math.abs(card.x - barNow.x)).toBeLessThan(1);
+    expect(Math.abs(card.y + card.height + 8 - barNow.y)).toBeLessThan(1.5);
+    await shell.getByTestId("desk-bar-input").fill("one\ntwo\nthree\nfour");
+    await expect.poll(async () => (await box(shell, '[data-testid="desk-bar"]')).height).toBeGreaterThan(barNow.height + 30);
+    const taller = await box(shell, '[data-testid="desk-bar"]');
+    const lifted = await box(shell, '[data-testid="desk-answer"]');
+    expect(Math.abs(lifted.y + lifted.height + 8 - taller.y)).toBeLessThan(1.5);
+    await capture(app, shell, "04b-desk-answer-on-a-tall-bar.png");
+    await shell.getByTestId("desk-bar-input").fill("");
+    await expect(shell.getByTestId("desk-answer-close")).toHaveAttribute("aria-label", "Hide the answer");
+
     // ── 6. Undo layout puts every window back where it was before the turn ─
     await shell.getByTestId("desk-undo-layout").click();
     await settled(shell);
@@ -296,7 +322,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await capture(app, shell, "05-desk-agent-opened.png");
 
     // ── 8. A page the agent's click opens joins the group — from a tab in the dock too — and comes out quietly ─
-    await shell.locator(`${windowSelector(invoice)} button[aria-label="Put away"]`).click();
+    await shell.locator(`${windowSelector(invoice)} button[aria-label="Collapse"]`).click();
     await settled(shell);
     await expect(shell.locator(windowSelector(invoice))).toHaveCount(0);
     // The person goes on in another window: the invoice is in the dock, and not the tab in use.
@@ -319,7 +345,33 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
     await expect(shell.getByTestId("desk-conversation")).toHaveCount(1);
     await expect(shell.getByTestId("desk-conversation").first()).toContainText("This desk");
+    // Rows, as the mentions' are: New conversation first; no heading.
+    await expect(shell.getByTestId("desk-conversations")).not.toContainText("Conversations");
+    await expect(shell.getByTestId("desk-conversation-new")).toHaveText("New conversation");
+    await expect(shell.getByTestId("desk-conversation").first()).toHaveAttribute("aria-current", "true");
     await capture(app, shell, "06-desk-conversations.png");
+    // A press anywhere else puts them away: in the shell (the Bar's field)…
+    await shell.getByTestId("desk-bar-input").click();
+    await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
+    // …or in a live page, which main relays.
+    await shell.getByTestId("desk-bar-conversations").click();
+    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
+    await app.evaluate(async ({ webContents }, url) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
+      contents.sendInputEvent({ type: "mouseMove", x: 420, y: 24 });
+      contents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, x: 420, y: 24 });
+      await new Promise((done) => setTimeout(done, 40));
+      contents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, x: 420, y: 24 });
+    }, ACCOUNTS);
+    await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    // Its own button still toggles it.
+    await shell.getByTestId("desk-bar-conversations").click();
+    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
+    await shell.getByTestId("desk-bar-conversations").click();
+    await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    await shell.getByTestId("desk-bar-conversations").click();
+    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
     const runId = run.runId;
     await shell.getByTestId("desk-conversation-new").click();
     await expect.poll(async () => (await snapshot(shell)).run).toBeNull();

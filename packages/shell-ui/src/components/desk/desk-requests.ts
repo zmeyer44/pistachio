@@ -7,6 +7,7 @@
 
 import { MAX_DESK_DOCKED, MAX_DESK_TITLE, MAX_DESK_URL, type DeskAgentState, type DeskReply, type DeskRequest } from "@pistachio/shell-contracts/desk-agent";
 import { displayHost } from "../../lib/url";
+import { fileItemOf } from "../../lib/desk/windows";
 import type { DeskEngine, DeskLayoutSnapshot } from "./desk-engine";
 
 /** A tab the agent opened reaches the shell's group a moment after main put it there: this long, at most. */
@@ -19,6 +20,8 @@ export interface DeskAnswerDeps {
   /** That group's name. */
   title(): string;
   tab(tabId: string): { title: string; url: string } | undefined;
+  /** A document window's file (its context item). */
+  file(itemId: string): { name: string } | undefined;
   /** The open run's turn, which a layout remembered for Undo belongs to; null with none. */
   turn(): { runId: string; turns: number } | null;
   /** Where every window was before the agent first moved one in this turn (the first call per turn wins). */
@@ -37,13 +40,15 @@ function clip(text: string, max: number): string {
 export function deskStateOf(deps: DeskAnswerDeps): DeskAgentState {
   const layout = deps.engine.agentLayout();
   const describe = (tabId: string): { title: string; url: string } => {
+    const itemId = fileItemOf(tabId);
+    if (itemId !== null) return { title: clip(deps.file(itemId)?.name ?? "Document", MAX_DESK_TITLE), url: "" };
     const tab = deps.tab(tabId);
     return { title: clip(tab?.title || displayHost(tab?.url ?? "") || "Untitled", MAX_DESK_TITLE), url: clip(tab?.url ?? "", MAX_DESK_URL) };
   };
   return {
     groupId: deps.groupId(),
     title: clip(deps.title(), MAX_DESK_TITLE),
-    windows: layout.windows.map((window) => ({ tabId: window.tabId, ...describe(window.tabId), box: window.box, focused: window.focused, masked: window.masked })),
+    windows: layout.windows.map((window) => ({ tabId: window.tabId, kind: window.kind, ...describe(window.tabId), box: window.box, focused: window.focused, masked: window.masked, minimized: window.minimized })),
     docked: layout.docked.slice(0, MAX_DESK_DOCKED).map((tabId) => ({ tabId, ...describe(tabId) })),
   };
 }
@@ -78,7 +83,8 @@ export async function answerDeskRequest(deps: DeskAnswerDeps, request: DeskReque
       return { ok: true, state: deskStateOf(deps) };
     }
     case "note": {
-      if (!engine.windowTabIds().includes(request.tabId)) return { ok: false, error: "that tab is in the dock: bring it out with desk_arrange first" };
+      if (!engine.windowTabIds().includes(request.tabId))
+        return { ok: false, error: fileItemOf(request.tabId) === null ? "that tab is in the dock: bring it out with desk_arrange first" : "that document is not open on the desk: bring it out with desk_arrange first" };
       const text = request.text?.trim() ?? "";
       deps.note(request.tabId, text === "" ? null : text.slice(0, 80));
       return { ok: true, state: deskStateOf(deps) };

@@ -36,7 +36,7 @@ import {
   zoneRect,
   type Rect,
 } from "../src/lib/desk/geometry";
-import { GLIDE_DECELERATION, GLIDE_TAU_S, glideDecay, glideTauFor, SPRING_PRESETS, springAtRest, stepSpring, VelocityTracker } from "../src/lib/desk/motion";
+import { cubicBezier, EASE_SMOOTH_OUT, GLIDE_DECELERATION, GLIDE_TAU_S, glideDecay, glideTauFor, SPRING_PRESETS, springAtRest, stepSpring, VelocityTracker } from "../src/lib/desk/motion";
 import { sanitizeVariants, DEFAULT_DESK_VARIANTS } from "../src/lib/desk/store";
 
 const desk: Rect = { x: 184, y: 0, w: 1000, h: 700 };
@@ -491,5 +491,27 @@ describe("editedMaskRegion", () => {
   it("moves the whole region, kept on the page", () => {
     expect(editedMaskRegion(start, null, 100, 50, page, 16)).toEqual({ x: 300, y: 200, w: 400, h: 300 });
     expect(editedMaskRegion(start, null, 900, -900, page, 16)).toEqual({ x: 600, y: 0, w: 400, h: 300 });
+  });
+});
+
+describe("timed motion's easing", () => {
+  it("is CSS's cubic-bézier: from 0 to 1, as a browser computes it", () => {
+    const ease = cubicBezier(0.25, 0.1, 0.25, 1);
+    expect(ease(0)).toBe(0);
+    expect(ease(1)).toBe(1);
+    // CSS `ease` halfway through its time is about 80% of the way.
+    expect(ease(0.5)).toBeCloseTo(0.8024, 3);
+    expect(cubicBezier(0, 0, 1, 1)(0.3)).toBeCloseTo(0.3, 5);
+  });
+
+  it("smooth ease-out goes most of the way early, settles softly, and never past the end", () => {
+    let last = 0;
+    for (let step = 1; step <= 100; step += 1) {
+      const value = EASE_SMOOTH_OUT(step / 100);
+      expect(value).toBeGreaterThanOrEqual(last);
+      expect(value).toBeLessThanOrEqual(1);
+      last = value;
+    }
+    expect(EASE_SMOOTH_OUT(0.25)).toBeGreaterThan(0.6);
   });
 });

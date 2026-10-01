@@ -13,7 +13,7 @@ import { isFiniteRect, type Rect } from "./geometry";
 import { GLIDE_DECELERATION } from "./motion";
 
 export type DeskPhysics = "glide" | "snap" | "free";
-export type DeskSpringFeel = "snappy" | "bouncy" | "smooth";
+export type DeskSpringFeel = "snappy" | "bouncy" | "smooth" | "eased";
 export type DeskMotion = "lifted" | "live";
 export type DeskChrome = "bar" | "tab" | "bare";
 export type DeskGrab = DeskGrabModifier | "off";
@@ -21,7 +21,7 @@ export type DeskGrab = DeskGrabModifier | "off";
 export interface DeskVariants {
   /** What a released window does. */
   physics: DeskPhysics;
-  /** The spring every settle rides. */
+  /** The spring every settle rides — or, Eased, a timed ease on transitions.dev's motion tokens instead. */
   spring: DeskSpringFeel;
   /** A carried window: its still, free to lift and tilt — or its live page, flat. */
   motion: DeskMotion;
@@ -72,6 +72,7 @@ export const DESK_AXES: readonly [
       { id: "snappy", label: "Snappy", hint: "Quick, with a trace of overshoot" },
       { id: "bouncy", label: "Bouncy", hint: "Loose, lands with a wobble" },
       { id: "smooth", label: "Smooth", hint: "Slow and critically damped" },
+      { id: "eased", label: "Eased", hint: "Timed eases on the motion tokens: quick, smooth, never past their place" },
     ],
   },
   {
@@ -117,6 +118,8 @@ export interface SavedDeskWindow {
   tabId: string;
   rect: Rect;
   mask?: DeskMask;
+  /** Minimized (the engine's Minimized): the box it grows back to, as fractions of the desk, and whether it is parked in the shelf at the desk's foot. */
+  mini?: { restore: Rect; parked: boolean };
 }
 
 /** A group's desk as it was left, windows bottom to top. */
@@ -220,8 +223,13 @@ export function sanitizeSaved(value: unknown): Record<string, SavedDesk> {
           (window): window is SavedDeskWindow =>
             typeof window === "object" && window !== null && typeof (window as SavedDeskWindow).tabId === "string" && isFiniteRect((window as SavedDeskWindow).rect),
         )
-        // A mask that does not hold up is dropped, and the window comes back whole.
-        .map(({ tabId, rect, mask }) => (isDeskMask(mask) ? { tabId, rect, mask } : { tabId, rect })),
+        // A mask that does not hold up is dropped, and the window comes back whole; so is a minimized state, and it comes back at its own size.
+        .map(({ tabId, rect, mask, mini }): SavedDeskWindow => {
+          if (isDeskMask(mask)) return { tabId, rect, mask };
+          if (typeof mini === "object" && mini !== null && isFiniteRect(mini.restore) && typeof mini.parked === "boolean")
+            return { tabId, rect, mini: { restore: mini.restore, parked: mini.parked } };
+          return { tabId, rect };
+        }),
     };
   }
   return saved;
