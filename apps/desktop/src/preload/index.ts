@@ -3,6 +3,7 @@ import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive"
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
 import { isDeskHover, isDeskPageInput, type DeskGrab, type DeskHover, type DeskPageInput, type DeskState } from "@pistachio/shell-contracts/desk";
+import type { DeskLayoutEvaluation } from "@pistachio/shell-contracts/desk-layout";
 import type {
   DeskRequest,
   GroupContextResult,
@@ -280,6 +281,7 @@ const api: PistachioApi = {
   captureTabStills: (tabIds: string[], width: number) =>
     ipcRenderer.invoke(IPC.deskStillsCapture, tabIds, width) as Promise<PaneStill[]>,
   focusTab: (tabId: string) => ipcRenderer.send(IPC.deskFocus, tabId),
+  judgeDeskLayout: (request) => ipcRenderer.invoke(IPC.deskLayoutJudge, request) as Promise<DeskLayoutEvaluation | null>,
   onDeskGrab(listener) {
     const handler = (_event: Electron.IpcRendererEvent, grab: DeskGrab): void => listener(grab);
     ipcRenderer.on(IPC.deskGrab, handler);

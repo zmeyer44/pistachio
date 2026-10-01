@@ -71,6 +71,7 @@ import { archiveEntryView, isTabArchiveRequest, type TabArchiveResponse } from "
 import { isTabGroupCommand, type TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import { isTidyRequest, type TidyResponse } from "@pistachio/shell-contracts/tidy";
 import { AddressIntentRanker, scriptedIntentModel } from "./address-intent";
+import { DeskLayoutJudge, scriptedLayoutModel } from "./desk-layout";
 import { scriptedFindModelFromEnv } from "@pistachio/smart-find/scripted";
 import { MemoryStore } from "./memory-store";
 import { ReminderScheduler, type ReminderExecutor } from "./reminder-scheduler";
@@ -2611,6 +2612,16 @@ const addressIntent = new AddressIntentRanker({
   model: () => scriptedIntentModel() ?? configuredIntentModel()?.model ?? null,
 });
 
+/**
+ * What the desk asks when a window comes or goes, or the person asks for a
+ * better layout (docs/desk-layout.md). A spec that scripts the answer
+ * (PISTACHIO_LAYOUT_SCRIPT) gets its script; everything else the account's
+ * evaluation model, or none.
+ */
+const deskLayout = new DeskLayoutJudge({
+  model: () => scriptedLayoutModel() ?? configuredIntentModel()?.model ?? null,
+});
+
 function installIpc(): void {
   ipcMain.handle(IPC.watchtower, async (event, value: unknown) => {
     if (!isShell(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error("Watchtower is shell-only.");
@@ -2946,6 +2957,10 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.deskFocus, (event, tabId: unknown) => {
     if (isShell(event.sender) && typeof tabId === "string") void requireBrowser().focusTab(tabId);
+  });
+  ipcMain.handle(IPC.deskLayoutJudge, (event, request: unknown) => {
+    if (!isShell(event.sender)) throw new Error("the desk's layout model is shell-only");
+    return deskLayout.judge(event.sender.id, request);
   });
   // ── The desk's agent (docs/desk-agent.md §3) ───────────────────────────
   ipcMain.handle(IPC.deskConversation, (event, command: unknown) => {

@@ -3976,6 +3976,22 @@ body:not([data-chrome-view])::after {
   width: 56px;
   height: 56px;
 }
+/* A page the shell draws, small (ShellPageMiniature): laid out at its own
+   box, and scaled from its corner to cover the box it is shown in. Contained,
+   so nothing in it (a fixed bar, say) reaches outside that box. */
+.desk-page-miniature {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.desk-page-miniature-page {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  contain: strict;
+}
 /* Another group's card (DockGroupCard): its desk drawn small — the desk's
    dotted ground, each window framed as the desk frames it, its picture in,
    the one it would come up on ringed in the group's colour. */
@@ -5021,20 +5037,24 @@ body:not([data-chrome-view])::after {
   outline: none;
   box-shadow: 0 0 0 2px var(--tg-solid);
 }
+/* The digits trimmed to their cap height and centred as a block, so they sit in
+   the middle of the dot whatever line-height they inherit. */
 .desk-stack-count {
   position: absolute;
   top: 1px;
   right: 1px;
-  display: grid;
+  display: block;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  place-items: center;
+  align-content: center;
   border-radius: 999px;
   background: var(--tg-solid);
   color: #fff;
   font-size: 10px;
   font-weight: 600;
+  text-align: center;
+  text-box: trim-both cap alphabetic;
   font-variant-numeric: tabular-nums;
   box-shadow: 0 0 0 2px color-mix(in oklch, var(--color-background-100) 80%, transparent);
 }
@@ -5153,6 +5173,9 @@ body:not([data-chrome-view])::after {
   .desk-drop-rail,
   .desk-drop-mark,
   .desk-drop-badge,
+  .desk-drop-zone-icons > svg,
+  .desk-drop-zone-title,
+  .desk-drop-zone-hint,
   .desk-dock-preview,
   .desk-dock-menu,
   .desk-dock-rename,
@@ -5787,7 +5810,8 @@ body:not([data-chrome-view])::after {
   font-variant-numeric: tabular-nums;
 }
 
-/* Files dragged over the desk: the workspace is a target, in the group's colour, and the pages under it are stills. */
+/* Files dragged over the desk: the workspace is a target, frosted in the group's colour, and the pages under it are stills.
+   The frame and the mark fade, not the zone: a fading parent would cut the frost off from the stills under it. */
 .desk-drop-zone {
   position: absolute;
   top: 0;
@@ -5795,54 +5819,111 @@ body:not([data-chrome-view])::after {
   z-index: 48;
   display: grid;
   place-items: center;
-  opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 140ms ease;
+  transition: visibility 0s linear 200ms;
 }
 .desk-drop-zone[data-up] {
+  visibility: visible;
   pointer-events: auto;
-}
-.desk-drop-zone[data-shown] {
-  opacity: 1;
+  transition-delay: 0s;
 }
 .desk-drop-zone-frame {
   position: absolute;
   inset: 8px 8px 8px 0;
   border: 2px dashed color-mix(in oklch, var(--tg-solid) 55%, transparent);
   border-radius: 16px;
-  background: color-mix(in oklch, var(--tg-solid) 7%, transparent);
+  background: color-mix(in oklch, var(--tg-solid) 6%, color-mix(in oklch, var(--color-background-100) 55%, transparent));
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  backdrop-filter: blur(16px) saturate(1.2);
+  opacity: 0;
   transition:
+    opacity 140ms ease,
     background-color 140ms ease,
     border-color 140ms ease;
 }
+.desk-drop-zone[data-shown] .desk-drop-zone-frame {
+  opacity: 1;
+}
 .desk-drop-zone[data-inside] .desk-drop-zone-frame {
   border-color: var(--tg-solid);
-  background: color-mix(in oklch, var(--tg-solid) 15%, transparent);
+  background: color-mix(in oklch, var(--tg-solid) 12%, color-mix(in oklch, var(--color-background-100) 55%, transparent));
 }
-.desk-drop-zone-card {
+.desk-drop-zone-mark {
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 14px 18px 14px 16px;
-  border-radius: 16px;
-  background: color-mix(in oklch, var(--color-background-100) 90%, transparent);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
-  backdrop-filter: blur(20px) saturate(1.5);
-  box-shadow:
-    0 0 0 1px var(--color-alpha-300),
-    0 18px 40px -18px oklch(0 0 0 / 0.4);
   pointer-events: none;
-  transform: scale(0.97);
-  transition: transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
-.desk-drop-zone[data-inside] .desk-drop-zone-card {
-  transform: scale(1);
+/* The three rise in turn, the files first and then the picture and the folder, tilted apart; over the zone they fan a little wider. */
+.desk-drop-zone-icons {
+  position: relative;
+  width: 120px;
+  height: 48px;
+  margin-bottom: 8px;
 }
-.desk-drop-zone-card > svg {
-  width: 22px;
-  height: 22px;
+.desk-drop-zone-icons > svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  margin: -14px;
   color: var(--tg-solid);
+  stroke-width: 1.75;
+  opacity: 0;
+  transform: translateY(14px) scale(0.5);
+  transition:
+    transform 320ms cubic-bezier(0.2, 0.9, 0.3, 1.25),
+    opacity 160ms ease;
+}
+.desk-drop-zone[data-shown] .desk-drop-zone-icons > svg {
+  opacity: 1;
+}
+.desk-drop-zone[data-shown] [data-icon="files"] {
+  transform: translateY(-6px);
+}
+.desk-drop-zone[data-shown] [data-icon="image"] {
+  transform: translate(-40px, 5px) rotate(-14deg);
+  transition-delay: 35ms;
+}
+.desk-drop-zone[data-shown] [data-icon="folder"] {
+  transform: translate(40px, 5px) rotate(14deg);
+  transition-delay: 70ms;
+}
+.desk-drop-zone[data-shown][data-inside] [data-icon="files"] {
+  transform: translateY(-9px);
+}
+.desk-drop-zone[data-shown][data-inside] [data-icon="image"] {
+  transform: translate(-46px, 4px) rotate(-19deg);
+}
+.desk-drop-zone[data-shown][data-inside] [data-icon="folder"] {
+  transform: translate(46px, 4px) rotate(19deg);
+}
+.desk-drop-zone-title,
+.desk-drop-zone-hint {
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity 160ms ease,
+    transform 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.desk-drop-zone[data-shown] :is(.desk-drop-zone-title, .desk-drop-zone-hint) {
+  opacity: 1;
+  transform: none;
+}
+.desk-drop-zone-title {
+  color: var(--tg-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.desk-drop-zone-hint {
+  margin-top: 2px;
+  color: var(--color-gray-900);
+  font-size: 12px;
+  line-height: 16px;
 }
 /* The Bar and the Stack take files too: while a drag is over the desk, they say so. */
 .desk-bar[data-drop-target] {

@@ -17,6 +17,7 @@ import { useAppStore } from "../../store";
 import { PistachioMark } from "../PistachioMark";
 import { useTodos } from "../home/HomeCards";
 import { useNow } from "../home/use-now";
+import { usePagePreview } from "../page-preview";
 import { ReportView } from "./ReportView";
 import { ReportOverlayHost } from "./preview";
 import { briefKey, useBriefStore } from "./use-brief";
@@ -107,8 +108,9 @@ export function BriefPage({ tabId, date, active }: { tabId: string | null; date:
 
   const report = entry?.response.report ?? null;
   const archive = entry?.response.archive ?? [];
+  const preview = usePagePreview();
 
-  // Today's brief makes itself the first time it is opened; an archived day is only ever read.
+  // Today's brief makes itself the first time it is opened; an archived day is only ever read, and a preview of the page never makes one.
   useEffect(() => {
     if (spaceId === null) return;
     let cancelled = false;
@@ -116,7 +118,7 @@ export function BriefPage({ tabId, date, active }: { tabId: string | null; date:
       .getState()
       .load(spaceId, day)
       .then((response) => {
-        if (cancelled || response === null) return;
+        if (cancelled || response === null || preview) return;
         // Making it and joining one already under way are the same request: the host runs one at a time.
         if (briefLoadAction(response, date !== null) !== "show") void useBriefStore.getState().generate(spaceId, day, name);
       });
@@ -125,13 +127,14 @@ export function BriefPage({ tabId, date, active }: { tabId: string | null; date:
     };
     // `name` only seasons a generation; it must not start one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spaceId, day, date]);
+  }, [spaceId, day, date, preview]);
 
   // The home page's to-dos are the truth about to-dos, both ways: finished there is ticked here, reopened there is unticked here.
   const todoTicks = useMemo(() => Object.fromEntries(todos.map((todo) => [`todo:${todo.id}`, todo.done])), [todos]);
 
+  // A preview files nothing: not even the corrections the report files as it mounts (ReportView).
   const onTick = (changes: { path: string; value: boolean }[]) => {
-    if (spaceId === null || report === null) return;
+    if (spaceId === null || report === null || preview) return;
     for (const change of changes) {
       const id = /^\/ticks\/todo:(.+)$/u.exec(change.path)?.[1];
       if (id === undefined) continue;

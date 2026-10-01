@@ -117,6 +117,23 @@ export function denormalizeRect(rect: Rect, bounds: Rect): Rect {
   };
 }
 
+/**
+ * A rectangle carried from the desk at one size to the desk at another, in
+ * proportion — each window counted with the gutter after it, so windows a
+ * gutter apart stay a gutter apart (a seam stays one), and a window against
+ * the desk's edge stays against it.
+ */
+export function rescaleRect(rect: Rect, before: Rect, after: Rect, gap = DESK_GAP): Rect {
+  const sx = (after.w + gap) / Math.max(1, before.w + gap);
+  const sy = (after.h + gap) / Math.max(1, before.h + gap);
+  return {
+    x: after.x + (rect.x - before.x) * sx,
+    y: after.y + (rect.y - before.y) * sy,
+    w: (rect.w + gap) * sx - gap,
+    h: (rect.h + gap) * sy - gap,
+  };
+}
+
 export function isFiniteRect(value: unknown): value is Rect {
   if (typeof value !== "object" || value === null) return false;
   const rect = value as Record<string, unknown>;
@@ -494,6 +511,184 @@ export function resizedRect(start: Rect, edges: Edges, dx: number, dy: number, b
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
+/* --------------------------------- seams --------------------------------- */
+
+/**
+ * How far from the desk's gap two windows may stand and still meet across
+ * it: rounding, and a desk resized a little since they were put there.
+ * Nearer or further apart (flush, overlapping, or just near), they are two
+ * windows, not a split.
+ */
+export const SEAM_SLACK = 2;
+
+/**
+ * Windows that meet across one gutter, as the panes of a split view do: on
+ * an "x" seam those `before` it end at its left side and those `after` it
+ * begin at its right; on a "y" seam, above it and below. Its gutter dragged,
+ * every window on it gives or takes the same, and the gutter stays a gutter.
+ */
+export interface Seam {
+  axis: "x" | "y";
+  before: string[];
+  after: string[];
+}
+
+const startOn = (rect: Rect, axis: "x" | "y"): number => (axis === "x" ? rect.x : rect.y);
+const endOn = (rect: Rect, axis: "x" | "y"): number => (axis === "x" ? rightOf(rect) : bottomOf(rect));
+/** Where a rectangle runs along a seam's line: its span on the other axis. */
+const spanAlong = (rect: Rect, axis: "x" | "y"): [number, number] => (axis === "x" ? [rect.y, bottomOf(rect)] : [rect.x, rightOf(rect)]);
+
+/** `a` ends the desk's gap short of where `b` begins, and the two run side by side for some of the way. */
+function meetsAcross(a: Rect, b: Rect, axis: "x" | "y", gap: number): boolean {
+  if (Math.abs(startOn(b, axis) - endOn(a, axis) - gap) > SEAM_SLACK) return false;
+  const [a0, a1] = spanAlong(a, axis);
+  const [b0, b1] = spanAlong(b, axis);
+  return Math.min(a1, b1) - Math.max(a0, b0) > 1;
+}
+
+/** A seam as it is found: its sides, and where its gutter begins (the end of the windows before it). */
+interface SeamFound {
+  axis: "x" | "y";
+  line: number;
+  before: Set<string>;
+  after: Set<string>;
+}
+
+/** Every window that meets one already on the seam across its gutter, on either side: moved without them, the gutter would close on them, or open. */
+function spreadSeam(seam: SeamFound, rects: ReadonlyMap<string, Rect>, gap: number): void {
+  const { axis, line, before, after } = seam;
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [id, rect] of rects) {
+      if (before.has(id) || after.has(id)) continue;
+      if (Math.abs(startOn(rect, axis) - line - gap) <= SEAM_SLACK && [...before].some((other) => meetsAcross(rects.get(other)!, rect, axis, gap))) {
+        after.add(id);
+        grew = true;
+      } else if (Math.abs(endOn(rect, axis) - line) <= SEAM_SLACK && [...after].some((other) => meetsAcross(rect, rects.get(other)!, axis, gap))) {
+        before.add(id);
+        grew = true;
+      }
+    }
+  }
+}
+
+/**
+ * The seam a press on one of a window's edges takes hold of — `side` is the
+ * window's side of it — if another window meets it across the gutter there,
+ * beside the pointer (`along`: where the pointer is along the gutter, which
+ * runs as far as the two run side by side, give or take its own width).
+ */
+function seamFrom(rects: ReadonlyMap<string, Rect>, id: string, axis: "x" | "y", side: "before" | "after", along: number, gap: number): SeamFound | null {
+  const rect = rects.get(id);
+  if (rect === undefined) return null;
+  const [r0, r1] = spanAlong(rect, axis);
+  const across = [...rects].find(([other, candidate]) => {
+    if (other === id || !(side === "before" ? meetsAcross(rect, candidate, axis, gap) : meetsAcross(candidate, rect, axis, gap))) return false;
+    const [c0, c1] = spanAlong(candidate, axis);
+    return along >= Math.max(r0, c0) - gap && along <= Math.min(r1, c1) + gap;
+  });
+  if (across === undefined) return null;
+  const seam: SeamFound = {
+    axis,
+    line: side === "before" ? endOn(rect, axis) : startOn(rect, axis) - gap,
+    before: new Set(side === "before" ? [id] : [across[0]]),
+    after: new Set(side === "before" ? [across[0]] : [id]),
+  };
+  spreadSeam(seam, rects, gap);
+  return seam;
+}
+
+/** A window of `from` cornered where its gutter crosses `to`'s (one of its edges on `to`'s line) joins `to`, with whatever meets it there. True if any did. */
+function joinAtCrossing(to: SeamFound, from: SeamFound, rects: ReadonlyMap<string, Rect>, gap: number): boolean {
+  let joined = false;
+  for (const id of [...from.before, ...from.after]) {
+    if (to.before.has(id) || to.after.has(id)) continue;
+    const rect = rects.get(id)!;
+    if (Math.abs(endOn(rect, to.axis) - to.line) <= SEAM_SLACK) to.before.add(id);
+    else if (Math.abs(startOn(rect, to.axis) - to.line - gap) <= SEAM_SLACK) to.after.add(id);
+    else continue;
+    joined = true;
+  }
+  if (joined) spreadSeam(to, rects, gap);
+  return joined;
+}
+
+/**
+ * The seams a press on a window's edge or corner (`edges`, at `at`) takes
+ * hold of, among `rects` (the windows that may be on one, by id): the
+ * gutter beside that edge where another window meets the window across the
+ * desk's gap, as the panes of a split view meet — with every window on that
+ * gutter, so nothing on it comes to overlap or leaves it. A corner takes
+ * hold of both its gutters; where they cross (three or four windows
+ * cornered there, as in a grid), each takes in the windows cornered there
+ * on the other, so the crossing moves as one. Null for an edge nothing
+ * meets the window across: that edge is the window's alone.
+ */
+export function seamsAt(rects: ReadonlyMap<string, Rect>, id: string, edges: Edges, at: Point, gap = DESK_GAP): { x: Seam | null; y: Seam | null } {
+  const x = edges.left || edges.right ? seamFrom(rects, id, "x", edges.right ? "before" : "after", at.y, gap) : null;
+  const y = edges.top || edges.bottom ? seamFrom(rects, id, "y", edges.bottom ? "before" : "after", at.x, gap) : null;
+  if (x !== null && y !== null) {
+    for (let grew = true; grew; ) grew = joinAtCrossing(x, y, rects, gap) || joinAtCrossing(y, x, rects, gap);
+  }
+  const done = (seam: SeamFound | null): Seam | null => (seam === null ? null : { axis: seam.axis, before: [...seam.before], after: [...seam.after] });
+  return { x: done(x), y: done(y) };
+}
+
+/**
+ * How far a seam's gutter goes for `travel` px of the pointer: no further
+ * than leaves every window on it as large as a window may be (or, smaller
+ * already, as large as it is), and on the way it sticks to the edges of
+ * windows not on it (`others`) that run along it — another gutter's, say,
+ * so two gutters of a grid can be lined up again.
+ */
+export function seamTravel(
+  rects: ReadonlyMap<string, Rect>,
+  seam: Seam,
+  travel: number,
+  others: readonly Rect[],
+  min: MinSize = WINDOW_MIN,
+  threshold = MAGNET_PX,
+  gap = DESK_GAP,
+): number {
+  const { axis } = seam;
+  const least = axis === "x" ? min.w : min.h;
+  const size = (id: string): number => {
+    const rect = rects.get(id)!;
+    return axis === "x" ? rect.w : rect.h;
+  };
+  // Those before it narrow as it goes back, those after it as it goes on: each
+  // side's smallest window says how far (and one under its least size, not at all).
+  const lo = Math.min(0, Math.max(...seam.before.map((id) => least - size(id))));
+  const hi = Math.max(0, Math.min(...seam.after.map((id) => size(id) - least)));
+  const taken = Math.min(hi, Math.max(lo, travel));
+  const members = [...seam.before, ...seam.after].map((id) => rects.get(id)!);
+  const from = Math.min(...members.map((rect) => spanAlong(rect, axis)[0]));
+  const to = Math.max(...members.map((rect) => spanAlong(rect, axis)[1]));
+  const line = endOn(rects.get(seam.before[0]!)!, axis);
+  let best = taken;
+  let distance = threshold + 1;
+  for (const other of others) {
+    const [o0, o1] = spanAlong(other, axis);
+    if (!spansNear(from, to, o0, o1, 48)) continue;
+    // The windows before it end where the other ends, or those after it begin where it begins.
+    for (const target of [endOn(other, axis) - line, startOn(other, axis) - gap - line]) {
+      const d = Math.abs(target - taken);
+      if (target >= lo && target <= hi && d <= threshold && d < distance) {
+        best = target;
+        distance = d;
+      }
+    }
+  }
+  return best;
+}
+
+/** A window with a seam's gutter moved by `travel`: one before it ends that much further on, one after it begins there; any other is as it was. */
+export function alongSeam(rect: Rect, seam: Seam, id: string, travel: number): Rect {
+  if (seam.before.includes(id)) return seam.axis === "x" ? { ...rect, w: rect.w + travel } : { ...rect, h: rect.h + travel };
+  if (seam.after.includes(id)) return seam.axis === "x" ? { ...rect, x: rect.x + travel, w: rect.w - travel } : { ...rect, y: rect.y + travel, h: rect.h - travel };
+  return rect;
+}
+
 /**
  * A mask's region being edited, in its page's box: the edges in hand moved
  * by the pointer's travel (`edges` null: the whole region moved), the
@@ -710,6 +905,8 @@ export function splitRect(rect: Rect, gap = DESK_GAP): [Rect, Rect] | null {
 export interface Placement {
   rect: Rect;
   split: { index: number; rect: Rect } | null;
+  /** How: the desk's first window, a tiled desk's hole, half of a window's place (`split`), or a free spot over the others. */
+  kind: "first" | "hole" | "split" | "free";
 }
 
 /**
@@ -727,19 +924,19 @@ export interface Placement {
  *   covers the least of them.
  */
 export function placeNewWindow(existing: readonly Rect[], bounds: Rect, inUse: number | null, gap = DESK_GAP): Placement {
-  if (existing.length === 0) return { rect: centeredRect(bounds), split: null };
+  if (existing.length === 0) return { rect: centeredRect(bounds), split: null, kind: "first" };
   const overlapping = existing.some((rect, index) => existing.some((other, later) => later > index && rectsOverlap(rect, other)));
   const tiled = !overlapping && existing.every((rect) => isTile(rect, bounds));
   if (tiled) {
     const hole = largestEmptyRect(existing, bounds, gap);
-    if (hole !== null && roomy(hole, bounds)) return { rect: hole, split: null };
+    if (hole !== null && roomy(hole, bounds)) return { rect: hole, split: null, kind: "hole" };
     const order = existing.map((_, index) => index).sort((a, b) => existing[b]!.w * existing[b]!.h - existing[a]!.w * existing[a]!.h);
     for (const index of inUse !== null && existing[inUse] !== undefined ? [inUse, ...order] : order) {
       const halves = splitRect(existing[index]!, gap);
-      if (halves !== null) return { rect: halves[1], split: { index, rect: halves[0] } };
+      if (halves !== null) return { rect: halves[1], split: { index, rect: halves[0] }, kind: "split" };
     }
   }
-  return { rect: freeSpot(existing, windowSize(bounds), bounds), split: null };
+  return { rect: freeSpot(existing, windowSize(bounds), bounds), split: null, kind: "free" };
 }
 
 /* ------------------------- the dock's pads ------------------------- */

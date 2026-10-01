@@ -33,7 +33,8 @@ export type ShortcutActionId =
   | "newNote"
   | "openNotes"
   | "tileDesk"
-  | "cascadeDesk";
+  | "cascadeDesk"
+  | "arrangeDesk";
 
 export type ShortcutSettings = Record<ShortcutActionId, string | null>;
 export type ShortcutPlatform = "darwin" | "other";
@@ -82,6 +83,7 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "openNotes", group: "Page", label: "Open notes", note: "Everything you have written." },
   { id: "tileDesk", group: "Window", label: "Tile desk windows", note: "On a tab group's desk: every window out, side by side." },
   { id: "cascadeDesk", group: "Window", label: "Cascade desk windows", note: "On a tab group's desk: every window out, fanned from the corner." },
+  { id: "arrangeDesk", group: "Window", label: "Arrange desk windows", note: "On a tab group's desk: the windows laid out the way the layout model judges they are used." },
 ];
 
 export const SHORTCUT_ACTION_IDS = SHORTCUT_DEFINITIONS.map((definition) => definition.id) as readonly ShortcutActionId[];
@@ -120,6 +122,7 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   openNotes: null,
   tileDesk: "Mod+Alt+T",
   cascadeDesk: "Mod+Alt+C",
+  arrangeDesk: "Mod+Alt+L",
 };
 
 const NAMED_KEYS = new Set([

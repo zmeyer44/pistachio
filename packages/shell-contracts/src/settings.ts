@@ -256,9 +256,9 @@ export interface DesktopSettings {
     /** Days an archived tab is kept. */
     archiveRetentionDays: number;
     /**
-     * How long ⌃ or ⌘ held on its own waits before the tab switcher opens
+     * How long ⌥⌘ or ⌥⌃ held on their own wait before the tab switcher opens
      * (@pistachio/shell-contracts/tab-switcher). "instant" opens it as the
-     * key goes down — so every ⌘ or ⌃ shortcut shows it for a moment.
+     * keys go down — so every ⌥⌘ or ⌥⌃ shortcut shows it for a moment.
      */
     switcherHold: TabSwitcherHold;
   };

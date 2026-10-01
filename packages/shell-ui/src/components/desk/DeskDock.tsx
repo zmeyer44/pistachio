@@ -15,6 +15,7 @@ import {
   NotebookPen,
   PictureInPicture2,
   Plus,
+  Sparkles,
   X,
 } from "lucide-react";
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
@@ -28,6 +29,7 @@ import { useNewGroupNaming, useTabGroupMenu } from "../../chrome/tab-group-menu"
 import { useTabMenu } from "../../chrome/tab-menu";
 import { chromeTabs } from "../../lib/chrome-tabs";
 import { groupsInRowOrder, settledOrder } from "../../lib/desk/dock-order";
+import { arrangeDesk } from "../../lib/desk/open";
 import { GLIDE_DECELERATION } from "../../lib/desk/motion";
 import { DESK_AXES, passedEntry, useDeskStore, type DeskAxisKey, type DeskChrome, type DeskVariants, type SavedDeskWindow } from "../../lib/desk/store";
 import { tabIcon } from "../../lib/desk/tab-icon";
@@ -50,7 +52,7 @@ import {
   type DeskView,
   type DockDragView,
 } from "./desk-engine";
-import { cropStyle, pageKind } from "./DeskWindow";
+import { cropStyle, pageKind, ShellPageMiniature } from "./DeskWindow";
 import { StackCard, StackTile } from "./DeskStack";
 
 /** The preview beside a hovered icon, and the gap between it and the dock. */
@@ -635,6 +637,7 @@ export const DeskDock = memo(function DeskDock({
           <DockPreview
             tab={hoveredTab}
             src={view.thumbs.get(hoveredTab.id) ?? null}
+            page={engine.pageSize(hoveredTab.id)}
             center={hovered!.center}
             dockHeight={dockHeight}
             onDesk={onDesk.has(hoveredTab.id)}
@@ -692,6 +695,7 @@ export const DeskDock = memo(function DeskDock({
             }}
             onTile={fromMore(() => engine.arrange("tile", tabIds))}
             onCascade={fromMore(() => engine.arrange("cascade", tabIds))}
+            onArrange={fromMore(() => void arrangeDesk("smart"))}
             onLeave={fromMore(() => useDeskStore.getState().leave())}
           />
         ) : null}
@@ -1164,6 +1168,7 @@ function hueOf(seed: string): number {
 function DockPreview({
   tab,
   src,
+  page,
   center,
   dockHeight,
   onDesk,
@@ -1171,6 +1176,8 @@ function DockPreview({
 }: {
   tab: BrowserTabInfo;
   src: string | null;
+  /** Where its page is laid out (DeskEngine.pageSize), if the shell draws it. */
+  page: { w: number; h: number };
   center: number;
   dockHeight: number;
   onDesk: boolean;
@@ -1195,7 +1202,10 @@ function DockPreview({
     >
       <span className="desk-dock-preview-tail" style={{ top: center - top }} />
       <div className="desk-dock-preview-shot">
-        {src !== null ? (
+        {/* A page the shell draws is shown as itself: main has no picture of it (and one it has is of the page the tab showed before). */}
+        {pageKind(tab.url) !== null ? (
+          <ShellPageMiniature key={tab.id} tab={tab} page={page} />
+        ) : src !== null ? (
           <img src={src} alt="" draggable={false} />
         ) : (
           <span className="desk-dock-preview-empty">
@@ -1315,17 +1325,20 @@ function SketchWindow({ window, tab, chrome, scale }: { window: DeskSketchWindow
             bottom: insets.bottom * scale,
           }}
         >
-          {tab === null ? null : <SketchPage tab={tab} window={window} />}
+          {tab === null ? null : (
+            <SketchPage tab={tab} window={window} page={{ w: rect.w - insets.left - insets.right, h: rect.h - insets.top - insets.bottom }} />
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-/** What a sketched window's page shows: its picture (a masked one's region), or — a shell page, asleep, never pictured — its app icon. */
-function SketchPage({ tab, window }: { tab: BrowserTabInfo; window: DeskSketchWindow }) {
+/** What a sketched window's page shows: its picture (a masked one's region), a shell page itself, or — asleep, never pictured — its app icon. */
+function SketchPage({ tab, window, page }: { tab: BrowserTabInfo; window: DeskSketchWindow; page: { w: number; h: number } }) {
   const { still, mask, stillShows } = window;
-  if (pageKind(tab.url) === null && still !== null) {
+  if (pageKind(tab.url) !== null) return <ShellPageMiniature tab={tab} page={page} />;
+  if (still !== null) {
     if (mask === null && stillShows !== "none") return <img className="desk-still" src={still} alt="" draggable={false} />;
     if (mask !== null && stillShows === "region") return <img className="desk-still" data-fill="" src={still} alt="" draggable={false} />;
     if (mask !== null && stillShows === "page") return <img className="desk-still-crop" src={still} alt="" draggable={false} style={cropStyle(mask)} />;
@@ -1352,6 +1365,7 @@ function DockMoreCard({
   onPointerDown,
   onTile,
   onCascade,
+  onArrange,
   onLeave,
 }: {
   ref: React.Ref<HTMLDivElement>;
@@ -1363,10 +1377,13 @@ function DockMoreCard({
   onPointerDown: () => void;
   onTile: () => void;
   onCascade: () => void;
+  /** The smart layout (docs/desk-layout.md): the windows laid out the way the layout model judges they are used. */
+  onArrange: () => void;
   onLeave: () => void;
 }) {
   const tile = useAppStore((state) => shortcutLabel(state.settings.shortcuts.tileDesk, PLATFORM));
   const cascade = useAppStore((state) => shortcutLabel(state.settings.shortcuts.cascadeDesk, PLATFORM));
+  const arrange = useAppStore((state) => shortcutLabel(state.settings.shortcuts.arrangeDesk, PLATFORM));
   return (
     <div
       ref={ref}
@@ -1385,6 +1402,9 @@ function DockMoreCard({
       </MoreItem>
       <MoreItem label="Cascade the windows" hint={cascade} testId="desk-cascade" onClick={onCascade}>
         <Layers2 aria-hidden="true" />
+      </MoreItem>
+      <MoreItem label="Arrange for me" hint={arrange} testId="desk-arrange" onClick={onArrange}>
+        <Sparkles aria-hidden="true" />
       </MoreItem>
       <span className="desk-more-divider" aria-hidden="true" />
       <div role="group" aria-label="Feel" data-testid="desk-variants" className="flex flex-col gap-px">

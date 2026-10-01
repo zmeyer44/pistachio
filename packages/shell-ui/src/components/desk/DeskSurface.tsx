@@ -12,7 +12,8 @@ import { agentActivity } from "../../lib/desk/agent";
 import { useGroupContexts, useGroupContextsLoaded } from "../../lib/desk/group-context";
 import { useFileWindows } from "../../lib/desk/group-files";
 import { documentWindowIds, fileOf } from "../../lib/desk/documents";
-import { fileItemOf, isTabWindow } from "../../lib/desk/windows";
+import { fileItemOf, fileWindowId, isTabWindow } from "../../lib/desk/windows";
+import { displayHost } from "../../lib/url";
 import { lendDeskArrange, lendDeskAsk } from "../../lib/desk/open";
 import { passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
@@ -23,6 +24,7 @@ import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDock } from "./DeskDock";
 import { DeskDropZone } from "./DeskDropZone";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
+import { SmartArranger, type WindowWords } from "./smart-arrange";
 import type { ShellWindowSubject } from "./window-kinds";
 
 const EMPTY_TABS: readonly BrowserTabInfo[] = [];
@@ -238,10 +240,50 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     shownGroup.current = groupId;
   }, [engine, groupId]);
 
-  // The keyboard's Tile and Cascade (chrome/actions.tsx) reach this desk's engine.
+  // ── The smart layout (docs/desk-layout.md) ─────────────────────────────
+
+  // What each window is, kept after it has gone: a window just closed is no tab any more, and the layout model is told what left.
+  const windowWords = useRef(new Map<string, WindowWords>());
+  useEffect(() => {
+    for (const tab of tabs) windowWords.current.set(tab.id, { title: tab.title, site: displayHost(tab.url), kind: "page" });
+    const files = contexts.find((candidate) => candidate.groupId === shownGroup.current)?.items ?? [];
+    for (const item of files) if (item.kind === "file") windowWords.current.set(fileWindowId(item.id), { title: item.name, site: "", kind: "document" });
+  });
+  // Windows coming and going may lay the others out anew, and the person can ask (⌘⌥L, the More card).
+  const arranger = useRef<SmartArranger | null>(null);
   useEffect(() => {
     if (engine === null) return;
-    lendDeskArrange((kind) => engine.arrange(kind));
+    const api = nativeApi();
+    const created = new SmartArranger(engine, {
+      auto: () => latest.current.variants.layout === "smart",
+      busy: () => {
+        const current = useAppStore.getState().snapshot?.run ?? null;
+        return current !== null && current.status === "running" && current.control === "agent";
+      },
+      judge: api === null ? null : (request) => api.judgeDeskLayout(request),
+      group: () => shownGroup.current,
+      describe: (id) => {
+        const tab = isTabWindow(id) ? useAppStore.getState().snapshot?.tabs.find((candidate) => candidate.id === id) : undefined;
+        if (tab !== undefined) windowWords.current.set(id, { title: tab.title, site: displayHost(tab.url), kind: "page" });
+        return windowWords.current.get(id) ?? (isTabWindow(id) ? null : { title: fileItemOf(id) ?? "", site: "", kind: "document" });
+      },
+      notify: (message, undo) => useAppStore.getState().showNotice(message, undo === null ? {} : { action: { label: "Undo", run: undo } }),
+      later: (run, ms) => {
+        const timer = window.setTimeout(run, ms);
+        return () => window.clearTimeout(timer);
+      },
+    });
+    arranger.current = created;
+    return () => {
+      created.destroy();
+      arranger.current = null;
+    };
+  }, [engine]);
+
+  // The keyboard's Tile, Cascade and Arrange (chrome/actions.tsx) reach this desk's engine.
+  useEffect(() => {
+    if (engine === null) return;
+    lendDeskArrange((kind) => (kind === "smart" ? void arranger.current?.ask() : engine.arrange(kind)));
     return () => lendDeskArrange(null);
   }, [engine]);
 

@@ -4,6 +4,7 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -18,6 +19,7 @@ import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
+import type { ShellPage } from "@pistachio/shell-contracts/shell-pages";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
 import { editedMaskRegion, type Edges, type Rect } from "../../lib/desk/geometry";
@@ -27,6 +29,7 @@ import { displayHost } from "../../lib/url";
 import { Favicon } from "../Favicon";
 import { PanePlaceholder } from "../PanePlaceholder";
 import { HomePage } from "../home/HomePage";
+import { PagePreview } from "../page-preview";
 import { BriefPage } from "../reports/BriefPage";
 import { CHROME_CARD_TOP, CHROME_INSETS, MASK_CARD_TOP, MASK_INSETS, type DeskEngine, type DeskWindowView } from "./desk-engine";
 import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
@@ -335,7 +338,7 @@ const ZOOMED_STYLE: CSSProperties = {
 };
 
 /** The shell's own pages, drawn by the shell in a window rather than by a live view. */
-export function pageKind(url: string): "home" | "brief" | "notes" | null {
+export function pageKind(url: string): ShellPage | null {
   if (isHomeUrl(url)) return "home";
   if (briefUrlDate(url.trim()) !== undefined) return "brief";
   if (notesUrlId(url.trim()) !== undefined) return "notes";
@@ -360,14 +363,7 @@ function WindowPage({
   focused: boolean;
 }) {
   const kind = pageKind(tab.url);
-  if (kind === "home") return <HomePage tabId={tab.id} active={focused} />;
-  if (kind === "brief") return <BriefPage tabId={tab.id} date={briefUrlDate(tab.url.trim()) ?? null} active={focused} />;
-  if (kind === "notes")
-    return (
-      <Suspense fallback={null}>
-        <NotesPage tabId={tab.id} noteId={notesUrlId(tab.url.trim()) ?? null} active={focused} />
-      </Suspense>
-    );
+  if (kind !== null) return <ShellPageView tab={tab} kind={kind} active={focused} />;
   if (still !== null && unmasking !== null) {
     // Growing back from a mask: the whole page where it stands now (the
     // engine moves the box each frame), or the region, where it is in it.
@@ -390,6 +386,58 @@ function WindowPage({
         <span className="max-w-60 truncate text-[12px] font-medium text-gray-1000">{tab.title || displayHost(tab.url)}</span>
         {waking || tab.lifecycle === "suspended" ? <span className="text-[11px] text-gray-700">{waking ? "Waking…" : "Asleep — click to wake"}</span> : null}
       </PanePlaceholder>
+    </div>
+  );
+}
+
+/** One of the shell's own pages (pageKind), drawn by the shell. */
+function ShellPageView({ tab, kind, active }: { tab: BrowserTabInfo; kind: ShellPage; active: boolean }) {
+  if (kind === "home") return <HomePage tabId={tab.id} active={active} />;
+  if (kind === "brief") return <BriefPage tabId={tab.id} date={briefUrlDate(tab.url.trim()) ?? null} active={active} />;
+  return (
+    <Suspense fallback={null}>
+      <NotesPage tabId={tab.id} noteId={notesUrlId(tab.url.trim()) ?? null} active={active} />
+    </Suspense>
+  );
+}
+
+/**
+ * A page the shell draws (pageKind), small, where a web page shows its
+ * picture: a dock icon's preview, a window in another group's sketch. Main
+ * has no picture of these — no view of theirs is ever drawn — so it is the
+ * page itself, laid out at `page` (its box on the desk: DeskEngine.pageSize)
+ * and scaled to cover the box it is put in from its top-left corner, as a
+ * picture there is (object-fit: cover). Inert, and a preview of itself
+ * (PagePreview): it takes no pointer or keyboard, and starts or writes
+ * nothing that opening the page would.
+ */
+export function ShellPageMiniature({ tab, page }: { tab: BrowserTabInfo; page: { w: number; h: number } }) {
+  const kind = pageKind(tab.url);
+  const ref = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const read = (): void => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      setBox((before) => (before !== null && before.w === w && before.h === h ? before : { w, h }));
+    };
+    read();
+    const observer = new ResizeObserver(read);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const scale = box === null ? 0 : Math.max(box.w / page.w, box.h / page.h);
+  return (
+    <div ref={ref} className="desk-page-miniature" data-testid="desk-page-miniature" aria-hidden="true" inert>
+      {kind === null || !(scale > 0) ? null : (
+        <div className="desk-page-miniature-page" style={{ width: page.w, height: page.h, transform: `scale(${String(scale)})` }}>
+          <PagePreview.Provider value={true}>
+            <ShellPageView tab={tab} kind={kind} active={false} />
+          </PagePreview.Provider>
+        </div>
+      )}
     </div>
   );
 }

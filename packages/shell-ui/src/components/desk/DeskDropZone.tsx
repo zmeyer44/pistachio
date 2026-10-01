@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { FilePlus2 } from "lucide-react";
+import { Files, Folder, ImageIcon } from "lucide-react";
 import { fileViewerKind, groupContextMediaTypeOf } from "@pistachio/shell-contracts/desk-agent";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
@@ -155,12 +155,15 @@ export function DeskDropZone({ group, engine, view }: { group: TabGroupInfo; eng
       onDrop={onDrop}
     >
       <div className="desk-drop-zone-frame" aria-hidden="true" />
-      <div className="desk-drop-zone-card">
-        <FilePlus2 aria-hidden="true" />
-        <span className="flex flex-col">
-          <span className="text-[13px] font-semibold text-gray-1000">Drop to open on the desk</span>
-          <span className="text-[11.5px] text-gray-800">It joins this desk’s context — @mention it in the Bar</span>
+      {/* A picture, the files and a folder rise out of the frosted workspace one after another, as claude.ai's do. */}
+      <div className="desk-drop-zone-mark">
+        <span className="desk-drop-zone-icons" aria-hidden="true">
+          <ImageIcon data-icon="image" />
+          <Files data-icon="files" />
+          <Folder data-icon="folder" />
         </span>
+        <span className="desk-drop-zone-title">Drop to open on the desk</span>
+        <span className="desk-drop-zone-hint">It joins this desk’s context — @mention it in the Bar</span>
       </div>
     </div>
   );

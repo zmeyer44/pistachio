@@ -9,6 +9,8 @@
     "./memory": "./src/views/memory.ts",
     "./address-intent": "./src/address-intent.ts",
     "./address-intent-contract": "./src/address-intent-contract.ts",
+    "./desk-layout": "./src/desk-layout.ts",
+    "./desk-layout-contract": "./src/desk-layout-contract.ts",
     "./turn-route": "./src/turn-route.ts",
     "./turn-route-contract": "./src/turn-route-contract.ts",
     "./tab-tidy": "./src/tab-tidy.ts",

@@ -144,7 +144,7 @@ describe("the next gesture while one is still landing", () => {
     void useAppStore.getState().openTabSwitcher("control", 1, 15);
     await settle();
     void useAppStore.getState().finishTabSwitcher(true);
-    void useAppStore.getState().openTabSwitcher("meta", 0, 15);
+    void useAppStore.getState().openTabSwitcher("alt+meta", 0, 15);
     await settle();
     const cancelled = useAppStore.getState().finishTabSwitcher(false);
     await settle();

@@ -50,6 +50,7 @@ import type {
 } from "./reminders.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
 import type { DeskGrab, DeskHover, DeskPageInput, DeskState } from "./desk.js";
+import type { DeskLayoutEvaluation, DeskLayoutRequest } from "./desk-layout.js";
 import type {
   DeskConversationCommand,
   DeskReply,
@@ -1131,6 +1132,12 @@ export interface NativeSurfaceApi {
   onDeskPageInput(listener: (input: DeskPageInput) => void): () => void;
   /** The pointer came onto a zoomed desk page (a minimized window's), or went off it. */
   onDeskHover(listener: (hover: DeskHover) => void): () => void;
+  /**
+   * What the layout model thinks of the desk (@pistachio/shell-contracts/desk-layout):
+   * null when the request is not worth asking, no model is reachable, the
+   * model was slow, or a newer question from this window superseded it.
+   */
+  judgeDeskLayout(request: DeskLayoutRequest): Promise<DeskLayoutEvaluation | null>;
   // ── The desk's agent (@pistachio/shell-contracts/desk-agent) ─────────────────
   /** A desk is up for a group (again for each group it passes to), or left; or the person chose its conversation. */
   deskConversation(command: DeskConversationCommand): Promise<void>;
@@ -1285,6 +1292,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   onDeskShift: "Fires from main's relay of every view's keys, native page views included.",
   onDeskPageInput: "Fires from main's mouse hook on native page views and its relay of their keys.",
   onDeskHover: "Fires from main's mouse hook on native page views.",
+  judgeDeskLayout: "The desk runs only over native page views; its layout model is asked for it.",
   deskConversation: "The desk runs only over native page views; its conversation follows it.",
   onDeskRequest: "Main's agent asks the desk, which exists only over native page views, for its layout.",
   deskReply: "Answers main's agent from the desk's engine, which places native page views.",
@@ -1430,6 +1438,7 @@ export const IPC = {
   deskShift: "pistachio:desk-shift",
   deskPageInput: "pistachio:desk-page-input",
   deskHover: "pistachio:desk-hover",
+  deskLayoutJudge: "pistachio:desk-layout-judge",
   deskConversation: "pistachio:desk-conversation",
   deskRequest: "pistachio:desk-request",
   deskReply: "pistachio:desk-reply",

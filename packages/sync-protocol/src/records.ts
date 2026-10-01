@@ -487,7 +487,8 @@ export type ShellShortcutAction =
   | "newNote"
   | "openNotes"
   | "tileDesk"
-  | "cascadeDesk";
+  | "cascadeDesk"
+  | "arrangeDesk";
 
 export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 

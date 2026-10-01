@@ -38,14 +38,17 @@ export function toggleDesk(groupId: string): void {
  * keyboard shortcut, which can come from anywhere in the shell). The desk's
  * surface lends its engine here while it is mounted (lendDeskArrange).
  */
-let arrangeUp: ((kind: "tile" | "cascade") => void) | null = null;
+let arrangeUp: ((kind: DeskArrangement) => void) | null = null;
 
-export function lendDeskArrange(arrange: ((kind: "tile" | "cascade") => void) | null): void {
+/** Tile, cascade, or — smart — the layout the desk's layout model judges best (docs/desk-layout.md). */
+export type DeskArrangement = "tile" | "cascade" | "smart";
+
+export function lendDeskArrange(arrange: ((kind: DeskArrangement) => void) | null): void {
   arrangeUp = arrange;
 }
 
-/** Tile or cascade the desk's windows; false with no desk up (the shortcut is then no one's). */
-export function arrangeDesk(kind: "tile" | "cascade"): boolean {
+/** Tile, cascade or arrange the desk's windows; false with no desk up (the shortcut is then no one's). */
+export function arrangeDesk(kind: DeskArrangement): boolean {
   const desk = useDeskStore.getState();
   if (arrangeUp === null || desk.groupId === null || desk.leaving) return false;
   arrangeUp(kind);

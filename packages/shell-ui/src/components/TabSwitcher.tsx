@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import type { TabSwitcherPreview } from "@pistachio/shell-contracts/ipc";
-import { TAB_SWITCHER_LIMIT, tabSwitcherIndex } from "@pistachio/shell-contracts/tab-switcher";
+import { TAB_SWITCHER_LIMIT, tabSwitcherHeld, tabSwitcherIndex } from "@pistachio/shell-contracts/tab-switcher";
 import { cn } from "../lib/cn";
 import { TAB_SWITCHER_GAP, TAB_SWITCHER_PADDING, tabSwitcherGrid } from "../lib/tab-switcher-grid";
 import { displayHost } from "../lib/url";
@@ -29,7 +29,7 @@ function capacityNow(): number {
 }
 
 /**
- * The tab switcher: ⌃ or ⌘ held (or ⌃Tab) shows the Space's tabs as live
+ * The tab switcher: ⌥⌘ or ⌥⌃ held (or ⌃Tab) shows the Space's tabs as live
  * thumbnails, most recently visited first, in the address modal's material.
  * Main reads the gesture from whichever view has the keyboard and owns the
  * order and the captures; this shell owns the selection and the drawing.
@@ -92,7 +92,7 @@ export function TabSwitcher() {
         event.preventDefault();
         event.stopPropagation();
       }
-      const held = modifier === "control" ? event.ctrlKey : event.metaKey;
+      const held = tabSwitcherHeld(modifier, { control: event.ctrlKey, meta: event.metaKey, alt: event.altKey });
       if (!held && event.key !== "Escape") void useAppStore.getState().finishTabSwitcher(true);
     };
     window.addEventListener("keydown", onKey, true);
@@ -136,7 +136,7 @@ export function TabSwitcher() {
   const selectedPreview = loading ? undefined : shown[selected];
   const releaseCheck = (event: ReactPointerEvent) => {
     // The pointer carries the modifier state too: a release main never saw ends it here.
-    if (!(modifier === "control" ? event.ctrlKey : event.metaKey)) void finish(true);
+    if (!tabSwitcherHeld(modifier, { control: event.ctrlKey, meta: event.metaKey, alt: event.altKey })) void finish(true);
   };
 
   return (

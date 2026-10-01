@@ -2,7 +2,7 @@
  * Settings → Tabs: the switches around Tidy (docs/tab-tidy.md) — when idle
  * tabs are archived, whether related ones are grouped, whether favorites go
  * home. What was archived lives on its own page, which this one points at.
- * And how long a held ⌃ or ⌘ waits before the tab switcher opens.
+ * And how long a held ⌥⌘ or ⌥⌃ waits before the tab switcher opens.
  */
 
 import { useEffect } from "react";
@@ -115,10 +115,10 @@ export function TabsSettingsPage() {
         <Fixed label="What an archived tab keeps" note="Its address, title and icon, its back and forward history, and where you had scrolled to — so restoring one puts you back where you were." />
         <Fixed label="Closed groups" note="Closing a tab group files the whole group here, to be restored together or one tab at a time." />
       </Group>
-      <Group title="Tab switcher" note="Hold ⌃ or ⌘ on its own to see your tabs, the most recent first, and let go to go to the one selected. ⌃Tab opens it at once, one tab along.">
+      <Group title="Tab switcher" note="Hold ⌥⌘ or ⌥⌃ on their own to see your tabs, the most recent first, and let go to go to the one selected. ⌃Tab, or Tab with ⌥⌘ or ⌥⌃ held, opens it at once, one tab along.">
         <Row
-          label="Open when ⌃ or ⌘ is held"
-          note="After a moment is short enough to feel immediate, and longer than a shortcut takes to follow its key. Instantly opens it as the key goes down, so every ⌘ or ⌃ shortcut shows it for a moment, and ⌘-click lands on it instead of the page."
+          label="Open when ⌥⌘ or ⌥⌃ is held"
+          note="After a moment is short enough to feel immediate, and longer than a shortcut takes to follow its key. Instantly opens it as the key goes down, so every ⌥⌘ or ⌥⌃ shortcut shows it for a moment, and ⌥⌘-click lands on it instead of the page."
         >
           <Select
             aria-label="Open the tab switcher"

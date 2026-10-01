@@ -8,6 +8,7 @@ import {
   tabSwitcherMove,
   TAB_SWITCHER_HOLD_MS,
   TabSwitcherGesture,
+  tabSwitcherHeld,
   type SwitcherKey,
 } from "../src/tab-switcher.js";
 
@@ -58,12 +59,25 @@ function up(key: string, flags: Partial<SwitcherKey> = {}): SwitcherKey {
 
 const CONTROL = { control: true };
 const META = { meta: true };
+/** ⌥⌘ and ⌥⌃: the pairs that hold the switcher. */
+const ALT_META = { alt: true, meta: true };
+const ALT_CONTROL = { alt: true, control: true };
+
+/** A gesture with ⌥⌘ pressed, ⌘ first, and held until the switcher opened on the active tab. */
+function openOnAltMeta(): TabSwitcherGesture {
+  const gesture = new TabSwitcherGesture();
+  gesture.key(down("Meta", META));
+  gesture.key(down("Alt", ALT_META));
+  gesture.holdElapsed();
+  return gesture;
+}
 
 describe("TabSwitcherGesture", () => {
   it("opens one step along on ⌃Tab and commits on the release", () => {
     const gesture = new TabSwitcherGesture();
     expect(gesture.key(down("Control", CONTROL))).toEqual({ consume: false, input: null });
-    expect(gesture.armed).toBe(true);
+    // ⌃ alone no longer arms a hold.
+    expect(gesture.armed).toBe(false);
     expect(gesture.key(down("Tab", CONTROL))).toEqual({
       consume: true,
       input: { type: "open", modifier: "control", step: 1 },
@@ -89,65 +103,115 @@ describe("TabSwitcherGesture", () => {
     });
   });
 
-  it("opens on the active tab when ⌃ or ⌘ is held alone", () => {
-    for (const [key, flags, modifier] of [
-      ["Control", CONTROL, "control"],
-      ["Meta", META, "meta"],
+  it("opens on the active tab when ⌥⌘ or ⌥⌃ is held alone, pressed in either order, and letting go of either key commits", () => {
+    for (const [first, second, flags, modifier] of [
+      ["Meta", "Alt", ALT_META, "alt+meta"],
+      ["Alt", "Meta", ALT_META, "alt+meta"],
+      ["Control", "Alt", ALT_CONTROL, "alt+control"],
+      ["Alt", "Control", ALT_CONTROL, "alt+control"],
     ] as const) {
-      const gesture = new TabSwitcherGesture();
-      gesture.key(down(key, flags));
-      expect(gesture.armed).toBe(true);
-      expect(gesture.holdElapsed()).toEqual({ type: "open", modifier, step: 0 });
-      expect(gesture.open).toBe(true);
-      expect(gesture.key(up(key))).toEqual({ consume: true, input: { type: "commit" } });
+      for (const released of [first, second]) {
+        const gesture = new TabSwitcherGesture();
+        gesture.key(down(first, { [first === "Alt" ? "alt" : first === "Meta" ? "meta" : "control"]: true }));
+        expect(gesture.armed).toBe(false);
+        gesture.key(down(second, flags));
+        expect(gesture.armed).toBe(true);
+        expect(gesture.holdElapsed()).toEqual({ type: "open", modifier, step: 0 });
+        expect(gesture.open).toBe(true);
+        const stillHeld = released === "Alt" ? { [modifier === "alt+meta" ? "meta" : "control"]: true } : { alt: true };
+        expect(gesture.key(up(released, stillHeld))).toEqual({ consume: true, input: { type: "commit" } });
+        expect(gesture.open).toBe(false);
+      }
     }
   });
 
-  it("walks the open switcher with arrows, commits on Return and cancels on Escape", () => {
-    const gesture = new TabSwitcherGesture();
-    gesture.key(down("Meta", META));
-    gesture.holdElapsed();
-    expect(gesture.key(down("ArrowRight", META))).toEqual({ consume: true, input: { type: "move", direction: "right" } });
-    expect(gesture.key(down("ArrowDown", META))).toEqual({ consume: true, input: { type: "move", direction: "down" } });
-    expect(gesture.key(down("Enter", META))).toEqual({ consume: true, input: { type: "commit" } });
-    expect(gesture.open).toBe(false);
-
-    gesture.key(down("Meta", META));
-    gesture.holdElapsed();
-    expect(gesture.key(down("Escape", META))).toEqual({ consume: true, input: { type: "cancel" } });
-    expect(gesture.open).toBe(false);
+  it("no longer arms for ⌘ or ⌃ held on its own, nor ⌥", () => {
+    for (const [key, flags] of [
+      ["Meta", META],
+      ["Control", CONTROL],
+      ["Alt", { alt: true }],
+    ] as const) {
+      const gesture = new TabSwitcherGesture();
+      gesture.key(down(key, flags));
+      expect(gesture.armed).toBe(false);
+      expect(gesture.holdElapsed()).toBeNull();
+    }
   });
 
-  it("lets a shortcut pressed with the modifier through, cancelling", () => {
+  it("opens one step along on Tab with the pair held, before the hold has run out", () => {
+    for (const [flags, modifier] of [
+      [ALT_META, "alt+meta"],
+      [ALT_CONTROL, "alt+control"],
+    ] as const) {
+      const gesture = new TabSwitcherGesture();
+      gesture.key(down("Alt", { alt: true }));
+      gesture.key(down(modifier === "alt+meta" ? "Meta" : "Control", flags));
+      expect(gesture.key(down("Tab", flags))).toEqual({ consume: true, input: { type: "open", modifier, step: 1 } });
+      expect(gesture.key(down("Tab", { ...flags, shift: true }))).toEqual({ consume: true, input: { type: "step", reverse: true } });
+      // A Tab's own release, the pair still held, is no release of the switcher.
+      expect(gesture.key(up("Tab", flags))).toEqual({ consume: false, input: null });
+      expect(gesture.open).toBe(true);
+    }
+    const backwards = new TabSwitcherGesture();
+    expect(backwards.key(down("Tab", { ...ALT_CONTROL, shift: true })).input).toEqual({ type: "open", modifier: "alt+control", step: -1 });
+  });
+
+  it("walks the open switcher with arrows, commits on Return and cancels on Escape", () => {
+    const gesture = openOnAltMeta();
+    expect(gesture.key(down("ArrowRight", ALT_META))).toEqual({ consume: true, input: { type: "move", direction: "right" } });
+    expect(gesture.key(down("ArrowDown", ALT_META))).toEqual({ consume: true, input: { type: "move", direction: "down" } });
+    expect(gesture.key(down("Enter", ALT_META))).toEqual({ consume: true, input: { type: "commit" } });
+    expect(gesture.open).toBe(false);
+
+    const again = openOnAltMeta();
+    expect(again.key(down("Escape", ALT_META))).toEqual({ consume: true, input: { type: "cancel" } });
+    expect(again.open).toBe(false);
+  });
+
+  it("lets a shortcut pressed with the pair through, cancelling", () => {
     const gesture = new TabSwitcherGesture();
     gesture.key(down("Meta", META));
-    // Pressed before the hold ran out: a shortcut, and never a switcher.
-    expect(gesture.key(down("t", META))).toEqual({ consume: false, input: null });
+    gesture.key(down("Alt", ALT_META));
+    // Pressed before the hold ran out: a shortcut (⌥⌘T), and never a switcher.
+    expect(gesture.key(down("†", { ...ALT_META, code: "KeyT" }))).toEqual({ consume: false, input: null });
     expect(gesture.armed).toBe(false);
     expect(gesture.holdElapsed()).toBeNull();
 
-    gesture.key(down("Meta", META));
-    gesture.holdElapsed();
+    const open = openOnAltMeta();
     // Pressed once it is up: the switcher goes, the shortcut still runs.
-    expect(gesture.key(down("t", META))).toEqual({ consume: false, input: { type: "cancel" } });
-    expect(gesture.open).toBe(false);
+    expect(open.key(down("†", { ...ALT_META, code: "KeyT" }))).toEqual({ consume: false, input: { type: "cancel" } });
+    expect(open.open).toBe(false);
+    // A plain ⌘ shortcut held as long as it likes never brings it up.
+    const plain = new TabSwitcherGesture();
+    plain.key(down("Meta", META));
+    expect(plain.holdElapsed()).toBeNull();
+    expect(plain.key(down("t", META))).toEqual({ consume: false, input: null });
   });
 
-  it("does not arm for a modifier held with another", () => {
+  it("does not arm for the pair held with another modifier", () => {
     const gesture = new TabSwitcherGesture();
-    gesture.key(down("Meta", { meta: true, shift: true }));
+    gesture.key(down("Alt", { alt: true, meta: true, shift: true }));
     expect(gesture.armed).toBe(false);
-    gesture.key(down("Control", { control: true, alt: true }));
+    gesture.key(down("Control", { control: true, alt: true, meta: true }));
     expect(gesture.armed).toBe(false);
+    // ⇧ joining an armed pair disarms it.
+    gesture.key(down("Meta", META));
+    gesture.key(down("Alt", ALT_META));
+    gesture.key(down("Shift", { ...ALT_META, shift: true }));
+    expect(gesture.holdElapsed()).toBeNull();
   });
 
-  it("disarms when the modifier is released before the hold, or the pointer is used", () => {
+  it("disarms when either key is released before the hold, or the pointer is used", () => {
+    for (const released of ["Alt", "Meta"]) {
+      const gesture = new TabSwitcherGesture();
+      gesture.key(down("Meta", META));
+      gesture.key(down("Alt", ALT_META));
+      gesture.key(up(released, released === "Alt" ? META : { alt: true }));
+      expect(gesture.holdElapsed()).toBeNull();
+    }
     const gesture = new TabSwitcherGesture();
     gesture.key(down("Control", CONTROL));
-    gesture.key(up("Control"));
-    expect(gesture.holdElapsed()).toBeNull();
-
-    gesture.key(down("Meta", META));
+    gesture.key(down("Alt", ALT_CONTROL));
     gesture.disarm();
     expect(gesture.holdElapsed()).toBeNull();
   });
@@ -159,6 +223,10 @@ describe("TabSwitcherGesture", () => {
     // The Control keyUp was swallowed; the next key arrives without the flag.
     expect(gesture.key(down("a"))).toEqual({ consume: false, input: { type: "commit" } });
     expect(gesture.open).toBe(false);
+    // So with the pair: ⌥ let go unseen, the next key arrives with ⌘ alone.
+    const pair = openOnAltMeta();
+    expect(pair.key(down("a", META))).toEqual({ consume: false, input: { type: "commit" } });
+    expect(pair.open).toBe(false);
   });
 
   it("stays shut when there is nothing to switch to", () => {
@@ -167,15 +235,29 @@ describe("TabSwitcherGesture", () => {
     expect(gesture.key(down("Tab", CONTROL))).toEqual({ consume: true, input: null });
     expect(gesture.open).toBe(false);
     gesture.key(down("Meta", META));
+    gesture.key(down("Alt", ALT_META));
     expect(gesture.holdElapsed()).toBeNull();
     expect(gesture.armed).toBe(false);
   });
 
-  it("ignores the modifier's auto-repeat while armed", () => {
+  it("ignores the pair's auto-repeat while armed", () => {
     const gesture = new TabSwitcherGesture();
     gesture.key(down("Control", CONTROL));
-    gesture.key(down("Control", { control: true, isAutoRepeat: true }));
+    gesture.key(down("Alt", ALT_CONTROL));
+    gesture.key(down("Alt", { ...ALT_CONTROL, isAutoRepeat: true }));
+    gesture.key(down("Control", { ...ALT_CONTROL, isAutoRepeat: true }));
     expect(gesture.armed).toBe(true);
+  });
+});
+
+describe("tabSwitcherHeld", () => {
+  it("reads the pair, or ⌃ alone, from an event's flags", () => {
+    expect(tabSwitcherHeld("alt+meta", { alt: true, meta: true, control: false })).toBe(true);
+    expect(tabSwitcherHeld("alt+meta", { alt: false, meta: true, control: false })).toBe(false);
+    expect(tabSwitcherHeld("alt+meta", { alt: true, meta: false, control: true })).toBe(false);
+    expect(tabSwitcherHeld("alt+control", { alt: true, meta: false, control: true })).toBe(true);
+    expect(tabSwitcherHeld("alt+control", { alt: false, meta: false, control: true })).toBe(false);
+    expect(tabSwitcherHeld("control", { alt: false, meta: false, control: true })).toBe(true);
   });
 });
 
@@ -235,7 +317,7 @@ describe("menuKeepsKey", () => {
   });
 });
 
-describe("how long a held ⌃ or ⌘ waits (Settings → Tabs)", () => {
+describe("how long a held ⌥⌘ or ⌥⌃ waits (Settings → Tabs)", () => {
   it("is a short hold unless chosen, and only one of the three choices", () => {
     expect(DEFAULT_SETTINGS.tabs.switcherHold).toBe("short");
     expect(sanitizeSettings({}).tabs.switcherHold).toBe("short");

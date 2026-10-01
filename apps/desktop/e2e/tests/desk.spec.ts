@@ -930,6 +930,122 @@ test("the dock: app icons, a preview on hover, a click opens where there is room
   }
 });
 
+test("a page the shell draws — home, a note, the brief — shows as itself in its dock preview and in its group's card, and writes nothing", async () => {
+  test.setTimeout(90_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-pages-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    const shell = await shellReady(app);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === "pistachio://demo/invoices")).toBe(true);
+    const created = await api(shell, (pistachio) =>
+      pistachio.notes({ type: "create", input: { title: "Trip plan", markdown: "## Day one\n\n- Pack the bags\n- Book the hotel" } }),
+    );
+    if (created.type !== "note") throw new Error(`no note was made: ${created.type}`);
+    const note = created.note;
+    const urls = ["pistachio://demo/invoices", "pistachio://home/", `pistachio://notes/${note.id}`, "pistachio://brief/"];
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(4);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const ids = urls.map((url) => byUrl.get(url)!);
+    await shell.evaluate((tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-pages", tabIds, title: "Pages", color: "blue" }), ids);
+    // Another group, coming up on a home tab: its card sketches that window.
+    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab("pistachio://home/"));
+    const anotherHome = async (): Promise<string | null> => (await snapshot(shell)).tabs.find((tab) => tab.url === urls[1] && tab.id !== ids[1])?.id ?? null;
+    await expect.poll(anotherHome).not.toBeNull();
+    const elsewhere = (await anotherHome())!;
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-pages-2", tabIds: [tabId], title: "Elsewhere", color: "green" }), elsewhere);
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), ids[0]!);
+    const group = shell.locator('[data-testid="tab-group"]').first();
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(4);
+    await settled(shell);
+
+    const preview = (tabId: string) => shell.locator(`[data-testid="desk-dock-preview"][data-tab-id="${tabId}"][data-shown]`);
+    const hover = async (tabId: string): Promise<void> => {
+      const icon = await box(shell, iconSelector(tabId));
+      await shell.mouse.move(center(icon).x, center(icon).y);
+      await expect(preview(tabId)).toHaveCount(1);
+    };
+    /** The page in the preview: as wide as it is laid out, and how wide it is drawn — covering the picture's box. */
+    const drawn = (tabId: string) =>
+      preview(tabId)
+        .locator(".desk-page-miniature-page")
+        .evaluate((page) => {
+          const shot = page.closest(".desk-dock-preview-shot")!.getBoundingClientRect();
+          const scaled = page.getBoundingClientRect();
+          return { laidOut: (page as HTMLElement).offsetWidth, width: scaled.width, height: scaled.height, shotWidth: shot.width, shotHeight: shot.height };
+        });
+
+    // ── 1. Each, still in the dock, is drawn small as itself, where a web page has its picture ─
+    for (const [index, testId] of [[1, "home-page"], [2, "note-body"], [3, "brief-page"]] as const) {
+      await hover(ids[index]!);
+      await expect(preview(ids[index]!).locator(`[data-testid="desk-page-miniature"] [data-testid="${testId}"]`)).toHaveCount(1);
+      await expect(preview(ids[index]!).locator("img")).toHaveCount(0);
+      const size = await drawn(ids[index]!);
+      expect(size.width).toBeGreaterThanOrEqual(size.shotWidth - 0.5);
+      expect(size.height).toBeGreaterThanOrEqual(size.shotHeight - 0.5);
+      expect(Math.min(size.width - size.shotWidth, size.height - size.shotHeight)).toBeLessThan(0.5);
+      if (index === 2) {
+        await expect(preview(ids[2]!).locator('[data-testid="note-body"]')).toContainText("Pack the bags");
+        // Read only: it is a picture of the note.
+        await expect(preview(ids[2]!).locator('[data-testid="note-body"]')).toHaveAttribute("contenteditable", "false");
+      }
+      await shell.waitForTimeout(250);
+      if (index !== 3) await capture(app, shell, index === 1 ? "16b-dock-preview-home.png" : "16c-dock-preview-note.png");
+    }
+    // A web page keeps its picture.
+    await hover(ids[0]!);
+    await expect(preview(ids[0]!).locator(".desk-dock-preview-shot img")).toHaveCount(1);
+    await expect(preview(ids[0]!).getByTestId("desk-page-miniature")).toHaveCount(0);
+
+    // ── 2. Out on the desk, a page is laid out at its window's page box ──────────
+    await shell.mouse.move(center(await box(shell, iconSelector(ids[1]!))).x, center(await box(shell, iconSelector(ids[1]!))).y);
+    await shell.mouse.down();
+    await shell.mouse.up();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await shell.mouse.move(700, 450);
+    await settled(shell);
+    const windowPage = await box(shell, `${windowSelector(ids[1]!)} [data-testid="desk-window-page"]`);
+    await hover(ids[1]!);
+    expect(Math.abs((await drawn(ids[1]!)).laidOut - windowPage.width)).toBeLessThanOrEqual(1);
+    await expect(preview(ids[1]!)).toContainText("On the desk");
+    await capture(app, shell, "16d-dock-preview-home-out.png");
+
+    // ── 3. Another group's card sketches its shell-drawn window as the page itself ──
+    await shell.mouse.move(700, 450);
+    const otherGroup = await box(shell, '[data-testid="desk-dock-group"][data-group-id="desk-pages-2"]');
+    await shell.mouse.move(center(otherGroup).x, center(otherGroup).y);
+    const card = shell.locator('[data-testid="desk-dock-group-card"][data-group-id="desk-pages-2"][data-shown]');
+    await expect(card).toHaveCount(1);
+    await expect(card.locator(`[data-testid="desk-sketch-window"][data-tab-id="${elsewhere}"] [data-testid="desk-page-miniature"] [data-testid="home-page"]`)).toHaveCount(1);
+    await shell.waitForTimeout(250);
+    await capture(app, shell, "16e-group-card-home.png");
+
+    // ── 4. Drawn as previews, the pages wrote nothing: the note is as it was made ──
+    const listed = await api(shell, (pistachio) => pistachio.notes({ type: "list" }));
+    if (listed.type !== "list") throw new Error(`no notes listed: ${listed.type}`);
+    expect(listed.notes.find((candidate) => candidate.id === note.id)?.revision).toBe(note.revision);
+  } finally {
+    await app.close();
+  }
+});
+
 test("⇧⌫ with the pointer on a dock icon closes that tab, wherever the keyboard is, and the page never hears it", async () => {
   test.setTimeout(120_000);
   const executablePath = resolveElectronExecutable();
@@ -2589,6 +2705,167 @@ test("a desk opened from a tab outside its group stays up on the group's tab, be
       center(rail),
     );
     expect(onTop).toBe(true);
+  } finally {
+    await app.close();
+  }
+});
+
+test("windows a gutter apart resize together from the gutter, as a split view's panes do; only the gutter's own windows move", async () => {
+  test.setTimeout(120_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-seams-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await clearOfCursor(app);
+    const shell = await shellReady(app);
+    const urls = ["pistachio://demo/invoices", "pistachio://demo/vendors/atlas-medical", "pistachio://demo/invoices?page=north"];
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[0])).toBe(true);
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(urls.length);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const ids = urls.map((url) => byUrl.get(url)!);
+    await shell.evaluate((tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-seams", tabIds, title: "Seams", color: "green" }), ids);
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), ids[0]!);
+    const group = shell.getByTestId("tab-group");
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await settled(shell);
+    const stage = await box(shell, ".desk-stage");
+    const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
+    for (const tabId of ids.slice(1)) {
+      await shell.locator(iconSelector(tabId)).click();
+      await expect(shell.locator(windowSelector(tabId))).toHaveCount(1);
+    }
+    await awayFromDock();
+    await settled(shell);
+    await openMore(shell);
+    await shell.getByTestId("desk-tile").click();
+    await awayFromDock();
+    await settled(shell);
+
+    // ── 1. Tiled: a half on the left, two quarters stacked on the right, a gutter between each ─
+    const boxes = async (): Promise<[Box, Box, Box]> => (await Promise.all(ids.map((tabId) => box(shell, windowSelector(tabId))))) as [Box, Box, Box];
+    const [left, top, bottom] = await boxes();
+    expect(Math.abs(top.x - (left.x + left.width) - 8)).toBeLessThan(1);
+    expect(Math.abs(bottom.x - top.x)).toBeLessThan(1);
+    expect(Math.abs(bottom.y - (top.y + top.height) - 8)).toBeLessThan(1);
+    for (const [index, tabId] of ids.entries()) await expectLiveIn(app, shell, urls[index]!, tabId);
+    await capture(app, shell, "70-seams-tiled.png");
+
+    /** What is under a point of the shell: a window's resize edge (whose, which, and its cursor), or something else. */
+    const under = (point: { x: number; y: number }): Promise<{ tabId: string | null; edge: string | null; cursor: string | null }> =>
+      shell.evaluate(({ x, y }) => {
+        const found = document.elementFromPoint(x, y)?.closest<HTMLElement>(".desk-window-edge") ?? null;
+        return {
+          tabId: found?.closest<HTMLElement>('[data-testid="desk-window"]')?.dataset["tabId"] ?? null,
+          edge: found?.dataset["deskEdge"] ?? null,
+          cursor: found === null ? null : getComputedStyle(found).cursor,
+        };
+      }, point);
+
+    // ── 2. The gutter between the half and the quarters: the pointer finds a resize edge there, and dragging it moves all three ─
+    const gutter = { x: left.x + left.width + 4, y: top.y + top.height / 2 };
+    expect(await under(gutter)).toMatchObject({ cursor: "ew-resize" });
+    await shell.mouse.move(gutter.x, gutter.y);
+    await shell.mouse.down();
+    for (let step = 1; step <= 12; step += 1) {
+      await shell.mouse.move(gutter.x + (140 * step) / 12, gutter.y);
+      await shell.waitForTimeout(16);
+    }
+    await shell.waitForTimeout(160);
+    // In hand: both sides are already their new size.
+    const [heldLeft, heldTop, heldBottom] = await boxes();
+    expect(Math.abs(heldLeft.width - (left.width + 140))).toBeLessThan(2);
+    expect(Math.abs(heldTop.x - (top.x + 140))).toBeLessThan(2);
+    expect(Math.abs(heldBottom.x - (bottom.x + 140))).toBeLessThan(2);
+    await capture(app, shell, "71-seams-gutter-in-hand.png");
+    await shell.mouse.up();
+    await settled(shell);
+    const [wideLeft, narrowTop, narrowBottom] = await boxes();
+    expect(Math.abs(wideLeft.x - left.x)).toBeLessThan(1);
+    expect(Math.abs(wideLeft.width - (left.width + 140))).toBeLessThan(2);
+    for (const [after, before] of [
+      [narrowTop, top],
+      [narrowBottom, bottom],
+    ] as const) {
+      expect(Math.abs(after.x - (before.x + 140))).toBeLessThan(2);
+      // The far edge holds still, and the gutter stays a gutter.
+      expect(Math.abs(after.x + after.width - (before.x + before.width))).toBeLessThan(1);
+      expect(Math.abs(after.x - (wideLeft.x + wideLeft.width) - 8)).toBeLessThan(1);
+      expect(Math.abs(after.y - before.y)).toBeLessThan(1);
+      expect(Math.abs(after.height - before.height)).toBeLessThan(1);
+    }
+    for (const [index, tabId] of ids.entries()) await expectLiveIn(app, shell, urls[index]!, tabId);
+    await capture(app, shell, "72-seams-gutter-moved.png");
+
+    // ── 3. The gutter between the two quarters is theirs alone: the half stays as it is ─
+    const between = { x: narrowTop.x + narrowTop.width / 2, y: narrowTop.y + narrowTop.height + 4 };
+    expect(await under(between)).toMatchObject({ cursor: "ns-resize" });
+    await place(shell, between, { x: between.x, y: between.y - 120 });
+    await settled(shell);
+    const [stillLeft, shortTop, tallBottom] = await boxes();
+    expect(Math.abs(stillLeft.width - wideLeft.width)).toBeLessThan(1);
+    expect(Math.abs(stillLeft.height - wideLeft.height)).toBeLessThan(1);
+    expect(Math.abs(shortTop.height - (narrowTop.height - 120))).toBeLessThan(2);
+    expect(Math.abs(tallBottom.y - (narrowBottom.y - 120))).toBeLessThan(2);
+    expect(Math.abs(tallBottom.y + tallBottom.height - (narrowBottom.y + narrowBottom.height))).toBeLessThan(1);
+    expect(Math.abs(tallBottom.y - (shortTop.y + shortTop.height) - 8)).toBeLessThan(1);
+    for (const [index, tabId] of ids.entries()) await expectLiveIn(app, shell, urls[index]!, tabId);
+    await capture(app, shell, "73-seams-quarters.png");
+
+    // ── 4. An edge with no window across the gutter is its window's alone: the half's left edge, by the dock ─
+    const outer = { x: stillLeft.x + 1, y: stillLeft.y + stillLeft.height / 2 };
+    await place(shell, outer, { x: outer.x + 90, y: outer.y });
+    await settled(shell);
+    const [narrowedLeft, sameTop, sameBottom] = await boxes();
+    expect(Math.abs(narrowedLeft.x - (stillLeft.x + 90))).toBeLessThan(2);
+    expect(Math.abs(narrowedLeft.x + narrowedLeft.width - (stillLeft.x + stillLeft.width))).toBeLessThan(1);
+    expect(Math.abs(sameTop.x - shortTop.x)).toBeLessThan(1);
+    expect(Math.abs(sameBottom.x - tallBottom.x)).toBeLessThan(1);
+
+    // ── 5. A window moved off the gutter is off the seam: the gutter is the half's and the lower quarter's, and the moved window's edge its own ─
+    // (Dragged from its title, as from anywhere on the bar, over the half: no longer a gutter from it.)
+    const title = center(await box(shell, `${windowSelector(ids[1]!)} [data-testid="desk-window-address"]`));
+    await place(shell, title, { x: title.x - 100, y: title.y + 40 });
+    await settled(shell);
+    const [lonelyLeft, movedTop, lowerQuarter] = await boxes();
+    expect(movedTop.x - (lonelyLeft.x + lonelyLeft.width)).toBeLessThan(-30);
+    // (On the quarter's side of the gutter, so it is the quarter that comes to the top, not the half.)
+    const lowerGutter = { x: lowerQuarter.x + 2, y: lowerQuarter.y + lowerQuarter.height / 2 };
+    expect(await under(lowerGutter)).toEqual({ tabId: ids[2], edge: "w", cursor: "ew-resize" });
+    await place(shell, lowerGutter, { x: lowerGutter.x + 60, y: lowerGutter.y });
+    await settled(shell);
+    const [widerLeft, sameMovedTop, narrowerLower] = await boxes();
+    expect(Math.abs(widerLeft.width - (lonelyLeft.width + 60))).toBeLessThan(2);
+    expect(Math.abs(narrowerLower.x - (lowerQuarter.x + 60))).toBeLessThan(2);
+    expect(Math.abs(narrowerLower.x - (widerLeft.x + widerLeft.width) - 8)).toBeLessThan(1);
+    expect(Math.abs(sameMovedTop.x - movedTop.x)).toBeLessThan(1);
+    expect(Math.abs(sameMovedTop.width - movedTop.width)).toBeLessThan(1);
+    // The moved window's left edge, over the half: its own.
+    const edge = { x: sameMovedTop.x + 1, y: sameMovedTop.y + sameMovedTop.height / 2 };
+    expect(await under(edge)).toEqual({ tabId: ids[1], edge: "w", cursor: "ew-resize" });
+    await place(shell, edge, { x: edge.x - 40, y: edge.y });
+    await settled(shell);
+    const [untouchedLeft, widerTop] = await boxes();
+    expect(Math.abs(untouchedLeft.width - widerLeft.width)).toBeLessThan(1);
+    expect(Math.abs(widerTop.x - (sameMovedTop.x - 40))).toBeLessThan(2);
+    expect(Math.abs(widerTop.x + widerTop.width - (sameMovedTop.x + sameMovedTop.width))).toBeLessThan(1);
+    await capture(app, shell, "74-seams-off-the-gutter.png");
   } finally {
     await app.close();
   }

@@ -10,6 +10,7 @@
  * when it is the window in use. And the desk passing to another group in
  * place: the old group's windows go home, the new group's come out where
  * they were left, and main never hears of more windows than it accepts.
+ * And the box a page the shell draws is laid out at, to be shown small.
  *
  * The engine runs a frame at a time outside React; here the frames are
  * driven by hand, and the only DOM it needs is a stage box.
@@ -17,11 +18,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DragSample } from "@pistachio/shell-contracts/chrome";
-import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
+import { DESK_MINI_ZOOM, isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
 import { CHROME_INSETS, DeskEngine, DOCK_ICON, DOCK_W, type DeskHost } from "../src/components/desk/desk-engine";
-import { carrySize, centeredRect, denormalizeRect, DESK_GAP, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
+import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
 let frames: Array<(now: number) => void> = [];
@@ -1469,6 +1470,151 @@ describe("editing a mask", () => {
     // The whole page, its shape kept.
     expect(page.mask).toMatchObject({ x: 0, y: 0, width: 1200, height: 800 });
     expect(Math.abs(page.width / page.height - 1.5)).toBeLessThan(0.01);
+    desk.destroy();
+  });
+});
+
+describe("a gutter between windows", () => {
+  let restoreNow: () => void = () => undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+  });
+  afterEach(() => restoreNow());
+
+  /** `count` live windows out, tiled (or where `saved` puts them), each with its element. */
+  function open(count: number, saved: SavedDeskWindow[] | null = null) {
+    const { drag, layouts } = native();
+    let wrote: SavedDeskWindow[] = [];
+    const desk = engine({ hasLivePage: () => true, save: (windows) => (wrote = windows) });
+    const stage = { left: 0, top: 0, width: 1600, height: 1000 };
+    desk.attachStage({ getBoundingClientRect: () => stage } as unknown as HTMLElement);
+    const ids = tabIds(count);
+    desk.start(saved ?? [], "tab-0", ids);
+    if (saved === null) for (const tabId of ids.slice(1)) desk.add(tabId, { focus: false });
+    const els = new Map(ids.map((tabId) => [tabId, element()]));
+    for (const [tabId, el] of els) desk.attachWindow(tabId, el as unknown as HTMLElement);
+    settle();
+    if (saved === null) desk.arrange("tile", ids);
+    settle();
+    const at = (tabId: string): Rect => rectOf(els.get(tabId)!);
+    /** Press an edge at (x, y), drag it `by` a step at a time, hold still, and let go. */
+    const drag_ = (tabId: string, edges: { left?: boolean; right?: boolean; top?: boolean; bottom?: boolean }, x: number, y: number, by: Point): void => {
+      desk.resize(tabId, { left: false, right: false, top: false, bottom: false, ...edges }, { clientX: x, clientY: y, button: 0 });
+      for (let step = 1; step <= 10; step += 1) {
+        drag.sample?.({ x: x + (by.x * step) / 10, y: y + (by.y * step) / 10, phase: "move" });
+        run(1);
+      }
+      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+      settle();
+    };
+    /** Main's box for a tab's live page, as last laid out. */
+    const page = (tabId: string) => layouts.at(-1)!.views.find((view) => view.tabId === tabId)!.bounds;
+    return { desk, at, drag: drag_, page, stage, saved: () => wrote };
+  }
+
+  it("resizes both halves of a split: one wider, the other narrower, the gutter kept, and main hears both", () => {
+    const { desk, at, drag, page, saved } = open(2);
+    const left = zoneRect("left", usable);
+    const right = zoneRect("right", usable);
+    expectRect(at("tab-0"), left);
+    expectRect(at("tab-1"), right);
+    // Pressed in the gutter, on the right-hand window's left edge.
+    drag("tab-1", { left: true }, right.x - DESK_GAP / 2, 500, { x: 160, y: 0 });
+    expectRect(at("tab-0"), { ...left, w: left.w + 160 });
+    expectRect(at("tab-1"), { ...right, x: right.x + 160, w: right.w - 160 });
+    expect(page("tab-0").width).toBe(Math.round(left.w + 160 - CHROME_INSETS.bar.left - CHROME_INSETS.bar.right));
+    expect(page("tab-1").x).toBe(Math.round(right.x + 160 + CHROME_INSETS.bar.left));
+    // And back the other way, by the left-hand window's right edge; both are saved as they were left.
+    drag("tab-0", { right: true }, left.x + left.w + 160 + DESK_GAP / 2, 300, { x: -300, y: 0 });
+    expectRect(at("tab-0"), { ...left, w: left.w - 140 });
+    expectRect(at("tab-1"), { ...right, x: right.x - 140, w: right.w + 140 });
+    expect(saved().map((window) => window.tabId).sort()).toEqual(["tab-0", "tab-1"]);
+    expectRect(denormalizeRect(saved().find((window) => window.tabId === "tab-1")!.rect, usable), at("tab-1"));
+    desk.destroy();
+  });
+
+  it("stops where a window on it would be smaller than a window may be", () => {
+    const { desk, at, drag } = open(2);
+    const right = zoneRect("right", usable);
+    drag("tab-1", { left: true }, right.x - DESK_GAP / 2, 500, { x: 2_000, y: 0 });
+    expect(Math.abs(at("tab-1").w - 300)).toBeLessThan(0.5);
+    expect(Math.abs(at("tab-1").x - (at("tab-0").x + at("tab-0").w) - DESK_GAP)).toBeLessThan(0.5);
+    expect(Math.abs(at("tab-1").x + at("tab-1").w - (right.x + right.w))).toBeLessThan(0.5);
+    desk.destroy();
+  });
+
+  it("moves every window on the gutter: a half beside two stacked quarters, and the quarters' own gutter between them alone", () => {
+    const { desk, at, drag } = open(3);
+    const left = zoneRect("left", usable);
+    const top = zoneRect("top-right", usable);
+    const bottom = zoneRect("bottom-right", usable);
+    expectRect(at("tab-1"), top);
+    expectRect(at("tab-2"), bottom);
+    drag("tab-0", { right: true }, left.x + left.w + DESK_GAP / 2, 800, { x: -120, y: 0 });
+    expectRect(at("tab-0"), { ...left, w: left.w - 120 });
+    expectRect(at("tab-1"), { ...top, x: top.x - 120, w: top.w + 120 });
+    expectRect(at("tab-2"), { ...bottom, x: bottom.x - 120, w: bottom.w + 120 });
+    drag("tab-2", { top: true }, 1200, bottom.y - DESK_GAP / 2, { x: 0, y: 150 });
+    expectRect(at("tab-0"), { ...left, w: left.w - 120 });
+    expectRect(at("tab-1"), { ...top, x: top.x - 120, w: top.w + 120, h: top.h + 150 });
+    expectRect(at("tab-2"), { ...bottom, x: bottom.x - 120, y: bottom.y + 150, w: bottom.w + 120, h: bottom.h - 150 });
+    desk.destroy();
+  });
+
+  it("leaves a window further off than the gutter alone: only the edge in hand moves", () => {
+    const apart = (x: number, w: number): Rect => normalizeRect({ x, y: 100, w, h: 600 }, usable);
+    const { desk, at, drag } = open(2, [
+      { tabId: "tab-1", rect: apart(800, 500) },
+      { tabId: "tab-0", rect: apart(200, 560) },
+    ]);
+    const other = at("tab-1");
+    expect(other.x - (at("tab-0").x + at("tab-0").w)).toBeCloseTo(40, 3);
+    drag("tab-0", { right: true }, 762, 400, { x: 80, y: 0 });
+    expectRect(at("tab-0"), { x: 200, y: 100, w: 640, h: 600 });
+    expectRect(at("tab-1"), other);
+    desk.destroy();
+  });
+
+  it("keeps the gutter a gutter when the desk changes size, so the split still holds", () => {
+    const { desk, at, drag, stage } = open(2);
+    stage.width = 1900;
+    stage.height = 1100;
+    desk.measure();
+    settle();
+    const wider: Rect = { ...usable, w: 1900 - usable.x, h: 1100 };
+    expectRect(at("tab-0"), zoneRect("left", wider));
+    expectRect(at("tab-1"), zoneRect("right", wider));
+    const right = zoneRect("right", wider);
+    drag("tab-1", { left: true }, right.x - DESK_GAP / 2, 500, { x: -100, y: 0 });
+    expect(at("tab-1").x - (at("tab-0").x + at("tab-0").w)).toBeCloseTo(DESK_GAP, 3);
+    expectRect(at("tab-1"), { ...right, x: right.x - 100, w: right.w + 100 });
+    desk.destroy();
+  });
+});
+
+/* ----------------------- a page the shell draws ---------------------- */
+
+describe("the box a tab's page is laid out at", () => {
+  it("is its window's page box — zoomed out when minimized — or, in the dock, that of a window filling the desk", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    desk.start([], "tab-0", tabIds(2));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const insets = CHROME_INSETS[DEFAULT_DESK_VARIANTS.chrome];
+    const pageOf = (rect: Rect, zoom = 1) => ({ w: (rect.w - insets.left - insets.right) / zoom, h: (rect.h - insets.top - insets.bottom) / zoom });
+    const expectSize = (actual: { w: number; h: number }, expected: { w: number; h: number }): void => {
+      expect(actual.w).toBeCloseTo(expected.w, 3);
+      expect(actual.h).toBeCloseTo(expected.h, 3);
+    };
+    expectSize(desk.pageSize("tab-0"), pageOf(rectOf(win)));
+    expectSize(desk.pageSize("tab-1"), pageOf(usable));
+    desk.minimize("tab-0");
+    settle();
+    expect(desk.getView().windows[0]!.mini).not.toBeNull();
+    expectSize(desk.pageSize("tab-0"), pageOf(rectOf(win), DESK_MINI_ZOOM));
     desk.destroy();
   });
 });

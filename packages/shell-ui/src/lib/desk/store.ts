@@ -17,6 +17,8 @@ export type DeskSpringFeel = "snappy" | "bouncy" | "smooth" | "eased";
 export type DeskMotion = "lifted" | "live";
 export type DeskChrome = "bar" | "tab" | "bare";
 export type DeskGrab = DeskGrabModifier | "off";
+/** Whether windows coming and going may move the others (docs/desk-layout.md). */
+export type DeskLayoutFeel = "smart" | "hand";
 
 export interface DeskVariants {
   /** What a released window does. */
@@ -29,6 +31,8 @@ export interface DeskVariants {
   chrome: DeskChrome;
   /** The key that grabs a window from anywhere on its page. */
   grab: DeskGrab;
+  /** Smart: a window coming or going asks the layout model whether the others should move. By hand: they stay put. */
+  layout: DeskLayoutFeel;
   /** Glide's deceleration: the share of its speed a thrown window loses every 100 ms, in percent (GLIDE_DECELERATION). */
   deceleration: number;
 }
@@ -55,6 +59,7 @@ export const DESK_AXES: readonly [
   Axis<"motion">,
   Axis<"chrome">,
   Axis<"grab">,
+  Axis<"layout">,
 ] = [
   {
     key: "physics",
@@ -102,6 +107,14 @@ export const DESK_AXES: readonly [
       { id: "off", label: "Off", hint: "Only the frame moves a window" },
     ],
   },
+  {
+    key: "layout",
+    label: "Layout",
+    options: [
+      { id: "smart", label: "Smart", hint: "When a window comes or goes, the desk may lay the others out anew (Undo in the notice)" },
+      { id: "hand", label: "By hand", hint: "Windows stay where they are put; ⌘⌥L still arranges them on request" },
+    ],
+  },
 ];
 
 export const DEFAULT_DESK_VARIANTS: DeskVariants = {
@@ -110,6 +123,7 @@ export const DEFAULT_DESK_VARIANTS: DeskVariants = {
   motion: "lifted",
   chrome: "bar",
   grab: "shift",
+  layout: "smart",
   deceleration: GLIDE_DECELERATION.default,
 };
 
@@ -204,6 +218,7 @@ export function sanitizeVariants(value: unknown): DeskVariants {
     motion: pick("motion"),
     chrome: pick("chrome"),
     grab: pick("grab"),
+    layout: pick("layout"),
     deceleration:
       typeof deceleration === "number" && Number.isFinite(deceleration)
         ? Math.min(GLIDE_DECELERATION.max, Math.max(GLIDE_DECELERATION.min, Math.round(deceleration)))

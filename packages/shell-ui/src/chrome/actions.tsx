@@ -520,6 +520,8 @@ export function runConfiguredShortcut(
       return arrangeDesk("tile");
     case "cascadeDesk":
       return arrangeDesk("cascade");
+    case "arrangeDesk":
+      return arrangeDesk("smart");
   }
 }
 

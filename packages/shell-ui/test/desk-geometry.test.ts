@@ -22,8 +22,13 @@ import {
   normalizeRect,
   placeNewWindow,
   rectsOverlap,
+  alongSeam,
+  rescaleRect,
   resizedRect,
   rubberBand,
+  seamsAt,
+  seamTravel,
+  type Seam,
   SNAP_TOP_SHARE,
   splitRect,
   thirdsCell,
@@ -232,6 +237,138 @@ describe("resizing", () => {
   });
 });
 
+describe("seams: windows a gutter apart, resized together", () => {
+  const edge = (side: "left" | "right" | "top" | "bottom") => ({ left: side === "left", right: side === "right", top: side === "top", bottom: side === "bottom" });
+  const rects = (entries: Record<string, Rect>): Map<string, Rect> => new Map(Object.entries(entries));
+  const sorted = (seam: Seam | null) => (seam === null ? null : { axis: seam.axis, before: [...seam.before].sort(), after: [...seam.after].sort() });
+
+  it("joins two halves across their gutter, from either side, and moves the gutter between them", () => {
+    const halves = rects({ left: zoneRect("left", desk), right: zoneRect("right", desk) });
+    const gutter = zoneRect("left", desk).x + zoneRect("left", desk).w;
+    for (const [id, side] of [["left", "right"], ["right", "left"]] as const) {
+      const { x, y } = seamsAt(halves, id, edge(side), { x: gutter + 4, y: 400 });
+      expect(sorted(x)).toEqual({ axis: "x", before: ["left"], after: ["right"] });
+      expect(y).toBeNull();
+    }
+    const seam = seamsAt(halves, "left", edge("right"), { x: gutter + 4, y: 400 }).x!;
+    const travel = seamTravel(halves, seam, 120, []);
+    expect(travel).toBe(120);
+    const left = alongSeam(halves.get("left")!, seam, "left", travel);
+    const right = alongSeam(halves.get("right")!, seam, "right", travel);
+    expect(left.w).toBe(halves.get("left")!.w + 120);
+    expect(right.x - (left.x + left.w)).toBe(DESK_GAP);
+    expect(right.x + right.w).toBe(desk.x + desk.w);
+  });
+
+  it("only joins windows the desk's gap apart: flush, overlapping or further off, each edge is its own", () => {
+    const left = { x: 100, y: 0, w: 500, h: 600 };
+    for (const gap of [0, -20, DESK_GAP + 6, 40]) {
+      const pair = rects({ left, right: { x: 600 + gap, y: 0, w: 500, h: 600 } });
+      expect(seamsAt(pair, "left", edge("right"), { x: 602, y: 300 }).x).toBeNull();
+    }
+    // Rounding, or a desk resized a little since they were put there, still holds.
+    const near = rects({ left, right: { x: 600 + DESK_GAP + 1.5, y: 0, w: 500, h: 600 } });
+    expect(seamsAt(near, "left", edge("right"), { x: 604, y: 300 }).x).not.toBeNull();
+  });
+
+  it("is a gutter only where the two run side by side", () => {
+    // A tall window, with a short one beside its top: the gutter runs down as far as the short one does.
+    const pair = rects({ tall: { x: 100, y: 0, w: 500, h: 900 }, short: { x: 608, y: 0, w: 500, h: 300 } });
+    expect(seamsAt(pair, "tall", edge("right"), { x: 604, y: 200 }).x).not.toBeNull();
+    expect(seamsAt(pair, "tall", edge("right"), { x: 604, y: 700 }).x).toBeNull();
+    // Off the end by no more than the gutter's own width (a press at the corner of the short one) still counts.
+    expect(seamsAt(pair, "tall", edge("right"), { x: 604, y: 305 }).x).not.toBeNull();
+  });
+
+  it("takes in every window on the gutter: a half beside two stacked quarters moves them both", () => {
+    const three = rects({ left: zoneRect("left", desk), top: zoneRect("top-right", desk), bottom: zoneRect("bottom-right", desk) });
+    const gutterX = zoneRect("top-right", desk).x - DESK_GAP / 2;
+    // Pressed beside either quarter, or from either quarter, it is the same seam.
+    for (const [id, side, y] of [["left", "right", 200], ["left", "right", 700], ["top", "left", 200], ["bottom", "left", 700]] as const) {
+      expect(sorted(seamsAt(three, id, edge(side), { x: gutterX, y }).x)).toEqual({ axis: "x", before: ["left"], after: ["bottom", "top"] });
+    }
+    // The gutter between the quarters is theirs alone.
+    const gutterY = zoneRect("bottom-right", desk).y - DESK_GAP / 2;
+    expect(sorted(seamsAt(three, "top", edge("bottom"), { x: 1000, y: gutterY }).y)).toEqual({ axis: "y", before: ["top"], after: ["bottom"] });
+  });
+
+  it("in a grid, an edge moves its own row's gutter, and the crossing moves all four", () => {
+    const grid = rects({
+      tl: zoneRect("top-left", desk),
+      tr: zoneRect("top-right", desk),
+      bl: zoneRect("bottom-left", desk),
+      br: zoneRect("bottom-right", desk),
+    });
+    const cross = { x: zoneRect("top-right", desk).x - DESK_GAP / 2, y: zoneRect("bottom-left", desk).y - DESK_GAP / 2 };
+    const row = seamsAt(grid, "tl", edge("right"), { x: cross.x, y: 200 });
+    expect(sorted(row.x)).toEqual({ axis: "x", before: ["tl"], after: ["tr"] });
+    // Any of the four corners at the crossing takes hold of both gutters, whole.
+    for (const [id, corner] of [
+      ["tl", { left: false, right: true, top: false, bottom: true }],
+      ["br", { left: true, right: false, top: true, bottom: false }],
+    ] as const) {
+      const { x, y } = seamsAt(grid, id, corner, cross);
+      expect(sorted(x)).toEqual({ axis: "x", before: ["bl", "tl"], after: ["br", "tr"] });
+      expect(sorted(y)).toEqual({ axis: "y", before: ["tl", "tr"], after: ["bl", "br"] });
+    }
+  });
+
+  it("goes no further than leaves every window on it its least size, and sticks to a gutter it passes", () => {
+    const left = { x: 100, y: 0, w: 500, h: 400 };
+    const right = { x: 608, y: 0, w: 500, h: 400 };
+    const pair = rects({ left, right });
+    const seam: Seam = { axis: "x", before: ["left"], after: ["right"] };
+    expect(seamTravel(pair, seam, 1_000, [])).toBe(500 - 300);
+    expect(seamTravel(pair, seam, -1_000, [])).toBe(-(500 - 300));
+    // Below them, another pair's gutter 30px to the right: within reach, the gutter lines up with it.
+    const below = [
+      { x: 100, y: 408, w: 530, h: 400 },
+      { x: 638, y: 408, w: 470, h: 400 },
+    ];
+    expect(seamTravel(pair, seam, 24, below)).toBe(30);
+    expect(seamTravel(pair, seam, 60, below)).toBe(60);
+  });
+
+  it("goes only as far as its smallest window on each side allows, and shrinks none already under its least size", () => {
+    // One window left of the gutter; two right of it, stacked, one narrow and one wide.
+    const after = rects({
+      left: { x: 100, y: 0, w: 900, h: 808 },
+      narrow: { x: 1008, y: 0, w: 320, h: 400 },
+      wide: { x: 1008, y: 408, w: 700, h: 400 },
+    });
+    const right: Seam = { axis: "x", before: ["left"], after: ["narrow", "wide"] };
+    expect(seamTravel(after, right, 400, [])).toBe(320 - 300);
+    // The same, mirrored: two of different widths left of the gutter.
+    const before = rects({
+      narrow: { x: 680, y: 0, w: 320, h: 400 },
+      wide: { x: 300, y: 408, w: 700, h: 400 },
+      right: { x: 1008, y: 0, w: 900, h: 808 },
+    });
+    const left: Seam = { axis: "x", before: ["narrow", "wide"], after: ["right"] };
+    expect(seamTravel(before, left, -400, [])).toBe(-(320 - 300));
+    // A window smaller than a window may be already: the gutter does not go its way, but goes the other.
+    const under = rects({
+      left: { x: 100, y: 0, w: 900, h: 808 },
+      narrow: { x: 1008, y: 0, w: 280, h: 400 },
+      wide: { x: 1008, y: 408, w: 700, h: 400 },
+    });
+    expect(seamTravel(under, right, 100, [])).toBe(0);
+    expect(seamTravel(under, right, -100, [])).toBe(-100);
+  });
+});
+
+describe("carrying the desk to another size", () => {
+  it("keeps a gutter a gutter, and a window against the desk's edge against it", () => {
+    const after = { ...desk, w: desk.w * 1.6, h: desk.h * 0.8 };
+    const tiles = (["top-left", "top-right", "bottom-left", "bottom-right"] as const).map((zone) => rescaleRect(zoneRect(zone, desk), desk, after));
+    for (const [index, zone] of (["top-left", "top-right", "bottom-left", "bottom-right"] as const).entries()) {
+      const expected = zoneRect(zone, after);
+      for (const key of ["x", "y", "w", "h"] as const) expect(tiles[index]![key]).toBeCloseTo(expected[key], 6);
+    }
+    expect(rescaleRect(desk, desk, after)).toEqual(after);
+  });
+});
+
 describe("layouts", () => {
   it("tiles one, two, three and many windows over the whole desk without overlap", () => {
     for (const count of [1, 2, 3, 4, 5, 7]) {
@@ -345,11 +482,11 @@ describe("Glide's deceleration", () => {
 
 describe("where a window brought out of the dock goes", () => {
   it("goes in the middle of an empty desk", () => {
-    expect(placeNewWindow([], desk, null)).toEqual({ rect: centeredRect(desk), split: null });
+    expect(placeNewWindow([], desk, null)).toEqual({ rect: centeredRect(desk), split: null, kind: "first" });
   });
 
   it("takes the other half beside a half, and the fourth quarter beside three", () => {
-    expect(placeNewWindow([zoneRect("left", desk)], desk, 0)).toEqual({ rect: zoneRect("right", desk), split: null });
+    expect(placeNewWindow([zoneRect("left", desk)], desk, 0)).toEqual({ rect: zoneRect("right", desk), split: null, kind: "hole" });
     const three = [zoneRect("top-left", desk), zoneRect("top-right", desk), zoneRect("bottom-left", desk)];
     const placed = placeNewWindow(three, desk, 2);
     expect(placed.split).toBeNull();
@@ -363,6 +500,7 @@ describe("where a window brought out of the dock goes", () => {
     expect(placeNewWindow([{ ...desk }], desk, 0)).toEqual({
       rect: zoneRect("right", desk),
       split: { index: 0, rect: zoneRect("left", desk) },
+      kind: "split",
     });
     // Two halves: the one in use splits top and bottom (it is taller than wide).
     const halves = [zoneRect("left", desk), zoneRect("right", desk)];

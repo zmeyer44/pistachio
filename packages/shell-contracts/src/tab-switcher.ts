@@ -7,7 +7,7 @@
 /** The most cards the switcher ever shows; a small window shows fewer. */
 export const TAB_SWITCHER_LIMIT = 15;
 /**
- * How long ⌃ or ⌘ held on its own waits before it brings the switcher up
+ * How long ⌥⌘ or ⌥⌃ held on their own wait before they bring the switcher up
  * without a Tab (Settings → Tabs). At once; a beat, short enough to feel
  * instant yet longer than a shortcut typed at speed takes to follow its
  * modifier; or the original, deliberate hold.
@@ -18,8 +18,31 @@ export const TAB_SWITCHER_HOLD_MS: Readonly<Record<TabSwitcherHold, number>> = {
 export const DEFAULT_TAB_SWITCHER_HOLD: TabSwitcherHold = "short";
 const TAB_HISTORY_LIMIT = 100;
 
-/** The modifier whose release commits the selection. */
-export type TabSwitcherModifier = "control" | "meta";
+/**
+ * What is held for the switcher, whose release commits the selection: ⌥
+ * with ⌘ or with ⌃ (held on their own, or with Tab), or ⌃ alone after ⌃Tab.
+ * Either key of a pair let go is the release.
+ */
+export type TabSwitcherModifier = "alt+meta" | "alt+control" | "control";
+
+/** The flags a key event or a pointer event carries. */
+export interface ModifierFlags {
+  control: boolean;
+  meta: boolean;
+  alt: boolean;
+}
+
+/** Whether what the switcher is held by is still down, by an event's flags. */
+export function tabSwitcherHeld(modifier: TabSwitcherModifier, flags: ModifierFlags): boolean {
+  switch (modifier) {
+    case "alt+meta":
+      return flags.alt && flags.meta;
+    case "alt+control":
+      return flags.alt && flags.control;
+    case "control":
+      return flags.control;
+  }
+}
 export type TabSwitcherDirection = "left" | "right" | "up" | "down";
 
 /** Move one visited tab to the front without letting stale history grow forever. */
@@ -191,21 +214,37 @@ const ARROWS: Readonly<Record<string, TabSwitcherDirection>> = {
 
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Meta", "Alt"]);
 
-function modifierOf(key: string): TabSwitcherModifier | null {
-  return key === "Control" ? "control" : key === "Meta" ? "meta" : null;
+/** The key is one of those the switcher is held by: its keyUp is a release. */
+function holdsSwitcher(modifier: TabSwitcherModifier, key: string): boolean {
+  return key === "Control" ? modifier !== "alt+meta" : key === "Meta" ? modifier === "alt+meta" : key === "Alt" && modifier !== "control";
+}
+
+/** ⌥⌘ or ⌥⌃ down and nothing else (no ⇧, not all three): the pair that arms the switcher, or null. */
+function heldPair(flags: SwitcherKey): TabSwitcherModifier | null {
+  if (!flags.alt || flags.shift || flags.meta === flags.control) return null;
+  return flags.meta ? "alt+meta" : "alt+control";
+}
+
+/** What a Tab opens the switcher with: ⌃ alone, or a pair (⇧ only steps backwards). Null for any other Tab. */
+function tabOpener(input: SwitcherKey): TabSwitcherModifier | null {
+  if (input.key !== "Tab") return null;
+  if (input.control && !input.meta && !input.alt) return "control";
+  return heldPair({ ...input, shift: false });
 }
 
 type Phase = { name: "idle" } | { name: "armed"; modifier: TabSwitcherModifier } | { name: "open"; modifier: TabSwitcherModifier };
 
 /**
- * The held-modifier gesture. ⌃ or ⌘ pressed on its own ARMS it; held for
- * the chosen TAB_SWITCHER_HOLD_MS with nothing else pressed (the caller's
- * timer calls `holdElapsed`; "instant" is a timer of 0), the switcher opens
- * on the active tab. ⌃Tab opens it at
- * once, one step along — ⌘Tab never reaches an app on macOS, which keeps it
- * for switching apps. While open, Tab and the arrows move the selection,
- * Return or releasing the modifier commits, Escape cancels, and any other
- * key cancels and goes on to wherever it was going (⌘T still opens a tab).
+ * The held-modifier gesture. ⌥⌘ or ⌥⌃ pressed on their own ARM it (⌘ or ⌃
+ * alone did, until it opened on every shortcut held a beat too long); held
+ * for the chosen TAB_SWITCHER_HOLD_MS with nothing else pressed (the
+ * caller's timer calls `holdElapsed`; "instant" is a timer of 0), the
+ * switcher opens on the active tab. Tab with the pair held, or ⌃Tab, opens
+ * it at once, one step along — ⌘Tab never reaches an app on macOS, which
+ * keeps it for switching apps. While open, Tab and the arrows move the
+ * selection, Return or letting go (either key of the pair) commits, Escape
+ * cancels, and any other key cancels and goes on to wherever it was going
+ * (⌥⌘T still tiles a desk).
  *
  * Releases are NOT reliable: once main consumes a keyDown, Chromium drops
  * that view's keyUps until the next keyDown. So a release is also read from
@@ -234,28 +273,24 @@ export class TabSwitcherGesture {
     if (phase.name === "open") return this.#whileOpen(phase.modifier, input);
     if (phase.name === "armed") {
       if (input.type === "keyUp") {
-        if (modifierOf(input.key) === phase.modifier || !input[phase.modifier]) this.#phase = { name: "idle" };
+        if (holdsSwitcher(phase.modifier, input.key) || !tabSwitcherHeld(phase.modifier, input)) this.#phase = { name: "idle" };
         return IGNORE;
       }
-      if (input.isAutoRepeat === true && modifierOf(input.key) === phase.modifier) return IGNORE;
+      if (input.isAutoRepeat === true && holdsSwitcher(phase.modifier, input.key)) return IGNORE;
       this.#phase = { name: "idle" };
     }
     if (input.type !== "keyDown") return IGNORE;
-    if (input.key === "Tab" && input.control && !input.meta && !input.alt) {
-      if (this.#canOpen()) this.#phase = { name: "open", modifier: "control" };
+    const opener = tabOpener(input);
+    if (opener !== null) {
+      if (this.#canOpen()) this.#phase = { name: "open", modifier: opener };
       return {
         consume: true,
-        input: this.open ? { type: "open", modifier: "control", step: input.shift ? -1 : 1 } : null,
+        input: this.open ? { type: "open", modifier: opener, step: input.shift ? -1 : 1 } : null,
       };
     }
-    const modifier = modifierOf(input.key);
-    const alone =
-      modifier === "control"
-        ? !input.meta && !input.alt && !input.shift
-        : modifier === "meta"
-          ? !input.control && !input.alt && !input.shift
-          : false;
-    if (modifier !== null && alone && input.isAutoRepeat !== true) this.#phase = { name: "armed", modifier };
+    // The pair's second key going down, with nothing else held.
+    const pair = MODIFIER_KEYS.has(input.key) ? heldPair(input) : null;
+    if (pair !== null && holdsSwitcher(pair, input.key) && input.isAutoRepeat !== true) this.#phase = { name: "armed", modifier: pair };
     return IGNORE;
   }
 
@@ -282,13 +317,13 @@ export class TabSwitcherGesture {
   }
 
   #whileOpen(modifier: TabSwitcherModifier, input: SwitcherKey): SwitcherOutcome {
-    const held = input[modifier];
+    const held = tabSwitcherHeld(modifier, input);
     if (input.type === "keyUp") {
-      if (modifierOf(input.key) !== modifier && held) return IGNORE;
+      if (!holdsSwitcher(modifier, input.key) && held) return IGNORE;
       this.#phase = { name: "idle" };
       return { consume: true, input: { type: "commit" } };
     }
-    if (!held && modifierOf(input.key) !== modifier) {
+    if (!held && !holdsSwitcher(modifier, input.key)) {
       // The release went unseen; this key was typed after it.
       this.#phase = { name: "idle" };
       return { consume: false, input: { type: "commit" } };

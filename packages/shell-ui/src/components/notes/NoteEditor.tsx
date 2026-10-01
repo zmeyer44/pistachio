@@ -41,6 +41,7 @@ import { acceptNoteImage, encodeTarget, imageBlobId, mayHaveAlpha, planDownscale
 import { docToMarkdown, noteExtensions } from "../../lib/notes-markdown";
 import type { SlashCommand } from "../../lib/notes-slash";
 import { useAppStore } from "../../store";
+import { usePagePreview } from "../page-preview";
 import { BubbleMenu, type TurnIntoId } from "./BubbleMenu";
 import { NoteImageView } from "./NoteImage";
 import { NoteTitle } from "./NoteTitle";
@@ -103,6 +104,8 @@ export function NoteEditor({ tabId, noteId, active }: { tabId: string | null; no
 }
 
 function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; active: boolean }) {
+  // Drawn as a preview of itself (a desk hover card): read only, and nothing it does is written.
+  const preview = usePagePreview();
   const navigate = useAppStore((state) => state.navigate);
   const createTab = useAppStore((state) => state.createTab);
   const openLink = useAppStore((state) => state.openLink);
@@ -157,6 +160,7 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
     content: note.markdown,
     contentType: "markdown",
     autofocus: false,
+    editable: !preview,
     editorProps: {
       attributes: { class: "note-prose", "data-testid": "note-body", spellcheck: "true" },
       handleDrop: (_view, event) => takeFiles((event as DragEvent).dataTransfer?.files ?? null, event),
@@ -274,9 +278,11 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
 
   const edit = useCallback(
     (draft: { title?: string; markdown?: string }) => {
+      // Every write starts here: a preview's machine never has one to send.
+      if (preview) return;
       step(autosave(save.current, { type: "edit", draft, at: Date.now() }));
     },
-    [step],
+    [step, preview],
   );
 
   const flushNow = useCallback(() => {
@@ -341,14 +347,14 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
   // says what it is called (docs/notes.md §4). Debounced: a title is typed a
   // letter at a time and every letter would otherwise republish the snapshot.
   useEffect(() => {
-    if (tabId === null) return;
+    if (tabId === null || preview) return;
     if (titleTimer.current !== null) window.clearTimeout(titleTimer.current);
     titleTimer.current = window.setTimeout(() => {
       void shellApi()
         .setTabTitle(tabId, title.trim() === "" ? NOTE_UNTITLED : title)
         .catch((cause: unknown) => useAppStore.getState().noteRefusal("setTabTitle", cause));
     }, TAB_TITLE_MS);
-  }, [tabId, title]);
+  }, [tabId, title, preview]);
 
   /* ── pictures ─────────────────────────────────────────────────────── */
 

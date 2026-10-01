@@ -82,7 +82,7 @@ function focusedUrl(app: ElectronApplication): Promise<string | null> {
   });
 }
 
-/** Start recording the keydowns the page at `url` sees, as "meta+b" (a modifier on its own is not recorded). */
+/** Start recording the keydowns the page at `url` sees, as "meta+b" or "alt+meta+b" (a modifier on its own is not recorded; a letter by its key, not the character ⌥ composes). */
 async function recordPageKeys(app: ElectronApplication, url: string): Promise<void> {
   await app.evaluate(async ({ webContents }, target) => {
     await webContents
@@ -91,7 +91,7 @@ async function recordPageKeys(app: ElectronApplication, url: string): Promise<vo
       ?.executeJavaScript(
         `window.__keys = [];
         addEventListener("keydown", (e) => {
-          if (!["Meta", "Control", "Shift", "Alt"].includes(e.key)) window.__keys.push((e.metaKey ? "meta+" : "") + e.key);
+          if (!["Meta", "Control", "Shift", "Alt"].includes(e.key)) window.__keys.push((e.altKey ? "alt+" : "") + (e.metaKey ? "meta+" : "") + (/^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : e.key));
         }, true);
         true`,
       );
@@ -154,23 +154,28 @@ test("⌃Tab from a page opens on the previous tab with live thumbnails, and Ret
   }
 });
 
-test("holding ⌘ alone opens on the active tab; arrows move and Escape cancels", async () => {
+test("holding ⌥⌘ opens on the active tab (⌘ alone no longer does); arrows move and Escape cancels", async () => {
   const app = await launch("tab-switcher-hold");
   try {
     const shell = await shellReady(app);
     const visited = await openTabs(shell, PAGES.slice(0, 3));
     await focusPage(app, PAGES[2]!);
 
+    // ⌘ held on its own, well past the hold: nothing.
     await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] }]);
+    await shell.waitForTimeout(800);
     const switcher = shell.getByTestId("tab-switcher");
+    await expect(switcher).toHaveCount(0);
+    // ⌥ joins it: the pair, held, opens the switcher.
+    await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] }]);
     await expect(switcher).toHaveAttribute("data-ready", "");
     const options = switcher.getByTestId("tab-switcher-option");
     await expect(options.nth(0)).toHaveAttribute("data-tab-id", visited[2]!);
     await expect(options.nth(0)).toHaveAttribute("aria-selected", "true");
 
-    await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Right", modifiers: ["meta"] }]);
+    await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Right", modifiers: ["meta", "alt"] }]);
     await expect(options.nth(1)).toHaveAttribute("aria-selected", "true");
-    await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Escape", modifiers: ["meta"] }]);
+    await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Escape", modifiers: ["meta", "alt"] }]);
     await expect(switcher).toHaveCount(0);
     expect(await activeTabId(shell)).toBe(visited[2]);
   } finally {
@@ -178,7 +183,7 @@ test("holding ⌘ alone opens on the active tab; arrows move and Escape cancels"
   }
 });
 
-test("a page's shortcut typed once a ⌘ hold has the switcher up still reaches the page", async () => {
+test("a page's shortcut typed once a ⌥⌘ hold has the switcher up still reaches the page", async () => {
   const app = await launch("tab-switcher-pass-on");
   try {
     const shell = await shellReady(app);
@@ -188,20 +193,27 @@ test("a page's shortcut typed once a ⌘ hold has the switcher up still reaches 
     await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "b", modifiers: ["meta"] }]);
     await expect.poll(() => inPage<string[]>(app, PAGES[2]!, "window.__keys")).toEqual(["meta+b"]);
 
-    await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] }]);
+    await sendKeys(app, { url: PAGES[2]! }, [
+      { type: "keyDown", keyCode: "Meta", modifiers: ["meta"] },
+      { type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] },
+    ]);
     const switcher = shell.getByTestId("tab-switcher");
     await expect(switcher).toHaveAttribute("data-ready", "");
     expect(await focusedUrl(app)).toBe("shell");
-    // The shell has the keyboard now; ⌘B cancels the switcher and goes on to the page.
-    await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "b", modifiers: ["meta"] }]);
+    // The shell has the keyboard now; ⌥⌘B (the pair held a beat too long) cancels the switcher and goes on to the page.
+    await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "b", modifiers: ["meta", "alt"] }]);
     await expect(switcher).toHaveCount(0);
-    await expect.poll(() => inPage<string[]>(app, PAGES[2]!, "window.__keys")).toEqual(["meta+b", "meta+b"]);
+    await expect.poll(() => inPage<string[]>(app, PAGES[2]!, "window.__keys")).toEqual(["meta+b", "alt+meta+b"]);
     expect(await focusedUrl(app)).toBe(PAGES[2]);
     expect(await activeTabId(shell)).toBe(visited[2]);
 
     // An Edit menu key does its work there too, though the menu never sees a sent key.
+    // (⌥ let go first: ⌘A is the release, and goes on to select all.)
     await inPage(app, PAGES[2]!, "getSelection().removeAllRanges(); true");
-    await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] }]);
+    await sendKeys(app, { url: PAGES[2]! }, [
+      { type: "keyDown", keyCode: "Meta", modifiers: ["meta"] },
+      { type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] },
+    ]);
     await expect(switcher).toHaveAttribute("data-ready", "");
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "a", modifiers: ["meta"] }]);
     await expect(switcher).toHaveCount(0);
@@ -219,7 +231,8 @@ test("a pressed shortcut is never taken for a hold", async () => {
     await focusPage(app, PAGES[1]!);
     await sendKeys(app, { url: PAGES[1]! }, [
       { type: "keyDown", keyCode: "Meta", modifiers: ["meta"] },
-      { type: "keyDown", keyCode: "Shift", modifiers: ["meta", "shift"] },
+      { type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] },
+      { type: "keyDown", keyCode: "Shift", modifiers: ["meta", "alt", "shift"] },
     ]);
     await shell.waitForTimeout(800);
     await expect(shell.getByTestId("tab-switcher")).toHaveCount(0);
@@ -235,15 +248,19 @@ test("the pointer picks a card, and the modifier's release goes to it", async ()
     const visited = await openTabs(shell, PAGES.slice(0, 3));
     await focusPage(app, PAGES[2]!);
 
-    await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "Control", modifiers: ["control"] }]);
+    await sendKeys(app, { url: PAGES[2]! }, [
+      { type: "keyDown", keyCode: "Control", modifiers: ["control"] },
+      { type: "keyDown", keyCode: "Alt", modifiers: ["control", "alt"] },
+    ]);
     const switcher = shell.getByTestId("tab-switcher");
     await expect(switcher).toHaveAttribute("data-ready", "");
     const options = switcher.getByTestId("tab-switcher-option");
     const target = options.nth(2);
     await expect(target).toHaveAttribute("data-tab-id", visited[0]!);
 
-    // The document sees the held modifier on the pointer's events too.
+    // The document sees the held pair on the pointer's events too.
     await shell.keyboard.down("Control");
+    await shell.keyboard.down("Alt");
     const box = await target.boundingBox();
     if (box === null) throw new Error("the card has no box");
     await shell.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -255,6 +272,7 @@ test("the pointer picks a card, and the modifier's release goes to it", async ()
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Shift", modifiers: ["shift"] }]);
     await expect(switcher).toHaveCount(0);
     await expect.poll(() => activeTabId(shell)).toBe(visited[0]);
+    await shell.keyboard.up("Alt");
     await shell.keyboard.up("Control");
   } finally {
     await app.close();

@@ -108,7 +108,11 @@ import {
   resizedKeepingAspect,
   resizedRect,
   rubberBandRect,
+  rescaleRect,
   sameRect,
+  seamsAt,
+  seamTravel,
+  alongSeam,
   cascadeRects,
   thirdsCell,
   thirdsZone,
@@ -122,8 +126,10 @@ import {
   type Edges,
   type Guide,
   type MinSize,
+  type Placement,
   type Point,
   type Rect,
+  type Seam,
   type ThirdsCell,
   type TileZone,
 } from "../../lib/desk/geometry";
@@ -417,6 +423,36 @@ export interface DeskAgentLayout {
   docked: string[];
 }
 
+/**
+ * A window came out onto the desk, or left it, by the person's hand (or the
+ * browser's choice of a tab): what the desk's smart layout hears
+ * (onLayoutMoment, docs/desk-layout.md). Not the desk's own arranging, the
+ * agent's, a group passing, or the desk coming up or going.
+ */
+export type DeskLayoutMoment =
+  | {
+      trigger: "opened";
+      id: string;
+      /** How it was placed (placeNewWindow): a hole, half a window's place, a free spot, or the desk's first. */
+      how: Placement["kind"];
+      /** The windows that may be laid out (layoutView), where they stood before it came out. */
+      before: Map<string, Rect>;
+    }
+  | { trigger: "closed"; gone: Array<{ id: string; rect: Rect; how: "closed" | "collapsed" }> };
+
+/** The desk as its smart layout reads it (layoutView). */
+export interface DeskLayoutView {
+  /** Where windows are laid out: the desk beside the dock, above its foot band. */
+  bounds: Rect;
+  /** The windows that may be laid out, bottom to top, each where it is going (not masked, minimized, or leaving). */
+  windows: Map<string, Rect>;
+  /** The rest still on the desk (masked, minimized but out), which stay where they are. */
+  others: Rect[];
+  inUse: string | null;
+  /** The layout as a string: two views with the same stamp have every window in the same place. */
+  stamp: string;
+}
+
 /** Where every window was (layoutSnapshot), bottom to top: what Undo layout puts back. */
 export interface DeskLayoutSnapshot {
   windows: Array<{ tabId: string; rect: Rect; mini: Minimized | null }>;
@@ -596,6 +632,8 @@ interface Gesture {
    */
   pinTop: number | null;
   edges: Edges | null;
+  /** A resize from a gutter other windows meet the window across: the seams it moves, split-view style. */
+  joint: Joint | null;
   tracker: VelocityTracker;
   /** The tile lit for the window in hand: an edge zone pushed into, or the snap tile under the pointer. */
   zone: TileZone | null;
@@ -616,6 +654,17 @@ interface Gesture {
   /** An icon in hand in the dock: where it would go there (DockDrag). */
   dock: DockDrag | null;
   end: (() => void) | null;
+}
+
+/**
+ * The seams a resize holds (seamsAt): its gutter on each axis (null where
+ * the edge in hand is the window's alone), and where every window on them
+ * stood at the press.
+ */
+interface Joint {
+  x: Seam | null;
+  y: Seam | null;
+  start: Map<string, Rect>;
 }
 
 /**
@@ -690,6 +739,8 @@ export class DeskEngine {
   #last = 0;
   #view: DeskView;
   readonly #listeners = new Set<() => void>();
+  /** The smart layout's ear (onLayoutMoment). */
+  readonly #momentListeners = new Set<(moment: DeskLayoutMoment) => void>();
   /** Null until the first layout goes out: an empty one (every window drawn) must still clear the panes main had up. */
   #sentLayout: string | null = null;
   #sentDesk = "";
@@ -806,6 +857,62 @@ export class DeskEngine {
   };
 
   getView = (): DeskView => this.#view;
+
+  /** Windows coming out or leaving by the person's hand (DeskLayoutMoment), for the desk's smart layout. */
+  onLayoutMoment(listener: (moment: DeskLayoutMoment) => void): () => void {
+    this.#momentListeners.add(listener);
+    return () => this.#momentListeners.delete(listener);
+  }
+
+  #moment(moment: DeskLayoutMoment): void {
+    if (this.#phase !== "open") return;
+    for (const listener of [...this.#momentListeners]) listener(moment);
+  }
+
+  /** A window the smart layout may move: out on the desk at its own size and shape, staying. */
+  #laidOutByDesk(id: string): boolean {
+    const win = this.#wins.get(id);
+    return win !== undefined && win.flight !== "away" && win.mask === null && win.mini === null && !this.#departing.has(id);
+  }
+
+  /** The desk as the smart layout reads it: where each window is going, and what may be moved. */
+  layoutView(): DeskLayoutView {
+    const windows = new Map<string, Rect>();
+    const others: Rect[] = [];
+    for (const id of this.#order) {
+      const win = this.#wins.get(id)!;
+      const rect = { ...(win.target ?? win.rect) };
+      if (this.#laidOutByDesk(id)) windows.set(id, rect);
+      else if (win.flight !== "away" && win.mini?.parked !== true && !this.#departing.has(id)) others.push(rect);
+    }
+    const stamp = [...windows].map(([id, rect]) => `${id}:${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.w)},${Math.round(rect.h)}`).join("|");
+    return { bounds: this.#usable(), windows, others, inUse: this.#focused, stamp };
+  }
+
+  /**
+   * Windows sent to where the smart layout put them (docs/desk-layout.md),
+   * each on the desk's own motion, a beat apart. Returns where every window
+   * was going before, for Undo (restoreLayout) — or null, changing nothing,
+   * when the desk is not open or a window is in hand.
+   */
+  applyLayout(layout: ReadonlyMap<string, Rect>): DeskLayoutSnapshot | null {
+    if (this.#phase !== "open" || this.#gesture !== null) return null;
+    const undo = this.layoutSnapshot();
+    const moving = [...layout].filter(([id]) => this.#laidOutByDesk(id));
+    moving.forEach(([id, rect], index) => {
+      const win = this.#wins.get(id)!;
+      win.target = { ...rect };
+      win.restore = null;
+      win.coasting = false;
+      // (A window still coming out turns toward its new place in the air.)
+      win.delay = win.flight !== null ? 0 : this.#beat(index, moving.length, 0, 0.035);
+    });
+    this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
+    return undo;
+  }
 
   attachStage(el: HTMLElement | null): void {
     this.#stage = el;
@@ -1256,6 +1363,24 @@ export class DeskEngine {
     }
   }
 
+  /**
+   * The box a tab's page has on the desk: its window's (where it is going,
+   * if it is on its way; laid out zoomed out, if minimized), or — in the
+   * dock — that of a window filling the desk. A page the shell draws has no
+   * picture, so the dock lays the page itself out at this box and draws it
+   * small, as it stands (ShellPageMiniature).
+   */
+  pageSize(tabId: string): { w: number; h: number } {
+    const win = this.#wins.get(tabId);
+    const rect = win === undefined ? this.#usable() : (win.target ?? win.rect);
+    const insets = win === undefined ? CHROME_INSETS[this.#host.variants().chrome] : this.#insets(win);
+    const zoom = win?.mini != null ? DESK_MINI_ZOOM : 1;
+    return {
+      w: Math.max(MIN_WINDOW_W, (rect.w - insets.left - insets.right) / zoom),
+      h: Math.max(MIN_WINDOW_H, (rect.h - insets.top - insets.bottom) / zoom),
+    };
+  }
+
   /** The stage moved or changed size: re-read it, and keep the arrangement in proportion. */
   measure(): void {
     const stage = this.#stage;
@@ -1292,9 +1417,10 @@ export class DeskEngine {
           if (win.mini !== null) win.mini.restore = clampRect(denormalizeRect(normalizeRect(win.mini.restore, before), after), reach);
           continue;
         }
-        win.rect = clampRect(denormalizeRect(normalizeRect(win.rect, before), after), reach);
-        if (win.target !== null) win.target = clampRect(denormalizeRect(normalizeRect(win.target, before), after), reach);
-        if (win.restore !== null) win.restore = clampRect(denormalizeRect(normalizeRect(win.restore, before), after), reach);
+        // (Windows a gutter apart stay a gutter apart: a split stays one.)
+        win.rect = clampRect(rescaleRect(win.rect, before, after), reach);
+        if (win.target !== null) win.target = clampRect(rescaleRect(win.target, before, after), reach);
+        if (win.restore !== null) win.restore = clampRect(rescaleRect(win.restore, before, after), reach);
       }
       this.#layShelf();
     } else if (underMoved && this.#phase === "open") this.#reband(before);
@@ -1620,10 +1746,12 @@ export class DeskEngine {
       this.#emit();
     }
     let changed = false;
+    const gone: Array<{ id: string; rect: Rect; how: "closed" }> = [];
     for (const [tabId, win] of [...this.#wins]) {
       // (A window of a group the desk has passed from is on its way into that group's icon; a document is setShellWindows'.)
       if (groupTabIds.includes(tabId) || !isTabWindow(tabId) || this.#departing.has(tabId) || win.flight === "away") continue;
       if (this.#gesture?.tabId === tabId) this.#cancelGesture();
+      if (this.#laidOutByDesk(tabId)) gone.push({ id: tabId, rect: { ...(win.target ?? win.rect) }, how: "closed" });
       this.#remove(tabId);
       changed = true;
     }
@@ -1632,6 +1760,7 @@ export class DeskEngine {
       this.#emit();
     }
     this.#render();
+    if (gone.length > 0) this.#moment({ trigger: "closed", gone });
   }
 
   /** The browser's active tab changed; if it is on the desk it comes to the top, if not it comes out. */
@@ -1686,6 +1815,7 @@ export class DeskEngine {
       return;
     }
     this.#makeRoom();
+    const before = this.layoutView().windows;
     const usable = this.#usable();
     // (The shelf's windows are at the desk's foot, below where windows go.)
     const staying = this.#staying().filter((id) => this.#wins.get(id)!.mini?.parked !== true);
@@ -1694,7 +1824,7 @@ export class DeskEngine {
     const inUse = this.#focused === null || this.#wins.get(this.#focused)?.mask != null || this.#wins.get(this.#focused)?.mini != null ? -1 : staying.indexOf(this.#focused);
     // Where it goes is read from the desk as it is (placeNewWindow): a tiled
     // desk's hole, or half of the window in use, or a free spot.
-    const placed = options.rect !== undefined ? { rect: options.rect, split: null } : placeNewWindow(rects, usable, inUse < 0 ? null : inUse);
+    const placed: Placement = options.rect !== undefined ? { rect: options.rect, split: null, kind: "free" } : placeNewWindow(rects, usable, inUse < 0 ? null : inUse);
     if (placed.split !== null) {
       const giving = this.#wins.get(staying[placed.split.index]!)!;
       giving.target = placed.split.rect;
@@ -1712,6 +1842,8 @@ export class DeskEngine {
     this.#emit();
     this.#render();
     this.#kick();
+    // (A window put where it was asked to be is placed already.)
+    if (options.rect === undefined && this.#laidOutByDesk(tabId)) this.#moment({ trigger: "opened", id: tabId, how: placed.kind, before });
   }
 
   /**
@@ -1759,9 +1891,11 @@ export class DeskEngine {
     if (win === undefined || win.flight === "away" || this.#phase === "leaving") return;
     if (this.#selecting === tabId) this.#selecting = null;
     if (this.#gesture?.tabId === tabId) this.#cancelGesture();
+    const gone = this.#laidOutByDesk(tabId) ? { id: tabId, rect: { ...(win.target ?? win.rect) }, how: "collapsed" as const } : null;
     this.#sendAway(win, true);
     this.#emit();
     this.#kick();
+    if (gone !== null) this.#moment({ trigger: "closed", gone: [gone] });
   }
 
   /**
@@ -2046,8 +2180,8 @@ export class DeskEngine {
           const moved = denormalizeRect(normalizeRect(from, before), after);
           win.target = clampRect({ ...from, x: moved.x, y: moved.y }, reach, this.#minSize(win));
         } else {
-          win.target = clampRect(denormalizeRect(normalizeRect(from, before), after), reach);
-          if (win.restore !== null) win.restore = clampRect(denormalizeRect(normalizeRect(win.restore, before), after), reach);
+          win.target = clampRect(rescaleRect(from, before, after), reach);
+          if (win.restore !== null) win.restore = clampRect(rescaleRect(win.restore, before, after), reach);
         }
         win.coasting = false;
       }
@@ -2307,11 +2441,16 @@ export class DeskEngine {
     if (event.button !== 0 || win === undefined || this.#phase !== "open" || this.#gesture !== null || win.flight !== null || win.mini?.parked === true) return;
     this.#raise(tabId);
     const start = this.#toStage({ x: event.clientX, y: event.clientY });
-    win.coasting = false;
-    win.target = null;
-    win.tween = null;
-    win.vel = { ...ZERO_RECT };
-    win.restore = null;
+    const joint = this.#jointAt(win, edges, start);
+    // The windows on its seams are resized with it: none goes on moving as it was.
+    for (const id of joint?.start.keys() ?? [tabId]) {
+      const held = this.#wins.get(id)!;
+      held.coasting = false;
+      held.target = null;
+      held.tween = null;
+      held.vel = { ...ZERO_RECT };
+      held.restore = null;
+    }
     this.#gesture = {
       kind: "resize",
       tabId,
@@ -2322,6 +2461,7 @@ export class DeskEngine {
       grab: { x: 0, y: 0 },
       pinTop: null,
       edges,
+      joint,
       tracker: new VelocityTracker(),
       zone: null,
       snapping: false,
@@ -2416,6 +2556,7 @@ export class DeskEngine {
       grab: { x: (origin.x - win.rect.x) / Math.max(1, win.rect.w), y: (origin.y - win.rect.y) / Math.max(1, win.rect.h) },
       pinTop: win.origin.y >= 0 && win.origin.y <= barHeight ? win.origin.y : null,
       edges: null,
+      joint: null,
       tracker: new VelocityTracker(),
       zone: null,
       snapping: false,
@@ -2465,6 +2606,7 @@ export class DeskEngine {
       grab: { x: 0.5, y: 0.5 },
       pinTop: null,
       edges: null,
+      joint: null,
       tracker: new VelocityTracker(),
       zone: null,
       snapping: false,
@@ -2695,9 +2837,67 @@ export class DeskEngine {
       win.rect = resizedKeepingAspect(gesture.startRect, edges, dx, dy, this.#reach(), MASK_INSETS.top, MIN_DESK_MASK);
       return;
     }
-    const resized = resizedRect(gesture.startRect, edges, gesture.pointer.x - gesture.start.x, gesture.pointer.y - gesture.start.y, this.#reach());
-    // Out to the desk's leading edge, behind the dock; the dock's own edge sticks on the way.
-    win.rect = magnetizeEdges(resized, edges, this.#others(win.tabId), this.#usable());
+    const dx = gesture.pointer.x - gesture.start.x;
+    const dy = gesture.pointer.y - gesture.start.y;
+    const joint = gesture.joint;
+    const ownX = joint === null || joint.x === null;
+    const ownY = joint === null || joint.y === null;
+    // An edge that is the window's alone: out to the desk's leading edge, behind the dock; the dock's own edge sticks on the way.
+    const alone: Edges = { left: edges.left && ownX, right: edges.right && ownX, top: edges.top && ownY, bottom: edges.bottom && ownY };
+    const free = magnetizeEdges(resizedRect(gesture.startRect, alone, dx, dy, this.#reach()), alone, this.#others(win.tabId), this.#usable());
+    if (joint === null) {
+      win.rect = free;
+      return;
+    }
+    // A gutter other windows meet it across moves, and they give or take what it does.
+    const others = this.#othersThan(joint.start);
+    const tx = joint.x === null ? 0 : seamTravel(joint.start, joint.x, dx, others);
+    const ty = joint.y === null ? 0 : seamTravel(joint.start, joint.y, dy, others);
+    for (const [id, start] of joint.start) {
+      const held = this.#wins.get(id);
+      if (held === undefined) continue;
+      let rect = start;
+      if (joint.x !== null) rect = alongSeam(rect, joint.x, id, tx);
+      if (joint.y !== null) rect = alongSeam(rect, joint.y, id, ty);
+      // (A corner with a gutter one way only: the other way, its edge is its own.)
+      if (id === win.tabId) rect = joint.x === null ? { ...rect, x: free.x, w: free.w } : joint.y === null ? { ...rect, y: free.y, h: free.h } : rect;
+      held.rect = rect;
+    }
+  }
+
+  /**
+   * The seams a press on a window's edges takes hold of (seamsAt), among the
+   * windows that can be on one: tabs' and documents' windows at rest on the
+   * desk at their own size — not a picture (a masked window keeps its
+   * shape), a minimized one, or one flying, settling or still coming out.
+   * Null: no window meets it across the gutter there.
+   */
+  #jointAt(win: Win, edges: Edges, at: Point): Joint | null {
+    const seamless = (held: Win): boolean =>
+      held.mask !== null || held.maskWanted !== null || held.unmasking !== null || held.mini !== null || held.flight !== null || held.hold || this.#departing.has(held.tabId);
+    if (seamless(win)) return null;
+    const rects = new Map<string, Rect>();
+    for (const id of this.#order) {
+      const held = this.#wins.get(id)!;
+      if (seamless(held) || (held !== win && (held.target !== null || held.coasting || held.tween !== null))) continue;
+      rects.set(id, { ...held.rect });
+    }
+    const { x, y } = seamsAt(rects, win.tabId, edges, at);
+    if (x === null && y === null) return null;
+    const start = new Map<string, Rect>();
+    for (const seam of [x, y]) for (const id of [...(seam?.before ?? []), ...(seam?.after ?? [])]) start.set(id, rects.get(id)!);
+    return { x, y, start };
+  }
+
+  /** The windows a resize's seams may stick to: every window but those on them (#others). */
+  #othersThan(on: ReadonlyMap<string, Rect>): Rect[] {
+    const rects: Rect[] = [];
+    for (const id of this.#order) {
+      const win = this.#wins.get(id)!;
+      if (on.has(id) || win.flight === "away" || win.mini?.parked === true) continue;
+      rects.push(win.target ?? win.rect);
+    }
+    return rects;
   }
 
   /**
@@ -2751,16 +2951,20 @@ export class DeskEngine {
       Math.abs(velocity.x) > Math.abs(velocity.y) &&
       gesture.pointer.x + glideReach(velocity.x) * 1.2 < DOCK_W;
     // Let go on the Close pad: into it, and the tab is closed once it is gone.
+    // (Where it was before it was taken up is the place it leaves; a window just out of the dock left none.)
+    const left = gesture.kind === "move" && this.#laidOutByDesk(win.tabId) ? { id: win.tabId, rect: { ...gesture.startRect } } : null;
     if (gesture.drop === "close") {
       this.#closeInto(win, this.#drops.close);
       this.#emit();
       this.#kick();
+      if (left !== null) this.#moment({ trigger: "closed", gone: [{ ...left, how: "closed" }] });
       return;
     }
     if (gesture.overDock || flungHome) {
       this.#sendAway(win, true);
       this.#emit();
       this.#kick();
+      if (left !== null) this.#moment({ trigger: "closed", gone: [{ ...left, how: "collapsed" }] });
       return;
     }
     // A window letting go of the whole desk lands at the size it was headed
