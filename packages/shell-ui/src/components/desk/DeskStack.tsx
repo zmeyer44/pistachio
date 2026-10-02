@@ -1,31 +1,28 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+import { useLayoutEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { ArrowUpRight, Lightbulb, Link2, Plus, Quote, Sparkles, X, Import } from "lucide-react";
 import type { GroupContextItem, GroupContextResult, GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { addContextFiles, droppedText, fileSize } from "../../lib/desk/group-context";
-import { useDeskFileDrag } from "../../lib/desk/file-drag";
 import { cn } from "../../lib/cn";
 import { displayHost } from "../../lib/url";
 import { fileWindowId } from "../../lib/desk/windows";
-import { DOCK_W, type DeskEngine } from "./desk-engine";
+import type { DeskEngine } from "./desk-engine";
 import { FileGlyph } from "./files/FileGlyph";
 
-/** The Stack's card beside the dock: its width, and the gap between them (the dock's popovers'). */
+/** The Stack's card beside the sidebar: its width. */
 const CARD_W = 312;
-const CARD_GAP = 12;
-/** How long the Stack bounces on taking something in. */
-const RECEIVED_MS = 520;
 
 type Item = GroupContextView["items"][number];
 
-function carriesSomething(event: ReactDragEvent): boolean {
+/** A drag that carries something the Stack takes: files, or a link or text dragged out of a page. */
+export function carriesSomething(event: ReactDragEvent): boolean {
   const types = [...event.dataTransfer.types];
   return types.includes("Files") || types.includes("text/uri-list") || types.includes("text/plain");
 }
 
 /** Take what was dropped on the Stack into the group's context: files, or a link or text dragged out of a page. */
-async function takeDrop(group: TabGroupInfo, data: DataTransfer): Promise<GroupContextResult> {
+export async function takeDrop(group: TabGroupInfo, data: DataTransfer): Promise<GroupContextResult> {
   const files = [...data.files];
   if (files.length > 0) return addContextFiles(group.id, group.title, files);
   const text = droppedText(data);
@@ -41,124 +38,27 @@ async function takeDrop(group: TabGroupInfo, data: DataTransfer): Promise<GroupC
   return { rejected: [] };
 }
 
-function rejectionLine(result: GroupContextResult): string | null {
+/** What a drop could not take, as one line for the card to say. */
+export function rejectionLine(result: GroupContextResult): string | null {
   if (result.rejected.length === 0) return null;
   return result.rejected.map((entry) => `${entry.name}: ${entry.reason}`).join(" · ");
 }
 
 /**
- * The group's context in the dock (docs/desk-agent.md §1, "The Stack"): a
- * stack of cards between the tabs and the other groups, with a count. Files
- * dropped on it (and text or links dragged out of a page) go into the
- * context; a click opens its card beside the dock. It bounces when
- * something comes in — the agent saving a fact, a file dropped.
- */
-export function StackTile({
-  group,
-  context,
-  open,
-  engine,
-  onToggle,
-  onRejected,
-}: {
-  group: TabGroupInfo;
-  context: GroupContextView | null;
-  open: boolean;
-  /** The Stack is its documents' home: their windows are put away into it, and come out of it. */
-  engine: DeskEngine;
-  onToggle: (el: HTMLElement) => void;
-  onRejected: (line: string | null) => void;
-}) {
-  const count = context?.items.length ?? 0;
-  const tileRef = useRef<HTMLSpanElement>(null);
-  const [dropping, setDropping] = useState(false);
-  const fileDrag = useDeskFileDrag((state) => state.active);
-  useLayoutEffect(() => {
-    engine.attachHome("file", tileRef.current);
-    return () => engine.attachHome("file", null);
-  }, [engine]);
-  const depth = useRef(0);
-  const before = useRef(count);
-  useEffect(() => {
-    const grew = count > before.current;
-    before.current = count;
-    const el = tileRef.current;
-    if (!grew || el === null) return;
-    delete el.dataset["received"];
-    void el.offsetWidth;
-    el.dataset["received"] = "";
-    const timer = window.setTimeout(() => delete el.dataset["received"], RECEIVED_MS);
-    return () => window.clearTimeout(timer);
-  }, [count]);
-  const label = count === 0 ? "Context: drop files here" : `Context: ${String(count)} ${count === 1 ? "thing" : "things"}`;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-label={label}
-      aria-expanded={open}
-      title={label}
-      data-testid="desk-stack"
-      data-count={count}
-      data-open={open ? "" : undefined}
-      data-dropping={dropping ? "" : undefined}
-      data-drop-target={fileDrag && !dropping ? "" : undefined}
-      className="desk-dock-item desk-stack-item"
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={(event) => onToggle(event.currentTarget)}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        onToggle(event.currentTarget);
-      }}
-      onDragEnter={(event) => {
-        if (!carriesSomething(event)) return;
-        event.preventDefault();
-        depth.current += 1;
-        setDropping(true);
-      }}
-      onDragOver={(event) => {
-        if (!carriesSomething(event)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-      }}
-      onDragLeave={() => {
-        depth.current = Math.max(0, depth.current - 1);
-        if (depth.current === 0) setDropping(false);
-      }}
-      onDrop={(event) => {
-        if (!carriesSomething(event)) return;
-        event.preventDefault();
-        depth.current = 0;
-        setDropping(false);
-        void takeDrop(group, event.dataTransfer).then((result) => onRejected(rejectionLine(result)), () => onRejected("That could not be added"));
-      }}
-    >
-      <span ref={tileRef} className="desk-stack-tile" aria-hidden="true">
-        <span className="desk-stack-card" data-layer="3" />
-        <span className="desk-stack-card" data-layer="2" />
-        <span className="desk-stack-card" data-layer="1">
-          {count === 0 ? <Plus /> : null}
-        </span>
-        {count === 0 ? null : <span className="desk-stack-count">{count}</span>}
-      </span>
-    </div>
-  );
-}
-
-/**
- * The Stack's card, beside the dock: the files as tiles (a click opens one
- * in its own app), the facts and snippets as lines, a field to add a fact,
- * Add files…, and × on each. What the agent saved says so. Contexts of
- * groups that are not here (another Mac's, synced) can be brought in.
+ * The Stack's card, beside its row in the sidebar (DeskContextRow): the
+ * files as tiles (a click opens one on the desk), the facts and snippets as
+ * lines, a field to add a fact, Add files…, and × on each. What the agent
+ * saved says so. Contexts of groups that are not here (another Mac's,
+ * synced) can be brought in.
  */
 export function StackCard({
   ref,
   group,
   context,
   others,
+  left,
   center,
-  dockHeight,
+  stageHeight,
   shown,
   rejection,
   onRejected,
@@ -177,9 +77,11 @@ export function StackCard({
   onOpened: () => void;
   /** Contexts of groups not in this Space's list: another Mac's, or another Space's. */
   others: readonly GroupContextView[];
-  /** The Stack's middle, from the dock's top: the card is centred on it where it fits. */
+  /** Its left edge in the stage. */
+  left: number;
+  /** The Stack's row's middle, in the stage: the card is centred on it where it fits. */
   center: number;
-  dockHeight: number;
+  stageHeight: number;
   shown: boolean;
   rejection: string | null;
   onRejected: (line: string | null) => void;
@@ -201,7 +103,7 @@ export function StackCard({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
-  const top = Math.max(8, Math.min(Math.max(8, dockHeight - height - 8), center - height / 2));
+  const top = Math.max(8, Math.min(Math.max(8, stageHeight - height - 8), center - height / 2));
   const api = nativeApi();
   const addFact = (): void => {
     const text = fact.trim();
@@ -234,7 +136,7 @@ export function StackCard({
       data-dropping={dropping ? "" : undefined}
       className="desk-dock-menu desk-stack-card-panel tab-group-tone"
       data-group-color={group.color}
-      style={{ left: DOCK_W + CARD_GAP, top, width: CARD_W }}
+      style={{ left, top, width: CARD_W }}
       onDragOver={(event) => {
         if (!carriesSomething(event)) return;
         event.preventDefault();

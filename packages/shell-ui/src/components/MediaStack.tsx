@@ -47,6 +47,7 @@ import {
 } from "../lib/media-stack";
 import { useMediaPresence } from "./useMediaPresence";
 import { useAppStore } from "../store";
+import { useDeskStore } from "../lib/desk/store";
 import { nativeApi } from "../api";
 import { useSurface } from "../surface";
 
@@ -843,7 +844,9 @@ export function MediaStack() {
   const pinned = useAppStore(
     (state) => state.settings.layout.sidebar === "pinned",
   );
-  const sidebarRevealed = useAppStore((state) => state.sidebarRevealed);
+  // On a desk the column is the desk's dock: up, whatever the layout says.
+  const onDesk = useDeskStore((state) => state.groupId !== null);
+  const sidebarRevealed = useAppStore((state) => state.sidebarRevealed) || onDesk;
   // The footer's menus open upward over this stack. The video is a native
   // view above the page, so a menu can only get in front of it by the view
   // coming down; the card keeps its slot and the view returns on close.

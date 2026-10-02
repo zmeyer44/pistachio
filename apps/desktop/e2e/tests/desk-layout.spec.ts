@@ -52,10 +52,8 @@ async function box(page: Page, selector: string): Promise<Box> {
 }
 
 const windowSelector = (tabId: string): string => `[data-testid="desk-window"][data-tab-id="${tabId}"]`;
-const iconSelector = (tabId: string): string => `[data-testid="desk-dock-icon"][data-tab-id="${tabId}"] .desk-dock-tile`;
-/** The dock's column (DOCK_W) and the gap beside it; the Bar's band (and gap) at the desk's foot. */
-const DOCK_COLUMN = 60 + 8;
-const BAR_BAND = 52 + 8;
+/** A tab's row in the sidebar — the desk's dock. */
+const rowSelector = (tabId: string): string => `[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`;
 const GAP = 8;
 
 /** The desk is at rest: nothing entering, nothing in hand, nothing flying or settling. */
@@ -187,13 +185,13 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     const group = shell.getByTestId("tab-group");
     await group.getByTestId("tab-group-header").hover();
     await group.getByTestId("tab-group-desk").click();
-    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(4);
+    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(4);
     await settled(shell);
     const stage = await box(shell, ".desk-stage");
     const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
     // Two more windows out (nothing for the model to move: the script's partner is not out yet, or is the window itself), then tiled.
     for (const tabId of [inbox, invoice]) {
-      await shell.locator(iconSelector(tabId)).click();
+      await shell.locator(rowSelector(tabId)).click();
       await expect(shell.locator(windowSelector(tabId))).toHaveCount(1);
     }
     await awayFromDock();
@@ -205,10 +203,11 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     await awayFromDock();
     await settled(shell);
 
-    // The desk in its own terms: the usable box beside the dock, above the Bar.
-    const left = stage.x + DOCK_COLUMN;
-    const width = stage.x + stage.width - left;
-    const height = stage.height - BAR_BAND;
+    // The desk in its own terms: the whole card beside the sidebar (the Bar's notch lies over its foot).
+    const left = stage.x;
+    const top = stage.y;
+    const width = stage.width;
+    const height = stage.height;
     const halfW = (width - GAP) / 2;
     const halfH = (height - GAP) / 2;
     const near = (actual: Box, expected: { x: number; y: number; width: number; height: number }): string => {
@@ -222,12 +221,12 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     };
     const at = (tabId: string): Promise<Box> => box(shell, windowSelector(tabId));
     const quarter = {
-      topLeft: { x: left, y: stage.y, width: halfW, height: halfH },
-      topRight: { x: left + halfW + GAP, y: stage.y, width: halfW, height: halfH },
-      bottomLeft: { x: left, y: stage.y + halfH + GAP, width: halfW, height: halfH },
-      bottomRight: { x: left + halfW + GAP, y: stage.y + halfH + GAP, width: halfW, height: halfH },
+      topLeft: { x: left, y: top, width: halfW, height: halfH },
+      topRight: { x: left + halfW + GAP, y: top, width: halfW, height: halfH },
+      bottomLeft: { x: left, y: top + halfH + GAP, width: halfW, height: halfH },
+      bottomRight: { x: left + halfW + GAP, y: top + halfH + GAP, width: halfW, height: halfH },
     };
-    const leftHalf = { x: left, y: stage.y, width: halfW, height };
+    const leftHalf = { x: left, y: top, width: halfW, height };
     await expect.poll(async () => near(await at(budget), leftHalf)).toBe("there");
     await expect.poll(async () => near(await at(inbox), quarter.topRight)).toBe("there");
     await expect.poll(async () => near(await at(invoice), quarter.bottomRight)).toBe("there");
@@ -236,7 +235,7 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     // ── 1. A window out: the rule split the budget, the model sets it beside the invoice ─
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), budget);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(budget);
-    await shell.locator(iconSelector(vendor)).click();
+    await shell.locator(rowSelector(vendor)).click();
     await expect(shell.locator(windowSelector(vendor))).toHaveCount(1);
     await awayFromDock();
     const card = notices.getByTestId("notice-card").filter({ hasText: "beside" });
@@ -263,7 +262,7 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     await expect(shell.locator(windowSelector(inbox))).toHaveCount(0);
     await expect(notices.getByTestId("notice-card").filter({ hasText: "took the space" })).toHaveCount(1);
     await settled(shell);
-    await expect.poll(async () => near(await at(budget), { x: left, y: stage.y, width, height: halfH })).toBe("there");
+    await expect.poll(async () => near(await at(budget), { x: left, y: top, width, height: halfH })).toBe("there");
     await expect.poll(async () => near(await at(vendor), quarter.bottomLeft)).toBe("there");
     await capture(app, shell, "04-filled.png");
 
@@ -274,7 +273,7 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     await expect(notices.getByTestId("notice-card").filter({ hasText: "the main place" })).toHaveCount(1);
     await settled(shell);
     const mainW = Math.round((width - GAP) * 0.62);
-    await expect.poll(async () => near(await at(budget), { x: left, y: stage.y, width: mainW, height })).toBe("there");
+    await expect.poll(async () => near(await at(budget), { x: left, y: top, width: mainW, height })).toBe("there");
     const column = { x: left + mainW + GAP, width: width - mainW - GAP };
     for (const tabId of [vendor, invoice]) {
       const placed = await at(tabId);

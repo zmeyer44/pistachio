@@ -23,6 +23,7 @@ export type MenuEntry =
       danger?: boolean;
       /** A checkmark before the label. */
       checked?: boolean;
+      testId?: string;
     }
   | { separator: true }
   /** A muted caption, e.g. "Managed by your organization". */
@@ -56,6 +57,8 @@ interface MenuState {
 }
 
 const MENU_W = 220;
+/** The menu's width, for an owner that hangs it from a trigger's trailing edge. */
+export const CONTEXT_MENU_W = MENU_W;
 const EDGE = 6;
 
 export function useContextMenu(): {
@@ -283,6 +286,7 @@ function ContextMenu({ state, ready, onClose }: { state: MenuState; ready: boole
             type="button"
             role="menuitem"
             disabled={item.disabled}
+            data-testid={item.testId}
             data-focused={focused === i ? "" : undefined}
             onMouseMove={() => setFocused(i)}
             onClick={(e) => {

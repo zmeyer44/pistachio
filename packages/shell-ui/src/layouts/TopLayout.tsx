@@ -2,6 +2,7 @@ import { TRAFFIC_LIGHTS_W } from "@pistachio/shell-contracts/chrome";
 import { ChromeRegion } from "../chrome/manifest-renderers";
 import { AgentConsole } from "../components/AgentConsole";
 import { ContentArea } from "../components/ContentArea";
+import { SidebarColumn } from "./SidebarLayout";
 
 /**
  * The top-tabs layout: a 40px titlebar strip over the content row. The strip
@@ -12,6 +13,9 @@ import { ContentArea } from "../components/ContentArea";
  * The layout places REGIONS and nothing else. What each region holds is the
  * manifest's business (chrome/manifest.ts): leading → tabs → trailing across
  * the strip, after the traffic-light pad.
+ *
+ * While a tab group's desk is up, the sidebar's column comes in beside the
+ * content as its dock, as in the sidebar layout (SidebarColumn).
  */
 export function TopLayout() {
   return (
@@ -31,6 +35,7 @@ export function TopLayout() {
         </div>
       </header>
       <div data-testid="chrome-content-row" className="chrome-layout-ground flex min-h-0 min-w-0">
+        <SidebarColumn layout="top" />
         <ContentArea />
         <AgentConsole />
       </div>

@@ -6,10 +6,8 @@ import { nativeApi } from "../../api";
 import { addContextFiles } from "../../lib/desk/group-context";
 import { carriesFiles, useDeskFileDrag } from "../../lib/desk/file-drag";
 import { documentShare, fileWindowId } from "../../lib/desk/windows";
-import { DESK_GAP } from "../../lib/desk/geometry";
 import { useAppStore } from "../../store";
-import { BAR_BAND } from "./DeskBar";
-import { DOCK_W, type DeskEngine, type DeskView } from "./desk-engine";
+import type { DeskEngine, DeskView } from "./desk-engine";
 
 /** A page said files are over it: the shell waits this long for the drag to come to it once the page gives way. */
 const ARMED_MS = 1_500;
@@ -136,7 +134,6 @@ export function DeskDropZone({ group, engine, view }: { group: TabGroupInfo; eng
       data-shown={shown ? "" : undefined}
       data-inside={inside ? "" : undefined}
       aria-hidden={!up}
-      style={{ left: DOCK_W + DESK_GAP, bottom: BAR_BAND }}
       onDragEnter={(event) => {
         if (!carriesFiles(event.dataTransfer)) return;
         event.preventDefault();

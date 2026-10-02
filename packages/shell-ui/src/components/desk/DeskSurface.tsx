@@ -7,22 +7,23 @@ import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
-import { groupMoveIndex } from "../../lib/desk/dock-order";
 import { agentActivity } from "../../lib/desk/agent";
 import { useGroupContexts, useGroupContextsLoaded } from "../../lib/desk/group-context";
 import { useFileWindows } from "../../lib/desk/group-files";
 import { documentWindowIds, fileOf } from "../../lib/desk/documents";
 import { fileItemOf, fileWindowId, isTabWindow } from "../../lib/desk/windows";
 import { displayHost } from "../../lib/url";
-import { lendDeskArrange, lendDeskAsk } from "../../lib/desk/open";
+import { lendDeskArrange, lendDeskAsk, lendDeskEngine } from "../../lib/desk/open";
+import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
 import { passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay } from "../GlanceOverlay";
-import { BAR_BAND, DeskBar } from "./DeskBar";
+import { DeskBar } from "./DeskBar";
 import { DeskEngine, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
-import { DeskDock } from "./DeskDock";
+import { DeskDropRail } from "./DeskDropRail";
 import { DeskDropZone } from "./DeskDropZone";
+import { DeskSideCard } from "./DeskSideCard";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
 import { SmartArranger, type WindowWords } from "./smart-arrange";
 import type { ShellWindowSubject } from "./window-kinds";
@@ -44,21 +45,51 @@ function tabsOf(snapshot: ShellSnapshot | null, tabIds: readonly string[]): read
   return tabIds.map((tabId) => byId.get(tabId)).filter((tab): tab is BrowserTabInfo => tab !== undefined);
 }
 
+/** The stage's corner in the window (where the drop rail, over the sidebar, is placed from). */
+function stageCorner(stage: HTMLElement | null): { left: number; top: number } {
+  const box = stage?.getBoundingClientRect();
+  return { left: box?.left ?? 0, top: box?.top ?? 0 };
+}
+
 /**
- * The desk: a tab group's tabs as free windows over the surface, with the
- * group's inventory down its leading side (docs/desk.md). It takes the
- * browser surface's place while it is up — same box, same gutter — so the
- * page in view becomes a window without moving a pixel, and it gives the
- * box back the same way.
+ * Where a window lives in the sidebar, the desk's dock (DeskHost.homeOf):
+ * a tab's row — or, its group folded away or the row scrolled out of
+ * sight, its group's — another group's row, or the Stack's (the group's
+ * context row), for a document. Null where the sidebar shows none.
+ */
+function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string): HTMLElement | null {
+  const pane = document.querySelector<HTMLElement>("[data-testid='sidebar-pane']");
+  if (pane === null) return null;
+  const list = pane.querySelector<HTMLElement>("[data-testid='sidebar-tab-list']")?.getBoundingClientRect() ?? null;
+  const inSight = (el: HTMLElement | null): HTMLElement | null => {
+    if (el === null || list === null) return el;
+    const box = el.getBoundingClientRect();
+    const middle = box.top + box.height / 2;
+    return box.width > 0 && middle >= list.top && middle <= list.bottom ? el : null;
+  };
+  const groupRow = (gid: string): HTMLElement | null =>
+    inSight(pane.querySelector<HTMLElement>(`[data-testid='tab-group'][data-group-id='${CSS.escape(gid)}'] [data-group-header]`));
+  if (kind === "group") return groupRow(id);
+  if (kind === "file") return inSight(pane.querySelector<HTMLElement>("[data-testid='desk-stack']")) ?? groupRow(groupId);
+  return inSight(pane.querySelector<HTMLElement>(`[role='tab'][data-tab-id='${CSS.escape(id)}']`)) ?? groupRow(groupId);
+}
+
+/**
+ * The desk: a tab group's tabs as free windows over the surface (docs/desk.md),
+ * with the sidebar's column beside it as its dock — the group's tabs as rows
+ * there, which windows come out of and go back into. It takes the browser
+ * surface's place while it is up — same box, same gutter — so the page in
+ * view becomes a window without moving a pixel, and it gives the box back
+ * the same way.
  *
  * The motion is the engine's (desk-engine.ts); this component keeps it fed
  * with what the browser says — the group's tabs, which one is active,
  * which are asleep — and draws what the engine says is on the desk.
  *
- * The desk can pass to another of the Space's groups in place (from its
- * dock: useDeskStore's switchTo): `groupId` changes under the same engine,
- * which sends the old group's windows into its icon and brings the new
- * group's out (DeskEngine.switchGroup).
+ * The desk can pass to another of the Space's groups in place (that group's
+ * desk button in the sidebar: useDeskStore's switchTo): `groupId` changes
+ * under the same engine, which sends the old group's windows into its row
+ * and brings the new group's out of theirs (DeskEngine.switchGroup).
  */
 export default function DeskSurface({ groupId }: { groupId: string }) {
   const group = useAppStore((state) => state.snapshot?.tabGroups.find((candidate) => candidate.id === groupId) ?? null);
@@ -120,9 +151,6 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         if (isTabWindow(tabId)) useAppStore.getState().openUrlBar(tabId);
       },
       save: (windows) => useDeskStore.getState().save(shownGroup.current, { windows }),
-      switchGroup: (next) => useDeskStore.getState().switchTo(next),
-      // A drop in the dock: the browser holds the order, of the group's tabs and of the groups.
-      reorderTab: (tabId, index) => void useAppStore.getState().tabGroupCommand({ type: "addTab", groupId: shownGroup.current, tabId, index }),
       moveTabToGroup: (tabId, groupId, next) => {
         void (async () => {
           const store = useAppStore.getState();
@@ -137,16 +165,16 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
           await store.tabGroupCommand({ type: "addTab", groupId, tabId });
         })();
       },
-      reorderGroup: (groupId, order) => {
-        const store = useAppStore.getState();
-        const index = store.snapshot === null ? null : groupMoveIndex(store.snapshot, groupId, order);
-        if (index !== null) void store.tabGroupCommand({ type: "move", groupId, index });
-      },
       leaveDone: () => useDeskStore.getState().finishLeave(),
+      sidebar: () => {
+        const slot = document.querySelector<HTMLElement>("[data-testid='sidebar-motion-slot']");
+        if (slot === null) return null;
+        const box = slot.getBoundingClientRect();
+        return box.width < 1 ? null : { x: box.left, y: box.top, w: box.width, h: box.height };
+      },
+      homeOf: (kind, id) => sidebarHome(kind, id, shownGroup.current),
     });
     created.attachStage(stage);
-    // The Bar's band at the foot, before any window is laid out: they keep above it.
-    created.setBarBand(BAR_BAND);
     const snapshot = useAppStore.getState().snapshot;
     const ids = latest.current.tabs.map((tab) => tab.id);
     const active = snapshot?.activeTabId ?? null;
@@ -184,18 +212,9 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     const onKey = (event: KeyboardEvent): void => created.setShift(event.shiftKey);
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKey);
-    // Where the pointer is, for the dock (it steps aside for the window in
-    // use lying behind it, and comes back when the pointer comes to it):
-    // the shell's own pointer events, and main's word when the pointer comes
-    // there over a live page.
-    const onPointer = (event: PointerEvent): void => created.notePointer({ x: event.clientX, y: event.clientY });
-    const offPointer = (): void => created.notePointer(null);
-    stage.addEventListener("pointermove", onPointer);
-    stage.addEventListener("pointerleave", offPointer);
     // The pointer on a minimized window's live page, which the shell never hears: main's word (a parked one rises into view).
     const offHover = nativeApi()?.onDeskHover((hover) => created.hoverMini(hover.tabId, "page", hover.over));
     const offPage = nativeApi()?.onDeskPageInput((input) => {
-      if (input === "dock") created.pointerAtDock();
       // A press on a live page while a document was in use: that page is in use now. (Pressed, a page
       // the browser had not selected is selected, and comes up that way; the one it had, only here.)
       if (input === "press") {
@@ -211,8 +230,6 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       window.removeEventListener("resize", measure);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("keyup", onKey);
-      stage.removeEventListener("pointermove", onPointer);
-      stage.removeEventListener("pointerleave", offPointer);
       offGrab?.();
       offShift?.();
       offHover?.();
@@ -278,6 +295,13 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       created.destroy();
       arranger.current = null;
     };
+  }, [engine]);
+
+  // The sidebar — the desk's dock — acts on its windows through it (lib/desk/open.ts).
+  useEffect(() => {
+    if (engine === null) return;
+    lendDeskEngine(engine);
+    return () => lendDeskEngine(null);
   }, [engine]);
 
   // The keyboard's Tile, Cascade and Arrange (chrome/actions.tsx) reach this desk's engine.
@@ -382,6 +406,41 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     useCallback((listener: () => void) => engine?.subscribe(listener) ?? (() => undefined), [engine]),
     () => engine?.getView() ?? null,
   );
+
+  // The sidebar marks the tabs whose windows are out on the desk, and the one in use (lib/desk/chrome.ts).
+  useEffect(() => {
+    const marks = new Map<string, DeskMark>();
+    for (const window of view?.windows ?? []) if (window.flight !== "away" && isTabWindow(window.tabId)) marks.set(window.tabId, window.focused ? "focused" : "out");
+    useDeskChrome.getState().setMarks(marks);
+  }, [view]);
+  // The agent's tab wears its ring in the sidebar too.
+  useEffect(() => {
+    useDeskChrome.getState().setAgentTab(agentTab);
+  }, [agentTab]);
+  useEffect(
+    () => () => {
+      const chrome = useDeskChrome.getState();
+      chrome.setMarks(new Map());
+      chrome.closeCard();
+      chrome.setHovered(null);
+      chrome.setAgentTab(null);
+    },
+    [],
+  );
+
+  // One of the group's rows in the sidebar under the pointer: ⇧⌫ closes that tab, wherever the keyboard is
+  // (main takes the key while the engine says a row is hovered, and says when it is struck).
+  const hovered = useDeskChrome((state) => state.hovered);
+  const closable = hovered !== null && tabIds.includes(hovered) && view?.gesture == null ? hovered : null;
+  useEffect(() => {
+    if (engine === null) return;
+    engine.setDockHover(closable !== null);
+    if (closable === null) return;
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "close") void useAppStore.getState().closeTab(closable);
+    });
+    return () => offPage?.();
+  }, [engine, closable]);
 
   // The group lost a tab (closed, moved out): its window goes.
   useEffect(() => {
@@ -503,6 +562,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     return subject;
   };
   const attachGuides = useCallback((el: HTMLDivElement | null) => engine?.attachGuides(el), [engine]);
+  /** A window in hand: the drop rail may stand over the sidebar. */
+  const carrying = view?.gesture === "move" || view?.gesture === "spawn";
 
   return (
     <section
@@ -549,7 +610,17 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
               );
             })}
         {engine === null || view === null || group === null ? null : (
-          <DeskDock group={group} tabs={tabs} view={view} engine={engine} context={context} otherContexts={otherContexts} agentTabId={agentTab} />
+          <DeskSideCard engine={engine} view={view} stageRef={stageRef} group={group} context={context} others={otherContexts} />
+        )}
+        {engine === null || view === null || group === null ? null : (
+          <DeskDropRail
+            engine={engine}
+            drops={view.drops}
+            stage={stageCorner(stageRef.current)}
+            shown={carrying && view.dropsShown}
+            drop={carrying ? view.dockDrop : null}
+            groupColor={group.color}
+          />
         )}
         {engine === null || view === null || group === null ? null : (
           <DeskDropZone group={group} engine={engine} view={view} />

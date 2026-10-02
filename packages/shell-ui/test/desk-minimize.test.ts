@@ -1,8 +1,8 @@
 /**
  * Minimized desk windows (docs/desk.md, "Minimize"): a window made small,
  * its page zoomed out, parked in the shelf at the desk's foot — half of it
- * below the desk's edge, the next one along overlapping it by half — with
- * the desk keeping above their band. The pointer on one raises it (and
+ * below the desk's edge, the next one along overlapping it by half — over
+ * the windows there, whose pages are cut short of them. The pointer on one raises it (and
  * only it) into view; dragged away it is a minimized window out on the
  * desk, and let go at the foot it parks again; Expand gives it back its
  * box. Main hears each minimized page's box and zoom, and a page growing
@@ -17,7 +17,7 @@ import type { DragSample } from "@pistachio/shell-contracts/chrome";
 import { DESK_MINI_ZOOM, isDeskState, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { CHROME_INSETS, DeskEngine, DOCK_W, MINI_SIZE, type DeskHost } from "../src/components/desk/desk-engine";
+import { CHROME_INSETS, DeskEngine, MINI_SIZE, SHELF_INSET, type DeskHost } from "../src/components/desk/desk-engine";
 import { DESK_GAP, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
@@ -84,10 +84,9 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     close: () => undefined,
     editAddress: () => undefined,
     save: () => undefined,
-    switchGroup: () => undefined,
-    reorderTab: () => undefined,
     moveTabToGroup: () => undefined,
-    reorderGroup: () => undefined,
+    sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    homeOf: () => null,
     leaveDone: () => undefined,
     ...host,
   });
@@ -115,11 +114,16 @@ function expectRect(actual: Rect, expected: Rect, within = 1): void {
 
 const STAGE = { w: 1600, h: 1000 };
 const insets = CHROME_INSETS[DEFAULT_DESK_VARIANTS.chrome];
-/** The band the desk keeps above while windows are parked: where they peek up, and a gap. */
-const FOOT = MINI_SIZE.h / 2 + DESK_GAP;
-const LEFT = DOCK_W + DESK_GAP;
+/** How much of a parked window shows above the desk's foot: a quarter of it (the engine's MINI_PEEK). */
+const PEEK = MINI_SIZE.h / 4;
+/** The shelf's band at the desk's foot: where they peek up, and a gap above (a minimized window let go in it parks). */
+const FOOT = PEEK + DESK_GAP;
+/** Where the shelf begins: clear of the well's rounded corner. */
+const LEFT = SHELF_INSET;
+/** The desk a window fills, windows parked or not: the whole card. */
+const FILLED = { x: 0, y: 0, w: STAGE.w, h: STAGE.h };
 /** Where the shelf's first window peeks up, and where it is raised to. */
-const PEEKING = { x: LEFT, y: STAGE.h - MINI_SIZE.h / 2, w: MINI_SIZE.w, h: MINI_SIZE.h };
+const PEEKING = { x: LEFT, y: STAGE.h - PEEK, w: MINI_SIZE.w, h: MINI_SIZE.h };
 const RAISED = { ...PEEKING, y: STAGE.h - MINI_SIZE.h - DESK_GAP };
 /** Past the time a raised window waits once the pointer has left it. */
 const MINI_LOWER_WAIT = 400;
@@ -202,19 +206,57 @@ describe("minimizing a window", () => {
     desk.destroy();
   });
 
-  it("keeps the desk above the shelf while a window is parked there: a window filling the desk gives way, and fills it all again after", () => {
-    const { desk, rect } = open();
+  it("lies over the windows at the desk's foot: a window filling the desk still fills it, its page cut short of the shelf, and whole again after", () => {
+    const { desk, els, layouts, rect } = open();
     desk.toggleMaximize("tab-2");
     settle();
-    expectRect(rect("tab-2"), { x: LEFT, y: 0, w: STAGE.w - LEFT, h: STAGE.h });
+    expectRect(rect("tab-2"), FILLED);
+    const page = (): { y: number; height: number } | undefined => layouts.at(-1)?.views.find((view) => view.tabId === "tab-2")?.bounds;
+    expect(page()!.y + page()!.height).toBe(STAGE.h - insets.bottom);
     desk.minimize("tab-1");
     settle();
-    expectRect(rect("tab-2"), { x: LEFT, y: 0, w: STAGE.w - LEFT, h: STAGE.h - FOOT });
-    // Nothing is under the shelf: a window let down there stays above it.
-    expect(rect("tab-0").y + rect("tab-0").h).toBeLessThanOrEqual(STAGE.h - FOOT + 0.5);
+    expectRect(rect("tab-2"), FILLED);
+    // Its live page stops where the parked window peeks up, and its frame's page box with it; the shelf stays live over the rest.
+    expect(page()!.y + page()!.height).toBe(STAGE.h - PEEK);
+    expect(els.get("tab-2")!.style["--desk-cut"]).toBe(`${(PEEK - insets.bottom).toFixed(1)}px`);
+    expect(layouts.at(-1)?.views.map((view) => view.tabId)).toContain("tab-1");
     desk.expand("tab-1");
     settle();
-    expectRect(rect("tab-2"), { x: LEFT, y: 0, w: STAGE.w - LEFT, h: STAGE.h });
+    expectRect(rect("tab-2"), FILLED);
+    expect(page()!.y + page()!.height).toBe(STAGE.h - insets.bottom);
+    expect(els.get("tab-2")!.style["--desk-cut"]).toBe("0.0px");
+    desk.destroy();
+  });
+
+  it("says a window is in use only while it is out at its own size and in use: its row pressed is then the address's", () => {
+    const { desk } = open();
+    expect(desk.inUse("tab-0")).toBe(true);
+    expect(desk.inUse("tab-1")).toBe(false);
+    desk.minimize("tab-0");
+    settle();
+    expect(desk.inUse("tab-0")).toBe(false);
+    desk.expand("tab-0");
+    settle();
+    expect(desk.inUse("tab-0")).toBe(true);
+    desk.putAway("tab-0");
+    settle();
+    expect(desk.inUse("tab-0")).toBe(false);
+    expect(desk.inUse("tab-3")).toBe(false);
+    desk.destroy();
+  });
+
+  it("cuts a window short of the Bar's notch only where it is under it", () => {
+    const { desk, layouts, rect } = open();
+    desk.setNotch({ w: 240, h: 32 });
+    desk.toggleMaximize("tab-2");
+    settle();
+    const page = (tabId: string): { y: number; height: number } | undefined => layouts.at(-1)?.views.find((view) => view.tabId === tabId)?.bounds;
+    expectRect(rect("tab-2"), FILLED);
+    expect(page("tab-2")!.y + page("tab-2")!.height).toBe(STAGE.h - 32);
+    // In the left half, clear of the notch: whole.
+    desk.applyLayout(new Map([["tab-2", { x: 0, y: 0, w: STAGE.w / 2 - 200, h: STAGE.h }]]));
+    settle();
+    expect(page("tab-2")!.y + page("tab-2")!.height).toBe(STAGE.h - insets.bottom);
     desk.destroy();
   });
 
@@ -486,8 +528,8 @@ describe("a minimized window snapped", () => {
     return { aiming };
   }
   const titleOf = (rect: Rect) => ({ x: rect.x + 60, y: rect.y + 12 });
-  /** The desk windows go in with nothing parked: all of the stage beside the dock. */
-  const usable = { x: LEFT, y: 0, w: STAGE.w - LEFT, h: STAGE.h };
+  /** The desk windows go in with nothing parked. */
+  const usable = FILLED;
 
   it("into an edge zone lands in it as a window at its own size, its page no longer zoomed", () => {
     const { desk, drag, desks, rect, view } = open();
@@ -496,7 +538,7 @@ describe("a minimized window snapped", () => {
     const { aiming } = carry(desk, drag, "tab-0", titleOf(PEEKING), { x: STAGE.w - 6, y: 500 });
     expect(aiming).toBe(true);
     expect(view("tab-0").mini).toBeNull();
-    expectRect(rect("tab-0"), { x: LEFT + (usable.w - DESK_GAP) / 2 + DESK_GAP, y: 0, w: (usable.w - DESK_GAP) / 2, h: STAGE.h });
+    expectRect(rect("tab-0"), { x: usable.x + (usable.w - DESK_GAP) / 2 + DESK_GAP, y: usable.y, w: (usable.w - DESK_GAP) / 2, h: usable.h });
     expect(desks.at(-1)?.zoomed).toEqual([]);
     desk.destroy();
   });
@@ -509,8 +551,8 @@ describe("a minimized window snapped", () => {
     // The top-right third of the desk is its top-right quarter.
     carry(desk, drag, "tab-1", titleOf({ ...PEEKING, x: LEFT + MINI_SIZE.w / 2 }), { x: STAGE.w - 200, y: 150 }, true);
     expect(view("tab-1").mini).toBeNull();
-    const usableNow = { ...usable, h: STAGE.h - FOOT };
-    expectRect(rect("tab-1"), { x: LEFT + (usableNow.w - DESK_GAP) / 2 + DESK_GAP, y: 0, w: (usableNow.w - DESK_GAP) / 2, h: (usableNow.h - DESK_GAP) / 2 });
+    const usableNow = FILLED;
+    expectRect(rect("tab-1"), { x: usableNow.x + (usableNow.w - DESK_GAP) / 2 + DESK_GAP, y: usableNow.y, w: (usableNow.w - DESK_GAP) / 2, h: (usableNow.h - DESK_GAP) / 2 });
     // The one still parked stays parked.
     expect(view("tab-0").mini).toBe("parked");
     desk.destroy();
@@ -554,29 +596,10 @@ describe("a minimized window snapped", () => {
   });
 });
 
-describe("the shelf over a desk whose surface runs below it", () => {
-  it("peeks from the window's edge, not the stage's: nothing shows between a parked window and the edge", () => {
-    // The surface's gutter: 8px of it below the stage, down to the window's edge.
-    const GUTTER = 8;
+describe("the shelf at the foot of the desk's card", () => {
+  it("peeks from the card's own edge, cut off there, its view too, and the desk keeps above where it peeks up", () => {
     const { layouts } = native();
-    const desk = new DeskEngine({
-      variants: () => DEFAULT_DESK_VARIANTS,
-      hasLivePage: () => true,
-      select: () => undefined,
-      close: () => undefined,
-      editAddress: () => undefined,
-      save: () => undefined,
-      switchGroup: () => undefined,
-      reorderTab: () => undefined,
-      moveTabToGroup: () => undefined,
-      reorderGroup: () => undefined,
-      leaveDone: () => undefined,
-    });
-    const surface = { getBoundingClientRect: () => ({ left: 0, top: 0, width: STAGE.w, height: STAGE.h + GUTTER, bottom: STAGE.h + GUTTER }) };
-    desk.attachStage({
-      getBoundingClientRect: () => ({ left: 0, top: 0, width: STAGE.w, height: STAGE.h, bottom: STAGE.h }),
-      closest: (selector: string) => (selector === ".desk-surface" ? surface : null),
-    } as unknown as HTMLElement);
+    const desk = engine();
     desk.start([], "tab-0", ["tab-0", "tab-1"]);
     settle();
     desk.add("tab-1", { focus: false });
@@ -585,22 +608,21 @@ describe("the shelf over a desk whose surface runs below it", () => {
     desk.attachWindow("tab-0", el as unknown as HTMLElement);
     desk.minimize("tab-0");
     settle();
-    const edge = STAGE.h + GUTTER;
-    expectRect(rectOf(el), { ...PEEKING, y: edge - MINI_SIZE.h / 2 });
-    // Cut off at the window's edge, its view too.
-    expect(el.style["clipPath"]).toBe(`inset(-40px -40px ${(MINI_SIZE.h / 2).toFixed(1)}px -40px)`);
+    expectRect(rectOf(el), PEEKING);
+    // Cut off at the card's edge, its view too: the surface's gutter below it stays clear.
+    expect(el.style["clipPath"]).toBe(`inset(-40px -40px ${(MINI_SIZE.h - PEEK).toFixed(1)}px -40px)`);
     const view = layouts.at(-1)!.views.find((entry) => entry.tabId === "tab-0")!;
-    expect(view.bounds.y + view.bounds.height).toBe(edge);
-    // The desk keeps above where it peeks up, and no further.
+    expect(view.bounds.y + view.bounds.height).toBe(STAGE.h);
+    // The desk keeps above where it peeks up, and a gap.
     const other = desk.layoutSnapshot().windows.find((window) => window.tabId === "tab-1")!.rect;
-    expect(other.y + other.h).toBeLessThanOrEqual(edge - MINI_SIZE.h / 2 - DESK_GAP + 0.5);
+    expect(other.y + other.h).toBeLessThanOrEqual(STAGE.h - PEEK - DESK_GAP + 0.5);
     desk.destroy();
   });
 });
 
 describe("a window growing into a larger box", () => {
-  /** The desk a window fills: all of the stage beside the dock (nothing parked). */
-  const filled = { x: LEFT, y: 0, w: STAGE.w - LEFT, h: STAGE.h };
+  /** The desk a window fills (nothing parked). */
+  const filled = FILLED;
   const pageOf = (rect: Rect) => ({ width: Math.round(rect.w - insets.left - insets.right), height: Math.round(rect.h - insets.top - insets.bottom) });
 
   it("fills the desk as its live page, laid out at the desk's size from the start, and never past it, even with the Bouncy spring", async () => {

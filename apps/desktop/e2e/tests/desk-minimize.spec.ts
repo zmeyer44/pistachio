@@ -1,22 +1,23 @@
 /**
  * Minimized desk windows end to end (docs/desk.md, "Minimize"): the
  * window's Minimize button shrinks it into the shelf at the desk's foot,
- * beside the dock, half of it below the desk's edge, its page shown as if
+ * beside the sidebar, peeking up a quarter of its height, its page shown as if
  * zoomed to 50% (laid out twice the window's size, and only that tab: its
  * site's other tab is untouched) and live, its view cut short at the desk's
  * edge. The pointer on it — on its frame, or on its live page, which main
  * relays — raises it into view, and a click lands on the page where it is
  * drawn. The next one stacks to the right, overlapping it by half. Dragged
  * out it is a minimized window like any other, resized and still zoomed;
- * the desk keeps above the shelf; Expand gives each its box and its page
- * its own size back; Collapse (the old Put away) sends one to the dock.
+ * the shelf lies over the windows there, their pages cut short of it;
+ * Expand gives each its box and its page
+ * its own size back; Collapse (the old Put away) sends one into the sidebar.
  */
 
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { _electron as electron, expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
@@ -36,6 +37,12 @@ function api<T>(shell: Page, call: (pistachio: PistachioApi) => Promise<T>): Pro
 }
 
 const snapshot = (shell: Page): Promise<ShellSnapshot> => api(shell, (pistachio) => pistachio.getSnapshot());
+
+/** One of a window's less-used controls, on its frame's menu (⋯): minimize, mask, a document's own. */
+async function fromFrameMenu(shell: Page, win: Locator, testId: string): Promise<void> {
+  await win.getByTestId("desk-window-more").click();
+  await shell.locator(`[data-testid="context-menu"] [data-testid="${testId}"]`).click();
+}
 
 interface Box {
   x: number;
@@ -197,7 +204,8 @@ const ACCOUNTS = "pistachio://demo/auth/relying-party";
 /** A minimized window (the least a window may be), its page box inside the title bar frame, and that box at 50%. */
 const MINI = { w: 300, h: 200 };
 const MINI_PAGE = { w: 290, h: 161 };
-const LEFT = 68;
+/** Where the shelf begins: in from the desk's leading edge, clear of its rounded corner (the engine's SHELF_INSET). */
+const LEFT = 18;
 
 test("minimized windows: parked peeking at the desk's foot, zoomed out and live, raised by the pointer, stacked, dragged out, resized, expanded", async () => {
   test.setTimeout(180_000);
@@ -237,23 +245,23 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     const group = shell.getByTestId("tab-group");
     await group.getByTestId("tab-group-header").hover();
     await group.getByTestId("tab-group-desk").click();
-    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(3);
     await settled(shell);
     // The vendor and the accounts out too: three windows.
     for (const tabId of [vendor, accounts]) {
-      await shell.locator(`[data-testid="desk-dock-icon"][data-tab-id="${tabId}"]`).click();
+      await shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`).click();
       await settled(shell);
     }
     await expect(shell.locator('[data-testid="desk-window"]')).toHaveCount(3);
     const stage = await box(shell, ".desk-stage");
     const foot = stage.y + stage.height;
-    // A parked window peeks up from the window's edge, below the desk's gutter: nothing shows between them.
-    const edge = await shell.evaluate(() => window.innerHeight);
-    const surface = await box(shell, '[data-testid="desk-surface"]');
-    near(surface.y + surface.height, edge, 0.5);
+    // A parked window peeks up from the desk card's foot, cut off there: the surface's gutter below stays clear.
+    const edge = foot;
     /** Where the shelf's windows peek up from, and the line the desk's windows keep above. */
-    const peekY = edge - MINI.h / 2;
-    const keepAbove = peekY - 8;
+    // (A quarter of it shows: its title bar and a strip of its page.)
+    const peekY = edge - MINI.h / 4;
+    /** Where a minimized window let go parks: in the shelf's band, from a gap above where they peek up. */
+    const shelfTop = peekY - 8;
     const away = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + 40);
     await away();
     const invoiceWindow = shell.locator(windowSelector(invoice));
@@ -265,8 +273,8 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     const invoicePageBefore = await pageSize(app, INVOICES);
     await capture(app, shell, "01-three-windows.png");
 
-    // ── 1. Minimize: into the shelf at the desk's foot, beside the dock, half of it below the desk's edge ─
-    await invoiceWindow.getByTestId("desk-minimize").click();
+    // ── 1. Minimize: into the shelf at the desk's foot, beside the sidebar, three quarters of it below the desk's edge ─
+    await fromFrameMenu(shell, invoiceWindow, "desk-minimize");
     await settled(shell);
     await expect(invoiceWindow).toHaveAttribute("data-mini", "parked");
     const parked = await box(shell, windowSelector(invoice));
@@ -282,15 +290,16 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await expect
       .poll(async () => (await liveViews(app)).find((view) => view.url === INVOICES)?.bounds ?? null)
       .toEqual({ x: Math.round(parked.x + 5), y: Math.round(parked.y + 34), width: MINI_PAGE.w, height: Math.round(edge - (parked.y + 34)) });
-    // The desk keeps above the shelf: no window goes under it.
-    for (const tabId of [vendor, accounts]) {
-      const rect = await box(shell, windowSelector(tabId));
-      expect(rect.y + rect.height).toBeLessThanOrEqual(keepAbove + 1);
+    // The shelf lies over the windows at the desk's foot: a live page under it stops where it peeks up.
+    for (const url of [VENDOR, ACCOUNTS]) {
+      const view = (await liveViews(app)).find((candidate) => candidate.url === url);
+      if (view !== undefined && view.bounds.x < parked.x + parked.width && parked.x < view.bounds.x + view.bounds.width)
+        expect(view.bounds.y + view.bounds.height).toBeLessThanOrEqual(peekY + 1);
     }
     await capture(app, shell, "02-minimized.png");
 
     // ── 2. The pointer on its live page (main's word) raises it into view; a click lands where the page is drawn ─
-    await pageMouse(app, INVOICES, "mouseMove", 120, 30);
+    await pageMouse(app, INVOICES, "mouseMove", 120, 8);
     await expect(invoiceWindow).toHaveAttribute("data-raised", "");
     await expect.poll(async () => Math.round((await box(shell, windowSelector(invoice))).y)).toBe(Math.round(foot - MINI.h - 8));
     await expect
@@ -301,12 +310,12 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await expect.poll(() => inPage<number[][]>(app, INVOICES, "window.__pressed")).toEqual([[200, 120]]);
     await capture(app, shell, "03-raised.png");
     // Off its page: back down a moment later.
-    await pageMouse(app, INVOICES, "mouseLeave", 120, 30);
+    await pageMouse(app, INVOICES, "mouseLeave", 120, 8);
     await expect(invoiceWindow).not.toHaveAttribute("data-raised", "");
     await expect.poll(async () => Math.round((await box(shell, windowSelector(invoice))).y)).toBe(Math.round(peekY));
 
     // ── 3. The next one stacks to the right, overlapping it by half, and over it; the pointer on its frame raises only it ─
-    await vendorWindow.getByTestId("desk-minimize").click();
+    await fromFrameMenu(shell, vendorWindow, "desk-minimize");
     await settled(shell);
     await expect(vendorWindow).toHaveAttribute("data-mini", "parked");
     const second = await box(shell, windowSelector(vendor));
@@ -338,7 +347,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     const free = await box(shell, windowSelector(vendor));
     near(free.width, MINI.w);
     near(free.height, MINI.h);
-    expect(free.y + free.height).toBeLessThanOrEqual(keepAbove + 1);
+    expect(free.y + free.height).toBeLessThanOrEqual(shelfTop + 1);
     near((await box(shell, windowSelector(invoice))).x, stage.x + LEFT);
     // Resized from its corner, its page is laid out at twice its new box.
     const corner = await box(shell, `${windowSelector(vendor)} [data-desk-edge="se"]`);
@@ -356,7 +365,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await capture(app, shell, "05-dragged-out-resized.png");
 
     // ── 5. Filling the desk, a window grows into it as its live page, laid out at the desk's size from the start
-    //       — never its still stretched to it — and keeps above the shelf ─
+    //       — never its still stretched to it — the shelf over its foot ─
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), accounts);
     await settled(shell);
     await inPage(app, ACCOUNTS, "window.__widths = [[Date.now(), innerWidth]]; (function tick() { if (__widths.at(-1)[1] !== innerWidth) __widths.push([Date.now(), innerWidth]); requestAnimationFrame(tick); })(); true");
@@ -376,7 +385,12 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     }, windowSelector(accounts));
     await settled(shell);
     const filled = await box(shell, windowSelector(accounts));
-    near(filled.y + filled.height, keepAbove, 3);
+    // The whole card, its live page stopping where the parked window peeks up.
+    near(filled.y + filled.height, foot, 3);
+    await expect.poll(async () => {
+      const view = (await liveViews(app)).find((candidate) => candidate.url === ACCOUNTS);
+      return view === undefined ? null : Math.abs(view.bounds.y + view.bounds.height - peekY) <= 1;
+    }).toBe(true);
     expect(await shell.evaluate(() => (window as unknown as { __fillDrawn: boolean[] }).__fillDrawn.filter(Boolean))).toEqual([]);
     const fillWidths = await inPage<Array<[number, number]>>(app, ACCOUNTS, "__widths");
     expect(fillWidths[0]![1]).toBe(accountsBefore);
@@ -396,11 +410,14 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     near(back.width, invoiceBefore.width, 3);
     near(back.height, invoiceBefore.height, 3);
     await expect.poll(() => pageSize(app, INVOICES)).toEqual(invoicePageBefore);
-    // The shelf is empty: the desk is all the windows' again.
+    // The shelf is empty: the window filling the desk is cut short only of the Bar's notch now, under the middle of its foot.
+    const filledNow = await box(shell, windowSelector(accounts));
+    near(filledNow.y + filledNow.height, foot, 3);
+    const notch = await box(shell, '[data-testid="desk-bar"]');
     await expect.poll(async () => {
-      const rect = await box(shell, windowSelector(accounts));
-      return Math.round(rect.y + rect.height);
-    }).toBeGreaterThan(Math.round(keepAbove + 20));
+      const page = await box(shell, `${windowSelector(accounts)} [data-testid="desk-window-page"]`);
+      return Math.round(page.y + page.height);
+    }).toBe(Math.round(notch.y));
     await capture(app, shell, "06-expanded.png");
 
     // ── 7. Snapped as any window is — into the left half, at the desk's edge — it is a window at its own size again ─
@@ -409,7 +426,8 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await expect(vendorWindow).toHaveAttribute("data-mini", "free");
     const carried = await box(shell, windowSelector(vendor));
     const hold = { x: carried.x + 60, y: carried.y + 17 };
-    const zoneAt = { x: stage.x + 82, y: stage.y + stage.height * 0.45 };
+    // (In the desk's leading edge band, its first 30px.)
+    const zoneAt = { x: stage.x + 12, y: stage.y + stage.height * 0.45 };
     await shell.mouse.move(hold.x, hold.y);
     await shell.mouse.down();
     for (let step = 1; step <= 24; step += 1) await shell.mouse.move(hold.x + ((zoneAt.x - hold.x) * step) / 24, hold.y + ((zoneAt.y - hold.y) * step) / 24);
@@ -420,15 +438,15 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await settled(shell);
     await expect(vendorWindow).not.toHaveAttribute("data-mini", /.+/);
     const half = await box(shell, windowSelector(vendor));
-    near(half.x, stage.x + LEFT);
+    near(half.x, stage.x);
     near(half.y, stage.y);
-    expect(half.width).toBeGreaterThan(stage.width / 2 - LEFT);
+    near(half.width, (stage.width - 8) / 2);
     const halfView = (await viewBounds(app, VENDOR))!;
     await expect.poll(() => pageSize(app, VENDOR)).toEqual({ width: halfView.width, height: halfView.height, zoom: 1 });
     await capture(app, shell, "07-snapped-to-a-half.png");
 
-    // ── 8. Collapse (the old Put away) sends a minimized window to the dock ─
-    await vendorWindow.getByTestId("desk-minimize").click();
+    // ── 8. Collapse (the old Put away) sends a minimized window into the sidebar ─
+    await fromFrameMenu(shell, vendorWindow, "desk-minimize");
     await settled(shell);
     await expect(vendorWindow).toHaveAttribute("data-mini", "parked");
     await vendorWindow.getByTestId("desk-collapse").click();

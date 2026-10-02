@@ -32,6 +32,13 @@ function api<T>(shell: Page, call: (pistachio: PistachioApi) => Promise<T>): Pro
 
 const snapshot = (shell: Page): Promise<ShellSnapshot> => api(shell, (pistachio) => pistachio.getSnapshot());
 
+/** The Bar grown from its idle pill, as the pointer coming to it grows it, so its field and buttons can be used. */
+async function reachBar(shell: Page): Promise<void> {
+  const bar = shell.getByTestId("desk-bar");
+  if ((await bar.getAttribute("data-compact")) !== null) await shell.getByTestId("desk-bar-pill").hover();
+  await expect(bar).not.toHaveAttribute("data-compact", "");
+}
+
 interface Box {
   x: number;
   y: number;
@@ -43,6 +50,10 @@ async function box(page: Page, selector: string): Promise<Box> {
   const found = await page.locator(selector).first().boundingBox();
   if (found === null) throw new Error(`${selector} has no box`);
   return found;
+}
+
+function near(actual: number, expected: number, within = 2): void {
+  expect(Math.abs(actual - expected), `${actual} vs ${expected}`).toBeLessThanOrEqual(within);
 }
 
 /** The window as a person sees it: the shell with every live page composited over it at its box (desk.spec.ts). */
@@ -92,7 +103,7 @@ async function capture(app: ElectronApplication, shell: Page, filename: string):
   await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
 }
 
-/** Move the window out from under the real cursor, whose hover would otherwise reach the dock (desk.spec.ts). */
+/** Move the window out from under the real cursor, whose hover would otherwise reach the sidebar (desk.spec.ts). */
 async function clearOfCursor(app: ElectronApplication): Promise<void> {
   await app.evaluate(({ BrowserWindow, screen }) => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -200,19 +211,33 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     const group = shell.getByTestId("tab-group");
     await group.getByTestId("tab-group-header").hover();
     await group.getByTestId("tab-group-desk").click();
-    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
     await settled(shell);
     const stage = await box(shell, ".desk-stage");
     const away = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.4);
     await away();
 
-    // ── 1. The Bar at the desk's foot, the windows above it; the Stack in the dock, empty ─
+    // ── 1. The Bar, a notch at the desk's foot, over the windows there; the Stack in the dock, empty ─
     const bar = shell.getByTestId("desk-bar");
     await expect(bar).toBeVisible();
     // Just the field and its buttons: it asks about the group by name.
     await expect(shell.getByTestId("desk-bar-input")).toHaveAttribute("placeholder", "Ask about Northstar…");
-    // A pill at one line.
-    expect(await shell.getByTestId("desk-bar").evaluate((el) => getComputedStyle(el).borderTopLeftRadius)).toBe("26px");
+    // Idle, it is a small notch that says what it is for (and the key that opens it), square at its foot; the pointer
+    // coming to it grows it into the Bar, a notch still.
+    await expect(bar).toHaveAttribute("data-compact", "");
+    await expect(shell.getByTestId("desk-bar-pill")).toContainText("Ask about Northstar");
+    await expect.poll(() => bar.evaluate((el) => [getComputedStyle(el).borderTopLeftRadius, getComputedStyle(el).borderBottomLeftRadius])).toEqual(["14px", "0px"]);
+    const idle = await box(shell, '[data-testid="desk-bar"]');
+    near(idle.y + idle.height, stage.y + stage.height, 1);
+    near(idle.height, 32, 1);
+    // The window in use reaches the desk's foot under it, its page stopping at the notch's top.
+    const entryPage = await box(shell, `${windowSelector(invoice)} [data-testid="desk-window-page"]`);
+    if (entryPage.x < idle.x + idle.width && idle.x < entryPage.x + entryPage.width && entryPage.y + entryPage.height > idle.y - 40)
+      near(entryPage.y + entryPage.height, idle.y, 1);
+    await capture(app, shell, "01a-desk-notch.png");
+    await shell.getByTestId("desk-bar-pill").hover();
+    await expect(bar).not.toHaveAttribute("data-compact", "");
+    await expect.poll(() => bar.evaluate((el) => [getComputedStyle(el).borderTopLeftRadius, getComputedStyle(el).borderBottomLeftRadius])).toEqual(["22px", "0px"]);
     // Every button says what it does.
     await shell.getByTestId("desk-bar-attach").hover();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Attach files");
@@ -222,9 +247,8 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await away();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveCount(0);
     const barBox = await box(shell, '[data-testid="desk-bar"]');
-    expect(barBox.y + barBox.height).toBeGreaterThan(stage.y + stage.height - 4);
-    const entry = await box(shell, windowSelector(invoice));
-    expect(entry.y + entry.height).toBeLessThanOrEqual(barBox.y + 1);
+    // Out of the card's foot.
+    near(barBox.y + barBox.height, stage.y + stage.height, 1);
     await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "0");
     await capture(app, shell, "01-desk-bar.png");
 
@@ -264,7 +288,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.locator(windowSelector(vendor))).toHaveCount(1);
     await expect(shell.locator(`${windowSelector(vendor)}[data-agent]`)).toHaveCount(1);
     await expect(shell.locator(`${windowSelector(vendor)} [data-testid="desk-window-agent"]`)).toContainText("Thinking");
-    await expect(shell.locator(`[data-testid="desk-dock-icon"][data-tab-id="${vendor}"][data-agent]`)).toHaveCount(1);
+    await expect(shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${vendor}"] [data-testid="tab-agent-working"]`)).toHaveCount(1);
     await expect(shell.getByTestId("desk-bar-stop")).toBeVisible();
     expect((await snapshot(shell)).activeTabId).toBe(invoice);
     await capture(app, shell, "03-desk-agent-working.png");
@@ -274,12 +298,14 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.locator(`${windowSelector(vendor)} [data-testid="desk-window-note"]`)).toContainText("Net 30 · due Oct 12");
     await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "3");
     await expect(shell.locator("[data-agent]")).toHaveCount(0);
+    await expect(shell.getByTestId("tab-agent-working")).toHaveCount(0);
     await settled(shell);
     const left = await box(shell, windowSelector(invoice));
     const right = await box(shell, windowSelector(vendor));
     expect(left.x + left.width).toBeLessThan(right.x);
     expect(Math.abs(left.width - right.width)).toBeLessThan(4);
-    expect(right.y + right.height).toBeLessThanOrEqual(barBox.y + 1);
+    // Halves of the whole card, down to its foot under the Bar.
+    near(right.y + right.height, stage.y + stage.height, 2);
     const run = (await snapshot(shell)).run!;
     expect(run.groupId).toBe("desk-agent");
     expect(run.toolCalls.map((call) => call.name)).toEqual(["desk.arrange", "page.inspect", "desk.note", "context.save"]);
@@ -313,7 +339,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await shell.getByTestId("desk-bar-input").fill("Open the connected accounts too");
     await shell.getByTestId("desk-bar-input").press("Enter");
     await expect(shell.getByTestId("desk-answer")).toContainText("Opened the connected accounts", { timeout: 15_000 });
-    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(3);
+    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(3);
     const opened = (await snapshot(shell)).tabs.find((tab) => tab.url === ACCOUNTS)!;
     expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-agent")?.tabIds).toContain(opened.id);
     await expect(shell.locator(windowSelector(opened.id))).toHaveCount(1);
@@ -322,7 +348,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await capture(app, shell, "05-desk-agent-opened.png");
 
     // ── 8. A page the agent's click opens joins the group — from a tab in the dock too — and comes out quietly ─
-    await shell.locator(`${windowSelector(invoice)} button[aria-label="Collapse"]`).click();
+    await shell.locator(`${windowSelector(invoice)} [data-testid="desk-collapse"]`).click();
     await settled(shell);
     await expect(shell.locator(windowSelector(invoice))).toHaveCount(0);
     // The person goes on in another window: the invoice is in the dock, and not the tab in use.
@@ -341,6 +367,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
 
     // ── 9. The conversations: this desk's, marked; a new one starts empty ─
+    await reachBar(shell);
     await shell.getByTestId("desk-bar-conversations").click();
     await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
     await expect(shell.getByTestId("desk-conversation")).toHaveCount(1);
@@ -355,6 +382,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
     // …or in a live page, which main relays.
+    await reachBar(shell);
     await shell.getByTestId("desk-bar-conversations").click();
     await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
     await app.evaluate(async ({ webContents }, url) => {
@@ -366,10 +394,13 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     }, ACCOUNTS);
     await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
     // Its own button still toggles it.
+    await reachBar(shell);
     await shell.getByTestId("desk-bar-conversations").click();
     await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
+    await reachBar(shell);
     await shell.getByTestId("desk-bar-conversations").click();
     await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    await reachBar(shell);
     await shell.getByTestId("desk-bar-conversations").click();
     await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
     const runId = run.runId;
@@ -377,6 +408,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
     await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
     // And the earlier one is still there to continue here.
+    await reachBar(shell);
     await shell.getByTestId("desk-bar-conversations").click();
     await shell.locator(`[data-testid="desk-conversation"][data-run-id="${runId}"]`).click();
     await expect.poll(async () => (await snapshot(shell)).run?.runId).toBe(runId);

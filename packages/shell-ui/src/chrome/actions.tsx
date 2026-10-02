@@ -61,7 +61,8 @@ import {
 } from "@pistachio/shell-contracts/shortcuts";
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
-import { arrangeDesk } from "../lib/desk/open";
+import { arrangeDesk, toggleDeskOfActiveTab } from "../lib/desk/open";
+import { useDeskStore } from "../lib/desk/store";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
 import { useSurface } from "../surface";
 import { useShell, type ShellHost } from "./shell-host";
@@ -396,7 +397,8 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
     icon: ({ settings }) =>
       settings.layout.sidebar === "pinned" ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />,
     shortcutId: "toggleSidebarPinned",
-    enabled: ({ settings }) => settings.layout.mode === "sidebar",
+    // (On a desk, in either layout, it switches the desk's sidebar between whole and rail: shell-host.)
+    enabled: ({ settings }) => settings.layout.mode === "sidebar" || useDeskStore.getState().groupId !== null,
     run: ({ run }) => run({ type: "toggleSidebarPinned" }),
   },
   togglePin: {
@@ -522,6 +524,8 @@ export function runConfiguredShortcut(
       return arrangeDesk("cascade");
     case "arrangeDesk":
       return arrangeDesk("smart");
+    case "toggleDesk":
+      return toggleDeskOfActiveTab();
   }
 }
 

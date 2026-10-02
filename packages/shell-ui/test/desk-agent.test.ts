@@ -13,7 +13,7 @@ import { isDeskReply, type DeskRequest } from "@pistachio/shell-contracts/desk-a
 import { MAX_DESK_WINDOWS } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { DeskEngine, DOCK_W, type DeskHost } from "../src/components/desk/desk-engine";
+import { DeskEngine, type DeskHost } from "../src/components/desk/desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "../src/components/desk/desk-requests";
 import { agentActivity, agentVerb, boxRect, deskZoneRect, percentBox } from "../src/lib/desk/agent";
 import { DESK_GAP, zoneRect, type Rect } from "../src/lib/desk/geometry";
@@ -42,9 +42,8 @@ function settle(): void {
   }
 }
 
-const BAND = 60;
-/** The room windows have on the 1600×1000 stage with the Bar's band: beside the dock, above the Bar. */
-const desk: Rect = { x: DOCK_W + DESK_GAP, y: 0, w: 1600 - DOCK_W - DESK_GAP, h: 1000 - BAND };
+/** The room windows have on the 1600×1000 stage: the whole card, the Bar's notch over its foot. */
+const desk: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
 
 function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
@@ -56,15 +55,14 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     close: () => undefined,
     editAddress: () => undefined,
     save: () => undefined,
-    switchGroup: () => undefined,
-    reorderTab: () => undefined,
     moveTabToGroup: () => undefined,
-    reorderGroup: () => undefined,
+    sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    homeOf: () => null,
     leaveDone: () => undefined,
     ...host,
   });
   created.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 1000 }) } as unknown as HTMLElement);
-  created.setBarBand(BAND);
+  created.setNotch({ w: 240, h: 32 });
   return created;
 }
 
@@ -106,7 +104,7 @@ describe("the agent's zones and boxes", () => {
   });
 
   it("read and write boxes as percents of the desk, and keep a box the agent gave on it", () => {
-    expect(percentBox(zoneRect("right", desk), desk)).toEqual({ x: 50.3, y: 0, w: 49.7, h: 100 });
+    expect(percentBox(zoneRect("right", desk), desk)).toEqual({ x: 50.2, y: 0, w: 49.8, h: 100 });
     expect(boxRect({ x: 0, y: 0, w: 50, h: 100 }, desk)).toEqual({ x: desk.x, y: 0, w: desk.w / 2, h: desk.h });
     // Past the desk's edge, it is brought back onto it.
     const pushed = boxRect({ x: 80, y: 80, w: 50, h: 50 }, desk);

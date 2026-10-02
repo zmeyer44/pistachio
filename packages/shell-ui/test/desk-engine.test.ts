@@ -4,12 +4,13 @@
  * more windows than main accepts (@pistachio/shell-contracts/desk). And what
  * a window in hand does: a window filling the desk lets go of it as it is
  * dragged, and Shift lands a released window in the tile it lights. And the
- * dock: a click opens a tab where the layout has room, and an icon dragged
- * clear of it becomes the tab's window, held by the title bar. And a window
- * may lie behind the dock, which floats over it — stepping aside for it
- * when it is the window in use. And the desk passing to another group in
- * place: the old group's windows go home, the new group's come out where
- * they were left, and main never hears of more windows than it accepts.
+ * dock — the sidebar's column beside the desk: a tab chosen there comes out
+ * where the layout has room, a row pulled out over the desk becomes the
+ * tab's window, held by the title bar, and windows go back into their rows;
+ * while a window is carried near the desk's edge, a drop rail stands over
+ * the sidebar. And the desk passing to another group in place: the old
+ * group's windows go home, the new group's come out where they were left,
+ * and main never hears of more windows than it accepts.
  * And the box a page the shell draws is laid out at, to be shown small.
  *
  * The engine runs a frame at a time outside React; here the frames are
@@ -18,10 +19,10 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DragSample } from "@pistachio/shell-contracts/chrome";
-import { DESK_MINI_ZOOM, isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
+import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { CHROME_INSETS, DeskEngine, DOCK_ICON, DOCK_W, type DeskHost } from "../src/components/desk/desk-engine";
+import { CHROME_INSETS, DeskEngine, type DeskHost } from "../src/components/desk/desk-engine";
 import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
@@ -72,6 +73,9 @@ function native(options: { stills?: boolean } = {}) {
   return { layouts, desks, drag };
 }
 
+/** The sidebar's column — the desk's dock — beside the stage, which is the window's content box here: left of it. */
+const SIDEBAR: Rect = { x: -48, y: 0, w: 48, h: 1000 };
+
 /** A desk whose pages are all shell-drawn (no live views), over a 1600×1000 stage. */
 function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const created = new DeskEngine({
@@ -81,11 +85,10 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     close: () => undefined,
     editAddress: () => undefined,
     save: () => undefined,
-    switchGroup: () => undefined,
-    reorderTab: () => undefined,
     moveTabToGroup: () => undefined,
-    reorderGroup: () => undefined,
     leaveDone: () => undefined,
+    sidebar: () => SIDEBAR,
+    homeOf: () => null,
     ...host,
   });
   created.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 1000 }) } as unknown as HTMLElement);
@@ -180,7 +183,7 @@ describe("the desk's window limit", () => {
 /* ------------------------------ in hand ------------------------------ */
 
 /** The desk windows may use on the 1600×1000 stage: all of it but the inventory. */
-const usable: Rect = { x: DOCK_W + DESK_GAP, y: 0, w: 1600 - DOCK_W - DESK_GAP, h: 1000 };
+const usable: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
 
 /** A stand-in for an element the engine writes to: a window's box is its translate and size. */
 function element() {
@@ -254,7 +257,7 @@ describe("a window in hand", () => {
     settle();
     expectRect(rectOf(win), usable);
     // Grab the title bar three quarters along it, and pull.
-    const at = { x: usable.x + usable.w * 0.75, y: 17 };
+    const at = { x: usable.x + usable.w * 0.75, y: usable.y + 17 };
     desk.grab("tab-0", at);
     // Not on the move yet: nothing changes.
     run(3);
@@ -406,7 +409,7 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
-  it("shows the dock's pads only near the desk's leading edge, and lights the one a release would go to", () => {
+  it("shows the drop rail over the sidebar only near the desk's leading edge, and lights the segment a release would go to", () => {
     const { desk, win, move, release } = open();
     const start = rectOf(win);
     desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
@@ -415,11 +418,13 @@ describe("a window in hand", () => {
     move(usable.x + 100, 300);
     expect(desk.getView().dropsShown).toBe(true);
     expect(desk.getView().dockDrop).toBeNull();
-    move(30, 300);
+    move(-24, 300);
     expect(desk.getView().dockDrop).toBe("away");
-    move(30, 940);
+    move(-24, 940);
     expect(desk.getView().dockDrop).toBe("close");
-    // Back across the desk's edge band: the left half again, not a pad.
+    // The rail stands over the sidebar's column.
+    expect(desk.getView().drops.away.x).toBe(SIDEBAR.x + 6);
+    // Back across the desk's edge band: the left half again, not the rail.
     move(usable.x + 10, 500);
     expect(desk.getView().dockDrop).toBeNull();
     release();
@@ -428,12 +433,12 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
-  it("puts a window let go on the upper pad back into the dock, its tab kept", () => {
+  it("puts a window let go on the rail's upper segment back into the dock, its tab kept", () => {
     const close = vi.fn();
     const { desk, win, move, release } = open({ close });
     const start = rectOf(win);
     desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
-    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 170) / 8), 300);
+    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 224) / 8), 300);
     expect(desk.getView().dockDrop).toBe("away");
     release();
     expect(desk.windowTabIds()).toEqual([]);
@@ -441,12 +446,12 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
-  it("closes the tab of a window let go on the lower pad, once it has gone into it", () => {
+  it("closes the tab of a window let go on the rail's lower segment, once it has gone into it", () => {
     const close = vi.fn();
     const { desk, win, move, release } = open({ close });
     const start = rectOf(win);
     desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
-    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 170) / 8), 300 + step * 80);
+    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 224) / 8), 300 + step * 80);
     expect(desk.getView().dockDrop).toBe("close");
     release();
     expect(desk.windowTabIds()).toEqual([]);
@@ -455,16 +460,16 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
-  it("closes a window let go on the lower pad even when the agent, or Undo layout, asks for it on its way there", () => {
+  it("closes a window let go on the rail's lower segment even when the agent, or Undo layout, asks for it on its way there", () => {
     const close = vi.fn();
     const { desk, win, move, letGo } = open({ close });
     const before = desk.layoutSnapshot();
     const start = rectOf(win);
     desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
-    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 170) / 8), 300 + step * 80);
+    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 224) / 8), 300 + step * 80);
     expect(desk.getView().dockDrop).toBe("close");
     letGo();
-    // Going into the Close pad is the person's: a placement or an Undo does not bring it back.
+    // Going into the rail's Close is the person's: a placement or an Undo does not bring it back.
     desk.arrangeFor({ place: [{ tabId: "tab-0", zone: "left" }] });
     desk.restoreLayout(before);
     settle();
@@ -553,55 +558,26 @@ describe("a window's title", () => {
 
 /* ------------------------------ the dock ------------------------------ */
 
-describe("the dock", () => {
+describe("the sidebar, the desk's dock", () => {
   let restoreNow: () => void = () => undefined;
-  /** The shell page's own pointer listeners (a press on an icon is tracked there until it travels). */
-  let listeners: Map<string, Set<(event: unknown) => void>>;
   beforeEach(() => {
     const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
     restoreNow = () => spy.mockRestore();
-    listeners = new Map();
-    vi.stubGlobal("window", {
-      setInterval: () => 0,
-      clearInterval: () => undefined,
-      setTimeout: () => 0,
-      clearTimeout: () => undefined,
-      addEventListener: (type: string, listener: (event: unknown) => void) => {
-        if (!listeners.has(type)) listeners.set(type, new Set());
-        listeners.get(type)!.add(listener);
-      },
-      removeEventListener: (type: string, listener: (event: unknown) => void) => listeners.get(type)?.delete(listener),
-      matchMedia: () => ({ matches: false }),
-      devicePixelRatio: 1,
-    });
   });
   afterEach(() => restoreNow());
 
-  const dispatch = (type: string, x: number, y: number): void => {
-    for (const listener of [...(listeners.get(type) ?? [])]) listener({ clientX: x, clientY: y, shiftKey: false });
-  };
+  /** A row in the sidebar, 32px tall, its icon 8px in. */
+  const row = (top: number) => ({ isConnected: true, dataset: {} as Record<string, string>, offsetWidth: 32, getBoundingClientRect: () => ({ left: -40, top, width: 32, height: 32 }) });
 
-  /**
-   * Tab 0 out as a window; the rest in the dock (two tabs, unless said).
-   * Icons sit in the dock's column, 40px square, 46px apart — and under
-   * them, the other groups' icons, 50px apart.
-   */
-  function dock(options: { tabs?: number; groups?: readonly string[]; host?: Partial<DeskHost> } = {}) {
+  /** Tab 0 out as a window; the rest in the dock (two tabs, unless said), each with its row in the sidebar, 34px apart. */
+  function dock(options: { tabs?: number; host?: Partial<DeskHost> } = {}) {
     const { drag } = native();
-    const desk = engine(options.host);
-    const ghost = element();
-    const windows = new Map<string, ReturnType<typeof element>>();
     const count = options.tabs ?? 2;
-    desk.attachGhost(ghost as unknown as HTMLElement);
+    const rows = new Map(tabIds(count).map((tabId, index) => [tabId, row(400 + index * 34)]));
+    const desk = engine({ homeOf: (kind, id) => (kind === "tab" ? ((rows.get(id) as unknown as HTMLElement | undefined) ?? null) : null), ...options.host });
     desk.start([], "tab-0", tabIds(count));
-    const icon = (top: number): HTMLElement =>
-      ({ isConnected: true, getBoundingClientRect: () => ({ left: 10, top, width: DOCK_ICON, height: DOCK_ICON }) }) as unknown as HTMLElement;
-    for (const [index, tabId] of tabIds(count).entries()) desk.attachIcon(tabId, icon(400 + index * 46));
-    const groupTop = (index: number): number => 400 + count * 46 + 20 + index * 50;
-    for (const [index, groupId] of (options.groups ?? []).entries()) desk.attachGroupIcon(groupId, icon(groupTop(index)));
     const attach = (tabId: string): ReturnType<typeof element> => {
       const win = element();
-      windows.set(tabId, win);
       desk.attachWindow(tabId, win as unknown as HTMLElement);
       return win;
     };
@@ -615,19 +591,7 @@ describe("the dock", () => {
       drag.sample?.({ x: 0, y: 0, phase: "cancel" });
       settle();
     };
-    /** Press tab `index`'s icon and pull it past the slop, as a person starts a drag. */
-    const pull = (index: number): void => {
-      const at = { x: 30, y: 420 + index * 46 };
-      desk.pressIcon(`tab-${index}`, { clientX: at.x, clientY: at.y, button: 0 });
-      dispatch("pointermove", at.x + 8, at.y);
-    };
-    /** The same for another group's icon; a click there calls `onClick`. */
-    const pullGroup = (index: number, onClick: () => void = () => undefined): void => {
-      const at = { x: 30, y: groupTop(index) + 20 };
-      desk.pressGroup(options.groups![index]!, { clientX: at.x, clientY: at.y, button: 0 }, onClick);
-      dispatch("pointermove", at.x, at.y + 8);
-    };
-    return { desk, ghost, attach, move, release, pull, pullGroup, groupTop };
+    return { desk, rows, attach, move, release };
   }
 
   it("brings a tab out where the layout has room: filling the desk, the window in use gives up half", () => {
@@ -652,155 +616,33 @@ describe("the dock", () => {
     desk.destroy();
   });
 
-  it("leaves a window alone while only its icon is in hand, Shift or no Shift", () => {
-    const { desk, attach, move, release, pull } = dock();
-    const win = attach("tab-0");
-    const before = rectOf(win);
-    pull(0);
-    move(DOCK_W + 10, 460);
-    expect(desk.getView().iconDrag).toBe("tab-0");
-    desk.setShift(true);
-    move(DOCK_W + 12, 470);
-    desk.setShift(false);
-    expectRect(rectOf(win), before);
-    release();
-    expectRect(rectOf(win), before);
-    desk.destroy();
-  });
-
-  it("lets go of an icon still in the dock with nothing changed", () => {
-    const { desk, ghost, move, release, pull } = dock();
-    pull(1);
-    expect(desk.getView().iconDrag).toBe("tab-1");
-    expect(ghost.dataset["on"]).toBe("");
-    move(DOCK_W + 10, 440);
-    expect(desk.getView().iconDrag).toBe("tab-1");
-    release();
-    expect(ghost.dataset["on"]).toBeUndefined();
-    expect(desk.getView().iconDrag).toBeNull();
-    expect(desk.windowTabIds()).toEqual(["tab-0"]);
-    desk.destroy();
-  });
-
-  it("makes room among the group's tabs for an icon moved down the dock, and let go, the tab takes that place", () => {
-    const reordered: Array<[string, number]> = [];
-    const { desk, ghost, move, release, pull } = dock({ tabs: 3, host: { reorderTab: (tabId, index) => reordered.push([tabId, index]) } });
-    pull(0);
-    // Past tab 1's middle (466), not tab 2's (512): the place after tab 1.
-    move(30, 480);
-    expect(desk.getView().dockDrag).toEqual({ kind: "tab", id: "tab-0", order: ["tab-0", "tab-1", "tab-2"], to: 1, into: null, pitch: 46 });
-    move(34, 530);
-    expect(desk.getView().dockDrag?.to).toBe(2);
-    release();
-    expect(reordered).toEqual([["tab-0", 2]]);
-    // Shown in its place at once, before the browser has said so, and the icon has flown there (the last place, 492).
-    expect(desk.getView().dockSettle).toEqual({ tabs: ["tab-1", "tab-2", "tab-0"], groups: null, gone: null });
-    expect(ghost.style["transform"]).toContain("translate3d(10.0px, 492.0px, 0)");
-    expect(ghost.dataset["on"]).toBeUndefined();
-    expect(desk.getView().iconDrag).toBeNull();
-    expect(desk.getView().dockDrag).toBeNull();
-    // The browser's order catches up: the dock shows its own again. Nothing on the desk moved.
-    desk.syncTabs(["tab-1", "tab-2", "tab-0"]);
-    expect(desk.getView().dockSettle).toBeNull();
-    expect(desk.windowTabIds()).toEqual(["tab-0"]);
-    desk.destroy();
-  });
-
-  it("moves an icon up the dock too, and let go where it started, changes nothing", () => {
-    const reordered: Array<[string, number]> = [];
-    const { desk, move, release, pull } = dock({ tabs: 3, host: { reorderTab: (tabId, index) => reordered.push([tabId, index]) } });
-    pull(2);
-    move(30, 440);
-    expect(desk.getView().dockDrag?.to).toBe(1);
-    move(30, 400);
-    expect(desk.getView().dockDrag?.to).toBe(0);
-    move(30, 520);
-    expect(desk.getView().dockDrag?.to).toBe(2);
-    release();
-    expect(reordered).toEqual([]);
-    expect(desk.getView().dockSettle).toBeNull();
-    desk.destroy();
-  });
-
-  it("lets a tab's icon go into another group, as an app into a folder: its window flies into that group's icon, the one under it taking over", () => {
-    const moved: Array<[string, string, string | null]> = [];
-    const selected: string[] = [];
-    const { desk, attach, move, release, pull, groupTop } = dock({
-      tabs: 3,
-      groups: ["group-1", "group-2"],
-      host: { moveTabToGroup: (tabId, groupId, next) => moved.push([tabId, groupId, next]), select: (tabId) => selected.push(tabId) },
-    });
+  it("brings a tab out of its row, and puts its window back into it, the row bouncing as it takes it", () => {
+    const { desk, rows, attach } = dock();
     desk.add("tab-1", { focus: true });
-    attach("tab-1");
+    const added = attach("tab-1");
+    run(1);
+    // It sets out from the row's icon, over the sidebar.
+    const first = rectOf(added);
+    expect(first.x).toBeLessThan(0);
+    expect(first.y).toBeGreaterThan(400);
     settle();
-    expect(desk.focusedTabId()).toBe("tab-1");
-    pull(1);
-    move(30, groupTop(1) + 22);
-    // Over a group: it is not among the tabs any more, and the tabs close up behind it.
-    expect(desk.getView().dockDrag).toMatchObject({ id: "tab-1", to: null, into: "group-2" });
-    move(30, groupTop(0) + 18);
-    expect(desk.getView().dockDrag?.into).toBe("group-1");
-    release();
-    expect(moved).toEqual([["tab-1", "group-1", "tab-0"]]);
-    expect(selected.at(-1)).toBe("tab-0");
-    expect(desk.getView().dockSettle).toEqual({ tabs: ["tab-0", "tab-2"], groups: null, gone: "tab-1" });
-    // The tab has left the group, and its window has gone into the other's icon.
-    desk.syncTabs(["tab-0", "tab-2"]);
+    desk.putAway("tab-1");
+    run(1);
+    expect(desk.getView().windows.find((window) => window.tabId === "tab-1")!.flight).toBe("away");
     settle();
     expect(desk.windowTabIds()).toEqual(["tab-0"]);
-    expect(desk.focusedTabId()).toBe("tab-0");
+    expect(rows.get("tab-1")!.dataset["received"]).toBe("");
     desk.destroy();
   });
 
-  it("pulled clear of the dock, a tab's icon is its window again, and its section closes up as it was", () => {
-    const { desk, move, pull } = dock({ tabs: 3 });
-    pull(0);
-    move(30, 480);
-    expect(desk.getView().dockDrag?.to).toBe(1);
-    move(DOCK_W + 60, 480);
-    expect(desk.getView().dockDrag).toBeNull();
-    expect(desk.getView().gesture).toBe("move");
-    desk.destroy();
-  });
-
-  it("moves another group's icon among the groups, never out of the dock; a click passes the desk to it", () => {
-    const reordered: Array<[string, readonly string[]]> = [];
-    const { desk, ghost, move, release, pullGroup, groupTop } = dock({
-      groups: ["group-1", "group-2", "group-3"],
-      host: { reorderGroup: (groupId, order) => reordered.push([groupId, order]) },
-    });
-    pullGroup(0);
-    expect(desk.getView().groupDrag).toBe("group-1");
-    expect(desk.getView().iconDrag).toBeNull();
-    // Far out over the desk: still its icon, in the dock, and it follows the pointer only a little way out.
-    move(DOCK_W + 300, groupTop(1) + 30);
-    expect(desk.getView().gesture).toBe("icon");
-    expect(desk.getView().dockDrag).toMatchObject({ kind: "group", id: "group-1", to: 1, into: null, pitch: 50 });
-    expect(desk.windowTabIds()).toEqual(["tab-0"]);
-    const x = Number(/translate3d\((-?[\d.]+)px/.exec(ghost.style["transform"]!)![1]);
-    expect(x).toBeLessThan(DOCK_W + 40);
-    release();
-    expect(reordered).toEqual([["group-1", ["group-2", "group-1", "group-3"]]]);
-    expect(desk.getView().dockSettle).toEqual({ tabs: null, groups: ["group-2", "group-1", "group-3"], gone: null });
-    expect(desk.getView().groupDrag).toBeNull();
-    let clicked = 0;
-    desk.pressGroup("group-3", { clientX: 30, clientY: groupTop(2) + 20, button: 0 }, () => (clicked += 1));
-    dispatch("pointerup", 30, groupTop(2) + 20);
-    expect(clicked).toBe(1);
-    expect(reordered).toHaveLength(1);
-    desk.destroy();
-  });
-
-  it("turns an icon pulled clear of the dock into its window, held by the title bar", () => {
-    const { desk, ghost, attach, move, release, pull } = dock();
-    pull(1);
-    move(DOCK_W + 60, 460);
-    expect(ghost.dataset["on"]).toBeUndefined();
-    expect(desk.getView().iconDrag).toBeNull();
+  it("turns a row pulled out over the desk into its window, held by the title bar", () => {
+    const { desk, attach, move, release } = dock();
+    expect(desk.pullFromSidebar("tab-1", { x: 4, y: 452 })).toBe(true);
     expect(desk.windowTabIds()).toEqual(["tab-0", "tab-1"]);
+    expect(desk.getView().gesture).toBe("spawn");
     const win = attach("tab-1");
-    for (let step = 1; step <= 10; step += 1) move(DOCK_W + 60 + step * 20, 460 + step * 10);
-    const pointer = { x: DOCK_W + 260, y: 560 };
+    for (let step = 1; step <= 10; step += 1) move(4 + step * 25, 452 + step * 10);
+    const pointer = { x: 254, y: 552 };
     const carried = rectOf(win);
     const size = windowSize(usable);
     expect(carried.w).toBeCloseTo(size.w, 0);
@@ -817,12 +659,12 @@ describe("the dock", () => {
   });
 
   it("brings a window that is out to the hand, its shape kept, its title bar under the pointer", () => {
-    const { desk, attach, move, release, pull } = dock();
+    const { desk, attach, move, release } = dock();
     const win = attach("tab-0");
     const before = rectOf(win);
-    pull(0);
-    const pointer = { x: DOCK_W + 200, y: 300 };
-    for (let step = 1; step <= 6; step += 1) move(DOCK_W + 20 + step * 30, 420 - step * 20);
+    expect(desk.pullFromSidebar("tab-0", { x: 4, y: 410 })).toBe(true);
+    const pointer = { x: 200, y: 300 };
+    for (let step = 1; step <= 6; step += 1) move(20 + step * 30, 420 - step * 20);
     // It flies there: give the catch a moment with the pointer still.
     for (let step = 0; step < 40; step += 1) move(pointer.x, pointer.y);
     const held = rectOf(win);
@@ -837,199 +679,27 @@ describe("the dock", () => {
     expect(desk.windowTabIds()).toEqual(["tab-0"]);
     desk.destroy();
   });
-});
 
-
-/* ------------------------- behind the dock ------------------------- */
-
-describe("a window behind the dock", () => {
-  let restoreNow: () => void = () => undefined;
-  let listeners: Map<string, Set<(event: unknown) => void>>;
-  beforeEach(() => {
-    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
-    restoreNow = () => spy.mockRestore();
-    listeners = new Map();
-    vi.stubGlobal("window", {
-      setInterval: () => 0,
-      clearInterval: () => undefined,
-      setTimeout: () => 0,
-      clearTimeout: () => undefined,
-      addEventListener: (type: string, listener: (event: unknown) => void) => {
-        if (!listeners.has(type)) listeners.set(type, new Set());
-        listeners.get(type)!.add(listener);
-      },
-      removeEventListener: (type: string, listener: (event: unknown) => void) => listeners.get(type)?.delete(listener),
-      matchMedia: () => ({ matches: false }),
-      devicePixelRatio: 1,
-    });
-    // A still is decoded before it is shown.
-    vi.stubGlobal(
-      "Image",
-      class {
-        src = "";
-        decode(): Promise<void> {
-          return Promise.resolve();
-        }
-      },
-    );
+  it("takes no row out that is not the group's, nor while a window is in hand", () => {
+    const { desk } = dock();
+    expect(desk.pullFromSidebar("stranger", { x: 4, y: 410 })).toBe(false);
+    expect(desk.pullFromSidebar("tab-1", { x: 4, y: 452 })).toBe(true);
+    expect(desk.pullFromSidebar("tab-0", { x: 4, y: 452 })).toBe(false);
+    expect(desk.windowTabIds()).toEqual(["tab-0", "tab-1"]);
+    desk.destroy();
   });
-  afterEach(() => restoreNow());
 
-  /** The dock's shelf, centred on the 1000px stage's leading edge. */
-  const shelf: Rect = { x: 0, y: 300, w: DOCK_W, h: 400 };
-
-  /** Stills on their way in, and the frames that put them on screen. */
-  async function flush(): Promise<void> {
-    for (let round = 0; round < 4; round += 1) {
-      for (let tick = 0; tick < 8; tick += 1) await Promise.resolve();
-      settle();
+  it("puts a window flung past the desk's leading edge into the dock — and none, with no sidebar beside the desk", () => {
+    for (const sidebar of [SIDEBAR, null]) {
+      const { desk, move, release } = dock({ host: { sidebar: () => sidebar } });
+      desk.grab("tab-0", { x: 600, y: 300 });
+      for (let step = 1; step <= 6; step += 1) move(600 - step * 60, 300);
+      release();
+      expect(desk.windowTabIds()).toEqual(sidebar === null ? ["tab-0"] : []);
+      desk.destroy();
     }
-  }
-
-  function open(live: boolean) {
-    const { drag, layouts, desks } = native({ stills: live });
-    const desk = engine({ hasLivePage: () => live });
-    const win = element();
-    desk.setDockShelf(shelf);
-    desk.start([], "tab-0", tabIds(2));
-    desk.attachWindow("tab-0", win as unknown as HTMLElement);
-    settle();
-    const move = (x: number, y: number): void => {
-      drag.sample?.({ x, y, phase: "move" });
-      run(1);
-    };
-    /** Carry the window by its title bar, well along it, until its leading edge is at `x`; hold still, and let go. */
-    const tuck = (x: number): void => {
-      const start = rectOf(win);
-      const hold = { x: 320, y: 17 };
-      desk.grab("tab-0", { x: start.x + hold.x, y: start.y + hold.y });
-      for (let step = 1; step <= 10; step += 1) move(start.x + hold.x + (x - start.x) * (step / 10), start.y + hold.y);
-      for (let step = 0; step < 12; step += 1) move(x + hold.x, start.y + hold.y);
-      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
-      settle();
-    };
-    const click = (x: number, y: number): void => {
-      desk.press("tab-0", { clientX: x, clientY: y, button: 0 }, "content");
-      for (const listener of [...(listeners.get("pointerup") ?? [])]) listener({ clientX: x, clientY: y });
-    };
-    const livePages = (): string[] => layouts.at(-1)!.views.map((view) => view.tabId);
-    return { desk, win, move, tuck, click, layouts, desks, livePages };
-  }
-
-  it("rests where it is let go in the dock's column, as far as the desk's leading edge", () => {
-    const { desk, win, tuck } = open(false);
-    tuck(24);
-    expect(Math.abs(rectOf(win).x - 24)).toBeLessThan(1.5);
-    // Pushed further, it stops at the desk's edge.
-    tuck(-200);
-    expect(Math.abs(rectOf(win).x)).toBeLessThan(1.5);
-    // Near the dock's edge, it sticks to it.
-    tuck(usable.x - 9);
-    expect(Math.abs(rectOf(win).x - usable.x)).toBeLessThan(1.5);
-    desk.destroy();
-  });
-
-  it("keeps filling the desk clear of the dock, and comes back to where it lay", () => {
-    const { desk, win, tuck } = open(false);
-    tuck(20);
-    const tucked = rectOf(win);
-    desk.toggleMaximize("tab-0");
-    settle();
-    expectRect(rectOf(win), usable);
-    desk.toggleMaximize("tab-0");
-    settle();
-    expectRect(rectOf(win), tucked);
-    desk.destroy();
-  });
-
-  it("resizes out to the desk's leading edge, sticking at the dock's on the way", () => {
-    const { desk, win, move } = open(false);
-    const start = rectOf(win);
-    const y = start.y + 100;
-    desk.resize("tab-0", { left: true, right: false, top: false, bottom: false }, { clientX: start.x, clientY: y, button: 0 });
-    move(usable.x - 6, y);
-    expect(Math.abs(rectOf(win).x - usable.x)).toBeLessThan(1);
-    move(12, y);
-    expect(Math.abs(rectOf(win).x - 12)).toBeLessThan(1);
-    move(-80, y);
-    expect(Math.abs(rectOf(win).x)).toBeLessThan(1);
-    // The opposite edge holds still.
-    expect(Math.abs(rectOf(win).x + rectOf(win).w - (start.x + start.w))).toBeLessThan(1);
-    desk.destroy();
-  });
-
-  it("is drawn under the dock; used, the dock steps aside for it, and comes back when the pointer comes to it", async () => {
-    const { desk, win, tuck, click, desks, livePages } = open(true);
-    await flush();
-    expect(livePages()).toEqual(["tab-0"]);
-    tuck(20);
-    await flush();
-    // Under the dock: its still, and the dock over it.
-    let view = desk.getView();
-    expect(rectOf(win).x).toBeLessThan(shelf.w);
-    expect(view.windows[0]!.drawn).toBe(true);
-    expect(view.dockAside).toBe(false);
-    expect(livePages()).toEqual([]);
-    // Clicked into, it is the window in use: the dock slides away, and once it has gone the page is live.
-    click(rectOf(win).x + 400, 500);
-    expect(desk.getView().dockAside).toBe(true);
-    expect(livePages()).toEqual([]);
-    await flush();
-    expect(desk.getView().windows[0]!.drawn).toBe(false);
-    expect(livePages()).toEqual(["tab-0"]);
-    // Main watches the dock's place for the pointer, over that page.
-    expect(desks.at(-1)!.dock).toEqual({ x: 0, y: shelf.y - 8, width: DOCK_W + DESK_GAP, height: shelf.h + 16 });
-    // The pointer comes there: the page gives way to its still, and the dock comes back over it.
-    desk.pointerAtDock();
-    await flush();
-    view = desk.getView();
-    expect(view.dockAside).toBe(false);
-    expect(view.windows[0]!.drawn).toBe(true);
-    expect(desks.at(-1)!.dock ?? null).toBeNull();
-    // Off it again, over the window: aside once more.
-    desk.notePointer({ x: 700, y: 500 });
-    await flush();
-    expect(desk.getView().dockAside).toBe(true);
-    expect(livePages()).toEqual(["tab-0"]);
-    // The Feel menu open beside the dock holds it there.
-    desk.holdDock("feel", true);
-    await flush();
-    expect(desk.getView().dockAside).toBe(false);
-    desk.holdDock("feel", false);
-    await flush();
-    expect(desk.getView().dockAside).toBe(true);
-    desk.destroy();
-  });
-
-  it("stays drawn under the dock when it is only let go there", async () => {
-    const { desk, win, tuck, livePages } = open(true);
-    await flush();
-    tuck(20);
-    await flush();
-    // Let go, it is the window in use too — but the dock stays until it is chosen.
-    expect(desk.focusedTabId()).toBe("tab-0");
-    expect(desk.getView().dockAside).toBe(false);
-    expect(livePages()).toEqual([]);
-    // Another window in use: the dock stays over this one. Chosen from outside the desk (the sidebar), the dock steps aside for it.
-    desk.add("tab-1", { focus: true });
-    desk.attachWindow("tab-1", element() as unknown as HTMLElement);
-    await flush();
-    expect(desk.focusedTabId()).toBe("tab-1");
-    expect(desk.getView().dockAside).toBe(false);
-    desk.activeChanged("tab-0");
-    await flush();
-    expect(desk.getView().dockAside).toBe(true);
-    expect(livePages()).toContain("tab-0");
-    // Out from behind the dock, it is live again.
-    tuck(usable.x + 40);
-    await flush();
-    expect(rectOf(win).x).toBeGreaterThan(usable.x);
-    expect(livePages()).toEqual(["tab-0"]);
-    desk.destroy();
   });
 });
-
-/* ------------------------------ masks ------------------------------ */
 
 describe("a masked window", () => {
   let restoreNow: () => void = () => undefined;
@@ -1369,65 +1039,7 @@ describe("passing the desk to another group", () => {
     desk.destroy();
   });
 
-  it("sketches another group's desk as passing to it lays it out: each window where it lands, the one it comes up on on top", () => {
-    native();
-    const desk = engine();
-    desk.start([], "tab-0", tabIds(2));
-    settle();
-    const ids = ["b-0", "b-1", "b-2"];
-    // (A tab since gone from the group is not on its desk.)
-    const saved: SavedDeskWindow[] = [
-      { tabId: "b-1", rect: rect(0.5) },
-      { tabId: "gone", rect: rect(0.3) },
-      { tabId: "b-0", rect: rect(0.05) },
-    ];
-    const sketch = desk.sketchGroup(ids, saved, "b-1");
-    expect(sketch).toMatchObject({ width: 1600, height: 1000 });
-    expect(sketch.windows.map((window) => [window.tabId, window.focused])).toEqual([
-      ["b-0", false],
-      ["b-1", true],
-    ]);
-    desk.switchGroup({ from: "A", groupId: "B", tabIds: ids, saved, entry: "b-1" });
-    const els = new Map(sketch.windows.map((window) => [window.tabId, element()]));
-    for (const [tabId, el] of els) desk.attachWindow(tabId, el as unknown as HTMLElement);
-    settle();
-    expect(desk.windowTabIds()).toEqual(["b-0", "b-1"]);
-    for (const window of sketch.windows) expectRect(rectOf(els.get(window.tabId)!), window.rect);
-    desk.destroy();
-  });
 
-  it("sketches a group never on a desk as its tab used last, alone in the middle", () => {
-    native();
-    const desk = engine();
-    desk.start([], "tab-0", tabIds(2));
-    settle();
-    const sketch = desk.sketchGroup(["b-0", "b-1"], [], "b-1");
-    expect(sketch.windows).toHaveLength(1);
-    expect(sketch.windows[0]).toMatchObject({ tabId: "b-1", focused: true, mask: null, still: null, stillShows: "none" });
-    expectRect(sketch.windows[0]!.rect, centeredRect(usable));
-    desk.destroy();
-  });
-
-  it("sketches each window with the latest picture of its page — a masked one's whole page, to be cropped to its region", async () => {
-    native({ stills: true });
-    const desk = engine({ hasLivePage: () => true });
-    desk.start([], "tab-0", tabIds(2));
-    settle();
-    const mask = { x: 10, y: 10, width: 200, height: 120, pageWidth: 1000, pageHeight: 700 };
-    const saved: SavedDeskWindow[] = [{ tabId: "b-0", rect: rect(0.05), mask }, { tabId: "b-1", rect: rect(0.5) }];
-    desk.peekGroup("B", ["b-0", "b-1"]);
-    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
-    const sketch = desk.sketchGroup(["b-0", "b-1"], saved, null);
-    expect(sketch.windows.map((window) => [window.tabId, window.still, window.stillShows])).toEqual([
-      ["b-0", "data:image/jpeg;base64,b-0", "page"],
-      ["b-1", "data:image/jpeg;base64,b-1", "page"],
-    ]);
-    // Masked, it keeps its region's shape.
-    const masked = sketch.windows[0]!;
-    expect(masked.mask).toEqual(mask);
-    expect((masked.rect.h - 18) / masked.rect.w).toBeCloseTo(120 / 200, 2);
-    desk.destroy();
-  });
 
   it("never tells main of more windows than it accepts, with both groups' out at once", () => {
     const { desks } = native();
@@ -1582,39 +1194,13 @@ describe("a gutter between windows", () => {
     stage.height = 1100;
     desk.measure();
     settle();
-    const wider: Rect = { ...usable, w: 1900 - usable.x, h: 1100 };
+    const wider: Rect = { ...usable, w: 1900, h: 1100 };
     expectRect(at("tab-0"), zoneRect("left", wider));
     expectRect(at("tab-1"), zoneRect("right", wider));
     const right = zoneRect("right", wider);
     drag("tab-1", { left: true }, right.x - DESK_GAP / 2, 500, { x: -100, y: 0 });
     expect(at("tab-1").x - (at("tab-0").x + at("tab-0").w)).toBeCloseTo(DESK_GAP, 3);
     expectRect(at("tab-1"), { ...right, x: right.x - 100, w: right.w + 100 });
-    desk.destroy();
-  });
-});
-
-/* ----------------------- a page the shell draws ---------------------- */
-
-describe("the box a tab's page is laid out at", () => {
-  it("is its window's page box — zoomed out when minimized — or, in the dock, that of a window filling the desk", () => {
-    native();
-    const desk = engine();
-    const win = element();
-    desk.start([], "tab-0", tabIds(2));
-    desk.attachWindow("tab-0", win as unknown as HTMLElement);
-    settle();
-    const insets = CHROME_INSETS[DEFAULT_DESK_VARIANTS.chrome];
-    const pageOf = (rect: Rect, zoom = 1) => ({ w: (rect.w - insets.left - insets.right) / zoom, h: (rect.h - insets.top - insets.bottom) / zoom });
-    const expectSize = (actual: { w: number; h: number }, expected: { w: number; h: number }): void => {
-      expect(actual.w).toBeCloseTo(expected.w, 3);
-      expect(actual.h).toBeCloseTo(expected.h, 3);
-    };
-    expectSize(desk.pageSize("tab-0"), pageOf(rectOf(win)));
-    expectSize(desk.pageSize("tab-1"), pageOf(usable));
-    desk.minimize("tab-0");
-    settle();
-    expect(desk.getView().windows[0]!.mini).not.toBeNull();
-    expectSize(desk.pageSize("tab-0"), pageOf(rectOf(win), DESK_MINI_ZOOM));
     desk.destroy();
   });
 });

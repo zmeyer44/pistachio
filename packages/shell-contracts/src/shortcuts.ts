@@ -34,7 +34,8 @@ export type ShortcutActionId =
   | "openNotes"
   | "tileDesk"
   | "cascadeDesk"
-  | "arrangeDesk";
+  | "arrangeDesk"
+  | "toggleDesk";
 
 export type ShortcutSettings = Record<ShortcutActionId, string | null>;
 export type ShortcutPlatform = "darwin" | "other";
@@ -84,6 +85,7 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "tileDesk", group: "Window", label: "Tile desk windows", note: "On a tab group's desk: every window out, side by side." },
   { id: "cascadeDesk", group: "Window", label: "Cascade desk windows", note: "On a tab group's desk: every window out, fanned from the corner." },
   { id: "arrangeDesk", group: "Window", label: "Arrange desk windows", note: "On a tab group's desk: the windows laid out the way the layout model judges they are used." },
+  { id: "toggleDesk", group: "Window", label: "Toggle desk", note: "Opens the desk of the tab group you are in, or leaves the desk that is up." },
 ];
 
 export const SHORTCUT_ACTION_IDS = SHORTCUT_DEFINITIONS.map((definition) => definition.id) as readonly ShortcutActionId[];
@@ -123,6 +125,8 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   tileDesk: "Mod+Alt+T",
   cascadeDesk: "Mod+Alt+C",
   arrangeDesk: "Mod+Alt+L",
+  // Beside ⌘\ (split view); ⌥⌘D is the Mac's own Dock toggle.
+  toggleDesk: "Mod+Alt+Backslash",
 };
 
 const NAMED_KEYS = new Set([

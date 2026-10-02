@@ -7,9 +7,10 @@
  * renderer is a type error, not a blank spot in one layout.
  */
 
-import { Globe } from "lucide-react";
+import { Globe, Search } from "lucide-react";
 import type { FC } from "react";
 import type { SpaceInfo } from "@pistachio/shell-contracts/ipc";
+import { DeskMoreButton, DeskRailToggle } from "../components/desk/DeskSidebarControls";
 import { DownloadsChip } from "../components/DownloadsChip";
 import { TabMark } from "../components/Favicon";
 import { FavoritesGrid } from "../components/FavoritesGrid";
@@ -23,6 +24,8 @@ import { TabStrip } from "../components/TabStrip";
 import { UpdatePill } from "../components/UpdatePill";
 import { Kbd } from "../components/ui/kbd";
 import { cn } from "../lib/cn";
+import { useSidebarRail } from "../components/sidebar-rail";
+import { useDeskStore } from "../lib/desk/store";
 import { selectActiveTab, useAppStore } from "../store";
 import { ActionButton, useAction } from "./actions";
 import { featuresIn, type ChromeFeatureId, type SidebarRegion, type TopRegion } from "./manifest";
@@ -64,6 +67,7 @@ function NavigationCluster({ orientation }: ChromeRendererProps) {
  * page. Runs as a shell command, like every control that opens a modal.
  */
 function SidebarAddress() {
+  const rail = useSidebarRail();
   const { hint, run } = useAction("editAddress");
   const tab = useAppStore(selectActiveTab);
   const chrome = useChromeTabs().find((t) => t.id === tab?.id) ?? null;
@@ -72,6 +76,24 @@ function SidebarAddress() {
   const editing = useAppStore(
     (s) => s.overlay === "url" && !s.urlBarNew && (s.urlBarTabId === null || s.urlBarTabId === tab?.id),
   );
+  // As a rail (a desk's dock): the same button, its icon alone.
+  if (rail)
+    return (
+      <button
+        type="button"
+        data-testid="sidebar-address"
+        title={hint === null ? "Search or enter URL" : `Search or enter URL (${hint})`}
+        aria-label="Edit address"
+        aria-expanded={editing}
+        onClick={run}
+        className={cn(
+          "no-drag grid size-8 shrink-0 cursor-pointer place-items-center rounded-md text-gray-900 transition-colors [&_svg]:size-[18px]",
+          editing ? "bg-background-100 shadow-small" : "bg-alpha-100 hover:bg-alpha-200",
+        )}
+      >
+        <Search aria-hidden="true" />
+      </button>
+    );
   return (
     <button
       type="button"
@@ -124,8 +146,20 @@ function ScreenShareFeature({ orientation }: ChromeRendererProps) {
 
 /* ------------------------------ sidebarPin ------------------------------ */
 
-/** Last in the toolbar row, pushed to its far end. */
+/**
+ * Last in the toolbar row, pushed to its far end. While a desk is up the
+ * sidebar is its dock, pinned whatever it otherwise is: in its place, the
+ * desk's card (arrange, feel, leave) and the switch to its rail (⌘S).
+ */
 function SidebarPinFeature({ orientation }: ChromeRendererProps) {
+  const desk = useDeskStore((state) => state.groupId !== null || state.opening !== null);
+  if (desk)
+    return (
+      <span className="ml-auto flex items-center gap-0.5">
+        <DeskMoreButton />
+        <DeskRailToggle />
+      </span>
+    );
   return (
     <span className="ml-auto flex items-center">
       <ActionButton id="toggleSidebarPinned" variant={buttonVariant(orientation)} />

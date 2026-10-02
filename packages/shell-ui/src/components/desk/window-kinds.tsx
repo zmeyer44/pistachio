@@ -7,7 +7,7 @@
  *
  * A new kind of window: its id prefix (lib/desk/windows.ts), its subject
  * here (what the surface hands its window: the thing it shows), its parts
- * (shellWindowParts), its home in the dock (DeskEngine.attachHome), and
+ * (shellWindowParts), its home in the sidebar (DeskHost.homeOf), and
  * what choosing and closing one mean (DeskSurface's host).
  */
 

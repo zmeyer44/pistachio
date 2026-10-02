@@ -950,29 +950,31 @@ export interface DockDrops {
 }
 
 /**
- * The two pads that stand in the dock's column while a window is carried
- * (the dock slides away to make room): back into the dock above, and its
- * tab closed below — where the Dock keeps its Trash — the smaller of the
- * two, since closing is the one to mean. From `top` down: above it, the
- * window's own buttons may sit over the column.
+ * The drop rail's two segments over the sidebar's column while a window is
+ * carried near the desk's leading edge (`side`, the column in the stage:
+ * left of it, at negative x): back into the dock above, and its tab closed
+ * below — where the Dock keeps its Trash — the smaller of the two, since
+ * closing is the one to mean. From `top` down: above it, the window's own
+ * buttons may sit over the column.
  */
-export function dockDrops(height: number, dockW: number, inset = 6, gap = DESK_GAP, top = inset): DockDrops {
-  const inner = Math.max(0, height - top - inset);
+export function sidebarDrops(side: Rect, inset = 6, gap = DESK_GAP, top = side.y + inset): DockDrops {
+  const inner = Math.max(0, side.y + side.h - inset - top);
   const closeH = Math.min(Math.round(inner * 0.4), Math.max(120, Math.min(220, Math.round(inner * 0.28))));
-  const w = Math.max(1, dockW - inset * 2 + 4);
-  const close = { x: inset, y: top + inner - closeH, w, h: closeH };
-  return { away: { x: inset, y: top, w, h: Math.max(0, close.y - gap - top) }, close };
+  const x = side.x + inset;
+  const w = Math.max(1, side.w - inset * 2);
+  const close = { x, y: top + inner - closeH, w, h: closeH };
+  return { away: { x, y: top, w, h: Math.max(0, close.y - gap - top) }, close };
 }
 
 /**
- * The pad a carried window is over: anything left of `edge` (the dock's
- * column, or further out, over the sidebar), level with the desk, split
- * where the two pads meet. Right of `edge` is the desk, where the leading
- * edge's band offers the left half and its quarters (edgeZone): the two
- * never overlap, so a lit target is the only one.
+ * The segment a carried window is over: anything left of `edge` (the desk's
+ * leading edge: the sidebar, or further out), level with the rail, split
+ * where the two segments meet. Right of `edge` is the desk, where the
+ * leading edge's band offers the left half and its quarters (edgeZone):
+ * the two never overlap, so a lit target is the only one.
  */
-export function dockDropAt(point: Point, drops: DockDrops, edge: number, height: number, slack = 24): DockDrop | null {
-  if (point.x >= edge || point.y < -slack || point.y > height + slack) return null;
+export function dockDropAt(point: Point, drops: DockDrops, edge: number, slack = 24): DockDrop | null {
+  if (drops.away.w <= 0 || point.x >= edge || point.y < drops.away.y - slack || point.y > bottomOf(drops.close) + slack) return null;
   const split = (bottomOf(drops.away) + drops.close.y) / 2;
   return point.y >= split ? "close" : "away";
 }

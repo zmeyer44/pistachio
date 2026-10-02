@@ -45,6 +45,7 @@ import { useAppStore } from "../store";
 import { splitZoneAt, type PointerLike, type SplitZone } from "./drag-geometry";
 import type { ChromeTab } from "./tabs";
 import { nativeApi } from "../api";
+import { deskEngine, dropTabOnDesk } from "../lib/desk/open";
 
 /** Anything on the shelf a drag can carry, with what the ghost draws. */
 export interface ShelfItem {
@@ -127,6 +128,8 @@ const SETTLE_EASING = "cubic-bezier(0.22, 0.9, 0.26, 1)";
 const SETTLE_TIMEOUT_MS = 1_000;
 /** The list's horizontal padding (px-2): PIN_INDENT is measured from inside it. */
 const LIST_PAD = 8;
+/** On a desk, a tab's row carried this far past the column's edge is over the desk. */
+const DESK_EDGE_PX = 2;
 /** Within this many px of the scroller's edge the list scrolls under the drag. */
 const AUTO_SCROLL_EDGE = 28;
 const AUTO_SCROLL_STEP = 8;
@@ -371,7 +374,11 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
     const rect = el.getBoundingClientRect();
     const grabX = startX - rect.left;
     const grabY = startY - rect.top;
-    const canSplit = item.kind !== "group" && item.tabs.length === 1 && (useAppStore.getState().snapshot?.visibleTabIds.length ?? 0) < 4;
+    // On a desk the sidebar is its dock: a tab's row carried out over it is
+    // its window (`overDesk`), and nothing splits.
+    const onDesk = deskEngine() !== null;
+    const deskTab = onDesk && item.kind === "tab" && item.tabs.length === 1 ? item.tabs[0] : undefined;
+    const canSplit = !onDesk && item.kind !== "group" && item.tabs.length === 1 && (useAppStore.getState().snapshot?.visibleTabIds.length ?? 0) < 4;
     const origin = originDrop(item, listRef.current, gridRef.current);
     // A tile moves freely; a row stays in its slot horizontally unless it
     // is being lifted RIGHT toward the page (see `follow`). The ghost the
@@ -408,6 +415,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
      * are read as they will be once it has.
      */
     const dropFor = (ev: PointerLike, scrollBy: number): { drop: ShelfDrop | null; overContent: boolean; zone: SplitZone | null } => {
+      if (overDesk(ev)) return { drop: null, overContent: true, zone: null };
       const area = boundsRef.current;
       if (canSplit && area !== null && ev.clientX >= area.x) {
         return { drop: null, overContent: true, zone: splitZoneAt("y", area, ev) };
@@ -428,6 +436,13 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       const box = list.getBoundingClientRect();
       const drop = listDropAt(rowsOf(list), item.kind, ev.clientY - (box.top - scrollBy), ev.clientX - box.left - LIST_PAD);
       return { drop, overContent: false, zone: null };
+    };
+
+    /** The pointer is past the column's edge, over the desk, with a tab's row in hand. */
+    const overDesk = (ev: PointerLike): boolean => {
+      if (deskTab === undefined) return false;
+      const column = rootRef.current?.getBoundingClientRect();
+      return column !== undefined && ev.clientX > column.right + DESK_EDGE_PX;
     };
 
     /** How far the list scrolls under a pointer near its edge this frame — measured, not yet written. */
@@ -483,7 +498,12 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       placement.target.style.opacity = placement.opacity;
     };
 
-    const onMove = (ev: PointerLike): void => {
+    /**
+     * `live` is false for the sample a release is read from: a tab's row of
+     * the desk's group carried out over the desk is then let go there
+     * (`finish`), not handed on.
+     */
+    const onMove = (ev: PointerLike, live = true): void => {
       pointer = ev;
       if (state === null) {
         if (Math.abs(ev.clientX - startX) < DRAG_START_PX && Math.abs(ev.clientY - startY) < DRAG_START_PX) return;
@@ -503,6 +523,13 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       }
       // Every measurement first, against the layout as it stands; then the
       // writes. Interleaving them would force a layout per read.
+      // A row of the desk's group out over the desk becomes its window in
+      // hand: the desk takes the gesture on from here, the button still down.
+      if (live && deskTab !== undefined && overDesk(ev) && deskEngine()?.hasGroupTab(deskTab.id) === true) {
+        finish(false);
+        deskEngine()?.pullFromSidebar(deskTab.id, { x: ev.clientX, y: ev.clientY });
+        return;
+      }
       const scrollBy = autoScrollDelta(ev);
       const { drop, overContent, zone } = dropFor(ev, scrollBy);
       // Where the source's box is drawn, viewport px (as `follow` moves it):
@@ -574,7 +601,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       if (pending !== null) {
         const last = pending;
         pending = null;
-        onMove(last);
+        onMove(last, false);
       }
       finished = true;
       window.removeEventListener("pointermove", onWindowMove);
@@ -617,6 +644,12 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       store.setTabDragging(false);
+      // Let go over the desk: the tab's window comes out there (joining the group, if it was not the group's).
+      if (deskTab !== undefined && overDesk(pointer)) {
+        setDrag(null);
+        void dropTabOnDesk(deskTab.id, { x: pointer.clientX, y: pointer.clientY });
+        return;
+      }
       if (done.drop === null || sameDrop(done.drop, origin)) {
         setDrag(null);
         return;

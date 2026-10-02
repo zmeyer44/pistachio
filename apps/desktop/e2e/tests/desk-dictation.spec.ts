@@ -35,6 +35,13 @@ function api<T>(shell: Page, call: (pistachio: PistachioApi) => Promise<T>): Pro
 
 const snapshot = (shell: Page): Promise<ShellSnapshot> => api(shell, (pistachio) => pistachio.getSnapshot());
 
+/** The Bar grown from its idle pill, as the pointer coming to it grows it, so its field and buttons can be used. */
+async function reachBar(shell: Page): Promise<void> {
+  const bar = shell.getByTestId("desk-bar");
+  if ((await bar.getAttribute("data-compact")) !== null) await shell.getByTestId("desk-bar-pill").hover();
+  await expect(bar).not.toHaveAttribute("data-compact", "");
+}
+
 /** The window as a person sees it: the shell with every live page composited over it at its box (desk.spec.ts). */
 async function capture(app: ElectronApplication, shell: Page, filename: string): Promise<void> {
   await shell.waitForTimeout(400);
@@ -81,7 +88,7 @@ async function capture(app: ElectronApplication, shell: Page, filename: string):
   await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
 }
 
-/** Move the window out from under the real cursor, whose hover would otherwise reach the dock (desk.spec.ts). */
+/** Move the window out from under the real cursor, whose hover would otherwise reach the sidebar (desk.spec.ts). */
 async function clearOfCursor(app: ElectronApplication): Promise<void> {
   await app.evaluate(({ BrowserWindow, screen }) => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -181,7 +188,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
     const group = shell.getByTestId("tab-group");
     await group.getByTestId("tab-group-header").hover();
     await group.getByTestId("tab-group-desk").click();
-    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
     await settled(shell);
     const stage = await shell.locator(".desk-stage").boundingBox();
     if (stage === null) throw new Error("no desk stage");
@@ -197,6 +204,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
 
     // ── 1. The microphone is one of the Bar's buttons, beside Send ─
     await expect(dictate).toBeVisible();
+    await reachBar(shell);
     await dictate.hover();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Dictate");
     await away();
@@ -205,6 +213,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
     await input.fill("Compare with.");
     await input.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(7, 7));
     await speech.answer("the vendor record");
+    await reachBar(shell);
     await dictate.click();
     await expect(wave).toHaveAttribute("data-phase", "recording");
     await expect(input).toBeHidden();
@@ -237,6 +246,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
     // ── 4. Escape drops a recording: nothing is sent to be transcribed, the text is as it was ─
     await speech.delay(0);
     await input.press("End");
+    await reachBar(shell);
     await dictate.click();
     await expect(wave).toHaveAttribute("data-phase", "recording");
     await shell.waitForTimeout(1_200);
@@ -249,6 +259,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
     // ── 5. Discarded while its words are being transcribed, they are dropped when they come ─
     await speech.delay(1_500);
     await speech.answer("and never mind");
+    await reachBar(shell);
     await dictate.click();
     await expect(wave).toHaveAttribute("data-phase", "recording");
     await shell.waitForTimeout(1_200);
@@ -263,6 +274,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
     // ── 6. A transcription that fails says why, in the Bar's words, and keeps the text ─
     await speech.delay(0);
     await speech.answer({ error: "Voice isn't available right now: Pistachio's models couldn't be reached from this Mac. Type your introduction instead." });
+    await reachBar(shell);
     await dictate.click();
     await expect(wave).toHaveAttribute("data-phase", "recording");
     await shell.waitForTimeout(1_200);
@@ -272,6 +284,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
     await capture(app, shell, "04-failed.png");
 
     // ── 7. A tap too short to hear is not sent, and says what to do; the next press clears it ─
+    await reachBar(shell);
     await dictate.click();
     await expect(banner).toHaveCount(0);
     await expect(wave).toHaveAttribute("data-phase", "recording");
@@ -283,6 +296,7 @@ test("dictation in the desk's Bar: it listens, what was said lands at the caret,
     // ── 8. Into an empty field, what was said is the message ─
     await input.fill("");
     await speech.answer("  What is due this week?  ");
+    await reachBar(shell);
     await dictate.click();
     await expect(wave).toHaveAttribute("data-phase", "recording");
     await shell.waitForTimeout(1_200);

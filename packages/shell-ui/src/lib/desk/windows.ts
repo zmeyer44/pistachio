@@ -9,7 +9,7 @@
  * - `tab`: the tab's own id (a UUID). Its icon in the dock is its home.
  * - `file`: `file:<context item id>`. Its home is the dock's Stack.
  *
- * A new kind is a new prefix here, a home in the dock (DeskEngine.attachHome),
+ * A new kind is a new prefix here, a home in the sidebar (DeskHost.homeOf),
  * and a window component (components/desk/window-kinds.tsx).
  */
 

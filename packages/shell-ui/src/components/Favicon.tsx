@@ -20,7 +20,7 @@ export function Favicon({ src, seed, className, letter: showLetter = true }: { s
     return (
       <span
         className={cn(
-          "grid size-4 shrink-0 place-items-center rounded-[4px] bg-alpha-200 text-[9px] leading-none font-semibold text-gray-900 [text-box:trim-both_cap_alphabetic]",
+          "favicon grid size-4 shrink-0 place-items-center rounded-[4px] bg-alpha-200 text-[9px] leading-none font-semibold text-gray-900 [text-box:trim-both_cap_alphabetic]",
           className,
         )}
       >
@@ -32,7 +32,7 @@ export function Favicon({ src, seed, className, letter: showLetter = true }: { s
     <img
       src={src}
       alt=""
-      className={cn("size-4 shrink-0 rounded-[4px]", className)}
+      className={cn("favicon size-4 shrink-0 rounded-[4px]", className)}
       draggable={false}
       onError={() => setFailed(true)}
     />

@@ -54,10 +54,9 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     close: () => undefined,
     editAddress: () => undefined,
     save: () => undefined,
-    switchGroup: () => undefined,
-    reorderTab: () => undefined,
     moveTabToGroup: () => undefined,
-    reorderGroup: () => undefined,
+    sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    homeOf: () => null,
     leaveDone: () => undefined,
     ...host,
   });
@@ -155,9 +154,9 @@ describe("a document's window", () => {
 
   it("goes home into the Stack and comes out of it, the Stack bouncing as it takes it", () => {
     native();
-    const desk = engine();
-    const stack = stackAt({ x: 10, y: 480, w: 40, h: 40 });
-    desk.attachHome("file", stack);
+    const stack = stackAt({ x: -40, y: 480, w: 32, h: 32 });
+    // The Stack's row in the sidebar is the documents' home.
+    const desk = engine({ homeOf: (kind) => (kind === "file" ? stack : null) });
     desk.start([], "tab-0", ["tab-0"], [PLAN]);
     settle();
     desk.add(PLAN, { focus: true });

@@ -55,23 +55,25 @@ export function shellStateOf(state: AppState): ShellState {
       state.error !== null ||
       state.glance !== null,
     sidebarRevealed: sidebarRevealedOf(state, deskUp(useDeskStore.getState())),
-    sidebarAway: sidebarAwayOf(state, deskUp(useDeskStore.getState())),
+    sidebarOnDesk: deskUp(useDeskStore.getState()),
+    sidebarRail: railOf(useDeskStore.getState(), state),
   };
 }
 
-/** A tab group's desk is up, or waiting to open: the sidebar is put away (layouts/SidebarLayout.tsx). */
+/** The desk's dock is the sidebar's rail, in the sidebar layout (where the window's buttons would sit over it). */
+function railOf(desk: { opening: string | null; groupId: string | null; rail: boolean }, state: Pick<AppState, "settings">): boolean {
+  return deskUp(desk) && desk.rail && state.settings.layout.mode === "sidebar";
+}
+
+/** A tab group's desk is up, or waiting to open: the sidebar's column is its dock (layouts/SidebarLayout.tsx). */
 function deskUp(desk: { opening: string | null; groupId: string | null }): boolean {
   return desk.opening !== null || desk.groupId !== null;
 }
 
-/** The column is up: pinned it always is; compact, while the pointer holds it out — unless it is put away for a desk. */
-function sidebarRevealedOf(state: Pick<AppState, "settings" | "sidebarRevealed">, away: boolean): boolean {
+/** The compact column is out: pinned it always is; compact, while the pointer holds it out. (On a desk it is the dock: `sidebarOnDesk`.) */
+function sidebarRevealedOf(state: Pick<AppState, "settings" | "sidebarRevealed">, onDesk: boolean): boolean {
   const layout = state.settings.layout;
-  return layout.mode === "sidebar" && !away && (layout.sidebar === "pinned" || state.sidebarRevealed);
-}
-
-function sidebarAwayOf(state: Pick<AppState, "settings">, away: boolean): boolean {
-  return state.settings.layout.mode === "sidebar" && away;
+  return layout.mode === "sidebar" && !onDesk && (layout.sidebar === "pinned" || state.sidebarRevealed);
 }
 
 function useStoreShellState(): ShellState {
@@ -97,9 +99,11 @@ function useStoreShellState(): ShellState {
       s.error !== null ||
       s.glance !== null,
   );
-  const away = useDeskStore(deskUp);
-  const sidebarRevealed = useAppStore((s) => sidebarRevealedOf(s, away));
-  const sidebarAway = useAppStore((s) => sidebarAwayOf(s, away));
+  const sidebarOnDesk = useDeskStore(deskUp);
+  const deskRail = useDeskStore((d) => deskUp(d) && d.rail);
+  const sidebarLayout = useAppStore((s) => s.settings.layout.mode === "sidebar");
+  const sidebarRail = deskRail && sidebarLayout;
+  const sidebarRevealed = useAppStore((s) => sidebarRevealedOf(s, sidebarOnDesk));
   return useMemo(
     () => ({
       consoleOpen,
@@ -111,9 +115,10 @@ function useStoreShellState(): ShellState {
       tabSwitcherOpen,
       veiled,
       sidebarRevealed,
-      sidebarAway,
+      sidebarOnDesk,
+      sidebarRail,
     }),
-    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, tabSwitcherOpen, veiled, sidebarRevealed, sidebarAway],
+    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, tabSwitcherOpen, veiled, sidebarRevealed, sidebarOnDesk, sidebarRail],
   );
 }
 
@@ -261,6 +266,12 @@ export function runShellCommand(command: ShellCommand): void {
       s.setConsoleOpen(true);
       break;
     case "toggleSidebarPinned": {
+      // On a desk the sidebar is its dock, pinned: ⌘S switches it between the whole sidebar and its rail.
+      const desk = useDeskStore.getState();
+      if (desk.groupId !== null || desk.opening !== null) {
+        desk.setRail(!desk.rail);
+        break;
+      }
       const layout = s.settings.layout;
       if (layout.mode !== "sidebar") return;
       // Going compact from a pinned column: it leaves the layout at once,

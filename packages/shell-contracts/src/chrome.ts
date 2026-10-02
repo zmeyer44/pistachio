@@ -70,6 +70,12 @@ export const SIDEBAR_DEFAULT_W = 248;
 export const SIDEBAR_MIN_W = 200;
 export const SIDEBAR_MAX_W = 380;
 /**
+ * The sidebar as a rail while a desk is up (docs/desk.md): its icons alone.
+ * A row's icon sits 16px in (the list's padding and the row's), so a column
+ * this wide centres them.
+ */
+export const SIDEBAR_RAIL_W = 48;
+/**
  * Clearance for the macOS traffic lights at the window's top-left
  * (BrowserWindow trafficLightPosition {x: 16, y: 15}, three 12px buttons on
  * 20px centers). Whatever chrome occupies that corner — the top tab strip,
@@ -316,13 +322,19 @@ export interface ShellState {
    */
   sidebarRevealed: boolean;
   /**
-   * The sidebar's column is put away entirely, pinned or compact, until a
-   * tab group's desk is left (docs/desk.md): the traffic lights stay, over
-   * the top of the desk's dock column, and the compact sidebar's edge brings
-   * nothing out.
-   * Always false in the top layout.
+   * A tab group's desk is up, or opening (docs/desk.md): the sidebar's
+   * column is the desk's dock — up whole or as its rail, whatever the
+   * layout says — so the traffic lights stay, over its top, and the compact
+   * sidebar's edge brings nothing out.
    */
-  sidebarAway: boolean;
+  sidebarOnDesk: boolean;
+  /**
+   * The desk's dock is the sidebar's narrow rail, in the sidebar layout: the
+   * window's buttons, which would hang over the desk's corner, are hidden
+   * (the whole sidebar has room for them in its toolbar). Always false
+   * without a desk, and in the top layout, whose strip holds them.
+   */
+  sidebarRail: boolean;
   /** The reminders page (pistachio://reminders) is over the content hole. */
   remindersOpen: boolean;
   /** The bookmarks page (pistachio://bookmarks) is over the content hole. */
@@ -352,7 +364,8 @@ export const DEFAULT_SHELL_STATE: ShellState = {
   tabSwitcherOpen: false,
   veiled: false,
   sidebarRevealed: false,
-  sidebarAway: false,
+  sidebarOnDesk: false,
+  sidebarRail: false,
 };
 
 export function isShellState(value: unknown): value is ShellState {
@@ -365,7 +378,8 @@ export function isShellState(value: unknown): value is ShellState {
       "settingsOpen",
       "veiled",
       "sidebarRevealed",
-      "sidebarAway",
+      "sidebarOnDesk",
+      "sidebarRail",
       "remindersOpen",
       "bookmarksOpen",
       "liveViewOpen",

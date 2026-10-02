@@ -4,6 +4,7 @@
  * no page view to free — so on the web there is nothing to open.
  */
 
+import type { DeskEngine } from "../../components/desk/desk-engine";
 import { nativeApi } from "../../api";
 import { useAppStore } from "../../store";
 import { useDeskStore } from "./store";
@@ -13,10 +14,10 @@ export function deskAvailable(): boolean {
 }
 
 /**
- * Open the group's desk, or put it away if it is the one up. The sidebar is
- * put away while a desk is up (layouts/SidebarLayout.tsx), and in the
- * sidebar layout the desk opens once it has gone. Another group's desk
- * up, it passes to this group in place.
+ * Open the group's desk, or put it away if it is the one up. While a desk is
+ * up the sidebar's column is its dock (layouts/SidebarLayout.tsx's
+ * SidebarColumn), and the desk opens once the column has settled at its desk
+ * width. Another group's desk up, it passes to this group in place.
  */
 export function toggleDesk(groupId: string): void {
   if (!deskAvailable()) return;
@@ -30,7 +31,32 @@ export function toggleDesk(groupId: string): void {
     return;
   }
   if (desk.groupId !== null) desk.leave({ immediate: true });
-  useDeskStore.getState().open(groupId, { afterSidebar: useAppStore.getState().settings.layout.mode === "sidebar" });
+  useDeskStore.getState().open(groupId, { afterSidebar: true });
+}
+
+/**
+ * The Toggle desk shortcut, from anywhere in the shell or a page: the desk
+ * that is up is left; with none up, the tab in use opens its group's desk.
+ * A tab in no group has no desk, and a notice says how to get one.
+ */
+export function toggleDeskOfActiveTab(): boolean {
+  if (!deskAvailable()) return false;
+  const desk = useDeskStore.getState();
+  if (desk.groupId !== null && !desk.leaving) {
+    desk.leave();
+    return true;
+  }
+  const store = useAppStore.getState();
+  const snapshot = store.snapshot;
+  const activeTabId = snapshot?.activeTabId ?? null;
+  if (snapshot === null || activeTabId === null) return false;
+  const group = snapshot.tabGroups.find((candidate) => candidate.tabIds.includes(activeTabId));
+  if (group === undefined) {
+    store.showNotice("A desk is a tab group's: put this tab in a group to open it as a desk");
+    return true;
+  }
+  toggleDesk(group.id);
+  return true;
 }
 
 /**
@@ -72,4 +98,46 @@ export function askDesk(): boolean {
   if (askUp === null || desk.groupId === null || desk.leaving) return false;
   askUp();
   return true;
+}
+
+/**
+ * The desk that is up, for the sidebar — its dock — to act on its windows:
+ * a tab's row brings its window out or puts it away from its menu, and a row
+ * pulled out over the desk is its window in hand (chrome/shelf-drag.tsx).
+ * The desk's surface lends its engine here while it is mounted.
+ */
+let engineUp: DeskEngine | null = null;
+
+export function lendDeskEngine(engine: DeskEngine | null): void {
+  engineUp = engine;
+}
+
+/** The desk's engine while one is up and open (not leaving), or null. */
+export function deskEngine(): DeskEngine | null {
+  const desk = useDeskStore.getState();
+  return desk.groupId === null || desk.leaving ? null : engineUp;
+}
+
+/** How long a tab that just joined the desk's group may take to reach the desk (the snapshot that says so). */
+const JOIN_WAIT_MS = 1500;
+
+/**
+ * A tab's row let go over the desk (chrome/shelf-drag.tsx): its window comes
+ * out where it was let go. A tab that is not the group's joins it first —
+ * the desk hears of it with the snapshot that says so.
+ */
+export async function dropTabOnDesk(tabId: string, client: { x: number; y: number }): Promise<void> {
+  const groupId = useDeskStore.getState().groupId;
+  const engine = deskEngine();
+  if (groupId === null || engine === null) return;
+  if (!engine.hasGroupTab(tabId)) {
+    const joined = await useAppStore.getState().tabGroupCommand({ type: "addTab", groupId, tabId });
+    if (joined === null) return;
+    const until = performance.now() + JOIN_WAIT_MS;
+    while (deskEngine()?.hasGroupTab(tabId) !== true) {
+      if (performance.now() > until || useDeskStore.getState().groupId !== groupId) return;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  }
+  deskEngine()?.addAt(tabId, client);
 }

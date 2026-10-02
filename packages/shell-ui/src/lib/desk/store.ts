@@ -160,19 +160,23 @@ interface DeskStore {
    */
   instance: number;
   /**
-   * The group whose desk is waiting for the sidebar to go (sidebarGone): the
-   * sidebar is put away while a desk is up, and the desk opens over the
-   * whole row only once it has, so the page it lifts off is already there.
+   * The group whose desk is waiting for the sidebar (sidebarReady): while a
+   * desk is up the sidebar's column is its dock, full or as a rail of icons,
+   * and the desk opens only once the column has settled at that width, so the
+   * page it lifts off is already laid out where it will stand.
    */
   opening: string | null;
   /** The desk is putting itself away; the surface finishes it (finishLeave). */
   leaving: boolean;
   variants: DeskVariants;
   saved: Record<string, SavedDesk>;
-  /** Open the group's desk — once the sidebar has gone, with `afterSidebar` (the sidebar layout). */
+  /** While a desk is up, the sidebar is a rail of icons (or, false, the whole sidebar): ⌘S switches. Kept on this device. */
+  rail: boolean;
+  /** Open the group's desk — once the sidebar has settled at its desk width, with `afterSidebar`. */
   open(groupId: string, options?: { afterSidebar?: boolean }): void;
-  /** The sidebar has gone: the desk waiting for it opens. */
-  sidebarGone(): void;
+  /** The sidebar has settled at its desk width: the desk waiting for it opens. */
+  sidebarReady(): void;
+  setRail(rail: boolean): void;
   /** The desk that is up passes to another group, in place: its surface runs the passing (DeskEngine.switchGroup). */
   switchTo(groupId: string): void;
   /** Put the desk away — with its closing motion unless `immediate`. */
@@ -190,15 +194,16 @@ const MAX_SAVED_DESKS = 40;
 interface Persisted {
   variants: DeskVariants;
   saved: Record<string, SavedDesk>;
+  rail: boolean;
 }
 
 function readPersisted(): Persisted {
-  const fallback: Persisted = { variants: DEFAULT_DESK_VARIANTS, saved: {} };
+  const fallback: Persisted = { variants: DEFAULT_DESK_VARIANTS, saved: {}, rail: true };
   try {
     const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(STORAGE_KEY);
     if (raw === null) return fallback;
     const value = JSON.parse(raw) as Partial<Persisted>;
-    return { variants: sanitizeVariants(value.variants), saved: sanitizeSaved(value.saved) };
+    return { variants: sanitizeVariants(value.variants), saved: sanitizeSaved(value.saved), rail: typeof value.rail === "boolean" ? value.rail : true };
   } catch {
     return fallback;
   }
@@ -263,15 +268,21 @@ export const useDeskStore = create<DeskStore>((set, get) => ({
   leaving: false,
   variants: initial.variants,
   saved: initial.saved,
+  rail: initial.rail,
   open: (groupId, options) =>
     set(
       options?.afterSidebar === true
         ? { opening: groupId, groupId: null, leaving: false }
         : { groupId, instance: get().instance + 1, opening: null, leaving: false },
     ),
-  sidebarGone: () => {
+  sidebarReady: () => {
     const opening = get().opening;
     if (opening !== null) set({ groupId: opening, instance: get().instance + 1, opening: null, leaving: false });
+  },
+  setRail: (rail) => {
+    if (rail === get().rail) return;
+    set({ rail });
+    persist({ variants: get().variants, saved: get().saved, rail });
   },
   switchTo: (groupId) => {
     const state = get();
@@ -288,7 +299,7 @@ export const useDeskStore = create<DeskStore>((set, get) => ({
   setVariant: (key, value) => {
     const variants = { ...get().variants, [key]: value };
     set({ variants });
-    persist({ variants, saved: get().saved });
+    persist({ variants, saved: get().saved, rail: get().rail });
   },
   cycleVariant: (key) => {
     const axis = DESK_AXES.find((candidate) => candidate.key === key)!;
@@ -304,6 +315,6 @@ export const useDeskStore = create<DeskStore>((set, get) => ({
     const keys = Object.keys(saved);
     for (const key of keys.slice(0, Math.max(0, keys.length - MAX_SAVED_DESKS))) delete saved[key];
     set({ saved });
-    persist({ variants: get().variants, saved });
+    persist({ variants: get().variants, saved, rail: get().rail });
   },
 }));

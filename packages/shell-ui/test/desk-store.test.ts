@@ -65,10 +65,10 @@ describe("opening a desk", () => {
   it("waits for the sidebar to go, and opens once it has", () => {
     useDeskStore.getState().open("g1", { afterSidebar: true });
     expect(useDeskStore.getState()).toMatchObject({ groupId: null, opening: "g1" });
-    useDeskStore.getState().sidebarGone();
+    useDeskStore.getState().sidebarReady();
     expect(useDeskStore.getState()).toMatchObject({ groupId: "g1", opening: null, leaving: false });
     // Nothing waiting: the sidebar going again changes nothing.
-    useDeskStore.getState().sidebarGone();
+    useDeskStore.getState().sidebarReady();
     expect(useDeskStore.getState().groupId).toBe("g1");
   });
 
@@ -76,7 +76,7 @@ describe("opening a desk", () => {
     useDeskStore.getState().open("g1", { afterSidebar: true });
     useDeskStore.getState().leave();
     expect(useDeskStore.getState()).toMatchObject({ groupId: null, opening: null, leaving: false });
-    useDeskStore.getState().sidebarGone();
+    useDeskStore.getState().sidebarReady();
     expect(useDeskStore.getState().groupId).toBeNull();
   });
 

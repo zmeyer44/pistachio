@@ -488,7 +488,8 @@ export type ShellShortcutAction =
   | "openNotes"
   | "tileDesk"
   | "cascadeDesk"
-  | "arrangeDesk";
+  | "arrangeDesk"
+  | "toggleDesk";
 
 export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 

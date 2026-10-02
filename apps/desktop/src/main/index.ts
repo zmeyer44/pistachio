@@ -691,13 +691,13 @@ function isCompactSidebar(current: DesktopSettings): boolean {
   );
 }
 
-/** Keep the native reveal target active only while compact mode is hidden (and not put away for a desk). */
+/** Keep the native reveal target active only while compact mode is hidden (and not the desk's dock). */
 function syncSidebarEntryWatch(): void {
   if (sidebarWatch === null || settings === null) return;
   sidebarWatch.setEntryEnabled(
     isCompactSidebar(settings.get()) &&
       !shellState.sidebarRevealed &&
-      !shellState.sidebarAway,
+      !shellState.sidebarOnDesk,
   );
 }
 
@@ -709,9 +709,13 @@ function syncSidebarEntryWatch(): void {
  * On close they remain through the CSS retreat rather than popping away from
  * a toolbar that is still visible. A reversal cancels that pending hide.
  *
- * A sidebar put away while a tab group's desk is up (ShellState.sidebarAway)
- * is another matter: the desk takes the whole row, and the buttons stay,
- * over the top of the dock's column (which keeps its shelf clear of them).
+ * While a tab group's desk is up (ShellState.sidebarOnDesk) the column is
+ * the desk's dock, up whole or as its rail whatever the layout says: whole,
+ * the buttons stay in its toolbar; as the rail (ShellState.sidebarRail) they
+ * are hidden, as with the compact sidebar hidden — the rail is too narrow
+ * for them, and they would hang over the desk's corner. They go at once,
+ * not after a retreat: the rail's head moves up into their place as it
+ * comes.
  *
  * In native fullscreen they stay on: macOS then keeps them in the titlebar
  * that slides down with the menu bar when the pointer reaches the top edge,
@@ -728,9 +732,10 @@ function applyWindowButtons(immediate = false): void {
   const window = shellWindow;
   const shouldShow = () =>
     window.isFullScreen() ||
-    shellState.sidebarAway ||
-    !isCompactSidebar(requireSettings().get()) ||
-    shellState.sidebarRevealed;
+    (!shellState.sidebarRail &&
+      (shellState.sidebarOnDesk ||
+        !isCompactSidebar(requireSettings().get()) ||
+        shellState.sidebarRevealed));
   if (shouldShow()) {
     if (windowButtonHideTimer !== null) clearTimeout(windowButtonHideTimer);
     windowButtonHideTimer = null;
@@ -742,8 +747,9 @@ function applyWindowButtons(immediate = false): void {
     if (window.isDestroyed()) return;
     if (!shouldShow()) window.setWindowButtonVisibility(false);
   };
-  // Startup has no transition to watch and the window is not visible yet.
-  if (immediate || !window.isVisible()) {
+  // Startup has no transition to watch and the window is not visible yet; the
+  // desk's rail has its head where they were from its first frame.
+  if (immediate || !window.isVisible() || shellState.sidebarRail) {
     hide();
     return;
   }

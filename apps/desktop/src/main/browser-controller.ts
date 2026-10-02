@@ -2018,8 +2018,11 @@ export class BrowserController {
       (this.#visibleTabIds().includes(tabId) || this.#media.has(tabId)) ||
       // Sleep would end the share without a word to the people watching it.
       this.#screenShares.has(tabId) ||
-      // A desk shows several pages besides the active one: none of them is idle.
-      this.#layout.views.some((view) => view.tabId === tabId)
+      // A desk shows several pages besides the active one: none of them is
+      // idle — nor is a window of one that is drawn for now (covered,
+      // minimized, under an overlay), whose page is not in the layout.
+      this.#layout.views.some((view) => view.tabId === tabId) ||
+      this.#desk?.tabIds.includes(tabId) === true
     )
       return;
     this.#cancelPermissionsForTab(tabId);
@@ -7275,6 +7278,13 @@ export class BrowserController {
           };
     // A pointer already at the dock's place says so again on its next move.
     this.#deskAtDock = false;
+    // Every window on the desk is a page to see: one whose tab is asleep (a
+    // desk reopened on its saved windows, a window the agent brought out) is
+    // woken at once, never left for a click — shown, as any wake is, once
+    // its page has painted (#beginWake).
+    for (const tabId of this.#desk?.tabIds ?? []) {
+      if (this.#dormantTabs.has(tabId)) void this.#ensureLiveTab(tabId, { awaitLoad: false }).catch(() => undefined);
+    }
     this.#syncDeskMasks(state?.masks ?? []);
     this.#syncDeskZooms(state?.zoomed ?? []);
     const desk = this.#desk;

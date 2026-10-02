@@ -1,8 +1,9 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { MessageScroller } from "@shadcn/react/message-scroller";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronUp, FileText, History, Loader2, Mic, Paperclip, Square, SquarePen, TextQuote, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronUp, FileText, History, Loader2, Mic, Paperclip, Sparkles, Square, SquarePen, TextQuote, Undo2, X } from "lucide-react";
 import type { AgentAttachment, RunSummary, ThreadListItem } from "@pistachio/protocol";
 import { groupContextMediaTypeOf, type GroupContextFile, type GroupContextView } from "@pistachio/shell-contracts/desk-agent";
+import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { composerAccepts, formatAttachmentText, formatSelectionText, selectionChipLabel, toAgentAttachments } from "../../lib/chat-attachments";
@@ -20,9 +21,10 @@ import { ApprovalCard, ClarificationCard, CompletionMeta, MessageRow, TERMINAL, 
 import { useThreadLayout } from "../chat/use-thread-layout";
 import { OutputCards } from "../OutputCard";
 import { TakeoverCard } from "../TakeoverCard";
+import { Kbd } from "../ui/kbd";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
-import { DOCK_W, type DeskEngine, type DeskView } from "./desk-engine";
+import type { DeskEngine, DeskView } from "./desk-engine";
 import { DictationWave } from "./DictationWave";
 import { FileGlyph, fileKindLabel } from "./files/FileGlyph";
 
@@ -40,13 +42,22 @@ interface MentionMenuState {
 /** At most this many files a message carries as files (pictures, PDFs) through its mentions and what was attached. */
 const MAX_MESSAGE_FILES = 6;
 
-/** The Bar's height at one line, and the band the desk keeps for it at its foot (the Bar and the gap above it). */
+/** The Bar's height at one line: as tall as the notch grows (it grows taller with more lines). */
 export const BAR_H = 52;
-export const BAR_BAND = BAR_H + DESK_GAP;
+/** The idle notch's height above the desk's foot (`.desk-bar[data-compact]`), and the radius of its flares beside it (the engine's hole). */
+export const NOTCH_H = 32;
+export const NOTCH_FLARE = 10;
+/** The grown Bar stays a cover this long after it starts back to its idle notch: it is over the pages until it is down. */
+const NOTCH_CLOSE_MS = 280;
+/** Growing waits for the pages under the grown Bar to give way, but never longer than this. */
+const NOTCH_WAIT_MS = 300;
 /** A tooltip over the Bar's buttons opens after this long, as the dock's do. */
 const TIP_DELAY_MS = 350;
 /** The band above the Bar stays a cover this long after a tooltip closes: moving from one button to the next, the next's does not wait. */
 const TIP_LINGER_MS = 200;
+/** The pointer on the pill this long before it grows: one passing over it on its way elsewhere does not (transitions.dev's intent delay, `--duration-micro`). */
+const PILL_HOVER_MS = 80;
+const PLATFORM = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
 /** The band above the Bar where its tooltips appear, and how far past its ends they may reach. */
 const TIP_BAND_H = 44;
 const TIP_BAND_REACH = 56;
@@ -74,36 +85,73 @@ function stageBox(el: HTMLElement): Rect | null {
 /**
  * What the Bar draws over the desk is a cover (DeskEngine.setCover): a live
  * page is a native view and would paint over it, so the windows under it
- * give way to their stills while it is up.
+ * give way to their stills while it is up. `shape` makes the cover of the
+ * element's box (the grown notch's, from its box at any size).
  */
-function useCover(engine: DeskEngine, key: string, ref: RefObject<HTMLElement | null>, active: boolean): void {
+function useCover(engine: DeskEngine, key: string, ref: RefObject<HTMLElement | null>, active: boolean, shape?: (box: Rect) => Rect): void {
   useLayoutEffect(() => {
     const el = ref.current;
     if (!active || el === null) {
       engine.setCover(key, null);
       return;
     }
-    const measure = (): void => engine.setCover(key, stageBox(el));
+    const measure = (): void => {
+      const box = stageBox(el);
+      engine.setCover(key, box === null || shape === undefined ? box : shape(box));
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
+    // (The stage too: the desk resized moves what is centred on it.)
+    const stage = el.closest(".desk-stage");
+    if (stage !== null) observer.observe(stage);
     window.addEventListener("resize", measure);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", measure);
       engine.setCover(key, null);
     };
-  }, [engine, key, ref, active]);
+  }, [engine, key, ref, active, shape]);
+}
+
+/** The grown notch's footprint, from the anchor's box at any size: the Bar's whole width at one line at least, and its flares. */
+function grownNotch(box: Rect): Rect {
+  const h = Math.max(box.h, BAR_H);
+  return { x: box.x - NOTCH_FLARE, y: box.y + box.h - h, w: box.w + NOTCH_FLARE * 2, h };
+}
+
+/** True while `on`, and for `ms` after it goes. */
+function useLinger(on: boolean, ms: number): boolean {
+  const [lingering, setLingering] = useState(on);
+  useLayoutEffect(() => {
+    if (on) {
+      setLingering(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setLingering(false), ms);
+    return () => window.clearTimeout(timer);
+  }, [on, ms]);
+  return on || lingering;
 }
 
 /**
- * The desk's agent, in a glass bar at the desk's foot (docs/desk-agent.md
+ * The desk's agent, in a notch at the desk's foot (docs/desk-agent.md
  * §1): the message field, attach, the conversations, the answer and send —
  * stop while the agent works. Above it, the answer card shows the latest
  * exchange as it happens; it opens when a turn starts and stays until
  * closed. The card sits on the Bar, however tall the Bar grows, and is as
  * wide. The conversations it lists are every thread, each marked with the
  * group it started in: choosing one continues it at this desk.
+ *
+ * The notch is the shell's own ground rising out of the surface's edge
+ * into the desk. Idle — nothing typed or staged, nothing open above it, the
+ * agent not at work, no file on its way, the keyboard and the pointer
+ * elsewhere — it is small and says what it is for, and the windows under it
+ * are cut short of it (DeskEngine.setNotch); the pointer coming to it, a
+ * click, ⌘I or a drag of files grows it into the Bar (a morph,
+ * transitions.dev's plus → menu: the row keeps its full width and is
+ * revealed as the notch widens around it) — a cover, once the pages under
+ * it have given way (the pointer on it asks them to at once).
  *
  * `undo` is offered on the card after a turn that moved the windows.
  */
@@ -134,6 +182,8 @@ export const DeskBar = memo(function DeskBar({
   context: GroupContextView | null;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLSpanElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const mentionsRef = useRef<HTMLDivElement>(null);
@@ -164,7 +214,6 @@ export const DeskBar = memo(function DeskBar({
   const leaving = view.phase === "leaving";
   const cardShown = answerOpen && run !== null && !leaving;
 
-  useCover(engine, "bar", barRef, !leaving);
   useCover(engine, "answer", cardRef, cardShown);
   useCover(engine, "conversations", pickerRef, pickerOpen && !leaving);
   useCover(engine, "mentions", mentionsRef, mentionMenu !== null && !leaving);
@@ -229,6 +278,68 @@ export const DeskBar = memo(function DeskBar({
   const activity = agentActivity(run);
   const shownCover = (key: string): boolean => view.clearCovers.has(key);
 
+  // Idle, the Bar is a small notch. The composer says whether it holds anything; the rest is what is open around it.
+  const [composerIdle, setComposerIdle] = useState(true);
+  const [focusWithin, setFocusWithin] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  /** The pointer is on the idle notch: the pages under the grown Bar are asked to give way at once, before it grows. */
+  const [arming, setArming] = useState(false);
+  const hoverTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
+  const wanted = !composerIdle || focusWithin || hovered || cardShown || pickerOpen || mentionMenu !== null || fileDrag || drop.dragging;
+  // Grown, the Bar is a cover (its whole footprint, whatever its width as it grows or shrinks: what is under it is the
+  // same throughout), from the pointer coming to it until it is back down.
+  const [overdue, setOverdue] = useState(false);
+  useEffect(() => {
+    setOverdue(false);
+    if (!wanted) return;
+    const timer = window.setTimeout(() => setOverdue(true), NOTCH_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [wanted]);
+  const compact = !wanted || !(shownCover("bar") || overdue);
+  const covering = useLinger(!compact, NOTCH_CLOSE_MS) || wanted || arming;
+  useCover(engine, "bar", anchorRef, covering && !leaving, grownNotch);
+  const askKey = useAppStore((state) => shortcutLabel(state.settings.shortcuts.toggleConsole, PLATFORM));
+  // The idle notch is as wide as what it says (a long group name is cut short).
+  const [pillWidth, setPillWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = pillRef.current;
+    if (el === null) return;
+    const measure = (): void => setPillWidth(el.offsetWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  // The windows under the idle notch are cut short of it.
+  useLayoutEffect(() => {
+    engine.setNotch(leaving || pillWidth === null ? null : { w: pillWidth + NOTCH_FLARE * 2, h: NOTCH_H });
+  }, [engine, leaving, pillWidth]);
+  useEffect(() => () => engine.setNotch(null), [engine]);
+  // The notch as it is drawn now, as it grows and shrinks: the engine cuts it through the well and the windows under it.
+  useLayoutEffect(() => {
+    const el = barRef.current;
+    if (el === null || leaving) {
+      engine.setNotchShape(null);
+      return;
+    }
+    const measure = (): void => {
+      const box = stageBox(el);
+      if (box !== null) engine.setNotchShape({ ...box, radius: Number.parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0, flare: NOTCH_FLARE });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    const stage = el.closest(".desk-stage");
+    if (stage !== null) observer.observe(stage);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      engine.setNotchShape(null);
+    };
+  }, [engine, leaving]);
+
   // A button's tooltip is open: the band above the Bar, where it appears, is
   // a cover, and stays one a moment after it closes (the dock's rule).
   const [tip, setTip] = useState<string | null>(null);
@@ -252,8 +363,8 @@ export const DeskBar = memo(function DeskBar({
   });
 
   return (
-    // Centred on the desk beside the dock: the room windows have.
-    <div className="desk-bar-lane" data-testid="desk-bar-lane" style={{ left: DOCK_W + DESK_GAP, right: 0 }}>
+    // Centred on the desk, on its foot.
+    <div className="desk-bar-lane" data-testid="desk-bar-lane" style={{ left: DESK_GAP, right: DESK_GAP, bottom: 0 }}>
       {/* One column, the Bar's width: the answer rests on the Bar, however tall the Bar grows. */}
       <div className="desk-bar-column">
         {cardShown ? (
@@ -268,7 +379,7 @@ export const DeskBar = memo(function DeskBar({
             onClose={() => setAnswerOpen(false)}
           />
         ) : null}
-        <div className="desk-bar-anchor">
+        <div ref={anchorRef} className="desk-bar-anchor">
           {/* Over the answer, on the Bar's top edge: it is what the conversations button opened last. */}
           {pickerOpen && !leaving ? (
             <ConversationPicker
@@ -282,37 +393,69 @@ export const DeskBar = memo(function DeskBar({
             />
           ) : null}
           {mentionMenu !== null && !leaving ? <MentionMenu ref={mentionsRef} menu={mentionMenu} shown={shownCover("mentions")} /> : null}
+          {/* The notch: the Bar, its flares beside its foot. */}
           <div
-            ref={barRef}
-            {...drop.handlers}
-            role="region"
-            aria-label="Ask Pistachio about this desk"
-            data-testid="desk-bar"
-            data-acting={activity !== null ? "" : undefined}
-            data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
-            className="desk-bar"
+            className="desk-notch"
+            data-compact={compact ? "" : undefined}
+            style={pillWidth === null ? undefined : ({ "--desk-pill-w": `${String(pillWidth)}px` } as React.CSSProperties)}
           >
-            {drop.dragging ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-[22px]" /> : null}
-            <TooltipProvider delay={TIP_DELAY_MS}>
-              <BarComposer
-                group={group}
-                context={context}
-                run={run}
-                activity={activity}
-                inputRef={inputRef}
-                insertRef={insertRef}
-                fileDrag={fileDrag}
-                onMentionMenu={setMentionMenu}
-                drop={drop}
-                answerOpen={cardShown}
-                pickerOpen={pickerOpen}
-                tip={barTip}
-                onTipsGone={closeTips}
-                onSent={() => setAnswerOpen(true)}
-                onToggleAnswer={() => setAnswerOpen((value) => !value)}
-                onTogglePicker={() => setPickerOpen((value) => !value)}
-              />
-            </TooltipProvider>
+            <div
+              ref={barRef}
+              {...drop.handlers}
+              role="region"
+              aria-label="Ask Pistachio about this desk"
+              data-testid="desk-bar"
+              data-acting={activity !== null ? "" : undefined}
+              data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
+              data-compact={compact ? "" : undefined}
+              className="desk-bar"
+              onFocus={() => setFocusWithin(true)}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
+              }}
+              onPointerEnter={() => {
+                setArming(true);
+                window.clearTimeout(hoverTimer.current);
+                hoverTimer.current = window.setTimeout(() => setHovered(true), PILL_HOVER_MS);
+              }}
+              // A close is never delayed: the pointer gone, the Bar goes back to its idle notch at once.
+              onPointerLeave={() => {
+                setArming(false);
+                window.clearTimeout(hoverTimer.current);
+                setHovered(false);
+              }}
+            >
+              {/* What the Bar is while idle: a click grows it and puts the keyboard in its field. */}
+              <span className="desk-bar-pill" aria-hidden="true" data-testid="desk-bar-pill" onMouseDown={(event) => event.preventDefault()} onClick={focusInput}>
+                <span ref={pillRef} className="desk-bar-pill-content">
+                  <Sparkles aria-hidden="true" />
+                  <span className="min-w-0 truncate">Ask about {group.title}</span>
+                  {askKey === null ? null : <Kbd small className="desk-bar-pill-key">{askKey}</Kbd>}
+                </span>
+              </span>
+              {drop.dragging ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-t-[19px] rounded-b-md" /> : null}
+              <TooltipProvider delay={TIP_DELAY_MS}>
+                <BarComposer
+                  group={group}
+                  context={context}
+                  run={run}
+                  activity={activity}
+                  inputRef={inputRef}
+                  insertRef={insertRef}
+                  fileDrag={fileDrag}
+                  onMentionMenu={setMentionMenu}
+                  drop={drop}
+                  answerOpen={cardShown}
+                  pickerOpen={pickerOpen}
+                  tip={barTip}
+                  onTipsGone={closeTips}
+                  onSent={() => setAnswerOpen(true)}
+                  onToggleAnswer={() => setAnswerOpen((value) => !value)}
+                  onTogglePicker={() => setPickerOpen((value) => !value)}
+                  onIdle={setComposerIdle}
+                />
+              </TooltipProvider>
+            </div>
           </div>
         </div>
       </div>
@@ -338,6 +481,7 @@ function BarComposer({
   onSent,
   onToggleAnswer,
   onTogglePicker,
+  onIdle,
 }: {
   group: TabGroupInfo;
   context: GroupContextView | null;
@@ -357,6 +501,8 @@ function BarComposer({
   onSent: () => void;
   onToggleAnswer: () => void;
   onTogglePicker: () => void;
+  /** Whether it holds nothing and nothing is going on in it: the Bar may then be its pill. */
+  onIdle: (idle: boolean) => void;
 }) {
   const sendMessage = useAppStore((state) => state.sendAgentMessage);
   const interrupt = useAppStore((state) => state.interruptAgent);
@@ -505,6 +651,8 @@ function BarComposer({
   useEffect(() => () => onMentionMenu(null), [onMentionMenu]);
 
   const empty = value.trim() === "" && staged.length === 0;
+  const idle = value === "" && staged.length === 0 && drop.rejection === null && !listening && !acting;
+  useEffect(() => onIdle(idle), [idle, onIdle]);
   const submit = (): void => {
     if (empty) return;
     const text = value.trim();
@@ -575,7 +723,7 @@ function BarComposer({
           : `Ask about ${group.title}…`
         : "Ask a follow-up…";
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    <div className="desk-bar-body flex flex-col">
       {drop.rejection === null ? null : (
         <div role="status" className="mx-3 mt-2 flex items-start gap-1.5 rounded-md bg-amber-100 px-2 py-1 text-[11px] leading-4 text-amber-900">
           <span className="min-w-0 flex-1">{drop.rejection}</span>

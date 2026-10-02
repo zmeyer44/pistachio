@@ -24,39 +24,35 @@
  *   drawn, the whole page shown around the region at its scale, and the
  *   region's edges dragged; main shows the whole page meanwhile through the
  *   same override (the page's box never changes, so the page never knows).
- * - the desk can pass to ANOTHER GROUP in place (switchGroup): the dock
- *   lists the Space's other groups under its tabs, and choosing one sends
- *   this group's windows into their group's new icon there — each once it
- *   has a still to fly as — while the other group's come out of the icon
- *   chosen, to where they were left (or, never on a desk, its tab used last
- *   alone, in the middle).
- * - the dock floats over the desk, and a window may lie behind it: the
- *   dock's place is a cover too, so a window there is drawn, under the
- *   dock's glass — except the window in use, which must be live. For that
- *   one the dock steps aside, and comes back once the pointer comes to its
- *   place (#yielding).
+ * - the desk's dock is the SIDEBAR's column beside it (docs/desk.md), not
+ *   part of the desk: a tab's window comes out of its row there and goes
+ *   back into it (the host finds the rows: DeskHost.homeOf), a row dragged
+ *   out over the desk is its window in hand (pullFromSidebar), and while a
+ *   window is carried near the desk's leading edge, a drop rail stands over
+ *   the sidebar — back into the dock above, the tab closed below.
+ * - the desk can pass to ANOTHER GROUP in place (switchGroup): this group's
+ *   windows go into its row in the sidebar — each once it has a still to
+ *   fly as — while the other group's come out of that group's row, to
+ *   where they were left (or, never on a desk, its tab used last alone, in
+ *   the middle).
  * - a window need not be a tab's (lib/desk/windows.ts): a DOCUMENT, one of
  *   the group's context files open in its viewer, is the shell's own DOM
  *   through and through. It is always drawn — it never has a native page —
  *   so it covers the pages under it like any drawn window, and moves,
- *   lifts and tilts as it is. Its home is the dock's Stack, not an icon of
- *   its own (attachHome): it is put away into the Stack and comes out of it.
+ *   lifts and tilts as it is. Its home is the group's Stack (its context
+ *   row in the sidebar), not a row of its own: it is put away into it and
+ *   comes out of it.
  *   Main is never told of it; the pane the desk leaves as is always a tab's.
  * - a window can be MINIMIZED: small (the least a window may be), its page
  *   shown as if zoomed out (DESK_MINI_ZOOM — main's zoom, or for a page
  *   the shell draws, a CSS scale), and PARKED in the shelf at the desk's
- *   foot, each peeking up half its height beside the one before, the next
- *   to the right overlapping it by half. While any is parked, the desk
- *   keeps above their band (#footBand), so no window is ever under one.
+ *   foot, each peeking up a quarter of its height beside the one before, the next
+ *   to the right overlapping it by half. They lie over the windows there,
+ *   as the Bar's notch does (#ledges): a window under them is cut short of
+ *   them, its page stopping where they begin (#cutFor).
  *   The pointer on a parked window raises it into full view (hoverMini);
  *   dragged away it is a minimized window like any other, and let go at
  *   the desk's foot it parks again. Expand gives it back the box it had.
- * - the dock's icons can be REARRANGED: a tab's among the group's tabs, a
- *   group's among the other groups (each in its own section, the icons
- *   there making room for it), and a tab's let go on another group's icon
- *   goes into that group, its window flying there too (#dropInDock). The
- *   browser holds the order; the dock shows the one a drop made until the
- *   browser says the same (dockSettle).
  *
  * A still has to exist before a live page may be taken down for it, and it
  * must be recent enough to pass for the page: each window records when it
@@ -70,7 +66,7 @@
  * structural changes (a window added, raised, drawn or live) via subscribe.
  */
 
-import { TRAFFIC_LIGHTS_H, TRAFFIC_LIGHTS_W, type DragCursor } from "@pistachio/shell-contracts/chrome";
+import { TRAFFIC_LIGHTS_H, type DragCursor } from "@pistachio/shell-contracts/chrome";
 import {
   DESK_MINI_ZOOM,
   deskMaskKey,
@@ -83,19 +79,16 @@ import {
   type DeskZoomedPage,
 } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "../../api";
-import { movedOrder } from "../../lib/desk/dock-order";
 import { startPaneDrag } from "../../lib/pane-drag";
 import {
-  bottomOf,
   carrySize,
   cellZone,
   centeredRect,
   clampRect,
-  containsPoint,
   DESK_GAP,
   denormalizeRect,
   dockDropAt,
-  dockDrops,
+  sidebarDrops,
   edgeZone,
   freeSpot,
   magnetize,
@@ -190,9 +183,61 @@ const MASK_EDIT_BAR_GAP = 8;
 
 /** A minimized window's size: the least a window may be (its page shown zoomed out, DESK_MINI_ZOOM). */
 export const MINI_SIZE = { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
-/** Parked at the desk's foot, a minimized window peeks up this share of its height; the next one along overlaps it by this share of its width. */
-const MINI_PEEK = 0.5;
+/** Parked at the desk's foot, a minimized window peeks up this share of its height (its title bar and a strip of its page); the next one along overlaps it by this share of its width. */
+const MINI_PEEK = 0.25;
 const MINI_OVERLAP = 0.5;
+/**
+ * The shelf stands this far in from the desk's sides: clear of the well's
+ * rounded corners (`.desk-stage`'s radius), so a window peeking from its foot,
+ * cut off square there, never pokes out past the corner's curve.
+ */
+export const SHELF_INSET = 18;
+/** A window cut short over the desk's foot (#cutFor) keeps at least this much of its page; one that would keep less is covered there instead. */
+const MIN_CUT_PAGE = 80;
+/** How far a window's own clip reaches around it, so its shadow is kept (all but where the notch is a hole through it). */
+const CLIP_MARGIN = 120;
+
+/**
+ * The Bar's notch as it is drawn now (setNotchShape), in the stage: the
+ * Bar's box, rising from the desk's foot; the radius of its shoulders; and
+ * of the flares where its sides meet the edge.
+ */
+export interface NotchShape {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  radius: number;
+  flare: number;
+}
+
+/**
+ * The notch's outline, offset by (dx, dy): out of the desk's foot at its
+ * left flare, up its side to its shoulder, across, down and out at its right
+ * flare — and on down past the foot, so nothing under it there (a window's
+ * shadow) is left either.
+ */
+function notchOutline(shape: NotchShape, foot: number, dx: number, dy: number): string {
+  const n = (value: number): string => value.toFixed(1);
+  const f = shape.flare;
+  const x0 = shape.x + dx;
+  const x1 = shape.x + shape.w + dx;
+  const top = shape.y + dy;
+  const bottom = foot + dy;
+  const r = Math.max(0, Math.min(shape.radius, shape.w / 2, bottom - f - top));
+  return [
+    `M ${n(x0 - f)} ${n(bottom)}`,
+    `A ${n(f)} ${n(f)} 0 0 0 ${n(x0)} ${n(bottom - f)}`,
+    `V ${n(top + r)}`,
+    `A ${n(r)} ${n(r)} 0 0 1 ${n(x0 + r)} ${n(top)}`,
+    `H ${n(x1 - r)}`,
+    `A ${n(r)} ${n(r)} 0 0 1 ${n(x1)} ${n(top + r)}`,
+    `V ${n(bottom - f)}`,
+    `A ${n(f)} ${n(f)} 0 0 0 ${n(x1 + f)} ${n(bottom)}`,
+    `V ${n(bottom + CLIP_MARGIN)}`,
+    `H ${n(x0 - f)} Z`,
+  ].join(" ");
+}
 /**
  * A raised parked window the pointer has left goes back down after this
  * long: an intent gate (transitions.dev's micro duration), so the pointer
@@ -235,43 +280,32 @@ const EASED_MOVE_MS = DURATION_FAST_MS;
 const EASED_RESIZE_MS = CARD_RESIZE_MS;
 const EASED_OPEN_MS = DURATION_FAST_MS;
 const EASED_CLOSE_MS = DURATION_QUICK_MS;
+/** Closed from its frame, a window draws in to this scale as it fades: a modal's close (transitions.dev's `--scale-large`). */
+const CLOSE_SCALE = 0.96;
 /** Eased: what still follows the pointer (a window letting go of the desk in hand, flying to the hand, its lift and tilt) settles critically damped. */
 const EASED_SPRING: SpringConfig = { response: 0.25, damping: 1 };
 
 /** Passing to another group: a live window waits at most this long for the still it flies home as. */
 const SWITCH_STILL_WAIT_MS = 400;
 
-/** The dock's column on the desk's leading side, and an icon in it. */
-export const DOCK_W = 60;
-export const DOCK_ICON = 40;
-/** An icon dragged this far past the dock's edge turns into its window, held by the title bar. */
-const DOCK_PULL = 24;
-/** A tab's icon in hand is over another group's once its middle is inside that icon grown by this much: let go, the tab goes into the group. */
-const INTO_SLACK = 4;
-/** Another group's icon in hand is held in the dock: past its edge, it goes at most this much further, however far the pointer goes. */
-const GROUP_REACH = 36;
-/** An icon let go in the dock flies to its place there, or into another group's icon, in this long (the ghost's transition in shell.css). */
-const GHOST_LAND_MS = 200;
-/** After a drop in the dock, it shows the order the drop made until the browser's says the same — or this long, if it never does. */
-const DOCK_SETTLE_MS = 1_500;
-/** The drop rail sits this far inside the dock's column, top and bottom (dockDrops). */
-const DOCK_DROP_INSET = 6;
-/** Held over one of the dock's pads, a drawn window shrinks toward this width as it fades into the pad. */
+/**
+ * The desk's dock is the sidebar's column beside it (docs/desk.md): a tab's
+ * window comes out of its row there, and goes back into it. A row's icon is
+ * this big — a window coming out grows from it.
+ */
+const ROW_ICON = 16;
+/** The drop rail stands this far inside the sidebar's column, all round. */
+const RAIL_INSET = 6;
+/** Held over the drop rail, a drawn window shrinks toward this width as it fades into the segment under it. */
 const OVER_DOCK_WIDTH = 140;
-/** How long a dock icon bounces on taking a window back. */
+/** How long a sidebar row bounces on taking a window back. */
 const RECEIVE_MS = 560;
-/** The pads show once a carried window's pointer comes this near the desk's leading edge. */
+/** The drop rail comes over the sidebar once a carried window's pointer comes this near the desk's leading edge. */
 const DROPS_NEAR = 180;
-/** The leading edge's band that offers the left half (and its quarters at the ends): past it are the pads. */
+/** The leading edge's band that offers the left half (and its quarters at the ends): past it are the drop rail's segments. */
 const LEFT_EDGE_BAND = 30;
-/** A window taken from the desk by its icon flies to the hand on this. */
+/** A window taken from the sidebar while out on the desk flies to the hand on this. */
 const CATCH_SPRING: SpringConfig = { response: 0.3, damping: 0.86 };
-/** A preview shown from the dock is freshened if its picture is older than this. */
-const PEEK_FRESH_MS = 1_500;
-/** The dock's shelf slides out of the way in this long; its place stays covered until it has gone. */
-const DOCK_STEP_ASIDE_MS = 240;
-/** The pointer is at the dock's place this far above or below its shelf, too. */
-const DOCK_PLACE_SLACK = 8;
 
 /** A lifted window's scale, and its tilt per px/s of swing. */
 const LIFT_SCALE = 1.035;
@@ -313,6 +347,8 @@ export interface DeskWindowView {
   intoDock: boolean;
   /** On its way into the inventory ("away") or out of it ("in"). */
   flight: "in" | "away" | null;
+  /** Closed from its frame: it fades where it stands rather than on its way somewhere. */
+  closing: boolean;
   /** The frame is showing — false while the window is the whole surface, entering or leaving. */
   framed: boolean;
   maximized: boolean;
@@ -348,73 +384,22 @@ export interface DeskWindowView {
 
 export interface DeskView {
   windows: readonly DeskWindowView[];
-  thumbs: ReadonlyMap<string, string>;
   /**
-   * While a window is carried the dock slides away, and two pads stand in
-   * its column: back into the dock, and its tab closed. The pads (in the
-   * stage's coordinates), whether they are showing (the pointer is near the
-   * desk's leading edge), and the one a release now would go to.
+   * While a window is carried near the desk's leading edge, a drop rail
+   * stands over the sidebar: back into the dock above, its tab closed
+   * below. The two segments (in the stage's coordinates: the sidebar is left
+   * of the stage, at negative x), whether they are showing, and the one a
+   * release now would go to.
    */
   drops: DockDrops;
   dropsShown: boolean;
-  /**
-   * The band at the top of the dock's column that the window's own buttons
-   * (macOS's traffic lights) sit over, where the stage reaches the window's
-   * top-left corner: the shelf keeps clear of it, and of as much at its
-   * foot, so it stays centred; the drop rail starts below it.
-   */
-  dockClear: number;
   dockDrop: DockDrop | null;
-  /** A tab's icon is in hand, dragged out of the dock, not yet its window — or let go in the dock, flying to its place there. */
-  iconDrag: string | null;
-  /** Another group's icon is in hand, moved among the groups — or let go, flying to its place. */
-  groupDrag: string | null;
-  /** An icon in hand in the dock: where it would go if let go now (the dock opens a gap there). */
-  dockDrag: DockDragView | null;
-  /** The order a drop in the dock made, shown until the browser's says the same. */
-  dockSettle: DockSettleView | null;
   /** Covers (setCover) no live page paints over any more: what the shell draws there can be seen. */
   clearCovers: ReadonlySet<string>;
-  /**
-   * The dock is out of the way: it has stepped aside for the window in use,
-   * which lies behind it, or it waits for the page under its place to give
-   * way to a still before it comes back.
-   */
-  dockAside: boolean;
   /** Shift is held over a window in hand: every release lands in the tile the pointer is over. */
   snapping: boolean;
-  gesture: "move" | "resize" | "spawn" | "icon" | null;
+  gesture: "move" | "resize" | "spawn" | null;
   phase: "entering" | "open" | "leaving";
-}
-
-/**
- * An icon in hand in the dock (DeskView.dockDrag): a tab's among the
- * group's tabs, or another group's among the groups. Each stays in its own
- * section; a tab's may also be let go on another group's icon, as an app is
- * dropped into a folder, and goes into that group.
- */
-export interface DockDragView {
-  kind: "tab" | "group";
-  /** The tab's id, or the group's. */
-  id: string;
-  /** Its section's icons as they stood when the drag began, top to bottom (it among them). */
-  order: readonly string[];
-  /** Where it would go among them, counted without it; null while it is nowhere in the section (over another group, say). */
-  to: number | null;
-  /** A tab's icon over another group's: let go, the tab goes into that group. */
-  into: string | null;
-  /** From one icon's place to the next's, in px. */
-  pitch: number;
-}
-
-/** What the dock shows after a drop in it, until the browser has said the same (DeskView.dockSettle). */
-export interface DockSettleView {
-  /** The group's tabs, top to bottom, as the drop left them. */
-  tabs: readonly string[] | null;
-  /** The other groups, top to bottom. */
-  groups: readonly string[] | null;
-  /** A tab let go into another group: no longer the dock's. */
-  gone: string | null;
 }
 
 /** The desk as the agent reads it (agentLayout): the windows out, bottom to top (documents among them), and the group's tabs in the dock. */
@@ -442,7 +427,7 @@ export type DeskLayoutMoment =
 
 /** The desk as its smart layout reads it (layoutView). */
 export interface DeskLayoutView {
-  /** Where windows are laid out: the desk beside the dock, above its foot band. */
+  /** Where windows are laid out: the desk, above its foot band. */
   bounds: Rect;
   /** The windows that may be laid out, bottom to top, each where it is going (not masked, minimized, or leaving). */
   windows: Map<string, Rect>;
@@ -464,26 +449,6 @@ export interface Minimized {
   parked: boolean;
 }
 
-/** A window of another group's desk, drawn small (sketchGroup). */
-export interface DeskSketchWindow {
-  tabId: string;
-  /** Its box in the stage. */
-  rect: Rect;
-  mask: DeskMask | null;
-  /** On top: the window in use, once the desk has passed to the group. */
-  focused: boolean;
-  still: string | null;
-  /** What `still` is a picture of (DeskWindowView's). */
-  stillShows: "page" | "region" | "none";
-}
-
-/** Another group's desk as it would come out (sketchGroup): the stage's size, and its windows bottom to top. */
-export interface DeskSketch {
-  width: number;
-  height: number;
-  windows: DeskSketchWindow[];
-}
-
 export interface DeskHost {
   variants(): DeskVariants;
   /** A native page can be on screen for this tab right now: awake, not shell-drawn. */
@@ -492,25 +457,28 @@ export interface DeskHost {
   select(tabId: string): void;
   /** A window of the shell's own (a document) was chosen: its content takes the keyboard. */
   focusWindow?(id: string): void;
-  /** Close this tab (a window let go on the dock's Close pad). */
+  /** Close this tab (its window closed from its frame, or let go on the drop rail's Close). */
   close(tabId: string): void;
   /** Edit this tab's address: the address palette, over the desk (a click on a window's title). */
   editAddress(tabId: string): void;
   save(windows: SavedDeskWindow[]): void;
-  /** Another of the Space's groups was chosen in the dock: its desk takes this one's place (switchGroup follows). */
-  switchGroup(groupId: string): void;
-  /** A tab's icon let go at another place in the dock: the tab goes to `index` among the group's other tabs. */
-  reorderTab(tabId: string, index: number): void;
   /**
-   * A tab's icon let go on another group's: the tab goes into that group.
-   * Were it the tab in use, `next` (a window left on the desk, or null for
-   * none) takes over first, so the desk is never left on a tab not its own.
+   * A tab of the group sent to another group (its row's menu): the tab goes
+   * into that group. Were it the tab in use, `next` (a window left on the
+   * desk, or null for none) takes over first, so the desk is never left on a
+   * tab not its own.
    */
   moveTabToGroup(tabId: string, groupId: string, next: string | null): void;
-  /** Another group's icon let go at another place among the groups: `order` is the dock's groups as they are to be, top to bottom. */
-  reorderGroup(groupId: string, order: readonly string[]): void;
   /** The leaving motion is done: the surface can go back to panes. */
   leaveDone(): void;
+  /** The sidebar's column beside the desk — its dock — in the window's coordinates, or null where there is none. */
+  sidebar(): Rect | null;
+  /**
+   * Where a window lives in the sidebar, which it comes out of and goes back
+   * into: a tab's row (its group folded away, the group's), another group's
+   * row, or — a document's — the group's Stack. Null where there is none.
+   */
+  homeOf(kind: "tab" | "group" | "file", id: string): HTMLElement | null;
 }
 
 interface Still {
@@ -589,6 +557,14 @@ interface Win {
    * Close pad, which closes its tab on arrival, nor into another group.
    */
   homeward: boolean;
+  /** Closed from its frame (×): drawing in where it stands and fading, quicker than a flight's fade. */
+  closing: boolean;
+  /**
+   * How far short of its frame's foot its page stops (#cutFor): above what
+   * the shell draws at the desk's foot over it — the Bar's notch, the parked
+   * windows — which its live page would otherwise paint over.
+   */
+  cut: number;
 }
 
 /**
@@ -611,13 +587,11 @@ interface Unmasking {
 interface Gesture {
   /**
    * "move" a window on the desk; "resize" one; "spawn" a window just come out
-   * of the dock in hand (drawn throughout, and back into the dock if let go
-   * over it); "icon" a tab's icon dragged in the dock, before it is pulled
-   * clear and becomes one of the others — or another group's icon, moved
-   * among the groups (`dock`), which never leaves the dock.
+   * of the sidebar in hand (pullFromSidebar: drawn throughout, and back into
+   * the dock if let go over the drop rail).
    */
-  kind: "move" | "resize" | "spawn" | "icon";
-  /** The window's tab (for "icon", the tab whose icon is in hand; "" for a group's icon). */
+  kind: "move" | "resize" | "spawn";
+  /** The window's tab. */
   tabId: string;
   startedAt: number;
   start: Point;
@@ -641,18 +615,14 @@ interface Gesture {
   snapping: boolean;
   cell: ThirdsCell | null;
   overDock: boolean;
-  /** Over one of the dock's pads (dockDropAt): let go, and the window goes there. */
+  /** Over one of the drop rail's segments (dockDropAt): let go, and the window goes there. */
   drop: DockDrop | null;
-  /** An icon in hand: where on the icon the pointer holds it. */
-  ghost: Point | null;
-  /** A window flying to the hand (taken by its icon): how far it still is from where the hand holds it. */
+  /** A window flying to the hand (taken by its row in the sidebar): how far it still is from where the hand holds it. */
   lag: { x: number; y: number; vx: number; vy: number } | null;
   /** A window spanning the desk (letGoSize): the size it lets go to once the pointer travels. */
   unfill: { w: number; h: number } | null;
   /** The size a moved window is growing or shrinking to in hand (it let go of the desk), or null for its own. */
   size: { w: number; h: number } | null;
-  /** An icon in hand in the dock: where it would go there (DockDrag). */
-  dock: DockDrag | null;
   end: (() => void) | null;
 }
 
@@ -667,45 +637,9 @@ interface Joint {
   start: Map<string, Rect>;
 }
 
-/**
- * An icon in hand in the dock, and its section as it stood when the drag
- * began: each icon's box in its section's scrolled content (so a scroll
- * meanwhile moves nothing it is read against), and the scroller.
- */
-interface DockDrag {
-  kind: "tab" | "group";
-  id: string;
-  items: DockSlot[];
-  scroller: Element | null;
-  /** Its place among `items`. */
-  from: number;
-  pitch: number;
-  /** A tab's icon: the other groups' icons, which it can be let go on. */
-  groups: DockSlot[];
-  groupScroller: Element | null;
-  to: number | null;
-  into: string | null;
-}
-
-/** An icon let go in the dock, on its way to its place there (or into a group's icon). */
-interface Landing {
-  kind: "tab" | "group";
-  id: string;
-  /** Where it goes, read on the frame after the drop (the dock drawn with the drop by then); null once read. */
-  aim: (() => Rect) | null;
-  into: boolean;
-  /** When it is there. */
-  until: number;
-  done: () => void;
-}
-
-interface DockSlot {
-  id: string;
-  /** In the stage, as if its section were scrolled to the top (its box then, plus the section's scroll then). */
-  rect: Rect;
-}
-
 const ZERO_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
+/** No sidebar beside the desk: nowhere for the drop rail. */
+const NO_DROPS: DockDrops = { away: ZERO_RECT, close: ZERO_RECT };
 
 /** A pointer press, as the shell's handlers hand it on (Shift, when known, is the snap key). */
 interface PressEvent {
@@ -724,14 +658,11 @@ export class DeskEngine {
   #stage: HTMLElement | null = null;
   #stageBox = { left: 0, top: 0, width: 0, height: 0 };
   #zoneEl: HTMLElement | null = null;
-  #ghostEl: HTMLElement | null = null;
   #dropsEl: HTMLElement | null = null;
-  /** What the shell draws over the desk beside the dock (setCover), in the stage's coordinates. */
+  /** What the shell draws over the desk (setCover): a card beside the sidebar, the Bar — in the stage's coordinates. */
   readonly #covers = new Map<string, Rect>();
   #clearCovers: ReadonlySet<string> = new Set();
-  readonly #thumbAskedAt = new Map<string, number>();
   #guideEls: HTMLElement[] = [];
-  readonly #iconEls = new Map<string, HTMLElement>();
   readonly #thumbs = new Map<string, Still>();
   #gesture: Gesture | null = null;
   #phase: DeskView["phase"] = "entering";
@@ -756,24 +687,14 @@ export class DeskEngine {
   #destroyed = false;
   #armedDrop: DockDrop | null = null;
   #dropsNear = false;
-  #drops: DockDrops = dockDrops(0, DOCK_W);
-  /** DeskView.dockClear. */
-  #dockClear = 0;
+  /** The drop rail's segments over the sidebar, in the stage (measure: the sidebar's column as the host says it stands). */
+  #drops: DockDrops = NO_DROPS;
+  /** The sidebar's column, in the stage (left of it), or null where there is none. */
+  #side: Rect | null = null;
   #dirtyView = false;
   /** Shift is down — the snap key — as the latest key event or pointer sample said. */
   #shift = false;
-  /** Where the dock's shelf stands (setDockShelf), in the stage — its resting box, wherever it is sliding. */
-  #shelf: Rect | null = null;
-  /** The window the person chose to use: if it lies behind the dock, the dock steps aside for it (#yielding). */
-  #asideFor: string | null = null;
-  /** When the dock began to step aside, for as long as it is aside. */
-  #asideSince: number | null = null;
-  #dockAside = false;
-  /** The pointer is at the dock's place, as the shell's pointer events or main (pointerAtDock) last said. */
-  #pointerAtDock = false;
-  /** What the dock has open beside it (the Feel menu): it stands while any is. */
-  readonly #dockHolds = new Set<string>();
-  /** A tab's icon in the dock is under the pointer: main takes ⇧⌫ for it (setDockHover). */
+  /** A tab's row in the sidebar is under the pointer: main takes ⇧⌫ for it (setDockHover). */
   #dockHover = false;
   /** The window whose page is frozen for its mask to be chosen (startMask). */
   #selecting: string | null = null;
@@ -783,45 +704,29 @@ export class DeskEngine {
   #editing: string | null = null;
   /** The group's tabs (start, syncTabs, switchGroup): the dock's, whose pictures are kept fresh. */
   #groupTabIds: readonly string[] = [];
-  /** The dock's icons for the Space's other groups (attachGroupIcon). */
-  readonly #groupIconEls = new Map<string, HTMLElement>();
-  /** When a group's pictures were last asked for from the dock (peekGroup). */
-  readonly #groupPeekedAt = new Map<string, number>();
-  /** Another group's icon pressed in the dock, and where it stood then: its windows come out of there (switchGroup). */
-  #groupPress: { groupId: string; rect: Rect } | null = null;
   /**
    * The windows of a group the desk has passed from (switchGroup), each
-   * waiting for a still to fly into its group's icon as: the group, and
+   * waiting for a still to fly into its group's row as: the group, and
    * when it began waiting.
    */
   readonly #departing = new Map<string, { groupId: string; since: number }>();
-  /** How many windows are still flying into each group's icon: it bounces as the last lands. */
+  /** How many windows are still flying into each group's row: it bounces as the last lands. */
   readonly #folding = new Map<string, number>();
-  /** An icon let go in the dock, flying to its place there or into a group's icon (#landGhost): its place stays faint until it lands. */
-  #landing: Landing | null = null;
-  /** DeskView.dockSettle, and the timer that gives up on it. */
-  #dockSettle: DockSettleView | null = null;
-  #settleTimer = 0;
-  /** The Bar's band at the desk's foot (setBarBand): windows keep above it. */
-  #barBand = 0;
+  /** The Bar's notch at the desk's foot, idle (setNotch): its size, centred there. */
+  #notch: { w: number; h: number } | null = null;
+  /** The Bar's notch as it is drawn now (setNotchShape): a hole through the well and the windows under it. */
+  #notchShape: NotchShape | null = null;
+  #wellHoled = false;
   /**
    * The windows of the shell's own this desk may show (the group's
    * documents: setShellWindows), or null until the host knows — windows
    * saved with the desk then come out, and go if they turn out not to be.
    */
   #shellIds: readonly string[] | null = null;
-  /** Where each kind of shell window lives in the dock (attachHome): a document's is the Stack. */
-  readonly #homeEls = new Map<DeskWindowKind, HTMLElement>();
   /** The minimized windows parked in the shelf at the desk's foot, left to right. */
   #parked: string[] = [];
   /** Leaving, the window in use growing back into the pane as its live page, laid out at the pane's box already (leave). */
   #leaveTop: string | null = null;
-  /**
-   * How far the desk's surface runs below the stage (its gutter, down to
-   * the window's edge): a parked window peeks up from that edge, the
-   * window's own, not the stage's, so nothing shows between it and the edge.
-   */
-  #underStage = 0;
   /** The parked window raised into full view, for the pointer on it. */
   #raised: string | null = null;
   /** Where the pointer is said to be on a minimized window: its frame (the shell's own pointer), or its live page (main's word). */
@@ -832,17 +737,10 @@ export class DeskEngine {
     this.#host = host;
     this.#view = {
       windows: [],
-      thumbs: new Map(),
       drops: this.#drops,
       dropsShown: false,
-      dockClear: 0,
       dockDrop: null,
-      iconDrag: null,
-      groupDrag: null,
-      dockDrag: null,
-      dockSettle: null,
       clearCovers: this.#clearCovers,
-      dockAside: false,
       snapping: false,
       gesture: null,
       phase: "entering",
@@ -935,23 +833,6 @@ export class DeskEngine {
     if (el !== null) this.#write(win);
   }
 
-  /** A tab's icon in the dock: where its window flies out of, and back into. */
-  attachIcon(tabId: string, el: HTMLElement | null): void {
-    if (el === null) this.#iconEls.delete(tabId);
-    else this.#iconEls.set(tabId, el);
-  }
-
-  attachGroupIcon(groupId: string, el: HTMLElement | null): void {
-    if (el === null) this.#groupIconEls.delete(groupId);
-    else this.#groupIconEls.set(groupId, el);
-  }
-
-  /** Where a kind of shell window lives in the dock — a document's, the Stack: it is put away into it, and comes out of it. */
-  attachHome(kind: DeskWindowKind, el: HTMLElement | null): void {
-    if (el === null) this.#homeEls.delete(kind);
-    else this.#homeEls.set(kind, el);
-  }
-
   /**
    * The shell windows this desk may show (the group's documents), or null
    * while the host does not know yet. One out whose document has gone
@@ -974,69 +855,14 @@ export class DeskEngine {
     this.#render();
   }
 
-  /** Another group's icon is under the pointer: its tabs' pictures are fetched, so its windows come out as themselves. */
-  peekGroup(groupId: string, tabIds: readonly string[]): void {
-    const now = performance.now();
-    if (now - (this.#groupPeekedAt.get(groupId) ?? Number.NEGATIVE_INFINITY) < PEEK_FRESH_MS) return;
-    this.#groupPeekedAt.set(groupId, now);
-    this.#requestThumbs(tabIds.slice(0, MAX_DESK_WINDOWS).filter((tabId) => (this.#thumbs.get(tabId)?.at ?? Number.NEGATIVE_INFINITY) < now - PEEK_FRESH_MS));
-  }
-
-  /** Another group's icon was clicked: where it stands is kept, for its windows to come out of, and the host passes the desk to it. */
-  chooseGroup(groupId: string): void {
-    if (this.#phase === "leaving") return;
-    const rect = this.#groupIconRect(groupId);
-    this.#groupPress = rect === null ? null : { groupId, rect };
-    this.#host.switchGroup(groupId);
-  }
-
-  /**
-   * A press on another group's icon in the dock: a click (`onClick`) passes
-   * the desk to it; a drag takes the icon in hand, to be moved among the
-   * groups, where the others make room for it.
-   */
-  pressGroup(groupId: string, event: PressEvent, onClick: () => void): void {
-    // (A click counts while the desk is still passing to another group — it can turn straight back — a drag only once it is open.)
-    if (event.button !== 0 || this.#phase === "leaving") return;
-    const start = { x: event.clientX, y: event.clientY };
-    this.#trackPress(start, {
-      onDrag: (point) => this.#beginDockDrag("group", groupId, start, point),
-      onClick,
-    });
-  }
-
-  /**
-   * Another group's desk as it would come out if the desk passed to it now
-   * (laid out as switchGroup lays it out): the stage's size, and its windows
-   * in the stage, bottom to top, each with the latest picture of its page —
-   * for the dock to draw it small beside the group's icon.
-   */
-  sketchGroup(tabIds: readonly string[], saved: readonly SavedDeskWindow[], entry: string | null): DeskSketch {
-    // (Its documents are left out: the card draws pages.)
-    const { windows, entry: top } = this.#laidOut(saved, tabIds, entry, []);
-    return {
-      width: this.#stageBox.width,
-      height: this.#stageBox.height,
-      windows: windows.map((window) => {
-        const still = this.#latestStill(window.tabId);
-        return { ...window, focused: window.tabId === top, still: still?.src ?? null, stillShows: stillShows(still, window.mask) };
-      }),
-    };
-  }
-
-  /** The icon in hand while one is dragged out of the dock. */
-  attachGhost(el: HTMLElement | null): void {
-    this.#ghostEl = el;
-  }
-
   /** The dock's pads: the pointer's height is written to it (`--pointer-y`), and the lit pad's mark follows it. */
   attachDrops(el: HTMLElement | null): void {
     this.#dropsEl = el;
   }
 
   /**
-   * Something the shell draws over the desk beside the dock — a preview, a
-   * menu — or null to take it away. A live page is a native view and would
+   * Something the shell draws over the desk — a card beside the sidebar, the
+   * Bar's answer — or null to take it away. A live page is a native view and would
    * paint over it, so the windows under it give way to their stills; the
    * view's `clearCovers` says once none is left there, and it can be shown.
    */
@@ -1053,24 +879,6 @@ export class DeskEngine {
     this.#kick();
   }
 
-  /** Where the dock's shelf stands, in the stage: its resting box (a slide away does not move it). */
-  setDockShelf(rect: Rect | null): void {
-    const before = this.#shelf;
-    if (rect === null ? before === null : before !== null && sameRect(before, rect, 0.5)) return;
-    this.#shelf = rect === null ? null : { ...rect };
-    this.#render();
-    this.#kick();
-  }
-
-  /** The dock has something open beside it (the Feel menu), or no longer: it stands while it does. */
-  holdDock(key: string, held: boolean): void {
-    if (held === this.#dockHolds.has(key)) return;
-    if (held) this.#dockHolds.add(key);
-    else this.#dockHolds.delete(key);
-    this.#render();
-    this.#kick();
-  }
-
   /**
    * A tab's icon in the dock is under the pointer, or no longer: while one
    * is, ⇧⌫ closes its tab wherever the keyboard is — main takes the key
@@ -1079,28 +887,6 @@ export class DeskEngine {
   setDockHover(hovered: boolean): void {
     if (hovered === this.#dockHover) return;
     this.#dockHover = hovered;
-    this.#render();
-    this.#kick();
-  }
-
-  /**
-   * The pointer moved over the shell (null: it left the desk). Come to the
-   * dock's place, it brings the dock back from where it stepped aside; gone
-   * from it, the dock steps aside again for the window in use behind it.
-   */
-  notePointer(client: Point | null): void {
-    const place = this.#dockPlace();
-    const at = client !== null && place !== null && containsPoint(place, this.#toStage(client));
-    if (at === this.#pointerAtDock) return;
-    this.#pointerAtDock = at;
-    this.#render();
-    this.#kick();
-  }
-
-  /** Main: the pointer came to the dock's place over a live page, which the shell never hears (DeskPageInput "dock"). */
-  pointerAtDock(): void {
-    if (this.#pointerAtDock) return;
-    this.#pointerAtDock = true;
     this.#render();
     this.#kick();
   }
@@ -1143,7 +929,7 @@ export class DeskEngine {
     if (this.#selecting !== tabId || win === undefined || win.mask !== null) return;
     const insets = this.#insets(win);
     const pageW = Math.round(win.rect.w - insets.left - insets.right);
-    const pageH = Math.round(win.rect.h - insets.top - insets.bottom);
+    const pageH = Math.round(win.rect.h - insets.top - insets.bottom - win.cut);
     if (pageW < MIN_DESK_MASK || pageH < MIN_DESK_MASK) {
       this.cancelMask();
       return;
@@ -1347,40 +1133,6 @@ export class DeskEngine {
     return { x, y, ...MASK_EDIT_BAR };
   }
 
-  /** The dock is showing this tab's preview: see that its picture is recent. */
-  peek(tabId: string): void {
-    const now = performance.now();
-    if (this.#wins.has(tabId)) {
-      this.#queueCapture(tabId, false);
-      this.#flushCaptures();
-      return;
-    }
-    const thumb = this.#thumbs.get(tabId);
-    const asked = this.#thumbAskedAt.get(tabId) ?? Number.NEGATIVE_INFINITY;
-    if ((thumb === undefined || now - thumb.at > PEEK_FRESH_MS) && now - asked > PEEK_FRESH_MS) {
-      this.#thumbAskedAt.set(tabId, now);
-      this.#requestThumbs([tabId]);
-    }
-  }
-
-  /**
-   * The box a tab's page has on the desk: its window's (where it is going,
-   * if it is on its way; laid out zoomed out, if minimized), or — in the
-   * dock — that of a window filling the desk. A page the shell draws has no
-   * picture, so the dock lays the page itself out at this box and draws it
-   * small, as it stands (ShellPageMiniature).
-   */
-  pageSize(tabId: string): { w: number; h: number } {
-    const win = this.#wins.get(tabId);
-    const rect = win === undefined ? this.#usable() : (win.target ?? win.rect);
-    const insets = win === undefined ? CHROME_INSETS[this.#host.variants().chrome] : this.#insets(win);
-    const zoom = win?.mini != null ? DESK_MINI_ZOOM : 1;
-    return {
-      w: Math.max(MIN_WINDOW_W, (rect.w - insets.left - insets.right) / zoom),
-      h: Math.max(MIN_WINDOW_H, (rect.h - insets.top - insets.bottom) / zoom),
-    };
-  }
-
   /** The stage moved or changed size: re-read it, and keep the arrangement in proportion. */
   measure(): void {
     const stage = this.#stage;
@@ -1389,21 +1141,8 @@ export class DeskEngine {
     const before = this.#usable();
     const resized = this.#stageBox.width > 0 && (box.width !== this.#stageBox.width || box.height !== this.#stageBox.height);
     this.#stageBox = { left: box.left, top: box.top, width: box.width, height: box.height };
-    const surface = typeof stage.closest === "function" ? stage.closest(".desk-surface") : null;
-    const under = surface === null ? 0 : Math.max(0, Math.round(surface.getBoundingClientRect().bottom - box.bottom));
-    const underMoved = under !== this.#underStage;
-    this.#underStage = under;
-    // The window's buttons over the top of the dock's column (the stage at the window's top-left corner).
-    const clear = box.left < TRAFFIC_LIGHTS_W ? Math.max(0, Math.round(TRAFFIC_LIGHTS_H - box.top)) : 0;
-    if (clear !== this.#dockClear) {
-      this.#dockClear = clear;
-      this.#dirtyView = true;
-    }
-    const drops = dockDrops(box.height, DOCK_W, DOCK_DROP_INSET, DESK_GAP, Math.max(DOCK_DROP_INSET, clear));
-    if (!sameRect(drops.away, this.#drops.away, 0.5) || !sameRect(drops.close, this.#drops.close, 0.5)) {
-      this.#drops = drops;
-      this.#dirtyView = true;
-    }
+    this.#writeWell();
+    this.#measureSide();
     if (resized && this.#phase === "open") {
       const after = this.#usable();
       const reach = this.#reach();
@@ -1423,8 +1162,26 @@ export class DeskEngine {
         if (win.restore !== null) win.restore = clampRect(rescaleRect(win.restore, before, after), reach);
       }
       this.#layShelf();
-    } else if (underMoved && this.#phase === "open") this.#reband(before);
+    }
     this.#render();
+  }
+
+  /**
+   * The sidebar's column beside the desk, in the stage (left of it), and the
+   * drop rail's segments over it — below the window's own buttons, where the
+   * column runs up under them.
+   */
+  #measureSide(): void {
+    const client = this.#host.sidebar();
+    const { left, top } = this.#stageBox;
+    const side = client === null || client.w < 1 ? null : { x: client.x - left, y: client.y - top, w: client.w, h: client.h };
+    this.#side = side;
+    const drops =
+      side === null ? NO_DROPS : sidebarDrops(side, RAIL_INSET, DESK_GAP, Math.max(side.y + RAIL_INSET, client!.y < TRAFFIC_LIGHTS_H ? TRAFFIC_LIGHTS_H - top : side.y));
+    if (!sameRect(drops.away, this.#drops.away, 0.5) || !sameRect(drops.close, this.#drops.close, 0.5)) {
+      this.#drops = drops;
+      this.#dirtyView = true;
+    }
   }
 
   /** Anything the host knows changed — a tab woke, the overlay rose, a variant was switched. */
@@ -1443,8 +1200,7 @@ export class DeskEngine {
     if (held === this.#shift) return;
     this.#shift = held;
     const gesture = this.#gesture;
-    // An icon in hand is not its window yet: that stays where it is (Shift counts once it is taken).
-    if (gesture === null || gesture.kind === "resize" || gesture.kind === "icon") return;
+    if (gesture === null || gesture.kind === "resize") return;
     const win = this.#wins.get(gesture.tabId);
     if (win === undefined) return;
     this.#placeCarried(win, gesture);
@@ -1461,7 +1217,6 @@ export class DeskEngine {
     window.clearInterval(this.#thumbTimer);
     window.clearInterval(this.#coveredTimer);
     window.clearTimeout(this.#retryTimer);
-    window.clearTimeout(this.#settleTimer);
     window.clearTimeout(this.#lowerTimer);
     nativeApi()?.setDesk(null);
     this.#listeners.clear();
@@ -1551,8 +1306,6 @@ export class DeskEngine {
     this.#selecting = null;
     this.#editing = null;
     this.#save();
-    // The dock's order is the other group's now (a tab just let go into that group among it).
-    this.#settleDock(null);
     const now = performance.now();
     for (const tabId of this.#order) {
       const win = this.#wins.get(tabId)!;
@@ -1567,8 +1320,8 @@ export class DeskEngine {
     this.#miniHover = null;
     this.#groupTabIds = next.tabIds;
     this.#shellIds = next.shellIds ?? null;
-    const from = this.#groupPress?.groupId === next.groupId ? this.#groupPress.rect : this.#dockMiddle();
-    this.#groupPress = null;
+    // Out of the group's row in the sidebar, where it stands now.
+    const from = this.#groupRect(next.groupId) ?? this.#sideMiddle();
     // The window in use on top. (A window of this group may still be on its
     // way home, the desk passed from it a moment ago: it is taken back where
     // it was left, not made anew.)
@@ -1594,7 +1347,6 @@ export class DeskEngine {
     this.#folding.delete(next.groupId);
     this.#focused = entry;
     this.#pendingFocus = entry;
-    this.#asideFor = null;
     this.#phase = "entering";
     if (entry !== null) this.#host.select(entry);
     this.#dirtyView = true;
@@ -1621,8 +1373,8 @@ export class DeskEngine {
   }
 
   /**
-   * A group's windows as they come out onto the desk (start, switchGroup,
-   * sketchGroup): each where it was left, in the desk as it is now, and the
+   * A group's windows as they come out onto the desk (start, switchGroup):
+   * each where it was left, in the desk as it is now, and the
    * tab the desk comes up on — out too, alone in the middle or in the room
    * left beside the others — on top. Past the desk's limit, the bottom ones
    * stay in the dock.
@@ -1637,10 +1389,9 @@ export class DeskEngine {
     const kept = saved.filter((window) => member(window.tabId));
     // The desk comes up on a tab: the pane it lifts off is a tab's page, and comes out at its own size, minimized or not.
     const entry = entryTabId !== null && tabIds.includes(entryTabId) ? entryTabId : (kept.filter((window) => isTabWindow(window.tabId)).at(-1)?.tabId ?? null);
-    // The shelf's band first: the rest are laid out above it.
     const parkedIds = kept.filter((window) => window.mini?.parked === true && window.mask === undefined && window.tabId !== entry).map((window) => window.tabId);
-    const usable = this.#usableFor(parkedIds.length);
-    const reach = this.#reachFor(parkedIds.length);
+    const usable = this.#usable();
+    const reach = this.#reach();
     const windows: Array<{ tabId: string; rect: Rect; mask: DeskMask | null; mini: Minimized | null }> = kept.map((window) => {
       if (window.mask !== undefined) return { tabId: window.tabId, rect: this.#maskedRectFrom(window.rect, window.mask), mask: window.mask, mini: null };
       const rect = clampRect(denormalizeRect(window.rect, usable), reach);
@@ -1664,7 +1415,7 @@ export class DeskEngine {
 
   /** A window of the group the desk passed from, once it has its still (or has waited long enough): into its group's icon. */
   #departFor(win: Win, groupId: string): void {
-    this.#sendAway(win, false, this.#groupIconRect(groupId) ?? this.#dockMiddle());
+    this.#sendAway(win, false, this.#groupRect(groupId) ?? this.#sideMiddle());
     this.#folding.set(groupId, (this.#folding.get(groupId) ?? 0) + 1);
     const arrive = win.onArrive;
     win.onArrive = () => {
@@ -1675,7 +1426,7 @@ export class DeskEngine {
         return;
       }
       this.#folding.delete(groupId);
-      this.#bounce(this.#groupIconEls.get(groupId));
+      this.#bounce(this.#host.homeOf("group", groupId) ?? undefined);
     };
     this.#dirtyView = true;
   }
@@ -1739,16 +1490,10 @@ export class DeskEngine {
   /** The tabs of the group now: a window whose tab left it (closed, moved out) goes. */
   syncTabs(groupTabIds: readonly string[]): void {
     this.#groupTabIds = groupTabIds;
-    // The browser's order has caught up with a drop in the dock: the dock shows its own again.
-    const settled = this.#dockSettle?.tabs;
-    if (settled != null && settled.length === groupTabIds.length && settled.every((tabId, index) => tabId === groupTabIds[index])) {
-      this.#settleDock(null);
-      this.#emit();
-    }
     let changed = false;
     const gone: Array<{ id: string; rect: Rect; how: "closed" }> = [];
     for (const [tabId, win] of [...this.#wins]) {
-      // (A window of a group the desk has passed from is on its way into that group's icon; a document is setShellWindows'.)
+      // (A window of a group the desk has passed from is on its way into that group's row; a document is setShellWindows'.)
       if (groupTabIds.includes(tabId) || !isTabWindow(tabId) || this.#departing.has(tabId) || win.flight === "away") continue;
       if (this.#gesture?.tabId === tabId) this.#cancelGesture();
       if (this.#laidOutByDesk(tabId)) gone.push({ id: tabId, rect: { ...(win.target ?? win.rect) }, how: "closed" });
@@ -1772,8 +1517,7 @@ export class DeskEngine {
       if (this.#order[this.#order.length - 1] !== tabId && this.#gesture === null) this.#raise(tabId);
       this.#focused = tabId;
       if (chosen && this.#gesture === null) {
-        this.#asideFor = tabId;
-        // A window still waiting to take the keyboard (let go behind the dock, drawn) has lost it to this one.
+        // A window still waiting to take the keyboard (drawn) has lost it to this one.
         if (this.#pendingFocus !== tabId) this.#pendingFocus = null;
       }
       this.#emit();
@@ -1787,6 +1531,16 @@ export class DeskEngine {
   /** Which window's tab is in use — the top one, unless one was just put away. */
   focusedTabId(): string | null {
     return this.#focused;
+  }
+
+  /**
+   * The tab's window is out on the desk at its own size and in use: its row
+   * pressed is then the address's, as any tab's in use is (TabList). Any
+   * other press on a row of the desk's group is its window's (add).
+   */
+  inUse(tabId: string): boolean {
+    const win = this.#wins.get(tabId);
+    return win !== undefined && win.mini === null && win.flight === null && this.#focused === tabId;
   }
 
   windowTabIds(): string[] {
@@ -1807,7 +1561,6 @@ export class DeskEngine {
       this.#raise(tabId);
       if (options.focus === true) {
         this.#pendingFocus = tabId;
-        this.#asideFor = tabId;
       }
       this.#emit();
       this.#render();
@@ -1844,6 +1597,27 @@ export class DeskEngine {
     this.#kick();
     // (A window put where it was asked to be is placed already.)
     if (options.rect === undefined && this.#laidOutByDesk(tabId)) this.#moment({ trigger: "opened", id: tabId, how: placed.kind, before });
+  }
+
+  /**
+   * A tab's row let go over the desk (chrome/shelf-drag.tsx; a tab that was
+   * not the group's has just joined it): its window comes out there, at the
+   * size windows come out at, its title bar under the pointer near its
+   * leading end — as it would have been carried — flying out of the row.
+   */
+  addAt(tabId: string, client: Point): void {
+    if (this.#phase !== "open") return;
+    if (this.#wins.has(tabId)) {
+      this.add(tabId, { focus: true });
+      return;
+    }
+    const usable = this.#usable();
+    const at = this.#toStage(client);
+    const size = windowSize(usable);
+    const chrome = this.#host.variants().chrome;
+    const pinTop = chrome === "bar" ? CHROME_INSETS.bar.top / 2 : CHROME_CARD_TOP[chrome] / 2;
+    const rect = clampRect({ x: at.x - clamp(at.x - usable.x, 28, size.w / 2), y: at.y - pinTop, w: size.w, h: size.h }, usable);
+    this.add(tabId, { focus: true, rect });
   }
 
   /**
@@ -1899,17 +1673,42 @@ export class DeskEngine {
   }
 
   /**
-   * A tab of the group sent to another group from its icon's menu: as if
-   * its icon were let go on that group's (#dropInDock) — gone from the dock
-   * at once, its window flying into the group's icon — without an icon in
-   * hand to fly there. With no window to fly, the group's icon bounces.
+   * Closed from its frame (×): the window draws in a little where it
+   * stands and fades, as a window closing does, and once it is gone its tab
+   * is closed (Reopen closed tab brings it back). A document's window only
+   * closes: the file stays in the Stack (the host's close).
+   */
+  closeWindow(tabId: string): void {
+    const win = this.#wins.get(tabId);
+    if (win === undefined || win.flight === "away" || this.#phase === "leaving") return;
+    if (this.#selecting === tabId) this.#selecting = null;
+    if (this.#gesture?.tabId === tabId) this.#cancelGesture();
+    const gone = this.#laidOutByDesk(tabId) ? { id: tabId, rect: { ...(win.target ?? win.rect) }, how: "closed" as const } : null;
+    const r = win.rect;
+    const inset = (1 - CLOSE_SCALE) / 2;
+    this.#sendAway(win, true, { x: r.x + r.w * inset, y: r.y + r.h * inset, w: r.w * CLOSE_SCALE, h: r.h * CLOSE_SCALE });
+    win.closing = true;
+    const arrive = win.onArrive;
+    win.onArrive = () => {
+      arrive?.();
+      this.#host.close(tabId);
+    };
+    this.#emit();
+    this.#kick();
+    if (gone !== null) this.#moment({ trigger: "closed", gone: [gone] });
+  }
+
+  /**
+   * A tab of the group sent to another group from its row's menu in the
+   * sidebar: its window flies into that group's row, as a group's windows go
+   * home when the desk passes from it. With no window to fly, the group's
+   * row bounces.
    */
   moveTabToGroup(tabId: string, groupId: string): void {
     if (this.#phase === "leaving" || !this.#groupTabIds.includes(tabId)) return;
     const flies = this.#wins.has(tabId);
-    this.#settleDock({ tabs: this.#groupTabIds.filter((id) => id !== tabId), groups: null, gone: tabId });
     this.#moveToGroup(tabId, groupId);
-    if (!flies) this.#bounce(this.#groupIconEls.get(groupId));
+    if (!flies) this.#bounce(this.#host.homeOf("group", groupId) ?? undefined);
     this.#emit();
     this.#render();
     this.#kick();
@@ -1942,7 +1741,7 @@ export class DeskEngine {
   /**
    * Minimize: the window shrinks to a minimized window's size, its page
    * zoomed out (DESK_MINI_ZOOM), and parks in the shelf at the desk's foot,
-   * after the ones already there, peeking up half its height. It keeps the
+   * after the ones already there, peeking up a quarter of its height. It keeps the
    * box it had, to grow back to (expand). The window in use, it passes the
    * keyboard to the window under it. A masked window is a picture of part
    * of a page and is not minimized.
@@ -1985,7 +1784,6 @@ export class DeskEngine {
     win.delay = 0;
     this.#raise(tabId);
     this.#pendingFocus = tabId;
-    this.#asideFor = tabId;
     this.#save();
     this.#emit();
     this.#render();
@@ -2035,14 +1833,13 @@ export class DeskEngine {
     this.#kick();
   }
 
-  /** Make a window minimized — parked in the shelf, or out on the desk — the band at the desk's foot following. */
+  /** Make a window minimized — parked in the shelf, or out on the desk — the shelf laid out afresh. */
   #setMinimized(win: Win, mini: Minimized): void {
-    const before = this.#usable();
     win.mini = { restore: { ...mini.restore }, parked: mini.parked };
     const at = this.#parked.indexOf(win.tabId);
     if (mini.parked && at < 0) this.#parked.push(win.tabId);
     if (!mini.parked && at >= 0) this.#parked.splice(at, 1);
-    this.#reband(before);
+    this.#layShelf();
   }
 
   /** A minimized window at its own size again (the caller gives it its box): out of the shelf, its page held at that box as it grows there. */
@@ -2054,33 +1851,32 @@ export class DeskEngine {
     this.#dirtyView = true;
   }
 
-  /** Out of the shelf, the ones after it closing up, the band at the desk's foot following; still minimized, out on the desk. */
+  /** Out of the shelf, the ones after it closing up; still minimized, out on the desk. */
   #unpark(win: Win): void {
     const at = this.#parked.indexOf(win.tabId);
     if (win.mini !== null) win.mini.parked = false;
     if (at < 0) return;
-    const before = this.#usable();
     this.#parked.splice(at, 1);
     if (this.#raised === win.tabId) this.#raised = null;
     if (this.#miniHover?.tabId === win.tabId) this.#miniHover = null;
-    this.#reband(before);
+    this.#layShelf();
     this.#dirtyView = true;
   }
 
-  /** A minimized window in hand is over the shelf's band at the desk's foot: let go, it parks there. */
+  /** A minimized window in hand is over the shelf's band at the desk's foot (where the parked ones peek up, and the gap above them): let go, it parks there. */
   #overShelf(win: Win, point: Point): boolean {
-    return win.mini !== null && point.y >= this.#reachFor(this.#parked.length + (win.mini.parked ? 0 : 1)).h;
+    return win.mini !== null && point.y >= this.#stageBox.height - Math.ceil(MINI_SIZE.h * MINI_PEEK) - DESK_GAP;
   }
 
-  /** Where the shelf's `index`th of `count` parked windows goes: at the desk's foot, from beside the dock, peeking up — or, raised, in full view. */
+  /** Where the shelf's `index`th of `count` parked windows goes: at the desk's foot, from its leading edge, peeking up — or, raised, in full view. */
   #shelfRect(index: number, count: number, raised: boolean): Rect {
     const { width, height } = this.#stageBox;
-    const left = DOCK_W + DESK_GAP;
+    const left = SHELF_INSET;
     const { w, h } = MINI_SIZE;
     // Each overlaps the one before by half, closer still when that would run past the desk.
-    const room = Math.max(0, width - left - w - DESK_GAP);
+    const room = Math.max(0, width - left - w - SHELF_INSET);
     const step = count <= 1 ? 0 : Math.min(w * (1 - MINI_OVERLAP), room / (count - 1));
-    return { x: left + index * step, y: raised ? height - h - DESK_GAP : height + this.#underStage - h * MINI_PEEK, w, h };
+    return { x: left + index * step, y: raised ? height - h - DESK_GAP : height - h * MINI_PEEK, w, h };
   }
 
   /** The shelf's windows to their places (a parked window in hand goes where the hand takes it), and above the rest, left to right. */
@@ -2149,44 +1945,69 @@ export class DeskEngine {
   // ── The agent's hand (docs/desk-agent.md §2) ──────────────────────────
 
   /**
-   * The Bar's band at the desk's foot, or 0: the desk stops above it, as it
-   * stops beside the dock, and the windows spring into the smaller desk.
+   * The Bar's notch at the desk's foot, idle (DeskBar): its size, centred on
+   * the desk's foot, or null. The windows fill the desk under it, each cut
+   * short of it (#cutFor), as of the parked windows beside it.
    */
-  setBarBand(height: number): void {
-    const band = Math.max(0, Math.round(height));
-    if (band === this.#barBand) return;
-    const before = this.#usable();
-    this.#barBand = band;
-    this.#reband(before);
-    this.#emit();
+  setNotch(size: { w: number; h: number } | null): void {
+    const next = size === null ? null : { w: Math.max(0, Math.round(size.w)), h: Math.max(0, Math.round(size.h)) };
+    const before = this.#notch;
+    if (next === null ? before === null : before !== null && before.w === next.w && before.h === next.h) return;
+    this.#notch = next;
     this.#render();
     this.#kick();
   }
 
   /**
-   * The band at the desk's foot changed (the Bar's, or the shelf's as
-   * windows are parked there and leave it): the windows spring into the
-   * desk as it is now, in proportion, and the shelf is laid out afresh.
+   * The Bar's notch as it is drawn now, as it grows and shrinks (DeskBar),
+   * or null: it is a hole through the well and through every window under
+   * it, down to the shell's own ground (the surface's, the window's glass),
+   * which nothing drawn over them could match — so the notch is that ground,
+   * rising out of the edge, whatever the theme. (A live page is never under
+   * it: cut short of the idle notch, covered by the grown one.)
    */
-  #reband(before: Rect): void {
-    const after = this.#usable();
-    const reach = this.#reach();
-    if (this.#phase === "open" && !sameRect(before, after, 0.5)) {
-      for (const win of this.#wins.values()) {
-        if (this.#gesture?.tabId === win.tabId || win.flight !== null || win.mini?.parked === true) continue;
-        const from = win.target ?? win.rect;
-        if (win.mask !== null || win.mini !== null) {
-          // A picture — or a minimized window — keeps its size; only where it is follows the desk.
-          const moved = denormalizeRect(normalizeRect(from, before), after);
-          win.target = clampRect({ ...from, x: moved.x, y: moved.y }, reach, this.#minSize(win));
-        } else {
-          win.target = clampRect(rescaleRect(from, before, after), reach);
-          if (win.restore !== null) win.restore = clampRect(rescaleRect(win.restore, before, after), reach);
-        }
-        win.coasting = false;
-      }
+  setNotchShape(shape: NotchShape | null): void {
+    const before = this.#notchShape;
+    if (shape === null ? before === null : before !== null && (["x", "y", "w", "h", "radius", "flare"] as const).every((key) => Math.abs(before[key] - shape[key]) < 0.05))
+      return;
+    this.#notchShape = shape === null ? null : { ...shape };
+    this.#writeWell();
+    for (const win of this.#wins.values()) this.#write(win);
+  }
+
+  /** The well (the stage's ::before) with the notch a hole in it. */
+  #writeWell(): void {
+    const stage = this.#stage;
+    if (stage === null) return;
+    const shape = this.#notchShape;
+    if (shape === null) {
+      if (this.#wellHoled) stage.style.removeProperty("--desk-notch-clip");
+      this.#wellHoled = false;
+      return;
     }
-    this.#layShelf();
+    this.#wellHoled = true;
+    const { width, height } = this.#stageBox;
+    stage.style.setProperty("--desk-notch-clip", `path(evenodd, "M -2 -2 H ${(width + 2).toFixed(1)} V ${(height + 2).toFixed(1)} H -2 Z ${notchOutline(shape, height, 0, 0)}")`);
+  }
+
+  /**
+   * A window's clip with the notch a hole in it, when the notch is over it:
+   * not one carried, flying or turned (it passes over the notch), and only
+   * what the window keeps of itself otherwise — its shadow all round, cut
+   * off at the desk's edge (`below`) if it peeks from there.
+   */
+  #notchClip(win: Win, below: number, transformed: boolean): string | null {
+    const shape = this.#notchShape;
+    if (shape === null || transformed || win.flight !== null) return null;
+    const gesture = this.#gesture;
+    if (gesture !== null && gesture.tabId === win.tabId && gesture.kind !== "resize") return null;
+    const { x, y, w, h } = win.rect;
+    const foot = this.#stageBox.height;
+    const hole = { x: shape.x - shape.flare, y: shape.y, w: shape.w + shape.flare * 2, h: foot + CLIP_MARGIN - shape.y };
+    if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: h + CLIP_MARGIN * 2 }, hole)) return null;
+    const m = CLIP_MARGIN;
+    const bottom = below > 0 ? h - below : h + m;
+    return `path(evenodd, "M ${-m} ${-m} H ${(w + m).toFixed(1)} V ${bottom.toFixed(1)} H ${-m} Z ${notchOutline(shape, foot, -x, -y)}")`;
   }
 
   /** The tab is one of the group's (a tab the agent just opened may not be yet). */
@@ -2392,7 +2213,6 @@ export class DeskEngine {
         // The title, clicked: its address, to edit (the palette takes the keyboard).
         if (kind === "title") {
           this.#lastClick = null;
-          this.#asideFor = tabId;
           this.#host.editAddress(tabId);
           this.#render();
           this.#kick();
@@ -2406,7 +2226,6 @@ export class DeskEngine {
         }
         this.#lastClick = { tabId, at: now };
         this.#pendingFocus = tabId;
-        this.#asideFor = tabId;
         this.#render();
         this.#kick();
       },
@@ -2468,11 +2287,9 @@ export class DeskEngine {
       cell: null,
       overDock: false,
       drop: null,
-      ghost: null,
       lag: null,
       unfill: null,
       size: null,
-      dock: null,
       end: null,
     };
     // A masked window is drawn while it is resized (its still, stretched like the picture it is).
@@ -2483,22 +2300,6 @@ export class DeskEngine {
     );
     this.#emit();
     this.#kick();
-  }
-
-  /**
-   * A press on a tab's icon in the dock. A click brings the tab out — or its
-   * window, if it is out, to the top. A drag takes the icon in hand, and once
-   * it is pulled clear of the dock it becomes the tab's window, held by its
-   * title bar (#takeInHand).
-   */
-  pressIcon(tabId: string, event: PressEvent): void {
-    if (event.button !== 0 || this.#phase !== "open" || this.#gesture !== null) return;
-    this.#noteShift(event.shiftKey);
-    const start = { x: event.clientX, y: event.clientY };
-    this.#trackPress(start, {
-      onDrag: (point) => this.#beginDockDrag("tab", tabId, start, point),
-      onClick: () => this.add(tabId, { focus: true }),
-    });
   }
 
   #trackPress(start: Point, handlers: { onDrag: (point: Point) => void; onClick: () => void }): void {
@@ -2533,8 +2334,6 @@ export class DeskEngine {
       this.#unpark(win);
     }
     const origin = this.#toStage(start);
-    // In hand, the dock is out of the way for it; let go behind the dock, the dock comes back over it.
-    this.#asideFor = null;
     win.coasting = false;
     win.target = null;
     win.tween = null;
@@ -2563,13 +2362,11 @@ export class DeskEngine {
       cell: null,
       overDock: false,
       drop: null,
-      ghost: null,
       lag: null,
       // Spanning the desk (both ways, or its whole height or width): once it
       // is really moving, it lets go of the span, so it can be carried about.
       unfill: win.mask === null && win.mini === null ? letGoSize(win.rect, win.restore, usable) : null,
       size: null,
-      dock: null,
       end: null,
     };
     this.#gesture.tracker.push(origin.x, origin.y, performance.now());
@@ -2584,25 +2381,25 @@ export class DeskEngine {
     this.#kick();
   }
 
-  /** An icon in the dock taken in hand: a tab's (`id` its tab), or another group's. */
-  #beginDockDrag(kind: "tab" | "group", id: string, start: Point, current: Point): void {
-    if (this.#gesture !== null || this.#phase !== "open") return;
-    // Taken up again while it was still flying to its place.
-    if (this.#landing !== null) this.#endLanding();
-    const origin = this.#toStage(start);
-    const icon = (kind === "tab" ? this.#iconRect(id) : this.#groupIconRect(id)) ?? {
-      x: origin.x - DOCK_ICON / 2,
-      y: origin.y - DOCK_ICON / 2,
-      w: DOCK_ICON,
-      h: DOCK_ICON,
-    };
-    this.#gesture = {
-      kind: "icon",
-      tabId: kind === "tab" ? id : "",
+  /**
+   * A tab's row in the sidebar dragged out over the desk (chrome/shelf-drag.tsx
+   * hands it on here as the pointer crosses the desk's leading edge, the
+   * button still down): it becomes the tab's window in hand, as an icon
+   * pulled out of the Dock does (#takeInHand), and the gesture goes on from
+   * here. False, and nothing happens, for a tab that is not the group's or
+   * while the desk is busy.
+   */
+  pullFromSidebar(tabId: string, client: Point): boolean {
+    if (this.#gesture !== null || this.#phase !== "open" || !this.#groupTabIds.includes(tabId)) return false;
+    this.#noteShift(undefined);
+    const point = this.#toStage(client);
+    const gesture: Gesture = {
+      kind: "spawn",
+      tabId,
       startedAt: performance.now(),
-      start: origin,
-      pointer: origin,
-      startRect: { ...icon },
+      start: point,
+      pointer: point,
+      startRect: { x: point.x - ROW_ICON / 2, y: point.y - ROW_ICON / 2, w: ROW_ICON, h: ROW_ICON },
       grab: { x: 0.5, y: 0.5 },
       pinTop: null,
       edges: null,
@@ -2611,36 +2408,37 @@ export class DeskEngine {
       zone: null,
       snapping: false,
       cell: null,
-      overDock: true,
+      overDock: false,
       drop: null,
-      ghost: { x: clamp(origin.x - icon.x, 0, icon.w), y: clamp(origin.y - icon.y, 0, icon.h) },
       lag: null,
       unfill: null,
       size: null,
-      dock: this.#readDock(kind, id),
       end: null,
     };
+    this.#gesture = gesture;
     // Every live page's still, now: the window in hand, and those it will pass over, need one.
-    this.#prewarm(this.#gesture.tabId, true);
-    this.#gesture.end = startPaneDrag(start, {
+    this.#prewarm(tabId, true);
+    this.#takeInHand(gesture);
+    gesture.end = startPaneDrag(client, {
       cursor: "grabbing",
-      onMove: (point, shift) => this.#gestureMove(point, shift),
+      onMove: (next, shift) => this.#gestureMove(next, shift),
       onEnd: () => this.#gestureEnd(),
     });
     this.#emit();
-    this.#gestureMove(current);
+    this.#gestureMove(client);
     this.#kick();
+    return true;
   }
 
   /**
-   * The icon in hand is pulled clear of the dock: it becomes the tab's
-   * window, and the hand holds it by its title bar, near the bar's leading
-   * end — the window reaches out across the desk from the hand, not back
-   * over the dock. A window already out comes to the hand as it is, flying
-   * there from where it was — scaled down, its shape kept, if it is too big
-   * to carry (carrySize); a tab not out comes out at the size windows come out at,
-   * growing out of the icon under the pointer. From here it is any window
-   * in hand: magnets, zones, Shift's snap, a throw, or back into the dock.
+   * A tab's row pulled out of the sidebar: it becomes the tab's window, and
+   * the hand holds it by its title bar, near the bar's leading end — the
+   * window reaches out across the desk from the hand, not back over the
+   * sidebar. A window already out comes to the hand as it is, flying there
+   * from where it was — scaled down, its shape kept, if it is too big to
+   * carry (carrySize); a tab not out comes out at the size windows come out
+   * at, growing out of the row's icon under the pointer. From here it is any
+   * window in hand: magnets, zones, Shift's snap, a throw, or back into the dock.
    */
   #takeInHand(gesture: Gesture): void {
     const usable = this.#usable();
@@ -2650,13 +2448,10 @@ export class DeskEngine {
     const masked = this.#wins.get(gesture.tabId)?.mask != null;
     const pinTop = masked ? MASK_CARD_TOP / 2 : variants.chrome === "bar" ? CHROME_INSETS.bar.top / 2 : CHROME_CARD_TOP[variants.chrome] / 2;
     const holdX = (w: number): number => clamp(point.x - usable.x, 28, w / 2);
-    gesture.ghost = null;
     gesture.overDock = false;
     gesture.pinTop = pinTop;
-    this.#asideFor = null;
     gesture.tracker.reset();
     gesture.tracker.push(point.x, point.y, performance.now());
-    this.#showGhost(null);
     const out = this.#wins.get(gesture.tabId);
     if (out !== undefined) {
       if (out.flight !== null) this.#land(out);
@@ -2686,7 +2481,7 @@ export class DeskEngine {
       const hold = { x: holdX(size.w), y: pinTop };
       const win = this.#newWin(gesture.tabId, { x: point.x - hold.x, y: point.y - hold.y, w: size.w, h: size.h });
       win.origin = hold;
-      win.scale = Math.max(0.04, DOCK_ICON / size.w);
+      win.scale = Math.max(0.04, ROW_ICON / size.w);
       win.lift = lift;
       this.#wins.set(gesture.tabId, win);
       this.#order.push(gesture.tabId);
@@ -2723,61 +2518,38 @@ export class DeskEngine {
     const gesture = this.#gesture;
     if (gesture === null) return;
     const win = this.#wins.get(gesture.tabId);
-    if (win === undefined && gesture.kind !== "icon") return;
+    if (win === undefined) return;
     this.#noteShift(shift);
     const point = this.#toStage(client);
     gesture.pointer = point;
     gesture.tracker.push(point.x, point.y, performance.now());
-    if (gesture.kind === "icon") {
-      const dock = gesture.dock;
-      // Still an icon while it is near the dock, making room for itself
-      // there; pulled clear, a tab's is its window. A group's never leaves
-      // the dock: past its edge, the icon follows the pointer only a little.
-      if (point.x <= DOCK_W + DOCK_PULL || dock?.kind === "group") {
-        const x = point.x - gesture.ghost!.x;
-        const over = x - (DOCK_W + DOCK_PULL / 2 - DOCK_ICON);
-        const at = { x: dock?.kind === "group" && over > 0 ? x - over + (over * GROUP_REACH) / (over + GROUP_REACH) : x, y: point.y - gesture.ghost!.y };
-        this.#showGhost(at);
-        if (dock !== null) this.#aimDock(dock, { x: at.x + DOCK_ICON / 2, y: at.y + DOCK_ICON / 2 });
-        this.#render();
-        return;
-      }
-      // Out of the dock: its section closes up again, as it was.
-      if (dock !== null) {
-        gesture.dock = null;
-        this.#showGhostInto(false);
-        this.#dirtyView = true;
-      }
-      this.#takeInHand(gesture);
-    }
     // A window spanning the desk lets go of the span once it is really on
     // the move (a grab starts at the press, before the pointer has gone anywhere).
     if (gesture.unfill !== null && Math.hypot(point.x - gesture.start.x, point.y - gesture.start.y) >= CLICK_SLOP) {
       gesture.size = gesture.unfill;
       gesture.unfill = null;
-      win!.restore = null;
+      win.restore = null;
       this.#dirtyView = true;
     }
-    const carried = this.#wins.get(gesture.tabId)!;
-    if (gesture.kind === "resize") this.#placeResized(carried, gesture);
-    else this.#placeCarried(carried, gesture);
+    if (gesture.kind === "resize") this.#placeResized(win, gesture);
+    else this.#placeCarried(win, gesture);
     this.#render();
     this.#kick();
   }
 
   /**
-   * The carried window under the pointer: the dock's pads, the lit tile
+   * The carried window under the pointer: the drop rail, the lit tile
    * (Shift's snap, or an edge zone pushed into), magnets, the desk's edges.
    *
    * The leading edge is read in depth, so no two targets overlap: the
    * desk's first LEFT_EDGE_BAND px offer the left half (its quarters at the
-   * ends), and past the desk's edge — the column the dock slid out of, or
-   * further — are the pads, back into the dock above, the tab closed below.
+   * ends), and past the desk's edge — over the sidebar, or further — is the
+   * drop rail, back into the dock above, the tab closed below.
    */
   #placeCarried(win: Win, gesture: Gesture): void {
     const usable = this.#usable();
     const point = gesture.pointer;
-    gesture.drop = dockDropAt(point, this.#drops, DOCK_W + DESK_GAP / 2, this.#stageBox.height);
+    gesture.drop = dockDropAt(point, this.#drops, 0);
     gesture.overDock = gesture.drop !== null;
     // Snap mode: Shift held, the desk is in thirds and the tile under the pointer is lit.
     // (Not for a masked window: a tile would stretch the picture. A minimized one snaps as any
@@ -2802,9 +2574,9 @@ export class DeskEngine {
       rect = stuck.rect;
       guides = stuck.guides;
     }
-    // A drawn window is the shell's picture and may travel anywhere; a live
-    // page is a native view the shell cannot clip, so it stays on the desk
-    // (the dock's column is the desk's: a window may lie behind the dock).
+    // A drawn window is the shell's picture and may travel anywhere (out over
+    // the sidebar, to the drop rail); a live page is a native view the shell
+    // cannot clip, so it stays on the desk.
     if (!win.drawn) rect = rubberBandRect(rect, this.#reach(), LIVE_OVERSHOOT, this.#minSize(win));
     win.rect = rect;
     // It lifts and turns about the point it is held by, wherever that is as the window changes size.
@@ -2842,7 +2614,7 @@ export class DeskEngine {
     const joint = gesture.joint;
     const ownX = joint === null || joint.x === null;
     const ownY = joint === null || joint.y === null;
-    // An edge that is the window's alone: out to the desk's leading edge, behind the dock; the dock's own edge sticks on the way.
+    // An edge that is the window's alone: out to the desk's leading edge; the desk's own edges stick on the way.
     const alone: Edges = { left: edges.left && ownX, right: edges.right && ownX, top: edges.top && ownY, bottom: edges.bottom && ownY };
     const free = magnetizeEdges(resizedRect(gesture.startRect, alone, dx, dy, this.#reach()), alone, this.#others(win.tabId), this.#usable());
     if (joint === null) {
@@ -2913,16 +2685,6 @@ export class DeskEngine {
     this.#gesture = null;
     this.#showGuides([]);
     this.#showZone(null, false);
-    // Let go while still an icon — never pulled clear of the dock: nothing on
-    // the desk changes, and the icon goes where the dock made room for it.
-    if (gesture.kind === "icon") {
-      if (gesture.dock === null) this.#showGhost(null);
-      else this.#dropInDock(gesture.dock);
-      this.#emit();
-      this.#render();
-      this.#kick();
-      return;
-    }
     this.#armedDrop = null;
     this.#dropsNear = false;
     const win = this.#wins.get(gesture.tabId);
@@ -2942,14 +2704,15 @@ export class DeskEngine {
     const velocity = gesture.tracker.velocity(performance.now());
     const usable = this.#usable();
     const variants = this.#host.variants();
-    // Flung at the inventory: fast, mostly sideways, and headed into its column.
-    // (Not while Shift aims it at a tile: the tile it shows is where it goes.)
+    // Flung at the dock: fast, mostly sideways, and headed past the desk's leading edge into the sidebar.
+    // (Not while Shift aims it at a tile: the tile it shows is where it goes; nor with no sidebar beside the desk.)
     const flungHome =
+      this.#side !== null &&
       !gesture.snapping &&
       variants.physics !== "free" &&
       velocity.x < -PUT_AWAY_SPEED &&
       Math.abs(velocity.x) > Math.abs(velocity.y) &&
-      gesture.pointer.x + glideReach(velocity.x) * 1.2 < DOCK_W;
+      gesture.pointer.x + glideReach(velocity.x) * 1.2 < 0;
     // Let go on the Close pad: into it, and the tab is closed once it is gone.
     // (Where it was before it was taken up is the place it leaves; a window just out of the dock left none.)
     const left = gesture.kind === "move" && this.#laidOutByDesk(win.tabId) ? { id: win.tabId, rect: { ...gesture.startRect } } : null;
@@ -2982,11 +2745,10 @@ export class DeskEngine {
     // A minimized window let go at the desk's foot parks again, at the place in the shelf nearest the pointer.
     if (win.mini !== null && this.#overShelf(win, gesture.pointer)) {
       const step = MINI_SIZE.w * (1 - MINI_OVERLAP);
-      const at = clamp(Math.round((gesture.pointer.x - DOCK_W - DESK_GAP - MINI_SIZE.w / 2) / step), 0, this.#parked.length);
-      const before = this.#usable();
+      const at = clamp(Math.round((gesture.pointer.x - SHELF_INSET - MINI_SIZE.w / 2) / step), 0, this.#parked.length);
       win.mini.parked = true;
       this.#parked.splice(at, 0, win.tabId);
-      this.#reband(before);
+      this.#layShelf();
       this.#save();
       this.#emit();
       this.#render();
@@ -3032,9 +2794,7 @@ export class DeskEngine {
     this.#showZone(null, false);
     this.#armedDrop = null;
     this.#dropsNear = false;
-    this.#showGhost(null);
-    this.#showGhostInto(false);
-    const win = gesture.kind === "icon" ? undefined : this.#wins.get(gesture.tabId);
+    const win = this.#wins.get(gesture.tabId);
     if (win !== undefined) {
       win.lift = { scale: 1, tilt: 0 };
       win.target = gesture.kind === "spawn" ? null : this.#rest(win, win.rect);
@@ -3042,113 +2802,11 @@ export class DeskEngine {
     }
   }
 
-  // ── Rearranging the dock ───────────────────────────────────────────────
+  // ── Another group ──────────────────────────────────────────────────────
 
   /**
-   * An icon's section of the dock as it stands at the start of a drag: each
-   * icon where it rests, top to bottom. A tab's drag reads the other groups'
-   * icons too, which it can be let go on. Null if the icon is not there.
-   */
-  #readDock(kind: "tab" | "group", id: string): DockDrag | null {
-    const read = (els: ReadonlyMap<string, HTMLElement>): { items: DockSlot[]; scroller: Element | null } => {
-      const items: DockSlot[] = [];
-      let scroller: Element | null = null;
-      for (const [key, el] of els) {
-        const rect = this.#restingRect(el);
-        if (rect === null) continue;
-        scroller ??= dockSection(el);
-        items.push({ id: key, rect });
-      }
-      const scrolled = scroller?.scrollTop ?? 0;
-      for (const item of items) item.rect.y += scrolled;
-      items.sort((a, b) => middleY(a.rect) - middleY(b.rect));
-      return { items, scroller };
-    };
-    const own = read(kind === "tab" ? this.#iconEls : this.#groupIconEls);
-    const from = own.items.findIndex((item) => item.id === id);
-    if (from < 0) return null;
-    const groups = kind === "tab" ? read(this.#groupIconEls) : { items: [], scroller: null };
-    const first = own.items[0]!.rect;
-    const last = own.items[own.items.length - 1]!.rect;
-    return {
-      kind,
-      id,
-      items: own.items,
-      scroller: own.scroller,
-      from,
-      // (From their middles: the icon pressed has grown about its middle.)
-      pitch: own.items.length > 1 ? (middleY(last) - middleY(first)) / (own.items.length - 1) : first.h + 10,
-      groups: groups.items,
-      groupScroller: groups.scroller,
-      to: from,
-      into: null,
-    };
-  }
-
-  /**
-   * Where the icon in hand would go, its middle at `at`: among its section's
-   * icons, past the middle of each it has passed — or, a tab's over another
-   * group's icon, into that group (the section closes up, as without it).
-   */
-  #aimDock(dock: DockDrag, at: Point): void {
-    let into: string | null = null;
-    if (dock.kind === "tab" && at.x <= DOCK_W + INTO_SLACK) {
-      const y = at.y + (dock.groupScroller?.scrollTop ?? 0);
-      into = dock.groups.find(({ rect }) => y >= rect.y - INTO_SLACK && y <= rect.y + rect.h + INTO_SLACK)?.id ?? null;
-    }
-    const y = at.y + (dock.scroller?.scrollTop ?? 0);
-    const to = into !== null ? null : dock.items.filter((item, index) => index !== dock.from && middleY(item.rect) < y).length;
-    if (to === dock.to && into === dock.into) return;
-    dock.to = to;
-    dock.into = into;
-    this.#showGhostInto(into !== null);
-    this.#dirtyView = true;
-  }
-
-  /**
-   * An icon let go in the dock goes where the dock made room for it: a tab
-   * to that place among the group's tabs, or into the group it was let go
-   * on; another group to that place among the groups; let go where it
-   * started, back into its place. The dock shows the order it made at once
-   * (DeskView.dockSettle), and the icon flies there.
-   */
-  #dropInDock(dock: DockDrag): void {
-    const order = dock.items.map((item) => item.id);
-    const into = dock.into;
-    if (into !== null) {
-      this.#settleDock({ tabs: order.filter((id) => id !== dock.id), groups: null, gone: dock.id });
-      this.#moveToGroup(dock.id, into);
-      // Into the group's icon where it stands once the tab has left the dock
-      // (the shelf is shorter by it, and centred again); in the column's
-      // middle, whatever it still shows of lighting up to take the tab.
-      const aim = (): Rect => {
-        const icon = this.#groupIconRect(into) ?? dock.groups.find((slot) => slot.id === into)?.rect ?? this.#dockMiddle();
-        return { x: (DOCK_W - DOCK_ICON) / 2, y: middleY(icon) - DOCK_ICON / 2, w: DOCK_ICON, h: DOCK_ICON };
-      };
-      this.#landGhost(dock.kind, dock.id, aim, true, () => this.#bounce(this.#groupIconEls.get(into)));
-      return;
-    }
-    const to = dock.to ?? dock.from;
-    if (to !== dock.from) {
-      const next = movedOrder(order, dock.from, to);
-      if (dock.kind === "tab") {
-        this.#settleDock({ tabs: next, groups: null, gone: null });
-        this.#host.reorderTab(dock.id, to);
-      } else {
-        this.#settleDock({ tabs: null, groups: next, gone: null });
-        this.#host.reorderGroup(dock.id, next);
-      }
-    }
-    // The places stay where they were: it lands in the `to`th, where its section is scrolled now.
-    const slot = dock.items[to]!.rect;
-    const left = Math.min(...dock.items.map((item) => item.rect.x));
-    const aim = (): Rect => ({ x: left, y: middleY(slot) - DOCK_ICON / 2 - (dock.scroller?.scrollTop ?? 0), w: DOCK_ICON, h: DOCK_ICON });
-    this.#landGhost(dock.kind, dock.id, aim, false, null);
-  }
-
-  /**
-   * A tab's icon let go on another group's: the tab goes into that group. A
-   * window of it out on the desk goes too, flying into that group's icon
+   * A tab of the group sent to another group: the tab goes into that group.
+   * A window of it out on the desk goes too, flying into that group's row
    * once it has a still to fly as, as a group's windows go home when the
    * desk passes from it (#departFor). Were it the window in use, the one
    * under it takes over — without coming up over it on its way out.
@@ -3160,7 +2818,6 @@ export class DeskEngine {
       this.#departing.set(tabId, { groupId, since: performance.now() });
     }
     if (this.#pendingFocus === tabId) this.#pendingFocus = null;
-    if (this.#asideFor === tabId) this.#asideFor = null;
     let next: string | null = null;
     if (this.#focused === tabId) {
       next = this.#staying().filter((id) => id !== tabId && !this.#departing.has(id)).at(-1) ?? null;
@@ -3175,63 +2832,6 @@ export class DeskEngine {
     this.#dirtyView = true;
     // A window whose still never comes flies all the same once the wait is up.
     if (win !== undefined) this.#renderIn(SWITCH_STILL_WAIT_MS + 20);
-  }
-
-  /** The order a drop in the dock made, for the dock to show until the browser's says the same (or DOCK_SETTLE_MS passes). */
-  #settleDock(settle: DockSettleView | null): void {
-    window.clearTimeout(this.#settleTimer);
-    this.#dockSettle = settle;
-    this.#dirtyView = true;
-    if (settle === null) return;
-    this.#settleTimer = window.setTimeout(() => {
-      if (this.#destroyed || this.#dockSettle !== settle) return;
-      this.#settleDock(null);
-      this.#emit();
-    }, DOCK_SETTLE_MS);
-  }
-
-  /**
-   * The icon let go flies to where `aim` says, on the ghost's CSS transition
-   * (`.desk-dock-ghost[data-landing]` in shell.css) — into another group's
-   * icon, shrinking and fading as it goes — and its place in the dock stays
-   * faint until it is there (#endLanding). It sets off on the next frame,
-   * once the dock is drawn with the drop (#aimLanding).
-   */
-  #landGhost(kind: "tab" | "group", id: string, aim: () => Rect, into: boolean, done: (() => void) | null): void {
-    if (this.#ghostEl === null || reducedMotion()) {
-      this.#showGhost(null);
-      this.#showGhostInto(false);
-      done?.();
-      return;
-    }
-    this.#landing = { kind, id, aim, into, until: Number.POSITIVE_INFINITY, done: done ?? (() => undefined) };
-    this.#dirtyView = true;
-  }
-
-  #aimLanding(landing: Landing, now: number): void {
-    const rect = landing.aim!();
-    landing.aim = null;
-    landing.until = now + GHOST_LAND_MS;
-    const el = this.#ghostEl;
-    if (el === null) return;
-    // (Scaled about its middle: that goes to the middle of the icon it goes into.)
-    const x = rect.x + rect.w / 2 - DOCK_ICON / 2;
-    const y = rect.y + rect.h / 2 - DOCK_ICON / 2;
-    el.dataset["landing"] = landing.into ? "into" : "";
-    el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) scale(${landing.into ? 0.4 : 1})`;
-  }
-
-  /** The icon let go is in its place: the ghost goes, and the place shows the icon again. */
-  #endLanding(): void {
-    const landing = this.#landing;
-    if (landing === null) return;
-    this.#landing = null;
-    this.#showGhost(null);
-    this.#showGhostInto(false);
-    const el = this.#ghostEl;
-    if (el !== null && el.dataset["landing"] !== undefined) delete el.dataset["landing"];
-    landing.done();
-    this.#dirtyView = true;
   }
 
   // ── The frame loop ─────────────────────────────────────────────────────
@@ -3249,12 +2849,6 @@ export class DeskEngine {
     this.#last = now;
     let active = this.#gesture !== null;
     for (const win of [...this.#wins.values()]) if (this.#step(win, dt, now)) active = true;
-    // An icon let go in the dock: it sets off once the dock is drawn with the
-    // drop, and is there once its flight (the ghost's CSS transition) is done.
-    const landing = this.#landing;
-    if (landing?.aim != null) this.#aimLanding(landing, now);
-    else if (landing !== null && now >= landing.until) this.#endLanding();
-    if (this.#landing !== null) active = true;
     if (this.#phase === "entering" && !active) {
       this.#phase = "open";
       this.#dirtyView = true;
@@ -3269,8 +2863,7 @@ export class DeskEngine {
 
   /** One window's motion over `dt`. True while it is still moving. */
   #step(win: Win, dt: number, now: number): boolean {
-    // (An icon in hand is not its window yet: that stays as it is.)
-    const gesture = this.#gesture?.tabId === win.tabId && this.#gesture.kind !== "icon" ? this.#gesture : null;
+    const gesture = this.#gesture?.tabId === win.tabId ? this.#gesture : null;
     let moving = false;
     // Lift and tilt ride their own spring, carried or not.
     const variants = this.#host.variants();
@@ -3422,7 +3015,7 @@ export class DeskEngine {
    * off at, so it visibly rebounds and comes back to lie flush.
    */
   #coast(win: Win, dt: number): void {
-    // It may coast in behind the dock, as far as the desk's leading edge.
+    // It may coast as far as the card's edges.
     const reach = this.#reach();
     // It slows as the person set the glide to (the Feel settings' deceleration).
     const tau = glideTauFor(this.#host.variants().deceleration);
@@ -3482,37 +3075,30 @@ export class DeskEngine {
       if (editing === undefined && this.#editing !== null) this.#editing = null;
       this.#covers.delete("maskedit");
     }
+    // Each window cut short of what lies over the desk's foot (#cutFor): only what is left of its page need be clear.
+    const ledges = this.#ledges();
     const frames = new Map<string, Rect>();
-    for (const tabId of this.#order) frames.set(tabId, this.#wins.get(tabId)!.rect);
+    for (const tabId of this.#order) {
+      const win = this.#wins.get(tabId)!;
+      win.cut = this.#cutFor(win, win.rect, ledges);
+      frames.set(tabId, this.#liveBox(win));
+    }
     const gesture = this.#gesture;
     const zone = gesture?.zone ?? null;
     // An armed zone is drawn by the shell too; pages under it must give way to it.
     let order = zone === null ? this.#order : [...this.#order.slice(0, -1), "\u0000zone", ...this.#order.slice(-1)];
     if (zone !== null) frames.set("\u0000zone", tileRect(zone, this.#usable()));
-    // So must what is drawn over the desk beside the dock, above every window: the icon in hand, a preview, a menu.
+    // So must what is drawn over the desk above every window: a card beside the sidebar, the Bar's tooltips —
+    // and the Bar's notch, over a window not cut short of it.
     const covers = new Map(this.#covers);
-    if (gesture?.kind === "icon" && gesture.ghost !== null) {
-      const at = { x: gesture.pointer.x - gesture.ghost.x - 8, y: gesture.pointer.y - gesture.ghost.y - 8 };
-      covers.set("\u0000ghost", { ...at, w: DOCK_ICON + 16, h: DOCK_ICON + 16 });
-    }
-    // And the dock itself, over any window lying behind it — unless it has
-    // stepped aside (and finished sliding away) for the window in use there.
-    const yielding = this.#yielding();
-    if (!yielding) this.#asideSince = null;
-    else this.#asideSince ??= now;
-    const shelf = this.#shelfCover();
-    const dockStands = shelf !== null && (!yielding || now - this.#asideSince! < DOCK_STEP_ASIDE_MS);
-    if (dockStands) covers.set("\u0000dock", shelf);
-    // Sliding aside: its place is uncovered once it has gone, a frame from now or later.
-    if (yielding && dockStands) this.#kick();
+    const notch = this.#notchRect();
+    if (notch !== null && this.#phase === "open") covers.set("\u0000notch", notch);
     // A window just masked: the rest of it fades from around its region, over whatever it stood on.
     const fade = this.#maskFade;
     if (fade !== null && (now >= fade.until || !this.#wins.has(fade.tabId))) {
       this.#maskFade = null;
       this.#dirtyView = true;
     } else if (fade !== null) covers.set("\u0000maskfade", fade.from);
-    // While a window is carried, the drop rail stands in its column once it shows.
-    if (this.#dropsNear && (gesture?.kind === "move" || gesture?.kind === "spawn")) covers.set("\u0000drops", this.#railCover());
     // Leaving, nothing of the desk stays over the window becoming the pane (the dock, the Bar, a card closing): it
     // waits on none of them, and goes live as it grows (leave).
     if (covers.size > 0 && this.#phase !== "leaving") {
@@ -3565,13 +3151,6 @@ export class DeskEngine {
       if (win !== undefined) this.#departFor(win, departing.groupId);
     }
     this.#checkCovers();
-    // The dock slides back only once no live page is left under its place.
-    const blocked = dockStands && [...this.#wins.values()].some((win) => !win.drawn && rectsOverlap(win.rect, shelf));
-    const aside = yielding || blocked;
-    if (aside !== this.#dockAside) {
-      this.#dockAside = aside;
-      this.#dirtyView = true;
-    }
     if (this.#dirtyView) this.#emit();
     this.#report();
     this.#flushCaptures();
@@ -3583,7 +3162,7 @@ export class DeskEngine {
     const clear = new Set<string>();
     for (const [key, rect] of this.#covers) {
       let live = false;
-      for (const win of this.#wins.values()) if (!win.drawn && rectsOverlap(win.rect, rect)) live = true;
+      for (const win of this.#wins.values()) if (!win.drawn && rectsOverlap(this.#liveBox(win), rect)) live = true;
       if (!live) clear.add(key);
     }
     const before = this.#clearCovers;
@@ -3730,12 +3309,16 @@ export class DeskEngine {
       : `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
     const reveal = win.unmasking === null ? null : this.#revealBox(win, win.unmasking);
     const revealKey = reveal === null ? "" : `${reveal.x.toFixed(1)},${reveal.y.toFixed(1)},${reveal.w.toFixed(1)},${reveal.h.toFixed(1)}`;
-    // A window peeking from the desk's foot is cut off at the window's edge (its page's view is cut short there too, #report).
-    const below = transformed ? 0 : Math.max(0, y + h - this.#stageBox.height - this.#underStage);
-    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${below.toFixed(1)}`;
+    // A window peeking from the desk's foot is cut off at the desk's edge (its page's view is cut short there too, #report).
+    const below = transformed ? 0 : Math.max(0, y + h - this.#stageBox.height);
+    // Under the Bar's notch, the notch is a hole through it (setNotchShape).
+    const notched = this.#notchClip(win, below, transformed);
+    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${below.toFixed(1)}|${win.cut.toFixed(1)}|${notched ?? ""}`;
     if (key === win.written) return;
     win.written = key;
-    el.style.clipPath = below > 0 ? `inset(-40px -40px ${below.toFixed(1)}px -40px)` : "";
+    // Cut short over the desk's foot, its page stops there (DeskWindow's page box), the rest of its frame under what lies there.
+    el.style.setProperty("--desk-cut", `${win.cut.toFixed(1)}px`);
+    el.style.clipPath = notched ?? (below > 0 ? `inset(-40px -40px ${below.toFixed(1)}px -40px)` : "");
     el.style.transform = transform;
     el.style.width = `${w.toFixed(1)}px`;
     el.style.height = `${h.toFixed(1)}px`;
@@ -3779,25 +3362,28 @@ export class DeskEngine {
     const api = nativeApi();
     if (api === null) return;
     const { left, top } = this.#stageBox;
+    const ledges = this.#ledges();
     // The desk first: a masked page's view is placed only once main has its mask.
-    this.#reportDesk(api, left, top);
+    this.#reportDesk(api, ledges);
     const views: Array<{ tabId: string; bounds: { x: number; y: number; width: number; height: number } }> = [];
     for (const tabId of this.#order) {
       const win = this.#wins.get(tabId)!;
       if (win.drawn) continue;
       const insets = this.#insets(win);
       const y = Math.round(top + win.rect.y + insets.top);
-      // Peeking from the desk's foot, its view is cut short at the window's edge: main shows the top of its (zoomed) page.
-      const foot = Math.round(top + this.#stageBox.height + this.#underStage);
+      // Peeking from the desk's foot, its view is cut short at the desk's edge: main shows the top of its (zoomed) page.
+      const foot = Math.round(top + this.#stageBox.height);
       // Growing, its view is never larger than the page it is laid out at (growTo): one dimension may be shrinking meanwhile.
       const grow = win.growTo?.to ?? null;
       const width = Math.round(win.rect.w - insets.left - insets.right);
-      const height = Math.round(win.rect.h - insets.top - insets.bottom);
+      // (Cut short, its foot is where what it is cut short of begins, as the frame's page box has it.)
+      const height = win.cut > 0 ? Math.round(top + win.rect.y + win.rect.h - insets.bottom - win.cut) - y : Math.round(win.rect.h - insets.top - insets.bottom);
+      const grown = grow === null ? height : Math.round(grow.h - insets.top - insets.bottom - this.#cutFor(win, grow, ledges));
       const bounds = {
         x: Math.round(left + win.rect.x + insets.left),
         y,
         width: Math.max(1, grow === null ? width : Math.min(width, Math.round(grow.w - insets.left - insets.right))),
-        height: Math.max(1, Math.min(grow === null ? height : Math.min(height, Math.round(grow.h - insets.top - insets.bottom)), foot - y)),
+        height: Math.max(1, Math.min(height, grown, foot - y)),
       };
       views.push({ tabId, bounds });
     }
@@ -3808,14 +3394,11 @@ export class DeskEngine {
     }
   }
 
-  /** Which views are desk windows, the grab key, where the dock stands aside, whether an icon in it is hovered, and the masked pages. */
-  #reportDesk(api: NonNullable<ReturnType<typeof nativeApi>>, left: number, top: number): void {
+  /** Which views are desk windows, the grab key, whether a tab's row in the sidebar is hovered, and the masked pages. */
+  #reportDesk(api: NonNullable<ReturnType<typeof nativeApi>>, ledges: readonly Rect[]): void {
     const grab = this.#host.variants().grab;
-    // Aside for a window whose page is under its place, the dock comes back
-    // as the pointer comes there: main hears that pointer, the shell does not.
-    const place = this.#asideSince !== null ? this.#dockPlace() : null;
-    const dock =
-      place === null ? null : { x: Math.round(left + place.x), y: Math.round(top + place.y), width: Math.round(place.w), height: Math.round(place.h) };
+    // (The dock is the sidebar's column, beside the desk: there is no place of it over a page for main to watch.)
+    const dock = null;
     const masks: DeskMaskedPage[] = [];
     // Passing to another group, both groups' windows are out a moment: the
     // group come to the desk first, the one leaving after (waiting for its
@@ -3855,13 +3438,15 @@ export class DeskEngine {
     }
     // Growing into a larger box: laid out at it at once, as it grows there (growTo).
     for (const tabId of leavingLast(this.#order)) {
-      const grow = this.#wins.get(tabId)!.growTo;
+      const win = this.#wins.get(tabId)!;
+      const grow = win.growTo;
       if (grow === null || zoomed.some((page) => page.tabId === tabId)) continue;
-      const insets = this.#insets(this.#wins.get(tabId)!);
+      const insets = this.#insets(win);
+      // (As cut short there as it will be.)
       zoomed.push({
         tabId,
         width: Math.max(1, Math.round(grow.to.w - insets.left - insets.right)),
-        height: Math.max(1, Math.round(grow.to.h - insets.top - insets.bottom)),
+        height: Math.max(1, Math.round(grow.to.h - insets.top - insets.bottom - this.#cutFor(win, grow.to, ledges))),
         zoom: 1,
       });
     }
@@ -3872,7 +3457,7 @@ export class DeskEngine {
     const dockHover = this.#dockHover;
     // Main hears of tabs' windows only: a document has no page of its own.
     const desk = { tabIds: leavingLast(this.#staying().filter(isTabWindow)).slice(0, MAX_DESK_WINDOWS), grab: grab === "off" ? null : grab, dock, dockHover, masks, zoomed };
-    const deskKey = `${desk.tabIds.join(" ")}|${desk.grab ?? ""}|${dock === null ? "" : `${dock.x},${dock.y},${dock.width},${dock.height}`}|${dockHover ? "hover" : ""}|${masks
+    const deskKey = `${desk.tabIds.join(" ")}|${desk.grab ?? ""}|${dockHover ? "hover" : ""}|${masks
       .map((page) => `${page.tabId}:${deskMaskKey(page.mask)}:${page.width}x${page.height}`)
       .join(" ")}|${zoomed.map((page) => `${page.tabId}:${page.width}x${page.height}@${page.zoom}`).join(" ")}`;
     if (deskKey !== this.#sentDesk) {
@@ -3908,16 +3493,12 @@ export class DeskEngine {
 
   #emit(): void {
     this.#dirtyView = false;
-    const thumbs = new Map<string, string>();
-    for (const [tabId, still] of this.#thumbs) thumbs.set(tabId, still.src);
-    for (const win of this.#wins.values())
-      if (win.still !== null && (this.#thumbs.get(win.tabId)?.at ?? -1) < win.still.at) thumbs.set(win.tabId, win.still.src);
     const usable = this.#usable();
     const gesture = this.#gesture;
     this.#view = {
       windows: this.#order.map((tabId, index) => {
         const win = this.#wins.get(tabId)!;
-        const carried = gesture?.tabId === tabId && gesture.kind !== "resize" && gesture.kind !== "icon";
+        const carried = gesture?.tabId === tabId && gesture.kind !== "resize";
         return {
           tabId,
           z: index,
@@ -3929,6 +3510,7 @@ export class DeskEngine {
           aiming: carried && gesture.zone !== null,
           intoDock: carried && gesture.overDock,
           flight: win.flight,
+          closing: win.closing,
           framed: win.framed,
           // Letting go of the desk in hand, it is no longer the desk's size, whatever size it has reached.
           maximized: win.mask === null && win.mini === null && !(carried && gesture.size !== null) && sameRect(win.target ?? win.rect, usable, 2),
@@ -3951,27 +3533,10 @@ export class DeskEngine {
               : null,
         };
       }),
-      thumbs,
       drops: this.#drops,
       dropsShown: this.#dropsNear,
-      dockClear: this.#dockClear,
       dockDrop: this.#armedDrop,
-      iconDrag: gesture?.kind === "icon" && gesture.tabId !== "" ? gesture.tabId : this.#landing?.kind === "tab" ? this.#landing.id : null,
-      groupDrag: gesture?.kind === "icon" && gesture.dock?.kind === "group" ? gesture.dock.id : this.#landing?.kind === "group" ? this.#landing.id : null,
-      dockDrag:
-        gesture?.kind === "icon" && gesture.dock !== null
-          ? {
-              kind: gesture.dock.kind,
-              id: gesture.dock.id,
-              order: gesture.dock.items.map((item) => item.id),
-              to: gesture.dock.to,
-              into: gesture.dock.into,
-              pitch: gesture.dock.pitch,
-            }
-          : null,
-      dockSettle: this.#dockSettle,
       clearCovers: this.#clearCovers,
-      dockAside: this.#dockAside,
       snapping: gesture?.snapping ?? false,
       gesture: gesture?.kind ?? null,
       phase: this.#phase,
@@ -4061,13 +3626,6 @@ export class DeskEngine {
       });
   }
 
-  /** The newest picture of a tab's page: its window's, or the dock's. */
-  #latestStill(tabId: string): Still | null {
-    const own = this.#wins.get(tabId)?.still ?? null;
-    const thumb = this.#thumbs.get(tabId) ?? null;
-    return own === null || (thumb !== null && thumb.at > own.at) ? thumb : own;
-  }
-
   #requestThumbs(tabIds: readonly string[]): void {
     const api = nativeApi();
     if (api === null || tabIds.length === 0) return;
@@ -4118,6 +3676,7 @@ export class DeskEngine {
       origin: { x: rect.w / 2, y: 16 },
       el: null,
       written: "",
+      cut: 0,
       still: null,
       paintedAt: Number.NEGATIVE_INFINITY,
       wantStillSince: null,
@@ -4136,6 +3695,7 @@ export class DeskEngine {
       unmasking: null,
       revealed: false,
       homeward: false,
+      closing: false,
     };
   }
 
@@ -4155,7 +3715,6 @@ export class DeskEngine {
     const index = this.#order.indexOf(tabId);
     if (index < 0) return;
     this.#focused = tabId;
-    if (this.#asideFor !== tabId) this.#asideFor = null;
     if (this.#selecting !== null && this.#selecting !== tabId) this.#selecting = null;
     if (this.#editing !== null && this.#editing !== tabId) {
       this.#editing = null;
@@ -4179,7 +3738,7 @@ export class DeskEngine {
    * window's corner first, keeping what is on screen where it is.
    */
   #sendAway(win: Win, focusNext: boolean, to?: Rect): void {
-    const home = to ?? this.#iconRect(win.tabId) ?? { x: DOCK_W / 2 - 40, y: this.#stageBox.height / 2 - 25, w: 80, h: 50 };
+    const home = to ?? this.#iconRect(win.tabId) ?? this.#sideMiddle();
     const shown = win.drawn ? win.scale : 1;
     win.rect = {
       ...win.rect,
@@ -4241,9 +3800,9 @@ export class DeskEngine {
     return true;
   }
 
-  /** The dock's icon for this tab gives a little bounce: its window has just come back into it (a document's, the Stack). */
+  /** The tab's row in the sidebar gives a little bounce: its window has just come back into it (a document's, the Stack's row). */
   #receive(tabId: string): void {
-    this.#bounce(isTabWindow(tabId) ? this.#iconEls.get(tabId) : this.#homeEls.get(windowKind(tabId)));
+    this.#bounce(this.#host.homeOf(isTabWindow(tabId) ? "tab" : "file", tabId) ?? undefined);
   }
 
   #bounce(el: HTMLElement | undefined): void {
@@ -4298,7 +3857,6 @@ export class DeskEngine {
     if (win !== undefined) this.#unpark(win);
     this.#wins.delete(tabId);
     this.#order = this.#order.filter((id) => id !== tabId);
-    if (this.#asideFor === tabId) this.#asideFor = null;
     if (this.#selecting === tabId) this.#selecting = null;
     if (this.#editing === tabId) this.#editing = null;
     if (this.#focused === tabId) this.#focused = this.#topWindow();
@@ -4306,9 +3864,8 @@ export class DeskEngine {
   }
 
   /**
-   * Where a released window rests: on the desk — behind the dock too, as far
-   * as the desk's leading edge — stuck to whatever edge it is beside, the
-   * dock's own edge among them.
+   * Where a released window rests: on the desk, as far as its leading edge —
+   * stuck to whatever edge it is beside, the desk's own among them.
    */
   #rest(win: Win, rect: Rect): Rect {
     const reach = this.#reach();
@@ -4420,71 +3977,79 @@ export class DeskEngine {
   }
 
   /**
-   * The desk windows are laid out on: the stage, less the dock's column and
-   * the gap beside it. Tiles, filling the desk, the arrangements and where a
-   * new window comes out keep clear of the dock, as the Dock's are kept
-   * clear of; a window put somewhere by hand may go further (#reach).
+   * The desk windows are laid out on: the whole of the desk's card, so a
+   * window filling the desk fills the card, as a page fills its pane — the
+   * Bar's notch and the parked windows lie over its foot (#cutFor). Tiles,
+   * filling the desk, the arrangements and where a new window comes out
+   * use it.
    */
   #usable(): Rect {
-    return this.#usableFor(this.#parked.length);
-  }
-
-  /** Where a window may be: the whole stage above the band at its foot — behind the dock too, as far as the desk's leading edge. */
-  #reach(): Rect {
-    return this.#reachFor(this.#parked.length);
-  }
-
-  /** #usable, with this many windows parked in the shelf. */
-  #usableFor(parked: number): Rect {
     const { width, height } = this.#stageBox;
-    return { x: DOCK_W + DESK_GAP, y: 0, w: Math.max(1, width - DOCK_W - DESK_GAP), h: Math.max(1, height - this.#footBand(parked)) };
-  }
-
-  /** #reach, with this many windows parked in the shelf. */
-  #reachFor(parked: number): Rect {
-    const { width, height } = this.#stageBox;
-    return { x: 0, y: 0, w: Math.max(1, width), h: Math.max(1, height - this.#footBand(parked)) };
-  }
-
-  /** The band at the desk's foot that windows keep above: the Bar's, or while windows are parked there, the shelf's where they peek up. */
-  #footBand(parked: number): number {
-    return Math.max(this.#barBand, parked > 0 ? Math.ceil(MINI_SIZE.h * MINI_PEEK) - this.#underStage + DESK_GAP : 0);
+    return { x: 0, y: 0, w: Math.max(1, width), h: Math.max(1, height) };
   }
 
   /**
-   * The dock steps aside for the window in use when that window lies behind
-   * it: a live page is a native view and would paint over the dock, and the
-   * window in use must be live. The dock stands again once the pointer
-   * comes to its place, or while something of it is open (holdDock), or
-   * once another window is used, or that one is moved out from behind it.
+   * Where a window may be: the same box as #usable. (They differed while the
+   * desk had a dock of its own over its leading edge, which a window could
+   * lie behind but no layout used.)
    */
-  #yielding(): boolean {
-    const tabId = this.#asideFor;
-    const shelf = this.#shelfCover();
-    if (tabId === null || shelf === null || this.#phase !== "open" || this.#pointerAtDock || this.#dockHolds.size > 0) return false;
-    if (this.#focused !== tabId || this.#gesture?.kind === "icon" || !this.#host.hasLivePage(tabId)) return false;
-    const win = this.#wins.get(tabId);
-    return win !== undefined && win.flight === null && rectsOverlap(win.target ?? win.rect, shelf);
+  #reach(): Rect {
+    return this.#usable();
   }
 
-  /** What the dock's shelf covers of the desk where it stands (its ring included), or null before it has laid out. */
-  #shelfCover(): Rect | null {
-    const shelf = this.#shelf;
-    if (shelf === null || this.#phase === "leaving") return null;
-    return { x: shelf.x - 2, y: shelf.y - 2, w: shelf.w + 4, h: shelf.h + 4 };
+  /** The Bar's notch in the stage (setNotch), or null. */
+  #notchRect(): Rect | null {
+    const notch = this.#notch;
+    if (notch === null || notch.w < 1 || notch.h < 1) return null;
+    const { width, height } = this.#stageBox;
+    return { x: (width - notch.w) / 2, y: height - notch.h, w: notch.w, h: notch.h };
   }
 
-  /** What the drop rail covers while it stands in the dock's column. */
-  #railCover(): Rect {
-    const top = this.#drops.away.y;
-    return { x: 0, y: top - 2, w: DOCK_W + 2, h: bottomOf(this.#drops.close) - top + 4 };
+  /**
+   * What the shell draws at the desk's foot over the windows there: the
+   * Bar's notch, and each parked window where it peeks up (raised, its
+   * place down there still counts: the windows under it are not cut anew
+   * for a hover, only covered).
+   */
+  #ledges(): Rect[] {
+    const ledges: Rect[] = [];
+    const notch = this.#notchRect();
+    if (notch !== null) ledges.push(notch);
+    this.#parked.forEach((_, index) => ledges.push(this.#shelfRect(index, this.#parked.length, false)));
+    return ledges;
   }
 
-  /** Where the pointer finds the dock: its column and the gap beside it, level with its shelf. */
-  #dockPlace(): Rect | null {
-    const shelf = this.#shelf;
-    if (shelf === null) return null;
-    return { x: 0, y: shelf.y - DOCK_PLACE_SLACK, w: DOCK_W + DESK_GAP, h: shelf.h + DOCK_PLACE_SLACK * 2 };
+  /**
+   * How far short of its frame's foot a window at `rect` stops its page: at
+   * the top of what lies over the desk's foot under its page (#ledges), so
+   * its live page never paints over them — they are drawn over the rest of
+   * its frame there, as a notch in a screen with the menu bar around it. A
+   * tab's window at its own size only, on the open desk: a minimized or
+   * masked one, or a document (the shell's own, under them anyway), is
+   * covered by them instead; so is one that would keep too little page.
+   */
+  #cutFor(win: Win, rect: Rect, ledges: readonly Rect[]): number {
+    if (this.#phase !== "open" || win.mini !== null || win.mask !== null || !isTabWindow(win.tabId)) return 0;
+    const insets = this.#insets(win);
+    const left = rect.x + insets.left;
+    const right = rect.x + rect.w - insets.right;
+    const top = rect.y + insets.top;
+    const bottom = rect.y + rect.h - insets.bottom;
+    let stop = bottom;
+    for (const ledge of ledges) {
+      if (ledge.x < right && left < ledge.x + ledge.w && ledge.y < bottom && ledge.y + ledge.h > top) stop = Math.min(stop, ledge.y);
+    }
+    const cut = bottom - stop;
+    return cut > 0.01 && bottom - top - cut >= MIN_CUT_PAGE ? cut : 0;
+  }
+
+  /**
+   * Where a window's live page may be over the desk: its frame, less what it
+   * is cut short by at the desk's foot and the frame's foot below that (with
+   * half a pixel to spare for main's rounding of its view).
+   */
+  #liveBox(win: Win): Rect {
+    return win.cut > 0 ? { ...win.rect, h: win.rect.h - win.cut - this.#insets(win).bottom - 0.5 } : win.rect;
   }
 
   /** A window whose page is exactly the stage: the pane the surface shows without a desk. */
@@ -4500,58 +4065,45 @@ export class DeskEngine {
   }
 
   /**
-   * Where a tab's icon rests in the dock — not where it is this frame: the
-   * dock slides away while a window is carried, and a window put away on
-   * letting go flies to its icon as the dock slides back.
+   * Where a window lives in the sidebar, which it flies out of and back into
+   * — its row's icon, in the stage (left of it): a tab's row (its group
+   * folded away, the group's row), or a document's, the Stack's. Null where
+   * the sidebar shows none.
    */
   #iconRect(tabId: string): Rect | null {
-    // A document's is the Stack's: it has no icon of its own.
-    const el = isTabWindow(tabId) ? this.#iconEls.get(tabId) : this.#homeEls.get(windowKind(tabId));
-    return el === undefined ? null : this.#restingRect(el);
+    const el = this.#host.homeOf(isTabWindow(tabId) ? "tab" : "file", tabId);
+    return el === null ? null : this.#iconOf(el);
   }
 
-  /** Another group's icon in the dock, where it rests (as #iconRect). */
-  #groupIconRect(groupId: string): Rect | null {
-    const el = this.#groupIconEls.get(groupId);
-    return el === undefined ? null : this.#restingRect(el);
+  /** Another group's row in the sidebar: its windows come out of it, and go back into it. */
+  #groupRect(groupId: string): Rect | null {
+    const el = this.#host.homeOf("group", groupId);
+    return el === null ? null : this.#iconOf(el);
   }
 
-  /** An icon in the dock, in the stage, wherever the shelf holding it is sliding (#iconRect). */
-  #restingRect(el: HTMLElement): Rect | null {
+  /** A row's icon, in the stage: its leading mark, which the sidebar's rows draw 8px in, on their middle. */
+  #iconOf(el: HTMLElement): Rect | null {
     if (!el.isConnected) return null;
     const box = el.getBoundingClientRect();
     if (box.width < 1) return null;
-    const slide = dockSlide(el);
-    return { x: box.left - this.#stageBox.left - slide, y: box.top - this.#stageBox.top, w: box.width, h: box.height };
+    const size = Math.min(box.height, ROW_ICON * 1.5);
+    return {
+      x: box.left - this.#stageBox.left + 8 - (size - ROW_ICON) / 2,
+      y: box.top - this.#stageBox.top + (box.height - size) / 2,
+      w: size,
+      h: size,
+    };
   }
 
-  /** An icon's box in the middle of the dock's column: where windows go, or come from, with no icon of their own to find. */
-  #dockMiddle(): Rect {
-    return { x: DOCK_W / 2 - DOCK_ICON / 2, y: this.#stageBox.height / 2 - DOCK_ICON / 2, w: DOCK_ICON, h: DOCK_ICON };
+  /** The sidebar's middle, level with the desk's: where windows go, or come from, with no row of their own to find. */
+  #sideMiddle(): Rect {
+    const side = this.#side;
+    const size = ROW_ICON * 1.5;
+    return { x: side === null ? -size - DESK_GAP : side.x + side.w / 2 - size / 2, y: this.#stageBox.height / 2 - size / 2, w: size, h: size };
   }
 
   #toStage(client: Point): Point {
     return { x: client.x - this.#stageBox.left, y: client.y - this.#stageBox.top };
-  }
-
-  /** The icon in hand, at `at` (its corner, in the stage) — or put down. */
-  #showGhost(at: Point | null): void {
-    const el = this.#ghostEl;
-    if (el === null) return;
-    if (at === null) {
-      if (el.dataset["on"] !== undefined) delete el.dataset["on"];
-      return;
-    }
-    el.style.transform = `translate3d(${at.x.toFixed(1)}px, ${at.y.toFixed(1)}px, 0)`;
-    el.dataset["on"] = "";
-  }
-
-  /** The tab's icon in hand is over another group's, as an app over a folder: it draws in a little. */
-  #showGhostInto(on: boolean): void {
-    const el = this.#ghostEl;
-    if (el === null) return;
-    if (on) el.dataset["into"] = "";
-    else if (el.dataset["into"] !== undefined) delete el.dataset["into"];
   }
 
   /** Light the tile a carried window would land in — snap mode's own look while Shift aims it. */
@@ -4601,29 +4153,6 @@ export class DeskEngine {
       }
     });
   }
-}
-
-/** How far the dock's shelf holding `el` is slid off its place right now (its transform's x), or 0. */
-function dockSlide(el: HTMLElement): number {
-  if (typeof el.closest !== "function" || typeof DOMMatrixReadOnly === "undefined") return 0;
-  const shelf = el.closest<HTMLElement>(".desk-dock-shelf");
-  if (shelf === null) return 0;
-  const transform = getComputedStyle(shelf).transform;
-  if (transform === "" || transform === "none") return 0;
-  try {
-    return new DOMMatrixReadOnly(transform).m41;
-  } catch {
-    return 0;
-  }
-}
-
-/** The section of the dock holding icon `el` (the group's tabs, or the other groups), which scrolls when they outgrow it. */
-function dockSection(el: HTMLElement): Element | null {
-  return typeof el.closest === "function" ? el.closest(".desk-dock-icons, .desk-dock-groups") : null;
-}
-
-function middleY(rect: Rect): number {
-  return rect.y + rect.h / 2;
 }
 
 /** What a still can stand for, for a window masked with `mask` (or not): its region, the whole page (cropped if masked), or nothing. */

@@ -194,12 +194,15 @@ export function MenuPanel({
   label,
   align,
   testId,
+  shown = true,
   children,
 }: {
   menu: MenuButton;
   label: string;
   align: "start" | "end";
   testId?: string;
+  /** False while what it opens over is not ready for it (live pages still up): mounted, but not seen or pressed yet. */
+  shown?: boolean;
   children: React.ReactNode;
 }) {
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -234,8 +237,9 @@ export function MenuPanel({
         aria-label={label}
         data-testid={testId}
         data-pinned={menu.pinned ? "" : undefined}
+        data-shown={shown ? "" : undefined}
         onKeyDown={onKeyDown}
-        className="animate-overlay-in flex w-48 flex-col rounded-lg bg-background-100 p-1 text-gray-1000 shadow-menu"
+        className={cn("flex w-48 flex-col rounded-lg bg-background-100 p-1 text-gray-1000 shadow-menu", shown ? "animate-overlay-in" : "pointer-events-none opacity-0")}
       >
         <MenuContext.Provider value={menu}>{children}</MenuContext.Provider>
       </div>

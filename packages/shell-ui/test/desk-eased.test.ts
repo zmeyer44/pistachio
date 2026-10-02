@@ -14,8 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DragSample } from "@pistachio/shell-contracts/chrome";
 import { NATIVE_SURFACE_MEMBERS } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { DeskEngine, DOCK_W, type DeskHost } from "../src/components/desk/desk-engine";
-import { DESK_GAP, type Rect } from "../src/lib/desk/geometry";
+import { DeskEngine, type DeskHost } from "../src/components/desk/desk-engine";
+import { type Rect } from "../src/lib/desk/geometry";
 import { EASE_SMOOTH_OUT } from "../src/lib/desk/motion";
 import { DEFAULT_DESK_VARIANTS, sanitizeVariants, type DeskVariants } from "../src/lib/desk/store";
 
@@ -51,7 +51,6 @@ function rectOf(el: ReturnType<typeof element>): Rect {
 
 const EASED: DeskVariants = { ...DEFAULT_DESK_VARIANTS, spring: "eased" };
 const STAGE = { w: 1600, h: 1000 };
-const LEFT = DOCK_W + DESK_GAP;
 
 beforeEach(() => {
   frames = [];
@@ -104,10 +103,9 @@ function open(variants: DeskVariants = EASED, host: Partial<DeskHost> = {}) {
     close: () => undefined,
     editAddress: () => undefined,
     save: () => undefined,
-    switchGroup: () => undefined,
-    reorderTab: () => undefined,
     moveTabToGroup: () => undefined,
-    reorderGroup: () => undefined,
+    sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    homeOf: () => null,
     leaveDone: () => undefined,
     ...host,
   });
@@ -149,7 +147,7 @@ describe("the Eased feel", () => {
   it("fills the desk in 300ms on the smooth ease-out (a resize), never past it", () => {
     const { desk, rect } = open();
     const from = rect("tab-0");
-    const to = { x: LEFT, y: 0, w: STAGE.w - LEFT, h: STAGE.h };
+    const to = { x: 0, y: 0, w: STAGE.w, h: STAGE.h };
     desk.toggleMaximize("tab-0");
     const widths: number[] = [];
     // Halfway through its time, most of the way: fast away, a soft settle.

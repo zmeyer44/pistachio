@@ -4,7 +4,6 @@ import {
   lazy,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,7 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Crop, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, X } from "lucide-react";
+import { Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, X } from "lucide-react";
 import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
 import { DESK_MINI_ZOOM, MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
@@ -26,10 +25,10 @@ import { editedMaskRegion, type Edges, type Rect } from "../../lib/desk/geometry
 
 import type { DeskChrome, DeskGrab } from "../../lib/desk/store";
 import { displayHost } from "../../lib/url";
+import { CONTEXT_MENU_W, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { Favicon } from "../Favicon";
 import { PanePlaceholder } from "../PanePlaceholder";
 import { HomePage } from "../home/HomePage";
-import { PagePreview } from "../page-preview";
 import { BriefPage } from "../reports/BriefPage";
 import { CHROME_CARD_TOP, CHROME_INSETS, MASK_CARD_TOP, MASK_INSETS, type DeskEngine, type DeskWindowView } from "./desk-engine";
 import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
@@ -51,16 +50,20 @@ export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: 
  * shell paints it here — the page's still, a placeholder while it wakes,
  * or the shell's own drawing for a shell page (home, the brief, a note).
  *
+ * Its controls are fill, collapse (−, into its icon in the dock) and close
+ * (×); what is wanted less often — masking, minimizing, a document's own
+ * actions — is on the frame's menu (⋯, or a right-click on the frame).
+ *
  * Masked (DeskMask), the window is a region of its page, shown alone and
  * scaled like a picture — still the live page, used as it always is: the
  * bare frame's handle above the region and nothing else, its controls
- * Unmask and Collapse, and, in use, Edit mask. Choosing the region, its
+ * Unmask, Collapse and Close, and Edit mask on its menu. Choosing the region, its
  * page is frozen under a MaskSelector; editing it, the whole page is shown
  * around it under a MaskEditor.
  *
  * Minimized, the window is small and its page zoomed out (DESK_MINI_ZOOM):
  * a web page by main, a page the shell draws by a CSS scale here. Its
- * controls are Expand and Collapse. Parked at the desk's foot, the pointer
+ * controls are Expand, Collapse and Close. Parked at the desk's foot, the pointer
  * on it raises it into view: its frame says so here, its live page by main.
  */
 export const DeskWindow = memo(function DeskWindow({
@@ -163,22 +166,82 @@ export const DeskWindow = memo(function DeskWindow({
     engine.press(tabId, event, "content");
   };
 
+  const menu = useContextMenu();
+  /** Whether the frame's menu was up as the ⋯ was pressed: the press put it away, and the click is not to bring it back. */
+  const menuWasUp = useRef(false);
+  // Where the window goes when collapsed: its icon in the dock, or a document's home, the Stack.
+  const collapseLabel = parts !== null ? "Collapse into the Stack" : "Collapse into the sidebar";
+  /** What the frame's menu offers: what is wanted less often than the buttons; on a right-click, the buttons' too. */
+  const menuEntries = (all: boolean): MenuEntry[] => {
+    const rare: MenuEntry[] = [];
+    if (masked) {
+      if (tab !== null && !shellPage) rare.push({ label: "Edit mask", icon: <Crop aria-hidden="true" />, testId: "desk-edit-mask", onSelect: () => engine.editMask(tabId) });
+    } else if (!mini) {
+      for (const action of parts?.actions ?? []) rare.push({ label: action.label, icon: action.icon, testId: action.testId, onSelect: action.run });
+      if (canMask)
+        rare.push({
+          label: view.selecting ? "Cancel mask" : "Mask: keep part of the page",
+          icon: <Crop aria-hidden="true" />,
+          testId: "desk-mask",
+          onSelect: () => (view.selecting ? engine.cancelMask() : engine.startMask(tabId)),
+        });
+      rare.push({ label: "Minimize", icon: <PictureInPicture2 aria-hidden="true" />, testId: "desk-minimize", onSelect: () => engine.minimize(tabId) });
+    }
+    if (!all) return rare;
+    const common: MenuEntry[] = masked
+      ? [{ label: "Unmask", icon: <Expand aria-hidden="true" />, onSelect: () => engine.unmask(tabId) }]
+      : mini
+        ? [{ label: "Expand", icon: <Maximize2 aria-hidden="true" />, onSelect: () => engine.expand(tabId) }]
+        : [{ label: view.maximized ? "Restore" : "Fill the desk", icon: view.maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />, onSelect: () => engine.toggleMaximize(tabId) }];
+    common.push({ label: collapseLabel, icon: <Minus aria-hidden="true" />, onSelect: () => engine.putAway(tabId) });
+    return [...rare, ...(rare.length > 0 ? [{ separator: true } as const] : []), ...common, { separator: true }, { label: "Close", icon: <X aria-hidden="true" />, testId: "desk-close-item", onSelect: () => engine.closeWindow(tabId) }];
+  };
+  const onFrameMenu = (event: React.MouseEvent): void => {
+    event.preventDefault();
+    if (view.flight !== null) return;
+    menu.open(event, menuEntries(true));
+  };
+  const rare = menuEntries(false);
+  const more =
+    rare.length === 0 ? null : (
+      <FrameButton
+        label="More"
+        testId="desk-window-more"
+        pressed={menu.isOpen}
+        onPress={() => {
+          menuWasUp.current = menu.isOpen;
+        }}
+        onClick={(event) => {
+          if (menuWasUp.current) {
+            menuWasUp.current = false;
+            return;
+          }
+          // Hung from the button, its trailing edge under the button's.
+          const box = event.currentTarget.getBoundingClientRect();
+          menu.open({ clientX: box.right - CONTEXT_MENU_W, clientY: box.bottom + 4 }, rare);
+        }}
+      >
+        <Ellipsis aria-hidden="true" />
+      </FrameButton>
+    );
   const collapse = (
-    <FrameButton label="Collapse" testId="desk-collapse" onClick={() => engine.putAway(tabId)}>
+    <FrameButton label={collapseLabel} testId="desk-collapse" onClick={() => engine.putAway(tabId)}>
       <Minus aria-hidden="true" />
+    </FrameButton>
+  );
+  const close = (
+    <FrameButton label="Close" testId="desk-close" onClick={() => engine.closeWindow(tabId)}>
+      <X aria-hidden="true" />
     </FrameButton>
   );
   const controls = masked ? (
     <span className="desk-window-controls flex items-center">
-      {view.focused && tab !== null && !shellPage ? (
-        <FrameButton label="Edit mask" testId="desk-edit-mask" onClick={() => engine.editMask(tabId)}>
-          <Crop aria-hidden="true" />
-        </FrameButton>
-      ) : null}
+      {more}
       <FrameButton label="Unmask" testId="desk-unmask" onClick={() => engine.unmask(tabId)}>
         <Expand aria-hidden="true" />
       </FrameButton>
       {collapse}
+      {close}
     </span>
   ) : mini ? (
     <span className="desk-window-controls flex items-center">
@@ -186,31 +249,16 @@ export const DeskWindow = memo(function DeskWindow({
         <Maximize2 aria-hidden="true" />
       </FrameButton>
       {collapse}
+      {close}
     </span>
   ) : (
     <span className="desk-window-controls flex items-center">
-      {parts?.actions.map((action) => (
-        <FrameButton key={action.testId} label={action.label} testId={action.testId} onClick={action.run}>
-          {action.icon}
-        </FrameButton>
-      ))}
-      {canMask ? (
-        <FrameButton
-          label={view.selecting ? "Cancel mask" : "Mask: keep part of the page"}
-          testId="desk-mask"
-          pressed={view.selecting}
-          onClick={() => (view.selecting ? engine.cancelMask() : engine.startMask(tabId))}
-        >
-          <Crop aria-hidden="true" />
-        </FrameButton>
-      ) : null}
+      {more}
       <FrameButton label={view.maximized ? "Restore" : "Fill the desk"} onClick={() => engine.toggleMaximize(tabId)}>
         {view.maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
       </FrameButton>
-      <FrameButton label="Minimize" testId="desk-minimize" onClick={() => engine.minimize(tabId)}>
-        <PictureInPicture2 aria-hidden="true" />
-      </FrameButton>
       {collapse}
+      {close}
     </span>
   );
 
@@ -235,6 +283,8 @@ export const DeskWindow = memo(function DeskWindow({
       data-aiming={view.aiming ? "" : undefined}
       data-into-dock={view.intoDock ? "" : undefined}
       data-flight={view.flight ?? undefined}
+      data-closing={view.closing ? "" : undefined}
+      data-menu={menu.isOpen ? "" : undefined}
       data-framed={view.framed ? undefined : "off"}
       data-agent={working ? "" : undefined}
       className="desk-window"
@@ -259,7 +309,7 @@ export const DeskWindow = memo(function DeskWindow({
         />
       ) : null}
       {frame === "tab" ? (
-        <div className="desk-window-chrome desk-window-tab" onPointerDown={onFrameDown}>
+        <div className="desk-window-chrome desk-window-tab" onPointerDown={onFrameDown} onContextMenu={onFrameMenu}>
           {parts !== null ? (
             parts.title("flex-1")
           ) : (
@@ -271,7 +321,7 @@ export const DeskWindow = memo(function DeskWindow({
           {controls}
         </div>
       ) : frame === "bare" ? (
-        <div className="desk-window-chrome desk-window-handle" onPointerDown={onFrameDown} title={title}>
+        <div className="desk-window-chrome desk-window-handle" onPointerDown={onFrameDown} onContextMenu={onFrameMenu} title={title}>
           <span className="desk-window-pill" />
           {controls}
         </div>
@@ -282,7 +332,7 @@ export const DeskWindow = memo(function DeskWindow({
         style={{ top: cardTop, "--agent-ring-delay": ringDelay, "--agent-ring-radius": "calc(var(--radius-md) + 4px)" } as CSSProperties}
       >
         {frame === "bar" ? (
-          <div className="desk-window-chrome desk-window-bar" style={{ height: insets.top }} onPointerDown={onFrameDown}>
+          <div className="desk-window-chrome desk-window-bar" style={{ height: insets.top }} onPointerDown={onFrameDown} onContextMenu={onFrameMenu}>
             {/* Clicked, the address palette opens on this tab; dragged, it is the bar. */}
             {parts !== null ? (
               parts.title()
@@ -302,7 +352,8 @@ export const DeskWindow = memo(function DeskWindow({
           className="desk-window-page"
           data-testid="desk-window-page"
           onPointerDown={onPageDown}
-          style={{ top: insets.top - cardTop, left: insets.left, right: insets.right, bottom: insets.bottom }}
+          // Cut short over the desk's foot (the engine's --desk-cut): the Bar's notch and the parked windows lie over the rest of the frame there.
+          style={{ top: insets.top - cardTop, left: insets.left, right: insets.right, bottom: `calc(${String(insets.bottom)}px + var(--desk-cut, 0px))` }}
         >
           {/* A page the shell draws is zoomed out here when minimized (a web page is main's to zoom); always this box, so nothing in it is made anew. */}
           <div className="desk-window-zoom" style={mini && shellPage ? ZOOMED_STYLE : undefined}>
@@ -325,6 +376,7 @@ export const DeskWindow = memo(function DeskWindow({
         </div>
         <ResizeEdges tabId={tabId} engine={engine} top={frame === "bar"} />
       </div>
+      {menu.menu}
     </div>
   );
 });
@@ -384,7 +436,8 @@ function WindowPage({
     <div className="grid size-full place-items-center">
       <PanePlaceholder tab={tab}>
         <span className="max-w-60 truncate text-[12px] font-medium text-gray-1000">{tab.title || displayHost(tab.url)}</span>
-        {waking || tab.lifecycle === "suspended" ? <span className="text-[11px] text-gray-700">{waking ? "Waking…" : "Asleep — click to wake"}</span> : null}
+        {/* A window's tab is never left asleep: main wakes every tab with a window out (BrowserController.setDesk). */}
+        {waking || tab.lifecycle === "suspended" ? <span className="text-[11px] text-gray-700">Waking…</span> : null}
       </PanePlaceholder>
     </div>
   );
@@ -398,47 +451,6 @@ function ShellPageView({ tab, kind, active }: { tab: BrowserTabInfo; kind: Shell
     <Suspense fallback={null}>
       <NotesPage tabId={tab.id} noteId={notesUrlId(tab.url.trim()) ?? null} active={active} />
     </Suspense>
-  );
-}
-
-/**
- * A page the shell draws (pageKind), small, where a web page shows its
- * picture: a dock icon's preview, a window in another group's sketch. Main
- * has no picture of these — no view of theirs is ever drawn — so it is the
- * page itself, laid out at `page` (its box on the desk: DeskEngine.pageSize)
- * and scaled to cover the box it is put in from its top-left corner, as a
- * picture there is (object-fit: cover). Inert, and a preview of itself
- * (PagePreview): it takes no pointer or keyboard, and starts or writes
- * nothing that opening the page would.
- */
-export function ShellPageMiniature({ tab, page }: { tab: BrowserTabInfo; page: { w: number; h: number } }) {
-  const kind = pageKind(tab.url);
-  const ref = useRef<HTMLDivElement>(null);
-  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el === null) return;
-    const read = (): void => {
-      const w = el.clientWidth;
-      const h = el.clientHeight;
-      setBox((before) => (before !== null && before.w === w && before.h === h ? before : { w, h }));
-    };
-    read();
-    const observer = new ResizeObserver(read);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-  const scale = box === null ? 0 : Math.max(box.w / page.w, box.h / page.h);
-  return (
-    <div ref={ref} className="desk-page-miniature" data-testid="desk-page-miniature" aria-hidden="true" inert>
-      {kind === null || !(scale > 0) ? null : (
-        <div className="desk-page-miniature-page" style={{ width: page.w, height: page.h, transform: `scale(${String(scale)})` }}>
-          <PagePreview.Provider value={true}>
-            <ShellPageView tab={tab} kind={kind} active={false} />
-          </PagePreview.Provider>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -728,13 +740,16 @@ function FrameButton({
   label,
   testId,
   pressed,
+  onPress,
   onClick,
   children,
 }: {
   label: string;
   testId?: string;
   pressed?: boolean;
-  onClick: () => void;
+  /** The pointer went down on it (before the click). */
+  onPress?: () => void;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   children: ReactNode;
 }) {
   return (
@@ -744,14 +759,17 @@ function FrameButton({
       aria-label={label}
       aria-pressed={pressed}
       data-testid={testId}
-      onPointerDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        onPress?.();
+      }}
       // A press leaves the keyboard where it was (the window's page): a
       // focused frame button would light its ring at the next key — Shift,
       // say, held to snap the window it just filled.
       onMouseDown={(event) => event.preventDefault()}
       onClick={(event) => {
         event.stopPropagation();
-        onClick();
+        onClick(event);
       }}
       className="grid size-6 cursor-pointer place-items-center rounded-md text-gray-800 outline-none transition-[background-color,color,transform] duration-150 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94] aria-pressed:bg-alpha-300 aria-pressed:text-gray-1000 motion-reduce:transition-none [&_svg]:size-3.5"
     >

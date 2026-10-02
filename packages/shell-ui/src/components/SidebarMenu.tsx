@@ -4,6 +4,8 @@ import type { SpaceInfo } from "@pistachio/shell-contracts/ipc";
 import { ActionMenuItem } from "../chrome/actions";
 import { useShell } from "../chrome/shell-host";
 import { cn } from "../lib/cn";
+import { useDeskStore } from "../lib/desk/store";
+import { useSidebarRail } from "./sidebar-rail";
 import { useAppStore } from "../store";
 import type { PlaneRow } from "../lib/chrome-status";
 import { RenderingStatus, useBrowserStatus } from "./StatusControl";
@@ -26,6 +28,7 @@ export function SidebarMenu() {
   const email = useAppStore((state) => state.account.email);
   const menu = useMenuButton({ dismissed: useCompactSidebarHidden() });
   useFooterMenuOpen(menu.open);
+  const shown = useMenuOverPages(menu.open);
   const { run } = useShell();
   const active = spaces.find((space) => space.id === activeSpaceId) ?? null;
   const parent = active?.parentSpaceId == null ? null : (spaces.find((space) => space.id === active.parentSpaceId) ?? null);
@@ -55,7 +58,7 @@ export function SidebarMenu() {
         )}
       </button>
       {menu.open ? (
-        <MenuPanel menu={menu} label="Sidebar menu" align="start" testId="sidebar-menu">
+        <MenuPanel menu={menu} label="Sidebar menu" align="start" testId="sidebar-menu" shown={shown}>
           {active === null ? null : (
             <>
               <div data-testid="sidebar-menu-profile" className="flex items-center gap-2 px-2 py-1.5">
@@ -152,9 +155,31 @@ export function useFooterMenuOpen(open: boolean): void {
   }, [open, setFooterMenuOpen]);
 }
 
-/** The compact column has left the layout: a menu opened from it goes with it. */
+/**
+ * A footer menu on a desk's rail hangs out past the rail, over the desk,
+ * whose live pages are native views painted over the shell: while it is
+ * open they give way to their pictures, as for a context menu (the shell's
+ * "context-menu" overlay), and the panel shows once they have. True while
+ * the panel may show — always, off the rail, where it fits the column.
+ */
+export function useMenuOverPages(open: boolean): boolean {
+  const rail = useSidebarRail();
+  const raise = open && rail;
+  const setContextMenuOpen = useAppStore((state) => state.setContextMenuOpen);
+  const ready = useAppStore((state) => state.overlayReady);
+  useEffect(() => {
+    if (!raise) return;
+    setContextMenuOpen(true);
+    return () => setContextMenuOpen(false);
+  }, [raise, setContextMenuOpen]);
+  return !raise || ready;
+}
+
+/** The compact column has left the layout: a menu opened from it goes with it. (On a desk it is the desk's dock, and stays.) */
 export function useCompactSidebarHidden(): boolean {
-  return useAppStore(
+  const onDesk = useDeskStore((state) => state.groupId !== null || state.opening !== null);
+  const hidden = useAppStore(
     (state) => state.settings.layout.mode === "sidebar" && state.settings.layout.sidebar === "compact" && !state.sidebarRevealed,
   );
+  return hidden && !onDesk;
 }

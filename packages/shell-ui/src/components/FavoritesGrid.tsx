@@ -216,7 +216,7 @@ export function FavoritesGrid() {
         )}
       >
         {tiles.length === 0 ? (
-          <span className="col-span-3 grid h-10 place-items-center text-[11px] text-gray-700">
+          <span className="favorites-empty col-span-3 grid h-10 place-items-center text-[11px] text-gray-700">
             <span className="flex items-center gap-1">
               <Star className="size-3" aria-hidden="true" /> Drop to add a
               favorite
@@ -264,7 +264,7 @@ export function FavoritesGrid() {
                     menu.open(e, tileMenu(tile));
                   }}
                   className={cn(
-                    "relative grid h-10 touch-none place-items-center rounded-md border-[1.5px] outline-none transition-[background-color,box-shadow]",
+                    "favorite-tile relative grid h-10 touch-none place-items-center rounded-md border-[1.5px] outline-none transition-[background-color,box-shadow]",
                     grabbedId === tile.id
                       ? "z-30 cursor-grabbing"
                       : "cursor-pointer",

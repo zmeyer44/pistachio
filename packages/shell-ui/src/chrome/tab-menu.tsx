@@ -18,8 +18,9 @@ export { moveToFolderEntries } from "./tab-menu-entries";
  * moving to a folder, duplicating, splitting and closing can never be
  * available in one layout and missing from the other. The sidebar keeps
  * its own multi-selection and pin/folder menus, which have no strip
- * equivalent; a single tab's menu is this. A desk's dock opens it too, for
- * a tab's icon (components/desk/DeskDock.tsx: TabMenuOptions.desk).
+ * equivalent; a single tab's menu is this — on a desk, with the desk's own
+ * entries first (components/desk/DeskSidebarControls.tsx: deskTabEntries)
+ * and TabMenuOptions.desk.
  */
 
 /** The active Space's folders, off the shelf snapshot. */
@@ -79,11 +80,10 @@ export interface TabMenuOptions {
   /** A group made from the tab: the chrome names it, or starts its rename (useNewGroupNaming). */
   onNewGroup?: (groupId: string) => void;
   /**
-   * Opened from a desk's dock, which shows the group's tabs as windows: a
-   * split view means nothing there (its entry goes), a tab whose window is
-   * out is on screen and cannot be suspended, and a tab added to another
-   * group goes the way the dock sends it (its window flying into that
-   * group's icon).
+   * Opened while a desk is up, the sidebar being its dock: a split view
+   * means nothing there (its entry goes), a tab whose window is out is on
+   * screen and cannot be suspended, and a tab added to another group goes
+   * the way the desk sends it (its window flying into that group's row).
    */
   desk?: {
     onDesk(tabId: string): boolean;

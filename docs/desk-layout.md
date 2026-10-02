@@ -6,13 +6,13 @@ The smart layout puts a small decision model behind those moments. That model is
 
 ## 1. What a person sees
 
-**A window comes out** from the dock, the sidebar, ⌘T, or a link a page opened beside itself. It comes out where the rules put it, at once. A moment later, while it is still landing, the desk may move it:
+**A window comes out** from the sidebar (a row clicked or pulled out), ⌘T, or a link a page opened beside itself. It comes out where the rules put it, at once. A moment later, while it is still landing, the desk may move it:
 
 - **Beside the window it goes with.** The vendor record opened while the inbox was in use splits the invoice's place instead of the inbox's, and the inbox gets its own place back.
 - **Tiled with the others.** A third headphone page joins two being compared.
 - **Left where it came out.** A quick weather search stays put, and so does a hotel page that already came out beside the trip plan it belongs to.
 
-**A window leaves**, closed (⌘W, ⇧⌫ on its icon, the Close pad) or collapsed into the dock (−, the Collapse pad, a fling at the edge). The desk may then:
+**A window leaves**, closed (⌘W, ⇧⌫ on its row, the Close pad) or collapsed into the sidebar (−, the Collapse pad, a fling at the edge). The desk may then:
 
 - **Close the gap up**, as the other side of a split view takes the whole screen when one side is closed. The windows that border the gap exactly grow into it, the gutter kept. Three closes in a row are one question, asked 180 ms after the last.
 - **Re-tile**, when the windows left are peers: one of four listings closed leaves three that share the desk evenly.
@@ -96,7 +96,7 @@ The live check, `PISTACHIO_LAYOUT_LIVE=1 pnpm vitest run test/desk-layout.live.t
 - `packages/shell-contracts/src/desk-layout.ts`: the re-export. `ipc.ts`: `judgeDeskLayout`. `shortcuts.ts`: `arrangeDesk`, ⌘⌥L (mirrored in `packages/sync-protocol/src/records.ts`).
 - `apps/desktop/src/main/desk-layout.ts`: `DeskLayoutJudge` (one live question per window), and `scriptedLayoutModel` (`PISTACHIO_E2E=1` + `PISTACHIO_LAYOUT_SCRIPT`, keyed `opened`/`closed`/`asked`, windows named by part of a title). Wired in `index.ts`, with the preload beside it. Test: `apps/desktop/test/desk-layout.test.ts`.
 - `packages/shell-ui/src/lib/desk/smart-layout.ts`: the geometry. `components/desk/smart-arrange.ts`: the runner.
-- Engine (`desk-engine.ts`): `onLayoutMoment`, `layoutView`, and `applyLayout`. `placeNewWindow` now says how it placed a window (`Placement.kind`). `lib/desk/store.ts`: the Feel's `layout` axis. `DeskDock.tsx`: *Arrange for me* on the More card. `lib/desk/open.ts`: `arrangeDesk("smart")`.
+- Engine (`desk-engine.ts`): `onLayoutMoment`, `layoutView`, and `applyLayout`. `placeNewWindow` now says how it placed a window (`Placement.kind`). `lib/desk/store.ts`: the Feel's `layout` axis. `DeskMoreCard.tsx`: *Arrange for me* on the More card. `lib/desk/open.ts`: `arrangeDesk("smart")`.
 - Tests:
   - `packages/shell-ui/test/desk-smart-layout.test.ts`: geometry and the arranger over a fake engine.
   - `apps/desktop/e2e/tests/desk-layout.spec.ts`: a window out paired and then undone, a gap closed up, ⌘⌥L giving the main place, and By hand moving nothing. Screenshots are in `e2e/screenshots/desk-layout/`.

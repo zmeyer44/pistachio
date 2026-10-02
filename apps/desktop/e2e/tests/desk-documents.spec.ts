@@ -37,6 +37,19 @@ function api<T>(shell: Page, call: (pistachio: PistachioApi) => Promise<T>): Pro
 
 const snapshot = (shell: Page): Promise<ShellSnapshot> => api(shell, (pistachio) => pistachio.getSnapshot());
 
+/** The Bar grown from its idle pill, as the pointer coming to it grows it, so its field and buttons can be used. */
+async function reachBar(shell: Page): Promise<void> {
+  const bar = shell.getByTestId("desk-bar");
+  if ((await bar.getAttribute("data-compact")) !== null) await shell.getByTestId("desk-bar-pill").hover();
+  await expect(bar).not.toHaveAttribute("data-compact", "");
+}
+
+/** One of a window's less-used controls, on its frame's menu (⋯): mask, minimize, a document's own. */
+async function fromFrameMenu(shell: Page, win: string, testId: string): Promise<void> {
+  await shell.locator(`${win} [data-testid="desk-window-more"]`).click();
+  await shell.locator(`[data-testid="context-menu"] [data-testid="${testId}"]`).click();
+}
+
 interface Box {
   x: number;
   y: number;
@@ -96,7 +109,7 @@ async function capture(app: ElectronApplication, shell: Page, filename: string):
   await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
 }
 
-/** Move the window out from under the real cursor, whose hover would otherwise reach the dock (desk.spec.ts). */
+/** Move the window out from under the real cursor, whose hover would otherwise reach the sidebar (desk.spec.ts). */
 async function clearOfCursor(app: ElectronApplication): Promise<void> {
   await app.evaluate(({ BrowserWindow, screen }) => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -334,7 +347,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     const group = shell.getByTestId("tab-group");
     await group.getByTestId("tab-group-header").hover();
     await group.getByTestId("tab-group-desk").click();
-    await expect(shell.getByTestId("desk-dock-icon")).toHaveCount(2);
+    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
     await settled(shell);
     const stage = await box(shell, ".desk-stage");
     await shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.4);
@@ -406,7 +419,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await capture(app, shell, "02-text-edited.png");
 
     // ── 5. Collapsed, it goes into the Stack; from the Stack it comes back, as it was left ─
-    await shell.locator(`${planWindow} button[aria-label="Collapse"]`).click();
+    await shell.locator(`${planWindow} [data-testid="desk-collapse"]`).click();
     await settled(shell);
     await expect(docs).toHaveCount(0);
     await shell.getByTestId("desk-stack").click();
@@ -421,7 +434,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
 
     // ── 5b. Minimized, it parks at the desk's foot, its viewer zoomed out (the shell's own scale) and the same viewer still ─
     const planViewer = await shell.locator(`${planWindow} [data-testid="desk-text-viewer"]`).elementHandle();
-    await shell.locator(planWindow).getByTestId("desk-minimize").click();
+    await fromFrameMenu(shell, planWindow, "desk-minimize");
     await settled(shell);
     await expect(shell.locator(planWindow)).toHaveAttribute("data-mini", "parked");
     expect(await shell.locator(`${planWindow} .desk-window-zoom`).evaluate((el) => getComputedStyle(el).transform)).toBe("matrix(0.5, 0, 0, 0.5, 0, 0)");
@@ -557,6 +570,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
 
     // ── 12. @ in the Bar offers the context's files; the mention rides with the message; the agent arranges the document ─
     const input = shell.getByTestId("desk-bar-input");
+    await reachBar(shell);
     await input.click();
     await input.pressSequentially("What's left to pack in @no");
     await expect(shell.locator('[data-testid="desk-mentions"][data-shown]')).toHaveCount(1);

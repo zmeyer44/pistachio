@@ -53,8 +53,11 @@ import { pinnedRows } from "../lib/sidebar-tree";
 import { updateTabSelection } from "../lib/tab-selection";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
-import { deskAvailable, toggleDesk } from "../lib/desk/open";
+import { useDeskChrome } from "../lib/desk/chrome";
+import { deskAvailable, deskEngine, toggleDesk } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
+import { DeskContextRow, DeskRowMark, deskTabEntries, hoverDeskRow } from "./desk/DeskSidebarControls";
+import { useSidebarRail } from "./sidebar-rail";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { Favicon, TabMark } from "./Favicon";
 import { TabGroupRow } from "./TabGroupRow";
@@ -203,6 +206,9 @@ function TabRow({
       }}
       onPointerDown={onPointerDown}
       onContextMenu={onContextMenu}
+      // A desk up, ⇧⌫ closes the tab whose row is under the pointer (DeskSidebarControls' hoverDeskRow).
+      onPointerEnter={() => hoverDeskRow(tab.id, true)}
+      onPointerLeave={() => hoverDeskRow(tab.id, false)}
       onAuxClick={(e) => {
         if (e.button === 1) void closeTab(tab.id);
       }}
@@ -226,6 +232,7 @@ function TabRow({
         <TabTitle tab={tab} />
       </span>
       <TabTrailing tab={tab} />
+      <DeskRowMark tabId={tab.id} />
     </div>
   );
 }
@@ -886,7 +893,13 @@ export function TabList() {
   const grabbedId = drag !== null && !drag.settling ? drag.item.entityId : null;
   const menu = useContextMenu();
   const menuOpen = menu.isOpen;
-  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renaming, setRenamingRow] = useState<string | null>(null);
+  const rail = useSidebarRail();
+  // A rail has no room for a name: the whole sidebar comes back to edit one in (⌘S takes it back).
+  const setRenaming = (id: string | null): void => {
+    if (id !== null && rail) useDeskStore.getState().setRail(false);
+    setRenamingRow(id);
+  };
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<SectionId>>(
@@ -1307,6 +1320,15 @@ export function TabList() {
   };
   const activate = (tabId: string, event: TabSelectionEvent): void => {
     selectForBulk(tabSelectionKey(tabId), event, () => {
+      // A desk up, a row of its group is its window's, as the Dock's icon was:
+      // the window comes out (or back out — its tab may still be the one in
+      // use, the window put away), grows back from minimized, or comes to the
+      // top in use. Out and in use already, the press is the address's, below.
+      const engine = deskEngine();
+      if (engine !== null && engine.hasGroupTab(tabId) && !engine.inUse(tabId)) {
+        engine.add(tabId, { focus: true });
+        return;
+      }
       // Pressing the tab you are already on is an address press, not a
       // re-selection that would do nothing: the sidebar's row stands in for
       // the omnibox the way the top layout's active tab does (ActiveTabLabel).
@@ -1526,7 +1548,23 @@ export function TabList() {
   // the strip's tabs offer exactly these entries too.
   // A group made here is named by the host from its tabs; the name field opens only when it is not.
   const trackNewGroup = useNewGroupNaming(setRenaming);
-  const tabMenu = useTabMenu({ onNewGroup: trackNewGroup });
+  const deskUp = useDeskStore((s) => s.groupId !== null);
+  // A desk up, the sidebar is its dock: a tab whose window is out cannot be suspended, a split means
+  // nothing there, and one of the desk's tabs sent to another group goes the way the desk sends it
+  // (its window flying into that group's row).
+  const tabMenu = useTabMenu({
+    onNewGroup: trackNewGroup,
+    desk: deskUp
+      ? {
+          onDesk: (tabId) => useDeskChrome.getState().marks.has(tabId),
+          moveToGroup: (tabId, groupId) => {
+            const engine = deskEngine();
+            if (engine !== null && engine.hasGroupTab(tabId)) engine.moveTabToGroup(tabId, groupId);
+            else void tabGroupCommand({ type: "addTab", groupId, tabId });
+          },
+        }
+      : undefined,
+  });
 
   /** "Group selected tabs": the day tabs of a selection become one group. */
   const groupTabs = (tabIds: string[]): void => {
@@ -1763,7 +1801,8 @@ export function TabList() {
     if (first === undefined) return null;
     const openMenu = (tab: ChromeTab, e: React.MouseEvent): void => {
       setMenuGroupId(groupId);
-      openTabContextMenu(tabSelectionKey(tab.id), e, () => tabMenu(tab));
+      // The desk's tab: what the desk does with its window first.
+      openTabContextMenu(tabSelectionKey(tab.id), e, () => [...deskTabEntries(tab.id), ...tabMenu(tab)]);
     };
     return item.tabs.length === 1 ? (
       <TabRow
@@ -1972,7 +2011,10 @@ export function TabList() {
                     dragging={grabbedId === unit.id}
                     onHover={(inside) => onGroupHover(unit.group.id, inside)}
                     onToggleOpen={() => {
-                      if (!justDragged()) toggleGroup(unit);
+                      if (justDragged()) return;
+                      // On the rail the groups are the desk's dock's: another group's passes the desk to it, as the Dock's did.
+                      if (rail && deskGroupId !== null && deskGroupId !== unit.group.id) toggleDesk(unit.group.id);
+                      else toggleGroup(unit);
                     }}
                     onRename={(title) => (renaming === unit.group.id ? finishGroupRename(unit.group.id, title) : setRenaming(unit.group.id))}
                     onOpenAsSplit={() => void tabGroupCommand({ type: "openAsSplit", groupId: unit.group.id })}
@@ -1987,6 +2029,8 @@ export function TabList() {
                     }}
                   >
                     {unit.rows.map((row) => renderRow(row, unit.group.id))}
+                    {/* The desk's group: its context — the Stack — under its tabs (docs/desk-agent.md §1). */}
+                    {deskGroupId === unit.group.id ? <DeskContextRow group={unit.group} /> : null}
                   </TabGroupRow>
                 ),
               )}
