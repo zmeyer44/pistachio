@@ -54,8 +54,8 @@ import { updateTabSelection } from "../lib/tab-selection";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useDeskChrome } from "../lib/desk/chrome";
-import { deskAvailable, deskEngine, toggleDesk } from "../lib/desk/open";
-import { useDeskStore } from "../lib/desk/store";
+import { deskAvailable, deskEngine, showOnDesk, toggleDesk } from "../lib/desk/open";
+import { tabDeskOf, useDeskStore } from "../lib/desk/store";
 import { DeskContextRow, DeskRowMark, deskTabEntries, hoverDeskRow } from "./desk/DeskSidebarControls";
 import { useSidebarRail } from "./sidebar-rail";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
@@ -764,6 +764,9 @@ function SectionHeader({
   );
 }
 
+/** A section's slide (its duration-100), and a breath more. */
+const SECTION_SLIDE_MS = 120;
+
 /**
  * The divider between the kept pages and the day's: the "New tab" row and —
  * revealed when the pointer reaches it — a second button that starts a new
@@ -773,7 +776,9 @@ function SectionHeader({
 /**
  * A section's rows, sliding open and closed under their header. The rows stay
  * mounted — the grid-rows 0fr/1fr trick animates to whatever height they
- * take — and are inert while folded so nothing in them can take focus.
+ * take — and are inert while folded so nothing in them can take focus. The
+ * section clips them only while it slides: open and still, what stands past a
+ * row's edge (a group's count on the rail, over its tile's corner) shows whole.
  */
 function SectionBody({
   open,
@@ -785,6 +790,15 @@ function SectionBody({
   unclipped?: boolean;
   children: React.ReactNode;
 }) {
+  const [settled, setSettled] = useState(open);
+  useEffect(() => {
+    if (!open) {
+      setSettled(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSettled(true), SECTION_SLIDE_MS);
+    return () => window.clearTimeout(timer);
+  }, [open]);
   return (
     <div
       className={cn(
@@ -794,9 +808,9 @@ function SectionBody({
     >
       {/* min-w-0: an unclipped grid item's automatic minimum width is its
           min-content width — the longest title untruncated — which would widen
-          every row past the column for the length of a drag. */}
+          every row past the column. */}
       <div
-        className={cn("min-h-0 min-w-0", open && unclipped ? "overflow-visible" : "overflow-hidden")}
+        className={cn("min-h-0 min-w-0", open && (unclipped || settled) ? "overflow-visible" : "overflow-hidden")}
         aria-hidden={!open}
         inert={!open}
       >
@@ -1342,9 +1356,12 @@ export function TabList() {
     });
   };
   const openPin = (pin: SidebarPin, event: TabSelectionEvent): void => {
-    selectForBulk(pinSelectionKey(pin.id), event, () =>
-      void sidebarCommand({ type: "open", anchorId: pin.id }),
-    );
+    selectForBulk(pinSelectionKey(pin.id), event, () => {
+      // On its own desk, its window is shown there: its tab may still be the one in use, the window put away.
+      const live = liveByAnchor.get(pin.id);
+      if (live !== undefined && showOnDesk(live.id)) return;
+      void sidebarCommand({ type: "open", anchorId: pin.id });
+    });
   };
   const newFolder = (index?: number): void => {
     const id = crypto.randomUUID();
@@ -1559,7 +1576,10 @@ export function TabList() {
           onDesk: (tabId) => useDeskChrome.getState().marks.has(tabId),
           moveToGroup: (tabId, groupId) => {
             const engine = deskEngine();
-            if (engine !== null && engine.hasGroupTab(tabId)) engine.moveTabToGroup(tabId, groupId);
+            // (A loose tab's desk, or a page's own, goes with its tab: its window stays, and the desk is the group's.)
+            const deskId = useDeskStore.getState().groupId;
+            const follows = tabDeskOf(deskId) !== null || useAppStore.getState().snapshot?.looseGroups?.some((group) => group.id === deskId) === true;
+            if (engine !== null && engine.hasGroupTab(tabId) && !follows) engine.moveTabToGroup(tabId, groupId);
             else void tabGroupCommand({ type: "addTab", groupId, tabId });
           },
         }
@@ -1579,6 +1599,8 @@ export function TabList() {
   };
   const { menu: groupMenu, close: closeGroup } = useTabGroupMenu({ onRename: setRenaming });
   const deskGroupId = useDeskStore((s) => s.groupId);
+  // The desk is a loose tab's (TabGroupInfo.loose): its tab is drawn alone, and the Stack goes under its row.
+  const deskLoose = useAppStore((s) => s.snapshot?.looseGroups?.find((group) => group.id === deskGroupId) ?? null);
 
   const pinMenu = (pin: SidebarPin): MenuEntry[] => {
     const live = liveByAnchor.get(pin.id) ?? null;
@@ -1995,7 +2017,11 @@ export function TabList() {
             >
               {units.map((unit) =>
                 unit.kind === "row" ? (
-                  renderRow(unit.row, null)
+                  <Fragment key={unit.id}>
+                    {renderRow(unit.row, null)}
+                    {/* A loose tab's desk: its context — the Stack — under its row, as a group's is under its tabs. */}
+                    {deskLoose !== null && unit.row.tabs[0]?.id === deskLoose.tabIds[0] ? <DeskContextRow group={deskLoose} /> : null}
+                  </Fragment>
                 ) : (
                   <TabGroupRow
                     key={unit.id}

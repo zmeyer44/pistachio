@@ -8,12 +8,15 @@ import {
 import { useShelfDrag, type ShelfItem } from "../chrome/shelf-drag";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { cn } from "../lib/cn";
+import { showOnDesk } from "../lib/desk/open";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { useBrandColors } from "../lib/brand-colors";
 import { BrandWash, brandBorderStyle } from "./BrandTile";
 import { Favicon, TabMark } from "./Favicon";
+import { RailFavorites } from "./RailFavorites";
+import { useSidebarRail } from "./sidebar-rail";
 
 /**
  * The favorites grid under the address row — the `favorites` feature
@@ -69,6 +72,8 @@ export function FavoritesGrid() {
   const glance = useAppStore((s) => s.glance);
   const { drag, beginPress, justDragged, gridRef } = useShelfDrag();
   const menu = useContextMenu();
+  // On the desk's rail the favorites are one folder, its sheet holding this grid (RailFavorites).
+  const rail = useSidebarRail();
 
   const liveByAnchor = useMemo(() => {
     const map = new Map<string, ChromeTab>();
@@ -196,6 +201,172 @@ export function FavoritesGrid() {
     ];
   };
 
+  // A drag the grid could take: the grid says so, and where it is aimed, says it will.
+  const receiving = cn(
+    canReceive && "min-h-10 ring-1 ring-alpha-400",
+    canReceive && drag?.drop?.zone !== "favorites" && "bg-alpha-100",
+    canReceive && drag?.drop?.zone === "favorites" && "bg-green-100 ring-green-400",
+  );
+  const tileNodes = tiles.map((tile) => {
+    const live = liveFor(tile);
+    const active = live?.active === true;
+    const glanced =
+      !tile.managed && glance !== null && live?.id === glance.ownerTabId
+        ? glance.tab
+        : null;
+    const label = tile.title || prettyUrl(tile.url);
+    return (
+      <FavoriteTile
+        key={tile.id}
+        url={tile.url}
+        faviconUrl={live?.faviconUrl ?? tile.faviconUrl}
+      >
+        {(colors) => (
+          <button
+            type="button"
+            role="listitem"
+            data-flip-id={tile.id}
+            // A control that is also a drag handle: the press starts a drag,
+            // and the click that would open it is swallowed once it did.
+            data-drag-handle="true"
+            data-managed={tile.managed ? "" : undefined}
+            data-testid={tile.managed ? "preset-tile" : "favorite-tile"}
+            data-live={live === null ? undefined : ""}
+            // Its page's window on a desk goes home here (DeskSurface's sidebarHome).
+            data-live-tab-id={live?.id}
+            aria-label={label}
+            aria-pressed={active}
+            title={`${label}\n${prettyUrl(tile.url)}${tile.managed ? "\nProvided by your organization" : ""}`}
+            onClick={() => {
+              if (justDragged()) return;
+              // On its own desk, its window is shown there: its tab may still be the one in use, the window put away.
+              if (live !== null && showOnDesk(live.id)) return;
+              void sidebarCommand({ type: "open", anchorId: tile.id });
+            }}
+            onAuxClick={(e) => {
+              if (e.button === 1 && live !== null) void closeTab(live.id);
+            }}
+            onPointerDown={(e) => beginPress(itemFor(tile), e)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              menu.open(e, tileMenu(tile));
+            }}
+            className={cn(
+              "favorite-tile relative grid h-10 touch-none place-items-center rounded-md border-[1.5px] outline-none transition-[background-color,box-shadow]",
+              grabbedId === tile.id
+                ? "z-30 cursor-grabbing"
+                : "cursor-pointer",
+              active
+                ? "shadow-[0_4px_12px_-6px_rgb(0_0_0/0.25)]"
+                : "border-transparent bg-alpha-100 hover:bg-alpha-200",
+              tile.ghost && "opacity-80",
+            )}
+            style={active ? brandBorderStyle(colors) : undefined}
+          >
+            {active ? <BrandWash colors={colors} /> : null}
+            {live === null ? (
+              <Favicon
+                src={tile.faviconUrl}
+                seed={prettyUrl(tile.url)}
+                className="size-[18px] rounded-[5px] text-[10px]"
+              />
+            ) : (
+              <span className="[&>*]:size-[18px] [&>*]:rounded-[5px]">
+                <TabMark tab={live} fallbackFaviconUrl={tile.faviconUrl} />
+              </span>
+            )}
+            {tile.managed ? (
+              <span
+                aria-hidden="true"
+                className="absolute top-1 right-1 grid size-3 place-items-center rounded-full bg-background-100 text-gray-700 shadow-border"
+              >
+                <Building2 className="size-2" />
+              </span>
+            ) : null}
+            {glanced === null ? null : (
+              <span
+                data-testid="favorite-glance-favicon"
+                aria-label={`Glancing ${glanced.title}`}
+                title={`Glancing ${glanced.title}`}
+                className="absolute -top-1 -right-1 z-10 grid size-[18px] place-items-center rounded-[6px]"
+              >
+                <Favicon
+                  src={glanced.faviconUrl}
+                  seed={prettyUrl(glanced.url) || glanced.title}
+                  className="size-3 rounded-[3px] text-[7px]"
+                />
+              </span>
+            )}
+            {live !== null && !active ? (
+              <span
+                aria-hidden="true"
+                className="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 rounded-full bg-gray-700"
+              />
+            ) : null}
+            {live?.loading === true ? (
+              <span
+                aria-hidden="true"
+                className="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 animate-pulse-dot rounded-full bg-green-700"
+              />
+            ) : null}
+          </button>
+        )}
+      </FavoriteTile>
+    );
+  });
+
+  if (rail) {
+    // Under the folder, the favorites whose pages are open, a row each (as a tab's on the rail): shown on a click,
+    // closed with the middle button, the tile's own menu on a right-click.
+    const open = tiles.flatMap((tile) => {
+      const live = tile.ghost ? null : liveFor(tile);
+      if (live === null) return [];
+      const label = tile.title || prettyUrl(tile.url);
+      return [
+        <button
+          key={tile.id}
+          type="button"
+          role="listitem"
+          data-testid="rail-favorite-open"
+          data-active={live.active ? "" : undefined}
+          data-live-tab-id={live.id}
+          aria-label={`${label}, open`}
+          title={`${label}\n${prettyUrl(tile.url)}`}
+          className="rail-favorite-open no-drag"
+          onClick={() => {
+            if (!showOnDesk(live.id)) void sidebarCommand({ type: "open", anchorId: tile.id });
+          }}
+          onAuxClick={(e) => {
+            if (e.button === 1) void closeTab(live.id);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            menu.open(e, tileMenu(tile));
+          }}
+        >
+          <span aria-hidden="true" className="[&>*]:size-5 [&>*]:rounded-[5px]">
+            <TabMark tab={live} fallbackFaviconUrl={tile.faviconUrl} />
+          </span>
+        </button>,
+      ];
+    });
+    return (
+      <>
+        <RailFavorites
+          open={open}
+          favorites={tiles.map((tile) => ({ id: tile.id, title: tile.title, url: tile.url, faviconUrl: liveFor(tile)?.faviconUrl ?? tile.faviconUrl, ghost: tile.ghost }))}
+          gridRef={gridRef}
+          gridClassName={cn("no-drag grid grid-cols-3 gap-1.5 rounded-md transition-[background-color,box-shadow] duration-150", receiving)}
+          dragging={canReceive}
+          dropping={canReceive && drag?.drop?.zone === "favorites"}
+        >
+          {tileNodes}
+        </RailFavorites>
+        {menu.menu}
+      </>
+    );
+  }
+
   return (
     <div className={cn("shrink-0", overlay ? "relative h-0" : "")}>
       <div
@@ -208,11 +379,7 @@ export function FavoritesGrid() {
           overlay
             ? "absolute inset-x-2 -top-10 z-20 h-10 bg-background-200/95"
             : "relative mx-2 mb-2",
-          canReceive && "min-h-10 ring-1 ring-alpha-400",
-          canReceive && drag?.drop?.zone !== "favorites" && "bg-alpha-100",
-          canReceive &&
-            drag?.drop?.zone === "favorites" &&
-            "bg-green-100 ring-green-400",
+          receiving,
         )}
       >
         {tiles.length === 0 ? (
@@ -223,109 +390,7 @@ export function FavoritesGrid() {
             </span>
           </span>
         ) : null}
-        {tiles.map((tile) => {
-          const live = liveFor(tile);
-          const active = live?.active === true;
-          const glanced =
-            !tile.managed && glance !== null && live?.id === glance.ownerTabId
-              ? glance.tab
-              : null;
-          const label = tile.title || prettyUrl(tile.url);
-          return (
-            <FavoriteTile
-              key={tile.id}
-              url={tile.url}
-              faviconUrl={live?.faviconUrl ?? tile.faviconUrl}
-            >
-              {(colors) => (
-                <button
-                  type="button"
-                  role="listitem"
-                  data-flip-id={tile.id}
-                  // A control that is also a drag handle: the press starts a drag,
-                  // and the click that would open it is swallowed once it did.
-                  data-drag-handle="true"
-                  data-managed={tile.managed ? "" : undefined}
-                  data-testid={tile.managed ? "preset-tile" : "favorite-tile"}
-                  data-live={live === null ? undefined : ""}
-                  aria-label={label}
-                  aria-pressed={active}
-                  title={`${label}\n${prettyUrl(tile.url)}${tile.managed ? "\nProvided by your organization" : ""}`}
-                  onClick={() => {
-                    if (!justDragged())
-                      void sidebarCommand({ type: "open", anchorId: tile.id });
-                  }}
-                  onAuxClick={(e) => {
-                    if (e.button === 1 && live !== null) void closeTab(live.id);
-                  }}
-                  onPointerDown={(e) => beginPress(itemFor(tile), e)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    menu.open(e, tileMenu(tile));
-                  }}
-                  className={cn(
-                    "favorite-tile relative grid h-10 touch-none place-items-center rounded-md border-[1.5px] outline-none transition-[background-color,box-shadow]",
-                    grabbedId === tile.id
-                      ? "z-30 cursor-grabbing"
-                      : "cursor-pointer",
-                    active
-                      ? "shadow-[0_4px_12px_-6px_rgb(0_0_0/0.25)]"
-                      : "border-transparent bg-alpha-100 hover:bg-alpha-200",
-                    tile.ghost && "opacity-80",
-                  )}
-                  style={active ? brandBorderStyle(colors) : undefined}
-                >
-                  {active ? <BrandWash colors={colors} /> : null}
-                  {live === null ? (
-                    <Favicon
-                      src={tile.faviconUrl}
-                      seed={prettyUrl(tile.url)}
-                      className="size-[18px] rounded-[5px] text-[10px]"
-                    />
-                  ) : (
-                    <span className="[&>*]:size-[18px] [&>*]:rounded-[5px]">
-                      <TabMark tab={live} fallbackFaviconUrl={tile.faviconUrl} />
-                    </span>
-                  )}
-                  {tile.managed ? (
-                    <span
-                      aria-hidden="true"
-                      className="absolute top-1 right-1 grid size-3 place-items-center rounded-full bg-background-100 text-gray-700 shadow-border"
-                    >
-                      <Building2 className="size-2" />
-                    </span>
-                  ) : null}
-                  {glanced === null ? null : (
-                    <span
-                      data-testid="favorite-glance-favicon"
-                      aria-label={`Glancing ${glanced.title}`}
-                      title={`Glancing ${glanced.title}`}
-                      className="absolute -top-1 -right-1 z-10 grid size-[18px] place-items-center rounded-[6px]"
-                    >
-                      <Favicon
-                        src={glanced.faviconUrl}
-                        seed={prettyUrl(glanced.url) || glanced.title}
-                        className="size-3 rounded-[3px] text-[7px]"
-                      />
-                    </span>
-                  )}
-                  {live !== null && !active ? (
-                    <span
-                      aria-hidden="true"
-                      className="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 rounded-full bg-gray-700"
-                    />
-                  ) : null}
-                  {live?.loading === true ? (
-                    <span
-                      aria-hidden="true"
-                      className="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 animate-pulse-dot rounded-full bg-green-700"
-                    />
-                  ) : null}
-                </button>
-              )}
-            </FavoriteTile>
-          );
-        })}
+        {tileNodes}
       </div>
       {menu.menu}
     </div>

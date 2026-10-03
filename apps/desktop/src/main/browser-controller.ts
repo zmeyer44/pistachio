@@ -948,6 +948,15 @@ export class BrowserController {
   readonly #deskMasks = new Map<string, DeskMaskState>();
   /** The desk's zoomed pages (DeskZoomState), by tab. */
   readonly #deskZooms = new Map<string, DeskZoomState>();
+  /**
+   * Tabs' pages that have a document (a navigation has committed since the
+   * view was made, or since its renderer went): only such a page can be
+   * given an emulated viewport. A view just made for a waking tab has none
+   * until its first load commits, and enableDeviceEmulation on it then
+   * crashes the main process (a desk reopened after a relaunch, a minimized
+   * window's tab asleep: 0.0.28).
+   */
+  readonly #committedPages = new WeakSet<WebContents>();
   /** The zoomed desk page the pointer is on, as main last told the shell (onDeskHover). */
   #deskHovered: string | null = null;
   /** The latest work on a tab's mask (set up, re-aim, clear): a still of the tab waits for it. */
@@ -1008,6 +1017,8 @@ export class BrowserController {
   readonly #media = new Map<string, BrowserMediaInfo>();
   /** The one live background video currently composed into the sidebar card. */
   #mediaPreview: MediaPreviewPlacement | null = null;
+  /** The tabs whose pages measure their media's loudness for the desk's rail (setMediaMeters). */
+  #mediaMeters = new Set<string>();
   /**
    * The last pane a live tab was laid out in. A page composed into the
    * sidebar keeps this viewport (see #syncMediaPresentation), so the card's
@@ -1386,6 +1397,7 @@ export class BrowserController {
         )
         .map((group) => ({ ...group, tabIds: [...group.tabIds] })),
       tabGroups: this.tabGroups(),
+      looseGroups: this.looseTabGroups(),
       run: scopedRun,
       threads,
       sidebar,
@@ -1809,7 +1821,7 @@ export class BrowserController {
         splitGroups: [...this.#splitGroups.values()]
           .filter((group) => group.tabIds.every((tabId) => ids.has(tabId)))
           .map((group) => ({ ...group, tabIds: [...group.tabIds] })),
-        tabGroups: this.tabGroups(space.id),
+        tabGroups: [...this.tabGroups(space.id), ...this.looseTabGroups(space.id)],
       };
     }
     this.#tabSessionStore.save({ version: TAB_SESSION_VERSION, spaces });
@@ -3114,6 +3126,7 @@ export class BrowserController {
     if (previous?.tabId !== next?.tabId) this.#clearMediaPreview();
     this.#mediaPreview = next;
     this.#applyLayout();
+    if (next !== null && previous?.tabId !== next.tabId) this.#raiseMediaPreview();
   }
 
   /**
@@ -3131,6 +3144,30 @@ export class BrowserController {
     this.#mediaPreview = null;
     if (!this.#window.isDestroyed())
       this.#window.webContents.send(IPC.mediaPreviewHoverChanged, null);
+  }
+
+  /**
+   * The tabs whose loudness the desk's rail shows (docs/desk.md, "Now
+   * playing"): each page measures its media from a capture while it is
+   * listed, and stops when it is not (the tab preload's meter).
+   */
+  setMediaMeters(tabIds: readonly string[]): void {
+    const next = new Set(tabIds.filter((tabId) => this.#tabs.has(tabId)));
+    for (const tabId of this.#mediaMeters) if (!next.has(tabId)) this.#sendMediaMeter(tabId, false);
+    for (const tabId of next) if (!this.#mediaMeters.has(tabId)) this.#sendMediaMeter(tabId, true);
+    this.#mediaMeters = next;
+  }
+
+  #sendMediaMeter(tabId: string, on: boolean): void {
+    const contents = this.#tabs.get(tabId)?.view.webContents;
+    if (contents !== undefined && !contents.isDestroyed()) contents.send(IPC.mediaMeter, on);
+  }
+
+  /** A metered page's loudness, relayed to the shell; any other page's is not wanted. */
+  acceptMediaLevel(senderId: number, level: number | null): void {
+    const tab = this.#tabForWebContents(senderId);
+    if (tab === undefined || !this.#mediaMeters.has(tab.info.id) || this.#window.isDestroyed()) return;
+    this.#window.webContents.send(IPC.mediaLevelChanged, { tabId: tab.info.id, level });
   }
 
   /** Forward hover only from the tab currently presented in the sidebar. */
@@ -3638,7 +3675,8 @@ export class BrowserController {
     order.splice(order.indexOf(beside) + 1, 0, tabId);
     this.#tabOrder.splice(0, this.#tabOrder.length, ...order);
     const group = tabGroupOf([...this.#tabGroups.values()], beside);
-    if (group !== null) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: true });
+    // (A loose tab's group takes it only while its desk is up: elsewhere its tab is drawn alone, and a copy of it is a tab of its own.)
+    if (group !== null && (group.loose !== true || this.#onDesk(beside))) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: true });
   }
 
   async createAgentTab(
@@ -3912,6 +3950,8 @@ export class BrowserController {
     view.webContents.on("did-navigate", (_event, url) => {
       if (info.appIconUrl != null && hostOf(url) !== this.#appIconHosts.get(tab)) info.appIconUrl = null;
     });
+    // (Before anything else hears of it: a desk zoom waiting for the page's document is applied on this navigation.)
+    view.webContents.prependListener("did-navigate", () => this.#committedPages.add(view.webContents));
     view.webContents.on("did-navigate", refresh);
     view.webContents.on("did-navigate-in-page", refresh);
     // A capture ends with its document, and only once the next one has
@@ -3936,7 +3976,11 @@ export class BrowserController {
         void this.#applyForcedFocus(tab).catch(() => undefined);
       }
     });
-    view.webContents.on("did-finish-load", () => this.#sendTabDataPolicy(tab));
+    view.webContents.on("did-finish-load", () => {
+      this.#sendTabDataPolicy(tab);
+      // A new document's preload measures nothing until it is asked again.
+      if (this.#mediaMeters.has(tab.info.id)) this.#sendMediaMeter(tab.info.id, true);
+    });
     // A load that failed has Chromium's error page to show; a wake must not
     // hold the placeholder over it. An ABORTED load is not that: the page
     // itself moved on (a script redirect), and the document it went to will
@@ -3952,6 +3996,7 @@ export class BrowserController {
     // its media is not playing any more. The view stays — Electron reloads it
     // — so this is the same teardown a navigation does, without the tab going.
     view.webContents.on("render-process-gone", () => {
+      this.#committedPages.delete(view.webContents);
       if (this.#tabs.get(info.id) !== tab) return;
       this.#endWake(info.id);
       this.#releaseFullscreen(info.id);
@@ -6513,7 +6558,17 @@ export class BrowserController {
     return home;
   }
 
+  /** A Space's groups as the chrome draws them, and Tidy and the namer see them: not the loose tabs' (looseTabGroups). */
   tabGroups(spaceId = this.activeSpaceId()): TabGroupInfo[] {
+    return this.#spaceTabGroups(spaceId).filter((group) => group.loose !== true);
+  }
+
+  /** A Space's loose tabs' groups (TabGroupInfo.loose): each a desk's for one day tab, drawn as that tab alone. */
+  looseTabGroups(spaceId = this.activeSpaceId()): TabGroupInfo[] {
+    return this.#spaceTabGroups(spaceId).filter((group) => group.loose === true);
+  }
+
+  #spaceTabGroups(spaceId: string): TabGroupInfo[] {
     return [...this.#tabGroups.values()]
       .filter((group) => this.#tabGroupSpaceId(group) === spaceId)
       .map((group) => ({ ...group, tabIds: [...group.tabIds] }));
@@ -6551,7 +6606,7 @@ export class BrowserController {
    * Form a group from day tabs of one Space (the first tab's); they leave any
    * group they were in and gather where the first of them sits.
    */
-  createTabGroup(options: { id?: string; title?: string; color?: TabGroupColor; tabIds: readonly string[]; origin: TabGroupInfo["origin"] }): TabGroupInfo | null {
+  createTabGroup(options: { id?: string; title?: string; color?: TabGroupColor; tabIds: readonly string[]; origin: TabGroupInfo["origin"]; loose?: boolean }): TabGroupInfo | null {
     const id = options.id ?? randomUUID();
     if (this.#tabGroups.has(id)) return null;
     const spaceId = this.#tabInfo(options.tabIds[0] ?? "")?.spaceId;
@@ -6563,15 +6618,18 @@ export class BrowserController {
       })
       .sort((a, b) => (position.get(a) ?? 0) - (position.get(b) ?? 0));
     if (spaceId === undefined || tabIds.length === 0) return null;
+    // A loose tab's group is of its one tab, and grey: it takes no colour from the groups drawn beside it.
+    const loose = options.loose === true && tabIds.length === 1;
     const others = withoutTabs([...this.#tabGroups.values()], new Set(tabIds));
     const group: TabGroupInfo = {
       id,
       title: tabGroupTitle(options.title),
-      color: options.color ?? nextTabGroupColor(others.filter((other) => this.#tabGroupSpaceId(other) === spaceId)),
+      color: options.color ?? (loose ? "gray" : nextTabGroupColor(others.filter((other) => this.#tabGroupSpaceId(other) === spaceId && other.loose !== true))),
       tabIds,
       origin: options.origin,
       open: false,
       createdAt: Date.now(),
+      ...(loose ? { loose: true } : {}),
     };
     this.#setTabGroups([...others, group]);
     return group;
@@ -6610,7 +6668,14 @@ export class BrowserController {
     // The others lose what came from them (and an emptied one dissolves); the
     // target is rebuilt by hand, since it is never emptied by its own tabs.
     const others = withoutTabs([...this.#tabGroups.values()].filter((group) => group.id !== groupId), new Set(added));
-    this.#setTabGroups([...others, { ...target, tabIds: members, origin: options.byPerson ? "manual" : target.origin }]);
+    // A loose tab's group given a second tab is a group like any other: drawn, coloured beside its neighbours, and named from its tabs.
+    const grown = target.loose === true && members.length > 1;
+    const { loose: _loose, ...drawn } = target;
+    const next: TabGroupInfo = grown
+      ? { ...drawn, tabIds: members, origin: "manual", color: nextTabGroupColor(others.filter((other) => this.#tabGroupSpaceId(other) === spaceId && other.loose !== true)) }
+      : { ...target, tabIds: members, origin: options.byPerson ? "manual" : target.origin };
+    this.#setTabGroups([...others, next]);
+    if (grown) this.#nameTabGroup(next);
     return added;
   }
 
@@ -6716,7 +6781,8 @@ export class BrowserController {
     const before = groupAt(at - 1);
     const after = groupAt(at + 1);
     const own = tabGroupOf(groups, tabId);
-    if (own !== null) {
+    // (A loose tab's group is its one tab, wherever it is set down.)
+    if (own !== null && own.loose !== true) {
       if (before?.id === own.id || after?.id === own.id) {
         const position = new Map(order.map((id, index) => [id, index]));
         this.#tabGroups.set(own.id, { ...own, tabIds: [...own.tabIds].sort((a, b) => (position.get(a) ?? 0) - (position.get(b) ?? 0)) });
@@ -6733,8 +6799,9 @@ export class BrowserController {
   async tabGroupCommand(command: Exclude<TabGroupCommand, { type: "close" }>): Promise<void> {
     switch (command.type) {
       case "create": {
-        const group = this.createTabGroup({ id: command.id, title: command.title, color: command.color, tabIds: command.tabIds, origin: "manual" });
-        if (group !== null && command.title === undefined) this.#nameTabGroup(group);
+        const group = this.createTabGroup({ id: command.id, title: command.title, color: command.color, tabIds: command.tabIds, origin: "manual", loose: command.loose });
+        // (A loose tab's group is called by its tab, drawn as it is; it is named once it has a second.)
+        if (group !== null && command.title === undefined && group.loose !== true) this.#nameTabGroup(group);
         break;
       }
       case "rename":
@@ -7255,11 +7322,39 @@ export class BrowserController {
       .map(({ tabId }) => this.#tabs.get(tabId))
       .filter((tab): tab is ManagedTab => tab !== undefined && tab.view.getVisible());
     const order = shown.map((tab) => tab.info.id).join(" ");
-    if (order === this.#stackedOrder) return;
-    this.#stackedOrder = order;
-    if (shown.length < 2) return;
-    for (const tab of shown) this.#window.contentView.addChildView(tab.view);
-    this.#onViewAdded();
+    let moved = false;
+    if (order !== this.#stackedOrder) {
+      this.#stackedOrder = order;
+      if (shown.length >= 2) {
+        for (const tab of shown) this.#window.contentView.addChildView(tab.view);
+        moved = true;
+      }
+    }
+    // The floating player over them all: a page shown since (one alone, or one created above it) is put under it.
+    const preview = this.#mediaPreview === null ? undefined : this.#tabs.get(this.#mediaPreview.tabId);
+    if (preview !== undefined) {
+      const children = this.#window.contentView.children;
+      const at = children.indexOf(preview.view);
+      if (moved || shown.some((tab) => children.indexOf(tab.view) > at)) {
+        this.#raiseMediaPreview(false);
+        moved = true;
+      }
+    }
+    if (moved) this.#onViewAdded();
+  }
+
+  /**
+   * Over a desk, the media preview is the rail's floating player
+   * (docs/desk.md, "Now playing"): it floats over the desk's pages, so it
+   * goes above them — and the chrome views above it, the pip view's controls
+   * among them — whenever they are put back in order.
+   */
+  #raiseMediaPreview(chrome = true): void {
+    const preview = this.#mediaPreview;
+    const tab = preview === null ? undefined : this.#tabs.get(preview.tabId);
+    if (this.#layout.stacked !== true || tab === undefined || this.#window.isDestroyed()) return;
+    this.#window.contentView.addChildView(tab.view);
+    if (chrome) this.#onViewAdded();
   }
 
   // ── The desk (@pistachio/shell-contracts/desk) ──────────────────────────────
@@ -7864,10 +7959,14 @@ export class BrowserController {
     }
   }
 
-  /** Emulate the page's zoomed box, unless that is what is in place (or it is fullscreen). */
+  /**
+   * Emulate the page's zoomed box, unless that is what is in place (or it is
+   * fullscreen) — or the page has no document yet (#committedPages): its
+   * first navigation applies it (DeskZoomState.onNavigate).
+   */
   #applyDeskZoom(tab: ManagedTab, state: DeskZoomState): void {
     const contents = tab.view.webContents;
-    if (state.suspended || contents.isDestroyed() || contents !== state.contents) return;
+    if (state.suspended || contents.isDestroyed() || contents !== state.contents || !this.#committedPages.has(contents)) return;
     const key = deskZoomKey(state);
     if (state.applied === key) return;
     contents.enableDeviceEmulation({

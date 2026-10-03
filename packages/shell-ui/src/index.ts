@@ -8,6 +8,9 @@
 export { App } from "./App";
 export { BookmarkToastApp } from "./BookmarkToastApp";
 export { NoticeApp } from "./NoticeApp";
+export { NotchApp } from "./NotchApp";
+export { ShelfApp } from "./ShelfApp";
+export { PipApp } from "./PipApp";
 export { DragApp } from "./DragApp";
 export { FindApp } from "./FindApp";
 export { ThemeRuntime } from "./theme/ThemeRuntime";

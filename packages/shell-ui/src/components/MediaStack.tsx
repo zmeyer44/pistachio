@@ -41,39 +41,25 @@ import { Favicon } from "./Favicon";
 import { displayHost } from "../lib/url";
 import { useChromeTabs } from "../chrome/tabs";
 import {
+  formatTime,
   orderMediaStack,
+  projectedPosition,
   READ_ALOUD_LINGER_MS,
   readAloudFinished,
 } from "../lib/media-stack";
 import { useMediaPresence } from "./useMediaPresence";
 import { useAppStore } from "../store";
+import { useDeskChrome } from "../lib/desk/chrome";
+import { useNowPlaying } from "../lib/desk/now-playing";
+import { showOnDesk, useDeskWindowKey } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
 import { nativeApi } from "../api";
 import { useSurface } from "../surface";
+import { useSidebarRail } from "./sidebar-rail";
 
 /** How far the card's back / forward buttons move the playhead. */
 const SEEK_STEP_SECONDS = 15;
 
-function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-  const whole = Math.floor(seconds);
-  const hours = Math.floor(whole / 3_600);
-  const minutes = Math.floor((whole % 3_600) / 60);
-  const remainder = whole % 60;
-  return hours > 0
-    ? `${hours}:${minutes.toString().padStart(2, "0")}:${remainder.toString().padStart(2, "0")}`
-    : `${minutes}:${remainder.toString().padStart(2, "0")}`;
-}
-
-function projectedPosition(media: BrowserMediaInfo, now: number): number {
-  const elapsed = media.playing
-    ? (Math.max(0, now - media.updatedAt) / 1_000) * media.playbackRate
-    : 0;
-  return Math.min(
-    media.duration ?? Number.POSITIVE_INFINITY,
-    Math.max(0, media.position + elapsed),
-  );
-}
 
 function MediaButton({
   label,
@@ -400,7 +386,7 @@ function MediaArtwork({
   );
 }
 
-const MediaCard = memo(function MediaCard({
+export const MediaCard = memo(function MediaCard({
   media,
   index,
   showVideo,
@@ -456,7 +442,10 @@ const MediaCard = memo(function MediaCard({
   ]);
 
   const run = (control: MediaControl) => {
-    if (!exiting) void controlMedia(media.tabId, control);
+    if (exiting) return;
+    // On a desk, the tab is shown in its window there (lib/desk/open.ts).
+    if (control.type === "focus" && showOnDesk(media.tabId)) return;
+    void controlMedia(media.tabId, control);
   };
   const commitSeek = () => {
     const position = seekDraftRef.current;
@@ -768,8 +757,21 @@ function stackSlotHeight(
     : STACK_SLOT_H;
 }
 
-/** The cards and toasts the stack draws: media playing somewhere other than the visible tabs. */
-function useBackgroundMedia(): {
+/**
+ * The videos that came along into the background (watched, with their sound
+ * on, as their tab went out of view): one set for the window, so the desk's
+ * rail and its whole sidebar — each drawing the stack its own way, mounted in
+ * turn as ⌘S switches them — keep the same ones.
+ */
+const continuedVideoTabIds = new Set<string>();
+
+/**
+ * The cards and toasts the stack draws: media playing somewhere other than
+ * the visible tabs. On a desk, where several pages are in view at once, a
+ * tab is in view while its window is out on the desk; one the person sent
+ * from its window (lib/desk/now-playing.ts) comes along whatever its sound.
+ */
+export function useBackgroundMedia(): {
   media: BrowserMediaInfo[];
   readAloud: ReadAloudStatus[];
 } {
@@ -781,22 +783,27 @@ function useBackgroundMedia(): {
   const visibleTabIds = useAppStore(
     (state) => state.snapshot?.visibleTabIds ?? EMPTY_TAB_IDS,
   );
-  const continuedVideoTabIds = useRef(new Set<string>());
+  const onDesk = useDeskStore((state) => state.groupId !== null);
+  const deskMarks = useDeskChrome((state) => state.marks);
+  const popped = useNowPlaying((state) => state.popped);
   const visible = new Set(visibleTabIds);
   const known = new Set(allMedia.map((item) => item.tabId));
-  for (const tabId of continuedVideoTabIds.current) {
+  for (const tabId of continuedVideoTabIds) {
     if (!known.has(tabId) || tabId === activeTabId || visible.has(tabId)) {
-      continuedVideoTabIds.current.delete(tabId);
+      continuedVideoTabIds.delete(tabId);
     }
   }
   const background = allMedia.filter((item) => {
     // A call is not a player: its only controls would deafen the person.
     if (item.call) return false;
-    const foreground = item.tabId === activeTabId || visible.has(item.tabId);
+    const sent = onDesk && popped.includes(item.tabId);
+    // (On a desk, main's visible tabs are no guide: with no window out, it counts the tab in use as one.)
+    const foreground = onDesk ? deskMarks.has(item.tabId) || (item.tabId === activeTabId && !sent) : item.tabId === activeTabId || visible.has(item.tabId);
     if (item.presenting || foreground) {
-      if (item.hasVideo) continuedVideoTabIds.current.delete(item.tabId);
+      if (item.hasVideo) continuedVideoTabIds.delete(item.tabId);
       return false;
     }
+    if (sent) return true;
     if (!item.hasVideo) return true;
     // A video comes along only if it was being WATCHED as its tab went to the
     // background: playing, and with its sound on. A feed's muted autoplay
@@ -804,8 +811,8 @@ function useBackgroundMedia(): {
     // the sidebar — and it is the common case on a timeline. Muting from the
     // card afterwards keeps it: the entry is what this decides, not the stay.
     if (item.playing && !item.muted)
-      continuedVideoTabIds.current.add(item.tabId);
-    return continuedVideoTabIds.current.has(item.tabId);
+      continuedVideoTabIds.add(item.tabId);
+    return continuedVideoTabIds.has(item.tabId);
   });
   return { media: orderMediaStack(background), readAloud };
 }
@@ -818,7 +825,9 @@ function useBackgroundMedia(): {
 export function useMediaStackInset(): number {
   const { media, readAloud } = useBackgroundMedia();
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
-  if (media.length === 0 && readAloud.length === 0) return 0;
+  // (A desk's rail draws no stack: its now playing has a slot of its own.)
+  const rail = useSidebarRail();
+  if (rail || (media.length === 0 && readAloud.length === 0)) return 0;
   const toasts =
     readAloud.length * TOAST_H + Math.max(0, readAloud.length - 1) * STACK_GAP;
   const slot = media.length > 0 ? stackSlotHeight(media, sidebarWidth) : 0;
@@ -846,6 +855,9 @@ export function MediaStack() {
   );
   // On a desk the column is the desk's dock: up, whatever the layout says.
   const onDesk = useDeskStore((state) => state.groupId !== null);
+  // A page whose window is still on the desk (flying into its row, sent here) is the desk's until it has gone.
+  const deskWindowKey = useDeskWindowKey();
+  const deskWindows = deskWindowKey === "" ? [] : deskWindowKey.split(" ");
   const sidebarRevealed = useAppStore((state) => state.sidebarRevealed) || onDesk;
   // The footer's menus open upward over this stack. The video is a native
   // view above the page, so a menu can only get in front of it by the view
@@ -1094,7 +1106,8 @@ export function MediaStack() {
                   (pinned || sidebarRevealed) &&
                   !footerMenuOpen &&
                   !sidebarCovered &&
-                  rateTabId === null
+                  rateTabId === null &&
+                  !deskWindows.includes(entry.media.tabId)
                 }
                 closePopovers={
                   footerMenuOpen ||

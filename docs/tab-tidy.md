@@ -35,7 +35,7 @@ made, the browser cleans up; nothing is ever lost.*
 
 | Term | Meaning |
 | --- | --- |
-| **Loose tab** | A human day tab (no anchor) that is in no tab group. |
+| **Loose tab** | A human day tab (no anchor) that is in no tab group — or only in a loose tab's group (`TabGroupInfo.loose`, docs/desk.md: made for its desk, drawn as the tab alone), which Tidy never sees. Archived or grouped by Tidy, the tab leaves it, and the emptied group is gone. |
 | **Tab group** | A titled, coloured run of day tabs drawn as one row that opens on hover. `origin` is `auto` (Tidy made it, Tidy may archive it) or `manual`. |
 | **Archive** | Closed tabs and closed groups, per Space, newest first, kept 30 days (max 500 entries). A shell page over the content, like Watchtower — not a tab. |
 | **Tidy run** | One pass over one Space: archive + group + reset favorites, applied atomically, undoable until the next run. |
@@ -79,16 +79,16 @@ the model is asked (≤ 12 s). With nothing to do: "Tabs are already tidy".
 
 ### 3.3 A group in the sidebar
 
-- **At rest** one row: where a tab has its icon, the group's icons as a small
-  PILE of round bubbles that overlap the way a stack of avatars does — one
-  large, two on the diagonal, three in a loose triangle, four unevenly, and
-  past four, three with a "+N" badge in the group's colour. Hand-placed and
-  a little uneven on purpose (a grid reads as a grid); each bubble is ringed
-  in the surface colour; an icon FILLS its bubble the way a face fills an
-  avatar (clipped round — an icon drawn on transparency shows the bubble's
-  surface behind it), and a page with no icon is a bubble of the group's
-  colour. Then the title in the group's colour on a tint of it, and the tab
-  count at the far end.
+- **At rest** one row: where a tab has its icon, the group's mark — its
+  first four tabs' icons in a 2×2 of small rounded squares, each icon filling
+  its square, left to right and down (a lone tab's fills the mark), in the
+  style of the desk rail's favorites folder (docs/desk.md). A page with no
+  icon is a square of the group's colour. Then the title in the group's
+  colour on a tint of it, and the tab count at the far end. On the desk's
+  rail, where the row is its mark alone, the mark is a tile of the group's
+  colour with the count on its corner, as the favorites folder's is.
+  (Until 2026-10-02 the mark was a pile of overlapping round bubbles, like a
+  stack of avatars.)
 - **Hover** (after 140 ms of intent, so crossing the list does not make it
   ripple) the group opens in place and its tabs appear as ordinary rows,
   indented under a coloured rail. Leaving closes it after 240 ms. It also

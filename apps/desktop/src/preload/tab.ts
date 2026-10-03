@@ -703,6 +703,92 @@ ipcRenderer.on(MEDIA_PRESENTATION_CHANNEL, (_event, presentation: unknown) => {
   scheduleMediaReport(true);
 });
 
+// How loud this page's media is, for the desk's rail (docs/desk.md, "Now
+// playing"): measured only while main asks, from a capture of the primary
+// element. A capture leaves the element playing to the speakers as it was
+// (an element source would take its sound over); a protected or
+// cross-origin stream cannot be captured, and its level is unknown (null).
+const MEDIA_METER_CHANNEL = "pistachio:media-meter";
+const MEDIA_LEVEL_REPORT_CHANNEL = "pistachio:media-level-report";
+const METER_INTERVAL_MS = 50;
+
+interface MediaMeter {
+  media: HTMLMediaElement;
+  stream: MediaStream;
+  source: MediaStreamAudioSourceNode;
+  analyser: AnalyserNode;
+  samples: Float32Array<ArrayBuffer>;
+}
+
+let meterContext: AudioContext | null = null;
+let meter: MediaMeter | null = null;
+let meterTimer = 0;
+/** What was last sent; undefined before anything has been. */
+let meterSent: number | null | undefined;
+
+function closeMeter(): void {
+  if (meter === null) return;
+  meter.source.disconnect();
+  for (const track of meter.stream.getTracks()) track.stop();
+  meter = null;
+}
+
+function openMeter(media: HTMLMediaElement): MediaMeter | null {
+  try {
+    const capture = (media as HTMLMediaElement & { captureStream?: () => MediaStream }).captureStream;
+    if (capture === undefined) return null;
+    const stream = capture.call(media);
+    if (stream.getAudioTracks().length === 0) {
+      for (const track of stream.getTracks()) track.stop();
+      return null;
+    }
+    meterContext ??= new AudioContext();
+    if (meterContext.state === "suspended") void meterContext.resume().catch(() => undefined);
+    const source = meterContext.createMediaStreamSource(stream);
+    const analyser = meterContext.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    return { media, stream, source, analyser, samples: new Float32Array(analyser.fftSize) };
+  } catch {
+    return null;
+  }
+}
+
+function sampleMeter(): void {
+  const media = primaryMedia();
+  if (meter !== null && meter.media !== media) closeMeter();
+  const sounding = media !== null && !media.paused && !media.ended && !media.muted && media.volume > 0;
+  if (meter === null && sounding) meter = openMeter(media);
+  let level: number | null = 0;
+  if (sounding) {
+    if (meter === null) level = null;
+    else {
+      meter.analyser.getFloatTimeDomainData(meter.samples);
+      let sum = 0;
+      for (const sample of meter.samples) sum += sample * sample;
+      // Loudness as it is heard, roughly: the root of the RMS lifts the quiet passages.
+      level = Math.min(1, Math.sqrt(Math.sqrt(sum / meter.samples.length)) * 1.6);
+    }
+  }
+  // Rounded, and only when it moves: main relays every one to the rail.
+  const rounded = level === null ? null : Math.round(level * 40) / 40;
+  if (rounded === meterSent) return;
+  meterSent = rounded;
+  ipcRenderer.send(MEDIA_LEVEL_REPORT_CHANNEL, rounded);
+}
+
+ipcRenderer.on(MEDIA_METER_CHANNEL, (_event, on: unknown) => {
+  window.clearInterval(meterTimer);
+  meterTimer = 0;
+  if (on === true) {
+    meterSent = undefined;
+    meterTimer = window.setInterval(sampleMeter, METER_INTERVAL_MS);
+    return;
+  }
+  closeMeter();
+  if (meterContext?.state === "running") void meterContext.suspend().catch(() => undefined);
+});
+
 // The sidebar video is a native WebContentsView above the shell, so its
 // pointer never reaches the React card underneath. Relay only its boundary
 // state; main validates that this sender owns the current media preview.

@@ -12,7 +12,7 @@ import { RUN_SHORTCUT_EVENT } from "@pistachio/shell-contracts/shortcuts";
 import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
-import { askDesk } from "../lib/desk/open";
+import { askDesk, newTabOnDesk } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
 import { useAppStore, type AppState } from "../store";
 import { nextSplitMode } from "./split-mode";
@@ -247,10 +247,11 @@ export function runShellCommand(command: ShellCommand): void {
       break;
     case "newTab": {
       // On a desk, a new tab is a new window there, as its dock's + makes one:
-      // in the desk's group, on the home page, brought out as the window in use.
+      // in the desk's group, on the home page, brought out as the window in use
+      // (on a loose tab's desk, in a new group of the two: lib/desk/open.ts).
       const desk = useDeskStore.getState();
       if (desk.groupId !== null && !desk.leaving) {
-        void s.tabGroupCommand({ type: "newTab", groupId: desk.groupId });
+        void newTabOnDesk();
         break;
       }
       const general = s.settings.general;

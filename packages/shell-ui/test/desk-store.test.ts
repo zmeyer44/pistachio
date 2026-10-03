@@ -6,7 +6,8 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { passedEntry, sanitizeSaved, useDeskStore } from "../src/lib/desk/store";
+import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import { deskGroups, isDayTab, passedEntry, sanitizeSaved, tabDeskId, tabDeskOf, useDeskStore } from "../src/lib/desk/store";
 
 afterEach(() => useDeskStore.setState({ groupId: null, opening: null, leaving: false }));
 
@@ -107,5 +108,36 @@ describe("a saved desk", () => {
       },
     });
     expect(saved["g1"]!.windows).toEqual([{ tabId: "a", rect, mask }, { tabId: "b", rect }, { tabId: "c", rect }]);
+  });
+});
+
+describe("the desks a tab can be on", () => {
+  const snapshot = {
+    activeSpaceId: "s1",
+    tabs: [],
+    tabGroups: [{ id: "g1", tabIds: ["grouped"] }],
+    looseGroups: [{ id: "g2", tabIds: ["loose"], loose: true }],
+  } as unknown as ShellSnapshot;
+  const tab = (fields: Partial<BrowserTabInfo>): BrowserTabInfo => ({ kind: "human", unlisted: false, anchorId: null, ...fields }) as BrowserTabInfo;
+
+  it("are the groups drawn and the loose tabs' alike", () => {
+    expect(deskGroups(snapshot).map((group) => group.id)).toEqual(["g1", "g2"]);
+    expect(deskGroups({ ...snapshot, looseGroups: undefined })).toBe(snapshot.tabGroups);
+    expect(deskGroups(null)).toEqual([]);
+  });
+
+  it("for a day tab, a group's; a favorite's or a pinned page's tab, which no group can hold, has a desk of its own", () => {
+    expect(isDayTab(tab({}))).toBe(true);
+    expect(isDayTab(tab({ anchorId: "fav-1" }))).toBe(false);
+    expect(isDayTab(tab({ kind: "agent" }))).toBe(false);
+    expect(isDayTab(tab({ unlisted: true }))).toBe(false);
+  });
+
+  it("a page's own desk is told from a group's by its id, and never saved", () => {
+    expect(tabDeskOf(tabDeskId("page"))).toBe("page");
+    expect(tabDeskOf("g1")).toBe(null);
+    expect(tabDeskOf(null)).toBe(null);
+    useDeskStore.getState().save(tabDeskId("page"), { windows: [{ tabId: "page", rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } }] });
+    expect(useDeskStore.getState().saved[tabDeskId("page")]).toBeUndefined();
   });
 });

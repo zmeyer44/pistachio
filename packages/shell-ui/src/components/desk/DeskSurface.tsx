@@ -4,22 +4,23 @@ import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import { SURFACE_GUTTER } from "@pistachio/shell-contracts/chrome";
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
-import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { tabGroupTitle, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
 import { agentActivity } from "../../lib/desk/agent";
 import { useGroupContexts, useGroupContextsLoaded } from "../../lib/desk/group-context";
 import { useFileWindows } from "../../lib/desk/group-files";
+import { useNowPlaying } from "../../lib/desk/now-playing";
 import { documentWindowIds, fileOf } from "../../lib/desk/documents";
 import { fileItemOf, fileWindowId, isTabWindow } from "../../lib/desk/windows";
 import { displayHost } from "../../lib/url";
-import { lendDeskArrange, lendDeskAsk, lendDeskEngine } from "../../lib/desk/open";
+import { deskFor, lendDeskArrange, lendDeskAsk, lendDeskEngine } from "../../lib/desk/open";
 import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
-import { passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
+import { deskGroups, isDayTab, passedEntry, tabDeskOf, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay } from "../GlanceOverlay";
 import { DeskBar } from "./DeskBar";
-import { DeskEngine, type DeskLayoutSnapshot } from "./desk-engine";
+import { CHROME_INSETS, DeskEngine, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDropRail } from "./DeskDropRail";
 import { DeskDropZone } from "./DeskDropZone";
@@ -67,11 +68,21 @@ function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string
     const middle = box.top + box.height / 2;
     return box.width > 0 && middle >= list.top && middle <= list.bottom ? el : null;
   };
-  const groupRow = (gid: string): HTMLElement | null =>
-    inSight(pane.querySelector<HTMLElement>(`[data-testid='tab-group'][data-group-id='${CSS.escape(gid)}'] [data-group-header]`));
+  // (The favorites stand above the list: drawn is enough.)
+  const shown = (el: HTMLElement | null): HTMLElement | null => (el !== null && el.getBoundingClientRect().width > 0 ? el : null);
+  const tabRow = (tabId: string): HTMLElement | null =>
+    inSight(pane.querySelector<HTMLElement>(`[role='tab'][data-tab-id='${CSS.escape(tabId)}']`)) ??
+    // A favorite's page: its tile, or on the rail its row under the folder.
+    shown(pane.querySelector<HTMLElement>(`[data-live-tab-id='${CSS.escape(tabId)}']`));
+  // A page's own desk, or a loose tab's group, has no group's row: its tab's own is its home.
+  const groupRow = (gid: string): HTMLElement | null => {
+    const lone = tabDeskOf(gid) ?? useAppStore.getState().snapshot?.looseGroups?.find((group) => group.id === gid)?.tabIds[0] ?? null;
+    if (lone !== null) return tabRow(lone);
+    return inSight(pane.querySelector<HTMLElement>(`[data-testid='tab-group'][data-group-id='${CSS.escape(gid)}'] [data-group-header]`));
+  };
   if (kind === "group") return groupRow(id);
   if (kind === "file") return inSight(pane.querySelector<HTMLElement>("[data-testid='desk-stack']")) ?? groupRow(groupId);
-  return inSight(pane.querySelector<HTMLElement>(`[role='tab'][data-tab-id='${CSS.escape(id)}']`)) ?? groupRow(groupId);
+  return tabRow(id) ?? groupRow(groupId);
 }
 
 /**
@@ -92,8 +103,14 @@ function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string
  * and brings the new group's out of theirs (DeskEngine.switchGroup).
  */
 export default function DeskSurface({ groupId }: { groupId: string }) {
-  const group = useAppStore((state) => state.snapshot?.tabGroups.find((candidate) => candidate.id === groupId) ?? null);
-  const tabs = useAppStore(useShallow((state) => groupTabs(state.snapshot, group)));
+  // A page's own desk (tabDeskId: a favorite's, a pinned page's) is that tab's alone: no group, no Stack, no Bar.
+  const pageTabId = tabDeskOf(groupId);
+  // The desk's group: one the chrome draws, or a loose tab's (TabGroupInfo.loose).
+  const group = useAppStore((state) => deskGroups(state.snapshot).find((candidate) => candidate.id === groupId) ?? null);
+  const tabs = useAppStore(useShallow((state) => (pageTabId === null ? groupTabs(state.snapshot, group) : tabsOf(state.snapshot, [pageTabId]))));
+  // A loose tab's group goes by its tab's name, as the sidebar draws it: the Bar asks about it, the Stack is its.
+  const looseTitle = useAppStore((state) => (group?.loose === true ? (state.snapshot?.tabs.find((tab) => tab.id === group.tabIds[0])?.title ?? "") : ""));
+  const deskGroup = useMemo(() => (group?.loose === true ? { ...group, title: tabGroupTitle(looseTitle) } : group), [group, looseTitle]);
   const allTabIds = useAppStore(useShallow((state) => state.snapshot?.tabs.map((tab) => tab.id) ?? EMPTY_IDS));
   const activeTabId = useAppStore((state) => state.snapshot?.activeTabId ?? null);
   const wakingTabIds = useAppStore((state) => state.snapshot?.wakingTabIds ?? EMPTY_IDS);
@@ -104,7 +121,9 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const setContentBounds = useAppStore((state) => state.setContentBounds);
   const run = useAppStore((state) => state.snapshot?.run ?? null);
   const threads = useAppStore((state) => state.snapshot?.threads ?? EMPTY_THREADS);
-  const groups = useAppStore((state) => state.snapshot?.tabGroups ?? EMPTY_GROUPS);
+  const drawnGroups = useAppStore((state) => state.snapshot?.tabGroups ?? EMPTY_GROUPS);
+  const looseGroups = useAppStore((state) => state.snapshot?.looseGroups ?? EMPTY_GROUPS);
+  const groups = useMemo(() => (looseGroups.length === 0 ? drawnGroups : [...drawnGroups, ...looseGroups]), [drawnGroups, looseGroups]);
   const contexts = useGroupContexts();
   const contextsLoaded = useGroupContextsLoaded();
   const variants = useDeskStore((state) => state.variants);
@@ -114,8 +133,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const tabKey = tabIds.join(" ");
 
   // What the engine asks of the browser, always answered from the latest render.
-  const latest = useRef({ tabs, wakingTabIds, variants, group, contexts, contextsLoaded });
-  latest.current = { tabs, wakingTabIds, variants, group, contexts, contextsLoaded };
+  const latest = useRef({ tabs, wakingTabIds, variants, group: deskGroup, contexts, contextsLoaded });
+  latest.current = { tabs, wakingTabIds, variants, group: deskGroup, contexts, contextsLoaded };
   /** The group the engine's windows are of: it moves on only once the engine has passed to the next (and saved this one under its own id). */
   const shownGroup = useRef(groupId);
 
@@ -123,6 +142,10 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   // The tab in view when the desk opened, not one of the group's: it stays
   // the active one until the browser has selected the tab the desk opened on.
   const opener = useRef<string | null>(null);
+  // The desk passes to a tab's own because that tab was chosen: it comes up on it.
+  const passFor = useRef<string | null>(null);
+  // The desk's own changed under its windows (a loose tab put in a group, a group gone): no passing, the windows stay.
+  const inPlace = useRef(false);
   useLayoutEffect(() => {
     const stage = stageRef.current;
     if (stage === null) return;
@@ -243,16 +266,27 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
 
   // Passed to another group: the engine sends this group's windows into
   // its icon, and brings the new one's out to where they were left — its
-  // top window then in use, or with none left, its tab used last.
+  // top window then in use, or with none left, its tab used last; passed to
+  // because one of its tabs was chosen, that tab. A loose tab's desk comes
+  // up as its one window, in the middle.
   useLayoutEffect(() => {
     const from = shownGroup.current;
     if (engine === null || from === groupId) return;
     const groupTabIds = latest.current.tabs.map((tab) => tab.id);
+    const shellIds = latest.current.contextsLoaded ? documentWindowIds(latest.current.contexts.find((candidate) => candidate.groupId === groupId)) : null;
+    const chosen = passFor.current;
+    passFor.current = null;
+    if (inPlace.current) {
+      inPlace.current = false;
+      // (What it saves from here is the new desk's.)
+      shownGroup.current = groupId;
+      engine.regroup(groupTabIds, shellIds);
+      return;
+    }
     const saved = useDeskStore.getState().saved[groupId]?.windows ?? [];
-    const entry = passedEntry(saved, latest.current.tabs);
+    const entry = chosen !== null && groupTabIds.includes(chosen) ? chosen : passedEntry(saved, latest.current.tabs);
     // The old group's tab stays the active one until the new one's is selected: no reason to leave.
     opener.current = useAppStore.getState().snapshot?.activeTabId ?? null;
-    const shellIds = latest.current.contextsLoaded ? documentWindowIds(latest.current.contexts.find((candidate) => candidate.groupId === groupId)) : null;
     engine.switchGroup({ from, groupId, tabIds: groupTabIds, shellIds, saved, entry });
     shownGroup.current = groupId;
   }, [engine, groupId]);
@@ -315,17 +349,21 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
 
   // Main opens the group's conversation while its desk is up, and goes back
   // to the one before when it leaves; passing to another group, that one's.
+  // A page's own desk has no group, so no conversation of its own: main
+  // goes back to the one before, as when a desk is left.
   useEffect(() => {
-    void nativeApi()?.deskConversation({ type: "enter", groupId }).catch(() => undefined);
-  }, [groupId]);
+    void nativeApi()?.deskConversation(pageTabId === null ? { type: "enter", groupId } : { type: "leave" }).catch(() => undefined);
+  }, [groupId, pageTabId]);
   useEffect(() => () => void nativeApi()?.deskConversation({ type: "leave" }).catch(() => undefined), []);
 
-  // ⌘I puts the keyboard in the Bar.
+  // ⌘I puts the keyboard in the Bar. A page's own desk has none: there ⌘I opens the console, as anywhere.
   const [askSignal, setAskSignal] = useState(0);
+  const barUp = deskGroup !== null;
   useEffect(() => {
+    if (!barUp) return;
     lendDeskAsk(() => setAskSignal((count) => count + 1));
     return () => lendDeskAsk(null);
-  }, []);
+  }, [barUp]);
 
   // The notes the agent pinned to windows, until the next turn starts; and
   // where every window was before the agent first moved one this turn, for
@@ -413,6 +451,17 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     for (const window of view?.windows ?? []) if (window.flight !== "away" && isTabWindow(window.tabId)) marks.set(window.tabId, window.focused ? "focused" : "out");
     useDeskChrome.getState().setMarks(marks);
   }, [view]);
+  // A tab sent to the now playing (lib/desk/now-playing.ts) whose window is out again, or whose media has gone, is
+  // sent no more; nor is any once the desk is left.
+  const popped = useNowPlaying((state) => state.popped);
+  const mediaTabIds = useAppStore(useShallow((state) => state.media.map((item) => item.tabId)));
+  useEffect(() => {
+    for (const tabId of popped) {
+      const out = view?.windows.some((window) => window.tabId === tabId && window.flight !== "away") === true;
+      if (out || !mediaTabIds.includes(tabId)) useNowPlaying.getState().forget(tabId);
+    }
+  }, [view, popped, mediaTabIds]);
+  useEffect(() => () => useNowPlaying.setState({ popped: [] }), []);
   // The agent's tab wears its ring in the sidebar too.
   useEffect(() => {
     useDeskChrome.getState().setAgentTab(agentTab);
@@ -442,9 +491,18 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     return () => offPage?.();
   }, [engine, closable]);
 
-  // The group lost a tab (closed, moved out): its window goes.
+  // The group lost a tab (closed, moved out): its window goes. The tab in
+  // use joined it (a new tab on the desk, below): its window comes out.
+  const tabsBefore = useRef(tabIds);
   useEffect(() => {
-    engine?.syncTabs(tabIds);
+    const before = tabsBefore.current;
+    tabsBefore.current = tabIds;
+    // The desk's own group gone (ungrouped, a loose tab's put in another): its windows wait for the desk to pass
+    // (below), which keeps the one in use where it is, in place, or sends them home — not taken off here first.
+    if (engine === null || (group === null && pageTabId === null)) return;
+    engine.syncTabs(tabIds);
+    const active = useAppStore.getState().snapshot?.activeTabId ?? null;
+    if (!leaving && active !== null && tabIds.includes(active) && !before.includes(active) && !engine.windowTabIds().includes(active)) engine.activeChanged(active);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, tabKey]);
 
@@ -473,8 +531,14 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   }, [engine, tabs, wakingTabIds, variants, overlayActive]);
 
   // The browser's active tab is the desk's business: one of the group's
-  // comes to the top (or out of the inventory); any other ends the desk —
-  // unless it only became active because a desk window's tab was closed.
+  // comes to the top (or out of the inventory). A tab new since the last one
+  // and in no group (the address palette's, a link's) is a new tab on the
+  // desk: it joins the group, and comes out (above). Any other — from the
+  // sidebar, the tab switcher, the address palette — passes the desk to its
+  // own (deskFor): its group's, a loose tab's group made for it, or a page's
+  // own desk. A desk is left only by leaving it. (Unless the tab only became
+  // active because a desk window's tab was closed: the window left on top is
+  // in use.)
   const previous = useRef({ activeTabId, allTabIds });
   useEffect(() => {
     const before = previous.current;
@@ -485,22 +549,71 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       engine.activeChanged(activeTabId);
       return;
     }
-    // Still the tab from before the desk, its own on the way: no reason to leave.
+    // Still the tab from before the desk, its own on the way: no reason to pass.
     if (activeTabId === opener.current) return;
-    const closedWindow = before.activeTabId !== null && !allTabIds.includes(before.activeTabId) && engine.windowTabIds().some(isTabWindow);
-    if (closedWindow) {
-      const top = engine.windowTabIds().filter(isTabWindow).at(-1);
-      if (top !== undefined) void useAppStore.getState().selectTab(top);
+    const closed = before.activeTabId !== null && !allTabIds.includes(before.activeTabId);
+    const top = closed ? engine.windowTabIds().filter((id) => isTabWindow(id) && tabIds.includes(id)).at(-1) : undefined;
+    if (top !== undefined) {
+      void useAppStore.getState().selectTab(top);
       return;
     }
-    useDeskStore.getState().leave({ immediate: true });
+    const snapshot = useAppStore.getState().snapshot;
+    const chosen = snapshot?.tabs.find((tab) => tab.id === activeTabId);
+    const fresh = chosen !== undefined && !before.allTabIds.includes(activeTabId) && isDayTab(chosen) && !deskGroups(snapshot).some((other) => other.tabIds.includes(activeTabId));
+    if (fresh && group !== null) {
+      void useAppStore.getState().tabGroupCommand({ type: "addTab", groupId, tabId: activeTabId });
+      return;
+    }
+    void deskFor(activeTabId).then((next) => {
+      const desk = useDeskStore.getState();
+      // (Only while the desk, and the tab in use, are as they were.)
+      if (next === null || desk.groupId !== groupId || desk.leaving || useAppStore.getState().snapshot?.activeTabId !== activeTabId) return;
+      passFor.current = activeTabId;
+      desk.switchTo(next);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, activeTabId]);
 
-  // The group is gone (ungrouped, closed, another Space): so is its desk.
+  // The desk's own went from under it. A page's own desk whose tab is put
+  // in a group: the desk passes to that group, on that tab. A group gone —
+  // a loose tab's, its tab put in another group (dragged into one); any
+  // group ungrouped, its tabs closed, moved to another Space — passes the
+  // desk to the tab in use's own (deskFor), in place when that desk was
+  // never up before and its window is out here (a loose tab's group made
+  // now, a group never on a desk): the window stays where it is, the others
+  // go home. With no tab in use, it is left.
+  const pageHome = useAppStore((state) =>
+    pageTabId === null ? null : (deskGroups(state.snapshot).find((candidate) => candidate.tabIds.includes(pageTabId))?.id ?? null),
+  );
+  const pageGone = pageTabId !== null && !allTabIds.includes(pageTabId);
   useEffect(() => {
-    if (group === null) useDeskStore.getState().leave({ immediate: true });
-  }, [group]);
+    const desk = useDeskStore.getState();
+    // (Passed on already, the tab in use having changed with it: above.)
+    if (engine === null || desk.leaving || desk.groupId !== groupId) return;
+    if (pageTabId !== null && pageHome !== null) {
+      passFor.current = pageTabId;
+      desk.switchTo(pageHome);
+      return;
+    }
+    if (pageTabId !== null ? !pageGone : group !== null) return;
+    const active = useAppStore.getState().snapshot?.activeTabId ?? null;
+    if (active === null) {
+      desk.leave({ immediate: true });
+      return;
+    }
+    void deskFor(active).then((next) => {
+      const now = useDeskStore.getState();
+      if (now.groupId !== groupId || now.leaving) return;
+      if (next === null) {
+        now.leave({ immediate: true });
+        return;
+      }
+      inPlace.current = now.saved[next] === undefined && engine.windowTabIds().includes(active);
+      passFor.current = active;
+      now.switchTo(next);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, group, pageHome, pageGone]);
 
   useEffect(() => {
     if (leaving) engine?.leave();
@@ -538,6 +651,52 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     .join(" ");
   const strays = useAppStore(useShallow((state) => tabsOf(state.snapshot, strayKey === undefined || strayKey === "" ? EMPTY_IDS : strayKey.split(" "))));
   const tabsById = useMemo(() => new Map([...tabs, ...strays].map((tab) => [tab.id, tab])), [tabs, strays]);
+  // Over a live page, the parked windows are main's shelf view (ShelfApp), drawn over the page as nothing of the
+  // shell's can be: it is told where each stands (in the window, cut off at the desk's foot) and what it shows.
+  const sentShelf = useRef("");
+  useLayoutEffect(() => {
+    const api = nativeApi();
+    const stage = stageRef.current;
+    const shelf = view?.shelf ?? null;
+    if (api === null) return;
+    if (shelf === null || shelf.length === 0 || stage === null) {
+      if (sentShelf.current !== "") api.setDeskShelf(null);
+      sentShelf.current = "";
+      return;
+    }
+    const at = stage.getBoundingClientRect();
+    const pad = 2;
+    const left = Math.min(...shelf.map((spot) => spot.rect.x));
+    const right = Math.max(...shelf.map((spot) => spot.rect.x + spot.rect.w));
+    const top = Math.min(...shelf.map((spot) => spot.rect.y));
+    const insets = CHROME_INSETS[variants.chrome];
+    const frame = {
+      bounds: { x: at.left + left - pad, y: at.top + top - pad, width: right - left + pad * 2, height: at.height - top + pad },
+      pad,
+      insets: { top: insets.top, left: insets.left, right: insets.right },
+      windows: shelf.map((spot) => {
+        const tab = tabsById.get(spot.tabId) ?? null;
+        const host = displayHost(tab?.url ?? "");
+        return {
+          tabId: spot.tabId,
+          x: spot.rect.x - left + pad,
+          width: spot.rect.w,
+          height: spot.rect.h,
+          title: tab?.title || host || "Untitled",
+          host,
+          faviconUrl: tab?.faviconUrl ?? null,
+          still: view?.windows.find((window) => window.tabId === spot.tabId)?.still ?? null,
+        };
+      }),
+    };
+    const key = JSON.stringify(frame);
+    if (key === sentShelf.current) return;
+    sentShelf.current = key;
+    api.setDeskShelf(frame);
+  }, [view, tabsById, variants.chrome]);
+  useEffect(() => () => nativeApi()?.setDeskShelf(null), []);
+  // The pointer onto one of the shelf view's windows is onto its frame (it rises), or off it.
+  useEffect(() => nativeApi()?.onDeskShelfInput((input) => engine?.hoverMini(input.tabId, "frame", input.over)), [engine]);
   const attachZone = useCallback((el: HTMLDivElement | null) => engine?.attachZone(el), [engine]);
   // What a shell window shows (a document's file), one object per file so its window only re-renders when the file changes.
   // The file is found in whichever group's context holds it: a window of the group the desk has
@@ -609,24 +768,25 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
                 />
               );
             })}
-        {engine === null || view === null || group === null ? null : (
-          <DeskSideCard engine={engine} view={view} stageRef={stageRef} group={group} context={context} others={otherContexts} />
+        {/* (A page's own desk has no group: its More card and drop rail, but no Stack, file drops or Bar.) */}
+        {engine === null || view === null || (deskGroup === null && pageTabId === null) ? null : (
+          <DeskSideCard engine={engine} view={view} stageRef={stageRef} group={deskGroup} context={context} others={otherContexts} />
         )}
-        {engine === null || view === null || group === null ? null : (
+        {engine === null || view === null || (deskGroup === null && pageTabId === null) ? null : (
           <DeskDropRail
             engine={engine}
             drops={view.drops}
             stage={stageCorner(stageRef.current)}
             shown={carrying && view.dropsShown}
             drop={carrying ? view.dockDrop : null}
-            groupColor={group.color}
+            groupColor={deskGroup?.color ?? null}
           />
         )}
-        {engine === null || view === null || group === null ? null : (
-          <DeskDropZone group={group} engine={engine} view={view} />
+        {engine === null || view === null || deskGroup === null ? null : (
+          <DeskDropZone group={deskGroup} engine={engine} view={view} />
         )}
-        {engine === null || view === null || group === null ? null : (
-          <DeskBar group={group} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} context={context} />
+        {engine === null || view === null || deskGroup === null ? null : (
+          <DeskBar group={deskGroup} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} context={context} />
         )}
         {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} />}
       </div>

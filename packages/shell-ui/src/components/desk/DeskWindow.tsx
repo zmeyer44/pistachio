@@ -11,7 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, X } from "lucide-react";
+import { AudioLines, Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, X } from "lucide-react";
 import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
 import { DESK_MINI_ZOOM, MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
@@ -20,9 +20,11 @@ import { notesUrlId } from "@pistachio/shell-contracts/notes";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
 import type { ShellPage } from "@pistachio/shell-contracts/shell-pages";
 import { nativeApi } from "../../api";
+import { useAppStore } from "../../store";
 import { cn } from "../../lib/cn";
 import { editedMaskRegion, type Edges, type Rect } from "../../lib/desk/geometry";
 
+import { useNowPlaying } from "../../lib/desk/now-playing";
 import type { DeskChrome, DeskGrab } from "../../lib/desk/store";
 import { displayHost } from "../../lib/url";
 import { CONTEXT_MENU_W, useContextMenu, type MenuEntry } from "../ContextMenu";
@@ -109,6 +111,8 @@ export const DeskWindow = memo(function DeskWindow({
   const shellPage = parts !== null || (tab !== null && pageKind(tab.url) !== null);
   /** Only a web page can be masked: the shell draws its own pages. */
   const canMask = tab !== null && !shellPage && !masked && view.mini === null;
+  /** What its page is playing, if anything a player could take (not a call, nor a page presenting itself whole). */
+  const media = useAppStore((state) => (tab === null || shellPage ? null : (state.media.find((item) => item.tabId === tabId && !item.call && !item.presenting) ?? null)));
   const mini = view.mini !== null;
   const working = agent !== null;
   // Phased on the wall clock like every other ring, taken as this one goes on.
@@ -224,6 +228,21 @@ export const DeskWindow = memo(function DeskWindow({
         <Ellipsis aria-hidden="true" />
       </FrameButton>
     );
+  // Its page playing something: sent from here to the now playing — the window goes into its row, and the
+  // media plays on in the sidebar, or on the rail as a floating player or the rail's button (lib/desk/now-playing.ts).
+  const popOut =
+    media === null ? null : (
+      <FrameButton
+        label={media.hasVideo ? "Pop out the video" : "Pop out the audio"}
+        testId="desk-pop-out"
+        onClick={() => {
+          useNowPlaying.getState().pop(tabId);
+          engine.putAway(tabId);
+        }}
+      >
+        {media.hasVideo ? <PictureInPicture2 aria-hidden="true" /> : <AudioLines aria-hidden="true" />}
+      </FrameButton>
+    );
   const collapse = (
     <FrameButton label={collapseLabel} testId="desk-collapse" onClick={() => engine.putAway(tabId)}>
       <Minus aria-hidden="true" />
@@ -236,6 +255,7 @@ export const DeskWindow = memo(function DeskWindow({
   );
   const controls = masked ? (
     <span className="desk-window-controls flex items-center">
+      {popOut}
       {more}
       <FrameButton label="Unmask" testId="desk-unmask" onClick={() => engine.unmask(tabId)}>
         <Expand aria-hidden="true" />
@@ -245,6 +265,7 @@ export const DeskWindow = memo(function DeskWindow({
     </span>
   ) : mini ? (
     <span className="desk-window-controls flex items-center">
+      {popOut}
       <FrameButton label="Expand" testId="desk-expand" onClick={() => engine.expand(tabId)}>
         <Maximize2 aria-hidden="true" />
       </FrameButton>
@@ -253,6 +274,7 @@ export const DeskWindow = memo(function DeskWindow({
     </span>
   ) : (
     <span className="desk-window-controls flex items-center">
+      {popOut}
       {more}
       <FrameButton label={view.maximized ? "Restore" : "Fill the desk"} onClick={() => engine.toggleMaximize(tabId)}>
         {view.maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
@@ -352,8 +374,7 @@ export const DeskWindow = memo(function DeskWindow({
           className="desk-window-page"
           data-testid="desk-window-page"
           onPointerDown={onPageDown}
-          // Cut short over the desk's foot (the engine's --desk-cut): the Bar's notch and the parked windows lie over the rest of the frame there.
-          style={{ top: insets.top - cardTop, left: insets.left, right: insets.right, bottom: `calc(${String(insets.bottom)}px + var(--desk-cut, 0px))` }}
+          style={{ top: insets.top - cardTop, left: insets.left, right: insets.right, bottom: insets.bottom }}
         >
           {/* A page the shell draws is zoomed out here when minimized (a web page is main's to zoom); always this box, so nothing in it is made anew. */}
           <div className="desk-window-zoom" style={mini && shellPage ? ZOOMED_STYLE : undefined}>

@@ -132,11 +132,11 @@
 .sidebar-motion-slot[data-hidden] {
   transition-duration: 180ms;
 }
-/* A menu from a desk's rail (its footer's) hangs out past the column, over
-   the desk, which is drawn after it: while one is open the column is drawn
-   above the desk. (Not always: a window flying home into a row passes over
-   the column.) */
-.sidebar-motion-slot[data-rail]:has([role="menu"]) {
+/* A menu from a desk's rail (its footer's), or the favorites' sheet, hangs
+   out past the column, over the desk, which is drawn after it: while one is
+   open the column is drawn above the desk. (Not always: a window flying home
+   into a row passes over the column.) */
+.sidebar-motion-slot[data-rail]:is(:has([role="menu"]), :has(.rail-favorites-sheet[data-open])) {
   z-index: 3;
 }
 .sidebar-motion-pane {
@@ -3757,6 +3757,55 @@ body:not([data-chrome-view])::after {
   box-shadow: 0 0 0 1.5px var(--color-background-200);
 }
 
+/* A group's mark (TabGroupRow's FaviconCluster), in the favorites folder's style: its first four tabs' icons in a
+   2×2 of small squares, each icon filling its square; a lone tab's fills the mark. The count is the rail's (above). */
+.tab-group-mosaic {
+  display: grid;
+  place-items: center;
+}
+.tab-group-mosaic-grid {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  grid-template-columns: repeat(2, 9px);
+  grid-auto-rows: 9px;
+  align-content: center;
+  gap: 2px;
+}
+.tab-group-mosaic-cell {
+  width: 9px;
+  height: 9px;
+  border-radius: 2.5px;
+}
+.tab-group-mosaic-grid[data-count="1"] {
+  grid-template-columns: 1fr;
+}
+.tab-group-mosaic-grid[data-count="1"] .tab-group-mosaic-cell {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+.tab-group-mosaic-count {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  display: none;
+  min-width: 13px;
+  height: 13px;
+  box-sizing: border-box;
+  padding: 0 3px;
+  align-content: center;
+  border-radius: 999px;
+  background: var(--tg-solid);
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 600;
+  text-align: center;
+  text-box: trim-both cap alphabetic;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 1.5px var(--color-background-200);
+}
+
 /* ── The rail: the same column 48px wide, every row its icon alone ───────
    What a row says beside its icon (its title, counts, controls) is in its
    tooltip; a section's header is a hairline (three dots while folded). */
@@ -3775,15 +3824,48 @@ body:not([data-chrome-view])::after {
 .chrome-sidebar[data-rail] .desk-row-mark {
   left: 1px;
 }
-/* On the rail the icons are the rows: a size up from the whole sidebar's. */
-.chrome-sidebar[data-rail] .favicon {
+/* On the rail the icons are the rows: a size up from the whole sidebar's. (Not the favorites' folder and its sheet: RailFavorites.) */
+.chrome-sidebar[data-rail] .favicon:not(.rail-favorites *, .tab-group-mosaic *) {
   width: 20px;
   height: 20px;
   border-radius: 5px;
   font-size: 11px;
 }
-.chrome-sidebar[data-rail] :is([data-testid="favicon-cluster"], .desk-context-pile) {
+.chrome-sidebar[data-rail] .desk-context-pile {
   scale: 1.2;
+}
+/* A group's mark on the rail is a tile of the group's colour, as the favorites' folder is a tile of their own, its
+   tabs' icons in it and the count on its corner. */
+.chrome-sidebar[data-rail] .tab-group-mosaic {
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  border-radius: var(--radius-md);
+  background: var(--tg-tint-strong);
+}
+.chrome-sidebar[data-rail] .tab-group-mosaic-grid {
+  width: 22px;
+  height: 22px;
+  grid-template-columns: repeat(2, 10px);
+  grid-auto-rows: 10px;
+}
+.chrome-sidebar[data-rail] .tab-group-mosaic-cell {
+  width: 10px;
+  height: 10px;
+}
+.chrome-sidebar[data-rail] .tab-group-mosaic-grid[data-count="1"] .tab-group-mosaic-cell {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+.chrome-sidebar[data-rail] .tab-group-mosaic-count {
+  top: -4px;
+  right: -5px;
+  display: block;
+}
+/* The rail's list scrolls without a scrollbar: in a 48px column one would be clutter. */
+.chrome-sidebar[data-rail] [data-testid="sidebar-tab-list"] {
+  scrollbar-width: none;
 }
 .chrome-sidebar[data-rail] [data-row-kind="divider"] svg {
   width: 16px;
@@ -3845,15 +3927,186 @@ body:not([data-chrome-view])::after {
   gap: 0;
   padding: 0;
 }
-.chrome-sidebar[data-rail] [data-testid="favorites-grid"] {
-  grid-template-columns: 1fr;
+
+/* The favorites on the rail (components/RailFavorites.tsx): one folder tile
+   — the first four icons, and how many there are — and the sheet it slides
+   out of the rail's edge over the desk: a piece of the whole sidebar, its
+   favorites grid in it. The sheet is a cover over the desk (its live pages
+   give way to their stills): it shows once they have (data-shown). */
+.rail-favorites-folder {
+  position: relative;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--color-alpha-100);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.rail-favorites-folder:hover {
+  background: var(--color-alpha-200);
+}
+.rail-favorites-folder[aria-expanded="true"] {
+  background: var(--color-background-100);
+  box-shadow: var(--shadow-small);
+}
+.rail-favorites-folder:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+/* A row dragged onto it: the favorites take it (the sheet opens for the drop). */
+.rail-favorites-folder[data-dropping] {
+  background: var(--color-green-100);
+  box-shadow: 0 0 0 1px var(--color-green-400);
+}
+.rail-favorites-mosaic {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  grid-template-columns: repeat(2, 10px);
+  align-content: start;
   gap: 2px;
 }
-.chrome-sidebar[data-rail] .favorite-tile {
-  height: 32px;
+.rail-favorites-mark {
+  width: 10px;
+  height: 10px;
+  border-radius: 2.5px;
+  font-size: 6px;
 }
-.chrome-sidebar[data-rail] .favorites-empty {
-  display: none;
+.rail-favorites-count {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  min-width: 13px;
+  height: 13px;
+  box-sizing: border-box;
+  padding: 0 3px;
+  align-content: center;
+  border-radius: 999px;
+  background: var(--color-gray-900);
+  color: var(--color-background-100);
+  font-size: 8.5px;
+  font-weight: 600;
+  text-align: center;
+  text-box: trim-both cap alphabetic;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 1.5px var(--color-background-200);
+}
+/* Its left edge is the rail's (the favorites' 32px column sits 8px in from it). */
+.rail-favorites-sheet {
+  position: absolute;
+  left: calc(100% + 8px);
+  z-index: 40;
+  display: flex;
+  width: 236px;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 8px 10px;
+  border-radius: 0 14px 14px 0;
+  /* The sidebar's own ground: its surface and the theme's gradient, frosted over what it covers. */
+  background:
+    var(--theme-window-gradient),
+    color-mix(in srgb, var(--color-background-200) 94%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  backdrop-filter: blur(24px) saturate(1.3);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    18px 0 36px -22px oklch(0 0 0 / 0.35);
+  opacity: 0;
+  pointer-events: none;
+  clip-path: inset(-40px 100% -40px 0);
+  transition:
+    clip-path 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 120ms ease;
+}
+.rail-favorites-sheet[data-shown] {
+  opacity: 1;
+  pointer-events: auto;
+  clip-path: inset(-40px -60px -40px 0);
+}
+:root[data-desktop-glass="on"] .rail-favorites-sheet {
+  /* With the window's glass behind the sidebar: its tint and gradient, over a frost of the desk. */
+  background:
+    var(--theme-glass-gradient),
+    color-mix(in srgb, var(--color-background-200) max(var(--theme-glass-tint-opacity-percent), 72%), transparent);
+  -webkit-backdrop-filter: blur(30px) saturate(1.5);
+  backdrop-filter: blur(30px) saturate(1.5);
+}
+.rail-favorites-head {
+  display: flex;
+  height: 24px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 4px;
+  color: var(--color-gray-900);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.rail-favorites-head > :last-child {
+  color: var(--color-gray-700);
+  font-weight: 400;
+}
+/* The favorites whose pages are open, under the folder: a row each, with the grid's own open dot under the icon. */
+.rail-favorites-open {
+  display: flex;
+  margin-top: 4px;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.rail-favorite-open {
+  position: relative;
+  display: grid;
+  width: 32px;
+  height: 30px;
+  place-items: center;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  outline: none;
+  animation: rail-favorite-in 260ms cubic-bezier(0.2, 0.9, 0.25, 1.2);
+  transition: background-color 120ms ease;
+}
+.rail-favorite-open:hover {
+  background: var(--color-alpha-200);
+}
+.rail-favorite-open:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.rail-favorite-open::after {
+  content: "";
+  position: absolute;
+  bottom: 1px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 999px;
+  background: var(--color-gray-700);
+}
+/* The page in view (as the rail's tab in use, no card: the dot says it in the group's way, longer). */
+.rail-favorite-open[data-active]::after {
+  width: 10px;
+  margin-left: -5px;
+  background: var(--color-gray-1000);
+}
+@keyframes rail-favorite-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rail-favorites-folder,
+  .rail-favorites-sheet,
+  .rail-favorite-open {
+    transition: none;
+    animation: none;
+  }
 }
 .chrome-sidebar[data-rail] .sidebar-footer {
   justify-content: center;
@@ -4531,6 +4784,103 @@ body:not([data-chrome-view])::after {
     height 250ms cubic-bezier(0.22, 1, 0.36, 1),
     min-height 250ms cubic-bezier(0.22, 1, 0.36, 1),
     border-radius 250ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* The idle notch over a live page (NotchApp, main's "notch" view): the whole view is the notch — its face with
+   its shoulders, and the flares at its foot's ends — painted in the shell's ground, since over a page there is no
+   ground to cut down to. */
+body[data-chrome-view="notch"] {
+  background: transparent;
+}
+.desk-notch-view {
+  --desk-notch-fill: var(--color-background-200);
+  position: fixed;
+  inset: 0;
+}
+:root[data-desktop-glass="on"] .desk-notch-view {
+  /* The window's glass is not under a page: as near as its tint and gradient come. */
+  --desk-notch-fill: color-mix(in srgb, var(--color-background-200) 96%, var(--color-gray-500));
+}
+.desk-notch-view::before,
+.desk-notch-view::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: var(--desk-notch-flare);
+  height: var(--desk-notch-flare);
+  pointer-events: none;
+}
+.desk-notch-view::before {
+  left: 0;
+  background: radial-gradient(circle at 0 0, transparent calc(var(--desk-notch-flare) - 0.5px), var(--desk-notch-fill) var(--desk-notch-flare));
+}
+.desk-notch-view::after {
+  right: 0;
+  background: radial-gradient(circle at 100% 0, transparent calc(var(--desk-notch-flare) - 0.5px), var(--desk-notch-fill) var(--desk-notch-flare));
+}
+.desk-notch-view-face {
+  position: absolute;
+  inset: 0 var(--desk-notch-flare);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--desk-notch-radius) var(--desk-notch-radius) 0 0;
+  background: var(--desk-notch-fill);
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+}
+/* The parked windows over a live page (ShelfApp, main's "shelf" view): each as the shell draws it at rest in the
+   shelf — its card, its title bar dimmed as a window not in use's, the picture of its page — cut off by the view's
+   foot, which is the desk's. */
+body[data-chrome-view="shelf"] {
+  background: transparent;
+}
+.desk-shelf-view {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+.desk-shelf-window {
+  position: absolute;
+  overflow: hidden;
+  border-radius: calc(var(--radius-md) + 4px);
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 1px 2px oklch(0 0 0 / 0.05);
+}
+.desk-shelf-window-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 5px 0 11px;
+  color: var(--color-gray-900);
+  font-size: 12px;
+}
+.desk-shelf-window-bar > * {
+  opacity: 0.45;
+}
+.desk-shelf-window-bar > :first-child {
+  filter: grayscale(1);
+}
+.desk-shelf-window-page {
+  position: absolute;
+  bottom: 0;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--color-background-100);
+}
+.desk-shelf-window-page img {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
 }
 /* The row: at the Bar's full width always, faded, blurred and drawn in a little while the Bar is its pill. */
 .desk-bar-body {
@@ -5926,4 +6276,240 @@ body:not([data-chrome-view])::after {
   width: 1px;
   background: var(--color-alpha-200);
   pointer-events: none;
+}
+
+/* ── The desk's now playing on the rail (components/desk/DeskNowPlaying.tsx, PipApp.tsx) ──────────────
+   A video floats over the desk as its page's own picture (main's media preview), its controls drawn over it by
+   the pip view while the pointer is on it; the rest are buttons in the rail, a card of the stack's controls beside
+   them on hover. */
+body[data-chrome-view="pip"] {
+  background: transparent;
+}
+.desk-pip-view {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+  color: #fff;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.desk-pip-view > * {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+.desk-pip-view[data-shown] > * {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* The scrims the controls stand on: the picture darkened at its head and foot, as a player's own controls have it. */
+.desk-pip-view::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to bottom, oklch(0 0 0 / 0.55), transparent 34%),
+    linear-gradient(to top, oklch(0 0 0 / 0.6), transparent 40%),
+    oklch(0 0 0 / 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+.desk-pip-view[data-shown]::before {
+  opacity: 1;
+}
+.desk-pip-top,
+.desk-pip-middle,
+.desk-pip-bottom {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.desk-pip-top {
+  gap: 6px;
+  padding: 6px 6px 0;
+}
+.desk-pip-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px oklch(0 0 0 / 0.5);
+  white-space: nowrap;
+}
+.desk-pip-middle {
+  justify-content: center;
+  gap: 14px;
+}
+.desk-pip-bottom {
+  gap: 8px;
+  padding: 0 8px 6px 10px;
+}
+.desk-pip-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  cursor: pointer;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: inherit;
+  background: transparent;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+.desk-pip-button svg {
+  width: 15px;
+  height: 15px;
+  filter: drop-shadow(0 1px 2px oklch(0 0 0 / 0.45));
+}
+.desk-pip-button:hover:not(:disabled) {
+  background: oklch(1 0 0 / 0.18);
+}
+.desk-pip-button:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.desk-pip-button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+.desk-pip-button[data-primary] {
+  width: 42px;
+  height: 42px;
+  flex-basis: 42px;
+  background: oklch(1 0 0 / 0.16);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.desk-pip-button[data-primary] svg {
+  width: 20px;
+  height: 20px;
+}
+.desk-pip-time,
+.desk-pip-live {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px oklch(0 0 0 / 0.5);
+}
+.desk-pip-live {
+  flex: 1;
+}
+.desk-pip-progress {
+  min-width: 0;
+  height: 14px;
+  flex: 1;
+  margin: 0;
+  cursor: pointer;
+  appearance: none;
+  background: transparent;
+}
+.desk-pip-progress::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(to right, #fff var(--desk-pip-progress, 0%), oklch(1 0 0 / 0.35) var(--desk-pip-progress, 0%));
+}
+.desk-pip-progress::-webkit-slider-thumb {
+  width: 10px;
+  height: 10px;
+  margin-top: -3.5px;
+  appearance: none;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.4);
+}
+/* Where the picture stands, under it: its shadow. While something lies over the player the picture is down, and so is
+   this — it is the body's, above the desk's cards and the shell's pages, which are to lie over the player. */
+.desk-pip-backdrop {
+  position: fixed;
+  z-index: 30;
+  border-radius: 10px;
+  background: #000;
+  box-shadow:
+    0 0 0 1px oklch(0 0 0 / 0.2),
+    0 14px 34px -10px oklch(0 0 0 / 0.5);
+  pointer-events: none;
+}
+/* Covered, or its window still flying into its row (the picture comes once it has gone): nothing of it shows. */
+.desk-pip-backdrop[data-covered],
+.desk-pip-backdrop[data-pending] {
+  visibility: hidden;
+}
+/* The rail's buttons, above its footer. */
+.rail-now-playing {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0 6px;
+}
+.rail-media-button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--color-gray-1000);
+  background: var(--color-alpha-200);
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+.rail-media-button:hover {
+  background: var(--color-alpha-300);
+}
+.rail-media-button:active {
+  transform: scale(0.95);
+}
+.rail-media-button > svg {
+  width: 13px;
+  height: 13px;
+  margin-left: 1px;
+}
+.rail-media-bars {
+  display: flex;
+  height: 14px;
+  align-items: flex-end;
+  gap: 2px;
+}
+.rail-media-bars > i {
+  width: 3px;
+  height: 100%;
+  border-radius: 999px;
+  background: currentColor;
+  transform: scaleY(0.2);
+  transform-origin: bottom;
+}
+/* Beside the rail at its button, over the desk: the stack's own card, every control out. */
+.rail-media-card {
+  position: absolute;
+  z-index: 50;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-6px) scale(0.97);
+  transform-origin: left bottom;
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.rail-media-card[data-shown] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-pip-view > *,
+  .desk-pip-view::before,
+  .rail-media-card {
+    transition: none;
+  }
 }

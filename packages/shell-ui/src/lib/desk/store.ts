@@ -8,6 +8,8 @@
 
 import { create } from "zustand";
 import { isDeskMask, type DeskGrabModifier, type DeskMask } from "@pistachio/shell-contracts/desk";
+import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { writeStorageLater } from "../deferred-storage";
 import { isFiniteRect, type Rect } from "./geometry";
 import { GLIDE_DECELERATION } from "./motion";
@@ -142,6 +144,38 @@ export interface SavedDesk {
 }
 
 /**
+ * A page's own desk (docs/desk.md, "A loose tab's desk"): a favorite's or a
+ * pinned page's tab — which no group can hold — chosen while a desk is up
+ * comes up on a desk of its own, with only its window out and no group's
+ * Bar or Stack. (A day tab in no group gets a group of its own instead, a
+ * loose tab's: TabGroupInfo.loose.) The store's `groupId` then holds this
+ * id, which no group's can be (theirs are UUIDs), so everything that asks
+ * whether a desk is up still asks the one field. It is never saved.
+ */
+const TAB_DESK = "tab:";
+
+export function tabDeskId(tabId: string): string {
+  return TAB_DESK + tabId;
+}
+
+/** The tab whose own desk this is, or null for a group's desk (or none). */
+export function tabDeskOf(deskId: string | null): string | null {
+  return deskId !== null && deskId.startsWith(TAB_DESK) ? deskId.slice(TAB_DESK.length) : null;
+}
+
+/** Every group of the Space in view a desk may be up for: the ones drawn, and the loose tabs'. */
+export function deskGroups(snapshot: ShellSnapshot | null): readonly TabGroupInfo[] {
+  if (snapshot === null) return [];
+  const loose = snapshot.looseGroups ?? [];
+  return loose.length === 0 ? snapshot.tabGroups : [...snapshot.tabGroups, ...loose];
+}
+
+/** A tab a group can hold (main's #groupable): a listed day tab of the person's, not a pinned page's or a favorite's. */
+export function isDayTab(tab: BrowserTabInfo): boolean {
+  return tab.kind === "human" && !tab.unlisted && tab.anchorId === null;
+}
+
+/**
  * The tab a group's desk comes up on when the desk passes to it: its top
  * window as it was left, or, none of those still the group's, its tab used last.
  */
@@ -151,7 +185,7 @@ export function passedEntry(saved: readonly SavedDeskWindow[], tabs: ReadonlyArr
 }
 
 interface DeskStore {
-  /** The group whose desk is up, or null. */
+  /** The group whose desk is up — or a page's own desk (tabDeskId) — or null. */
   groupId: string | null;
   /**
    * Which desk this is: a desk opened afresh is a new one (the surface is
@@ -309,6 +343,8 @@ export const useDeskStore = create<DeskStore>((set, get) => ({
     get().setVariant(key, next as DeskVariants[typeof key]);
   },
   save: (groupId, desk) => {
+    // A page's own desk is its one window.
+    if (tabDeskOf(groupId) !== null) return;
     const saved = { ...get().saved };
     delete saved[groupId];
     saved[groupId] = desk;

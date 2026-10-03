@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { MessageScroller } from "@shadcn/react/message-scroller";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronUp, FileText, History, Loader2, Mic, Paperclip, Sparkles, Square, SquarePen, TextQuote, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronUp, FileText, History, Loader2, Mic, Paperclip, Square, SquarePen, TextQuote, Undo2, X } from "lucide-react";
 import type { AgentAttachment, RunSummary, ThreadListItem } from "@pistachio/protocol";
 import { groupContextMediaTypeOf, type GroupContextFile, type GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
@@ -21,10 +21,10 @@ import { ApprovalCard, ClarificationCard, CompletionMeta, MessageRow, TERMINAL, 
 import { useThreadLayout } from "../chat/use-thread-layout";
 import { OutputCards } from "../OutputCard";
 import { TakeoverCard } from "../TakeoverCard";
-import { Kbd } from "../ui/kbd";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import type { DeskEngine, DeskView } from "./desk-engine";
+import { DeskNotchFace } from "./DeskNotchFace";
 import { DictationWave } from "./DictationWave";
 import { FileGlyph, fileKindLabel } from "./files/FileGlyph";
 
@@ -286,6 +286,17 @@ export const DeskBar = memo(function DeskBar({
   const [arming, setArming] = useState(false);
   const hoverTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
+  /** The pointer came onto the Bar (or the notch view over a page): the pages under it are asked to give way, and it grows once the pointer has rested. */
+  const enterBar = useCallback(() => {
+    setArming(true);
+    window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(() => setHovered(true), PILL_HOVER_MS);
+  }, []);
+  const leaveBar = useCallback(() => {
+    setArming(false);
+    window.clearTimeout(hoverTimer.current);
+    setHovered(false);
+  }, []);
   const wanted = !composerIdle || focusWithin || hovered || cardShown || pickerOpen || mentionMenu !== null || fileDrag || drop.dragging;
   // Grown, the Bar is a cover (its whole footprint, whatever its width as it grows or shrinks: what is under it is the
   // same throughout), from the pointer coming to it until it is back down.
@@ -311,11 +322,55 @@ export const DeskBar = memo(function DeskBar({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
-  // The windows under the idle notch are cut short of it.
+  // The idle notch at the desk's foot: the engine knows where it lies over the windows (whether a live page is under it).
   useLayoutEffect(() => {
     engine.setNotch(leaving || pillWidth === null ? null : { w: pillWidth + NOTCH_FLARE * 2, h: NOTCH_H });
   }, [engine, leaving, pillWidth]);
   useEffect(() => () => engine.setNotch(null), [engine]);
+  // Over a live page, idle, the notch is main's notch view (NotchApp), drawn over the page as nothing of the
+  // shell's can be: it is told where (the notch and its flares, in the window) and what it says.
+  const overPage = compact && view.notchOver && !leaving;
+  useLayoutEffect(() => {
+    const api = nativeApi();
+    const el = barRef.current;
+    if (api === null) return;
+    if (!overPage || el === null) {
+      api.setDeskNotch(null);
+      return;
+    }
+    const send = (): void => {
+      const box = el.getBoundingClientRect();
+      api.setDeskNotch({
+        bounds: { x: box.left - NOTCH_FLARE, y: box.top, width: box.width + NOTCH_FLARE * 2, height: box.height },
+        label: `Ask about ${group.title}`,
+        shortcut: askKey,
+        color: group.color,
+        radius: Number.parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0,
+        flare: NOTCH_FLARE,
+      });
+    };
+    send();
+    const observer = new ResizeObserver(send);
+    observer.observe(el);
+    const stage = el.closest(".desk-stage");
+    if (stage !== null) observer.observe(stage);
+    window.addEventListener("resize", send);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", send);
+    };
+  }, [overPage, group.title, group.color, askKey]);
+  useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
+  // The pointer on the notch view, and a press there: the Bar's, as if they were on it.
+  useEffect(
+    () =>
+      nativeApi()?.onDeskNotchInput((input) => {
+        if (input === "enter") enterBar();
+        else if (input === "leave") leaveBar();
+        else focusInput();
+      }),
+    [enterBar, leaveBar, focusInput],
+  );
   // The notch as it is drawn now, as it grows and shrinks: the engine cuts it through the well and the windows under it.
   useLayoutEffect(() => {
     const el = barRef.current;
@@ -413,25 +468,13 @@ export const DeskBar = memo(function DeskBar({
               onBlur={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
               }}
-              onPointerEnter={() => {
-                setArming(true);
-                window.clearTimeout(hoverTimer.current);
-                hoverTimer.current = window.setTimeout(() => setHovered(true), PILL_HOVER_MS);
-              }}
+              onPointerEnter={enterBar}
               // A close is never delayed: the pointer gone, the Bar goes back to its idle notch at once.
-              onPointerLeave={() => {
-                setArming(false);
-                window.clearTimeout(hoverTimer.current);
-                setHovered(false);
-              }}
+              onPointerLeave={leaveBar}
             >
               {/* What the Bar is while idle: a click grows it and puts the keyboard in its field. */}
               <span className="desk-bar-pill" aria-hidden="true" data-testid="desk-bar-pill" onMouseDown={(event) => event.preventDefault()} onClick={focusInput}>
-                <span ref={pillRef} className="desk-bar-pill-content">
-                  <Sparkles aria-hidden="true" />
-                  <span className="min-w-0 truncate">Ask about {group.title}</span>
-                  {askKey === null ? null : <Kbd small className="desk-bar-pill-key">{askKey}</Kbd>}
-                </span>
+                <DeskNotchFace ref={pillRef} label={`Ask about ${group.title}`} shortcut={askKey} />
               </span>
               {drop.dragging ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-t-[19px] rounded-b-md" /> : null}
               <TooltipProvider delay={TIP_DELAY_MS}>

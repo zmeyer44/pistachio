@@ -35,7 +35,8 @@ export function DeskSideCard({
   engine: DeskEngine;
   view: DeskView;
   stageRef: RefObject<HTMLDivElement | null>;
-  group: TabGroupInfo;
+  /** The desk's group; null on a loose tab's desk, which has no Stack. */
+  group: TabGroupInfo | null;
   context: GroupContextView | null;
   others: readonly GroupContextView[];
 }) {
@@ -107,6 +108,7 @@ export function DeskSideCard({
   const left = Math.max(CARD_GAP, card.anchor.x + card.anchor.w - stage.left + CARD_GAP);
   const shown = view.clearCovers.has("card");
   if (card.kind === "stack") {
+    if (group === null) return null;
     return (
       <StackCard
         ref={cardRef}

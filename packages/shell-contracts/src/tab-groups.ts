@@ -42,9 +42,26 @@ export interface TabGroupInfo {
    * placeholder. Of the moment only — never stored, never restored.
    */
   naming?: boolean;
+  /**
+   * A loose tab's group (docs/desk.md, "A loose tab's desk"): made for a day
+   * tab in no group chosen while a desk is up, so its desk has all a
+   * group's does — the Bar, its conversation, the Stack, files dropped on
+   * it. It holds that one tab and is drawn as the tab alone, never as a
+   * group: the snapshot lists it apart (ShellSnapshot.looseGroups), and Tidy
+   * treats its tab as loose. Given a second tab, it is a group like any
+   * other (named, coloured, drawn); its tab put in another group, it is
+   * gone, as any group emptied is.
+   */
+  loose?: boolean;
 }
 
 export const MAX_TAB_GROUPS_PER_SPACE = 50;
+/**
+ * Loose tabs' groups (TabGroupInfo.loose) are kept apart from that bound:
+ * one is made for every day tab chosen on a desk, so a Space has as many as
+ * it has such tabs, and none may push a drawn group (or another) out.
+ */
+export const MAX_LOOSE_TAB_GROUPS_PER_SPACE = 2_000;
 export const MAX_TAB_GROUP_TITLE = 40;
 export const DEFAULT_TAB_GROUP_TITLE = "New group";
 
@@ -82,6 +99,8 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
   const groups: TabGroupInfo[] = [];
   const claimed = new Set<string>();
   const seen = new Set<string>();
+  let drawn = 0;
+  let loose = 0;
   for (const candidate of value) {
     if (typeof candidate !== "object" || candidate === null) continue;
     const raw = candidate as Record<string, unknown>;
@@ -94,6 +113,14 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
       tabIds.push(tabId);
     }
     if (tabIds.length === 0) continue;
+    // Each kind within its own bound: a loose tab's group is of its one tab.
+    const isLoose = raw["loose"] === true && tabIds.length === 1;
+    if (isLoose ? loose >= MAX_LOOSE_TAB_GROUPS_PER_SPACE : drawn >= MAX_TAB_GROUPS_PER_SPACE) {
+      for (const tabId of tabIds) claimed.delete(tabId);
+      continue;
+    }
+    if (isLoose) loose += 1;
+    else drawn += 1;
     seen.add(id);
     const createdAt = raw["createdAt"];
     groups.push({
@@ -104,8 +131,9 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
       origin: raw["origin"] === "auto" ? "auto" : "manual",
       open: raw["open"] === true,
       createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) && createdAt >= 0 ? createdAt : 0,
+      // (A loose tab's group holds its one tab: with more, it is a group like any other.)
+      ...(isLoose ? { loose: true } : {}),
     });
-    if (groups.length === MAX_TAB_GROUPS_PER_SPACE) break;
   }
   return groups;
 }
@@ -222,8 +250,8 @@ export interface TabGroupCommandResult {
  * an error — the row it came from was already stale.
  */
 export type TabGroupCommand =
-  /** Make a group from day tabs (they leave any group they were in). The renderer names the id so it can start renaming at once. */
-  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor }
+  /** Make a group from day tabs (they leave any group they were in). The renderer names the id so it can start renaming at once. `loose`: a loose tab's group (TabGroupInfo.loose), of one tab. */
+  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean }
   | { type: "rename"; groupId: string; title: string }
   | { type: "recolor"; groupId: string; color: TabGroupColor }
   /** Hold the group open, or let it close when the pointer leaves. */
@@ -280,7 +308,8 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
         raw["tabIds"].length <= 200 &&
         raw["tabIds"].every(isTabId) &&
         (raw["title"] === undefined || typeof raw["title"] === "string") &&
-        (raw["color"] === undefined || isTabGroupColor(raw["color"]))
+        (raw["color"] === undefined || isTabGroupColor(raw["color"])) &&
+        (raw["loose"] === undefined || (typeof raw["loose"] === "boolean" && (raw["loose"] === false || raw["tabIds"].length === 1)))
       );
     case "rename":
       return isTabGroupId(raw["groupId"]) && typeof raw["title"] === "string";

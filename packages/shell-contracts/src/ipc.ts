@@ -49,7 +49,7 @@ import type {
   ReminderSnapshot,
 } from "./reminders.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
-import type { DeskGrab, DeskHover, DeskPageInput, DeskState } from "./desk.js";
+import type { DeskGrab, DeskHover, DeskNotchFrame, DeskNotchInput, DeskPageInput, DeskPipFrame, DeskPipInput, DeskShelfFrame, DeskShelfInput, DeskState } from "./desk.js";
 import type { DeskLayoutEvaluation, DeskLayoutRequest } from "./desk-layout.js";
 import type {
   DeskConversationCommand,
@@ -71,7 +71,7 @@ import type {
   TabDragVisual,
 } from "./chrome.js";
 import type { AddressIntentRanking, AddressIntentRequest } from "./address-intent.js";
-import type { BrowserMediaInfo, MediaControl, ReadAloudStatus } from "./media.js";
+import type { BrowserMediaInfo, MediaControl, MediaLevel, ReadAloudStatus } from "./media.js";
 import type { ScreenShareInfo } from "./screen-share.js";
 import type {
   BrowserControlCommand,
@@ -212,8 +212,15 @@ export interface ShellSnapshot {
   splitMode: SplitMode;
   /** Every saved split group, including groups that are not currently visible. */
   splitGroups: SplitGroupInfo[];
-  /** The active Space's tab groups, in no particular order: a group sits where its first tab does (@pistachio/shell-contracts/tab-groups). */
+  /** The active Space's tab groups, in no particular order: a group sits where its first tab does (@pistachio/shell-contracts/tab-groups). Loose tabs' groups are not among them (looseGroups). */
   tabGroups: TabGroupInfo[];
+  /**
+   * The active Space's loose tabs' groups (TabGroupInfo.loose): each made
+   * for one day tab's desk and drawn as that tab alone, so listed apart from
+   * the groups the chrome draws. Only the desk reads them. Absent where no
+   * desk can be (the web shell).
+   */
+  looseGroups?: TabGroupInfo[];
   run: RunSummary | null;
   /** Every saved conversation, newest first, the open one included (main/thread-store.ts). */
   threads: ThreadListItem[];
@@ -1132,6 +1139,40 @@ export interface NativeSurfaceApi {
   onDeskPageInput(listener: (input: DeskPageInput) => void): () => void;
   /** The pointer came onto a zoomed desk page (a minimized window's), or went off it. */
   onDeskHover(listener: (hover: DeskHover) => void): () => void;
+  /** Shell → main: the desk's idle Bar to draw over the live pages under it (the notch view), or null. */
+  setDeskNotch(frame: DeskNotchFrame | null): void;
+  /** Notch view only: the notch as it stands, for a view that loaded after it was set. */
+  getDeskNotch(): Promise<DeskNotchFrame | null>;
+  /** Notch view only: every change to it. */
+  onDeskNotch(listener: (frame: DeskNotchFrame | null) => void): () => void;
+  /** Notch view only: the pointer coming and going, and a press. */
+  sendDeskNotchInput(input: DeskNotchInput): void;
+  /** Shell only: those, relayed by main to the desk's Bar. */
+  onDeskNotchInput(listener: (input: DeskNotchInput) => void): () => void;
+  /** Shell → main: the desk's parked windows to draw over the live pages under them (the shelf view), or null. */
+  setDeskShelf(frame: DeskShelfFrame | null): void;
+  /** Shelf view only: the shelf as it stands, for a view that loaded after it was set. */
+  getDeskShelf(): Promise<DeskShelfFrame | null>;
+  /** Shelf view only: every change to it. */
+  onDeskShelf(listener: (frame: DeskShelfFrame | null) => void): () => void;
+  /** Shelf view only: the pointer onto one of its windows, or off it. */
+  sendDeskShelfInput(input: DeskShelfInput): void;
+  /** Shell only: those, relayed by main to the desk. */
+  onDeskShelfInput(listener: (input: DeskShelfInput) => void): () => void;
+  /** Shell → main: the desk's floating player on the rail (the pip view, over the media preview), or null. */
+  setDeskPip(frame: DeskPipFrame | null): void;
+  /** Pip view only: the player as it stands, for a view that loaded after it was set. */
+  getDeskPip(): Promise<DeskPipFrame | null>;
+  /** Pip view only: every change to it. */
+  onDeskPip(listener: (frame: DeskPipFrame | null) => void): () => void;
+  /** Pip view only: a control pressed, or a press on the picture. */
+  sendDeskPipInput(input: DeskPipInput): void;
+  /** Shell only: those, relayed by main to the rail's now playing. */
+  onDeskPipInput(listener: (input: DeskPipInput) => void): () => void;
+  /** The tabs whose loudness the rail's now playing shows: main has their pages measure it while they are listed. */
+  setMediaMeters(tabIds: string[]): void;
+  /** A metered tab's loudness (MediaLevel), as its page measures it. */
+  onMediaLevel(listener: (level: MediaLevel) => void): () => void;
   /**
    * What the layout model thinks of the desk (@pistachio/shell-contracts/desk-layout):
    * null when the request is not worth asking, no model is reachable, the
@@ -1292,6 +1333,23 @@ export const NATIVE_SURFACE_MEMBERS = {
   onDeskShift: "Fires from main's relay of every view's keys, native page views included.",
   onDeskPageInput: "Fires from main's mouse hook on native page views and its relay of their keys.",
   onDeskHover: "Fires from main's mouse hook on native page views.",
+  setDeskNotch: "Places the native notch view over the live desk pages under the Bar.",
+  getDeskNotch: "The native notch view's own read of the notch.",
+  onDeskNotch: "The native notch view's own subscription to the notch.",
+  sendDeskNotchInput: "Relays the pointer and presses out of the native notch view.",
+  onDeskNotchInput: "Receives the native notch view's pointer and presses.",
+  setDeskShelf: "Places the native shelf view over the live desk pages under the parked windows.",
+  getDeskShelf: "The native shelf view's own read of the shelf.",
+  onDeskShelf: "The native shelf view's own subscription to the shelf.",
+  sendDeskShelfInput: "Relays the pointer out of the native shelf view.",
+  onDeskShelfInput: "Receives the native shelf view's pointer.",
+  setDeskPip: "Places the native pip view over the floating player's native video view.",
+  getDeskPip: "The native pip view's own read of the player.",
+  onDeskPip: "The native pip view's own subscription to the player.",
+  sendDeskPipInput: "Relays controls and presses out of the native pip view.",
+  onDeskPipInput: "Receives the native pip view's controls and presses.",
+  setMediaMeters: "Native tab pages measure their own media's loudness for the rail.",
+  onMediaLevel: "Native tab pages' measured loudness, relayed by main.",
   judgeDeskLayout: "The desk runs only over native page views; its layout model is asked for it.",
   deskConversation: "The desk runs only over native page views; its conversation follows it.",
   onDeskRequest: "Main's agent asks the desk, which exists only over native page views, for its layout.",
@@ -1438,6 +1496,22 @@ export const IPC = {
   deskShift: "pistachio:desk-shift",
   deskPageInput: "pistachio:desk-page-input",
   deskHover: "pistachio:desk-hover",
+  deskNotchSet: "pistachio:desk-notch-set",
+  deskNotchGet: "pistachio:desk-notch-get",
+  deskNotchChanged: "pistachio:desk-notch-changed",
+  deskNotchInput: "pistachio:desk-notch-input",
+  deskShelfSet: "pistachio:desk-shelf-set",
+  deskShelfGet: "pistachio:desk-shelf-get",
+  deskShelfChanged: "pistachio:desk-shelf-changed",
+  deskShelfInput: "pistachio:desk-shelf-input",
+  deskPipSet: "pistachio:desk-pip-set",
+  deskPipGet: "pistachio:desk-pip-get",
+  deskPipChanged: "pistachio:desk-pip-changed",
+  deskPipInput: "pistachio:desk-pip-input",
+  mediaMetersSet: "pistachio:media-meters-set",
+  mediaMeter: "pistachio:media-meter",
+  mediaLevelReport: "pistachio:media-level-report",
+  mediaLevelChanged: "pistachio:media-level-changed",
   deskLayoutJudge: "pistachio:desk-layout-judge",
   deskConversation: "pistachio:desk-conversation",
   deskRequest: "pistachio:desk-request",

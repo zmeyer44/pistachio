@@ -4,10 +4,11 @@
  * no page view to free — so on the web there is nothing to open.
  */
 
+import { useCallback, useSyncExternalStore } from "react";
 import type { DeskEngine } from "../../components/desk/desk-engine";
 import { nativeApi } from "../../api";
 import { useAppStore } from "../../store";
-import { useDeskStore } from "./store";
+import { deskGroups, isDayTab, tabDeskId, tabDeskOf, useDeskStore } from "./store";
 
 export function deskAvailable(): boolean {
   return nativeApi() !== null;
@@ -36,8 +37,8 @@ export function toggleDesk(groupId: string): void {
 
 /**
  * The Toggle desk shortcut, from anywhere in the shell or a page: the desk
- * that is up is left; with none up, the tab in use opens its group's desk.
- * A tab in no group has no desk, and a notice says how to get one.
+ * that is up is left; with none up, the tab in use opens its desk — its
+ * group's, or, in no group, its own (deskFor).
  */
 export function toggleDeskOfActiveTab(): boolean {
   if (!deskAvailable()) return false;
@@ -46,17 +47,43 @@ export function toggleDeskOfActiveTab(): boolean {
     desk.leave();
     return true;
   }
-  const store = useAppStore.getState();
-  const snapshot = store.snapshot;
-  const activeTabId = snapshot?.activeTabId ?? null;
-  if (snapshot === null || activeTabId === null) return false;
-  const group = snapshot.tabGroups.find((candidate) => candidate.tabIds.includes(activeTabId));
-  if (group === undefined) {
-    store.showNotice("A desk is a tab group's: put this tab in a group to open it as a desk");
-    return true;
-  }
-  toggleDesk(group.id);
+  const activeTabId = useAppStore.getState().snapshot?.activeTabId ?? null;
+  if (activeTabId === null) return false;
+  void deskFor(activeTabId).then((deskId) => {
+    const now = useDeskStore.getState();
+    if (deskId !== null && now.groupId === null && now.opening === null) toggleDesk(deskId);
+  });
   return true;
+}
+
+/** How long a group just made, or a tab that just joined the desk's group, may take to reach the snapshot. */
+const JOIN_WAIT_MS = 1500;
+
+/**
+ * The desk a tab is shown on (docs/desk.md): its group's — one the chrome
+ * draws, or a loose tab's. A day tab in no group gets a loose tab's group
+ * made for it now (TabGroupInfo.loose), so that its desk has all a group's
+ * does; a favorite's or a pinned page's, which no group can hold, a desk of
+ * its own (tabDeskId). Null for a tab that is gone, or not in the Space in
+ * view, or when its group could not be made.
+ */
+export async function deskFor(tabId: string): Promise<string | null> {
+  const snapshot = useAppStore.getState().snapshot;
+  const tab = snapshot?.tabs.find((candidate) => candidate.id === tabId);
+  if (snapshot === null || tab === undefined || tab.spaceId !== snapshot.activeSpaceId) return null;
+  const group = deskGroups(snapshot).find((candidate) => candidate.tabIds.includes(tabId));
+  if (group !== undefined) return group.id;
+  if (!isDayTab(tab)) return tabDeskId(tabId);
+  const id = crypto.randomUUID();
+  const made = await useAppStore.getState().tabGroupCommand({ type: "create", id, tabIds: [tabId], loose: true });
+  if (made === null) return null;
+  // Its desk can be up once the snapshot lists it.
+  const until = performance.now() + JOIN_WAIT_MS;
+  while (!deskGroups(useAppStore.getState().snapshot).some((candidate) => candidate.id === id)) {
+    if (performance.now() > until) return null;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  return id;
 }
 
 /**
@@ -108,8 +135,41 @@ export function askDesk(): boolean {
  */
 let engineUp: DeskEngine | null = null;
 
+const engineListeners = new Set<() => void>();
+
 export function lendDeskEngine(engine: DeskEngine | null): void {
   engineUp = engine;
+  for (const listener of engineListeners) listener();
+}
+
+/**
+ * The tabs with a window on the desk that is up — one flying into its row
+ * included — as one key ("" with no desk). A page is the desk's while its
+ * window is: a picture of it elsewhere (the media stack's card, the rail's
+ * floating player) waits until the window has gone, or main's layout, which
+ * still has the page in it, would take the picture back.
+ */
+export function useDeskWindowKey(): string {
+  const engine = useDeskEngine();
+  return useSyncExternalStore(
+    useCallback((listener: () => void) => engine?.subscribe(listener) ?? (() => undefined), [engine]),
+    () => (engine === null ? "" : engine.getView().windows.map((window) => window.tabId).join(" ")),
+    () => "",
+  );
+}
+
+/** deskEngine() for a component: rendered again as an engine is lent, taken back, or its desk leaves. */
+export function useDeskEngine(): DeskEngine | null {
+  const lent = useSyncExternalStore(
+    (listener) => {
+      engineListeners.add(listener);
+      return () => engineListeners.delete(listener);
+    },
+    () => engineUp,
+    () => null,
+  );
+  const open = useDeskStore((state) => state.groupId !== null && !state.leaving);
+  return open ? lent : null;
 }
 
 /** The desk's engine while one is up and open (not leaving), or null. */
@@ -118,18 +178,54 @@ export function deskEngine(): DeskEngine | null {
   return desk.groupId === null || desk.leaving ? null : engineUp;
 }
 
-/** How long a tab that just joined the desk's group may take to reach the desk (the snapshot that says so). */
-const JOIN_WAIT_MS = 1500;
+/**
+ * A tab of the desk's group shown on the desk: its window out, or back out,
+ * in use (the media stack's "show the tab", the floating player's "back to
+ * the desk"). Through the engine, not by selecting the tab: a window sent
+ * out of the desk leaves its tab the one in use when it was the last out,
+ * and selecting it again would change nothing. False for any other tab
+ * (no desk, or another group's): selecting it is the browser's, and the
+ * desk passes to its own.
+ */
+export function showOnDesk(tabId: string): boolean {
+  const engine = deskEngine();
+  if (engine === null || !engine.hasGroupTab(tabId)) return false;
+  engine.add(tabId, { focus: true });
+  return true;
+}
+
+/**
+ * A new tab on the desk that is up (⌘T, the sidebar's +): in the desk's
+ * group, on the home page, brought out as the window in use. On a loose
+ * tab's desk that makes its group one of two, drawn as any group is from
+ * then on (main). A page's own desk has no group to hold it: the new tab is
+ * a loose one, and the desk passes to it (DeskSurface).
+ */
+export async function newTabOnDesk(): Promise<void> {
+  const desk = useDeskStore.getState();
+  if (desk.groupId === null || desk.leaving) return;
+  const store = useAppStore.getState();
+  if (tabDeskOf(desk.groupId) !== null) {
+    await store.createTab(store.settings.general.homeUrl);
+    return;
+  }
+  await store.tabGroupCommand({ type: "newTab", groupId: desk.groupId });
+}
 
 /**
  * A tab's row let go over the desk (chrome/shelf-drag.tsx): its window comes
  * out where it was let go. A tab that is not the group's joins it first —
- * the desk hears of it with the snapshot that says so.
+ * the desk hears of it with the snapshot that says so. (A page's own desk
+ * has no group to take it: the tab is chosen, and the desk passes to it.)
  */
 export async function dropTabOnDesk(tabId: string, client: { x: number; y: number }): Promise<void> {
   const groupId = useDeskStore.getState().groupId;
   const engine = deskEngine();
   if (groupId === null || engine === null) return;
+  if (tabDeskOf(groupId) !== null) {
+    await useAppStore.getState().selectTab(tabId);
+    return;
+  }
   if (!engine.hasGroupTab(tabId)) {
     const joined = await useAppStore.getState().tabGroupCommand({ type: "addTab", groupId, tabId });
     if (joined === null) return;

@@ -83,6 +83,30 @@ function viewBounds(app: ElectronApplication, url: string): Promise<Box | null> 
   }, url);
 }
 
+/** The desk's shelf view (main's "shelf" chrome view) on screen, and its box; null while it is not. */
+function shelfView(app: ElectronApplication): Promise<Box | null> {
+  return app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    const view = window?.contentView.children.find(
+      (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#shelf") && (child as WebContentsView).getVisible(),
+    ) as WebContentsView | undefined;
+    return view === undefined ? null : view.getBounds();
+  });
+}
+
+/** A mouse event on the shelf view, as the person's pointer would reach it. */
+function shelfMouse(app: ElectronApplication, type: "mouseMove" | "mouseLeave", x: number, y: number): Promise<void> {
+  return app.evaluate(
+    async ({ webContents }, { type, x, y }) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#shelf"));
+      if (contents === undefined) throw new Error("no shelf view");
+      contents.sendInputEvent({ type, x: Math.round(x), y: Math.round(y) });
+      await new Promise((done) => setTimeout(done, 60));
+    },
+    { type, x, y },
+  );
+}
+
 /** Run a script in the tab's page. */
 function inPage<T>(app: ElectronApplication, url: string, script: string): Promise<T> {
   return app.evaluate(
@@ -385,12 +409,17 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     }, windowSelector(accounts));
     await settled(shell);
     const filled = await box(shell, windowSelector(accounts));
-    // The whole card, its live page stopping where the parked window peeks up.
+    // The whole card, its whole page live under the parked window, which main's shelf view draws over it.
     near(filled.y + filled.height, foot, 3);
     await expect.poll(async () => {
       const view = (await liveViews(app)).find((candidate) => candidate.url === ACCOUNTS);
-      return view === undefined ? null : Math.abs(view.bounds.y + view.bounds.height - peekY) <= 1;
+      return view === undefined ? null : Math.abs(view.bounds.y + view.bounds.height - (foot - 5)) <= 1;
     }).toBe(true);
+    await expect.poll(() => shelfView(app)).not.toBeNull();
+    const shelfBox = (await shelfView(app))!;
+    near(shelfBox.x, stage.x + LEFT - 2, 2);
+    near(shelfBox.y, peekY - 2, 2);
+    near(shelfBox.y + shelfBox.height, foot, 2);
     expect(await shell.evaluate(() => (window as unknown as { __fillDrawn: boolean[] }).__fillDrawn.filter(Boolean))).toEqual([]);
     const fillWidths = await inPage<Array<[number, number]>>(app, ACCOUNTS, "__widths");
     expect(fillWidths[0]![1]).toBe(accountsBefore);
@@ -398,7 +427,11 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     expect(fillWidths.slice(1).map(([, width]) => width)).toEqual([Math.round(filled.width - 10)]);
     expect(fillWidths[1]![0] - fillAt).toBeLessThan(150);
 
-    // ── 6. Expand: back to the box it had, its page at its own size again ─
+    // ── 6. Expand: back to the box it had, its page at its own size again. The pointer onto the shelf view raises it,
+    //       as onto its frame, and over the page it rises the shell's again ─
+    await shelfMouse(app, "mouseMove", 62, 19);
+    await expect(invoiceWindow).toHaveAttribute("data-raised", "");
+    await expect.poll(() => shelfView(app)).toBeNull();
     await shell.mouse.move(parked.x + 60, peekY + 17);
     await expect(invoiceWindow).toHaveAttribute("data-raised", "");
     await invoiceWindow.getByTestId("desk-expand").click();
@@ -410,14 +443,13 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     near(back.width, invoiceBefore.width, 3);
     near(back.height, invoiceBefore.height, 3);
     await expect.poll(() => pageSize(app, INVOICES)).toEqual(invoicePageBefore);
-    // The shelf is empty: the window filling the desk is cut short only of the Bar's notch now, under the middle of its foot.
+    // The shelf is empty: the window filling the desk keeps its whole page again (the Bar's notch lies over it, cutting nothing).
     const filledNow = await box(shell, windowSelector(accounts));
     near(filledNow.y + filledNow.height, foot, 3);
-    const notch = await box(shell, '[data-testid="desk-bar"]');
     await expect.poll(async () => {
       const page = await box(shell, `${windowSelector(accounts)} [data-testid="desk-window-page"]`);
       return Math.round(page.y + page.height);
-    }).toBe(Math.round(notch.y));
+    }).toBe(Math.round(foot - 5));
     await capture(app, shell, "06-expanded.png");
 
     // ── 7. Snapped as any window is — into the left half, at the desk's edge — it is a window at its own size again ─
@@ -496,5 +528,75 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     expect(pageErrors).toEqual([]);
   } finally {
     await app.close();
+  }
+});
+
+test("a desk reopened after a relaunch, a minimized window's tab asleep: the tab wakes zoomed out, and the app stays up", async () => {
+  test.setTimeout(180_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-mini-relaunch-"));
+  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: INVOICES } })));
+  const launch = async (): Promise<{ app: ElectronApplication; shell: Page; exits: Array<string | null> }> => {
+    const app = await electron.launch({ args: ["."], cwd: process.cwd(), executablePath, env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData } });
+    const exits: Array<string | null> = [];
+    app.process().on("exit", (_code, signal) => exits.push(signal));
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await clearOfCursor(app);
+    return { app, shell: await shellReady(app), exits };
+  };
+  const openDesk = async (shell: Page): Promise<void> => {
+    const group = shell.getByTestId("tab-group");
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+  };
+
+  // ── 1. A desk with a window minimized into the shelf, left, and the app quit ─
+  let vendor = "";
+  {
+    const { app, shell } = await launch();
+    try {
+      await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === INVOICES)).toBe(true);
+      for (const address of [VENDOR, ACCOUNTS]) {
+        await shell.evaluate((url) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(url), address);
+        await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === address)).toBe(true);
+      }
+      const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+      const invoice = byUrl.get(INVOICES)!;
+      vendor = byUrl.get(VENDOR)!;
+      await shell.evaluate(
+        (tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-relaunch", tabIds, title: "Northstar", color: "blue" }),
+        [invoice, vendor, byUrl.get(ACCOUNTS)!],
+      );
+      await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), invoice);
+      await openDesk(shell);
+      await settled(shell);
+      await shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${vendor}"]`).click();
+      await settled(shell);
+      await fromFrameMenu(shell, shell.locator(windowSelector(vendor)), "desk-minimize");
+      await settled(shell);
+      await expect(shell.locator(windowSelector(vendor))).toHaveAttribute("data-mini", "parked");
+      await shell.keyboard.press("Meta+Alt+Backslash");
+      await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
+      await shell.waitForTimeout(500);
+    } finally {
+      await app.close();
+    }
+  }
+
+  // ── 2. Relaunched, the group's tabs asleep: its desk opens on its saved windows, the minimized one's tab woken
+  //       (as every window's is) and its page zoomed out once it has one — never before, which crashed main ─
+  const { app, shell, exits } = await launch();
+  try {
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.some((group) => group.id === "desk-relaunch")).toBe(true);
+    await openDesk(shell);
+    await settled(shell);
+    await expect(shell.locator(windowSelector(vendor))).toHaveAttribute("data-mini", "parked");
+    await expect.poll(() => pageSize(app, VENDOR), { timeout: 15_000 }).toEqual({ width: MINI_PAGE.w * 2, height: MINI_PAGE.h * 2, zoom: 1 });
+    expect(exits).toEqual([]);
+  } finally {
+    await app.close().catch(() => undefined);
   }
 });

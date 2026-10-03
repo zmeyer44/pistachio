@@ -206,25 +206,29 @@ describe("minimizing a window", () => {
     desk.destroy();
   });
 
-  it("lies over the windows at the desk's foot: a window filling the desk still fills it, its page cut short of the shelf, and whole again after", () => {
-    const { desk, els, layouts, rect } = open();
+  it("lies over the windows at the desk's foot: a window filling the desk keeps its whole page, live, the shelf over it said for main to draw", () => {
+    const { desk, layouts, rect, view } = open();
     desk.toggleMaximize("tab-2");
     settle();
     expectRect(rect("tab-2"), FILLED);
-    const page = (): { y: number; height: number } | undefined => layouts.at(-1)?.views.find((view) => view.tabId === "tab-2")?.bounds;
+    const page = (): { y: number; height: number } | undefined => layouts.at(-1)?.views.find((entry) => entry.tabId === "tab-2")?.bounds;
     expect(page()!.y + page()!.height).toBe(STAGE.h - insets.bottom);
+    expect(desk.getView().shelf).toBeNull();
     desk.minimize("tab-1");
     settle();
     expectRect(rect("tab-2"), FILLED);
-    // Its live page stops where the parked window peeks up, and its frame's page box with it; the shelf stays live over the rest.
-    expect(page()!.y + page()!.height).toBe(STAGE.h - PEEK);
-    expect(els.get("tab-2")!.style["--desk-cut"]).toBe(`${(PEEK - insets.bottom).toFixed(1)}px`);
-    expect(layouts.at(-1)?.views.map((view) => view.tabId)).toContain("tab-1");
+    // Its whole page, live: the parked window peeking up over it covers it not; main's shelf view draws that window.
+    expect(page()!.y + page()!.height).toBe(STAGE.h - insets.bottom);
+    expect(view("tab-2").drawn).toBe(false);
+    expect(desk.getView().shelf).toEqual([{ tabId: "tab-1", rect: PEEKING }]);
+    // The parked window is its still meanwhile (what that view shows), not a live page under it.
+    expect(view("tab-1").drawn).toBe(true);
+    expect(layouts.at(-1)?.views.map((entry) => entry.tabId)).not.toContain("tab-1");
     desk.expand("tab-1");
     settle();
     expectRect(rect("tab-2"), FILLED);
     expect(page()!.y + page()!.height).toBe(STAGE.h - insets.bottom);
-    expect(els.get("tab-2")!.style["--desk-cut"]).toBe("0.0px");
+    expect(desk.getView().shelf).toBeNull();
     desk.destroy();
   });
 
@@ -245,18 +249,21 @@ describe("minimizing a window", () => {
     desk.destroy();
   });
 
-  it("cuts a window short of the Bar's notch only where it is under it", () => {
+  it("cuts no window short of the Bar's notch: a live page under it is said, for the notch to be drawn over it", () => {
     const { desk, layouts, rect } = open();
     desk.setNotch({ w: 240, h: 32 });
     desk.toggleMaximize("tab-2");
     settle();
     const page = (tabId: string): { y: number; height: number } | undefined => layouts.at(-1)?.views.find((view) => view.tabId === tabId)?.bounds;
     expectRect(rect("tab-2"), FILLED);
-    expect(page("tab-2")!.y + page("tab-2")!.height).toBe(STAGE.h - 32);
-    // In the left half, clear of the notch: whole.
+    // The whole page, down to the frame's foot: the notch lies over it (main's notch view), not cutting it.
+    expect(page("tab-2")!.y + page("tab-2")!.height).toBe(STAGE.h - insets.bottom);
+    expect(desk.getView().notchOver).toBe(true);
+    // In the left half, clear of the notch: nothing live under it.
     desk.applyLayout(new Map([["tab-2", { x: 0, y: 0, w: STAGE.w / 2 - 200, h: STAGE.h }]]));
     settle();
     expect(page("tab-2")!.y + page("tab-2")!.height).toBe(STAGE.h - insets.bottom);
+    expect(desk.getView().notchOver).toBe(false);
     desk.destroy();
   });
 
@@ -597,7 +604,7 @@ describe("a minimized window snapped", () => {
 });
 
 describe("the shelf at the foot of the desk's card", () => {
-  it("peeks from the card's own edge, cut off there, its view too, and the desk keeps above where it peeks up", () => {
+  it("peeks from the card's own edge, cut off there, its view too; and nothing of any window at rest falls past the card's foot", () => {
     const { layouts } = native();
     const desk = engine();
     desk.start([], "tab-0", ["tab-0", "tab-1"]);
@@ -606,16 +613,20 @@ describe("the shelf at the foot of the desk's card", () => {
     settle();
     const el = element();
     desk.attachWindow("tab-0", el as unknown as HTMLElement);
+    const other = element();
+    desk.attachWindow("tab-1", other as unknown as HTMLElement);
     desk.minimize("tab-0");
     settle();
     expectRect(rectOf(el), PEEKING);
     // Cut off at the card's edge, its view too: the surface's gutter below it stays clear.
-    expect(el.style["clipPath"]).toBe(`inset(-40px -40px ${(MINI_SIZE.h - PEEK).toFixed(1)}px -40px)`);
+    expect(el.style["clipPath"]).toBe(`inset(-120px -120px ${(MINI_SIZE.h - PEEK).toFixed(1)}px -120px)`);
     const view = layouts.at(-1)!.views.find((entry) => entry.tabId === "tab-0")!;
     expect(view.bounds.y + view.bounds.height).toBe(STAGE.h);
-    // The desk keeps above where it peeks up, and a gap.
-    const other = desk.layoutSnapshot().windows.find((window) => window.tabId === "tab-1")!.rect;
-    expect(other.y + other.h).toBeLessThanOrEqual(STAGE.h - PEEK - DESK_GAP + 0.5);
+    // A window filling the desk keeps its shadow all round but past the foot, the gutter the Bar's notch rises out of.
+    desk.toggleMaximize("tab-1");
+    settle();
+    expectRect(rectOf(other), FILLED);
+    expect(other.style["clipPath"]).toBe("inset(-120px -120px 0.0px -120px)");
     desk.destroy();
   });
 });

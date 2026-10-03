@@ -198,6 +198,30 @@ function center(rect: Box): { x: number; y: number } {
   return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
 }
 
+/** The desk's notch view (main's "notch" chrome view) on screen, and its box; null while it is not. */
+function notchView(app: ElectronApplication): Promise<Box | null> {
+  return app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    const view = window?.contentView.children.find(
+      (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#notch") && (child as WebContentsView).getVisible(),
+    ) as WebContentsView | undefined;
+    return view === undefined ? null : view.getBounds();
+  });
+}
+
+/** A mouse event on the notch view, as the person's pointer would reach it. */
+function notchMouse(app: ElectronApplication, type: "mouseMove" | "mouseLeave", x: number, y: number): Promise<void> {
+  return app.evaluate(
+    async ({ webContents }, { type, x, y }) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"));
+      if (contents === undefined) throw new Error("no notch view");
+      contents.sendInputEvent({ type, x: Math.round(x), y: Math.round(y) });
+      await new Promise((done) => setTimeout(done, 60));
+    },
+    { type, x, y },
+  );
+}
+
 /** Main's box for the tab's view equals the hole its desk window leaves (a pixel of rounding either way). */
 async function expectLiveIn(app: ElectronApplication, shell: Page, url: string, tabId: string): Promise<void> {
   await expect
@@ -388,12 +412,27 @@ test("a tab group's desk: pull out, move, stick, tile, throw, resize, put away, 
     expect(Math.abs(half.width - (usableOf(stage).width - 8) / 2)).toBeLessThan(2);
     expect(Math.abs(half.height - usableOf(stage).height)).toBeLessThan(2);
     await expectLiveIn(app, shell, urls[1]!, ids[1]!);
-    // Down to the desk's foot, under the Bar's notch: its page stops at the notch's top, the rest of its frame under the notch.
+    // Down to the desk's foot, under the Bar's notch, its page whole: the notch is main's notch view, over the live page.
     const notch = await box(shell, '[data-testid="desk-bar"][data-compact]');
     expect(notch.y + notch.height).toBeCloseTo(stage.y + stage.height, 0);
     const halfPage = await box(shell, `${windowSelector(ids[1]!)} [data-testid="desk-window-page"]`);
-    expect(Math.abs(halfPage.y + halfPage.height - notch.y)).toBeLessThan(2);
+    expect(Math.abs(halfPage.y + halfPage.height - (stage.y + stage.height - 5))).toBeLessThan(2);
+    await expect.poll(() => notchView(app!)).not.toBeNull();
+    const overPage = (await notchView(app!))!;
+    expect(Math.abs(overPage.x - (notch.x - 10))).toBeLessThanOrEqual(1);
+    expect(Math.abs(overPage.y - notch.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(overPage.width - (notch.width + 20))).toBeLessThanOrEqual(1);
     await capture(app, shell, "04-left-half.png");
+    // The pointer on the notch view is on the Bar: it grows (the page under it giving way), and the view goes.
+    await notchMouse(app!, "mouseMove", overPage.width / 2, overPage.height / 2);
+    await expect(shell.locator('[data-testid="desk-bar"]:not([data-compact])')).toHaveCount(1);
+    await expect.poll(() => notchView(app!)).toBeNull();
+    // (The pointer is over the shell's Bar now, where the view was; then it goes.)
+    await shell.mouse.move(overPage.x + overPage.width / 2, overPage.y + overPage.height / 2);
+    await shell.mouse.move(stage.x + stage.width * 0.75, stage.y + 60, { steps: 4 });
+    await expect(shell.locator('[data-testid="desk-bar"][data-compact]')).toHaveCount(1);
+    // Back to its idle size over the live page, the view is back over it.
+    await expect.poll(() => notchView(app!), { timeout: 5_000 }).not.toBeNull();
 
     // ── 5. Throw the other window: it coasts on to the far edge and lies there ─
     // (By the visible end of its bar — the half-width window covers the rest.)
@@ -1014,6 +1053,182 @@ test("the sidebar is the desk's dock: a row's click opens where there is room, a
     await shell.keyboard.press("Escape");
     await expect(shell.getByTestId("url-bar")).toHaveCount(0);
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+  } finally {
+    await app.close();
+  }
+});
+
+test("on the rail the favorites are one folder: its sheet slides out of the rail over the desk, the pages under it giving way, by pointer, click or keyboard", async () => {
+  test.setTimeout(120_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-rail-favorites-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const VENDOR = "pistachio://demo/vendors/atlas-medical";
+  const favorites = [
+    ["Vendor", VENDOR],
+    ["Docs", "https://docs.example.org/"],
+    ["Mail", "pistachio://demo/auth/relying-party?favorite=mail"],
+    ["Calendar", "https://calendar.example.net/"],
+    ["News", "https://news.example.com/"],
+    ["Wiki", "https://wiki.example.org/"],
+    ["Bank", "https://bank.example.com/"],
+  ];
+  await writeFile(
+    join(userData, "sidebar.json"),
+    JSON.stringify({ version: 1, spaces: { work: { favorites: favorites.map(([title, url], index) => ({ id: `fav-${String(index)}`, url, title, faviconUrl: null })), entries: [] } } }),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await clearOfCursor(app);
+    const shell = await shellReady(app);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === "pistachio://demo/invoices")).toBe(true);
+    await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), "pistachio://demo/auth/relying-party");
+    await expect.poll(async () => (await snapshot(shell)).tabs.length).toBe(2);
+    const ids = (await snapshot(shell)).tabs.map((tab) => tab.id);
+    // A tab outside the group, its row on the rail too: it can be dropped onto the favorites.
+    await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), "pistachio://demo/invoices?outside=1");
+    await expect.poll(async () => (await snapshot(shell)).tabs.length).toBe(3);
+    const outside = (await snapshot(shell)).tabs.find((tab) => !ids.includes(tab.id))!.id;
+    await shell.evaluate((tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-favorites", tabIds, title: "Northstar", color: "blue" }), ids);
+    // One favorite's page open (Mail's, a local page), outside the group.
+    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.sidebarCommand({ type: "open", anchorId: "fav-2" }));
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.anchorId === "fav-2")).toBe(true);
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), ids[0]!);
+    const group = shell.getByTestId("tab-group");
+    await group.getByTestId("tab-group-header").hover();
+    await group.getByTestId("tab-group-desk").click();
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
+    await settled(shell);
+    const stage = await box(shell, ".desk-stage");
+    const away = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.6);
+    await away();
+
+    // ── 1. One folder in place of a row per favorite: the first four icons and the count ─
+    const folder = shell.getByTestId("rail-favorites");
+    await expect(folder).toHaveAttribute("aria-label", "Favorites, 7");
+    await expect(folder.locator(".rail-favorites-mark")).toHaveCount(4);
+    const folderBox = await box(shell, '[data-testid="rail-favorites"]');
+    expect(folderBox.height).toBe(32);
+    // Under it, the favorites whose pages are open: Mail's (named as its page is, its address under the name).
+    const openRows = shell.getByTestId("rail-favorite-open");
+    await expect(openRows).toHaveCount(1);
+    await expect(openRows.first()).toHaveAttribute("aria-label", /, open$/);
+    await expect(openRows.first()).toHaveAttribute("title", /favorite=mail/);
+    expect((await box(shell, '[data-testid="rail-favorite-open"]')).y).toBeGreaterThanOrEqual(folderBox.y + folderBox.height);
+    const sheet = shell.getByTestId("rail-favorites-sheet");
+    await expect(sheet).not.toHaveAttribute("data-open", /.*/);
+    // Shut, its tiles are out of reach (inert, unseen).
+    await expect(sheet).toHaveJSProperty("inert", true);
+
+    // ── 2. The pointer resting on it: the sheet slides out of the rail's edge, over the desk, once the pages under it have given way ─
+    await folder.hover();
+    await expect(sheet).toHaveAttribute("data-shown", "");
+    const sheetBox = await box(shell, '[data-testid="rail-favorites-sheet"]');
+    const slot = await box(shell, '[data-testid="sidebar-motion-slot"]');
+    expect(Math.abs(sheetBox.x - (slot.x + slot.width))).toBeLessThanOrEqual(1);
+    expect(sheetBox.y).toBeLessThanOrEqual(folderBox.y);
+    await expect(sheet.getByTestId("favorite-tile")).toHaveCount(7);
+    for (const view of await liveViews(app)) {
+      const clear = view.bounds.x >= sheetBox.x + sheetBox.width || view.bounds.y >= sheetBox.y + sheetBox.height || view.bounds.y + view.bounds.height <= sheetBox.y;
+      expect(clear, `a live page under the sheet: ${JSON.stringify(view.bounds)}`).toBe(true);
+    }
+    await shell.waitForTimeout(300);
+    await capture(app, shell, "24-rail-favorites.png");
+    // It goes a moment after the pointer leaves it and the folder.
+    await away();
+    await expect(sheet).not.toHaveAttribute("data-open", /.*/, { timeout: 2_000 });
+
+    // ── 3. A click pins it out: the pointer leaving keeps it; Escape puts it away ─
+    await folder.click();
+    await expect(sheet).toHaveAttribute("data-shown", "");
+    await away();
+    await shell.waitForTimeout(700);
+    await expect(sheet).toHaveAttribute("data-open", "");
+    await shell.keyboard.press("Escape");
+    await expect(sheet).not.toHaveAttribute("data-open", /.*/);
+
+    // ── 4. The keyboard: Enter brings it out on its first favorite, the arrows move through them, Escape goes back to the folder ─
+    await folder.focus();
+    await shell.keyboard.press("Enter");
+    await expect(sheet).toHaveAttribute("data-shown", "");
+    await expect.poll(() => shell.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null)).toBe("Vendor");
+    await shell.keyboard.press("ArrowRight");
+    await expect.poll(() => shell.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null)).toBe("Docs");
+    await shell.keyboard.press("ArrowDown");
+    await expect.poll(() => shell.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null)).toBe("News");
+    await shell.keyboard.press("Escape");
+    await expect(sheet).not.toHaveAttribute("data-open", /.*/);
+    await expect.poll(() => shell.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null)).toBe("rail-favorites");
+
+    // ── 5. A row dragged onto the folder opens the sheet, and its grid takes the drop ─
+    const from = center(await box(shell, rowSelector(outside)));
+    const onFolder = center(folderBox);
+    await shell.mouse.move(from.x, from.y);
+    await shell.mouse.down();
+    for (let step = 1; step <= 10; step += 1) {
+      await shell.mouse.move(from.x + ((onFolder.x - from.x) * step) / 10, from.y + ((onFolder.y - from.y) * step) / 10);
+      await shell.waitForTimeout(16);
+    }
+    await expect(sheet).toHaveAttribute("data-open", "");
+    await expect(sheet).toHaveAttribute("data-shown", "");
+    const lastTile = await box(shell, '[data-testid="rail-favorites-sheet"] [data-testid="favorite-tile"] >> nth=-1');
+    const into = { x: lastTile.x + lastTile.width + 20, y: lastTile.y + lastTile.height / 2 };
+    for (let step = 1; step <= 10; step += 1) {
+      await shell.mouse.move(onFolder.x + ((into.x - onFolder.x) * step) / 10, onFolder.y + ((into.y - onFolder.y) * step) / 10);
+      await shell.waitForTimeout(16);
+    }
+    await shell.mouse.up();
+    await expect.poll(async () => (await snapshot(shell)).sidebar.favorites.length).toBe(8);
+    // (Not the desk's: the tab stays out of the group, no window for it.)
+    expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-favorites")?.tabIds).not.toContain(outside);
+    await expect(folder).toHaveAttribute("aria-label", "Favorites, 8");
+    // Its page is the new favorite's, open: under the folder with Mail's.
+    await expect(openRows).toHaveCount(2);
+    await away();
+    await expect(sheet).not.toHaveAttribute("data-open", /.*/, { timeout: 2_000 });
+
+    // ── 6. The middle button on an open favorite's row closes its page, and the row goes ─
+    await shell.locator('[data-testid="rail-favorite-open"][title*="favorite=mail"]').click({ button: "middle" });
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.anchorId === "fav-2")).toBe(false);
+    await expect(openRows).toHaveCount(1);
+    await expect(shell.locator('[data-testid="rail-favorite-open"][title*="favorite=mail"]')).toHaveCount(0);
+
+    // ── 7. A favorite chosen opens it, as from the whole sidebar: a page in no group, on a desk of its own ─
+    await folder.hover();
+    await expect(sheet).toHaveAttribute("data-shown", "");
+    await sheet.getByRole("listitem", { name: "Vendor" }).click();
+    await expect.poll(async () => {
+      const now = await snapshot(shell);
+      return now.tabs.find((tab) => tab.id === now.activeTabId)?.url ?? null;
+    }).toBe(VENDOR);
+    const vendorTab = (await snapshot(shell)).activeTabId!;
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(vendorTab))).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await expect(shell.getByTestId("desk-bar")).toHaveCount(0);
+    // Its window put away, its tab is still the one in use: the favorite chosen again brings the window back out.
+    await shell.waitForTimeout(700);
+    await shell.locator(windowSelector(vendorTab)).getByTestId("desk-collapse").click();
+    await expect(shell.locator(windowSelector(vendorTab))).toHaveCount(0);
+    expect((await snapshot(shell)).activeTabId).toBe(vendorTab);
+    await shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${vendorTab}"]`).click();
+    await expect(shell.locator(windowSelector(vendorTab))).toHaveCount(1);
+    // With no Bar to put the keyboard in, ⌘I opens the console, as anywhere.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.send("pistachio:shell-command", { type: "toggleConsole" }));
+    await expect(shell.getByTestId("agent-panel")).toBeVisible();
   } finally {
     await app.close();
   }
@@ -1931,6 +2146,166 @@ test("the sidebar lists the Space's other groups; on the rail a click on one pas
     await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
     await expect(shell.getByTestId("browser-surface")).toBeVisible();
     expect((await snapshot(shell)).activeTabId).toBe(b0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("choosing a tab off the desk passes the desk to its own: another group's, or a loose tab's group made for it — drawn as the tab alone, with all a group's desk has — which a group taking the tab deletes, and ⌘T grows into a group", async () => {
+  test.setTimeout(150_000);
+  const executablePath = resolveElectronExecutable();
+  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+  await mkdir(screenshotDirectory, { recursive: true });
+  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-passing-"));
+  await writeFile(
+    join(userData, "settings.json"),
+    JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: "pistachio://demo/invoices" } })),
+  );
+  const app = await electron.launch({
+    args: ["."],
+    cwd: process.cwd(),
+    executablePath,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  });
+  try {
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await clearOfCursor(app);
+    const shell = await shellReady(app);
+    const urls = [
+      "pistachio://demo/invoices",
+      "pistachio://demo/vendors/atlas-medical",
+      "pistachio://demo/invoices?page=north",
+      "pistachio://demo/invoices?page=south",
+      "pistachio://demo/invoices?page=loose",
+      "pistachio://demo/invoices?page=second",
+    ];
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[0])).toBe(true);
+    for (const url of urls.slice(1)) await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), url);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(urls.length);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const [a0, a1, b0, b1, loose, second] = urls.map((url) => byUrl.get(url)!) as [string, string, string, string, string, string];
+    const command = (body: Record<string, unknown>): Promise<unknown> =>
+      shell.evaluate((cmd) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand(cmd as never), body);
+    await command({ type: "create", id: "desk-a", tabIds: [a0, a1], title: "Research", color: "blue" });
+    await command({ type: "create", id: "desk-b", tabIds: [b0, b1], title: "Regions", color: "orange" });
+    const choose = (tabId: string): Promise<unknown> => shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), tabId);
+    await choose(a0);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
+    const header = shell.locator('[data-testid="tab-group"][data-group-id="desk-a"] [data-testid="tab-group-header"]');
+    await header.hover();
+    await shell.locator('[data-testid="tab-group"][data-group-id="desk-a"]').getByTestId("tab-group-desk").click();
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
+    await settled(shell);
+    const stage = await box(shell, ".desk-stage");
+    const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
+    const stageColor = (): Promise<string | null> => shell.evaluate(() => document.querySelector(".desk-stage")?.getAttribute("data-group-color") ?? null);
+    /** The loose tab's group that holds the tab, if any. */
+    const looseGroupOf = async (tabId: string) => ((await snapshot(shell)).looseGroups ?? []).find((group) => group.tabIds.includes(tabId)) ?? null;
+    expect(await stageColor()).toBe("blue");
+
+    // ── 1. Another group's tab chosen (the tab switcher, the address palette): the desk passes to that group, on that tab ─
+    await choose(b1);
+    await expect.poll(stageColor).toBe("orange");
+    await settled(shell);
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(b1))).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(b1);
+    await expectLiveIn(app, shell, urls[3]!, b1);
+    await capture(app, shell, "75-desk-passed-to-chosen-tab.png");
+
+    // ── 2. A loose tab's row clicked: a group is made for it, drawn as the tab alone, and its desk has all a group's has ─
+    await shell.locator(rowSelector(loose)).click();
+    await awayFromDock();
+    await expect.poll(async () => (await looseGroupOf(loose))?.id ?? null).not.toBe(null);
+    const made = (await looseGroupOf(loose))!;
+    expect((await snapshot(shell)).tabGroups.some((group) => group.tabIds.includes(loose))).toBe(false);
+    await expect.poll(stageColor).toBe("gray");
+    await settled(shell);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(loose))).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(loose);
+    await expectLiveIn(app, shell, urls[4]!, loose);
+    const alone = await box(shell, windowSelector(loose));
+    const desk = await box(shell, ".desk-stage");
+    expect(Math.abs(alone.x + alone.width / 2 - (desk.x + desk.width / 2))).toBeLessThan(4);
+    // No group's row in the sidebar: the tab's own, with the Stack under it; the Bar, asking about the tab.
+    await expect(shell.locator(`[data-testid="tab-group"][data-group-id="${made.id}"]`)).toHaveCount(0);
+    await expect(shell.locator(rowSelector(loose))).toHaveCount(1);
+    await expect(shell.getByTestId("desk-stack")).toHaveCount(1);
+    await expect(shell.getByTestId("desk-bar")).toHaveCount(1);
+    await shell.evaluate(
+      (groupId) =>
+        (window as unknown as { pistachio: PistachioApi }).pistachio.groupContext({ type: "addText", groupId, title: "Loose", kind: "fact", text: "Net 30 terms" }),
+      made.id,
+    );
+    await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "1");
+    await capture(app, shell, "76-loose-tab-desk.png");
+
+    // ── 3. The loose tab put in Research (its row dragged into the group): it is Research's, its group is gone, and the desk passes to Research on it ─
+    await command({ type: "addTab", groupId: "desk-a", tabId: loose });
+    await expect.poll(async () => (await looseGroupOf(loose))?.id ?? null).toBe(null);
+    expect((await snapshot(shell)).tabGroups.find((group) => group.id === "desk-a")?.tabIds).toContain(loose);
+    expect((await snapshot(shell)).tabGroups.some((group) => group.id === made.id)).toBe(false);
+    await expect.poll(stageColor).toBe("blue");
+    await settled(shell);
+    await expect(shell.locator(windowSelector(loose))).toHaveCount(1);
+    await expect(shell.locator(windowSelector(a0))).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(loose);
+
+    // ── 4. Another loose tab's desk, and ⌘T there: its group is one of two now, drawn, coloured and named as any group is ─
+    await shell.locator(rowSelector(second)).click();
+    await awayFromDock();
+    await expect.poll(async () => (await looseGroupOf(second))?.id ?? null).not.toBe(null);
+    const grown = (await looseGroupOf(second))!;
+    await expect.poll(stageColor).toBe("gray");
+    await settled(shell);
+    await expectLiveIn(app, shell, urls[5]!, second);
+    await app.evaluate(
+      ({ webContents }, url) => {
+        const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
+        contents.focus();
+        contents.sendInputEvent({ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] });
+        contents.sendInputEvent({ type: "keyDown", keyCode: "t", modifiers: ["meta"] });
+        contents.sendInputEvent({ type: "keyUp", keyCode: "t", modifiers: ["meta"] });
+        contents.sendInputEvent({ type: "keyUp", keyCode: "Meta", modifiers: [] });
+      },
+      urls[5]!,
+    );
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === grown.id)?.tabIds.length ?? 0).toBe(2);
+    const drawn = (await snapshot(shell)).tabGroups.find((group) => group.id === grown.id)!;
+    expect(drawn.loose).toBeUndefined();
+    expect(drawn.color).not.toBe("gray");
+    expect(await looseGroupOf(second)).toBe(null);
+    const fresh = drawn.tabIds.find((tabId) => tabId !== second)!;
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(fresh);
+    await expect.poll(stageColor).toBe(drawn.color);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await expect(shell.locator(windowSelector(second))).toHaveCount(1);
+    await expect(shell.locator(windowSelector(fresh))).toHaveCount(1);
+    await expect(shell.locator(`[data-testid="tab-group"][data-group-id="${grown.id}"]`)).toHaveCount(1);
+    await settled(shell);
+    await capture(app, shell, "77-loose-desk-cmd-t.png");
+
+    // ── 4b. That group ungrouped from under its desk: the tab in use, loose now, gets a group of its own, its window
+    // staying where it was (in place), and the other goes home ─
+    const freshBox = await box(shell, windowSelector(fresh));
+    await command({ type: "ungroup", groupId: grown.id });
+    await expect.poll(async () => (await looseGroupOf(fresh))?.id ?? null).not.toBe(null);
+    await expect.poll(stageColor).toBe("gray");
+    await settled(shell);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    const kept = await box(shell, windowSelector(fresh));
+    for (const key of ["x", "y", "width", "height"] as const) expect(Math.abs(kept[key] - freshBox[key])).toBeLessThan(3);
+
+    // ── 5. Research's tab chosen: the desk passes back to it, on that tab ─────
+    await choose(a1);
+    await expect.poll(stageColor).toBe("blue");
+    await settled(shell);
+    await expect(shell.locator(windowSelector(a1))).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a1);
+    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
   } finally {
     await app.close();
   }

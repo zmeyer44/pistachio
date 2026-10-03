@@ -40,7 +40,7 @@ import type { TidySummary } from "./tidy.js";
  * after a capture (renderer/src/BookmarkToastApp.tsx), and the notice stack
  * (./notice.ts, renderer/src/NoticeApp.tsx).
  */
-export type ChromeViewId = "drag" | "find" | "bookmark" | "notice";
+export type ChromeViewId = "drag" | "find" | "bookmark" | "notice" | "notch" | "shelf" | "pip";
 
 /** The URL hash each chrome view loads the renderer bundle with. */
 export const CHROME_VIEW_HASHES: Record<ChromeViewId, `#${ChromeViewId}`> = {
@@ -48,6 +48,9 @@ export const CHROME_VIEW_HASHES: Record<ChromeViewId, `#${ChromeViewId}`> = {
   find: "#find",
   bookmark: "#bookmark",
   notice: "#notice",
+  notch: "#notch",
+  shelf: "#shelf",
+  pip: "#pip",
 };
 
 export function chromeViewFromHash(hash: string): ChromeViewId | null {

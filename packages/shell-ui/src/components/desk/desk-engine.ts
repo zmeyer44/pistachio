@@ -48,8 +48,9 @@
  *   the shell draws, a CSS scale), and PARKED in the shelf at the desk's
  *   foot, each peeking up a quarter of its height beside the one before, the next
  *   to the right overlapping it by half. They lie over the windows there,
- *   as the Bar's notch does (#ledges): a window under them is cut short of
- *   them, its page stopping where they begin (#cutFor).
+ *   which keep their whole pages: over a live page the shelf is drawn by
+ *   main's shelf view, above the page (shelfOver), as the Bar's notch is by
+ *   its notch view (notchOver).
  *   The pointer on a parked window raises it into full view (hoverMini);
  *   dragged away it is a minimized window like any other, and let go at
  *   the desk's foot it parks again. Expand gives it back the box it had.
@@ -192,9 +193,7 @@ const MINI_OVERLAP = 0.5;
  * cut off square there, never pokes out past the corner's curve.
  */
 export const SHELF_INSET = 18;
-/** A window cut short over the desk's foot (#cutFor) keeps at least this much of its page; one that would keep less is covered there instead. */
-const MIN_CUT_PAGE = 80;
-/** How far a window's own clip reaches around it, so its shadow is kept (all but where the notch is a hole through it). */
+/** How far a window's own clip reaches around it, so its shadow is kept (all but past the desk's foot, and where the notch is a hole through it). */
 const CLIP_MARGIN = 120;
 
 /**
@@ -202,6 +201,12 @@ const CLIP_MARGIN = 120;
  * Bar's box, rising from the desk's foot; the radius of its shoulders; and
  * of the flares where its sides meet the edge.
  */
+/** A parked window down in the shelf, where it stands in the stage (DeskView.shelf). */
+export interface DeskShelfSpot {
+  tabId: string;
+  rect: Rect;
+}
+
 export interface NotchShape {
   x: number;
   y: number;
@@ -214,8 +219,8 @@ export interface NotchShape {
 /**
  * The notch's outline, offset by (dx, dy): out of the desk's foot at its
  * left flare, up its side to its shoulder, across, down and out at its right
- * flare — and on down past the foot, so nothing under it there (a window's
- * shadow) is left either.
+ * flare, and back along the foot. (Nothing of a window is left past the foot
+ * to cut a hole in: #write.)
  */
 function notchOutline(shape: NotchShape, foot: number, dx: number, dy: number): string {
   const n = (value: number): string => value.toFixed(1);
@@ -234,7 +239,6 @@ function notchOutline(shape: NotchShape, foot: number, dx: number, dy: number): 
     `A ${n(r)} ${n(r)} 0 0 1 ${n(x1)} ${n(top + r)}`,
     `V ${n(bottom - f)}`,
     `A ${n(f)} ${n(f)} 0 0 0 ${n(x1 + f)} ${n(bottom)}`,
-    `V ${n(bottom + CLIP_MARGIN)}`,
     `H ${n(x0 - f)} Z`,
   ].join(" ");
 }
@@ -396,6 +400,21 @@ export interface DeskView {
   dockDrop: DockDrop | null;
   /** Covers (setCover) no live page paints over any more: what the shell draws there can be seen. */
   clearCovers: ReadonlySet<string>;
+  /** A cover lies over the rail's floating player (setFloat): its picture is to come down while it does. */
+  floatCovered: boolean;
+  /**
+   * A live page is under the Bar's idle notch: the notch is drawn over it by
+   * a view of main's (the "notch" chrome view), as nothing the shell draws
+   * can be (DeskBar says where).
+   */
+  notchOver: boolean;
+  /**
+   * A live page is under the parked windows down in the shelf: where each
+   * stands (in the stage, left to right), for main's shelf view to draw them
+   * over the page (DeskSurface says where, and what they show); null while
+   * the shelf is the shell's own to draw.
+   */
+  shelf: readonly DeskShelfSpot[] | null;
   /** Shift is held over a window in hand: every release lands in the tile the pointer is over. */
   snapping: boolean;
   gesture: "move" | "resize" | "spawn" | null;
@@ -559,12 +578,6 @@ interface Win {
   homeward: boolean;
   /** Closed from its frame (×): drawing in where it stands and fading, quicker than a flight's fade. */
   closing: boolean;
-  /**
-   * How far short of its frame's foot its page stops (#cutFor): above what
-   * the shell draws at the desk's foot over it — the Bar's notch, the parked
-   * windows — which its live page would otherwise paint over.
-   */
-  cut: number;
 }
 
 /**
@@ -662,6 +675,12 @@ export class DeskEngine {
   /** What the shell draws over the desk (setCover): a card beside the sidebar, the Bar — in the stage's coordinates. */
   readonly #covers = new Map<string, Rect>();
   #clearCovers: ReadonlySet<string> = new Set();
+  /** The rail's floating player over the desk (setFloat), and whether its picture is live. */
+  #float: { rect: Rect; live: boolean } | null = null;
+  #floatCovered = false;
+  #notchOver = false;
+  #shelf: readonly DeskShelfSpot[] | null = null;
+  #shelfKey = "";
   #guideEls: HTMLElement[] = [];
   readonly #thumbs = new Map<string, Still>();
   #gesture: Gesture | null = null;
@@ -741,6 +760,9 @@ export class DeskEngine {
       dropsShown: false,
       dockDrop: null,
       clearCovers: this.#clearCovers,
+      floatCovered: this.#floatCovered,
+      notchOver: this.#notchOver,
+      shelf: this.#shelf,
       snapping: false,
       gesture: null,
       phase: "entering",
@@ -880,6 +902,26 @@ export class DeskEngine {
   }
 
   /**
+   * The rail's floating player (docs/desk.md, "Now playing"), in the desk's
+   * coordinates, or null, and whether its picture is live there. Its picture
+   * is a page of main's over the desk's windows, so a cover over it is clear
+   * only once it has come down — which it does while the view's
+   * `floatCovered` says a cover lies over it.
+   */
+  setFloat(rect: Rect | null, live = false): void {
+    const before = this.#float;
+    if (rect === null) {
+      if (before === null) return;
+      this.#float = null;
+    } else {
+      if (before !== null && before.live === live && sameRect(before.rect, rect, 0.5)) return;
+      this.#float = { rect: { ...rect }, live };
+    }
+    this.#render();
+    this.#kick();
+  }
+
+  /**
    * A tab's icon in the dock is under the pointer, or no longer: while one
    * is, ⇧⌫ closes its tab wherever the keyboard is — main takes the key
    * (DeskState.dockHover), and the dock closes the tab it is told of.
@@ -929,7 +971,7 @@ export class DeskEngine {
     if (this.#selecting !== tabId || win === undefined || win.mask !== null) return;
     const insets = this.#insets(win);
     const pageW = Math.round(win.rect.w - insets.left - insets.right);
-    const pageH = Math.round(win.rect.h - insets.top - insets.bottom - win.cut);
+    const pageH = Math.round(win.rect.h - insets.top - insets.bottom);
     if (pageW < MIN_DESK_MASK || pageH < MIN_DESK_MASK) {
       this.cancelMask();
       return;
@@ -1355,6 +1397,29 @@ export class DeskEngine {
     this.#requestThumbs(next.tabIds.filter((tabId) => this.#wins.has(tabId)));
     // A window whose still never comes flies all the same once the wait is up.
     this.#renderIn(SWITCH_STILL_WAIT_MS + 20);
+    this.#kick();
+  }
+
+  /**
+   * The desk's own changed under its windows, without passing: a loose
+   * tab's desk is its new group's now (the tab put in a group — ⌘T there),
+   * or a group gone from under its desk left the tab in use loose, on a
+   * desk of its own. The windows of the desk's tabs stay where they are;
+   * any other goes home into its row.
+   */
+  regroup(tabIds: readonly string[], shellIds: readonly string[] | null): void {
+    if (this.#phase === "leaving") return;
+    this.#groupTabIds = tabIds;
+    this.#shellIds = shellIds;
+    for (const id of [...this.#order]) {
+      const win = this.#wins.get(id)!;
+      if (win.flight === "away" || this.#departing.has(id) || this.#isMember(id)) continue;
+      if (this.#gesture?.tabId === id) this.#cancelGesture();
+      this.#sendAway(win, true);
+    }
+    this.#save();
+    this.#emit();
+    this.#render();
     this.#kick();
   }
 
@@ -1946,8 +2011,9 @@ export class DeskEngine {
 
   /**
    * The Bar's notch at the desk's foot, idle (DeskBar): its size, centred on
-   * the desk's foot, or null. The windows fill the desk under it, each cut
-   * short of it (#cutFor), as of the parked windows beside it.
+   * the desk's foot, or null. The windows fill the desk under it, whole: with
+   * a live page under it (the view's `notchOver`), the notch is drawn over the
+   * page by main's notch view, which DeskBar places.
    */
   setNotch(size: { w: number; h: number } | null): void {
     const next = size === null ? null : { w: Math.max(0, Math.round(size.w)), h: Math.max(0, Math.round(size.h)) };
@@ -1963,8 +2029,8 @@ export class DeskEngine {
    * or null: it is a hole through the well and through every window under
    * it, down to the shell's own ground (the surface's, the window's glass),
    * which nothing drawn over them could match — so the notch is that ground,
-   * rising out of the edge, whatever the theme. (A live page is never under
-   * it: cut short of the idle notch, covered by the grown one.)
+   * rising out of the edge, whatever the theme. (A live page under the idle
+   * notch has main's notch view over it instead; the grown Bar is a cover.)
    */
   setNotchShape(shape: NotchShape | null): void {
     const before = this.#notchShape;
@@ -1992,22 +2058,21 @@ export class DeskEngine {
 
   /**
    * A window's clip with the notch a hole in it, when the notch is over it:
-   * not one carried, flying or turned (it passes over the notch), and only
-   * what the window keeps of itself otherwise — its shadow all round, cut
-   * off at the desk's edge (`below`) if it peeks from there.
+   * not one carried or flying (it passes over the notch), and only what the
+   * window keeps of itself otherwise — its shadow all round, cut off at the
+   * desk's foot (`foot`, in the window's own box).
    */
-  #notchClip(win: Win, below: number, transformed: boolean): string | null {
+  #notchClip(win: Win, foot: number): string | null {
     const shape = this.#notchShape;
-    if (shape === null || transformed || win.flight !== null) return null;
+    if (shape === null || win.flight !== null) return null;
     const gesture = this.#gesture;
     if (gesture !== null && gesture.tabId === win.tabId && gesture.kind !== "resize") return null;
-    const { x, y, w, h } = win.rect;
-    const foot = this.#stageBox.height;
-    const hole = { x: shape.x - shape.flare, y: shape.y, w: shape.w + shape.flare * 2, h: foot + CLIP_MARGIN - shape.y };
-    if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: h + CLIP_MARGIN * 2 }, hole)) return null;
+    const { x, y, w } = win.rect;
+    const stageH = this.#stageBox.height;
+    const hole = { x: shape.x - shape.flare, y: shape.y, w: shape.w + shape.flare * 2, h: stageH - shape.y };
+    if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: foot + CLIP_MARGIN }, hole)) return null;
     const m = CLIP_MARGIN;
-    const bottom = below > 0 ? h - below : h + m;
-    return `path(evenodd, "M ${-m} ${-m} H ${(w + m).toFixed(1)} V ${bottom.toFixed(1)} H ${-m} Z ${notchOutline(shape, foot, -x, -y)}")`;
+    return `path(evenodd, "M ${-m} ${-m} H ${(w + m).toFixed(1)} V ${foot.toFixed(1)} H ${-m} Z ${notchOutline(shape, stageH, -x, -y)}")`;
   }
 
   /** The tab is one of the group's (a tab the agent just opened may not be yet). */
@@ -3075,24 +3140,19 @@ export class DeskEngine {
       if (editing === undefined && this.#editing !== null) this.#editing = null;
       this.#covers.delete("maskedit");
     }
-    // Each window cut short of what lies over the desk's foot (#cutFor): only what is left of its page need be clear.
-    const ledges = this.#ledges();
     const frames = new Map<string, Rect>();
-    for (const tabId of this.#order) {
-      const win = this.#wins.get(tabId)!;
-      win.cut = this.#cutFor(win, win.rect, ledges);
-      frames.set(tabId, this.#liveBox(win));
-    }
+    for (const tabId of this.#order) frames.set(tabId, this.#wins.get(tabId)!.rect);
+    // The parked windows peeking up at the desk's foot cover no window under them: over a live page there, main's
+    // shelf view draws them (shelfOver), and they are drawn (stills) meanwhile.
+    const lowered = new Set(this.#loweredShelf());
+    const shelfOver = this.#shelfOverLive(lowered);
     const gesture = this.#gesture;
     const zone = gesture?.zone ?? null;
     // An armed zone is drawn by the shell too; pages under it must give way to it.
     let order = zone === null ? this.#order : [...this.#order.slice(0, -1), "\u0000zone", ...this.#order.slice(-1)];
     if (zone !== null) frames.set("\u0000zone", tileRect(zone, this.#usable()));
-    // So must what is drawn over the desk above every window: a card beside the sidebar, the Bar's tooltips —
-    // and the Bar's notch, over a window not cut short of it.
+    // So must what is drawn over the desk above every window: a card beside the sidebar, the Bar's tooltips.
     const covers = new Map(this.#covers);
-    const notch = this.#notchRect();
-    if (notch !== null && this.#phase === "open") covers.set("\u0000notch", notch);
     // A window just masked: the rest of it fades from around its region, over whatever it stood on.
     const fade = this.#maskFade;
     if (fade !== null && (now >= fade.until || !this.#wins.has(fade.tabId))) {
@@ -3109,7 +3169,13 @@ export class DeskEngine {
       }
     }
     for (const win of this.#wins.values()) this.#putMaskBack(win, now);
-    const uncovered = uncoveredWindows(order, frames);
+    const uncovered = uncoveredWindows(
+      order.filter((id) => !lowered.has(id)),
+      frames,
+    );
+    // (The shelf's own, against everything: it is the top of the stack, under only what the shell draws over the desk.)
+    const shelfUncovered = uncoveredWindows(order, frames);
+    for (const id of lowered) if (shelfUncovered.has(id)) uncovered.add(id);
     for (const win of this.#wins.values()) {
       // Back at its whole page, at rest: the window is its live page again (main gives the page back its own size then).
       if (win.unmasking !== null && win.target === null && !win.coasting) {
@@ -3117,7 +3183,8 @@ export class DeskEngine {
         this.#dirtyView = true;
       }
       this.#latchGrowth(win);
-      const wants = !uncovered.has(win.tabId) || this.#wantsStillForMotion(win);
+      // (A parked window under main's shelf view wants its still: that view shows it.)
+      const wants = !uncovered.has(win.tabId) || this.#wantsStillForMotion(win) || (shelfOver && lowered.has(win.tabId));
       if (wants) {
         // Only a still asked for from now on will do: ask at once, however recently one was.
         const began = win.wantStillSince === null;
@@ -3130,12 +3197,14 @@ export class DeskEngine {
       // A mask being edited is drawn at once: main shows its whole page meanwhile, into a view sized for that, never over the region's box.
       // So is a window growing back from its mask: live, its page would be shown at every size it passes through.
       // So is a window shrinking into minimized: its page is laid out at the size it ends at. (Growing back from it, it is live: growTo.)
+      // So is a parked window while main's shelf view draws it over a live page (its still is what that view shows).
       const forced =
         win.flight !== null ||
         (this.#gesture?.kind === "spawn" && this.#gesture.tabId === win.tabId) ||
         this.#editing === win.tabId ||
         win.unmasking !== null ||
-        win.miniMotion === "in";
+        win.miniMotion === "in" ||
+        (shelfOver && lowered.has(win.tabId));
       const drawn = !native || forced || (wants && this.#fresh(win));
       if (drawn !== win.drawn) {
         win.drawn = drawn;
@@ -3151,19 +3220,91 @@ export class DeskEngine {
       if (win !== undefined) this.#departFor(win, departing.groupId);
     }
     this.#checkCovers();
+    this.#checkNotch();
+    this.#checkShelf();
     if (this.#dirtyView) this.#emit();
     this.#report();
     this.#flushCaptures();
     this.#focusPending();
   }
 
+  /** Whether a live page is under the Bar's idle notch (the view's `notchOver`): main's notch view draws it over the page then. */
+  #checkNotch(): void {
+    const notch = this.#notchRect();
+    let over = false;
+    if (notch !== null && this.#phase === "open") {
+      for (const win of this.#wins.values()) {
+        if (win.drawn || !this.#host.hasLivePage(win.tabId)) continue;
+        const insets = this.#insets(win);
+        if (rectsOverlap(this.#pageBox(win, insets), notch)) over = true;
+      }
+    }
+    if (over === this.#notchOver) return;
+    this.#notchOver = over;
+    this.#dirtyView = true;
+  }
+
+  /** A window's page in the stage: its frame less its frame's insets. */
+  #pageBox(win: Win, insets: Insets = this.#insets(win)): Rect {
+    return { x: win.rect.x + insets.left, y: win.rect.y + insets.top, w: win.rect.w - insets.left - insets.right, h: win.rect.h - insets.top - insets.bottom };
+  }
+
+  /** The parked windows down in the shelf, peeking up (not the raised one, nor one in hand or on its way), left to right. */
+  #loweredShelf(): string[] {
+    return this.#parked.filter((id) => {
+      const win = this.#wins.get(id);
+      return win !== undefined && id !== this.#raised && win.flight === null && win.miniMotion === null && this.#gesture?.tabId !== id;
+    });
+  }
+
+  /** Whether a live page (not the shelf's) is under a parked window down in the shelf. */
+  #shelfOverLive(lowered: ReadonlySet<string>): boolean {
+    if (this.#phase !== "open" || lowered.size === 0) return false;
+    const peeks = [...lowered].map((id) => this.#wins.get(id)!.rect);
+    for (const win of this.#wins.values()) {
+      if (lowered.has(win.tabId) || win.drawn || !this.#host.hasLivePage(win.tabId)) continue;
+      const page = this.#pageBox(win);
+      if (peeks.some((peek) => rectsOverlap(page, peek))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The shelf over a live page (the view's `shelf`): where each parked window
+   * down in it stands, for main's shelf view to draw them over the page, as
+   * nothing the shell draws can be — or null, the shelf being the shell's.
+   * Read after the windows have been drawn or not this frame.
+   */
+  #checkShelf(): void {
+    const lowered = this.#loweredShelf();
+    const over = this.#shelfOverLive(new Set(lowered));
+    const next = over ? lowered.map((tabId) => ({ tabId, rect: { ...this.#wins.get(tabId)!.rect } })) : null;
+    const key = next === null ? "" : next.map(({ tabId, rect }) => `${tabId}:${rect.x.toFixed(1)},${rect.y.toFixed(1)},${rect.w.toFixed(1)},${rect.h.toFixed(1)}`).join(" ");
+    if (key === this.#shelfKey) return;
+    this.#shelfKey = key;
+    this.#shelf = next;
+    this.#dirtyView = true;
+    // Its windows are drawn, or live again, as it comes and goes: a frame more says so.
+    this.#kick();
+  }
+
   /** Which covers no live page is under any more (the view's `clearCovers`). */
   #checkCovers(): void {
     const clear = new Set<string>();
+    let floatCovered = false;
     for (const [key, rect] of this.#covers) {
       let live = false;
-      for (const win of this.#wins.values()) if (!win.drawn && rectsOverlap(this.#liveBox(win), rect)) live = true;
+      for (const win of this.#wins.values()) if (!win.drawn && rectsOverlap(win.rect, rect)) live = true;
+      // (The floating player's picture is live over the windows until it comes down for the cover.)
+      if (this.#float !== null && rectsOverlap(this.#float.rect, rect)) {
+        floatCovered = true;
+        if (this.#float.live) live = true;
+      }
       if (!live) clear.add(key);
+    }
+    if (floatCovered !== this.#floatCovered) {
+      this.#floatCovered = floatCovered;
+      this.#dirtyView = true;
     }
     const before = this.#clearCovers;
     if (clear.size === before.size && [...clear].every((key) => before.has(key))) return;
@@ -3309,16 +3450,18 @@ export class DeskEngine {
       : `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
     const reveal = win.unmasking === null ? null : this.#revealBox(win, win.unmasking);
     const revealKey = reveal === null ? "" : `${reveal.x.toFixed(1)},${reveal.y.toFixed(1)},${reveal.w.toFixed(1)},${reveal.h.toFixed(1)}`;
-    // A window peeking from the desk's foot is cut off at the desk's edge (its page's view is cut short there too, #report).
-    const below = transformed ? 0 : Math.max(0, y + h - this.#stageBox.height);
-    // Under the Bar's notch, the notch is a hole through it (setNotchShape).
-    const notched = this.#notchClip(win, below, transformed);
-    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${below.toFixed(1)}|${win.cut.toFixed(1)}|${notched ?? ""}`;
+    // Nothing of a window falls past the desk's foot: its shadow there would darken the surface's gutter, which the
+    // Bar's notch rises out of, and the notch would stand out from the edge it is cut from. A window peeking from the
+    // foot (parked) is cut off there too, its page's view with it (#report). Under the notch, the notch is a hole
+    // through it (setNotchShape). (Lifted, flying or turned, it passes over the edge as it is.)
+    const stageH = this.#stageBox.height;
+    const foot = transformed || stageH <= 0 ? null : stageH - y;
+    const m = CLIP_MARGIN;
+    const clip = foot === null ? "" : (this.#notchClip(win, foot) ?? `inset(-${m}px -${m}px ${(h - foot).toFixed(1)}px -${m}px)`);
+    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${clip}`;
     if (key === win.written) return;
     win.written = key;
-    // Cut short over the desk's foot, its page stops there (DeskWindow's page box), the rest of its frame under what lies there.
-    el.style.setProperty("--desk-cut", `${win.cut.toFixed(1)}px`);
-    el.style.clipPath = notched ?? (below > 0 ? `inset(-40px -40px ${below.toFixed(1)}px -40px)` : "");
+    el.style.clipPath = clip;
     el.style.transform = transform;
     el.style.width = `${w.toFixed(1)}px`;
     el.style.height = `${h.toFixed(1)}px`;
@@ -3362,9 +3505,8 @@ export class DeskEngine {
     const api = nativeApi();
     if (api === null) return;
     const { left, top } = this.#stageBox;
-    const ledges = this.#ledges();
     // The desk first: a masked page's view is placed only once main has its mask.
-    this.#reportDesk(api, ledges);
+    this.#reportDesk(api);
     const views: Array<{ tabId: string; bounds: { x: number; y: number; width: number; height: number } }> = [];
     for (const tabId of this.#order) {
       const win = this.#wins.get(tabId)!;
@@ -3376,9 +3518,8 @@ export class DeskEngine {
       // Growing, its view is never larger than the page it is laid out at (growTo): one dimension may be shrinking meanwhile.
       const grow = win.growTo?.to ?? null;
       const width = Math.round(win.rect.w - insets.left - insets.right);
-      // (Cut short, its foot is where what it is cut short of begins, as the frame's page box has it.)
-      const height = win.cut > 0 ? Math.round(top + win.rect.y + win.rect.h - insets.bottom - win.cut) - y : Math.round(win.rect.h - insets.top - insets.bottom);
-      const grown = grow === null ? height : Math.round(grow.h - insets.top - insets.bottom - this.#cutFor(win, grow, ledges));
+      const height = Math.round(win.rect.h - insets.top - insets.bottom);
+      const grown = grow === null ? height : Math.round(grow.h - insets.top - insets.bottom);
       const bounds = {
         x: Math.round(left + win.rect.x + insets.left),
         y,
@@ -3395,7 +3536,7 @@ export class DeskEngine {
   }
 
   /** Which views are desk windows, the grab key, whether a tab's row in the sidebar is hovered, and the masked pages. */
-  #reportDesk(api: NonNullable<ReturnType<typeof nativeApi>>, ledges: readonly Rect[]): void {
+  #reportDesk(api: NonNullable<ReturnType<typeof nativeApi>>): void {
     const grab = this.#host.variants().grab;
     // (The dock is the sidebar's column, beside the desk: there is no place of it over a page for main to watch.)
     const dock = null;
@@ -3442,11 +3583,10 @@ export class DeskEngine {
       const grow = win.growTo;
       if (grow === null || zoomed.some((page) => page.tabId === tabId)) continue;
       const insets = this.#insets(win);
-      // (As cut short there as it will be.)
       zoomed.push({
         tabId,
         width: Math.max(1, Math.round(grow.to.w - insets.left - insets.right)),
-        height: Math.max(1, Math.round(grow.to.h - insets.top - insets.bottom - this.#cutFor(win, grow.to, ledges))),
+        height: Math.max(1, Math.round(grow.to.h - insets.top - insets.bottom)),
         zoom: 1,
       });
     }
@@ -3537,6 +3677,9 @@ export class DeskEngine {
       dropsShown: this.#dropsNear,
       dockDrop: this.#armedDrop,
       clearCovers: this.#clearCovers,
+      floatCovered: this.#floatCovered,
+      notchOver: this.#notchOver,
+      shelf: this.#shelf,
       snapping: gesture?.snapping ?? false,
       gesture: gesture?.kind ?? null,
       phase: this.#phase,
@@ -3676,7 +3819,6 @@ export class DeskEngine {
       origin: { x: rect.w / 2, y: 16 },
       el: null,
       written: "",
-      cut: 0,
       still: null,
       paintedAt: Number.NEGATIVE_INFINITY,
       wantStillSince: null,
@@ -3979,7 +4121,7 @@ export class DeskEngine {
   /**
    * The desk windows are laid out on: the whole of the desk's card, so a
    * window filling the desk fills the card, as a page fills its pane — the
-   * Bar's notch and the parked windows lie over its foot (#cutFor). Tiles,
+   * Bar's notch and the parked windows lie over its foot (notchOver, shelf). Tiles,
    * filling the desk, the arrangements and where a new window comes out
    * use it.
    */
@@ -4003,53 +4145,6 @@ export class DeskEngine {
     if (notch === null || notch.w < 1 || notch.h < 1) return null;
     const { width, height } = this.#stageBox;
     return { x: (width - notch.w) / 2, y: height - notch.h, w: notch.w, h: notch.h };
-  }
-
-  /**
-   * What the shell draws at the desk's foot over the windows there: the
-   * Bar's notch, and each parked window where it peeks up (raised, its
-   * place down there still counts: the windows under it are not cut anew
-   * for a hover, only covered).
-   */
-  #ledges(): Rect[] {
-    const ledges: Rect[] = [];
-    const notch = this.#notchRect();
-    if (notch !== null) ledges.push(notch);
-    this.#parked.forEach((_, index) => ledges.push(this.#shelfRect(index, this.#parked.length, false)));
-    return ledges;
-  }
-
-  /**
-   * How far short of its frame's foot a window at `rect` stops its page: at
-   * the top of what lies over the desk's foot under its page (#ledges), so
-   * its live page never paints over them — they are drawn over the rest of
-   * its frame there, as a notch in a screen with the menu bar around it. A
-   * tab's window at its own size only, on the open desk: a minimized or
-   * masked one, or a document (the shell's own, under them anyway), is
-   * covered by them instead; so is one that would keep too little page.
-   */
-  #cutFor(win: Win, rect: Rect, ledges: readonly Rect[]): number {
-    if (this.#phase !== "open" || win.mini !== null || win.mask !== null || !isTabWindow(win.tabId)) return 0;
-    const insets = this.#insets(win);
-    const left = rect.x + insets.left;
-    const right = rect.x + rect.w - insets.right;
-    const top = rect.y + insets.top;
-    const bottom = rect.y + rect.h - insets.bottom;
-    let stop = bottom;
-    for (const ledge of ledges) {
-      if (ledge.x < right && left < ledge.x + ledge.w && ledge.y < bottom && ledge.y + ledge.h > top) stop = Math.min(stop, ledge.y);
-    }
-    const cut = bottom - stop;
-    return cut > 0.01 && bottom - top - cut >= MIN_CUT_PAGE ? cut : 0;
-  }
-
-  /**
-   * Where a window's live page may be over the desk: its frame, less what it
-   * is cut short by at the desk's foot and the frame's foot below that (with
-   * half a pixel to spare for main's rounding of its view).
-   */
-  #liveBox(win: Win): Rect {
-    return win.cut > 0 ? { ...win.rect, h: win.rect.h - win.cut - this.#insets(win).bottom - 0.5 } : win.rect;
   }
 
   /** A window whose page is exactly the stage: the pane the surface shows without a desk. */

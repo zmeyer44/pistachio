@@ -1,3 +1,7 @@
+// (Types only: a runtime import here would make the media module one both preloads share, and Rollup would split it
+// into a chunk the sandboxed tab preload cannot require.)
+import type { MediaControl } from "./media.js";
+
 /**
  * The desk: an experimental view of ONE tab group in which every tab is a
  * free window — dragged, thrown, resized and stacked inside the page area —
@@ -270,6 +274,223 @@ export type DeskPageInput = "press" | "escape" | "dock" | "close" | "fileDrag";
 
 export function isDeskPageInput(value: unknown): value is DeskPageInput {
   return value === "press" || value === "escape" || value === "dock" || value === "close" || value === "fileDrag";
+}
+
+/**
+ * The desk's Bar, idle, drawn over the live pages under it (docs/desk.md,
+ * "The foot"): the "notch" chrome view, a utility view stacked above the tab
+ * views (main/chrome-view.ts), since a live page paints over everything the
+ * shell draws. The shell says where (the window's own coordinates: the notch
+ * and its flares) and what it says, while a live page is under it; null
+ * otherwise, when the notch is a hole in what the shell draws instead.
+ */
+export interface DeskNotchFrame {
+  bounds: { x: number; y: number; width: number; height: number };
+  /** The idle Bar's words ("Ask about Research") and the key that opens it. */
+  label: string;
+  shortcut: string | null;
+  /** The group's colour (TabGroupColor), for the mark's tone. */
+  color: string;
+  /** The notch's shoulders' radius and its flares' (px). */
+  radius: number;
+  flare: number;
+}
+
+export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
+  if (typeof value !== "object" || value === null) return false;
+  const frame = value as Partial<DeskNotchFrame>;
+  const bounds = frame.bounds;
+  const finite = (n: unknown): boolean => typeof n === "number" && Number.isFinite(n);
+  return (
+    typeof bounds === "object" &&
+    bounds !== null &&
+    finite(bounds.x) &&
+    finite(bounds.y) &&
+    finite(bounds.width) &&
+    finite(bounds.height) &&
+    bounds.width > 0 &&
+    bounds.height > 0 &&
+    bounds.width <= 4096 &&
+    bounds.height <= 512 &&
+    typeof frame.label === "string" &&
+    frame.label.length <= 400 &&
+    (frame.shortcut === null || (typeof frame.shortcut === "string" && frame.shortcut.length <= 40)) &&
+    typeof frame.color === "string" &&
+    frame.color.length <= 40 &&
+    finite(frame.radius) &&
+    finite(frame.flare)
+  );
+}
+
+/**
+ * The desk's parked windows drawn over the live pages under them (docs/desk.md,
+ * "The foot"): the "shelf" chrome view, as the notch's, since a live page
+ * paints over the windows' frames, which are the shell's. The shell says where
+ * (the window's coordinates, cut off at the desk's foot) and each window's
+ * face while a live page is under them; null otherwise.
+ */
+export interface DeskShelfFrame {
+  bounds: { x: number; y: number; width: number; height: number };
+  /** The windows, left to right (each over the one before): x from the view's left, their whole height (the view cuts them off). */
+  windows: DeskShelfWindow[];
+  /** Where a window's page sits in it: its frame's insets (the shell's chrome variant). */
+  insets: { top: number; left: number; right: number };
+  /** The room left around the windows (not below: the desk's foot cuts them off), for their outlines. */
+  pad: number;
+}
+
+export interface DeskShelfWindow {
+  tabId: string;
+  x: number;
+  width: number;
+  height: number;
+  title: string;
+  host: string;
+  faviconUrl: string | null;
+  /** A picture of its page as it is shown (zoomed out), or null. */
+  still: string | null;
+}
+
+/** The pointer onto one of the shelf view's windows, or off it: the window's, as if on its frame. */
+export interface DeskShelfInput {
+  tabId: string;
+  over: boolean;
+}
+
+const MAX_SHELF_STILL = 4_000_000;
+
+export function isDeskShelfFrame(value: unknown): value is DeskShelfFrame {
+  if (typeof value !== "object" || value === null) return false;
+  const frame = value as Partial<DeskShelfFrame>;
+  const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+  const bounds = frame.bounds;
+  const insets = frame.insets;
+  return (
+    typeof bounds === "object" &&
+    bounds !== null &&
+    finite(bounds.x) &&
+    finite(bounds.y) &&
+    finite(bounds.width) &&
+    finite(bounds.height) &&
+    bounds.width > 0 &&
+    bounds.height > 0 &&
+    bounds.width <= 8192 &&
+    bounds.height <= 2048 &&
+    typeof insets === "object" &&
+    insets !== null &&
+    finite(insets.top) &&
+    finite(insets.left) &&
+    finite(insets.right) &&
+    finite(frame.pad) &&
+    Array.isArray(frame.windows) &&
+    frame.windows.length <= 24 &&
+    frame.windows.every(
+      (window: Partial<DeskShelfWindow>) =>
+        typeof window === "object" &&
+        window !== null &&
+        typeof window.tabId === "string" &&
+        window.tabId.length <= 200 &&
+        finite(window.x) &&
+        finite(window.width) &&
+        finite(window.height) &&
+        typeof window.title === "string" &&
+        window.title.length <= 2000 &&
+        typeof window.host === "string" &&
+        window.host.length <= 500 &&
+        (window.faviconUrl === null || (typeof window.faviconUrl === "string" && window.faviconUrl.length <= 100_000)) &&
+        (window.still === null || (typeof window.still === "string" && window.still.length <= MAX_SHELF_STILL && window.still.startsWith("data:image/"))),
+    )
+  );
+}
+
+export function isDeskShelfInput(value: unknown): value is DeskShelfInput {
+  if (typeof value !== "object" || value === null) return false;
+  const input = value as Partial<DeskShelfInput>;
+  return typeof input.tabId === "string" && input.tabId.length <= 200 && typeof input.over === "boolean";
+}
+
+/**
+ * The desk's floating player on the rail (docs/desk.md, "Now playing"): the
+ * "pip" chrome view, over the tab's own view, which main shows there
+ * presenting its video (the media preview). A video is a native view the
+ * shell cannot draw over, so this view draws the player's controls over the
+ * picture while the pointer is on it, as a browser's picture in picture
+ * does. The shell says where it stands (the window's coordinates) and what
+ * is playing; null while it is not up.
+ */
+export interface DeskPipFrame {
+  bounds: { x: number; y: number; width: number; height: number };
+  media: DeskPipMedia;
+}
+
+/** What the floating player's controls need of what is playing (@pistachio/shell-contracts/media's BrowserMediaInfo). */
+export interface DeskPipMedia {
+  tabId: string;
+  title: string;
+  playing: boolean;
+  muted: boolean;
+  position: number;
+  duration: number | null;
+  /** Wall-clock time of `position`, for the playhead to move between reports. */
+  updatedAt: number;
+  playbackRate: number;
+  seekable: boolean;
+  canPrevious: boolean;
+  canNext: boolean;
+}
+
+/** From the floating player's view: a control for what is playing, or a press on the picture (a move, should it travel). */
+export type DeskPipInput = { type: "control"; control: MediaControl } | { type: "grab"; x: number; y: number };
+
+export function isDeskPipFrame(value: unknown): value is DeskPipFrame {
+  if (typeof value !== "object" || value === null) return false;
+  const frame = value as Partial<DeskPipFrame>;
+  const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+  const bounds = frame.bounds;
+  const media = frame.media;
+  return (
+    typeof bounds === "object" &&
+    bounds !== null &&
+    finite(bounds.x) &&
+    finite(bounds.y) &&
+    finite(bounds.width) &&
+    finite(bounds.height) &&
+    bounds.width > 0 &&
+    bounds.height > 0 &&
+    bounds.width <= 4096 &&
+    bounds.height <= 4096 &&
+    typeof media === "object" &&
+    media !== null &&
+    typeof media.tabId === "string" &&
+    media.tabId.length <= 200 &&
+    typeof media.title === "string" &&
+    media.title.length <= 2000 &&
+    typeof media.playing === "boolean" &&
+    typeof media.muted === "boolean" &&
+    finite(media.position) &&
+    (media.duration === null || finite(media.duration)) &&
+    finite(media.updatedAt) &&
+    finite(media.playbackRate) &&
+    typeof media.seekable === "boolean" &&
+    typeof media.canPrevious === "boolean" &&
+    typeof media.canNext === "boolean"
+  );
+}
+
+/** The input's shape; a control's own is main's to check (media's isMediaControl), as for every control of the stack's. */
+export function isDeskPipInput(value: unknown): value is DeskPipInput {
+  if (typeof value !== "object" || value === null) return false;
+  const input = value as Record<string, unknown>;
+  const control = input["control"];
+  if (input["type"] === "control") return typeof control === "object" && control !== null && typeof (control as Record<string, unknown>)["type"] === "string";
+  return input["type"] === "grab" && typeof input["x"] === "number" && Number.isFinite(input["x"]) && typeof input["y"] === "number" && Number.isFinite(input["y"]);
+}
+
+/** The pointer onto the notch view and off it, and a press on it: the Bar's, as if on the Bar itself. */
+export type DeskNotchInput = "enter" | "leave" | "press";
+
+export function isDeskNotchInput(value: unknown): value is DeskNotchInput {
+  return value === "enter" || value === "leave" || value === "press";
 }
 
 /** A key event, as Electron's `before-input-event` has it. */

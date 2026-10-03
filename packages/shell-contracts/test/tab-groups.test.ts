@@ -49,6 +49,29 @@ describe("sanitizeTabGroups", () => {
     expect(sanitizeTabGroups(undefined, new Set())).toEqual([]);
     expect(sanitizeTabGroups({}, new Set())).toEqual([]);
   });
+
+  it("bounds the drawn groups and the loose tabs' apart, so neither pushes the other out", () => {
+    const tabs = Array.from({ length: 120 }, (_, index) => `t${String(index)}`);
+    const looseGroups = tabs.slice(0, 60).map((tabId, index) => ({ id: `l${String(index)}`, tabIds: [tabId], loose: true }));
+    const drawnGroups = tabs.slice(60, 111).map((tabId, index) => ({ id: `d${String(index)}`, tabIds: [tabId] }));
+    const groups = sanitizeTabGroups([...looseGroups, ...drawnGroups], new Set(tabs));
+    expect(groups.filter((candidate) => candidate.loose === true)).toHaveLength(60);
+    expect(groups.filter((candidate) => candidate.loose !== true)).toHaveLength(50);
+  });
+
+  it("keeps a loose tab's group loose only while it holds the one tab", () => {
+    const groups = sanitizeTabGroups(
+      [
+        { id: "lone", tabIds: ["a"], loose: true },
+        { id: "grown", tabIds: ["b", "c"], loose: true },
+      ],
+      new Set(["a", "b", "c"]),
+    );
+    expect(groups.map((candidate) => [candidate.id, candidate.loose === true])).toEqual([
+      ["lone", true],
+      ["grown", false],
+    ]);
+  });
 });
 
 describe("withoutTabs", () => {
@@ -97,6 +120,9 @@ describe("group helpers", () => {
   it("checks commands at the boundary", () => {
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1", "cloud:t2"] })).toBe(true);
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: [] })).toBe(false);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1"], loose: true })).toBe(true);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1", "t2"], loose: true })).toBe(false);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1"], loose: "yes" })).toBe(false);
     expect(isTabGroupCommand({ type: "recolor", groupId: "g", color: "teal" })).toBe(false);
     expect(isTabGroupCommand({ type: "move", groupId: "g", index: -1 })).toBe(false);
     expect(isTabGroupCommand({ type: "close", groupId: "g" })).toBe(true);

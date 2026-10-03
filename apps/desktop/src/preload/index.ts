@@ -2,7 +2,7 @@ import type { WatchtowerResponse } from "@pistachio/shell-contracts/watchtower";
 import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
-import { isDeskHover, isDeskPageInput, type DeskGrab, type DeskHover, type DeskPageInput, type DeskState } from "@pistachio/shell-contracts/desk";
+import { isDeskHover, isDeskNotchFrame, isDeskNotchInput, isDeskPageInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, type DeskGrab, type DeskHover, type DeskNotchFrame, type DeskNotchInput, type DeskPageInput, type DeskPipFrame, type DeskPipInput, type DeskShelfFrame, type DeskShelfInput, type DeskState } from "@pistachio/shell-contracts/desk";
 import type { DeskLayoutEvaluation } from "@pistachio/shell-contracts/desk-layout";
 import type {
   DeskRequest,
@@ -64,6 +64,7 @@ import type { NoticeEvent, NoticeFrame, NoticeStackState } from "@pistachio/shel
 import type {
   BrowserMediaInfo,
   MediaControl,
+  MediaLevel,
   ReadAloudStatus,
 } from "@pistachio/shell-contracts/media";
 import type {
@@ -305,6 +306,75 @@ const api: PistachioApi = {
     };
     ipcRenderer.on(IPC.deskHover, handler);
     return () => ipcRenderer.removeListener(IPC.deskHover, handler);
+  },
+  // The desk's idle Bar over the live pages under it: the notch view (docs/desk.md, "The foot").
+  setDeskNotch: (frame: DeskNotchFrame | null) => ipcRenderer.send(IPC.deskNotchSet, frame),
+  getDeskNotch: async () => {
+    const frame: unknown = await ipcRenderer.invoke(IPC.deskNotchGet);
+    return isDeskNotchFrame(frame) ? frame : null;
+  },
+  onDeskNotch(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, frame: unknown): void => {
+      listener(isDeskNotchFrame(frame) ? frame : null);
+    };
+    ipcRenderer.on(IPC.deskNotchChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.deskNotchChanged, handler);
+  },
+  sendDeskNotchInput: (input: DeskNotchInput) => ipcRenderer.send(IPC.deskNotchInput, input),
+  onDeskNotchInput(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, input: unknown): void => {
+      if (isDeskNotchInput(input)) listener(input);
+    };
+    ipcRenderer.on(IPC.deskNotchInput, handler);
+    return () => ipcRenderer.removeListener(IPC.deskNotchInput, handler);
+  },
+  // The desk's parked windows over the live pages under them: the shelf view.
+  setDeskShelf: (frame: DeskShelfFrame | null) => ipcRenderer.send(IPC.deskShelfSet, frame),
+  getDeskShelf: async () => {
+    const frame: unknown = await ipcRenderer.invoke(IPC.deskShelfGet);
+    return isDeskShelfFrame(frame) ? frame : null;
+  },
+  onDeskShelf(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, frame: unknown): void => {
+      listener(isDeskShelfFrame(frame) ? frame : null);
+    };
+    ipcRenderer.on(IPC.deskShelfChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.deskShelfChanged, handler);
+  },
+  sendDeskShelfInput: (input: DeskShelfInput) => ipcRenderer.send(IPC.deskShelfInput, input),
+  onDeskShelfInput(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, input: unknown): void => {
+      if (isDeskShelfInput(input)) listener(input);
+    };
+    ipcRenderer.on(IPC.deskShelfInput, handler);
+    return () => ipcRenderer.removeListener(IPC.deskShelfInput, handler);
+  },
+  // The desk's floating player on the rail: the pip view, over the media preview.
+  setDeskPip: (frame: DeskPipFrame | null) => ipcRenderer.send(IPC.deskPipSet, frame),
+  getDeskPip: async () => {
+    const frame: unknown = await ipcRenderer.invoke(IPC.deskPipGet);
+    return isDeskPipFrame(frame) ? frame : null;
+  },
+  onDeskPip(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, frame: unknown): void => {
+      listener(isDeskPipFrame(frame) ? frame : null);
+    };
+    ipcRenderer.on(IPC.deskPipChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.deskPipChanged, handler);
+  },
+  sendDeskPipInput: (input: DeskPipInput) => ipcRenderer.send(IPC.deskPipInput, input),
+  onDeskPipInput(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, input: unknown): void => {
+      if (isDeskPipInput(input)) listener(input);
+    };
+    ipcRenderer.on(IPC.deskPipInput, handler);
+    return () => ipcRenderer.removeListener(IPC.deskPipInput, handler);
+  },
+  setMediaMeters: (tabIds: string[]) => ipcRenderer.send(IPC.mediaMetersSet, tabIds),
+  onMediaLevel(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, level: MediaLevel): void => listener(level);
+    ipcRenderer.on(IPC.mediaLevelChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.mediaLevelChanged, handler);
   },
   // The desk's agent (docs/desk-agent.md §3): which conversation the desk
   // opens, main's questions about the desk and their answers, and the

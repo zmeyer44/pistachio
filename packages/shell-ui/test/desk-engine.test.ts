@@ -10,7 +10,8 @@
  * while a window is carried near the desk's edge, a drop rail stands over
  * the sidebar. And the desk passing to another group in place: the old
  * group's windows go home, the new group's come out where they were left,
- * and main never hears of more windows than it accepts.
+ * and main never hears of more windows than it accepts; a loose tab's desk
+ * comes up as its one window, and takes on a new group in place.
  * And the box a page the shell draws is laid out at, to be shown small.
  *
  * The engine runs a frame at a time outside React; here the frames are
@@ -1062,6 +1063,42 @@ describe("passing the desk to another group", () => {
     expect(desk.windowTabIds()).toHaveLength(MAX_DESK_WINDOWS);
     expect(desk.windowTabIds().every((tabId) => tabId.startsWith("b-"))).toBe(true);
     for (const state of desks) expect(isDeskState(state)).toBe(true);
+    desk.destroy();
+  });
+
+  it("brings a loose tab's desk up as its one window, in the middle", () => {
+    native();
+    const desk = engine();
+    desk.start([], "tab-0", tabIds(2));
+    settle();
+    desk.switchGroup({ from: "A", groupId: "tab:loose", tabIds: ["loose"], saved: [], entry: "loose" });
+    const win = element();
+    desk.attachWindow("loose", win as unknown as HTMLElement);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["loose"]);
+    expectRect(rectOf(win), centeredRect(usable));
+    desk.destroy();
+  });
+
+  it("takes on a new group of its own in place: its tabs' windows stay where they are, any other goes home", () => {
+    native();
+    const saves: string[][] = [];
+    const desk = engine({ save: (windows) => saves.push(windows.map((window) => window.tabId)) });
+    desk.start([], "tab-0", tabIds(2));
+    const kept = element();
+    desk.attachWindow("tab-0", kept as unknown as HTMLElement);
+    settle();
+    desk.add("tab-1", { focus: false });
+    settle();
+    const before = rectOf(kept);
+    // tab-0's loose desk became a new group's (⌘T there): tab-1 is not one of its tabs.
+    desk.regroup(["tab-0", "fresh"], null);
+    expect(desk.getView().windows.find((window) => window.tabId === "tab-1")!.flight).toBe("away");
+    settle();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    expectRect(rectOf(kept), before);
+    expect(desk.hasGroupTab("fresh")).toBe(true);
+    expect(saves.at(-1)).toEqual(["tab-0"]);
     desk.destroy();
   });
 });

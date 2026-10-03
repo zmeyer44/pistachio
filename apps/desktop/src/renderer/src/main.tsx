@@ -10,8 +10,8 @@ import "./styles.css";
 setShellApi(window.pistachio);
 
 // The same bundle serves the shell window and the utility chrome views above
-// its native tab views: drag capture, find-in-page, the bookmark card and
-// the notice stack (main/chrome-view.ts).
+// its native tab views: drag capture, find-in-page, the bookmark card, the
+// notice stack, and the desk's notch and shelf over a live page (main/chrome-view.ts).
 // Each loads this page with the hash that names it (@pistachio/shell-contracts/chrome).
 // Each view is its own lazy chunk, so a utility page never evaluates the
 // shell's code (the store, the console, settings, onboarding) and the shell
@@ -27,6 +27,15 @@ const BookmarkToastApp = React.lazy(() =>
 );
 const NoticeApp = React.lazy(() =>
   import("@pistachio/shell-ui/NoticeApp.js").then((module) => ({ default: module.NoticeApp })),
+);
+const NotchApp = React.lazy(() =>
+  import("@pistachio/shell-ui/NotchApp.js").then((module) => ({ default: module.NotchApp })),
+);
+const ShelfApp = React.lazy(() =>
+  import("@pistachio/shell-ui/ShelfApp.js").then((module) => ({ default: module.ShelfApp })),
+);
+const PipApp = React.lazy(() =>
+  import("@pistachio/shell-ui/PipApp.js").then((module) => ({ default: module.PipApp })),
 );
 const DragApp = React.lazy(() =>
   import("@pistachio/shell-ui/DragApp.js").then((module) => ({ default: module.DragApp })),
@@ -48,6 +57,12 @@ function Root({ view }: { view: ChromeViewId | null }) {
       return <BookmarkToastApp />;
     case "notice":
       return <NoticeApp />;
+    case "notch":
+      return <NotchApp />;
+    case "shelf":
+      return <ShelfApp />;
+    case "pip":
+      return <PipApp />;
     case null:
       return <App />;
   }

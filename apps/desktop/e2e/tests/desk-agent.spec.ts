@@ -230,10 +230,10 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     const idle = await box(shell, '[data-testid="desk-bar"]');
     near(idle.y + idle.height, stage.y + stage.height, 1);
     near(idle.height, 32, 1);
-    // The window in use reaches the desk's foot under it, its page stopping at the notch's top.
+    // A window reaching the desk's foot under it keeps its whole page: the notch lies over it, not cutting it.
     const entryPage = await box(shell, `${windowSelector(invoice)} [data-testid="desk-window-page"]`);
     if (entryPage.x < idle.x + idle.width && idle.x < entryPage.x + entryPage.width && entryPage.y + entryPage.height > idle.y - 40)
-      near(entryPage.y + entryPage.height, idle.y, 1);
+      near(entryPage.y + entryPage.height, stage.y + stage.height - 5, 1);
     await capture(app, shell, "01a-desk-notch.png");
     await shell.getByTestId("desk-bar-pill").hover();
     await expect(bar).not.toHaveAttribute("data-compact", "");

@@ -212,7 +212,7 @@ import {
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
-import { isDeskState } from "@pistachio/shell-contracts/desk";
+import { isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
 import {
   isDeskConversationCommand,
   isGroupContextCommand,
@@ -236,6 +236,7 @@ import {
 } from "@pistachio/shell-contracts/shortcuts";
 import {
   isMediaControl,
+  isMediaLevelReport,
   type BrowserMediaInfo,
   type ReadAloudStatus,
 } from "@pistachio/shell-contracts/media";
@@ -341,6 +342,62 @@ let bookmarkLayer: ChromeOverlayView | null = null;
  * fullscreen page cannot take them away.
  */
 let noticeLayer: NoticeLayer | null = null;
+/**
+ * The desk's idle Bar drawn over the live pages under it (docs/desk.md, "The
+ * foot"): a utility view of its own, since a tab view paints over everything
+ * the shell draws. The shell says where and what while a live page is under
+ * the notch, and null otherwise; the pointer on it and a press go back to the
+ * shell's Bar, which grows from there as if the pointer were on it.
+ */
+let notchLayer: ChromeOverlayView | null = null;
+let deskNotch: DeskNotchFrame | null = null;
+/** The desk's parked windows over the live pages under them, the same way (the "shelf" view). */
+let shelfLayer: ChromeOverlayView | null = null;
+let deskShelf: DeskShelfFrame | null = null;
+
+/**
+ * A desk view raised over the pages — and the drag layer back over it, as
+ * onViewAdded orders them: a drag in progress keeps the pointer, however
+ * often what it moves is raised (the floating player, following it).
+ */
+function raiseDeskLayer(layer: ChromeOverlayView): void {
+  layer.raise();
+  dragLayer?.raise();
+}
+
+function applyDeskShelf(): void {
+  const layer = shelfLayer;
+  if (layer === null) return;
+  layer.setSlot(deskShelf?.bounds ?? null);
+  layer.setVeiled(shellState.veiled);
+  layer.setShown(deskShelf !== null);
+  if (deskShelf !== null) raiseDeskLayer(layer);
+  if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskShelfChanged, deskShelf);
+}
+
+/** The desk's floating player on the rail: its controls over the media preview's picture (the "pip" view). */
+let pipLayer: ChromeOverlayView | null = null;
+let deskPip: DeskPipFrame | null = null;
+
+function applyDeskPip(): void {
+  const layer = pipLayer;
+  if (layer === null) return;
+  layer.setSlot(deskPip?.bounds ?? null);
+  layer.setVeiled(shellState.veiled);
+  layer.setShown(deskPip !== null);
+  if (deskPip !== null) raiseDeskLayer(layer);
+  if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskPipChanged, deskPip);
+}
+
+function applyDeskNotch(): void {
+  const layer = notchLayer;
+  if (layer === null) return;
+  layer.setSlot(deskNotch?.bounds ?? null);
+  layer.setVeiled(shellState.veiled);
+  layer.setShown(deskNotch !== null);
+  if (deskNotch !== null) raiseDeskLayer(layer);
+  if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskNotchChanged, deskNotch);
+}
 let bookmarkToastHeight = 104;
 const BOOKMARK_TOAST_WIDTH = 400;
 const BOOKMARK_TOAST_MARGIN = 4;
@@ -2082,6 +2139,21 @@ async function createWindow(): Promise<void> {
     id: "notice",
     preload,
   });
+  const notchView = new ChromeOverlayView(window, {
+    id: "notch",
+    preload,
+  });
+  notchLayer = notchView;
+  const shelfView = new ChromeOverlayView(window, {
+    id: "shelf",
+    preload,
+  });
+  shelfLayer = shelfView;
+  const pipView = new ChromeOverlayView(window, {
+    id: "pip",
+    preload,
+  });
+  pipLayer = pipView;
   const notices = new NoticeLayer(noticeView, window, () => {
     if (browser?.focusActivePage() === true) return;
     if (!window.isDestroyed()) window.webContents.focus();
@@ -2096,6 +2168,9 @@ async function createWindow(): Promise<void> {
     findView.webContents,
     bookmarkView.webContents,
     noticeView.webContents,
+    notchView.webContents,
+    shelfView.webContents,
+    pipView.webContents,
   ]) {
     contents.on("before-input-event", (event, input) => {
       relayChromeInput(event, input, contents);
@@ -2121,6 +2196,9 @@ async function createWindow(): Promise<void> {
       if (findView.shown) findView.raise();
       if (bookmarkView.shown) bookmarkView.raise();
       if (noticeView.shown) noticeView.raise();
+      if (notchView.shown) notchView.raise();
+      if (shelfView.shown) shelfView.raise();
+      if (pipView.shown) pipView.raise();
       // Last, so a drag in progress keeps the pointer over a tab view that
       // was created under it.
       dragView.raise();
@@ -2367,6 +2445,10 @@ async function createWindow(): Promise<void> {
   // Nor the notice stack until the first notice; one said before its view
   // has loaded is handed over the moment it has.
   void noticeView.load(rendererUrl, rendererFile).then(() => notices.loaded());
+  // The desk's notch, once a desk puts its Bar over a live page.
+  void notchView.load(rendererUrl, rendererFile).then(applyDeskNotch);
+  void shelfView.load(rendererUrl, rendererFile).then(applyDeskShelf);
+  void pipView.load(rendererUrl, rendererFile).then(applyDeskPip);
   window.on("closed", () => {
     if (windowButtonHideTimer !== null) clearTimeout(windowButtonHideTimer);
     windowButtonHideTimer = null;
@@ -2386,6 +2468,15 @@ async function createWindow(): Promise<void> {
     notices.dispose();
     noticeView.destroy();
     noticeLayer = null;
+    notchView.destroy();
+    notchLayer = null;
+    deskNotch = null;
+    shelfView.destroy();
+    shelfLayer = null;
+    deskShelf = null;
+    pipView.destroy();
+    pipLayer = null;
+    deskPip = null;
     bookmarkService?.dismissToast();
     sidebarWatch?.dispose();
     sidebarWatch = null;
@@ -2841,6 +2932,15 @@ function installIpc(): void {
     if (typeof hovered !== "boolean") return;
     requireBrowser().acceptMediaPreviewHover(event.sender.id, hovered);
   });
+  // The desk's rail shows how loud the media it lists is: their pages measure it while it is up.
+  ipcMain.on(IPC.mediaMetersSet, (event, tabIds: unknown) => {
+    if (!isShell(event.sender) || !Array.isArray(tabIds) || tabIds.length > 16 || !tabIds.every((id) => typeof id === "string" && id.length <= 200)) return;
+    requireBrowser().setMediaMeters(tabIds as string[]);
+  });
+  ipcMain.on(IPC.mediaLevelReport, (event, level: unknown) => {
+    if (!isMediaLevelReport(level)) return;
+    requireBrowser().acceptMediaLevel(event.sender.id, level);
+  });
   ipcMain.handle(IPC.browserControlsGet, (event) => {
     if (!isShell(event.sender))
       throw new Error("browser controls are shell-only");
@@ -3094,6 +3194,9 @@ function installIpc(): void {
     applyWindowButtons();
     syncSidebarEntryWatch();
     if (findLayer !== null) findLayer.setVeiled(state.veiled);
+    notchLayer?.setVeiled(state.veiled);
+    shelfLayer?.setVeiled(state.veiled);
+    pipLayer?.setVeiled(state.veiled);
     syncBookmarkLayer();
   });
   // ── The drag layer: shell → main → layer, and the samples back ──────────
@@ -3326,6 +3429,41 @@ function installIpc(): void {
     if (chromeViewOf(event.sender) !== "notice") return;
     if (typeof height !== "number" || !Number.isFinite(height)) return;
     noticeLayer?.resize(height);
+  });
+  ipcMain.on(IPC.deskNotchSet, (event, frame: unknown) => {
+    if (!isShell(event.sender) || (frame !== null && !isDeskNotchFrame(frame))) return;
+    deskNotch = frame;
+    applyDeskNotch();
+  });
+  ipcMain.handle(IPC.deskNotchGet, () => deskNotch);
+  ipcMain.on(IPC.deskNotchInput, (event, input: unknown) => {
+    if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchInput(input)) return;
+    if (shellWindow === null || shellWindow.isDestroyed()) return;
+    // A press puts the keyboard in the Bar's field, which is the shell's.
+    if (input === "press") shellWindow.webContents.focus();
+    shellWindow.webContents.send(IPC.deskNotchInput, input);
+  });
+  ipcMain.on(IPC.deskShelfSet, (event, frame: unknown) => {
+    if (!isShell(event.sender) || (frame !== null && !isDeskShelfFrame(frame))) return;
+    deskShelf = frame;
+    applyDeskShelf();
+  });
+  ipcMain.handle(IPC.deskShelfGet, () => deskShelf);
+  ipcMain.on(IPC.deskShelfInput, (event, input: unknown) => {
+    if (chromeViewOf(event.sender) !== "shelf" || !isDeskShelfInput(input)) return;
+    if (shellWindow === null || shellWindow.isDestroyed()) return;
+    shellWindow.webContents.send(IPC.deskShelfInput, input);
+  });
+  ipcMain.on(IPC.deskPipSet, (event, frame: unknown) => {
+    if (!isShell(event.sender) || (frame !== null && !isDeskPipFrame(frame))) return;
+    deskPip = frame;
+    applyDeskPip();
+  });
+  ipcMain.handle(IPC.deskPipGet, () => deskPip);
+  ipcMain.on(IPC.deskPipInput, (event, input: unknown) => {
+    if (chromeViewOf(event.sender) !== "pip" || !isDeskPipInput(input) || (input.type === "control" && !isMediaControl(input.control))) return;
+    if (shellWindow === null || shellWindow.isDestroyed()) return;
+    shellWindow.webContents.send(IPC.deskPipInput, input);
   });
   ipcMain.on(IPC.noticeEvent, (event, noticeEvent: unknown) => {
     if (chromeViewOf(event.sender) !== "notice" || !isNoticeEvent(noticeEvent)) return;
@@ -4000,6 +4138,12 @@ function chromeViewOf(sender: Electron.WebContents): ChromeViewId | null {
     return bookmarkLayer.id;
   if (noticeLayer !== null && sender.id === noticeLayer.view.webContents.id)
     return noticeLayer.view.id;
+  if (notchLayer !== null && sender.id === notchLayer.webContents.id)
+    return notchLayer.id;
+  if (shelfLayer !== null && sender.id === shelfLayer.webContents.id)
+    return shelfLayer.id;
+  if (pipLayer !== null && sender.id === pipLayer.webContents.id)
+    return pipLayer.id;
   return null;
 }
 

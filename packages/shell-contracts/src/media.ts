@@ -103,6 +103,21 @@ export type MediaControl =
   /** A "Read aloud" card: light the spoken words on the page they came from, or stop. */
   | { type: "followText"; enabled: boolean };
 
+/**
+ * How loud a tab's media sounds right now, for the desk's rail (docs/desk.md,
+ * "Now playing"): 0 (silent) to 1, measured by its page while main asks it
+ * to (setMediaMeters). Null when the page cannot hear its own media — a
+ * protected (DRM) or cross-origin stream — and the rail only suggests it.
+ */
+export interface MediaLevel {
+  tabId: string;
+  level: number | null;
+}
+
+export function isMediaLevelReport(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1);
+}
+
 export const MIN_PLAYBACK_RATE = 0.25;
 export const MAX_PLAYBACK_RATE = 2;
 

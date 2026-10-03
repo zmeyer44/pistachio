@@ -1,6 +1,7 @@
 import { TRAFFIC_LIGHTS_H, TRAFFIC_LIGHTS_W } from "@pistachio/shell-contracts/chrome";
 import { ChromeRegion } from "../chrome/manifest-renderers";
 import { ShelfDragProvider } from "../chrome/shelf-drag";
+import { RailNowPlaying } from "./desk/DeskNowPlaying";
 import { DeskMoreButton, DeskRailToggle } from "./desk/DeskSidebarControls";
 import { SidebarRailContext } from "./sidebar-rail";
 
@@ -26,7 +27,8 @@ import { SidebarRailContext } from "./sidebar-rail";
  * regions drawn narrow, its icons alone (sidebar-rail.ts): the toolbar gives
  * way to the desk's own two buttons — the whole sidebar back, and the desk's
  * card — at its head, where the window's buttons were (main hides them while
- * the rail is up: ShellState.sidebarRail), and background media is not drawn.
+ * the rail is up: ShellState.sidebarRail), and background media is the desk's
+ * now playing (desk/DeskNowPlaying.tsx) instead of the stack's cards.
  */
 export function SidebarChrome({ rail = false, lights = true }: { rail?: boolean; lights?: boolean }) {
   return (
@@ -57,6 +59,8 @@ export function SidebarChrome({ rail = false, lights = true }: { rail?: boolean;
             </div>
           )}
         </div>
+        {/* On the rail, background media is the desk's now playing: a floating player for a video, a button here for the rest. */}
+        {rail ? <RailNowPlaying /> : null}
         {/* The footer: the menu (the Space avatar) at its start, then any pills. All are buttons, so the row opts out as one. */}
         <div className="sidebar-footer no-drag flex h-10 shrink-0 items-center gap-1.5 border-t border-alpha-400 px-2">
           <ChromeRegion layout="sidebar" region="footer" />

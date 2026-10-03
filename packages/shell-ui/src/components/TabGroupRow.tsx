@@ -30,81 +30,37 @@ export interface ClusterTab {
   faviconUrl: string | null;
 }
 
-/** One bubble of the stack: where it sits in the 20px field, how big it is, and how far it leans. */
-interface Bubble {
-  x: number;
-  y: number;
-  size: number;
-}
-
 /**
- * The stack's arrangements, in px within a 20×20 field. Hand-placed rather
- * than computed, because what makes a pile of icons read as a PILE is that
- * it is a little uneven: the sizes differ by a hair, nothing shares an edge,
- * and each bubble overlaps the one before it. Later bubbles sit on top.
- */
-const STACKS: Record<1 | 2 | 3 | 4, readonly Bubble[]> = {
-  1: [{ x: 2, y: 2, size: 16 }],
-  2: [
-    { x: 0, y: 0, size: 12 },
-    { x: 7, y: 7, size: 13 },
-  ],
-  3: [
-    { x: 5, y: 0, size: 11 },
-    { x: 0, y: 7.5, size: 11.5 },
-    { x: 8.5, y: 9, size: 11 },
-  ],
-  4: [
-    { x: 0, y: 0, size: 12 },
-    { x: 9.5, y: 1.5, size: 10 },
-    { x: 1.5, y: 10, size: 10 },
-    { x: 8.5, y: 8.5, size: 11.5 },
-  ],
-};
-
-/**
- * A group's tabs as one mark: their icons as a small pile of round bubbles,
- * overlapping the way a stack of avatars does — one large, two on the
- * diagonal, three in a loose triangle, and past four, three with a badge
- * counting the rest. Each bubble is ringed in the surface's colour so the
- * overlaps read as one thing in front of another.
+ * A group's tabs as one mark, in the favorites folder's style (RailFavorites):
+ * its first four tabs' icons in a 2×2 of small squares, each icon filling its
+ * square, left to right and down; a tab with no icon is a square of the
+ * group's colour. On the desk's rail, where the row says nothing else, the
+ * mark is a tile of the group's colour and a badge says how many tabs it
+ * holds, as the favorites folder's says how many favorites (the whole
+ * sidebar's row says the count beside the title instead).
  *
- * The pile is drawn in a 20px field but takes only the 16px a tab's icon
+ * The mark is drawn in a 20px field but takes only the 16px a tab's icon
  * does in layout, so a group's title lines up with the tab titles around it.
  */
 export function FaviconCluster({ tabs, className }: { tabs: readonly ClusterTab[]; className?: string }) {
   const seed = (tab: ClusterTab): string => displayHost(tab.url) || tab.title;
-  const shown = tabs.length > 4 ? tabs.slice(0, 3) : tabs.slice(0, 4);
-  const more = tabs.length - shown.length;
-  const slots = STACKS[Math.min(4, Math.max(1, shown.length + (more > 0 ? 1 : 0))) as 1 | 2 | 3 | 4];
-  const place = (bubble: Bubble | undefined): React.CSSProperties => ({ left: bubble?.x ?? 0, top: bubble?.y ?? 0, width: bubble?.size ?? 0, height: bubble?.size ?? 0 });
-  const bubble = "absolute grid place-items-center overflow-hidden rounded-full bg-background-100 shadow-[0_0_0_1.5px_var(--color-background-100),0_1px_2px_rgb(0_0_0/0.22)]";
+  const shown = tabs.slice(0, 4);
   return (
-    <span aria-hidden="true" data-testid="favicon-cluster" className={cn("relative -mx-0.5 size-5 shrink-0", className)}>
-      {shown.length === 0 ? <span className={bubble} style={place(STACKS[1][0])} /> : null}
-      {shown.map((tab, index) => (
-        <span key={index} className={bubble} style={place(slots[index])}>
-          {/* The icon FILLS its bubble, as a face fills an avatar: the bubble clips it round, and an icon
-              drawn on transparency shows the bubble's own surface behind it. A page with no icon is the
-              group's colour — a letter this small reads as dirt; alone, it has room for its letter.
-              (`leading-none` is said AGAIN after the size: the class merger drops the tile's own when
-              a font size follows it, and the letter then sits low on the row's line height.) */}
+    <span aria-hidden="true" data-testid="favicon-cluster" className={cn("tab-group-mosaic relative -mx-0.5 size-5 shrink-0", className)}>
+      <span className="tab-group-mosaic-grid" data-count={Math.max(1, shown.length)}>
+        {shown.length === 0 ? <span className="tab-group-mosaic-cell bg-(--tg-solid)/55" /> : null}
+        {shown.map((tab, index) => (
+          // A page with no icon is the group's colour: a letter this small reads as dirt.
           <Favicon
-            letter={shown.length === 1}
+            key={index}
+            letter={false}
             src={tab.faviconUrl}
             seed={seed(tab)}
-            className={cn(
-              "size-full rounded-none object-cover",
-              tab.faviconUrl === null && (shown.length === 1 ? "bg-(--tg-tint-strong) text-[8.5px] leading-none text-(--tg-text)" : "bg-(--tg-solid)/55"),
-            )}
+            className={cn("tab-group-mosaic-cell object-cover", tab.faviconUrl === null && "bg-(--tg-solid)/55")}
           />
-        </span>
-      ))}
-      {more > 0 ? (
-        <span className={cn(bubble, "bg-(--tg-solid) text-[5.5px] leading-none font-bold tracking-tight text-white")} style={place(slots[shown.length])}>
-          {more > 9 ? "+" : `+${String(more)}`}
-        </span>
-      ) : null}
+        ))}
+      </span>
+      <span className="tab-group-mosaic-count">{tabs.length}</span>
     </span>
   );
 }

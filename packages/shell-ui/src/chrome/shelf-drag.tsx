@@ -415,21 +415,15 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
      * are read as they will be once it has.
      */
     const dropFor = (ev: PointerLike, scrollBy: number): { drop: ShelfDrop | null; overContent: boolean; zone: SplitZone | null } => {
+      // The favorites first, wherever they are: on a desk's rail their grid is
+      // in the sheet out over the desk (RailFavorites), which a drop there is
+      // for, not the desk under it.
+      const favorites = overFavorites(ev);
+      if (favorites !== null) return { drop: favorites, overContent: false, zone: null };
       if (overDesk(ev)) return { drop: null, overContent: true, zone: null };
       const area = boundsRef.current;
       if (canSplit && area !== null && ev.clientX >= area.x) {
         return { drop: null, overContent: true, zone: splitZoneAt("y", area, ev) };
-      }
-      const grid = gridRef.current;
-      if (grid !== null && item.kind !== "folder" && item.kind !== "split" && item.kind !== "group") {
-        const box = grid.getBoundingClientRect();
-        if (ev.clientX >= box.left - 4 && ev.clientX <= box.right + 4 && ev.clientY >= box.top - 4 && ev.clientY <= box.bottom + 4) {
-          return {
-            drop: { zone: "favorites", index: favoriteDropAt(tilesOf(grid), ev.clientX - box.left, ev.clientY - box.top) },
-            overContent: false,
-            zone: null,
-          };
-        }
       }
       const list = listRef.current;
       if (list === null) return { drop: null, overContent: false, zone: null };
@@ -439,6 +433,14 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
     };
 
     /** The pointer is past the column's edge, over the desk, with a tab's row in hand. */
+    /** The favorites' grid under the pointer (a little past its edges), and where in it a drop would go; null off it, or for what it cannot take. */
+    const overFavorites = (ev: PointerLike): ShelfDrop | null => {
+      const grid = gridRef.current;
+      if (grid === null || item.kind === "folder" || item.kind === "split" || item.kind === "group") return null;
+      const box = grid.getBoundingClientRect();
+      if (ev.clientX < box.left - 4 || ev.clientX > box.right + 4 || ev.clientY < box.top - 4 || ev.clientY > box.bottom + 4) return null;
+      return { zone: "favorites", index: favoriteDropAt(tilesOf(grid), ev.clientX - box.left, ev.clientY - box.top) };
+    };
     const overDesk = (ev: PointerLike): boolean => {
       if (deskTab === undefined) return false;
       const column = rootRef.current?.getBoundingClientRect();
@@ -525,7 +527,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       // writes. Interleaving them would force a layout per read.
       // A row of the desk's group out over the desk becomes its window in
       // hand: the desk takes the gesture on from here, the button still down.
-      if (live && deskTab !== undefined && overDesk(ev) && deskEngine()?.hasGroupTab(deskTab.id) === true) {
+      if (live && deskTab !== undefined && overDesk(ev) && overFavorites(ev) === null && deskEngine()?.hasGroupTab(deskTab.id) === true) {
         finish(false);
         deskEngine()?.pullFromSidebar(deskTab.id, { x: ev.clientX, y: ev.clientY });
         return;
@@ -644,8 +646,9 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       store.setTabDragging(false);
-      // Let go over the desk: the tab's window comes out there (joining the group, if it was not the group's).
-      if (deskTab !== undefined && overDesk(pointer)) {
+      // Let go over the desk: the tab's window comes out there (joining the group, if it was not the group's) — unless
+      // it was over the favorites' sheet out over the desk (RailFavorites), which takes it.
+      if (deskTab !== undefined && overDesk(pointer) && overFavorites(pointer) === null) {
         setDrag(null);
         void dropTabOnDesk(deskTab.id, { x: pointer.clientX, y: pointer.clientY });
         return;

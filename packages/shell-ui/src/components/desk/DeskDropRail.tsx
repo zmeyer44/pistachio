@@ -37,7 +37,8 @@ export function DeskDropRail({
   engine: DeskEngine;
   drops: DockDrops;
   /** The group's colour (a `data-group-color` name): Collapse lights in it. */
-  groupColor: string;
+  /** The desk's group's colour; null on a loose tab's desk. */
+  groupColor: string | null;
   /** The stage's corner in the window. */
   stage: { left: number; top: number };
   shown: boolean;
@@ -57,7 +58,7 @@ export function DeskDropRail({
     <div
       ref={attach}
       className="desk-drops tab-group-tone"
-      data-group-color={groupColor}
+      data-group-color={groupColor ?? undefined}
       data-shown={shown ? "" : undefined}
       aria-hidden="true"
       style={{

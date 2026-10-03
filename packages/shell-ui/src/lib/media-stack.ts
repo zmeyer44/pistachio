@@ -1,5 +1,31 @@
 import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 
+/** `75` → "1:15", an hour on → "1:01:15". */
+export function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const whole = Math.floor(seconds);
+  const hours = Math.floor(whole / 3_600);
+  const minutes = Math.floor((whole % 3_600) / 60);
+  const remainder = whole % 60;
+  return hours > 0
+    ? `${hours}:${minutes.toString().padStart(2, "0")}:${remainder.toString().padStart(2, "0")}`
+    : `${minutes}:${remainder.toString().padStart(2, "0")}`;
+}
+
+/** Where the playhead is now, moved on from the last report at its rate while playing. */
+export function projectedPosition(
+  media: Pick<BrowserMediaInfo, "playing" | "updatedAt" | "playbackRate" | "duration" | "position">,
+  now: number,
+): number {
+  const elapsed = media.playing
+    ? (Math.max(0, now - media.updatedAt) / 1_000) * media.playbackRate
+    : 0;
+  return Math.min(
+    media.duration ?? Number.POSITIVE_INFINITY,
+    Math.max(0, media.position + elapsed),
+  );
+}
+
 /** How many cards the sidebar stack shows; the rest wait behind it, unseen. */
 export const MAX_MEDIA_CARDS = 3;
 
