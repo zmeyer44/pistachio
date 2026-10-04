@@ -34,7 +34,7 @@ import {
 const PASSWORD = "correct-horse-battery";
 const SCREENSHOTS = "e2e/screenshots/web-two-apps";
 
-test("one account, two sites: the dashboard hands over to the browser", async ({ page }) => {
+test("one account, two sites: the dashboard hands over to the browser", { tag: ["@web"] }, async ({ page }) => {
   // Two cold `next dev` processes, a real Chromium fleet, and a claimed
   // session on the other side of the hand-over.
   test.setTimeout(600_000);

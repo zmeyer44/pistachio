@@ -23,9 +23,8 @@ describe("permission prompt overlay", () => {
     expect(permissionPromptOverlay(snapshot(), snapshot([], [passkey("p")]), "none")).toBe("permission");
   });
 
-  it("interrupts only the status card and the site-info popover", () => {
+  it("interrupts only the site-info popover", () => {
     const next = snapshot([permission("a")]);
-    expect(permissionPromptOverlay(snapshot(), next, "status")).toBe("permission");
     expect(permissionPromptOverlay(snapshot(), next, "site-info")).toBe("permission");
     expect(permissionPromptOverlay(snapshot(), next, "url")).toBeNull();
     expect(permissionPromptOverlay(snapshot(), next, "settings")).toBeNull();

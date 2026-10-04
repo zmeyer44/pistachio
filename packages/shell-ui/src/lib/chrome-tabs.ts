@@ -2,7 +2,7 @@
  * The rows the chrome lays out, built from the snapshot: the tab's info plus
  * its role in the window. Pure — no store, no React — so the sharing rule
  * below can be pinned under node (test/chrome-tabs.test.ts); chrome/tabs.ts
- * wraps it in the hook the strip and the list use.
+ * wraps it in the hook the sidebar's list uses.
  */
 
 import type { BrowserTabInfo, ShellSnapshot, SplitGroupInfo, SplitMode } from "@pistachio/shell-contracts/ipc";

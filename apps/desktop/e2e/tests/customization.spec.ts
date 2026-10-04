@@ -1,23 +1,16 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Locator } from "@playwright/test";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication, type Locator } from "@playwright/test";
 import type { DesktopSettings } from "@pistachio/shell-contracts/settings";
 import { pageFirst, shellReady } from "./windows";
+import { captureEnabled, launchApp } from "./app";
 
 const screenshotDirectory = join(process.cwd(), "e2e/screenshots/customization");
 
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", suffix),
-  ].find((candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")));
-}
-
-async function captureWindow(app: ElectronApplication, filename: string): Promise<void> {
+/** The window, once `settling`'s finite animations have finished. */
+async function captureWindow(app: ElectronApplication, filename: string, settling: Locator): Promise<void> {
+  if (!captureEnabled) return;
+  await settle(settling);
   const png = await app.evaluate(async ({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows().find((candidate) => candidate.getTitle() === "Pistachio");
     if (window === undefined) throw new Error("Pistachio window is unavailable");
@@ -73,23 +66,14 @@ async function nativeVibrancyChanges(app: ElectronApplication): Promise<Array<st
   });
 }
 
-test("themes and shortcut bindings customize the live Electron window", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-customization-"));
+test("themes and shortcut bindings customize the live Electron window", { tag: ["@settings"] }, async () => {
   // Glass is a property of every chrome surface, the agent console included,
   // and the console opens closed by default — so ask for it on launch. The
   // home page is the demo site: the last step needs a native page WebContents
   // to send a key to, and this one is local and always there.
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify(pageFirst({ general: { consoleOpenOnLaunch: true, homeUrl: "pistachio://demo/invoices" } })),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  const { app, userData } = await launchApp({
+    settings: pageFirst({ general: { consoleOpenOnLaunch: true, homeUrl: "pistachio://demo/invoices" } }),
+    name: "customization",
   });
 
   try {
@@ -121,8 +105,7 @@ test("themes and shortcut bindings customize the live Electron window", async ()
     await expect(shell.getByTestId("agent-panel-surface")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("side-rail")).toHaveCount(0);
     await expect(shell.getByTestId("status-footer")).toHaveCount(0);
-    await settle(settings);
-    await captureWindow(app, "01-desktop-glass-on.png");
+    await captureWindow(app, "01-desktop-glass-on.png", settings);
 
     // Turning glass off restores a genuinely opaque native window without recreating it.
     await desktopGlass.click();
@@ -136,8 +119,7 @@ test("themes and shortcut bindings customize the live Electron window", async ()
     await expect(shell.getByTestId("sidebar-chrome")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("agent-panel-surface")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect.poll(() => nativeVibrancyChanges(app)).toEqual([null]);
-    await settle(settings);
-    await captureWindow(app, "02-desktop-glass-off.png");
+    await captureWindow(app, "02-desktop-glass-off.png", settings);
     await desktopGlass.click();
     await expect(desktopGlass).toHaveAttribute("aria-checked", "true");
     await expect.poll(() => shell.evaluate(() => document.documentElement.dataset["desktopGlass"])).toBe("on");
@@ -156,8 +138,7 @@ test("themes and shortcut bindings customize the live Electron window", async ()
         return stored === null ? null : { scheme: stored.appearance.scheme, color: stored.appearance.colors[0] };
       })
       .toEqual({ scheme: "dark", color: "#3F67D8" });
-    await settle(settings);
-    await captureWindow(app, "03-appearance-custom-dark.png");
+    await captureWindow(app, "03-appearance-custom-dark.png", settings);
 
     // Recording is an explicit mode, so ordinary key presses cannot silently replace a binding.
     await settings.getByRole("button", { name: "Shortcuts", exact: true }).click();
@@ -165,15 +146,13 @@ test("themes and shortcut bindings customize the live Electron window", async ()
     const newTab = settings.getByTestId("shortcut-newTab");
     await newTab.click();
     await expect(newTab).toContainText("Press shortcut");
-    await settle(settings);
-    await captureWindow(app, "04-shortcut-recording.png");
+    await captureWindow(app, "04-shortcut-recording.png", settings);
 
     // The recorded portable binding is immediately visible and written atomically.
     await shell.keyboard.press("Meta+K");
     await expect(newTab).toContainText("K");
     await expect.poll(async () => (await storedSettings(userData))?.shortcuts.newTab ?? null).toBe("Mod+K");
-    await settle(settings);
-    await captureWindow(app, "05-shortcut-rebound.png");
+    await captureWindow(app, "05-shortcut-rebound.png", settings);
 
     // Focus a native webpage WebContents, not React chrome: the same binding must still route back to shell.
     await shell.keyboard.press("Escape");
@@ -187,8 +166,7 @@ test("themes and shortcut bindings customize the live Electron window", async ()
     }, process.platform === "darwin" ? "meta" : "control");
     const urlBar = shell.getByTestId("url-bar");
     await expect(urlBar).toBeVisible();
-    await settle(urlBar);
-    await captureWindow(app, "06-native-page-shortcut.png");
+    await captureWindow(app, "06-native-page-shortcut.png", urlBar);
   } finally {
     await app.close();
   }

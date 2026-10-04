@@ -1,89 +1,19 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
-import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
-import { dragPage, pageFirst, shellPage } from "./windows";
+import { expect, test, type ElectronApplication } from "@playwright/test";
+import { dragPage, pageFirst, shellReady } from "./windows";
+import { launchApp } from "./app";
+import { capturePage, captureShell as captureWindowFrame, captureTabView, visibleTabViewBoxes } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/sidebar-split-drag");
+const FOLDER = "sidebar-split-drag";
 
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
+function captureShell(app: ElectronApplication, filename: string): Promise<void> {
+  return captureWindowFrame(app, FOLDER, filename);
 }
 
-async function captureShell(app: ElectronApplication, filename: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
-async function captureLivePage(app: ElectronApplication, filename: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    const view = window.contentView.children.find((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return false;
-      const url = (child as WebContentsView).webContents.getURL();
-      return !Object.values(hashes).some((hash) => url.endsWith(hash));
-    }) as WebContentsView | undefined;
-    if (view === undefined) throw new Error("No live page is visible during the split preview");
-    return (await view.webContents.capturePage()).toPNG().toString("base64");
-  }, CHROME_VIEW_HASHES);
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
-function visibleTabViewBoxes(app: ElectronApplication): Promise<Array<{ x: number; y: number; width: number; height: number }>> {
-  return app.evaluate(({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return window.contentView.children.flatMap((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return [];
-      const url = (child as WebContentsView).webContents.getURL();
-      return Object.values(hashes).some((hash) => url.endsWith(hash)) ? [] : [(child as WebContentsView).getBounds()];
-    });
-  }, CHROME_VIEW_HASHES);
-}
-
-test("a sidebar tab live-previews the page reflow before it becomes a split", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-sidebar-split-drag-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify(pageFirst({ layout: { mode: "sidebar", sidebar: "pinned" } })),
-  );
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+test("a sidebar tab live-previews the page reflow before it becomes a split", { tag: ["@split", "@sidebar"] }, async () => {
+  const { app } = await launchApp({ settings: pageFirst({ layout: { sidebar: "pinned" } }), name: "sidebar-split-drag" });
   try {
-    const shell = await shellPage(app);
+    const shell = await shellReady(app);
     const layer = await dragPage(app);
-    await shell.waitForLoadState("domcontentloaded");
     await layer.waitForLoadState("domcontentloaded");
     const source = shell.getByTestId("sidebar-tab-list").getByTestId("human-tab").first();
     const content = shell.getByTestId("primary-pane");
@@ -120,8 +50,8 @@ test("a sidebar tab live-previews the page reflow before it becomes a split", as
     await expect(ghost).toBeVisible();
     await expect(ghost).toHaveAttribute("data-split-zone", "left");
     await captureShell(app, "02-live-split-preview.png");
-    await captureLivePage(app, "03-native-page-reflow.png");
-    await layer.screenshot({ path: join(screenshotDirectory, "04-drag-ghost.png"), omitBackground: true });
+    await captureTabView(app, FOLDER, "03-native-page-reflow.png");
+    await capturePage(layer, FOLDER, "04-drag-ghost.png");
 
     // Once the real pointer is over a page, the drag layer owns its samples.
     // Crossing to the opposite edge must move both the landing pane and the

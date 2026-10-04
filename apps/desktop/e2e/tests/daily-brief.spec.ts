@@ -8,56 +8,18 @@
  * a native view that stays hidden behind the shell's page.
  */
 
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { BRIEF_PAGE_URL } from "@pistachio/shell-contracts/reports";
-import { noticePage, shellPage } from "./windows";
+import { noticePage, shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell as captureWindow, capturePage, humanTabs as tabs, visibleTabViews } from "./pages-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/daily-brief");
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", executableSuffix)];
-  return candidates.find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function captureShell(app: ElectronApplication, shell: Page, filename: string): Promise<void> {
-  // capturePage can trail the DOM by a frame or two; let the page settle first.
-  await shell.waitForTimeout(400);
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
-function visibleTabViews(app: ElectronApplication): Promise<number> {
-  return app.evaluate(({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return window.contentView.children.filter((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return false;
-      const url = (child as WebContentsView).webContents.getURL();
-      return !Object.values(hashes).some((hash) => url.endsWith(hash));
-    }).length;
-  }, CHROME_VIEW_HASHES);
-}
-
-async function tabs(shell: Page): Promise<Array<{ id: string; url: string; title: string }>> {
-  return shell.evaluate(async () => {
-    const snapshot = await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot();
-    return snapshot.tabs.filter((tab) => tab.kind === "human").map(({ id, url, title }) => ({ id, url, title }));
-  });
+/** capturePage can trail the DOM by a frame or two; the page settles first. */
+function captureShell(app: ElectronApplication, filename: string): Promise<void> {
+  return captureWindow(app, `daily-brief/${filename}`, 400);
 }
 
 /** A day built around the moment the spec runs: one meeting under way, one coming up, one tonight. */
@@ -92,27 +54,28 @@ function scriptedDay(): string {
   });
 }
 
-async function launchBrief(prefix: string, general: Record<string, unknown> = {}): Promise<{ app: ElectronApplication; userData: string }> {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), prefix));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" }, general }));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData, PISTACHIO_BRIEF_SCRIPT: scriptedDay() },
-  });
-  return { app, userData };
+function launchBrief(name: string, general: Record<string, unknown> = {}): Promise<{ app: ElectronApplication; userData: string }> {
+  return launchApp({ settings: { layout: { sidebar: "pinned" }, general }, env: { PISTACHIO_BRIEF_SCRIPT: scriptedDay() }, name });
 }
 
-test("the daily brief: from the home page, a composed report of the day with ticks that stick", async () => {
-  test.setTimeout(150_000);
-  const { app, userData } = await launchBrief("pistachio-brief-");
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+// One window: the brief made from the home page, then the same brief in the
+// dark and in a narrow pane.
+test.describe.serial("the daily brief", { tag: ["@home", "@pages"] }, () => {
+  test.describe.configure({ timeout: 90_000 });
+  let app: ElectronApplication;
+  let userData: string;
+  let shell: Page;
 
+  test.beforeAll(async () => {
+    ({ app, userData } = await launchBrief("brief"));
+    shell = await shellReady(app);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("the daily brief: from the home page, a composed report of the day with ticks that stick", async () => {
     // A to-do written on the home page is part of the day the brief reads.
     await expect(shell.getByTestId("home-page")).toBeVisible();
     await shell.getByTestId("home-todo-add").last().click();
@@ -124,7 +87,7 @@ test("the daily brief: from the home page, a composed report of the day with tic
     // The way in: one line under the greeting.
     const teaser = shell.getByTestId("home-brief");
     await expect(teaser).toContainText("Daily Brief");
-    await captureShell(app, shell, "01-home-teaser.png");
+    await captureShell(app, "01-home-teaser.png");
     await teaser.click();
 
     // The brief opens as its own tab and makes itself.
@@ -157,7 +120,7 @@ test("the daily brief: from the home page, a composed report of the day with tic
     // A list the layout put in the narrow column draws as a quiet panel there.
     await expect(page.getByTestId("report-aside").getByTestId("report-list")).toContainText("Compare flight prices");
     await expect(page.getByTestId("brief-footer")).toContainText("Built-in layout");
-    await captureShell(app, shell, "02-brief-top.png");
+    await captureShell(app, "02-brief-top.png");
 
     // Pressing an item opens its preview beside the page rather than a tab: its own details, its own actions,
     // and the arrows step through the page in reading order. Escape puts the page back.
@@ -168,7 +131,7 @@ test("the daily brief: from the home page, a composed report of the day with tic
     await expect(preview.getByTestId("report-preview-actions")).toContainText("Up next");
     await expect(preview.getByTestId("report-preview-ask")).toHaveText(/Prep me/u);
     expect((await tabs(shell)).length).toBe(tabsBefore);
-    await captureShell(app, shell, "02b-brief-preview.png");
+    await captureShell(app, "02b-brief-preview.png");
     await preview.getByTestId("report-preview-next").click();
     await expect(preview.getByTestId("report-preview-title")).not.toContainText("1:1 with Dana");
     await shell.keyboard.press("Escape");
@@ -198,7 +161,7 @@ test("the daily brief: from the home page, a composed report of the day with tic
     await page.getByTestId("brief-refresh").click();
     await expect(page.getByTestId("brief-refresh")).toBeEnabled({ timeout: 30_000 });
     await expect(todo.getByRole("checkbox")).toHaveAttribute("aria-checked", "false");
-    await captureShell(app, shell, "09-todo-reopened.png");
+    await captureShell(app, "09-todo-reopened.png");
     // Finished for good this time.
     await todo.getByRole("checkbox").click();
     await expect(todo.getByRole("checkbox")).toHaveAttribute("aria-checked", "true");
@@ -208,7 +171,7 @@ test("the daily brief: from the home page, a composed report of the day with tic
     await expect(message).toContainText("Handled");
 
     await page.evaluate((element) => element.scrollTo({ top: element.scrollHeight }), await page.elementHandle());
-    await captureShell(app, shell, "03-brief-bottom.png");
+    await captureShell(app, "03-brief-bottom.png");
 
     const files = (await readdir(join(userData, "briefs"))).filter((name) => name.includes("__"));
     expect(files).toHaveLength(1);
@@ -225,42 +188,32 @@ test("the daily brief: from the home page, a composed report of the day with tic
     await expect(home.getByTestId("home-todo").filter({ hasText: "Book flights to Lisbon" }).getByRole("checkbox")).toHaveAttribute("aria-checked", "true");
     // …and its teaser now carries the brief's own headline.
     await expect(home.getByTestId("home-brief")).toContainText("waiting on you");
-    await captureShell(app, shell, "04-home-after.png");
+    await captureShell(app, "04-home-after.png");
+  });
 
-  } finally {
-    await app.close();
-  }
-});
-
-test("the daily brief in a narrow pane and in the dark", async () => {
-  test.setTimeout(150_000);
-  const { app } = await launchBrief("pistachio-brief-dark-");
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+  test("the daily brief in a narrow pane and in the dark", async () => {
     await shell.evaluate(async () => {
       await (window as unknown as { pistachio: PistachioApi }).pistachio.updateSettings({ appearance: { scheme: "dark" } });
     });
-    await shell.getByTestId("home-brief").click();
+    await expect(shell.locator("html")).toHaveAttribute("data-color-scheme", "dark");
+    // From the home page the test before left in front.
+    await shell.getByTestId("home-page").last().getByTestId("home-brief").click();
     const page = shell.getByTestId("brief-page").last();
     await expect(page.getByTestId("report-title")).toContainText("Brief", { timeout: 30_000 });
-    await captureShell(app, shell, "05-brief-dark.png");
+    await captureShell(app, "05-brief-dark.png");
 
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setSize(760, 900));
     await expect(page.getByTestId("report-aside")).toBeVisible();
-    await captureShell(app, shell, "06-brief-narrow.png");
-  } finally {
-    await app.close();
-  }
+    await captureShell(app, "06-brief-narrow.png");
+  });
 });
 
-test("the scheduled brief: past its hour at launch, it makes itself and says so", async () => {
-  test.setTimeout(150_000);
+test("the scheduled brief: past its hour at launch, it makes itself and says so", { tag: ["@pages", "@notices"] }, async () => {
+  test.setTimeout(90_000);
   // Midnight has always passed: this is the Mac that was closed at the hour and opened later.
-  const { app, userData } = await launchBrief("pistachio-brief-clock-", { morningBrief: true, morningBriefTime: "00:00" });
+  const { app, userData } = await launchBrief("brief-clock", { morningBrief: true, morningBriefTime: "00:00" });
   try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+    const shell = await shellReady(app);
     await expect(shell.getByTestId("home-page")).toBeVisible();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.focus());
 
@@ -274,12 +227,12 @@ test("the scheduled brief: past its hour at launch, it makes itself and says so"
     const notices = await noticePage(app);
     const card = notices.locator('[data-testid="notice-card"][data-depth="0"]');
     await expect(card).toContainText(/The \w+day Brief is ready/u);
-    await notices.screenshot({ path: join(screenshotDirectory, "07-scheduled-notice.png") });
+    await capturePage(notices, "daily-brief/07-scheduled-notice.png");
     await card.getByRole("button", { name: "Read" }).click();
     await expect(shell.getByTestId("brief-page").last().getByTestId("report-title")).toBeVisible();
     // One attempt a day is on file, so a relaunch does not make a second brief.
     expect(await readdir(join(userData, "briefs"))).toContain("schedule.json");
-    await captureShell(app, shell, "08-scheduled-brief.png");
+    await captureShell(app, "08-scheduled-brief.png");
   } finally {
     await app.close();
   }

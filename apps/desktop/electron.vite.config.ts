@@ -30,7 +30,15 @@ const workspacePackages = [
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin({ exclude: workspacePackages })],
-    build: { rollupOptions: { input: { index: "src/main/index.ts", "watchtower-worker": "src/main/watchtower/worker.ts" } } },
+    build: {
+      rollupOptions: {
+        input: {
+          index: "src/main/index.ts",
+          "watchtower-worker": "src/main/watchtower/worker.ts",
+          "shields-worker": "src/main/shields/compile-worker.ts",
+        },
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin({ exclude: workspacePackages })],

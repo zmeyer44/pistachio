@@ -13,7 +13,7 @@ import { useScreenShares, useScreenShareStartNotice } from "./ScreenShareIndicat
  *
  * The arrival is a pointer MOVE inside the column, never `pointerenter`:
  * Chromium synthesizes an enter for whatever lands under a cursor that has
- * not moved — this column mounting at launch, or when the layout switches —
+ * not moved — this column mounting at launch, or when compact is chosen —
  * and a sidebar that opens by itself because the cursor happened to rest at
  * the window's edge is exactly the launch nobody can predict. A move is the
  * person's.

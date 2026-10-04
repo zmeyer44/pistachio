@@ -1,44 +1,52 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { shellPage } from "./windows";
+import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell, pageAt } from "./agent-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/console-links");
+/**
+ * The console around a conversation, on one launch: its feedback popover
+ * posts a report to the API, and a link in a message previews as a Glance.
+ * The owner page is the window's only tab, so it is the home page: launch
+ * opens on `general.homeUrl` and nothing else.
+ */
+
 const OWNER_URL = "pistachio://demo/invoices";
 const PREVIEW_URL = "pistachio://demo/vendors/atlas-medical";
 const REMINDER_ID = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
 const OCCURRENCE_ID = "16fd2706-8baf-433b-82eb-8c7fada847da";
 const RUN_ID = "3b241101-e2bb-4255-8caf-4136c566a962";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
+interface Received {
+  method: string | undefined;
+  url: string | undefined;
+  contentType: string | undefined;
+  body: unknown;
 }
 
-async function pageAt(app: ElectronApplication, url: string): Promise<Page> {
-  await expect.poll(() => app.windows().some((page) => page.url() === url)).toBe(true);
-  const page = app.windows().find((candidate) => candidate.url() === url);
-  if (page === undefined) throw new Error(`No Electron page at ${url}`);
-  return page;
+/** Stands in for apps/www: records every POST and answers 201. */
+async function feedbackSink(): Promise<{ server: Server; apiUrl: string; received: Received[] }> {
+  const received: Received[] = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      received.push({ method: request.method, url: request.url, contentType: request.headers["content-type"], body: JSON.parse(body) });
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const { port } = server.address() as AddressInfo;
+  return { server, apiUrl: `http://127.0.0.1:${String(port)}/api`, received };
 }
 
 function visibleTabViews(app: ElectronApplication): Promise<string[]> {
@@ -61,9 +69,9 @@ function tabUrls(shell: Page): Promise<string[]> {
 }
 
 /** A finished agent reminder whose report names a page, waiting in the console's inbox. */
-function remindersDocument(): string {
+function remindersDocument(): unknown {
   const at = "2026-08-27T13:11:47.556Z";
-  return JSON.stringify({
+  return {
     version: 1,
     reminders: [
       {
@@ -99,41 +107,90 @@ function remindersDocument(): string {
         acknowledgedAt: null,
       },
     ],
-  });
+  };
 }
 
-test("a link in a console message previews as a Glance; ⌘-click opens a tab instead", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-console-links-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    // The owner page is the window's only tab, so it is the home page: launch
-    // opens on `general.homeUrl` and nothing else.
-    JSON.stringify({
-      layout: { mode: "top", sidebar: "pinned" },
-      general: { consoleOpenOnLaunch: true, homeUrl: OWNER_URL },
-    }),
-  );
-  await writeFile(join(userData, "reminders.json"), remindersDocument());
+test.describe.serial("the console's feedback and links", { tag: ["@glance", "@agent"] }, () => {
+  test.describe.configure({ timeout: 45_000 });
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
-  try {
-    const shell = await shellPage(app);
+  let app: ElectronApplication;
+  let shell: Page;
+  let sink: Awaited<ReturnType<typeof feedbackSink>>;
+
+  test.beforeAll(async () => {
+    test.setTimeout(60_000);
+    sink = await feedbackSink();
+    ({ app } = await launchApp({
+      name: "console-links",
+      settings: { layout: { sidebar: "pinned" }, general: { consoleOpenOnLaunch: true, homeUrl: OWNER_URL } },
+      files: { "reminders.json": remindersDocument() },
+      env: { PISTACHIO_API_URL: sink.apiUrl },
+    }));
+    shell = await shellReady(app);
     await pageAt(app, OWNER_URL);
-    await shell.waitForLoadState("domcontentloaded");
+  });
 
+  test.afterAll(async () => {
+    await app?.close();
+    sink?.server.close();
+  });
+
+  test("the console's feedback popover posts the message, reaction, and context to the API", async () => {
+    // The trigger sits in the console header; the popover is Geist's: field, emoji row, Send.
+    const trigger = shell.getByTestId("console-feedback");
+    await trigger.click();
+    const popover = shell.getByRole("dialog", { name: "Feedback" });
+    await expect(popover).toBeVisible();
+    const field = popover.getByPlaceholder("Your feedback...");
+    await expect(field).toBeFocused();
+    const send = popover.getByRole("button", { name: "Send" });
+    await expect(send).toBeDisabled();
+    await captureShell(shell, "console-feedback", "01-popover-open.png");
+
+    await popover.getByRole("radio", { name: "Loved it" }).click();
+    await expect(popover.getByRole("radio", { name: "Loved it" })).toHaveAttribute("aria-checked", "true");
+    await field.fill("The vendor link opened the wrong page.");
+    await expect(send).toBeEnabled();
+    await captureShell(shell, "console-feedback", "02-popover-filled.png");
+    await send.click();
+
+    // Received: acknowledged in place, then the popover closes on its own.
+    await expect(popover.getByRole("status")).toContainText("Your feedback has been received!");
+    await captureShell(shell, "console-feedback", "03-popover-sent.png");
+    await expect.poll(() => sink.received.length).toBe(1);
+    const [report] = sink.received;
+    if (report === undefined) throw new Error("no report received");
+    expect(report.method).toBe("POST");
+    expect(report.url).toBe("/api/feedback");
+    expect(report.contentType).toBe("application/json");
+    expect(report.body).toEqual(
+      expect.objectContaining({
+        version: 1,
+        id: expect.stringMatching(UUID_RE),
+        message: "The vendor link opened the wrong page.",
+        reaction: "love",
+        app: expect.objectContaining({ version: expect.any(String), electron: expect.any(String), platform: expect.any(String), model: expect.any(String) }),
+        browser: expect.objectContaining({ activeTab: expect.objectContaining({ url: OWNER_URL }), tabCount: 1 }),
+        // A reminder's finished report in the inbox is not an open conversation.
+        run: null,
+      }),
+    );
+    await expect(popover).toHaveCount(0);
+
+    // The next report starts blank.
+    await trigger.click();
+    await expect(shell.getByRole("dialog", { name: "Feedback" }).getByPlaceholder("Your feedback...")).toHaveValue("");
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByRole("dialog", { name: "Feedback" })).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
+  test("a link in a console message previews as a Glance; ⌘-click opens a tab instead", async () => {
     // The URL in the report is a real link; the prose around it is not.
     const link = shell.getByRole("link", { name: PREVIEW_URL });
     await expect(link).toBeVisible();
     await expect(link).toHaveAttribute("href", PREVIEW_URL);
-    await mkdir(screenshotDirectory, { recursive: true });
-    await shell.screenshot({ path: join(screenshotDirectory, "01-link-in-console.png") });
+    await captureShell(shell, "console-links", "01-link-in-console.png");
 
     // A plain click previews the page above the live tab and creates no tab.
     await link.click();
@@ -141,7 +198,7 @@ test("a link in a console message previews as a Glance; ⌘-click opens a tab in
     await expect.poll(() => visibleTabViews(app)).toEqual([PREVIEW_URL]);
     const preview = await pageAt(app, PREVIEW_URL);
     expect(await tabUrls(shell)).toEqual([OWNER_URL]);
-    await shell.screenshot({ path: join(screenshotDirectory, "02-link-previewed.png") });
+    await captureShell(shell, "console-links", "02-link-previewed.png");
 
     // Escape in the preview runs the usual close motion back to the owner.
     await preview.keyboard.press("Escape");
@@ -176,7 +233,5 @@ test("a link in a console message previews as a Glance; ⌘-click opens a tab in
     await link.click({ modifiers: ["Meta"] });
     await expect.poll(() => tabUrls(shell)).toEqual([OWNER_URL, PREVIEW_URL, PREVIEW_URL]);
     await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
-  } finally {
-    await app.close();
-  }
+  });
 });

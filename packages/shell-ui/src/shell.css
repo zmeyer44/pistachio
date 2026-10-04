@@ -72,23 +72,9 @@
 
 /* ── Chrome surfaces ─────────────────────────────────────────────────────────
    Each chrome host paints its own ground and names it as --chrome-surface, so
-   a control shared between hosts (the active space chip's ring offset, which
-   must match what is behind it) never assumes one. The top strip sits a step
-   DARKER than the tabs on it — gray-100 under background-100 — so the active
-   tab reads as lifted off the strip rather than as a white shape on white;
-   the sidebar keeps the recessed background-200 its rows are drawn on. */
-.chrome-strip {
-  --chrome-surface: color-mix(
-    in oklch,
-    var(--color-gray-100) 94%,
-    var(--theme-accent)
-  );
-  background-color: color-mix(
-    in srgb,
-    var(--chrome-surface) var(--theme-surface-opacity-percent),
-    transparent
-  );
-}
+   a control that must match what is behind it (a ring's offset) never
+   assumes one. The sidebar keeps the recessed background-200 its rows are
+   drawn on. */
 .chrome-layout-ground {
   background-color: var(--color-background-200);
 }
@@ -106,21 +92,14 @@
    data-surface-translucent). Over an opaque surface it would still read back
    and blur the whole column every frame the sidebar or console moves, for
    nothing visible. Desktop glass overrides this again further down. */
-:root[data-surface-translucent="on"] .chrome-strip,
 :root[data-surface-translucent="on"] .chrome-sidebar {
   backdrop-filter: blur(20px) saturate(1.15);
-}
-
-/* The active tab's silhouette (TabStrip FolderShell): the pane cards' soft
-   shadow layer, under the hairline the outline draws. */
-.folder-drop {
-  filter: drop-shadow(0 1px 1px oklch(0 0 0 / 0.04));
 }
 
 /* The compact sidebar stays mounted while this slot clips and moves it. The
    slot's width reflows the native WebContentsView beside it; the transform
    makes the chrome itself one compositor movement rather than a remount.
-   The surface adds no gutter on this side (ContentArea's leadingGutter), so
+   The surface adds no gutter on this side (ContentArea's BrowserSurface), so
    the hidden slot IS the page's 10px inset. The wider interaction target is
    independent of it. */
 /* Pinned, the slot runs on this clock only while it goes away for a desk or
@@ -454,7 +433,7 @@
   --agent-ring-radius: var(--radius-sm);
 }
 
-/* The ring in miniature, around a tab's mark in the tab list and strip while
+/* The ring in miniature, around a tab's mark in the tab list while
    the agent works in that tab (Favicon.tsx TabMark `working`) — how the
    person sees work going on in a tab behind the one they are on. The same
    comet, drawn thinner and closer: a 3px band would swallow a 16px icon. */
@@ -785,8 +764,8 @@
 }
 
 /* A screen share (components/ScreenShareIndicator.tsx): the read-aloud
-   toast's shape in the sidebar, a pill in the strip, both in red, the one
-   color in the chrome that means other people can see this. The live dot
+   toast's shape in the sidebar, in red, the one color in the chrome that
+   means other people can see this. The live dot
    pulses unless motion is reduced. */
 .screen-share-card {
   display: flex;
@@ -2243,7 +2222,6 @@
   );
   background-image: var(--theme-glass-gradient);
 }
-:root[data-desktop-glass="on"] .chrome-strip,
 :root[data-desktop-glass="on"] .chrome-sidebar {
   background-color: transparent;
   background-image: none;
@@ -3779,6 +3757,7 @@ body:not([data-chrome-view])::after {
 }
 .tab-group-mosaic-grid[data-count="1"] {
   grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
 }
 .tab-group-mosaic-grid[data-count="1"] .tab-group-mosaic-cell {
   width: 20px;
@@ -3852,6 +3831,12 @@ body:not([data-chrome-view])::after {
 .chrome-sidebar[data-rail] .tab-group-mosaic-cell {
   width: 10px;
   height: 10px;
+}
+/* A lone tab's icon is the whole mark here too: the rail's 2×2 above outranks the base's one cell, so it is said
+   again (in a 10px cell the icon was squeezed to its width — an img's max-width — and hung below the tile). */
+.chrome-sidebar[data-rail] .tab-group-mosaic-grid[data-count="1"] {
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
 }
 .chrome-sidebar[data-rail] .tab-group-mosaic-grid[data-count="1"] .tab-group-mosaic-cell {
   width: 22px;

@@ -68,7 +68,7 @@ function chipWidthEstimate(label: string): number {
 
 /**
  * The address bar, as a search-style modal (⌘L, ⌘T's new tab, or clicking a
- * visible tab's URL). The tab strip has no editable field of its own: editing
+ * sidebar's address row). The chrome has no editable field of its own: editing
  * happens here, with the input prefilled with the current URL and selected, so
  * typing replaces it and Escape leaves the page untouched.
  *

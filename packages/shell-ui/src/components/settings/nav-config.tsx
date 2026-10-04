@@ -33,6 +33,7 @@ import {
   RefreshCw,
   ScrollText,
   Settings,
+  ShieldBan,
   ShieldCheck,
   Layers,
 } from "lucide-react";
@@ -108,9 +109,10 @@ export const SETTINGS_NAV: NavSection[] = [
         icon: ShieldCheck,
         label: "Privacy & security",
         match: "privacy",
-        section: "privacy",
-        description: "Site data, spaces, isolation",
+        section: "privacy/shields",
+        description: "Ads and trackers, site data, spaces, isolation",
         items: [
+          { key: "shields", icon: ShieldBan, section: "privacy/shields", note: "Blocking, tracking, fingerprinting" },
           { key: "site-data", icon: Database, section: "privacy", note: "Recents, cookies, cache" },
           { key: "spaces", icon: Boxes, section: "privacy/spaces", note: "One cookie jar each" },
           { key: "isolation", icon: LockKeyhole, section: "privacy/isolation", note: "What the agent cannot keep" },

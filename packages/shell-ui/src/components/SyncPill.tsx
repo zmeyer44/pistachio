@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { Cloud, CloudOff, RefreshCw, ShieldAlert } from "lucide-react";
 import type { ThreadListItem } from "@pistachio/protocol";
-import type { ChromeOrientation } from "../chrome/manifest-renderers";
 import { useShell } from "../chrome/shell-host";
 import { syncPillView, type SyncPillView } from "../lib/chrome-status";
 import { useSurface } from "../surface";
@@ -24,7 +23,7 @@ import { ChromePill } from "./ChromePill";
  * It lives in the chrome rather than over the page because a surface over
  * the content hole freezes the page under it (App.tsx).
  */
-export function SyncPill({ orientation }: { orientation: ChromeOrientation }) {
+export function SyncPill() {
   const sync = useAppStore((state) => state.syncStatus);
   const workspace = useAppStore((state) => state.workspaceSync);
   const cloud = useAppStore((state) => state.cloud);
@@ -40,7 +39,6 @@ export function SyncPill({ orientation }: { orientation: ChromeOrientation }) {
 
   return (
     <ChromePill
-      orientation={orientation}
       title={view.title}
       aria-label={`${view.label}. ${view.title}`}
       data-testid="sync-pill"

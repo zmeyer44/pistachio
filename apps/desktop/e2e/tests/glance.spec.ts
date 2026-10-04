@@ -1,52 +1,16 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { shellPage } from "./windows";
+import { shellPage, shellReady } from "./windows";
+import { captureEnabled, launchApp } from "./app";
+import { openAlone, pageAt, pick } from "./pages-harness";
 
 const screenshotDirectory = join(process.cwd(), "e2e/screenshots/glance");
 const OWNER_URL = "pistachio://demo/invoices";
 const PREVIEW_URL = "pistachio://demo/vendors/atlas-medical";
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-/** The app starts on the home page; each test wants the demo page as its ONLY tab. */
-async function openOwnerAlone(shell: Page): Promise<void> {
-  await shell.evaluate(async (ownerUrl) => {
-    const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-    const before = await api.getSnapshot();
-    await api.createTab(ownerUrl);
-    for (const tab of before.tabs) await api.closeTab(tab.id);
-  }, OWNER_URL);
-}
-
-async function pageAt(app: ElectronApplication, url: string): Promise<Page> {
-  await expect.poll(() => app.windows().some((page) => page.url() === url)).toBe(true);
-  const page = app.windows().find((candidate) => candidate.url() === url);
-  if (page === undefined) throw new Error(`No Electron page at ${url}`);
-  return page;
-}
 
 function tabViews(app: ElectronApplication): Promise<
   Array<{
@@ -82,15 +46,6 @@ function shellSnapshot(shell: Page) {
   });
 }
 
-/** Pick a shell context-menu action from a tab row or shelf tile. */
-async function pick(shell: Page, target: ReturnType<Page["locator"]>, item: string): Promise<void> {
-  await target.click({ button: "right" });
-  const menu = shell.getByTestId("context-menu");
-  await expect(menu).toBeVisible();
-  await menu.getByRole("menuitem", { name: item }).click();
-  await expect(menu).toHaveCount(0);
-}
-
 interface WindowCapture {
   shell: string;
   width: number;
@@ -101,6 +56,7 @@ interface WindowCapture {
 
 /** Capture the shell and composite every visible native view in stacking order. */
 async function captureWindow(app: ElectronApplication, filename: string): Promise<void> {
+  if (!captureEnabled) return;
   const capture = await app.evaluate(async ({ BrowserWindow }): Promise<WindowCapture> => {
     const window = BrowserWindow.getAllWindows()[0];
     if (window === undefined) throw new Error("Pistachio window is unavailable");
@@ -167,27 +123,34 @@ async function openGlance(owner: Page, shell: Page, app: ElectronApplication): P
   return pageAt(app, PREVIEW_URL);
 }
 
-test("Glance previews a link, dismisses, promotes, and opens in a split", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-glance-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "top", sidebar: "pinned" }, general: { consoleOpenOnLaunch: false } }),
-  );
+// One window. Each test starts from the demo page as the window's only tab.
+test.describe.serial("Glance", { tag: ["@glance"] }, () => {
+  test.describe.configure({ timeout: 45_000 });
+  let app: ElectronApplication;
+  let shell: Page;
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  /** The app starts on the home page; each test wants the demo page as its ONLY tab, no Glance up. */
+  async function ownerAlone(): Promise<void> {
+    await openAlone(shell, OWNER_URL);
+    await expect.poll(async () => (await shellSnapshot(shell)).tabs.map(({ url }) => url)).toEqual([OWNER_URL]);
+    await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
+  }
+
+  test.beforeAll(async () => {
+    ({ app } = await launchApp({
+      settings: { layout: { sidebar: "pinned" }, general: { consoleOpenOnLaunch: false } },
+      name: "glance",
+    }));
+    shell = await shellReady(app);
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await openOwnerAlone(shell);
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("Glance previews a link, dismisses, promotes, and opens in a split", { tag: ["@smoke"] }, async () => {
+    await ownerAlone();
     const owner = await pageAt(app, OWNER_URL);
-    await shell.waitForLoadState("domcontentloaded");
     await expect(owner.locator("#vendor-record-link")).toBeVisible();
 
     // The modifier gesture must recess the owner and show one ephemeral live page, not create a tab.
@@ -311,32 +274,11 @@ test("Glance previews a link, dismisses, promotes, and opens in a split", async 
     expect(split.splitMode).toBe("vertical");
     expect(split.tabs.map(({ url }) => url)).toEqual([OWNER_URL, PREVIEW_URL]);
     await captureWindow(app, "05-promoted-to-split.png");
-  } finally {
-    await app.close();
-  }
-});
-
-test("a new-tab link automatically Glances from a favorite tab only", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-automatic-glance-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" }, general: { consoleOpenOnLaunch: false } }),
-  );
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await openOwnerAlone(shell);
+
+  test("a new-tab link automatically Glances from a favorite tab only", async () => {
+    await ownerAlone();
     const owner = await pageAt(app, OWNER_URL);
-    await shell.waitForLoadState("domcontentloaded");
     const sidebar = shell.getByTestId("sidebar-chrome");
     await expect(sidebar).toBeVisible();
     await expect(owner.locator("#vendor-record-link")).toBeVisible();
@@ -422,32 +364,11 @@ test("a new-tab link automatically Glances from a favorite tab only", async () =
     expect(owner.url()).toBe(OWNER_URL);
     await pageAt(app, PREVIEW_URL);
     await captureWindow(app, "09-new-tab-link-after-unfavorite.png");
-  } finally {
-    await app.close();
-  }
-});
-
-test("a modifier click on a script-navigating control Glances its window.open", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-intent-glance-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "top", sidebar: "pinned" }, general: { consoleOpenOnLaunch: false } }),
-  );
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await openOwnerAlone(shell);
+
+  test("a modifier click on a script-navigating control Glances its window.open", async () => {
+    await ownerAlone();
     const owner = await pageAt(app, OWNER_URL);
-    await shell.waitForLoadState("domcontentloaded");
     const button = owner.locator("#vendor-record-open");
     await expect(button).toBeVisible();
 
@@ -478,41 +399,22 @@ test("a modifier click on a script-navigating control Glances its window.open", 
       .toEqual([OWNER_URL, PREVIEW_URL]);
 
     // A synthetic modifier click is not a person's gesture: the page cannot
-    // declare intent for itself, so whatever its window.open yields, it is
-    // never a Glance.
+    // declare intent for itself, so its window.open is never a Glance. It
+    // opens a tab like any other, and that tab says main has answered it.
     await owner.evaluate(() => {
       const target = document.querySelector("#vendor-record-open");
       if (target === null) throw new Error("demo button is missing");
       target.dispatchEvent(new MouseEvent("click", { bubbles: true, altKey: true }));
     });
-    await owner.waitForTimeout(800);
+    await expect
+      .poll(async () => (await shellSnapshot(shell)).tabs.map(({ url }) => url))
+      .toEqual([OWNER_URL, PREVIEW_URL, PREVIEW_URL]);
     await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
-  } finally {
-    await app.close();
-  }
-});
-
-test("a new-tab link inside a Glance follows in the same Glance", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-glance-blank-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "top", sidebar: "pinned" }, general: { consoleOpenOnLaunch: false } }),
-  );
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await openOwnerAlone(shell);
+
+  test("a new-tab link inside a Glance follows in the same Glance", async () => {
+    await ownerAlone();
     const owner = await pageAt(app, OWNER_URL);
-    await shell.waitForLoadState("domcontentloaded");
     await expect(owner.locator("#vendor-record-link")).toBeVisible();
 
     const preview = await openGlance(owner, shell, app);
@@ -547,7 +449,5 @@ test("a new-tab link inside a Glance follows in the same Glance", async () => {
     await expect(shell.getByTestId("glance-overlay")).toBeVisible();
     expect((await shellSnapshot(shell)).tabs.map(({ url }) => url)).toEqual([OWNER_URL]);
     await captureWindow(app, "07-blank-link-stays-in-glance.png");
-  } finally {
-    await app.close();
-  }
+  });
 });

@@ -184,9 +184,8 @@ export function usePaletteInventory(open: boolean): { palette: CommandPaletteSna
 
 /**
  * The sidebar's kept pages — the organization's presets, favorites, pins —
- * as rows, so they are reachable from the top layout too (the manifest's
- * reason for hiding the grid there). The page behind `excludeAnchorId` (the
- * tab being edited) is skipped.
+ * as rows, so the address modal reaches them by name as well. The page
+ * behind `excludeAnchorId` (the tab being edited) is skipped.
  */
 export function useShelfRows(excludeAnchorId: string | null | undefined): ShelfEntry[] {
   const shelf = useAppStore((s) => s.snapshot?.sidebar ?? DEFAULT_SIDEBAR_STATE);

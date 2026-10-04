@@ -1,7 +1,6 @@
 /**
- * The tabs as the chrome sees them, shared by the horizontal strip and the
- * vertical list: the snapshot's info plus each tab's role in the window, and
- * the row units the two lay out over.
+ * The tabs as the chrome sees them: the snapshot's info plus each tab's role
+ * in the window, and the row units the sidebar's list lays out over.
  */
 
 import { useMemo, useRef } from "react";

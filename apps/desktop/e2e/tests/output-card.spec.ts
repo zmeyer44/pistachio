@@ -1,34 +1,24 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { RunSummary, ThreadListItem } from "@pistachio/protocol";
-import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { activeTabUrl, captureShell, captureWindow } from "./agent-harness";
 
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", executableSuffix)];
-  return candidates.find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
+/**
+ * Finished conversations read back from disk, as a previous session left
+ * them: the newest opens in the console at launch (a note the agent wrote,
+ * shown as a card), and the other is opened from the thread list (a
+ * completed task's footer). One launch, both threads seeded.
+ */
 
-/** The whole window — shell and the page views beside it — as the person sees it. */
-async function capture(app: ElectronApplication, path: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await writeFile(path, Buffer.from(png, "base64"));
-}
+const NOTE_START = "2026-09-23T14:59:00.000Z";
+const NOTE_LATER = "2026-09-23T14:59:08.000Z";
+const NOTE_REPLY =
+  "Created a new note: “Waymo transit rewards program.” It covers eligibility, the $2.85 reward, Bay Area rollout, Caltrain partnership, and expansion plans.";
 
-const START = "2026-09-23T14:59:00.000Z";
-const LATER = "2026-09-23T14:59:08.000Z";
-const REPLY =
-  "Created a new note: \u201cWaymo transit rewards program.\u201d It covers eligibility, the $2.85 reward, Bay Area rollout, Caltrain partnership, and expansion plans.";
+const META_START = "2026-08-29T22:38:46.000Z";
+const META_ANSWER =
+  "I couldn’t find a current Costco.com listing for qualifying jackfruit chips. The closest Costco-related option is PHO’NOMENAL Ripened Jackfruit Chips.";
 
 function noteRun(): RunSummary {
   return {
@@ -37,7 +27,7 @@ function noteRun(): RunSummary {
     status: "completed",
     purpose: "Summarize this page into a new note",
     title: "Summarize this page into a new note",
-    updatedAt: LATER,
+    updatedAt: NOTE_LATER,
     turns: 1,
     notes: "",
     context: {
@@ -51,22 +41,22 @@ function noteRun(): RunSummary {
     },
     humanTabId: "tab-1",
     agentTabId: null,
-    startedAt: START,
-    completedAt: LATER,
+    startedAt: NOTE_START,
+    completedAt: NOTE_LATER,
     control: "human",
     pendingApproval: null,
     pendingQuestion: null,
     pendingTakeover: null,
     messages: [
-      { id: "request", at: START, role: "user", content: "Summarize this page into a new note", turn: 1 },
-      { id: "answer", at: LATER, role: "assistant", content: REPLY, turn: 1 },
+      { id: "request", at: NOTE_START, role: "user", content: "Summarize this page into a new note", turn: 1 },
+      { id: "answer", at: NOTE_LATER, role: "assistant", content: NOTE_REPLY, turn: 1 },
     ],
     toolCalls: [
       {
         id: "tool-1",
         name: "note.create",
         label: "Write note",
-        detail: "Wrote: Waymo transit rewards program \u2014 note, edited 2026-09-23",
+        detail: "Wrote: Waymo transit rewards program — note, edited 2026-09-23",
         status: "completed",
         startedAt: "2026-09-23T14:59:02.000Z",
         completedAt: "2026-09-23T14:59:04.000Z",
@@ -77,18 +67,50 @@ function noteRun(): RunSummary {
     ],
     subagents: [],
     activity: [],
-    result: { summary: REPLY, changes: [], capsuleRevoked: false, evidenceEntries: 7, rootHash: "" },
+    result: { summary: NOTE_REPLY, changes: [], capsuleRevoked: false, evidenceEntries: 7, rootHash: "" },
   };
 }
 
-test("a note the agent wrote shows as a card under the reply and opens", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+function completedRun(): RunSummary {
+  return {
+    runId: "completion-meta",
+    taskId: "task-completion-meta",
+    status: "completed",
+    purpose: "Find qualifying jackfruit chips",
+    title: "Find qualifying jackfruit chips",
+    updatedAt: META_START,
+    turns: 1,
+    notes: "",
+    context: {
+      tokens: 2_400,
+      compactAt: 100_000,
+      window: 200_000,
+      compactions: 0,
+      steps: 4,
+      totalSteps: 4,
+      usage: { inputTokens: 2_000, outputTokens: 400 },
+    },
+    humanTabId: "tab-1",
+    agentTabId: null,
+    startedAt: META_START,
+    completedAt: META_START,
+    control: "human",
+    pendingApproval: null,
+    pendingQuestion: null,
+    pendingTakeover: null,
+    messages: [
+      { id: "request", at: META_START, role: "user", content: "Find qualifying jackfruit chips", turn: 1 },
+      { id: "answer", at: META_START, role: "assistant", content: META_ANSWER, turn: 1 },
+    ],
+    toolCalls: [],
+    subagents: [],
+    activity: [],
+    result: { summary: META_ANSWER, changes: [], capsuleRevoked: false, evidenceEntries: 84, rootHash: "" },
+  };
+}
 
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-output-card-"));
-  const threadsDirectory = join(userData, "threads");
-  const run = noteRun();
-  const item: ThreadListItem = {
+function listItem(run: RunSummary): ThreadListItem {
+  return {
     runId: run.runId,
     title: run.title,
     status: run.status,
@@ -97,51 +119,62 @@ test("a note the agent wrote shows as a card under the reply and opens", async (
     turns: run.turns,
     messageCount: run.messages.length,
   };
-  await mkdir(threadsDirectory, { recursive: true });
-  await Promise.all([
-    writeFile(
-      join(userData, "settings.json"),
-      JSON.stringify({ layout: { mode: "top", sidebar: "pinned" }, general: { consoleOpenOnLaunch: true } }),
-    ),
-    writeFile(join(threadsDirectory, "threads.json"), JSON.stringify({ version: 1, threads: [item] })),
-    writeFile(
-      join(threadsDirectory, `${run.runId}.json`),
-      JSON.stringify({ version: 1, run, model: [], evidence: [], learnedThrough: run.messages.length }),
-    ),
-  ]);
+}
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+function threadFile(run: RunSummary): unknown {
+  return { version: 1, run, model: [], evidence: [], learnedThrough: run.messages.length };
+}
+
+test.describe.serial("a finished conversation read back from disk", { tag: ["@agent"] }, () => {
+  test.describe.configure({ timeout: 45_000 });
+
+  let app: ElectronApplication;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    test.setTimeout(60_000);
+    const note = noteRun();
+    const meta = completedRun();
+    ({ app } = await launchApp({
+      name: "output-card",
+      // The finished conversations are read in the console, which opens closed.
+      settings: { layout: { sidebar: "pinned" }, general: { consoleOpenOnLaunch: true } },
+      files: {
+        // Newest first: the note's thread is the one open at launch.
+        "threads/threads.json": { version: 1, threads: [listItem(note), listItem(meta)] },
+        [`threads/${note.runId}.json`]: threadFile(note),
+        [`threads/${meta.runId}.json`]: threadFile(meta),
+      },
+    }));
+    shell = await shellReady(app);
   });
-  try {
-    const shell = await shellReady(app);
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a note the agent wrote shows as a card under the reply and opens", async () => {
     const card = shell.getByTestId("output-card");
     await expect(card).toHaveCount(1);
     await expect(card).toContainText("Waymo transit rewards program");
     await expect(card).toContainText("Note · Created");
-
-    const screenshotDirectory = join(process.cwd(), "e2e/screenshots/agent-console");
-    await mkdir(screenshotDirectory, { recursive: true });
-    await shell.waitForTimeout(400);
-    await capture(app, join(screenshotDirectory, "output-card.png"));
+    await captureWindow(app, "agent-console", "output-card.png", 400);
 
     await card.click();
     // The note opens as its own tab, at the notes page's address for it.
-    await expect
-      .poll(() =>
-        shell.evaluate(async () => {
-          const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-          const snapshot = await api.getSnapshot();
-          return snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId)?.url ?? null;
-        }),
-      )
-      .toBe("pistachio://notes/note-waymo");
-    await shell.waitForTimeout(800);
-    await capture(app, join(screenshotDirectory, "output-card-opened.png"));
-  } finally {
-    await app.close();
-  }
+    await expect.poll(() => activeTabUrl(shell)).toBe("pistachio://notes/note-waymo");
+    await captureWindow(app, "agent-console", "output-card-opened.png", 800);
+  });
+
+  test("completion metadata does not repeat the final answer", async () => {
+    await shell.getByTestId("thread-list-button").click();
+    await shell.getByTestId("thread-item-completion-meta").click();
+    await expect(shell.getByTestId("completion-meta")).toBeVisible();
+    await expect(shell.getByRole("status")).toHaveText("Task completed");
+    await expect(shell.getByText(META_ANSWER, { exact: true })).toHaveCount(1);
+    await expect(shell.getByTestId("completion-meta")).not.toContainText(META_ANSWER);
+    // The record's size comes from the stored result; the replay it opens is delegation.spec's.
+    await expect(shell.getByRole("button", { name: "View 84 activity records" })).toBeVisible();
+    await captureShell(shell, "agent-console", "completion-meta.png");
+  });
 });

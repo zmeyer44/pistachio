@@ -112,6 +112,7 @@ const NEUTRAL_BROWSER_CONTROLS: BrowserControlsSnapshot = {
   pendingPasskeyRequests: [],
   downloads: [],
   recentEvents: [],
+  shields: null,
 };
 import type { ForkSpaceRequest, ForkSpaceResult, SpaceEgressPolicy } from "@pistachio/shell-contracts/spaces";
 import type { OnboardingCompletion } from "@pistachio/shell-contracts/onboarding";
@@ -163,7 +164,6 @@ export type Overlay =
   | "space-fork"
   | "tab-switcher"
   | "liveView"
-  | "status"
   | "context-menu"
   | "image-preview"
   /** The downloads list under its chip (components/DownloadsPopover.tsx). */
@@ -192,7 +192,7 @@ export interface ChatInbox {
 
 const EMPTY_CHAT_INBOX: ChatInbox = { inserts: [], rejection: null };
 
-/** The tab a strip/shelf drag is carrying, shown large in the split drop preview. */
+/** The tab a shelf drag is carrying, shown large in the split drop preview. */
 export interface SplitDragTab {
   title: string;
   url: string;
@@ -225,7 +225,7 @@ export interface AppState {
   /**
    * The compact sidebar's column is in the layout: the pointer brought it
    * out at the window's edge and has not left it (layouts/SidebarLayout.tsx).
-   * Meaningless while the sidebar is pinned or the layout is top tabs.
+   * Meaningless while the sidebar is pinned.
    */
   sidebarRevealed: boolean;
   /**
@@ -301,7 +301,7 @@ export interface AppState {
    * by raising the chrome (lib/pane-drag.ts).
    */
   paneResizing: boolean;
-  /** A tab is being dragged from the strip or sidebar shelf. */
+  /** A tab is being dragged from the sidebar's list or shelf. */
   tabDragging: boolean;
   /** Proposed edge while a tab drag is armed over the page. Drives the live pane preview. */
   splitDropZone: SplitSide | null;
@@ -456,8 +456,6 @@ export interface AppState {
   openSiteInfo(): void;
   closeSiteInfo(): void;
   toggleSiteInfo(): void;
-  openStatusCard(): void;
-  closeStatusCard(): void;
   openSpaceFork(): void;
   closeSpaceFork(): void;
   switchSpace(spaceId: string): Promise<void>;
@@ -569,7 +567,7 @@ export interface AppState {
   controlMedia(tabId: string, control: MediaControl): Promise<void>;
   cancelReadAloud(id: string): Promise<void>;
   /** Speak a reply shown in the console; resolves once it is playing (or throws, as a toast). */
-  readAloudText(text: string): Promise<void>;
+  readAloudText(text: string, title?: string): Promise<void>;
   /** Change the sidebar shelf (@pistachio/shell-contracts/sidebar); main answers with a snapshot. */
   sidebarCommand(command: SidebarCommand): Promise<void>;
   /** Change the tab groups (@pistachio/shell-contracts/tab-groups); main answers with a snapshot. Null when it failed. */
@@ -1209,8 +1207,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) =>
       state.overlay === "site-info" ? { overlay: "none" } : { overlay: "site-info", urlBarTabId: null, urlBarNew: false },
     ),
-  openStatusCard: () => set((state) => (state.overlay === "none" ? { overlay: "status" } : {})),
-  closeStatusCard: () => set((state) => (state.overlay === "status" ? { overlay: "none" } : {})),
   openSpaceFork: () => set({ overlay: "space-fork", urlBarTabId: null, urlBarNew: false }),
   closeSpaceFork: () => set((state) => (state.overlay === "space-fork" ? { overlay: "none" } : {})),
   switchSpace: (spaceId) => safeAction(() => shellApi().switchSpace(spaceId), set),
@@ -1387,7 +1383,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSplitDropZone: (splitDropZone) => set((state) => state.splitDropZone === splitDropZone ? {} : { splitDropZone }),
   setSplitDragTab: (splitDragTab) => set({ splitDragTab }),
   // Reported on every surface layout pass; only a real change is worth
-  // waking the subscribers (tab-drag edge geometry) for.
+  // waking the subscribers (the shelf drag's split zones) for.
   setContentBounds: (contentBounds) => set((state) => {
     const current = state.contentBounds;
     if (
@@ -1609,7 +1605,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   controlMedia: (tabId, control) => safeAction(() => shellApi().controlMedia(tabId, control), set),
   cancelReadAloud: (id) => safeAction(() => shellApi().cancelReadAloud(id), set),
-  readAloudText: (text) => safeAction(() => shellApi().readAloudText(text), set),
+  readAloudText: (text, title) => safeAction(() => shellApi().readAloudText(text, title), set),
   sidebarCommand: (command) => safeAction(() => shellApi().sidebarCommand(command), set),
   tabGroupCommand: async (command) => {
     const result = await attemptValue(() => shellApi().tabGroupCommand(command));

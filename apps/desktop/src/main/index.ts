@@ -56,6 +56,9 @@ import {
 import { UpdateService } from "./update-service";
 import { ReadAloudService } from "./read-aloud";
 import { WatchtowerService } from "./watchtower/service";
+import { ShieldsService } from "./shields/service";
+import { isShieldsRequest } from "@pistachio/shell-contracts/shields";
+import { SHIELDS_COSMETICS_CHANNEL, SHIELDS_FRAME_CHANNEL, type ShieldsDomFeatures } from "@pistachio/shell-contracts/shields-page";
 import { watchtowerRequestSchema } from "@pistachio/shell-contracts/watchtower";
 import { ReaderStore } from "./reader-store";
 import { RunController } from "./run-controller";
@@ -435,6 +438,8 @@ const briefNotifications = new Set<Notification>();
 const readAloud = new ReadAloudService();
 const reader = new ReaderStore();
 let watchtower: WatchtowerService | null = null;
+/** Ad and tracker protection (docs/shields.md), made before the window so the first page is covered. */
+let shields: ShieldsService | null = null;
 
 /**
  * Where an artifact link points. The web app renders an artifact out of the
@@ -743,9 +748,7 @@ function relayChromeInput(
 
 /** The compact sidebar: the column hides itself, and the window buttons with it. */
 function isCompactSidebar(current: DesktopSettings): boolean {
-  return (
-    current.layout.mode === "sidebar" && current.layout.sidebar === "compact"
-  );
+  return current.layout.sidebar === "compact";
 }
 
 /** Keep the native reveal target active only while compact mode is hidden (and not the desk's dock). */
@@ -767,7 +770,7 @@ function syncSidebarEntryWatch(): void {
  * a toolbar that is still visible. A reversal cancels that pending hide.
  *
  * While a tab group's desk is up (ShellState.sidebarOnDesk) the column is
- * the desk's dock, up whole or as its rail whatever the layout says: whole,
+ * the desk's dock, up whole or as its rail whatever the setting says: whole,
  * the buttons stay in its toolbar; as the rail (ShellState.sidebarRail) they
  * are hidden, as with the compact sidebar hidden — the rail is too narrow
  * for them, and they would hang over the desk's corner. They go at once,
@@ -2227,6 +2230,7 @@ async function createWindow(): Promise<void> {
     {
       onArchiveTab: (id, contents) => watchtower?.attach(id, contents),
       archiveResponse: (url, spaceId) => watchtower?.respond(url, spaceId) ?? null,
+      ...(shields === null ? {} : { shields }),
       // A group made by hand is named by the fast model from its tabs — under the same switch as
       // Tidy's grouping, since it sends the same thing: titles, and addresses without queries.
       nameTabGroup: nameTabGroupHook,
@@ -2719,7 +2723,48 @@ const deskLayout = new DeskLayoutJudge({
   model: () => scriptedLayoutModel() ?? configuredIntentModel()?.model ?? null,
 });
 
+/** The address of the top frame above `frame` (the site being visited), or null when it is gone. */
+function frameTopUrl(frame: Electron.WebFrameMain | null): string | null {
+  try {
+    const top = frame?.top?.url;
+    return top === undefined || top === "" ? null : top;
+  } catch {
+    return null;
+  }
+}
+
 function installIpc(): void {
+  // The tab preload's question at document start (docs/shields.md §5). Sync:
+  // the frame's scriptlets and protections must run before its own scripts.
+  // Answered for every frame of a page in a protected session, judged by the
+  // address the frame committed — and, for exceptions and the seed, by the
+  // site being visited (the top frame's).
+  ipcMain.on(SHIELDS_FRAME_CHANNEL, (event, url: unknown) => {
+    // Assigning returnValue SENDS the reply: it is assigned exactly once.
+    const frame = event.senderFrame;
+    const answers = shields !== null && frame !== null && shields.covers(event.sender.session);
+    const address = frame !== null && frame.url !== "" ? frame.url : typeof url === "string" ? url : "";
+    let boot: ReturnType<ShieldsService["frameBootstrap"]> = null;
+    try {
+      boot = answers && shields !== null ? shields.frameBootstrap(address, frameTopUrl(frame) ?? address) : null;
+    } catch (error) {
+      // The page waits on this answer: it gets one, whatever went wrong.
+      console.error("[shields] bootstrap failed", error);
+    }
+    event.returnValue = boot;
+  });
+  ipcMain.handle(SHIELDS_COSMETICS_CHANNEL, (event, features: unknown) => {
+    const frame = event.senderFrame;
+    if (shields === null || frame === null || !shields.covers(event.sender.session)) return "";
+    if (typeof features !== "object" || features === null) return "";
+    return shields.cosmetics(frame.url, features as ShieldsDomFeatures, frameTopUrl(frame) ?? frame.url);
+  });
+  ipcMain.handle(IPC.shields, async (event, value: unknown) => {
+    if (!isShell(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error("Shields are shell-only.");
+    if (shields === null) throw new Error("Shields are starting.");
+    if (!isShieldsRequest(value)) throw new Error("That is not a Shields request.");
+    return shields.request(value);
+  });
   ipcMain.handle(IPC.watchtower, async (event, value: unknown) => {
     if (!isShell(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error("Watchtower is shell-only.");
     if (!watchtower) throw new Error("Watchtower is starting.");
@@ -2898,13 +2943,15 @@ function installIpc(): void {
     if (!isShell(event.sender)) return;
     requireBrowser().cancelReadAloud(requireString(id, "read aloud id"));
   });
-  ipcMain.handle(IPC.readAloudSpeak, async (event, text: unknown) => {
+  ipcMain.handle(IPC.readAloudSpeak, async (event, text: unknown, title: unknown) => {
     if (!isShell(event.sender)) return;
     const browserNow = requireBrowser();
     // The player opens as a tab, so it needs a Space: the tab in view's.
     const tab = browserNow.activeTab();
     if (tab === null) throw new Error("There is no tab to play this in.");
-    await browserNow.readAloud(requireString(text, "text"), { ...tab, title: "Pistachio" });
+    // What the media card calls it: a note's name, or the app's.
+    const named = typeof title === "string" ? title.trim().slice(0, 200) : "";
+    await browserNow.readAloud(requireString(text, "text"), { ...tab, title: named === "" ? "Pistachio" : named });
   });
   ipcMain.handle(
     IPC.mediaControl,
@@ -3827,7 +3874,7 @@ function installIpc(): void {
   });
   /**
    * A shell-drawn page naming its own tab (docs/notes.md §4): the note's
-   * title on the strip, where the static placeholder document could only say
+   * title on its tab, where the static placeholder document could only say
    * "Notes". Refused for any other address — a page must not be able to
    * relabel the tab a person is reading.
    */
@@ -4595,6 +4642,22 @@ app.whenReady().then(async () => {
   threads = new ThreadStore(app.getPath("userData"));
   setArtifactStore(artifacts);
   watchtower = new WatchtowerService(app.getPath("userData"), join(currentDir, "watchtower-worker.js"), () => browser?.watchtowerSources() ?? []);
+  const shieldsSettings = settings;
+  shields = new ShieldsService({
+    directory: join(app.getPath("userData"), "shields"),
+    settings: () => shieldsSettings.get().shields,
+    // Chromium's network stack: the system proxy applies, as it does to pages.
+    fetch: (url, init) => net.fetch(url, { headers: init.headers, signal: init.signal }),
+    workerPath: join(currentDir, "shields-worker.js"),
+    // Specs never reach the list servers; they block with filters of their own.
+    offline: process.env["PISTACHIO_E2E"] === "1" && process.env["PISTACHIO_SHIELDS_FETCH"] !== "1",
+    topUrlFor: (contentsId) => browser?.topUrlFor(contentsId) ?? null,
+    onPageChanged: (contentsId) => browser?.shieldsChanged(contentsId),
+    // An identity Space's WebRTC may only go through the gateway (D13).
+    webRtcFloor: () => (featureEnabled ? "proxied" : "default"),
+  });
+  settings.onChange((next) => shields?.applySettings(next.shields));
+  await shields.start();
   bookmarks = new BookmarkStore(app.getPath("userData"));
   const bookmarkSettings = settings;
   // A saved page is kept in Watchtower for as long as its saved record
@@ -4703,6 +4766,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   briefScheduler?.stop();
   watchtower?.close();
+  shields?.stop();
   runs?.flush();
   sidebar?.flush();
   tabArchive?.flush();

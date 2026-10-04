@@ -1,5 +1,4 @@
 import { ArrowDownToLine, RefreshCw } from "lucide-react";
-import type { ChromeOrientation } from "../chrome/manifest-renderers";
 import { cn } from "../lib/cn";
 import { useAppStore } from "../store";
 import { ChromePill } from "./ChromePill";
@@ -14,7 +13,7 @@ import { ChromePill } from "./ChromePill";
  * It lives in the chrome rather than over the page because a surface over
  * the content hole freezes the page under it (App.tsx).
  */
-export function UpdatePill({ orientation }: { orientation: ChromeOrientation }) {
+export function UpdatePill() {
   const update = useAppStore((s) => s.update);
   const download = useAppStore((s) => s.downloadUpdate);
   const install = useAppStore((s) => s.installUpdate);
@@ -22,19 +21,8 @@ export function UpdatePill({ orientation }: { orientation: ChromeOrientation }) 
   if (update.status !== "available" && update.status !== "downloading" && update.status !== "ready") return null;
 
   const busy = update.status === "downloading";
-  // The sidebar circle unrolls just a word; the strip has room for the rest.
-  const label =
-    update.status === "ready"
-      ? orientation === "vertical"
-        ? "Restart"
-        : "Restart to update"
-      : update.status === "downloading"
-        ? orientation === "vertical"
-          ? `${update.percent}%`
-          : `Downloading ${update.percent}%`
-        : orientation === "vertical"
-          ? "Update"
-          : `Update to ${update.version}`;
+  // The footer's circle unrolls just a word; the title says the rest.
+  const label = update.status === "ready" ? "Restart" : update.status === "downloading" ? `${update.percent}%` : "Update";
   const title =
     update.status === "ready"
       ? `Pistachio ${update.version} is downloaded. Restart to finish — tabs and Spaces come back as they are.`
@@ -44,7 +32,6 @@ export function UpdatePill({ orientation }: { orientation: ChromeOrientation }) 
 
   return (
     <ChromePill
-      orientation={orientation}
       title={title}
       aria-label={title}
       aria-busy={busy || undefined}
@@ -55,11 +42,7 @@ export function UpdatePill({ orientation }: { orientation: ChromeOrientation }) 
         if (update.status === "ready") install();
         else void download();
       }}
-      tone={
-        orientation === "vertical"
-          ? "bg-blue-700 text-white hover:bg-blue-900 disabled:cursor-default disabled:hover:bg-blue-700"
-          : "bg-blue-100 text-blue-900 hover:bg-blue-200 disabled:cursor-default disabled:hover:bg-blue-100"
-      }
+      tone="bg-blue-700 text-white hover:bg-blue-900 disabled:cursor-default disabled:hover:bg-blue-700"
       icon={update.status === "ready" ? <RefreshCw className="size-3.5" /> : <ArrowDownToLine className={cn("size-3.5", busy && "animate-pulse")} />}
       label={label}
     />

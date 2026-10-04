@@ -1,16 +1,12 @@
 /**
- * The parts of a tab that are the same whichever way the tabs run: the label,
- * the favicon with its nav controls folded in, the address layer, the close
- * button, and the trailing cluster with the per-tab actions behind the dots.
- * The horizontal strip (components/TabStrip.tsx) and the vertical list
- * compose these; the folder silhouette and the row-only pieces stay with the
- * strip.
+ * The parts of a tab the sidebar's rows compose (components/TabList.tsx,
+ * components/TabGroupRow.tsx): the label, the address as the chrome shows
+ * it, the close button, the marks, and the trailing cluster with the per-tab
+ * actions behind the dots.
  */
 
 import {
-  ChevronLeft,
   BookOpen,
-  ChevronRight,
   Columns2,
   Focus,
   LoaderCircle,
@@ -18,7 +14,6 @@ import {
   MoreHorizontal,
   Pin,
   PinOff,
-  RotateCw,
   ScreenShare,
   Sparkles,
   Volume2,
@@ -27,78 +22,12 @@ import {
 } from "lucide-react";
 import { isReaderUrl } from "@pistachio/shell-contracts/reader";
 import { screenShareObject } from "@pistachio/shell-contracts/screen-share";
-import { TabMark } from "../components/Favicon";
 import { cn } from "../lib/cn";
 import { displayHost, prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useShell } from "./shell-host";
 import type { ChromeTab } from "./tabs";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
-
-/** Compact nav button living inside the tab; swallows tab gestures. */
-function TabNavButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      onDoubleClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => e.stopPropagation()}
-      className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-gray-900 transition-colors duration-150 hover:bg-alpha-200 hover:text-gray-1000"
-    >
-      {children}
-    </button>
-  );
-}
-
-/**
- * The tab's favicon with its nav controls (back, forward, reload) folded in
- * behind it: at rest the tab shows the bare mark, and hovering THE MARK
- * unfolds every available control to its left in one motion, leaving the row
- * reading like a toolbar — ⟨ ⟩ ⟳ favicon title.
- *
- * `group/nav` wraps the controls AND the mark: the controls collapse to zero
- * width at rest, so the mark is the only way in, and once they are out the
- * pointer is still inside the group they belong to. The whole row tweens as
- * one clip box with the grid 0fr→1fr trick. Directions with no history are
- * omitted entirely — never shown as dead affordances.
- */
-export function TabNavCluster({ tab }: { tab: ChromeTab }) {
-  const goBack = useAppStore((s) => s.goBack);
-  const goForward = useAppStore((s) => s.goForward);
-  const reload = useAppStore((s) => s.reload);
-
-  return (
-    <span className="no-drag group/nav -m-1 flex shrink-0 items-center p-1">
-      <span className="grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-hover/nav:grid-cols-[1fr] group-hover/nav:opacity-100 group-focus-within/nav:grid-cols-[1fr] group-focus-within/nav:opacity-100">
-        {/* Spacing lives on clipped CONTENT, never as padding on the clip box:
-            padding does not shrink, so it would leave the controls a couple of
-            px wide at rest — enough to catch a hover on the way past. */}
-        <span className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-          {tab.canGoBack ? (
-            <TabNavButton label="Back" onClick={() => void goBack(tab.id)}>
-              <ChevronLeft className="size-3" aria-hidden="true" />
-            </TabNavButton>
-          ) : null}
-          {tab.canGoForward ? (
-            <TabNavButton label="Forward" onClick={() => void goForward(tab.id)}>
-              <ChevronRight className="size-3" aria-hidden="true" />
-            </TabNavButton>
-          ) : null}
-          <TabNavButton label="Reload" onClick={() => void reload(tab.id)}>
-            <RotateCw className="size-2.5" aria-hidden="true" />
-          </TabNavButton>
-          <span aria-hidden="true" className="w-1 shrink-0" />
-        </span>
-      </span>
-      <TabMark tab={tab} />
-    </span>
-  );
-}
 
 export function tabLabel(tab: ChromeTab): string {
   const base = tab.title || prettyUrl(tab.url) || "New tab";
@@ -128,57 +57,6 @@ export function TabTitle({ tab }: { tab: ChromeTab }) {
       ) : null}
       {tabLabel(tab)}
     </>
-  );
-}
-
-/**
- * The label of a tab whose page is on screen — the active tab, or either pane
- * of a split. Title at rest, cross-fading to the clickable address on hover,
- * or when the address itself is keyboard-focused. Strip-only: in the sidebar
- * the address has its own row (the `address` feature).
- */
-export function ActiveTabLabel({ tab, onEdit }: { tab: ChromeTab; onEdit: () => void }) {
-  return (
-    <span className="relative min-w-0 flex-1 self-stretch">
-      <span className="pointer-events-none absolute inset-0 flex items-center transition-opacity duration-150 group-has-[:focus-visible]:opacity-0 group-hover:opacity-0">
-        <span className="min-w-0 truncate text-[12.5px] font-medium">
-          <TabTitle tab={tab} />
-        </span>
-      </span>
-      <ActiveTabUrl tab={tab} onEdit={onEdit} />
-    </span>
-  );
-}
-
-/**
- * A visible tab's address layer: the current URL rendered as a pressable
- * field that opens the address modal ON THIS TAB — the tab itself is never an
- * editable input, so a stray click on the strip can never leave a half-typed
- * address sitting over the page. (⌘L opens the same modal on the active tab.)
- */
-export function ActiveTabUrl({ tab, onEdit }: { tab: ChromeTab; onEdit: () => void }) {
-  const shown = shownAddress(tab);
-
-  return (
-    <button
-      type="button"
-      title="Edit address (⌘L)"
-      aria-label="Edit address"
-      // A drag handle, not just a control: this field covers the active tab's
-      // whole title area on hover, so the strip lets a press here start a tab
-      // drag (and then swallows the click that ends it).
-      data-drag-handle="true"
-      onClick={(e) => {
-        e.stopPropagation();
-        onEdit();
-      }}
-      onDoubleClick={(e) => e.stopPropagation()}
-      className="pointer-events-none absolute inset-x-0 inset-y-[3px] flex w-full min-w-0 cursor-pointer items-center rounded-[7px] px-1.5 text-left font-mono text-[11.5px] text-gray-900 opacity-0 transition-opacity duration-150 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none group-hover:pointer-events-auto group-hover:opacity-100"
-    >
-      <span className="min-w-0 truncate">
-        {shown.length > 0 ? shown : <span className="text-gray-700">Search or enter URL</span>}
-      </span>
-    </button>
   );
 }
 
@@ -327,9 +205,9 @@ function renderSuspend(tab: ChromeTab): React.ReactNode {
 }
 
 /**
- * The per-tab actions, in the order they unfold behind the dots. Both the
- * strip's and the list's trailing cluster render this list, so a new per-tab
- * action is added here and nowhere else.
+ * The per-tab actions, in the order they unfold behind the dots. Every
+ * row's trailing cluster renders this list, so a new per-tab action is added
+ * here and nowhere else.
  */
 export const TAB_ACTIONS: ReadonlyArray<{ id: TabActionId; render(tab: ChromeTab): React.ReactNode }> = [
   { id: "delegate", render: renderDelegate },

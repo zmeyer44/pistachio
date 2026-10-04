@@ -1,29 +1,10 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import {
-  _electron as electron,
-  expect,
-  test,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { KeyboardInputEvent } from "electron";
 import { bookmarkToastPage, pageFirst, shellReady } from "./windows";
-
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/bookmarks");
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", suffix),
-  ].find((candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")));
-}
+import { launchApp } from "./app";
+import { activeUrl, capturePage, pageAt } from "./pages-harness";
 
 /** A 1×1 PNG: enough for an <img> to load and the card to show a picture. */
 const PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
@@ -90,21 +71,6 @@ async function serve(): Promise<{ server: Server; origin: string }> {
   return { server, origin: `http://127.0.0.1:${String(port)}` };
 }
 
-function activeUrl(shell: Page): Promise<string | null> {
-  return shell.evaluate(async () => {
-    const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-    const current = await api.getSnapshot();
-    return current.tabs.find((tab) => tab.id === current.activeTabId)?.url ?? null;
-  });
-}
-
-async function pageAt(app: ElectronApplication, url: string): Promise<Page> {
-  await expect.poll(() => app.windows().some((page) => page.url() === url)).toBe(true);
-  const page = app.windows().find((candidate) => candidate.url() === url);
-  if (page === undefined) throw new Error(`No Electron page at ${url}`);
-  return page;
-}
-
 /**
  * Two taps of shift in a tab's page, as the OS delivers them. Playwright's
  * own keyboard drives the renderer over CDP and never passes through
@@ -140,23 +106,6 @@ async function nativeKeys(app: ElectronApplication, url: string, inputs: Keyboar
   }, { target: url, inputs });
 }
 
-/**
- * A shortcut pressed on the page (⌘=, zoom in): main consumes its key-down,
- * and Chromium then swallows the key-ups of = and ⌘ — main never sees them.
- * Sent without waiting for the releases, since they never arrive.
- */
-async function pageShortcut(app: ElectronApplication, url: string): Promise<void> {
-  await app.evaluate(({ webContents }, target) => {
-    const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === target);
-    if (contents === undefined) throw new Error(`no tab at ${target}`);
-    contents.focus();
-    contents.sendInputEvent({ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] });
-    contents.sendInputEvent({ type: "keyDown", keyCode: "=", modifiers: ["meta"] });
-    contents.sendInputEvent({ type: "keyUp", keyCode: "=", modifiers: ["meta"] });
-    contents.sendInputEvent({ type: "keyUp", keyCode: "Meta" });
-  }, url);
-}
-
 /** Shift held while a letter is typed: a capital, not the gesture. */
 async function typeCapital(app: ElectronApplication, url: string, letter: string): Promise<void> {
   await app.evaluate(({ webContents }, { target, key }) => {
@@ -170,9 +119,8 @@ async function typeCapital(app: ElectronApplication, url: string, letter: string
 }
 
 /** A chrome page as it renders — the card's own view, or the shell with the bookmarks page up. */
-async function snapshot(page: Page, name: string): Promise<void> {
-  await mkdir(screenshotDirectory, { recursive: true });
-  await page.screenshot({ path: join(screenshotDirectory, `${name}.png`) });
+function snapshot(page: Page, name: string): Promise<void> {
+  return capturePage(page, `bookmarks/${name}.png`);
 }
 
 /** Where main placed the card's view: the active pane's bottom-right corner. */
@@ -188,106 +136,20 @@ function bookmarkViewBounds(app: ElectronApplication): Promise<{ x: number; y: n
   });
 }
 
-test("bookmark gesture requires two completed, uninterrupted Shift taps", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+/**
+ * Which key sequences make the gesture — two clean taps, nothing between,
+ * nothing held — is the detector's own (shell-contracts double-shift.test);
+ * this drives it through the real views: the page's, the shell's, and the
+ * window's blur.
+ */
+test("shift, shift saves the thing on the page; the card fills in; the page lists it", { tag: ["@pages"] }, async () => {
   const { server, origin } = await serve();
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-bookmark-gesture-"));
-  const listing = `${origin}/coffee`;
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst({ general: { homeUrl: listing } })));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
-  const down = (keyCode = "Shift", modifiers: KeyboardInputEvent["modifiers"] = []): KeyboardInputEvent => ({ type: "keyDown", keyCode, modifiers });
-  const up = (keyCode = "Shift", modifiers: KeyboardInputEvent["modifiers"] = []): KeyboardInputEvent => ({ type: "keyUp", keyCode, modifiers });
-
-  try {
-    const shell = await shellReady(app);
-    const toastView = await bookmarkToastPage(app);
-    const page = await pageAt(app, listing);
-    const state = () => shell.evaluate(async () => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      return { bookmarks: (await api.getBookmarks()).bookmarks, toast: await api.getBookmarkToast() };
-    });
-    await expect(page.locator("h1")).toHaveText("Breville Barista Express Espresso Machine");
-    await snapshot(page, "gesture-01-ready");
-
-    // A standalone tap followed by typing was incorrectly saved on the second key-down.
-    // Exercise the native page and shell routes, including keys held before Shift.
-    for (const url of [listing, shell.url()]) {
-      for (const inputs of [
-        [down(), up(), down(), down("A", ["shift"]), up("A", ["shift"]), up()],
-        [down("a"), down(), up(), down(), up(), up("a")],
-        [down(), up(), down("a"), up("a"), down(), up(), up("a")],
-        [down(), up(), down(), down("Meta", ["meta", "shift"]), up("Meta", ["shift"]), up()],
-      ]) {
-        await nativeKeys(app, url, inputs);
-        expect(await state()).toEqual({ bookmarks: [], toast: null });
-      }
-    }
-    await snapshot(page, "gesture-02-no-accidental-save");
-
-    // Even a valid-looking second press must wait for its clean release.
-    await page.evaluate(() => {
-      document.body.dataset["shiftReleases"] = "0";
-      document.addEventListener("keyup", (event) => {
-        if (event.key === "Shift") document.body.dataset["shiftReleases"] = String(Number(document.body.dataset["shiftReleases"]) + 1);
-      });
-    });
-    await nativeKeys(app, listing, [down(), up(), down()]);
-    expect(await state()).toEqual({ bookmarks: [], toast: null });
-    await nativeKeys(app, listing, [up()]);
-    const toast = toastView.getByTestId("bookmark-toast");
-    await expect(toast).toBeVisible();
-    await expect(toast).toHaveAttribute("data-status", "ready");
-    expect((await state()).bookmarks).toHaveLength(1);
-    await expect(page.locator("body")).toHaveAttribute("data-shift-releases", "2");
-    await snapshot(toastView, "gesture-03-clean-taps-saved");
-
-    // A window blur cancels the gesture even if the next tap arrives immediately.
-    await toastView.getByTestId("bookmark-toast-dismiss").click();
-    await expect(toast).toBeHidden();
-    await nativeKeys(app, listing, [down(), up()]);
-    await app.evaluate(({ BrowserWindow }) => {
-      // Deliver the native lifecycle notification without an OS focus animation
-      // accidentally making this a timeout test instead of a reset test.
-      BrowserWindow.getAllWindows()[0]!.emit("blur");
-    });
-    await nativeKeys(app, listing, [down(), up()]);
-    expect((await state()).toast).toBeNull();
-    await snapshot(page, "gesture-04-blur-cancelled");
-
-    // A shortcut on the page used to disable the gesture until the window
-    // lost focus: its swallowed releases left keys "held" forever.
-    await pageShortcut(app, listing);
-    await page.waitForTimeout(1_200);
-    await nativeKeys(app, listing, [down(), up(), down(), up()]);
-    await expect(toast).toBeVisible();
-    await expect(toast).toHaveAttribute("data-existed", "true");
-  } finally {
-    await app.close();
-    server.close();
-  }
-});
-
-test("shift, shift saves the thing on the page; the card fills in; the page lists it", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const { server, origin } = await serve();
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-bookmarks-"));
   const listing = `${origin}/coffee`;
   // The first tab opens on the listing: no trip through the web first, and
   // no error banner (a failed home page) veiling the card over the page.
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst({ general: { homeUrl: listing } })), "utf8");
-  const app: ElectronApplication = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+  const { app } = await launchApp({ settings: pageFirst({ general: { homeUrl: listing } }), name: "bookmarks" });
+  const down = (): KeyboardInputEvent => ({ type: "keyDown", keyCode: "Shift" });
+  const up = (): KeyboardInputEvent => ({ type: "keyUp", keyCode: "Shift" });
 
   try {
     const shell = await shellReady(app);
@@ -360,6 +222,25 @@ test("shift, shift saves the thing on the page; the card fills in; the page list
     await expect(toast).toHaveAttribute("data-existed", "true");
     await expect(toast).toContainText("Saved earlier");
     await toastView.getByTestId("bookmark-toast-dismiss").click();
+    await expect(toast).toBeHidden();
+
+    // The chrome relays the gesture too: with the shell holding the keys,
+    // shift, shift saves the page in front.
+    await tapShiftTwice(app, shell.url());
+    await expect(toast).toBeVisible();
+    await expect(toast).toHaveAttribute("data-existed", "true");
+    await toastView.getByTestId("bookmark-toast-dismiss").click();
+    await expect(toast).toBeHidden();
+
+    // A window blur cancels the gesture even if the next tap arrives at once.
+    await nativeKeys(app, listing, [down(), up()]);
+    await app.evaluate(({ BrowserWindow }) => {
+      // Deliver the native lifecycle notification without an OS focus animation
+      // accidentally making this a timeout test instead of a reset test.
+      BrowserWindow.getAllWindows()[0]!.emit("blur");
+    });
+    await nativeKeys(app, listing, [down(), up()]);
+    expect(await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.getBookmarkToast())).toBeNull();
 
     // Typing capitals is not the gesture, however quickly.
     await typeCapital(app, listing, "A");

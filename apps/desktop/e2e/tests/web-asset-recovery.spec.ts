@@ -9,7 +9,7 @@ const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR
 
 // Journey: render a feed, scroll to slow/broken assets, recover the slow image,
 // retry a failed transfer, then verify only a lost required stylesheet uses pixels.
-test("scrolling survives slow and broken assets, retries transfers, and preserves critical stylesheet fallback", async ({ page }) => {
+test("scrolling survives slow and broken assets, retries transfers, and preserves critical stylesheet fallback", { tag: ["@web"] }, async ({ page }) => {
   test.setTimeout(240_000);
   const chromium = chromiumPath();
   test.skip(chromium === null, "no Chromium build available");

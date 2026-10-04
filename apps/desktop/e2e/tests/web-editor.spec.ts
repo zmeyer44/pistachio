@@ -6,7 +6,7 @@ import { chromiumPath, openBrowseShell, openNewTab, signUpInTab, startWebStack, 
 // Journey: idle timeline stays DOM; click queues typing until remote focus;
 // pixels preserve the draft; paste/IME commit once; blur/retry restores DOM;
 // keyboard traversal uses the same handoff.
-test("idle composers mirror and acknowledged editor handoff preserves typing, paste and composition", async ({ page }) => {
+test("idle composers mirror and acknowledged editor handoff preserves typing, paste and composition", { tag: ["@web"] }, async ({ page }) => {
   test.setTimeout(180_000); page.setDefaultTimeout(15_000);
   const chromium = chromiumPath(); test.skip(!chromium, "Chromium required");
   let draft = "";

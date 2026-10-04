@@ -59,9 +59,9 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
   {
     id: "layout",
     section: "",
-    title: "Tabs layout & sidebar",
-    description: "Put the tabs in a top row or in a sidebar, and keep the sidebar always visible or reveal it on hover.",
-    keywords: ["sidebar", "top tabs", "tab bar", "compact", "hide the sidebar", "narrow", "vertical tabs", "layout"],
+    title: "Sidebar",
+    description: "Keep the sidebar always visible, or hide it and reveal it on hover.",
+    keywords: ["sidebar", "compact", "hide the sidebar", "narrow", "vertical tabs", "layout"],
   },
   {
     id: "new-tab",
@@ -206,6 +206,29 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     title: "Evidence & run records",
     description: "Replay the signed record of what the agent did, and show the payload behind each entry.",
     keywords: ["audit", "log", "proof", "signature", "replay", "receipts", "what the agent did"],
+  },
+
+  // ── Ads & trackers ───────────────────────────────────────────────────
+  {
+    id: "shields",
+    section: "privacy/shields",
+    title: "Ads & trackers",
+    description: "Choose how strongly ads, trackers, and dangerous sites are blocked, and set the protection level.",
+    keywords: ["ad blocker", "adblock", "block ads", "shields", "tracking protection", "trackers", "ublock", "privacy level", "strict"],
+  },
+  {
+    id: "shields-lists",
+    section: "privacy/shields",
+    title: "Filter lists & my filters",
+    description: "Turn filter lists on or off, update them, and write your own blocking rules.",
+    keywords: ["easylist", "filter list", "custom filters", "block a site", "element hiding", "cookie banners", "annoyances"],
+  },
+  {
+    id: "shields-fingerprinting",
+    section: "privacy/shields",
+    title: "Fingerprinting, cookies & HTTPS",
+    description: "Change fingerprinting protection, cross-site cookie blocking, HTTPS upgrades, Global Privacy Control, and WebRTC.",
+    keywords: ["fingerprint", "third-party cookies", "https only", "gpc", "do not track", "webrtc leak", "referrer", "utm"],
   },
 
   // ── Site data ────────────────────────────────────────────────────────

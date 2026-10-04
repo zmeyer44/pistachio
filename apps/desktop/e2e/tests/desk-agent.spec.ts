@@ -4,133 +4,19 @@
  * real controller and runner on a scripted model (PISTACHIO_AGENT_SCRIPT) —
  * the agent arranging the windows, wearing its ring on the window it works
  * in, pinning a note, saving a fact to the Stack; Undo layout; the
- * conversations; ⌘I.
+ * conversations; ⌘I. A turn going on in its group once the desk is left is
+ * desk-agent.test's (apps/desktop/test).
  */
 
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
-import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
-import { pageFirst, shellReady } from "./windows";
+import { expect, test } from "@playwright/test";
+import { api, box, createGroup, INVOICES, launchDesk, openGroupDesk, openTabs, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/desk-agent");
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", suffix)].find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-function api<T>(shell: Page, call: (pistachio: PistachioApi) => Promise<T>): Promise<T> {
-  return shell.evaluate(`(${call.toString()})(window.pistachio)`) as Promise<T>;
-}
-
-const snapshot = (shell: Page): Promise<ShellSnapshot> => api(shell, (pistachio) => pistachio.getSnapshot());
-
-/** The Bar grown from its idle pill, as the pointer coming to it grows it, so its field and buttons can be used. */
-async function reachBar(shell: Page): Promise<void> {
-  const bar = shell.getByTestId("desk-bar");
-  if ((await bar.getAttribute("data-compact")) !== null) await shell.getByTestId("desk-bar-pill").hover();
-  await expect(bar).not.toHaveAttribute("data-compact", "");
-}
-
-interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-async function box(page: Page, selector: string): Promise<Box> {
-  const found = await page.locator(selector).first().boundingBox();
-  if (found === null) throw new Error(`${selector} has no box`);
-  return found;
-}
+const capture = screenshots("desk-agent");
 
 function near(actual: number, expected: number, within = 2): void {
   expect(Math.abs(actual - expected), `${actual} vs ${expected}`).toBeLessThanOrEqual(within);
 }
 
-/** The window as a person sees it: the shell with every live page composited over it at its box (desk.spec.ts). */
-async function capture(app: ElectronApplication, shell: Page, filename: string): Promise<void> {
-  // capturePage can hand back a frame from before the latest paint.
-  await shell.waitForTimeout(400);
-  const layers = await app.evaluate(async ({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    const base = (await window.capturePage()).toDataURL();
-    const views: Array<{ dataUrl: string; bounds: { x: number; y: number; width: number; height: number } }> = [];
-    for (const child of window.contentView.children) {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) continue;
-      const view = child as WebContentsView;
-      if (Object.values(hashes).some((hash) => view.webContents.getURL().endsWith(hash))) continue;
-      views.push({ dataUrl: (await view.webContents.capturePage()).toDataURL(), bounds: view.getBounds() });
-    }
-    return { base, views };
-  }, CHROME_VIEW_HASHES);
-  const png = await shell.evaluate(async ({ base, views }) => {
-    const load = (src: string): Promise<HTMLImageElement> =>
-      new Promise((done, fail) => {
-        const image = new Image();
-        image.onload = () => done(image);
-        image.onerror = fail;
-        image.src = src;
-      });
-    const ground = await load(base);
-    const canvas = document.createElement("canvas");
-    canvas.width = ground.naturalWidth;
-    canvas.height = ground.naturalHeight;
-    const context = canvas.getContext("2d")!;
-    context.drawImage(ground, 0, 0);
-    const scale = ground.naturalWidth / window.innerWidth;
-    for (const view of views) {
-      const image = await load(view.dataUrl);
-      const { x, y, width, height } = view.bounds;
-      context.save();
-      context.beginPath();
-      context.roundRect(x * scale, y * scale, width * scale, height * scale, 8 * scale);
-      context.clip();
-      context.drawImage(image, x * scale, y * scale, width * scale, height * scale);
-      context.restore();
-    }
-    return canvas.toDataURL("image/png").slice("data:image/png;base64,".length);
-  }, layers);
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
-/** Move the window out from under the real cursor, whose hover would otherwise reach the sidebar (desk.spec.ts). */
-async function clearOfCursor(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ BrowserWindow, screen }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) return;
-    const cursor = screen.getCursorScreenPoint();
-    const bounds = window.getBounds();
-    const inside = cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width && cursor.y >= bounds.y && cursor.y < bounds.y + bounds.height;
-    if (!inside) return;
-    const area = screen.getDisplayNearestPoint(cursor).workArea;
-    const x = cursor.x - area.x > bounds.width + 20 ? area.x : cursor.x + 20 + bounds.width <= area.x + area.width ? cursor.x + 20 : null;
-    const y = cursor.y - area.y > bounds.height + 20 ? area.y : cursor.y + 20 + bounds.height <= area.y + area.height ? cursor.y + 20 : null;
-    if (x !== null) window.setPosition(x, bounds.y);
-    else if (y !== null) window.setPosition(bounds.x, y);
-  });
-}
-
-async function settled(shell: Page): Promise<void> {
-  await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
-  await expect(shell.locator(".desk-stage[data-gesture]")).toHaveCount(0);
-  await expect(shell.locator('[data-testid="desk-window"][data-flight]')).toHaveCount(0);
-  await shell.waitForTimeout(900);
-}
-
-const windowSelector = (tabId: string): string => `[data-testid="desk-window"][data-tab-id="${tabId}"]`;
-
-const INVOICES = "pistachio://demo/invoices";
-const VENDOR = "pistachio://demo/vendors/atlas-medical";
 const ACCOUNTS = "pistachio://demo/auth/relying-party";
 
 /**
@@ -172,47 +58,19 @@ const SCRIPT = {
     // The third clicks a link that opens a new tab, in the invoice while it is in the dock.
     { tools: [{ name: "page_click", input: { tabId: "{{tab:Northstar}}", target: "#vendor-record-link" } }] },
     { text: "Opened the vendor record from the invoice." },
-    // The fourth works on after the person has left the desk.
-    { delayMs: 3_000, tools: [{ name: "page_click", input: { tabId: "{{tab:Northstar}}", target: "#vendor-record-link" } }] },
-    { text: "Opened it once more, after you left the desk." },
   ],
 };
 
-test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, its presence, a note, a saved fact, Undo layout, the conversations", async () => {
-  test.setTimeout(180_000);
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  await mkdir(screenshotDirectory, { recursive: true });
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-agent-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: INVOICES } })));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData, PISTACHIO_AGENT_SCRIPT: JSON.stringify(SCRIPT) },
-  });
+test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, its presence, a note, a saved fact, Undo layout, the conversations", { tag: ["@desk", "@agent"] }, async () => {
+  test.setTimeout(120_000);
+  const { app, shell } = await launchDesk({ name: "agent", env: { PISTACHIO_AGENT_SCRIPT: JSON.stringify(SCRIPT) } });
   try {
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
-    });
-    await clearOfCursor(app);
-    const shell = await shellReady(app);
-    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === INVOICES)).toBe(true);
-    await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), VENDOR);
-    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === VENDOR)).toBe(true);
-    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
-    const invoice = byUrl.get(INVOICES)!;
-    const vendor = byUrl.get(VENDOR)!;
-    await shell.evaluate(
-      (tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-agent", tabIds, title: "Northstar", color: "green" }),
-      [invoice, vendor],
-    );
-    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), invoice);
-    const group = shell.getByTestId("tab-group");
-    await group.getByTestId("tab-group-header").hover();
-    await group.getByTestId("tab-group-desk").click();
+    const [invoice, vendor] = (await openTabs(shell, [INVOICES, VENDOR])) as [string, string];
+    await createGroup(shell, "desk-agent", [invoice, vendor], "Northstar", "green");
+    await selectTab(shell, invoice);
+    await openGroupDesk(shell, "desk-agent");
     await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
-    await settled(shell);
+    await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
     const away = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.4);
     await away();
@@ -299,7 +157,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "3");
     await expect(shell.locator("[data-agent]")).toHaveCount(0);
     await expect(shell.getByTestId("tab-agent-working")).toHaveCount(0);
-    await settled(shell);
+    await settled(shell, app);
     const left = await box(shell, windowSelector(invoice));
     const right = await box(shell, windowSelector(vendor));
     expect(left.x + left.width).toBeLessThan(right.x);
@@ -328,7 +186,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
 
     // ── 6. Undo layout puts every window back where it was before the turn ─
     await shell.getByTestId("desk-undo-layout").click();
-    await settled(shell);
+    await settled(shell, app);
     await expect(shell.locator(windowSelector(vendor))).toHaveCount(0);
     const undone = await box(shell, windowSelector(invoice));
     expect(Math.abs(undone.x - before.x)).toBeLessThan(3);
@@ -344,17 +202,17 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-agent")?.tabIds).toContain(opened.id);
     await expect(shell.locator(windowSelector(opened.id))).toHaveCount(1);
     expect((await snapshot(shell)).activeTabId).toBe(invoice);
-    await settled(shell);
+    await settled(shell, app);
     await capture(app, shell, "05-desk-agent-opened.png");
 
     // ── 8. A page the agent's click opens joins the group — from a tab in the dock too — and comes out quietly ─
     await shell.locator(`${windowSelector(invoice)} [data-testid="desk-collapse"]`).click();
-    await settled(shell);
+    await settled(shell, app);
     await expect(shell.locator(windowSelector(invoice))).toHaveCount(0);
     // The person goes on in another window: the invoice is in the dock, and not the tab in use.
-    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), opened.id);
+    await selectTab(shell, opened.id);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(opened.id);
-    await settled(shell);
+    await settled(shell, app);
     const inUseBefore = opened.id;
     await shell.getByTestId("desk-bar-input").fill("Open the vendor record from the invoice");
     await shell.getByTestId("desk-bar-input").press("Enter");
@@ -413,21 +271,6 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await shell.locator(`[data-testid="desk-conversation"][data-run-id="${runId}"]`).click();
     await expect.poll(async () => (await snapshot(shell)).run?.runId).toBe(runId);
 
-    // ── 10. Left mid-turn, the desk's turn goes on in its group: a page it opens still joins the group ─
-    await shell.getByTestId("desk-bar-input").fill("Open the vendor record once more");
-    await shell.getByTestId("desk-bar-input").press("Enter");
-    await expect.poll(async () => (await snapshot(shell)).run?.status).toBe("running");
-    await shell.getByTestId("desk-more").hover();
-    await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
-    await shell.getByTestId("desk-leave").click();
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    await expect
-      .poll(async () => (await snapshot(shell)).run?.messages.at(-1)?.content ?? "", { timeout: 20_000 })
-      .toContain("Opened it once more");
-    const vendorTabs = (await snapshot(shell)).tabs.filter((tab) => tab.url === VENDOR);
-    expect(vendorTabs).toHaveLength(3);
-    const offDesk = vendorTabs.find((tab) => tab.id !== vendor && tab.id !== fromLink.id)!;
-    expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-agent")?.tabIds).toContain(offDesk.id);
   } finally {
     await app.close();
   }

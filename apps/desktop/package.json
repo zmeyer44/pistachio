@@ -1,6 +1,6 @@
 {
   "name": "@pistachio/desktop",
-  "version": "0.0.29",
+  "version": "0.0.30",
   "productName": "Pistachio",
   "private": true,
   "type": "module",
@@ -12,13 +12,15 @@
     "start": "node scripts/electron-vite.mjs preview",
     "check-types": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run --config vitest.config.ts",
-    "test:e2e": "pnpm build && playwright test -c e2e/playwright.config.ts",
+    "test:e2e": "pnpm build && playwright test -c e2e/playwright.config.ts --grep-invert @web",
+    "test:e2e:web": "pnpm build && playwright test -c e2e/playwright.config.ts --grep @web",
     "lint": "eslint src test e2e --max-warnings 0",
     "dist:mac": "pnpm build && node scripts/dist-mac.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
+    "@ghostery/adblocker": "^2.18.2",
     "@pistachio/adapters": "workspace:*",
     "@pistachio/agent-runtime": "workspace:*",
     "@pistachio/documents": "workspace:*",
@@ -33,8 +35,8 @@
     "@pistachio/run-view": "workspace:*",
     "@pistachio/runtime": "workspace:*",
     "@pistachio/shell-contracts": "workspace:*",
-    "@pistachio/smart-find": "workspace:*",
     "@pistachio/shell-ui": "workspace:*",
+    "@pistachio/smart-find": "workspace:*",
     "@pistachio/sync-engine": "workspace:*",
     "@pistachio/sync-protocol": "workspace:*",
     "@pistachio/watchtower": "workspace:*",
@@ -48,6 +50,7 @@
     "electron-updater": "^6.8.9",
     "lucide-react": "^0.468.0",
     "tailwind-merge": "^3.6.0",
+    "tldts": "^7.4.16",
     "zod": "^4.4.3",
     "zustand": "^5.0.0"
   },

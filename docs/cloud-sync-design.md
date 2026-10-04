@@ -539,7 +539,7 @@ Copy harbor desktop `sync/{capture,cookie-applier,collateral,live-partition,work
 ### 10.6 Renderer
 
 - Settings pages: `Account` (including OTP-verified iMessage phone linking in both desktop and web), `Devices` (kind badges, rename, revoke, cloud row with fingerprint and a confirm-changed-key action), `Sync` (status, per-space toggle, origin overrides, Pull/Merge chooser cloned from `SpaceForkDialog`), `Cloud` (enable per space, channels with one-time secret, live-view open), `Egress` (per-space identity toggle, gateway status, restart-required). Registered in `SETTINGS_SECTIONS`, `PAGES`, `SETTINGS_NAV`; e2e settings spec list updated.
-- Chrome: `SyncPill` (null when connected) and `StatusControl` rows for sync, cloud, egress replacing the placeholders.
+- Chrome: `SyncPill` (null when connected) and status rows for sync, cloud, egress (now the sidebar menu's, `components/BrowserStatus.tsx`) replacing the placeholders.
 - Console: "Run in cloud" toggle in `AgentHeader`; cloud badge on thread rows; `LiveViewPage` overlay (`Overlay: 'liveView'`) drawing frames into an `<img>` and forwarding pointer/keyboard input while in `human_control`, scaling coordinates per §8.5. `@pistachio/live-view` is the protocol: its Zod schemas validate every frame in the runner and in both clients, and its arithmetic (scaling, the input encoding, the dial URL) is shared so a click lands in the same place from either client.
 - Onboarding: optional `account` step before `import` (skippable), cloned from `KeyStep`.
 - Copy: every "never synced" / "No account, no sync" string is rewritten.

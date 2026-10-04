@@ -1,53 +1,97 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { IPC } from "@pistachio/shell-contracts/ipc";
 import { sidebarMenuItem } from "./footer";
 import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell as captureWindow, capturePage } from "./pages-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/settings");
+/** The settings page lives in the chrome, so the shell capture is the whole picture — once its 140ms fade-in settles. */
+function captureShell(app: ElectronApplication, filename: string): Promise<void> {
+  return captureWindow(app, `settings/${filename}`, 400);
+}
 
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", executableSuffix),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
+/**
+ * Keep the iMessage link a renderer-to-main E2E without reaching a real
+ * phone: the main process owns a tiny BlueBubbles/control test double, while
+ * the production preload bridge and every settings component remain real.
+ */
+async function installIMessageFixture(app: ElectronApplication): Promise<void> {
+  await app.evaluate(
+    ({ ipcMain }, channels) => {
+      const installed = Object.values(channels);
+      for (const channel of installed) ipcMain.removeHandler(channel);
+
+      let status = { available: true, linked: false, phone: null as string | null, verifiedAt: null as string | null };
+      let challengeId: string | null = null;
+
+      ipcMain.handle(channels.accountGet, () => ({
+        state: "enrolled",
+        email: "messages@example.test",
+        userId: "e2e-user",
+        deviceId: "e2e-device",
+        deviceName: "Test Mac",
+        controlUrl: "https://control.example.test",
+        encryptionAvailable: true,
+        cloudDevicePin: null,
+        cloudDeviceChanged: null,
+        revoked: false,
+        hubUrl: null,
+        cloudBrowserUrl: null,
+        error: null,
+      }));
+      ipcMain.handle(channels.imessageGet, () => status);
+      ipcMain.handle(channels.imessageStart, (_event, phone: unknown) => {
+        if (phone !== "+1 212 555 0123") throw new Error("invalid_phone");
+        challengeId = "e2e-challenge";
+        return { challengeId, phone: "••• ••• 0123", expiresAt: new Date(Date.now() + 600_000).toISOString() };
+      });
+      ipcMain.handle(channels.imessageVerify, (_event, suppliedId: unknown, code: unknown) => {
+        if (suppliedId !== challengeId || code !== "123456") throw new Error("invalid_code");
+        status = {
+          available: true,
+          linked: true,
+          phone: "••• ••• 0123",
+          verifiedAt: new Date().toISOString(),
+        };
+        return status;
+      });
+      ipcMain.handle(channels.imessageUnlink, () => {
+        status = { available: true, linked: false, phone: null, verifiedAt: null };
+        challengeId = null;
+        return status;
+      });
+    },
+    {
+      accountGet: IPC.accountGet,
+      imessageGet: IPC.imessageGet,
+      imessageStart: IPC.imessageStart,
+      imessageVerify: IPC.imessageVerify,
+      imessageUnlink: IPC.imessageUnlink,
+    },
   );
 }
 
-/** The settings page lives in the chrome, so the shell capture is the whole picture. */
-async function captureShell(app: ElectronApplication, filename: string): Promise<void> {
-  // Let the page's 140ms fade-in settle first.
-  await new Promise((done) => setTimeout(done, 400));
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
+// One window, signed out and with no update feed (a dev run's): every
+// section, then About's word on updates, then — the account answered by a
+// test double — the iMessage link.
+test.describe.serial("Settings", { tag: ["@settings"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let app: ElectronApplication;
+  let userData: string;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    ({ app, userData } = await launchApp({ env: { PISTACHIO_UPDATE_FEED: "" }, name: "settings" }));
+    shell = await shellReady(app);
   });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
 
-test("settings open with ⌘,, every section renders, and a change persists to disk", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-settings-"));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  test.afterAll(async () => {
+    await app?.close();
   });
-  try {
-    const shell = await shellReady(app);
 
+  test("settings open with ⌘,, every section renders, and a change persists to disk", { tag: ["@smoke"] }, async () => {
     await shell.keyboard.press("Meta+,");
     const page = shell.getByTestId("settings-page");
     await expect(page).toBeVisible();
@@ -116,7 +160,7 @@ test("settings open with ⌘,, every section renders, and a change persists to d
     await page.getByRole("button", { name: "Privacy & security", exact: true }).click();
     const privacyMenu = page.getByTestId("settings-menu-privacy");
     await expect(privacyMenu).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Site data" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Ads & trackers" })).toBeVisible();
     // The outgoing root menu is gone once the push settles.
     await expect(page.getByTestId("settings-menu-root")).toHaveCount(0);
     await captureShell(app, "05a-privacy-menu.png");
@@ -176,7 +220,45 @@ test("settings open with ⌘,, every section renders, and a change persists to d
     await expect(page).toBeHidden();
     await shell.keyboard.press("Meta+i");
     await expect(shell.getByTestId("agent-panel")).toBeVisible();
-  } finally {
-    await app.close();
-  }
+  });
+
+  test("a dev run without a feed says updates are for the installed app", async () => {
+    await expect(shell.getByTestId("update-pill")).toHaveCount(0);
+    await shell.keyboard.press("Meta+,");
+    const page = shell.getByTestId("settings-page");
+    await page.getByRole("button", { name: "About", exact: true }).click();
+    await expect(page.getByText("Updates apply to the installed app")).toBeVisible();
+    await shell.keyboard.press("Escape");
+    await expect(page).toBeHidden();
+  });
+
+  test("a person links an iMessage number from Settings", async () => {
+    await installIMessageFixture(app);
+    await shell.reload();
+    shell = await shellReady(app);
+    await shell.bringToFront();
+
+    await (await sidebarMenuItem(shell, "settings-button")).click();
+    const settings = shell.getByTestId("settings-page");
+    await settings.getByRole("button", { name: "Account", exact: true }).click();
+    const phone = settings.getByTestId("imessage-phone");
+    await phone.scrollIntoViewIfNeeded();
+    await expect(phone).toBeVisible();
+    await capturePage(shell, "imessage-settings/01-phone-entry.png", { fullPage: true, settleMs: 250 });
+
+    await phone.fill("+1 212 555 0123");
+    await capturePage(shell, "imessage-settings/02-phone-filled.png", { fullPage: true, settleMs: 250 });
+    await settings.getByRole("button", { name: "Send code", exact: true }).click();
+
+    const code = settings.getByTestId("imessage-code");
+    await expect(code).toBeVisible();
+    await code.fill("123456");
+    await capturePage(shell, "imessage-settings/03-code-entry.png", { fullPage: true, settleMs: 250 });
+    await settings.getByRole("button", { name: "Verify number", exact: true }).click();
+
+    const linked = settings.getByTestId("imessage-linked-phone");
+    await expect(linked).toHaveText("••• ••• 0123");
+    await expect(settings.getByText("Replies answer the newest pending agent question.", { exact: false })).toBeVisible();
+    await capturePage(shell, "imessage-settings/04-connected.png", { fullPage: true, settleMs: 250 });
+  });
 });

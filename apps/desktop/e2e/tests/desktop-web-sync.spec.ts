@@ -11,7 +11,7 @@ import { shellPage } from "./windows";
 
 // Unlike the other desktop specs, this launches with accounts and sync ON.
 // All services and both device profiles belong to this test, not the developer.
-test("desktop signup hands its active tab and signed-in session to a fresh web browser", async ({ browser }, testInfo) => {
+test("desktop signup hands its active tab and signed-in session to a fresh web browser", { tag: ["@web", "@startup"] }, async ({ browser }, testInfo) => {
   test.setTimeout(240_000);
   const chromium = chromiumPath();
   expect(chromium, "The handoff test needs real Chromium").not.toBeNull();

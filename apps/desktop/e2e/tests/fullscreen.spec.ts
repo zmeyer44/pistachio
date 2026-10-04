@@ -1,31 +1,10 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage } from "./windows";
+import { launchApp } from "./app";
+import { pageAt } from "./chrome-harness";
 
 const VIDEO_URL = "pistachio://demo/invoices?fullscreen";
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", executableSuffix),
-  ];
-  return candidates.find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function pageAt(app: ElectronApplication, url: string): Promise<Page> {
-  await expect.poll(() => app.windows().some((page) => page.url() === url)).toBe(true);
-  const page = app.windows().find((candidate) => candidate.url() === url);
-  if (page === undefined) throw new Error(`No Electron page at ${url}`);
-  return page;
-}
 
 interface ViewGeometry {
   windowFullScreen: boolean;
@@ -52,17 +31,8 @@ function viewGeometry(app: ElectronApplication, url: string): Promise<ViewGeomet
   }, url);
 }
 
-test("a page's fullscreen request takes the window and fills it, and leaves with the tab", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-fullscreen-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+test("a page's fullscreen request takes the window and fills it, and leaves with the tab", { tag: ["@media", "@tabs"] }, async () => {
+  const { app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, name: "fullscreen" });
 
   try {
     const shell = await shellPage(app);

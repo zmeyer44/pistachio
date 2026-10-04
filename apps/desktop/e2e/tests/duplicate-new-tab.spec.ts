@@ -1,54 +1,13 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { pageFirst, shellPage } from "./windows";
+import { pageFirst, shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell as captureWindowFrame, snapshot as shellSnapshot, visibleTabViews } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/duplicate-new-tab");
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function captureShell(app: ElectronApplication, filename: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
-function visibleTabViews(app: ElectronApplication): Promise<number> {
-  return app.evaluate(({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return window.contentView.children.filter((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return false;
-      const url = (child as WebContentsView).webContents.getURL();
-      return !Object.values(hashes).some((hash) => url.endsWith(hash));
-    }).length;
-  }, CHROME_VIEW_HASHES);
+function captureShell(app: ElectronApplication, filename: string): Promise<void> {
+  return captureWindowFrame(app, "duplicate-tab", filename);
 }
 
 async function delayNextTabCapture(app: ElectronApplication, delayMs: number): Promise<void> {
@@ -136,28 +95,25 @@ function snapshot(shell: Page) {
   });
 }
 
-test("a new-tab result duplicates an already-open site without replacing or selecting its split", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-duplicate-tab-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    // ⌘T asks for an address here: this spec is the address modal's new-tab
-    // flow, and its still hand-off needs a real page under the modal, which
-    // the home page (drawn by the shell, its view hidden) is not.
-    JSON.stringify(pageFirst({ layout: { mode: "sidebar", sidebar: "pinned" } })),
-  );
+// One window, pinned, over a web page — ⌘T asks for an address here: the
+// address modal's new-tab flow, whose still hand-off needs a real page under
+// the modal (the home page is drawn by the shell, its view hidden). Then the
+// tab menu's own duplicate and the self-drop split.
+test.describe.serial("duplicating a tab", { tag: ["@sidebar", "@tabs", "@split", "@address"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let app: ElectronApplication;
+  let shell: Page;
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  test.beforeAll(async () => {
+    ({ app } = await launchApp({ settings: pageFirst({ layout: { sidebar: "pinned" } }), name: "duplicate-tab" }));
+    shell = await shellReady(app);
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
 
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a new-tab result duplicates an already-open site without replacing or selecting its split", async () => {
     // Capturing the page still is asynchronous. The address modal must wait
     // invisibly until main has hidden the native tab view, or its entrance
     // starts underneath that view and appears to jump stacking contexts.
@@ -269,7 +225,62 @@ test("a new-tab result duplicates an already-open site without replacing or sele
     });
     await expect.poll(() => visibleTabViews(app)).toBe(1);
     await captureShell(app, "03-duplicate-site-open-as-lone-tab.png");
-  } finally {
-    await app.close();
-  }
+  });
+
+  test("a tab duplicates from its context menu, and self-drops split with a fresh copy", async () => {
+    const rows = shell.getByTestId("sidebar-tab-list").getByTestId("human-tab");
+    const before = await shellSnapshot(shell);
+    const original = before.tabs.find((tab) => tab.id === before.activeTabId);
+    if (original === undefined) throw new Error("no active tab");
+    const rowCount = await rows.count();
+    const isNew = (id: string, known: string[]) => !known.includes(id);
+
+    // "Duplicate tab" in the row's context menu opens a second tab on the
+    // same page, right beside the original, and hands it the focus.
+    await shell.locator(`[data-testid="human-tab"][data-tab-id="${original.id}"]`).click({ button: "right" });
+    await captureShell(app, "04-context-menu.png");
+    await shell.getByRole("menuitem", { name: "Duplicate tab" }).or(shell.getByRole("button", { name: "Duplicate tab" })).click();
+    await expect(rows).toHaveCount(rowCount + 1);
+    const afterMenu = await shellSnapshot(shell);
+    expect(afterMenu.tabs).toHaveLength(before.tabs.length + 1);
+    const menuCopy = afterMenu.tabs.find((tab) => isNew(tab.id, before.tabs.map((known) => known.id)));
+    if (menuCopy === undefined) throw new Error("no duplicate tab appeared");
+    expect(menuCopy.url).toBe(original.url);
+    expect(afterMenu.activeTabId).toBe(menuCopy.id);
+    await captureShell(app, "05-duplicated-from-menu.png");
+
+    // "Open in split view" on the ACTIVE tab — like dropping it onto its own
+    // surface (both commit splitWith with the tab's own id) — splits it with
+    // a fresh copy instead of pulling in the other, unrelated tab.
+    await shell.locator(`[data-testid="human-tab"][data-tab-id="${menuCopy.id}"]`).click({ button: "right" });
+    await shell.getByRole("menuitem", { name: "Open in split view" }).or(shell.getByRole("button", { name: "Open in split view" })).click();
+    await expect(shell.getByTestId("secondary-pane")).toBeVisible();
+    const afterSelfSplit = await shellSnapshot(shell);
+    expect(afterSelfSplit.tabs).toHaveLength(afterMenu.tabs.length + 1);
+    const splitCopy = afterSelfSplit.tabs.find((tab) => isNew(tab.id, afterMenu.tabs.map((known) => known.id)));
+    if (splitCopy === undefined) throw new Error("the self-drop created no duplicate");
+    expect(splitCopy.url).toBe(menuCopy.url);
+    const selfGroup = afterSelfSplit.splitGroups.find((group) => group.tabIds.includes(menuCopy.id));
+    expect(selfGroup?.tabIds).toEqual([menuCopy.id, splitCopy.id]);
+    // The original stayed out of the split.
+    expect(selfGroup?.tabIds).not.toContain(original.id);
+    await captureShell(app, "06-self-drop-split-with-copy.png");
+
+    // A second self-drop grows the same group with another copy on the
+    // dropped edge rather than replacing a pane.
+    const activeId = afterSelfSplit.activeTabId;
+    if (activeId === null) throw new Error("no active tab after the self split");
+    await shell.evaluate(
+      (tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.splitWith(tabId, "left"),
+      activeId,
+    );
+    const afterSecond = await shellSnapshot(shell);
+    expect(afterSecond.tabs).toHaveLength(afterSelfSplit.tabs.length + 1);
+    const group = afterSecond.splitGroups.find((candidate) => candidate.id === selfGroup?.id);
+    if (group === undefined) throw new Error("the split group dissolved");
+    expect(group.tabIds).toHaveLength(3);
+    expect(group.tabIds[0]).not.toBe(activeId);
+    expect(group.tabIds).toContain(activeId);
+    await captureShell(app, "07-second-self-drop-grows-group.png");
+  });
 });

@@ -22,7 +22,7 @@ async function checkRenderingStatus(page: Page, mode: "dom" | "pixels" | "fallba
   await expect(page.getByTestId("sidebar-menu")).toBeHidden();
 }
 
-test("assets, local responsiveness, reconnect and compatibility fallback over the real web stack", async ({ page }) => {
+test("assets, local responsiveness, reconnect and compatibility fallback over the real web stack", { tag: ["@web"] }, async ({ page }) => {
   test.setTimeout(240_000);
   page.setDefaultTimeout(20_000);
   const chromium = chromiumPath();

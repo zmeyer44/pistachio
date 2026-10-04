@@ -67,7 +67,7 @@ async function typeIntroduction(page: Page): Promise<void> {
   await page.getByTestId("onboarding-bio").fill(BIO);
 }
 
-test("a new web account walks the first run and lands in a furnished Space", async ({ page, browser }) => {
+test("a new web account walks the first run and lands in a furnished Space", { tag: ["@web"] }, async ({ page, browser }) => {
   // A cold `next dev`, a real Chromium fleet, a claimed session, and a
   // walkthrough that ends by opening four tabs.
   test.setTimeout(600_000);
@@ -283,7 +283,7 @@ test("a new web account walks the first run and lands in a furnished Space", asy
 });
 
 
-test("an account created elsewhere must finish onboarding, including a failed save retry", async ({ page }) => {
+test("an account created elsewhere must finish onboarding, including a failed save retry", { tag: ["@web"] }, async ({ page }) => {
   test.setTimeout(240_000);
   const chromium = chromiumPath();
   test.skip(chromium === null, "no Chromium build is available for the cloud browser");

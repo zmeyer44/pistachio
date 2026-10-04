@@ -7,136 +7,23 @@
  * file. A document put away goes into the Stack and comes out of it again;
  * one @mentioned in the Bar rides with the message; the agent arranges a
  * document window as it arranges a tab's; the desk keeps them when it is
- * left and opened again.
+ * left and opened again. A document tiled and cascaded with the tabs, and
+ * minimized as a tab's window is, are desk-documents.test's and
+ * desk-minimize.spec's.
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type JSHandle, type Page } from "@playwright/test";
-import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
-import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import { join } from "node:path";
+import { expect, test, type JSHandle, type Page } from "@playwright/test";
+import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { docxFixture, xlsxFixture } from "../../../../packages/documents/test/fixtures";
-import { pageFirst, shellReady } from "./windows";
+import { api, box, createGroup, INVOICES, launchDesk, leaveDesk, openGroupDesk, openTabs, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/desk-documents");
+const capture = screenshots("desk-documents");
 
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", suffix)].find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-function api<T>(shell: Page, call: (pistachio: PistachioApi) => Promise<T>): Promise<T> {
-  return shell.evaluate(`(${call.toString()})(window.pistachio)`) as Promise<T>;
-}
-
-const snapshot = (shell: Page): Promise<ShellSnapshot> => api(shell, (pistachio) => pistachio.getSnapshot());
-
-/** The Bar grown from its idle pill, as the pointer coming to it grows it, so its field and buttons can be used. */
-async function reachBar(shell: Page): Promise<void> {
-  const bar = shell.getByTestId("desk-bar");
-  if ((await bar.getAttribute("data-compact")) !== null) await shell.getByTestId("desk-bar-pill").hover();
-  await expect(bar).not.toHaveAttribute("data-compact", "");
-}
-
-/** One of a window's less-used controls, on its frame's menu (⋯): mask, minimize, a document's own. */
-async function fromFrameMenu(shell: Page, win: string, testId: string): Promise<void> {
-  await shell.locator(`${win} [data-testid="desk-window-more"]`).click();
-  await shell.locator(`[data-testid="context-menu"] [data-testid="${testId}"]`).click();
-}
-
-interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-async function box(page: Page, selector: string): Promise<Box> {
-  const found = await page.locator(selector).first().boundingBox();
-  if (found === null) throw new Error(`${selector} has no box`);
-  return found;
-}
-
-/** The window as a person sees it: the shell with every live page composited over it at its box (desk.spec.ts). */
-async function capture(app: ElectronApplication, shell: Page, filename: string): Promise<void> {
-  await shell.waitForTimeout(400);
-  const layers = await app.evaluate(async ({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    const base = (await window.capturePage()).toDataURL();
-    const views: Array<{ dataUrl: string; bounds: { x: number; y: number; width: number; height: number } }> = [];
-    for (const child of window.contentView.children) {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) continue;
-      const view = child as WebContentsView;
-      if (Object.values(hashes).some((hash) => view.webContents.getURL().endsWith(hash))) continue;
-      views.push({ dataUrl: (await view.webContents.capturePage()).toDataURL(), bounds: view.getBounds() });
-    }
-    return { base, views };
-  }, CHROME_VIEW_HASHES);
-  const png = await shell.evaluate(async ({ base, views }) => {
-    const load = (src: string): Promise<HTMLImageElement> =>
-      new Promise((done, fail) => {
-        const image = new Image();
-        image.onload = () => done(image);
-        image.onerror = fail;
-        image.src = src;
-      });
-    const ground = await load(base);
-    const canvas = document.createElement("canvas");
-    canvas.width = ground.naturalWidth;
-    canvas.height = ground.naturalHeight;
-    const context = canvas.getContext("2d")!;
-    context.drawImage(ground, 0, 0);
-    const scale = ground.naturalWidth / window.innerWidth;
-    for (const view of views) {
-      const image = await load(view.dataUrl);
-      const { x, y, width, height } = view.bounds;
-      context.save();
-      context.beginPath();
-      context.roundRect(x * scale, y * scale, width * scale, height * scale, 8 * scale);
-      context.clip();
-      context.drawImage(image, x * scale, y * scale, width * scale, height * scale);
-      context.restore();
-    }
-    return canvas.toDataURL("image/png").slice("data:image/png;base64,".length);
-  }, layers);
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
-/** Move the window out from under the real cursor, whose hover would otherwise reach the sidebar (desk.spec.ts). */
-async function clearOfCursor(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ BrowserWindow, screen }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) return;
-    const cursor = screen.getCursorScreenPoint();
-    const bounds = window.getBounds();
-    const inside = cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width && cursor.y >= bounds.y && cursor.y < bounds.y + bounds.height;
-    if (!inside) return;
-    const area = screen.getDisplayNearestPoint(cursor).workArea;
-    const x = cursor.x - area.x > bounds.width + 20 ? area.x : cursor.x + 20 + bounds.width <= area.x + area.width ? cursor.x + 20 : null;
-    const y = cursor.y - area.y > bounds.height + 20 ? area.y : cursor.y + 20 + bounds.height <= area.y + area.height ? cursor.y + 20 : null;
-    if (x !== null) window.setPosition(x, bounds.y);
-    else if (y !== null) window.setPosition(bounds.x, y);
-  });
-}
-
-async function settled(shell: Page): Promise<void> {
-  await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
-  await expect(shell.locator(".desk-stage[data-gesture]")).toHaveCount(0);
-  await expect(shell.locator('[data-testid="desk-window"][data-flight]')).toHaveCount(0);
-  await shell.waitForTimeout(900);
-}
-
-const windowSelector = (id: string): string => `[data-testid="desk-window"][data-tab-id="${id}"]`;
-
-const INVOICES = "pistachio://demo/invoices";
-const VENDOR = "pistachio://demo/vendors/atlas-medical";
 const DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -272,6 +159,17 @@ async function itemId(shell: Page, name: string): Promise<string> {
   return found!;
 }
 
+/**
+ * The editor (a ProseMirror view: Tiptap hangs its editor on the view's
+ * element) has taken a click's caret into the block reading `text`: it
+ * adopts the DOM's selection a moment after the click, and keys struck
+ * before then land where its caret was — the document's start.
+ */
+async function caretIn(shell: Page, editorSelector: string, text: string): Promise<void> {
+  type WithEditor = HTMLElement & { editor?: { state: { selection: { $from: { parent: { textContent: string } } } } } };
+  await expect.poll(() => shell.locator(editorSelector).first().evaluate((el) => (el as WithEditor).editor?.state.selection.$from.parent.textContent ?? null)).toBe(text);
+}
+
 /** A context file's text as it is saved now. */
 function savedText(shell: Page, id: string): Promise<string> {
   return shell.evaluate(async (itemId) => {
@@ -311,44 +209,19 @@ const SCRIPT = {
   ],
 };
 
-test("documents on the desk: drop targets, a viewer for each kind, edits saved, the Stack, @mentions, the agent's hand", async () => {
-  test.setTimeout(240_000);
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  await mkdir(screenshotDirectory, { recursive: true });
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-documents-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: INVOICES } })));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData, PISTACHIO_AGENT_SCRIPT: JSON.stringify(SCRIPT) },
-  });
+test("documents on the desk: drop targets, a viewer for each kind, edits saved, the Stack, @mentions, the agent's hand", { tag: ["@desk", "@agent"] }, async () => {
+  test.setTimeout(180_000);
+  const { app, shell, userData } = await launchDesk({ name: "documents", env: { PISTACHIO_AGENT_SCRIPT: JSON.stringify(SCRIPT) } });
   try {
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
-    });
-    await clearOfCursor(app);
-    const shell = await shellReady(app);
     // Nothing the shell does here may throw.
     const pageErrors: string[] = [];
     shell.on("pageerror", (error) => pageErrors.push(`${error.message}\n${error.stack ?? ""}`));
-    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === INVOICES)).toBe(true);
-    await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), VENDOR);
-    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === VENDOR)).toBe(true);
-    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
-    const invoice = byUrl.get(INVOICES)!;
-    const vendor = byUrl.get(VENDOR)!;
-    await shell.evaluate(
-      (tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "desk-docs", tabIds, title: "Northstar", color: "blue" }),
-      [invoice, vendor],
-    );
-    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), invoice);
-    const group = shell.getByTestId("tab-group");
-    await group.getByTestId("tab-group-header").hover();
-    await group.getByTestId("tab-group-desk").click();
+    const [invoice, vendor] = (await openTabs(shell, [INVOICES, VENDOR])) as [string, string];
+    await createGroup(shell, "desk-docs", [invoice, vendor], "Northstar", "blue");
+    await selectTab(shell, invoice);
+    await openGroupDesk(shell, "desk-docs");
     await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
-    await settled(shell);
+    await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
     await shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.4);
     const docs = shell.locator('[data-testid="desk-window"][data-window-kind="file"]');
@@ -400,7 +273,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await expect(docs).toHaveCount(1);
     const planId = await itemId(shell, "plan.txt");
     const planWindow = windowSelector(`file:${planId}`);
-    await settled(shell);
+    await settled(shell, app);
     const planBox = await box(shell, planWindow);
     expect(Math.abs(planBox.x + planBox.width / 2 - planAt.x)).toBeLessThan(40);
     await expect(shell.locator(`${planWindow} [data-testid="desk-window-title"]`)).toContainText("plan.txt");
@@ -420,7 +293,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
 
     // ── 5. Collapsed, it goes into the Stack; from the Stack it comes back, as it was left ─
     await shell.locator(`${planWindow} [data-testid="desk-collapse"]`).click();
-    await settled(shell);
+    await settled(shell, app);
     await expect(docs).toHaveCount(0);
     await shell.getByTestId("desk-stack").click();
     await expect(shell.locator('[data-testid="desk-stack-card"][data-shown]')).toHaveCount(1);
@@ -429,32 +302,17 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await capture(app, shell, "03-in-the-stack.png");
     await planTile.locator("button").first().click();
     await expect(shell.getByTestId("desk-stack-card")).toHaveCount(0);
-    await settled(shell);
+    await settled(shell, app);
     await expect(shell.locator(`${planWindow} [data-testid="desk-text-viewer"]`)).toHaveValue(/Sunday: tram 28 to Graça/);
-
-    // ── 5b. Minimized, it parks at the desk's foot, its viewer zoomed out (the shell's own scale) and the same viewer still ─
-    const planViewer = await shell.locator(`${planWindow} [data-testid="desk-text-viewer"]`).elementHandle();
-    await fromFrameMenu(shell, planWindow, "desk-minimize");
-    await settled(shell);
-    await expect(shell.locator(planWindow)).toHaveAttribute("data-mini", "parked");
-    expect(await shell.locator(`${planWindow} .desk-window-zoom`).evaluate((el) => getComputedStyle(el).transform)).toBe("matrix(0.5, 0, 0, 0.5, 0, 0)");
-    expect(await planViewer!.evaluate((el) => el.isConnected)).toBe(true);
-    await capture(app, shell, "03b-minimized.png");
-    // (Its middle is at the desk's edge: the half below it is out of sight.)
-    await shell.locator(planWindow).hover({ position: { x: 120, y: 17 } });
-    await expect(shell.locator(planWindow)).toHaveAttribute("data-raised", "");
-    await shell.locator(planWindow).getByTestId("desk-expand").click();
-    await settled(shell);
-    await expect(shell.locator(planWindow)).not.toHaveAttribute("data-mini", /.+/);
-    expect(await shell.locator(`${planWindow} .desk-window-zoom`).evaluate((el) => getComputedStyle(el).transform)).toBe("none");
 
     // ── 6. A markdown file: shown as the document it describes, edited as a note is, its source a click away ─
     await dropOnDesk(shell, await transfer(shell, [FILES.notes]), { x: stage.x + stage.width * 0.62, y: stage.y + stage.height * 0.45 });
     const notesId = await itemId(shell, "notes.md");
     const notesWindow = windowSelector(`file:${notesId}`);
-    await settled(shell);
+    await settled(shell, app);
     await expect(shell.locator(`${notesWindow} [data-testid="desk-markdown-viewer"] h1`)).toHaveText("Trip notes");
     await shell.locator(`${notesWindow} [data-testid="desk-markdown-viewer"] li`).last().click();
+    await caretIn(shell, `${notesWindow} [data-testid="desk-markdown-viewer"]`, "Print the boarding pass");
     await shell.keyboard.press("End");
     await shell.keyboard.press("Enter");
     await shell.keyboard.type("Book the tram tour");
@@ -469,13 +327,14 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await dropOnDesk(shell, await transfer(shell, [FILES.trip]), { x: stage.x + stage.width * 0.45, y: stage.y + stage.height * 0.5 });
     const tripId = await itemId(shell, "trip.docx");
     const tripWindow = windowSelector(`file:${tripId}`);
-    await settled(shell);
+    await settled(shell, app);
     const tripPage = shell.locator(`${tripWindow} [data-testid="desk-document-viewer"]`);
     await expect(tripPage.locator("h1")).toHaveText("Lisbon trip");
     await expect(tripPage.locator(".docx-marker")).toHaveText(["•", "•", "1.", "2."]);
     await expect(tripPage.locator("td")).toHaveCount(6);
     await expect(shell.locator(`${tripWindow} [data-testid="desk-window-detail"]`)).toHaveText("Word document");
     await tripPage.locator("h1").click();
+    await caretIn(shell, `${tripWindow} [data-testid="desk-document-viewer"]`, "Lisbon trip");
     await shell.keyboard.press("End");
     await shell.keyboard.type(" (final)");
     await expect(shell.locator(`${tripWindow} [data-testid="desk-window-detail"]`)).toHaveText("Saved");
@@ -489,7 +348,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await dropOnDesk(shell, await transfer(shell, [FILES.budget]), { x: stage.x + stage.width * 0.55, y: stage.y + stage.height * 0.4 });
     const budgetId = await itemId(shell, "budget.xlsx");
     const budgetWindow = windowSelector(`file:${budgetId}`);
-    await settled(shell);
+    await settled(shell, app);
     const grid = shell.locator(`${budgetWindow} [data-testid="desk-sheet-grid"]`);
     await expect(grid.locator('.desk-sheet-cell[data-row="2"][data-col="1"]')).toHaveText("€1,240.00");
     await expect(grid.locator('.desk-sheet-cell[data-row="1"][data-col="2"]')).toHaveText("10/1/2024");
@@ -503,7 +362,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await dropOnDesk(shell, await transfer(shell, [FILES.stops]), { x: stage.x + stage.width * 0.4, y: stage.y + stage.height * 0.55 });
     const stopsId = await itemId(shell, "stops.csv");
     const stopsWindow = windowSelector(`file:${stopsId}`);
-    await settled(shell);
+    await settled(shell, app);
     await shell.locator(`${stopsWindow} .desk-sheet-cell[data-row="2"][data-col="1"]`).dblclick();
     await shell.locator(`${stopsWindow} [data-testid="desk-sheet-editor"]`).fill("13:00");
     await shell.keyboard.press("Enter");
@@ -515,6 +374,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await shell.keyboard.press("Escape");
     await expect(shell.locator(`${stopsWindow} [data-testid="desk-sheet-editor"]`)).toHaveCount(0);
     await expect(shell.locator(`${stopsWindow} .desk-sheet-cell[data-row="1"][data-col="0"]`)).toHaveText("Baixa");
+    // (Past the save an edit would have waited for: document-session's SAVE_AFTER_MS, 700ms.)
     await shell.waitForTimeout(1_200);
     await expect(shell.locator(`${stopsWindow} [data-testid="desk-window-detail"]`)).toHaveText("Saved");
     expect(await savedText(shell, stopsId)).toBe("stop,time\nBaixa,10:00\nAlfama,13:00\n");
@@ -522,12 +382,12 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     // ── 10. A picture and a PDF, each fitted to its window ─
     await dropOnDesk(shell, await transfer(shell, [], true), { x: stage.x + stage.width * 0.7, y: stage.y + stage.height * 0.35 });
     const viewId = await itemId(shell, "view.png");
-    await settled(shell);
+    await settled(shell, app);
     await expect(shell.locator(`${windowSelector(`file:${viewId}`)} [data-testid="desk-window-detail"]`)).toHaveText("480 × 300");
     await dropOnDesk(shell, await transfer(shell, [FILES.brochure]), { x: stage.x + stage.width * 0.5, y: stage.y + stage.height * 0.5 });
     const brochureId = await itemId(shell, "brochure.pdf");
     const brochureWindow = windowSelector(`file:${brochureId}`);
-    await settled(shell);
+    await settled(shell, app);
     await expect(shell.locator(`${brochureWindow} [data-testid="desk-pdf-page-box"][data-drawn]`)).toHaveCount(1, { timeout: 15_000 });
     await expect(shell.locator(`${brochureWindow} [data-testid="desk-window-detail"]`)).toHaveText("1 page");
     await expect(shell.locator(`${brochureWindow} .textLayer`)).toContainText("Lisbon walking tours");
@@ -545,12 +405,13 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     const memoId = await itemId(shell, "memo.doc");
     const memoWindow = windowSelector(`file:${memoId}`);
     const sunsetId = await itemId(shell, "sunset.heic");
-    await settled(shell);
+    await settled(shell, app);
     await expect(shell.locator(`${memoWindow} [data-testid="desk-document-viewer"]`)).toContainText("Budget review on Monday.", { timeout: 15_000 });
     await expect(shell.locator(`${windowSelector(`file:${sunsetId}`)} [data-testid="desk-window-detail"]`)).toHaveText("64 × 40", { timeout: 15_000 });
     // (The photo, dropped with it, came out over it: its title bar brings it to the top.)
     await shell.locator(`${memoWindow} [data-testid="desk-window-title"]`).click();
     await shell.locator(`${memoWindow} [data-testid="desk-document-viewer"] p`, { hasText: "Budget review" }).click();
+    await caretIn(shell, `${memoWindow} [data-testid="desk-document-viewer"]`, "Budget review on Monday.");
     await shell.keyboard.press("End");
     await shell.keyboard.type(" Bring the receipts.");
     await expect(shell.locator(`${memoWindow} [data-testid="desk-window-detail"]`)).toHaveText("Saved", { timeout: 15_000 });
@@ -559,14 +420,6 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     expect(memo?.kind === "file" ? memo.mediaType : null).toBe("application/msword");
     expect(await readAsMessage(shell, memoId)).toContain("Budget review on Monday. Bring the receipts.");
     await capture(app, shell, "07b-doc-and-heic.png");
-
-    // ── 11. Tiled with the tabs: a document is a window like any other ─
-    await shell.locator(".desk-stage").click({ position: { x: stage.width - 40, y: 40 } }).catch(() => undefined);
-    await shell.keyboard.press("Meta+Alt+t");
-    await settled(shell);
-    const tiles = await shell.locator('[data-testid="desk-window"]').evaluateAll((els) => els.map((el) => el.getBoundingClientRect()).map((r) => ({ x: r.x, y: r.y, w: r.width, h: r.height })));
-    for (const [index, a] of tiles.entries()) for (const b of tiles.slice(index + 1)) expect(a.x + a.w <= b.x + 1 || b.x + b.w <= a.x + 1 || a.y + a.h <= b.y + 1 || b.y + b.h <= a.y + 1).toBe(true);
-    await capture(app, shell, "08-tiled.png");
 
     // ── 12. @ in the Bar offers the context's files; the mention rides with the message; the agent arranges the document ─
     const input = shell.getByTestId("desk-bar-input");
@@ -588,7 +441,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     expect(asked.content).toContain("What's left to pack in @notes.md\n\nAttached file");
     expect(asked.content).toContain("Attached file “notes.md”");
     expect(asked.content).toContain("- Book the tram tour");
-    await settled(shell);
+    await settled(shell, app);
     const notesBox = await box(shell, notesWindow);
     const invoiceBox = await box(shell, windowSelector(invoice));
     expect(notesBox.x + notesBox.width).toBeLessThan(invoiceBox.x);
@@ -598,13 +451,10 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
 
     // ── 13. Left and opened again, the desk keeps its documents where they were ─
     const before = await box(shell, notesWindow);
-    await shell.getByTestId("desk-more").hover();
-    await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
-    await shell.getByTestId("desk-leave").click();
+    await leaveDesk(shell);
     await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    await group.getByTestId("tab-group-header").hover();
-    await group.getByTestId("tab-group-desk").click();
-    await settled(shell);
+    await openGroupDesk(shell, "desk-docs");
+    await settled(shell, app);
     await expect(shell.locator(notesWindow)).toHaveCount(1);
     const after = await box(shell, notesWindow);
     expect(Math.abs(after.x - before.x)).toBeLessThan(4);

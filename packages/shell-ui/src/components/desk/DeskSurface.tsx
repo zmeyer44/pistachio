@@ -6,7 +6,6 @@ import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/i
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { tabGroupTitle, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
-import { cn } from "../../lib/cn";
 import { agentActivity } from "../../lib/desk/agent";
 import { useGroupContexts, useGroupContextsLoaded } from "../../lib/desk/group-context";
 import { useFileWindows } from "../../lib/desk/group-files";
@@ -117,7 +116,6 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const overlayActive = useAppStore((state) => state.overlayActive);
   const paneStills = useAppStore((state) => state.paneStills);
   const glance = useAppStore((state) => state.glance);
-  const sidebarLayout = useAppStore((state) => state.settings.layout.mode === "sidebar");
   const setContentBounds = useAppStore((state) => state.setContentBounds);
   const run = useAppStore((state) => state.snapshot?.run ?? null);
   const threads = useAppStore((state) => state.snapshot?.threads ?? EMPTY_THREADS);
@@ -727,8 +725,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   return (
     <section
       data-testid="desk-surface"
-      className={cn("browser-surface desk-surface relative flex min-h-0 min-w-0 flex-1 bg-background-200 p-2", sidebarLayout && "drag-region")}
-      style={{ paddingTop: SURFACE_GUTTER, paddingLeft: sidebarLayout ? 0 : SURFACE_GUTTER }}
+      className="browser-surface desk-surface drag-region relative flex min-h-0 min-w-0 flex-1 bg-background-200 p-2"
+      style={{ paddingTop: SURFACE_GUTTER, paddingLeft: 0 }}
     >
       <div
         ref={stageRef}

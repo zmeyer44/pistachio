@@ -1,11 +1,6 @@
-import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { demoPortalHtml, demoToneWav } from "../../src/main/demo-page";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
 import {
-  _electron as electron,
   expect,
   test,
   type ElectronApplication,
@@ -15,6 +10,8 @@ import {
 import type { WebContentsView } from "electron";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage } from "./windows";
+import { captureEnabled, launchApp } from "./app";
+import { capturePage, closeApp, pageAt } from "./chrome-harness";
 
 let audioServer: Server;
 let AUDIO_URL: string;
@@ -54,26 +51,7 @@ test.afterAll(async () => {
 });
 
 const MEDIA_URL = "pistachio://demo/invoices?media-stack";
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/media-stack");
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
+const FOLDER = "media-stack";
 
 async function settled(element: Locator): Promise<void> {
   await expect
@@ -87,26 +65,15 @@ async function settled(element: Locator): Promise<void> {
     .toBe(false);
 }
 
-/** Force-close capture-stream fixtures if Electron does not finish quitting. */
-async function closeMediaApp(app: ElectronApplication): Promise<void> {
-  let timer: NodeJS.Timeout | undefined;
-  const killAfter = new Promise<void>((done) => {
-    timer = setTimeout(() => {
-      app.process().kill("SIGKILL");
-      done();
-    }, 10_000);
-  });
-  await Promise.race([app.close(), killAfter]);
-  if (timer !== undefined) clearTimeout(timer);
-}
-
-async function pageAt(app: ElectronApplication, url: string): Promise<Page> {
-  await expect
-    .poll(() => app.windows().some((page) => page.url() === url))
-    .toBe(true);
-  const page = app.windows().find((candidate) => candidate.url() === url);
-  if (page === undefined) throw new Error(`No Electron page at ${url}`);
-  return page;
+/** The shell, once `element` has come to rest, when captures are asked for. */
+async function captureAtRest(
+  shell: Page,
+  filename: string,
+  element?: Locator,
+): Promise<void> {
+  if (!captureEnabled) return;
+  if (element !== undefined) await settled(element);
+  await capturePage(shell, FOLDER, filename);
 }
 
 /** Install a player for the app-owned offline WAV fixture. */
@@ -181,20 +148,10 @@ async function installVideoPlayer(page: Page): Promise<void> {
   });
 }
 
-test("background playback becomes a fully controllable sidebar stack", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-media-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+test("background playback becomes a fully controllable sidebar stack", { tag: ["@media", "@sidebar"] }, async () => {
+  const { app } = await launchApp({
+    settings: { layout: { sidebar: "pinned" } },
+    name: "media",
   });
 
   try {
@@ -304,12 +261,10 @@ test("background playback becomes a fully controllable sidebar stack", async () 
     await expect(
       stack.getByRole("button", { name: "Show playing tab" }),
     ).toBeVisible();
-    await mkdir(screenshotDirectory, { recursive: true });
-    // Let the fan-out and the details' fade settle so the capture shows the open card.
+    // Let the fan-out and the details' fade settle: the resting geometry
+    // below is read from the open card, and the capture shows it.
     await settled(stack);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "expanded-stack.png"),
-    });
+    await captureAtRest(shell, "expanded-stack.png");
 
     // Speed opens a popup without moving the trigger or neighboring controls.
     const rateTrigger = stack.getByTestId("media-rate-trigger");
@@ -350,10 +305,7 @@ test("background playback becomes a fully controllable sidebar stack", async () 
       .toBe(1.75);
     await expect(rateTrigger).toHaveText("1.75x");
     expect(await geometry()).toEqual(restingGeometry);
-    await settled(rateCard);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "rate-slider.png"),
-    });
+    await captureAtRest(shell, "rate-slider.png", rateCard);
     await rateCard
       .getByRole("button", { name: "Reset playback speed to 1x" })
       .click();
@@ -478,10 +430,7 @@ test("background playback becomes a fully controllable sidebar stack", async () 
     await expect(dismiss).toBeHidden();
     await frontCard.getByTestId(`media-identity-${mediaTabId}`).hover();
     await expect(dismiss).toBeVisible();
-    await settled(frontCard);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "metadata-dismiss.png"),
-    });
+    await captureAtRest(shell, "metadata-dismiss.png", frontCard);
     await shell.mouse.move(800, 100);
     await expect
       .poll(() =>
@@ -489,9 +438,7 @@ test("background playback becomes a fully controllable sidebar stack", async () 
       )
       .toBe(54);
     await expect(frontCard.locator(".media-compact-progress")).toBeVisible();
-    await shell.screenshot({
-      path: join(screenshotDirectory, "compact-stack.png"),
-    });
+    await captureAtRest(shell, "compact-stack.png");
 
     const sidebarBefore = await shell
       .getByTestId("sidebar-tab-list")
@@ -514,15 +461,9 @@ test("background playback becomes a fully controllable sidebar stack", async () 
       )
       .not.toBe(lightSurface);
     await frontCard.getByTestId(`media-identity-${mediaTabId}`).hover();
-    await settled(frontCard);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "dark-expanded-stack.png"),
-    });
+    await captureAtRest(shell, "dark-expanded-stack.png", frontCard);
     await rateTrigger.click();
-    await settled(rateCard);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "dark-speed-slider.png"),
-    });
+    await captureAtRest(shell, "dark-speed-slider.png", rateCard);
     await speed.press("Escape");
     const sidebarAfter = await shell
       .getByTestId("sidebar-tab-list")
@@ -534,24 +475,14 @@ test("background playback becomes a fully controllable sidebar stack", async () 
     await dismiss.click();
     await expect(stack).toHaveCount(0);
   } finally {
-    await closeMediaApp(app);
+    await closeApp(app);
   }
 });
 
-test("a playing video becomes a live extension of the sidebar mini player", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-video-mini-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+test("a playing video becomes a live extension of the sidebar mini player", { tag: ["@media", "@sidebar"] }, async () => {
+  const { app } = await launchApp({
+    settings: { layout: { sidebar: "pinned" } },
+    name: "video-mini",
   });
 
   try {
@@ -872,15 +803,12 @@ test("a playing video becomes a live extension of the sidebar mini player", asyn
         ),
       )
       .toBe("0");
-    await mkdir(screenshotDirectory, { recursive: true });
-    await shell.screenshot({
-      path: join(screenshotDirectory, "video-mini-player.png"),
-    });
-    await mediaPage
-      .locator("#test-video")
-      .screenshot({
-        path: join(screenshotDirectory, "native-video-frame.png"),
-      });
+    await captureAtRest(shell, "video-mini-player.png");
+    await capturePage(
+      mediaPage.locator("#test-video"),
+      FOLDER,
+      "native-video-frame.png",
+    );
 
     // The video frame and compact metadata remain visible at rest. Hovering
     // the native video expands only its own card.
@@ -901,10 +829,7 @@ test("a playing video becomes a live extension of the sidebar mini player", asyn
         ),
       )
       .toBe("1");
-    await settled(card);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "video-mini-player-compact-controls.png"),
-    });
+    await captureAtRest(shell, "video-mini-player-compact-controls.png", card);
 
     // Metadata hover keeps the playback controls open and reveals dismissal.
     await baseControls.hover();
@@ -921,13 +846,7 @@ test("a playing video becomes a live extension of the sidebar mini player", asyn
         ),
       )
       .toBe("1");
-    await settled(card);
-    await shell.screenshot({
-      path: join(
-        screenshotDirectory,
-        "video-mini-player-expanded-controls.png",
-      ),
-    });
+    await captureAtRest(shell, "video-mini-player-expanded-controls.png", card);
 
     // Pointer activation can retain DOM focus, but that mouse focus must not
     // pin the card open after the pointer leaves. Pausing an already-open
@@ -1037,68 +956,124 @@ test("a playing video becomes a live extension of the sidebar mini player", asyn
         })
         .catch(() => undefined);
     }
-    await closeMediaApp(app);
+    await closeApp(app);
   }
 });
 
-test("only one background video plays at a time, and every card stays in reach", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-two-videos-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+// One window, two videos: the first left playing from inside a page's own
+// floating miniplayer, then a second started in a pane, which the first
+// yields to — and every card stays in reach.
+test.describe.serial("background videos", { tag: ["@sidebar", "@media"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
   const SECOND_URL = "pistachio://demo/invoices?media-stack-2";
+  let app: ElectronApplication;
+  let shell: Page;
+  let originalTabId: string;
+  let firstTabId: string;
+  let firstPage: Page;
 
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    const originalTabId = await shell.evaluate(async () => {
+  const tabIdFor = (url: string) =>
+    shell.evaluate(async (target) => {
       const snapshot = await (
         window as unknown as { pistachio: PistachioApi }
       ).pistachio.getSnapshot();
-      await (
+      return snapshot.tabs.find((tab) => tab.url === target)?.id ?? "";
+    }, url);
+  const playingOf = (tabId: string) =>
+    shell.evaluate(async (target) => {
+      const media = await (
         window as unknown as { pistachio: PistachioApi }
-      ).pistachio.createTab("pistachio://demo/invoices?media-stack");
-      if (snapshot.activeTabId === null) throw new Error("No original tab");
+      ).pistachio.getMedia();
+      return media.find((item) => item.tabId === target)?.playing ?? null;
+    }, tabId);
+
+  test.beforeAll(async () => {
+    ({ app } = await launchApp({
+      settings: { layout: { sidebar: "pinned" } },
+      name: "two-videos",
+    }));
+    shell = await shellPage(app);
+    await shell.waitForLoadState("domcontentloaded");
+  });
+
+  test.afterAll(async () => {
+    for (const url of [MEDIA_URL, SECOND_URL]) {
+      await app
+        ?.windows()
+        .find((candidate) => candidate.url() === url)
+        ?.evaluate(() => {
+          (
+            window as unknown as { stopTestVideo?: () => void }
+          ).stopTestVideo?.();
+        })
+        .catch(() => undefined);
+    }
+    await closeApp(app);
+  });
+
+  test("a video in a page's own floating miniplayer fills the sidebar card, not its corner", async () => {
+    const original = await shell.evaluate(async () => {
+      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
+      const snapshot = await api.getSnapshot();
+      await api.createTab("pistachio://demo/invoices?media-stack");
       return snapshot.activeTabId;
     });
-    const tabIdFor = (url: string) =>
-      shell.evaluate(async (target) => {
-        const snapshot = await (
-          window as unknown as { pistachio: PistachioApi }
-        ).pistachio.getSnapshot();
-        return snapshot.tabs.find((tab) => tab.url === target)?.id ?? "";
-      }, url);
-    const playingOf = (tabId: string) =>
-      shell.evaluate(async (target) => {
-        const media = await (
-          window as unknown as { pistachio: PistachioApi }
-        ).pistachio.getMedia();
-        return media.find((item) => item.tabId === target)?.playing ?? null;
-      }, tabId);
-
-    // First video: watched, then left behind for the sidebar.
-    const firstPage = await pageAt(app, MEDIA_URL);
+    if (original === null) throw new Error("No original tab");
+    originalTabId = original;
+    firstPage = await pageAt(app, MEDIA_URL);
     await installVideoPlayer(firstPage);
+    // YouTube's miniplayer: the player moved into a small fixed box in the
+    // corner, with will-change: transform. That makes the box the containing
+    // block of the video's position: fixed, which pinned the presented
+    // picture to the box and left the card showing the page's top-left.
+    await firstPage.evaluate(() => {
+      const box = document.createElement("div");
+      box.style.cssText =
+        "position:fixed;right:24px;bottom:24px;width:320px;height:180px;will-change:opacity,transform";
+      box.append(document.getElementById("test-video")!);
+      document.body.append(box);
+    });
+    // First video: watched, then left behind for the sidebar.
     await firstPage.locator("#start-video").click();
-    const firstTabId = await tabIdFor(MEDIA_URL);
+    await expect
+      .poll(() =>
+        firstPage
+          .locator("#test-video")
+          .evaluate((video) => (video as HTMLVideoElement).paused),
+      )
+      .toBe(false);
+    firstTabId = await tabIdFor(MEDIA_URL);
     await expect.poll(() => playingOf(firstTabId)).toBe(true);
+
     await shell.evaluate(async (tabId) => {
       await (
         window as unknown as { pistachio: PistachioApi }
       ).pistachio.selectTab(tabId);
     }, originalTabId);
     await expect(shell.getByTestId(`media-video-${firstTabId}`)).toBeVisible();
+    await expect
+      .poll(() =>
+        firstPage.evaluate(() =>
+          document.documentElement.hasAttribute("data-pistachio-mini-video"),
+        ),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        firstPage.locator("#test-video").evaluate((video) => {
+          const rect = video.getBoundingClientRect();
+          return { x: rect.x, y: rect.y, width: Math.round(rect.width) };
+        }),
+      )
+      .toEqual({
+        x: 0,
+        y: 0,
+        width: await firstPage.evaluate(() => window.innerWidth),
+      });
+    await captureAtRest(shell, "page-miniplayer-fills-card.png");
+  });
 
+  test("only one background video plays at a time, and every card stays in reach", async () => {
     // Second video started in a pane: the sidebar's video yields to it.
     await shell.evaluate(async (url) => {
       await (
@@ -1141,10 +1116,7 @@ test("only one background video plays at a time, and every card stays in reach",
     expect(rest[1]).not.toBeNull();
     expect(rest[1]?.y ?? 0).toBeLessThan(rest[0]?.y ?? 0);
     expect(rest[1]?.y ?? 0).toBeGreaterThanOrEqual((rest[0]?.y ?? 0) - 12);
-    await mkdir(screenshotDirectory, { recursive: true });
-    await shell.screenshot({
-      path: join(screenshotDirectory, "two-videos-rest.png"),
-    });
+    await captureAtRest(shell, "two-videos-rest.png");
 
     // Fanned out, both cards are full rows with their own controls. The peek
     // is what there is to point at: the card's centre is behind the picture.
@@ -1177,10 +1149,7 @@ test("only one background video plays at a time, and every card stays in reach",
     expect((fanned[1]?.y ?? 0) + (fanned[1]?.height ?? 0)).toBeLessThanOrEqual(
       fanned[0]?.y ?? 0,
     );
-    await settled(stack);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "two-videos-fanned.png"),
-    });
+    await captureAtRest(shell, "two-videos-fanned.png", stack);
 
     // Playing the paused card pauses the other and hands it the picture.
     await behind.getByRole("button", { name: "Play", exact: true }).click();
@@ -1240,122 +1209,8 @@ test("only one background video plays at a time, and every card stays in reach",
     expect(
       new Set(frames.map((frame) => Math.round(frame.y))).size,
     ).toBeGreaterThan(3);
-    await settled(stack);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "survivor-after-dismiss.png"),
-    });
-  } finally {
-    for (const url of [MEDIA_URL, SECOND_URL]) {
-      const page = app.windows().find((candidate) => candidate.url() === url);
-      if (page !== undefined) {
-        await page
-          .evaluate(() => {
-            (
-              window as unknown as { stopTestVideo?: () => void }
-            ).stopTestVideo?.();
-          })
-          .catch(() => undefined);
-      }
-    }
-    await closeMediaApp(app);
-  }
-});
-
-test("a video in a page's own floating miniplayer fills the sidebar card, not its corner", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-page-miniplayer-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+    await captureAtRest(shell, "survivor-after-dismiss.png", stack);
   });
-
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    const originalTabId = await shell.evaluate(async () => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      const snapshot = await api.getSnapshot();
-      await api.createTab("pistachio://demo/invoices?media-stack");
-      if (snapshot.activeTabId === null) throw new Error("No original tab");
-      return snapshot.activeTabId;
-    });
-    const mediaPage = await pageAt(app, MEDIA_URL);
-    await installVideoPlayer(mediaPage);
-    // YouTube's miniplayer: the player moved into a small fixed box in the
-    // corner, with will-change: transform. That makes the box the containing
-    // block of the video's position: fixed, which pinned the presented
-    // picture to the box and left the card showing the page's top-left.
-    await mediaPage.evaluate(() => {
-      const box = document.createElement("div");
-      box.style.cssText =
-        "position:fixed;right:24px;bottom:24px;width:320px;height:180px;will-change:opacity,transform";
-      box.append(document.getElementById("test-video")!);
-      document.body.append(box);
-    });
-    await mediaPage.locator("#start-video").click();
-    await expect
-      .poll(() =>
-        mediaPage
-          .locator("#test-video")
-          .evaluate((video) => (video as HTMLVideoElement).paused),
-      )
-      .toBe(false);
-    const mediaTabId = await shell.evaluate(async () => {
-      const snapshot = await (
-        window as unknown as { pistachio: PistachioApi }
-      ).pistachio.getSnapshot();
-      return (
-        snapshot.tabs.find(
-          (tab) => tab.url === "pistachio://demo/invoices?media-stack",
-        )?.id ?? ""
-      );
-    });
-
-    await shell.evaluate(async (tabId) => {
-      await (
-        window as unknown as { pistachio: PistachioApi }
-      ).pistachio.selectTab(tabId);
-    }, originalTabId);
-    await expect(shell.getByTestId(`media-video-${mediaTabId}`)).toBeVisible();
-    await expect
-      .poll(() =>
-        mediaPage.evaluate(() =>
-          document.documentElement.hasAttribute("data-pistachio-mini-video"),
-        ),
-      )
-      .toBe(true);
-    await expect
-      .poll(() =>
-        mediaPage.locator("#test-video").evaluate((video) => {
-          const rect = video.getBoundingClientRect();
-          return { x: rect.x, y: rect.y, width: Math.round(rect.width) };
-        }),
-      )
-      .toEqual({
-        x: 0,
-        y: 0,
-        width: await mediaPage.evaluate(() => window.innerWidth),
-      });
-    await shell.screenshot({
-      path: join(screenshotDirectory, "page-miniplayer-fills-card.png"),
-    });
-  } finally {
-    await app.windows()
-      .find((candidate) => candidate.url() === MEDIA_URL)
-      ?.evaluate(() => {
-        (window as unknown as { stopTestVideo?: () => void }).stopTestVideo?.();
-      })
-      .catch(() => undefined);
-    await closeMediaApp(app);
-  }
 });
 
 /**
@@ -1414,34 +1269,24 @@ async function installCallPage(page: Page): Promise<void> {
   });
 }
 
-test("a call's live audio never blinks a card in the stack, and a granted call has none", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-live-call-"));
+test("a call's live audio never blinks a card in the stack, and a granted call has none", { tag: ["@media"] }, async () => {
   const origin = new URL(AUDIO_URL).origin;
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }),
-  );
-  await writeFile(
-    join(userData, "enterprise-policy.json"),
-    JSON.stringify({
-      version: 1,
-      rules: [
-        {
-          pattern: origin,
-          permissions: { camera: "allow", microphone: "allow" },
-        },
-      ],
-    }),
-  );
-  const app = await electron.launch({
+  const { app } = await launchApp({
+    settings: { layout: { sidebar: "pinned" } },
+    files: {
+      "enterprise-policy.json": {
+        version: 1,
+        rules: [
+          {
+            pattern: origin,
+            permissions: { camera: "allow", microphone: "allow" },
+          },
+        ],
+      },
+    },
     // A synthetic camera and microphone: no device, no system prompt.
-    args: [".", "--use-fake-device-for-media-stream"],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+    args: ["--use-fake-device-for-media-stream"],
+    name: "live-call",
   });
 
   try {
@@ -1468,14 +1313,32 @@ test("a call's live audio never blinks a card in the stack, and a granted call h
         ).pistachio.selectTab(id);
       }, tabId);
     const card = shell.getByTestId(`media-card-${callTabId}`);
-    const sample = async (): Promise<boolean[]> => {
-      const seen: boolean[] = [];
-      for (let index = 0; index < 24; index += 1) {
-        seen.push((await card.count()) > 0);
-        await shell.waitForTimeout(250);
-      }
-      return seen;
-    };
+    /**
+     * Whether the card is in the stack, at the start and at every change of
+     * the shell's document over 3.5s — a few of the page's 1s media reports,
+     * which is where a pick taken back would show. A blink between two
+     * polls cannot slip past.
+     */
+    const sample = (): Promise<boolean[]> =>
+      shell.evaluate(
+        (testId) =>
+          new Promise<boolean[]>((done) => {
+            const present = () =>
+              document.querySelector(`[data-testid="${testId}"]`) !== null;
+            const seen = [present()];
+            const observer = new MutationObserver(() => {
+              const now = present();
+              if (now !== seen[seen.length - 1]) seen.push(now);
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+            window.setTimeout(() => {
+              observer.disconnect();
+              seen.push(present());
+              done(seen);
+            }, 3_500);
+          }),
+        `media-card-${callTabId}`,
+      );
 
     await installCallPage(callPage);
     await callPage.locator("#join-call").click();
@@ -1536,12 +1399,10 @@ test("a call's live audio never blinks a card in the stack, and a granted call h
     await select(originalTabId);
     expect(await sample()).not.toContain(true);
     await expect(shell.getByTestId("media-stack")).toHaveCount(0);
-    await shell.screenshot({
-      path: join(screenshotDirectory, "call-has-no-card.png"),
-    });
+    await captureAtRest(shell, "call-has-no-card.png");
   } finally {
     await callPageCleanup(app);
-    await closeMediaApp(app);
+    await closeApp(app);
   }
 });
 

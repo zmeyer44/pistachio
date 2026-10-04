@@ -1,34 +1,8 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import {
-  _electron as electron,
-  expect,
-  test,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { pageFirst, shellPage } from "./windows";
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      suffix,
-    ),
-  ].find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
+import { pageFirst, shellReady } from "./windows";
+import { launchApp } from "./app";
+import { activeUrl } from "./pages-harness";
 
 async function openPalette(shell: Page, query: string): Promise<void> {
   await shell.keyboard.press("Meta+L");
@@ -43,27 +17,38 @@ function snapshot(shell: Page) {
   );
 }
 
-test("the address overlay fuzzy-ranks commands, tabs, Spaces, settings, and recovery actions", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-command-palette-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst()));
-  const app: ElectronApplication = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: {
-      ...process.env,
-      PISTACHIO_E2E: "1",
-      PISTACHIO_USER_DATA: userData,
-    },
+/**
+ * Open the overlay and wait for main's palette inventory — which carries
+ * the clipboard's verdict — to have been answered. A row that should show
+ * is waited for as usual; where a row should NOT show, `settle` gives the
+ * answer a beat to be drawn, so a missing row means "not offered", never
+ * "not yet".
+ */
+async function openBrowsing(shell: Page, settle = false): Promise<void> {
+  await shell.keyboard.press("Meta+L");
+  await expect(shell.getByTestId("address-input")).toBeFocused();
+  await shell.evaluate(() =>
+    (window as unknown as { pistachio: PistachioApi }).pistachio.getCommandPalette(),
+  );
+  if (settle) await shell.waitForTimeout(250);
+}
+
+// One window: the palette's commands first, then Paste and Go over a fresh tab.
+test.describe.serial("the address overlay", { tag: ["@tabs", "@address"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let app: ElectronApplication;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    ({ app } = await launchApp({ settings: pageFirst(), name: "command-palette" }));
+    shell = await shellReady(app);
   });
 
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+  test.afterAll(async () => {
+    await app?.close();
+  });
 
+  test("the address overlay fuzzy-ranks commands, tabs, Spaces, settings, and recovery actions", { tag: ["@smoke"] }, async () => {
     // Settings sections participate in the same fuzzy inventory and an exact
     // section match beats the generic web-search row.
     await openPalette(shell, "keyboard shortcuts");
@@ -209,7 +194,57 @@ test("the address overlay fuzzy-ranks commands, tabs, Spaces, settings, and reco
         return { url: active?.url, anchored: active?.anchorId !== null };
       })
       .toEqual({ url: setup.sourceUrl, anchored: true });
-  } finally {
-    await app.close();
-  }
+  });
+
+  test("the address overlay offers the clipboard's URL first, as Paste and Go", async () => {
+    // A plain day tab in front: the pinned page the test above left would
+    // send an entered address to a new tab of its own.
+    const start = "pistachio://demo/invoices?paste-start";
+    await shell.evaluate(
+      (url) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(url),
+      start,
+    );
+    await expect.poll(() => activeUrl(shell)).toBe(start);
+
+    // This drives the machine's real clipboard; put back what it held.
+    const previous = await app.evaluate(({ clipboard }) => clipboard.readText());
+    try {
+      const target = "pistachio://demo/invoices?paste-and-go";
+
+      // A copied address is the first row, the first stop on ↓, and ↵ goes there.
+      await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), target);
+      await openBrowsing(shell);
+      const row = shell.getByTestId("paste-and-go");
+      await expect(row).toBeVisible();
+      await expect(row).toHaveAttribute("data-index", "0");
+      await expect(row).toContainText("Paste and Go");
+      await expect(row).toContainText("demo/invoices?paste-and-go");
+      await shell.keyboard.press("ArrowDown");
+      await expect(row).toHaveClass(/bg-alpha-200/);
+      await shell.keyboard.press("Enter");
+      await expect(shell.getByTestId("url-bar")).toHaveCount(0);
+      await expect.poll(() => activeUrl(shell)).toBe(target);
+
+      // Already on that page: nothing to paste and go to.
+      await openBrowsing(shell, true);
+      await expect(shell.getByTestId("paste-and-go")).toHaveCount(0);
+      await shell.keyboard.press("Escape");
+
+      // Copied prose is not an address, and never becomes a search.
+      await app.evaluate(({ clipboard }) => clipboard.writeText("invoice policy notes"));
+      await openBrowsing(shell, true);
+      await expect(shell.getByTestId("paste-and-go")).toHaveCount(0);
+      await shell.keyboard.press("Escape");
+
+      // Typing hides the row: the typed address is the suggestion then.
+      await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), "pistachio://demo/invoices?typed-over");
+      await openBrowsing(shell);
+      await expect(shell.getByTestId("paste-and-go")).toBeVisible();
+      await shell.getByTestId("address-input").fill("keyboard shortcuts");
+      await expect(shell.getByTestId("paste-and-go")).toHaveCount(0);
+      await shell.keyboard.press("Escape");
+    } finally {
+      await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), previous);
+    }
+  });
 });

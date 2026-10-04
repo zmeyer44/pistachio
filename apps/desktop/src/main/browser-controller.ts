@@ -187,6 +187,8 @@ import {
   normalizeNavigation,
 } from "@pistachio/shell-contracts/url";
 import { hasFileUpload } from "@pistachio/shell-contracts/request-upload";
+import type { ShieldsSiteState } from "@pistachio/shell-contracts/shields";
+import { HUB_PRIORITY, RequestHub } from "./shields/request-hub";
 import {
   demoAuthRelyingPartyHtml,
   demoOAuthCallbackHtml,
@@ -420,6 +422,17 @@ interface CapturedForkContext extends CapturedPageContext {
   sessionStorage: Record<string, string>;
 }
 
+/** What the controller needs of Shields (main/shields/service.ts). */
+export interface BrowserShields {
+  attachSession(target: Session): void;
+  attachContents(contents: WebContents): void;
+  /** True when Shields took the failed load over (an HTTPS upgrade falling back). */
+  navigationFailed(contents: WebContents, url: string, code: number): boolean;
+  siteState(contentsId: number, url: string): ShieldsSiteState;
+  setSite(site: string, enabled: boolean): void;
+  respond(url: URL): Response | null;
+}
+
 /**
  * What the account, sync, and egress services hang on the controller
  * (docs/cloud-sync-design.md §10.2, §10.3). Every hook is optional: without
@@ -441,6 +454,13 @@ export interface BrowserControllerHooks {
   findModel?: () => Experimental_EvaluationModel | null;
   onArchiveTab?: (id: string, contents: WebContents) => void;
   archiveResponse?: (url: URL, spaceId: string) => Promise<Response> | null;
+  /**
+   * Ad and tracker protection (docs/shields.md): attached to every Space
+   * session and every human page. Absent, nothing is blocked. Unlike the
+   * account hooks it is present under PISTACHIO_E2E too — it is local, and
+   * fetches no list there.
+   */
+  shields?: BrowserShields;
   /**
    * Awaited before the first WebContentsView is created on a session (and
    * before a fork child receives cookies, and before a browser import): the
@@ -2391,6 +2411,7 @@ export class BrowserController {
         pendingPasskeyRequests: [],
         downloads: [],
         recentEvents: [],
+        shields: null,
       };
     }
     const taskVerdict = (allowed: boolean, capability: string) => ({
@@ -2502,7 +2523,25 @@ export class BrowserController {
         .filter((event) => event.tabId === tab.info.id)
         .slice(0, 30)
         .map((event) => ({ ...event })),
+      // Task capsules run in partitions of their own, which Shields leave alone.
+      shields:
+        tab.info.kind === "human" && this.#hooks.shields !== undefined
+          ? this.#hooks.shields.siteState(tab.view.webContents.id, tab.info.url)
+          : null,
     };
+  }
+
+  /** The address a tab's page shows, for Shields' judgment of its requests; null for anything but a tab or Glance. */
+  topUrlFor(contentsId: number): string | null {
+    const tab = this.#tabForWebContents(contentsId);
+    if (tab === undefined) return null;
+    return tab.view.webContents.isDestroyed() ? tab.info.url : tab.view.webContents.getURL() || tab.info.url;
+  }
+
+  /** Shields' counts for a page changed: its popover redraws if it is the active tab's. */
+  shieldsChanged(contentsId: number): void {
+    const active = this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
+    if (active !== undefined && !active.view.webContents.isDestroyed() && active.view.webContents.id === contentsId) this.#emitBrowserControls();
   }
 
   async browserControl(command: BrowserControlCommand): Promise<void> {
@@ -2535,6 +2574,15 @@ export class BrowserController {
         this.#policy.clearPermissions(tab.info.url);
       this.#sendTabDataPolicy(tab);
       this.#emitBrowserControls();
+      return;
+    }
+    if (command.type === "setShields") {
+      // A page already loaded with (or without) its blocking only shows the
+      // change once it loads again, as in every browser with this switch.
+      if (tab.info.kind !== "human" || this.#hooks.shields === undefined || !/^https?:/.test(tab.info.url)) return;
+      this.#hooks.shields.setSite(tab.info.url, command.enabled);
+      this.#emitBrowserControls();
+      if (!tab.view.webContents.isDestroyed()) tab.view.webContents.reload();
       return;
     }
     if (
@@ -3772,8 +3820,10 @@ export class BrowserController {
     const view = new WebContentsView({
       webPreferences: {
         partition,
+        // In every frame, not only the top one: Shields protect each frame
+        // from its first script (preload/tab.ts runs the rest top-only).
         ...(options.kind === "human" && this.#tabPreload !== ""
-          ? { preload: this.#tabPreload }
+          ? { preload: this.#tabPreload, nodeIntegrationInSubFrames: true }
           : {}),
         contextIsolation: true,
         nodeIntegration: false,
@@ -3926,6 +3976,7 @@ export class BrowserController {
   #wireManagedTab(tab: ManagedTab): () => void {
     const { info, view } = tab;
     if (info.kind === "human") this.#hooks.onArchiveTab?.(info.id, view.webContents);
+    if (info.kind === "human") this.#hooks.shields?.attachContents(view.webContents);
     const publish = (): void => this.#publishManagedTab(tab);
     const refresh = (): void => {
       if (view.webContents.isDestroyed()) return;
@@ -3986,7 +4037,12 @@ export class BrowserController {
     // itself moved on (a script redirect), and the document it went to will
     // have its own dom-ready.
     view.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
-      if (!isMainFrame || code === -3 || this.#tabs.get(info.id) !== tab) return;
+      if (!isMainFrame || code === -3) return;
+      // An HTTPS upgrade the site could not answer goes back to HTTP (or to
+      // Shields' warning) instead of showing the failure — in a tab, and in
+      // a Glance, which lives outside #tabs.
+      if (info.kind === "human" && this.#hooks.shields?.navigationFailed(view.webContents, url, code) === true) return;
+      if (this.#tabs.get(info.id) !== tab) return;
       this.#endWake(info.id);
       this.#showNavigationError(tab, { url, code, description });
     });
@@ -4443,7 +4499,7 @@ export class BrowserController {
       backgroundColor: dark ? "#202225" : "#f8f8f3",
       webPreferences: {
         partition: tab.partition,
-        ...(this.#tabPreload === "" ? {} : { preload: this.#tabPreload }),
+        ...(this.#tabPreload === "" ? {} : { preload: this.#tabPreload, nodeIntegrationInSubFrames: true }),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
@@ -4507,6 +4563,13 @@ export class BrowserController {
     page.on("will-navigate", (event, url) => {
       if (url !== "about:blank" && !isAllowedNavigation(url))
         event.preventDefault();
+    });
+    // The popup shares its tab's session, upgrades included: an HTTPS upgrade
+    // the site cannot answer falls back (or warns) here as in a tab. And it
+    // is a page of its own to Shields — its WebRTC policy is not inherited.
+    this.#hooks.shields?.attachContents(page);
+    page.on("did-fail-load", (_event, code, _description, url, isMainFrame) => {
+      if (isMainFrame && code !== -3) this.#hooks.shields?.navigationFailed(page, url, code);
     });
     page.on("did-navigate", (_event, url) => {
       if (url === "about:blank") return;
@@ -4701,6 +4764,8 @@ export class BrowserController {
       const url = new URL(request.url);
       const archived = kind === "human" ? this.#hooks.archiveResponse?.(url, spaceId) : null;
       if (archived) return archived;
+      const shielded = kind === "human" ? this.#hooks.shields?.respond(url) : null;
+      if (shielded) return shielded;
       const spoken = this.#readAloud.respond(url, request.headers);
       if (spoken !== null) return spoken;
       const read = this.#reader.respond(url, request);
@@ -5049,25 +5114,20 @@ export class BrowserController {
     // form, a fetch/XHR, or a beacon can carry one. Leaving images, scripts,
     // styles, fonts, and media out of the filter spares every one of them a
     // round trip through this process.
-    target.webRequest.onBeforeRequest(
-      {
-        urls: ["http://*/*", "https://*/*", "pistachio://*/*"],
-        types: ["mainFrame", "subFrame", "xhr", "ping"],
-      },
-      (details, callback) => {
-        const uploadsFile = hasFileUpload(details.uploadData);
-        if (!uploadsFile) {
-          callback({});
-          return;
-        }
+    //
+    // The session's webRequest events are shared with Shields through the
+    // RequestHub (Electron keeps one listener per event); this handler runs
+    // first, so a refused upload is refused whatever Shields would say.
+    RequestHub.for(target).onBeforeRequest("upload-policy", {
+      priority: HUB_PRIORITY.policy,
+      types: ["mainFrame", "subFrame", "xhr", "ping"],
+      handler: (details) => {
+        if (!hasFileUpload(details.uploadData)) return undefined;
         const tab =
           details.webContentsId === undefined
             ? undefined
             : this.#tabForWebContents(details.webContentsId);
-        if (tab === undefined) {
-          callback({ cancel: true });
-          return;
-        }
+        if (tab === undefined) return { cancel: true };
         const verdict = this.#policy.action(tab.info.url, "upload");
         this.#recordPolicy(
           tab,
@@ -5076,9 +5136,10 @@ export class BrowserController {
           verdict.source,
           verdict.reason,
         );
-        callback({ cancel: verdict.decision === "block" });
+        return verdict.decision === "block" ? { cancel: true } : undefined;
       },
-    );
+    });
+    this.#hooks.shields?.attachSession(target);
     target.on("will-download", (event, item, contents) => {
       const tab = this.#tabForWebContents(contents.id);
       if (tab === undefined) {
@@ -5090,9 +5151,9 @@ export class BrowserController {
   }
 
   #installAgentEnforcement(target: Session, guard: AgentNetworkGuard): void {
-    target.webRequest.onBeforeRequest(
-      { urls: ["http://*/*", "https://*/*", "pistachio://*/*"] },
-      (details, callback) => {
+    RequestHub.for(target).onBeforeRequest("agent-enforcement", {
+      priority: HUB_PRIORITY.policy,
+      handler: (details) => {
         const uploadsFile = hasFileUpload(details.uploadData);
         const decision = guard.enforcer.authorize({
           url: details.url,
@@ -5101,9 +5162,9 @@ export class BrowserController {
           hasFileUpload: uploadsFile,
         });
         guard.onDecision(decision);
-        callback({ cancel: decision.outcome !== "allow" });
+        return decision.outcome !== "allow" ? { cancel: true } : undefined;
       },
-    );
+    });
     target.on("will-download", (event) => {
       if (!guard.enforcer.allowsDownloads()) event.preventDefault();
     });
@@ -5764,7 +5825,7 @@ export class BrowserController {
     const view = new WebContentsView({
       webPreferences: {
         partition: owner.partition,
-        ...(this.#tabPreload === "" ? {} : { preload: this.#tabPreload }),
+        ...(this.#tabPreload === "" ? {} : { preload: this.#tabPreload, nodeIntegrationInSubFrames: true }),
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,

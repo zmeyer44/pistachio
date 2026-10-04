@@ -1,9 +1,7 @@
-import { mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { createServer } from "node:http";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createServer, type Server } from "node:http";
 import {
-  _electron as electron,
   expect,
   test,
   type ElectronApplication,
@@ -16,6 +14,8 @@ import type {
 } from "@pistachio/shell-contracts/watchtower";
 import { WATCHTOWER_CAPTURE_SCRIPT } from "@pistachio/watchtower/capture";
 import { shellReady } from "./windows";
+import { captureEnabled, launchApp } from "./app";
+import { capturePage } from "./pages-harness";
 
 const api = (
   page: Page,
@@ -54,91 +54,108 @@ const navigate = (page: Page, tabId: string, url: string): Promise<void> =>
       ),
     { tabId, url },
   );
-const evidence = resolve(process.cwd(), "../../docs/qa/2026-09-19/watchtower");
+/**
+ * The journey's pictures, for a person reviewing a change (PISTACHIO_E2E_CAPTURE=1).
+ * docs/qa/2026-09-19/watchtower keeps the set that was reviewed then; a run
+ * writes its own beside the other specs' screenshots, never over that.
+ */
+function evidence(page: Page, filename: string): Promise<void> {
+  return capturePage(page, `watchtower/${filename}`, { animations: "disabled" });
+}
 
-// Journey: opt in → real foreground capture → revisit/deduplicate → revise →
-// find historic body text → compare versions → saved inert tab → restart → forget.
-test("Watchtower remembers substantive content and exact visits end to end", async () => {
-  test.setTimeout(240000);
-  await mkdir(evidence, { recursive: true });
-  let version = "Bronze bearings support the spindle.";
-  // A watch page as the web builds them: a player with a ticking clock, a
-  // rail of other videos, a sponsored slot — and the facts in structured data.
-  const watchPage = `<!doctype html><title>Gearbox teardown</title><meta property="og:type" content="video.other">
-    <script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoObject","name":"Gearbox teardown","author":{"@type":"Person","name":"Harbor Workshop"},"description":"The full gearbox teardown of a vintage lathe, with every shim measured.","duration":"PT12M","uploadDate":"2026-01-02"}</script>
-    <div id="columns"><div id="primary"><div id="player"><video></video><span class="time">0:00 / 12:00</span></div>
-    <h1>Gearbox teardown</h1><div id="description"><p>We open the gearbox of a vintage lathe and measure every shim before reassembly.</p><p>Chapters cover the spindle, the back gears and the oil seals in order.</p></div>
-    <div class="ad-slot"><p>Sponsored · RivalLathe clearance sale ends tonight</p></div></div>
-    <div id="related">${Array.from({ length: 14 }, (_, i) => `<a href="/v/${i}"><h3>Beekeeping basics episode ${i}</h3><span>Apiary Channel · ${i}M views</span></a>`).join("")}</div></div>
-    <script>let t=0;setInterval(()=>{t++;document.querySelector(".time").textContent="0:"+String(t%60).padStart(2,"0")+" / 12:00"},250)</script>`;
-  const server = createServer((request, response) => {
-    response.writeHead(200, { "content-type": "text/html" });
-    if (request.url?.startsWith("/watch")) {
-      response.end(watchPage);
-      return;
+/**
+ * Automation cannot acquire macOS foreground ownership on every runner.
+ * Simulate that OS signal only; native view visibility and extraction stay real.
+ */
+async function claimForeground(app: ElectronApplication): Promise<void> {
+  await app.evaluate(({ app, BrowserWindow }) => {
+    app.focus({ steal: true });
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.show();
+      window.focus();
+      window.isFocused = () => true;
     }
-    response.end(
-      `<!doctype html><title>The workshop notebook</title><meta name="author" content="Ada Workshop"><main><h1>A vintage lathe</h1><p>${version}</p><p>The original machine was restored in a small coastal workshop.</p><nav>NavigationNoise</nav><p hidden>HiddenSecret</p><form><input value="FormSecret"><textarea>DraftSecret</textarea></form><div contenteditable>EditableSecret</div><script>window.scriptSecret="ScriptSecret"</script><pre>speed = 42;</pre><a href="/reference">Workshop reference</a></main>`,
-    );
   });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("fixture missing");
-  const url = `http://127.0.0.1:${address.port}/notebook`;
-  const userData = await mkdtemp(join(tmpdir(), "watchtower-e2e-"));
+}
+
+// One profile, launched twice — the archive must outlive a restart — and the
+// index journey on the second launch, once the first journey has forgotten
+// everything.
+test.describe.serial("Watchtower", { tag: ["@pages"] }, () => {
   let app: ElectronApplication | null = null;
+  let page: Page;
+  let userData: string;
+  const servers: Server[] = [];
+
+  /** Launch on the profile (made by the first launch) and wait for the archive to answer. */
   const launch = async (): Promise<Page> => {
-    app = await electron.launch({
-      args: ["."],
-      cwd: process.cwd(),
-      executablePath: join(
-        process.cwd(),
-        "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
-      ),
-      env: {
-        ...process.env,
-        PISTACHIO_E2E: "1",
-        PISTACHIO_USER_DATA: userData,
-      },
-    });
-    const page = await shellReady(app);
-    await page.waitForLoadState("domcontentloaded");
-    // Automation cannot acquire macOS foreground ownership on every runner.
-    // Simulate that OS signal only; native view visibility and extraction stay real.
-    await app.evaluate(({ app, BrowserWindow }) => {
-      app.focus({ steal: true });
-      for (const window of BrowserWindow.getAllWindows()) {
-        window.show();
-        window.focus();
-        window.isFocused = () => true;
-      }
-    });
+    ({ app, userData } = await launchApp(
+      userData === undefined ? { name: "watchtower" } : { userData },
+    ));
+    const shell = await shellReady(app);
+    await claimForeground(app);
     await expect
       .poll(async () => {
         try {
-          return (await api(page, { type: "status" })).settings.enabled;
+          return (await api(shell, { type: "status" })).settings.enabled;
         } catch {
           return null;
         }
       })
       .not.toBeNull();
-    return page;
+    return shell;
   };
-  try {
-    let page = await launch();
+
+  test.afterAll(async () => {
+    await app?.close();
+    await Promise.all(servers.map((server) => new Promise<void>((done) => server.close(() => done()))));
+  });
+
+  // Journey: opt in → real foreground capture → revisit/deduplicate → revise →
+  // find historic body text → compare versions → saved inert tab → restart → forget.
+  test("Watchtower remembers substantive content and exact visits end to end", async () => {
+    test.setTimeout(150_000);
+    let version = "Bronze bearings support the spindle.";
+    // A watch page as the web builds them: a player with a ticking clock, a
+    // rail of other videos, a sponsored slot — and the facts in structured data.
+    const watchPage = `<!doctype html><title>Gearbox teardown</title><meta property="og:type" content="video.other">
+      <script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoObject","name":"Gearbox teardown","author":{"@type":"Person","name":"Harbor Workshop"},"description":"The full gearbox teardown of a vintage lathe, with every shim measured.","duration":"PT12M","uploadDate":"2026-01-02"}</script>
+      <div id="columns"><div id="primary"><div id="player"><video></video><span class="time">0:00 / 12:00</span></div>
+      <h1>Gearbox teardown</h1><div id="description"><p>We open the gearbox of a vintage lathe and measure every shim before reassembly.</p><p>Chapters cover the spindle, the back gears and the oil seals in order.</p></div>
+      <div class="ad-slot"><p>Sponsored · RivalLathe clearance sale ends tonight</p></div></div>
+      <div id="related">${Array.from({ length: 14 }, (_, i) => `<a href="/v/${i}"><h3>Beekeeping basics episode ${i}</h3><span>Apiary Channel · ${i}M views</span></a>`).join("")}</div></div>
+      <script>let t=0;setInterval(()=>{t++;document.querySelector(".time").textContent="0:"+String(t%60).padStart(2,"0")+" / 12:00"},250)</script>`;
+    const server = createServer((request, response) => {
+      response.writeHead(200, { "content-type": "text/html" });
+      if (request.url?.startsWith("/watch")) {
+        response.end(watchPage);
+        return;
+      }
+      response.end(
+        `<!doctype html><title>The workshop notebook</title><meta name="author" content="Ada Workshop"><main><h1>A vintage lathe</h1><p>${version}</p><p>The original machine was restored in a small coastal workshop.</p><nav>NavigationNoise</nav><p hidden>HiddenSecret</p><form><input value="FormSecret"><textarea>DraftSecret</textarea></form><div contenteditable>EditableSecret</div><script>window.scriptSecret="ScriptSecret"</script><pre>speed = 42;</pre><a href="/reference">Workshop reference</a></main>`,
+      );
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("fixture missing");
+    const url = `http://127.0.0.1:${address.port}/notebook`;
+    servers.push(server);
+    page = await launch();
     // The sidebar footer menu no longer lists Watchtower; the palette does.
     await page.keyboard.press("Meta+L");
     await page.getByTestId("address-input").fill("watchtower");
     await page.locator('[data-testid="command-result"][data-action-id="chrome:openWatchtower"]').click();
     await expect(page.getByTestId("watchtower-onboarding")).toBeVisible();
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "01-onboarding.png"),
-    });
+    // The index is one of the choices, and on unless declined.
+    await expect(
+      page.getByRole("switch", { name: "Index people, companies and ideas with Jev" }),
+    ).toBeChecked();
+    await evidence(page, "01-onboarding.png");
     await page
       .getByRole("button", { name: "Enable Watchtower", exact: true })
       .click();
+    expect((await api(page, { type: "status" })).settings.smartIndex).toBe(true);
     await expect(
       page.getByRole("textbox", { name: "Search Watchtower" }),
     ).toBeVisible();
@@ -200,10 +217,7 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
     await expect(page.getByTestId("watchtower-document")).toContainText(
       "Bronze bearings support",
     );
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "02-historical-search.png"),
-    });
+    await evidence(page, "02-historical-search.png");
     await page.evaluate(() =>
       (
         window as unknown as { pistachio: PistachioApi }
@@ -213,10 +227,7 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
       "data-color-scheme",
       "dark",
     );
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "06-dark-reader.png"),
-    });
+    await evidence(page, "06-dark-reader.png");
     await page.evaluate(() =>
       (
         window as unknown as { pistachio: PistachioApi }
@@ -238,10 +249,7 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
         }),
       )
       .toBe(true);
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "08-narrow-reader.png"),
-    });
+    await evidence(page, "08-narrow-reader.png");
     expect(
       await page
         .getByTestId("watchtower-page")
@@ -267,10 +275,7 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
     await expect(page.getByTestId("watchtower-diff")).toContainText(
       "Ceramic bearings replace",
     );
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "03-version-comparison.png"),
-    });
+    await evidence(page, "03-version-comparison.png");
     // How saving behaves is a section of the app's settings, one click away.
     await page
       .getByRole("button", { name: "Watchtower settings", exact: true })
@@ -294,10 +299,7 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
     await agentAccess.click();
     await expect(agentAccess).toHaveAttribute("aria-checked", "false");
     await expect(exclusions).toHaveValue("draft.example");
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "04-settings.png"),
-    });
+    await evidence(page, "04-settings.png");
     // The native folder chooser is controlled; export itself uses the real IPC and worker.
     await app!.evaluate(({ dialog }, directory) => {
       dialog.showOpenDialog = async () => ({
@@ -328,10 +330,7 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
     await expect(page.getByTestId("watchtower-forget")).toContainText(
       "What this does not do",
     );
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "09-forget-dialog.png"),
-    });
+    await evidence(page, "09-forget-dialog.png");
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(page.getByTestId("watchtower-forget")).toHaveCount(0);
     await page
@@ -389,10 +388,7 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
       .getByTestId("command-result")
       .filter({ hasText: "Watchtower" });
     await expect(savedResult).toHaveCount(1);
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "07-address-recall.png"),
-    });
+    await evidence(page, "07-address-recall.png");
     await savedResult.click();
     // Extract all sibling articles and prefer an explicit main over an earlier article.
     const roots = await app!.evaluate(
@@ -456,12 +452,17 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
     expect(extraction.bytes).toBeLessThan(256 * 1024);
     expect(extraction.frames).toBeGreaterThan(0);
     expect(extraction.elapsed).toBeLessThan(6000);
-    await writeFile(
-      join(evidence, "extraction.json"),
-      JSON.stringify(extraction, null, 2) + "\n",
-    );
-    // A video page: what it is about is saved, its furniture is not, and a
-    // player clock ticking for half a minute does not become new versions.
+    if (captureEnabled) {
+      const directory = join(process.cwd(), "e2e/screenshots/watchtower");
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, "extraction.json"),
+        JSON.stringify(extraction, null, 2) + "\n",
+      );
+    }
+    // A video page: what it is about is saved, its furniture is not. (That
+    // its ticking player clock never becomes new versions is the archive's
+    // own: watchtower archive.test "unchanged in-page recaptures".)
     await createTab(page, url.replace("/notebook", "/watch"));
     await expect
       .poll(
@@ -480,9 +481,6 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
     expect(watched.markdown).not.toMatch(/Beekeeping|Apiary|Sponsored|RivalLathe|12:00/u);
     // The rail's words must not find this page.
     expect((await api(page, { type: "search", query: "beekeeping" })).results).toEqual([]);
-    const versionsBefore = (await api(page, { type: "status" })).stats.snapshots;
-    await page.waitForTimeout(34000);
-    expect((await api(page, { type: "status" })).stats.snapshots).toBe(versionsBefore);
     expect(
       (await api(page, { type: "read", observationId: watch.observationId })).document!.history,
     ).toHaveLength(1);
@@ -500,10 +498,9 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
       enabled: true,
       paused: true,
     });
-    const count = (await api(page, { type: "status" })).stats.visits;
-    await createTab(page, `${url}?paused=1`);
-    await page.waitForTimeout(3000);
-    expect((await api(page, { type: "status" })).stats.visits).toBe(count);
+    // What a pause and an excluded site keep out (nothing) is the service's
+    // own: watchtower-service.test "pause cancels pending capture", "never
+    // keeps an excluded site". Here, only that the settings take.
     await api(page, {
       type: "settings",
       patch: { paused: false, excludedHosts: ["127.0.0.1"] },
@@ -513,9 +510,6 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
       paused: false,
       excludedHosts: ["127.0.0.1"],
     });
-    await createTab(page, `${url}?excluded=1`);
-    await page.waitForTimeout(3000);
-    expect((await api(page, { type: "status" })).stats.visits).toBe(count);
     await api(page, { type: "forget", all: true });
     await expect
       .poll(async () =>
@@ -549,12 +543,70 @@ test("Watchtower remembers substantive content and exact visits end to end", asy
       page.getByText("Nothing saved yet", { exact: true }),
     ).toBeVisible();
     await expect(page.getByTestId("watchtower-result")).toHaveCount(0);
-    await page.screenshot({
-      animations: "disabled",
-      path: join(evidence, "05-forgotten.png"),
+    await evidence(page, "05-forgotten.png");
+  });
+
+  // Journey: a page that declares what it is about is saved → its product and
+  // brand are index entries with no model involved → the entry opens, and
+  // leads back to the saved page → forgetting the page empties the index.
+  test("Watchtower files a saved page under what it declares it is about", async () => {
+    test.setTimeout(60_000);
+    const product = `<!doctype html><title>Air Runner 2 – Acme Shoes</title>
+      <script type="application/ld+json">[{"@context":"https://schema.org","@type":"WebSite","name":"Acme Shop"},
+      {"@context":"https://schema.org","@type":"Product","name":"Air Runner 2","brand":{"@type":"Brand","name":"Acme Shoes"}}]</script>
+      <main><h1>Air Runner 2</h1><p>The Air Runner 2 is a lightweight trainer for long runs on the road.</p>
+      <p>Every pair is tested for a thousand kilometres before it ships.</p></main>`;
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(product);
     });
-  } finally {
-    await (app as ElectronApplication | null)?.close();
-    await new Promise<void>((done) => server.close(() => done()));
-  }
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("fixture missing");
+    const url = `http://127.0.0.1:${address.port}/p/air-runner-2`;
+
+    // The journey before forgot everything and excluded this host; it is let
+    // back in. The index was opted into at onboarding, and is empty.
+    await api(page, { type: "settings", patch: { excludedHosts: [] } });
+    expect((await api(page, { type: "status" })).settings.smartIndex).toBe(true);
+    expect((await api(page, { type: "entities" })).index?.entities ?? []).toEqual([]);
+    await page.getByRole("button", { name: "Close Watchtower", exact: true }).click();
+    await expect(page.getByTestId("watchtower-page")).toHaveCount(0);
+
+    await createTab(page, url);
+    await app!.evaluate(({ app, BrowserWindow }) => {
+      app.focus({ steal: true });
+      BrowserWindow.getAllWindows()[0]?.focus();
+    });
+    await expect
+      .poll(
+        async () =>
+          ((await api(page, { type: "entities" })).index?.entities ?? [])
+            .map((entity) => `${entity.kind}:${entity.name}`)
+            .sort(),
+        { timeout: 20000 },
+      )
+      .toEqual(["company:Acme Shoes", "product:Air Runner 2"]);
+
+    await page.keyboard.press("Meta+L");
+    await page.getByTestId("address-input").fill("watchtower");
+    await page.locator('[data-testid="command-result"][data-action-id="chrome:openWatchtower"]').click();
+    await page.getByTestId("watchtower-view-index").click();
+    await expect(page.getByTestId("watchtower-entity")).toHaveCount(2);
+    await page.getByTestId("watchtower-entity").filter({ hasText: "Air Runner 2" }).click();
+    const reader = page.getByTestId("watchtower-entity-reader");
+    await expect(reader).toContainText("Named on 1 saved page");
+    await reader.getByRole("button", { name: /Air Runner 2 – Acme Shoes/u }).click();
+    const saved = page.getByTestId("watchtower-document");
+    await expect(saved).toContainText("Every pair is tested for a thousand kilometres");
+    // The saved page names what it is about, and leads back to it.
+    await expect(saved.getByTestId("watchtower-entity-chip")).toHaveText(["Air Runner 2", "Acme Shoes"]);
+    await saved.getByTestId("watchtower-entity-chip").filter({ hasText: "Acme Shoes" }).click();
+    await expect(page.getByTestId("watchtower-entity-reader")).toContainText("Company");
+
+    const pageId = (await api(page, { type: "search", query: "kilometres" })).results![0]!.pageId;
+    await api(page, { type: "forget", pageId });
+    expect((await api(page, { type: "entities" })).index?.entities).toEqual([]);
+  });
 });

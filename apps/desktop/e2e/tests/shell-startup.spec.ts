@@ -1,57 +1,52 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { spawn } from "node:child_process";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
 import { shellPage } from "./windows";
+import { electronExecutable, launchApp } from "./app";
+import { captureShell, closeApp } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/shell-startup");
+const FOLDER = "shell-startup";
 
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", suffix),
-  ].find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function closeApp(app: ElectronApplication): Promise<void> {
-  let timer: NodeJS.Timeout | undefined;
-  const killAfter = new Promise<void>((done) => {
-    timer = setTimeout(() => {
-      app.process().kill("SIGKILL");
-      done();
-    }, 10_000);
-  });
-  await Promise.race([app.close(), killAfter]);
-  if (timer !== undefined) clearTimeout(timer);
-}
-
-test("the shell and first page paint from a clean profile", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-shell-startup-"));
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value;
-  }
-  env["PISTACHIO_E2E"] = "1";
-  env["PISTACHIO_USER_DATA"] = userData;
-  const app = await electron.launch({
-    args: ["."],
+/** A second process on the same profile, as a second double-click would start; its exit code. */
+async function runDuplicate(userData: string): Promise<number | null> {
+  const duplicate = spawn(electronExecutable(), ["."], {
     cwd: process.cwd(),
-    executablePath,
-    env,
+    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+    stdio: "ignore",
   });
-  try {
-    const shell = await shellPage(app);
+  return new Promise<number | null>((resolveExit, rejectExit) => {
+    const timeout = setTimeout(() => {
+      duplicate.kill();
+      rejectExit(new Error("Duplicate Pistachio instance did not exit"));
+    }, 10_000);
+    duplicate.once("error", (error) => {
+      clearTimeout(timeout);
+      rejectExit(error);
+    });
+    duplicate.once("exit", (code) => {
+      clearTimeout(timeout);
+      resolveExit(code);
+    });
+  });
+}
+
+// One clean profile: the first paint, then a second process started on it.
+test.describe.serial("starting up", { tag: ["@home", "@startup"] }, () => {
+  let app: ElectronApplication | undefined;
+  let userData: string;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    ({ app, userData } = await launchApp({ name: "shell-startup" }));
+    shell = await shellPage(app);
+  });
+
+  test.afterAll(async () => {
+    await closeApp(app);
+  });
+
+  test("the shell and first page paint from a clean profile", { tag: ["@smoke"] }, async () => {
+    const running = app!;
     const diagnostics: string[] = [];
     const pendingRequests = new Set<string>();
     shell.on("console", (message) => {
@@ -87,7 +82,7 @@ test("the shell and first page paint from a clean profile", async () => {
       hasPreloadBridge: "pistachio" in window,
       chromeView: document.body.dataset["chromeView"] ?? null,
     }));
-    const contents = await app.evaluate(({ webContents }) =>
+    const contents = await running.evaluate(({ webContents }) =>
       webContents.getAllWebContents().map((item) => ({
         type: item.getType(),
         url: item.getURL(),
@@ -96,17 +91,9 @@ test("the shell and first page paint from a clean profile", async () => {
         crashed: item.isCrashed(),
       })),
     );
-    console.log(
-      JSON.stringify({ state, contents, pendingRequests: [...pendingRequests], diagnostics }, null, 2),
-    );
+    console.log(JSON.stringify({ state, contents, pendingRequests: [...pendingRequests], diagnostics }, null, 2));
 
-    await mkdir(screenshotDirectory, { recursive: true });
-    const png = await app.evaluate(async ({ BrowserWindow }) => {
-      const window = BrowserWindow.getAllWindows()[0];
-      if (window === undefined) throw new Error("Pistachio window is unavailable");
-      return (await window.capturePage()).toPNG().toString("base64");
-    });
-    await writeFile(join(screenshotDirectory, "01-clean-profile-shell.png"), Buffer.from(png, "base64"));
+    await captureShell(running, FOLDER, "01-clean-profile-shell.png");
     // Visible navigation chrome proves the lazy shell chunk mounted beyond the empty Suspense fallback.
     await expect(shell.getByTestId("sidebar-pane")).toBeVisible();
     expect(state.rootChildren).toBeGreaterThan(0);
@@ -114,8 +101,25 @@ test("the shell and first page paint from a clean profile", async () => {
     // placeholder, and the shell drew the page itself.
     await expect(shell.getByTestId("home-page")).toBeVisible();
     expect(contents.some((item) => item.url === HOME_PAGE_URL && !item.crashed)).toBe(true);
+    // (The home page's weather is fetched by the shell: on a machine
+    // without a network that request fails and shows up here.)
     expect(diagnostics).toEqual([]);
-  } finally {
-    await closeApp(app);
-  }
+  });
+
+  test("a duplicate process cannot share a durable Space session", async () => {
+    const running = app!;
+    await captureShell(running, FOLDER, "02-primary-instance.png");
+
+    expect(await runDuplicate(userData)).toBe(0);
+    expect(shell.isClosed()).toBe(false);
+    await expect
+      .poll(() =>
+        running.evaluate(({ BrowserWindow }) => ({
+          count: BrowserWindow.getAllWindows().length,
+          visible: BrowserWindow.getAllWindows()[0]?.isVisible() ?? false,
+        })),
+      )
+      .toEqual({ count: 1, visible: true });
+    await captureShell(running, FOLDER, "03-primary-remains-active.png");
+  });
 });

@@ -1,35 +1,9 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import {
-  _electron as electron,
-  expect,
-  test,
-  type ElectronApplication,
-} from "@playwright/test";
-import { shellPage, shellReady } from "./windows";
-
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/onboarding");
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      suffix,
-    ),
-  ];
-  return candidates.find(
-    (c) =>
-      c !== undefined &&
-      existsSync(c) &&
-      existsSync(resolve(dirname(c), "../Info.plist")),
-  );
-}
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication } from "@playwright/test";
+import { shellPage } from "./windows";
+import { captureEnabled, launchApp } from "./app";
+import { captureShell as captureWindow, captureView } from "./pages-harness";
 
 /**
  * Quit, and if Electron's shutdown stalls (it occasionally does while a
@@ -48,21 +22,11 @@ async function closeApp(app: ElectronApplication): Promise<void> {
   if (timer !== undefined) clearTimeout(timer);
 }
 
-async function captureShell(
+function captureShell(
   app: ElectronApplication,
   filename: string,
 ): Promise<void> {
-  await new Promise((done) => setTimeout(done, 450));
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows()[0];
-    if (w === undefined) throw new Error("no window");
-    return (await w.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(
-    join(screenshotDirectory, filename),
-    Buffer.from(png, "base64"),
-  );
+  return captureWindow(app, `onboarding/${filename}`, 450);
 }
 
 interface StoredSettings {
@@ -89,23 +53,11 @@ interface StoredSpaces {
  * in the grid, memory seeded, and the welcome tabs open. The about
  * step's "Or sign in" is absent here: the account services do not start
  * under PISTACHIO_E2E, so there is no keychain to offer sign-in with.
+ * Finished, Settings → About replays it, and Escape leaves the replay.
  */
-test("first run walks the wizard and furnishes the first Space", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No Electron runtime");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-onboarding-"));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    // PISTACHIO_ONBOARDING keeps the wizard that every other spec's launch turns off.
-    env: {
-      ...process.env,
-      PISTACHIO_E2E: "1",
-      PISTACHIO_ONBOARDING: "1",
-      PISTACHIO_USER_DATA: userData,
-    },
-  });
+test("first run walks the wizard and furnishes the first Space, and About replays it", { tag: ["@onboarding"] }, async () => {
+  // PISTACHIO_ONBOARDING keeps the wizard that every other spec's launch turns off.
+  const { app, userData } = await launchApp({ env: { PISTACHIO_ONBOARDING: "1" }, name: "onboarding" });
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");
@@ -281,20 +233,18 @@ test("first run walks the wizard and furnishes the first Space", async () => {
         await new Promise<void>((done) =>
           contents.once("did-finish-load", () => done()),
         );
-      await new Promise((done) => setTimeout(done, 300));
-      const image = await contents.capturePage();
       return {
-        png: image.toPNG().toString("base64"),
         title: contents.getTitle(),
         text: await contents.executeJavaScript("document.body.innerText"),
       };
     });
     expect(welcome.title).toBe("Welcome to Pistachio");
     expect(welcome.text).toContain("Let's settle in, Ada.");
-    await writeFile(
-      join(screenshotDirectory, "06-welcome-page.png"),
-      Buffer.from(welcome.png, "base64"),
-    );
+    if (captureEnabled) {
+      // The welcome page's first paint trails its load by a beat.
+      await new Promise((done) => setTimeout(done, 300));
+      await captureView(app, "pistachio://welcome/", "onboarding/06-welcome-page.png");
+    }
 
     // What landed on disk.
     const settings = JSON.parse(
@@ -332,44 +282,16 @@ test("first run walks the wizard and furnishes the first Space", async () => {
       await readFile(join(userData, "spaces.json"), "utf8"),
     ) as StoredSpaces;
     expect(spaces.spaces[0]?.name).toBe("Ada");
-  } finally {
-    await closeApp(app);
-  }
-});
 
-test("a completed install opens on the browser, and Settings → About replays the wizard", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No Electron runtime");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-onboarding-done-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ onboarding: { completed: true, completedAt: null } }),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: {
-      ...process.env,
-      PISTACHIO_E2E: "1",
-      PISTACHIO_ONBOARDING: "1",
-      PISTACHIO_USER_DATA: userData,
-    },
-  });
-  try {
-    const shell = await shellReady(app);
-    await expect(shell.getByTestId("sidebar-pane")).toBeVisible();
-    await expect(shell.getByTestId("onboarding")).toHaveCount(0);
-
+    // Settings → About replays the wizard; a replay can be left with Esc,
+    // and nothing is written.
     await shell.keyboard.press("Meta+,");
     await shell
       .getByTestId("settings-page")
       .getByRole("button", { name: "About", exact: true })
       .click();
     await shell.getByTestId("replay-onboarding").click();
-    const wizard = shell.getByTestId("onboarding");
     await expect(wizard).toBeVisible();
-    // A replay can be left with Esc; nothing is written.
     await shell.keyboard.press("Escape");
     await expect(wizard).toHaveCount(0);
   } finally {

@@ -1,11 +1,10 @@
-/** Settings → General: where the chrome lives, what a tab does, where a search goes, and what the window opens with. */
+/** Settings → General: how the sidebar behaves, what a tab does, where a search goes, and what the window opens with. */
 
 import { Globe } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { AI_SEARCH_PROVIDERS, WEB_SEARCH_PROVIDERS, aiSearchLabel, webSearchLabel } from "@pistachio/shell-contracts/search";
-import { CHROME_LAYOUT_MODES, type ChromeLayoutMode, type SidebarPresentation } from "@pistachio/shell-contracts/settings";
+import type { SidebarPresentation } from "@pistachio/shell-contracts/settings";
 import { isAllowedNavigation, withScheme as withSchemeForHost } from "@pistachio/shell-contracts/url";
-import { cn } from "../../../lib/cn";
 import { briefTimeItems } from "../../../lib/reports";
 import { isProbablyUrl } from "../../../lib/url";
 import { useAppStore } from "../../../store";
@@ -14,7 +13,7 @@ import { IconSelect } from "../../ui/icon-select";
 import { Input } from "../../ui/input";
 import { Select } from "../../ui/select";
 import { Switch } from "../../ui/switch";
-import { Block, Group, Page, Row } from "../parts";
+import { Group, Page, Row } from "../parts";
 
 const NEW_TAB_ITEMS = [
   { value: "home", label: "Home page" },
@@ -29,110 +28,6 @@ const SIDEBAR_ITEMS: ReadonlyArray<{ value: SidebarPresentation; label: string }
   { value: "pinned", label: "Always visible" },
   { value: "compact", label: "Compact — reveal on hover" },
 ];
-
-const LAYOUT_LABELS: Record<ChromeLayoutMode, string> = {
-  top: "Top tabs",
-  sidebar: "Sidebar",
-};
-
-/**
- * A wireframe of the window in each layout, drawn at the size of a large
- * icon: the window frame in the recessed strip colour, the page as a card
- * inside it, and the chrome where it would be. Both frames share the traffic
- * lights so the eye reads them as the same window arranged two ways.
- */
-const WIREFRAME: Record<ChromeLayoutMode, React.ReactNode> = {
-  top: (
-    <>
-      <rect x={24.5} y={4.5} width={26} height={10} rx={2.5} className="fill-background-100 stroke-gray-500" />
-      <rect x={53.5} y={4.5} width={22} height={10} rx={2.5} className="fill-none stroke-gray-500" />
-      <rect x={78.5} y={4.5} width={22} height={10} rx={2.5} className="fill-none stroke-gray-500" />
-      <rect x={4.5} y={18.5} width={103} height={49} rx={3} className="fill-background-100 stroke-gray-500" />
-    </>
-  ),
-  sidebar: (
-    <>
-      <rect x={5.5} y={18.5} width={23} height={6} rx={1.5} className="fill-background-100 stroke-gray-500" />
-      <rect x={5.5} y={27.5} width={23} height={6} rx={1.5} className="fill-none stroke-gray-500" />
-      <rect x={5.5} y={36.5} width={23} height={6} rx={1.5} className="fill-none stroke-gray-500" />
-      <rect x={5.5} y={45.5} width={23} height={6} rx={1.5} className="fill-none stroke-gray-500" />
-      <rect x={34.5} y={4.5} width={73} height={63} rx={3} className="fill-background-100 stroke-gray-500" />
-    </>
-  ),
-};
-
-function LayoutWireframe({ mode }: { mode: ChromeLayoutMode }) {
-  return (
-    <svg width={112} height={72} viewBox="0 0 112 72" aria-hidden="true" className="block">
-      <rect x={0.5} y={0.5} width={111} height={71} rx={4} className="fill-background-200 stroke-gray-500" />
-      <circle cx={8} cy={8.5} r={1.5} className="fill-gray-500" />
-      <circle cx={13} cy={8.5} r={1.5} className="fill-gray-500" />
-      <circle cx={18} cy={8.5} r={1.5} className="fill-gray-500" />
-      {WIREFRAME[mode]}
-    </svg>
-  );
-}
-
-/**
- * The layout choice as two illustrated radio cards. A native radio group
- * pattern on buttons: one tab stop (the checked card), arrows move the check
- * to the neighbour and follow it with focus, and Space/Enter re-affirm the
- * focused card through the button's own activation. Selected = the same
- * high-contrast ring the Switch fills with when it is on.
- */
-function LayoutPicker({ mode, onChange }: { mode: ChromeLayoutMode; onChange: (mode: ChromeLayoutMode) => void }) {
-  const cards = useRef<Partial<Record<ChromeLayoutMode, HTMLButtonElement | null>>>({});
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, from: ChromeLayoutMode) => {
-    const step =
-      event.key === "ArrowRight" || event.key === "ArrowDown"
-        ? 1
-        : event.key === "ArrowLeft" || event.key === "ArrowUp"
-          ? -1
-          : 0;
-    if (step === 0) return;
-    event.preventDefault();
-    const count = CHROME_LAYOUT_MODES.length;
-    const next = CHROME_LAYOUT_MODES[(CHROME_LAYOUT_MODES.indexOf(from) + step + count) % count];
-    if (next === undefined || next === from) return;
-    onChange(next);
-    cards.current[next]?.focus();
-  };
-
-  return (
-    <div role="radiogroup" aria-label="Tabs layout" className="flex flex-wrap gap-3">
-      {CHROME_LAYOUT_MODES.map((candidate) => {
-        const selected = candidate === mode;
-        return (
-          <button
-            key={candidate}
-            ref={(el) => {
-              cards.current[candidate] = el;
-            }}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            data-testid={`layout-mode-${candidate}`}
-            tabIndex={selected ? 0 : -1}
-            onClick={() => onChange(candidate)}
-            onKeyDown={(event) => onKeyDown(event, candidate)}
-            className={cn(
-              "flex cursor-pointer flex-col items-center gap-2 rounded-md bg-background-100 px-3 pt-3 pb-2.5 outline-none transition-shadow duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-              selected
-                ? "shadow-[0_0_0_1.5px_var(--color-gray-1000)]"
-                : "shadow-border hover:shadow-[0_0_0_1px_var(--color-gray-500)]",
-            )}
-          >
-            <LayoutWireframe mode={candidate} />
-            <span className={cn("text-label-12", selected ? "font-medium text-gray-1000" : "text-gray-900")}>
-              {LAYOUT_LABELS[candidate]}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 /**
  * An address a setting stores. Committed on Enter/blur rather than per
@@ -275,15 +170,9 @@ export function GeneralPage() {
   return (
     <Page
       title="General"
-      description="Where the tabs live, how they open, and what the window looks like when it does."
+      description="How the sidebar behaves, how tabs open, and what the window looks like when it does."
     >
-      <Group
-        title="Tabs layout"
-        note="Where your tabs live. The sidebar keeps every control the top row has."
-      >
-        <Block>
-          <LayoutPicker mode={layout.mode} onChange={(mode) => void updateSettings({ layout: { mode } })} />
-        </Block>
+      <Group title="Sidebar" note="Your tabs and the browser's controls live in a column at the window's left edge.">
         <Row
           label="Sidebar visibility"
           note="Compact hides the sidebar and the window controls. Move the pointer to the left edge to bring them back. ⌘S switches between the two."
@@ -293,7 +182,6 @@ export function GeneralPage() {
             data-testid="sidebar-presentation"
             value={layout.sidebar}
             items={SIDEBAR_ITEMS}
-            disabled={layout.mode !== "sidebar"}
             onValueChange={(sidebar) => void updateSettings({ layout: { sidebar } })}
             className="w-55 @max-md:w-42"
           />

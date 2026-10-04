@@ -1,28 +1,13 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication } from "@playwright/test";
 import { pageFirst, shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell as captureWindowFrame } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/screen-share");
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", suffix)].find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function captureShell(app: ElectronApplication, filename: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
+function captureShell(app: ElectronApplication, filename: string): Promise<void> {
+  return captureWindowFrame(app, "screen-share", filename);
 }
 
 /**
@@ -48,10 +33,7 @@ function requestScreen(app: ElectronApplication, pageUrl: string): Promise<strin
 // Answering "allow" would open macOS's own picker over the whole desktop, so
 // this spec stays on the questions Pistachio asks; the picker itself was
 // checked by hand (a Not supported error before the display-media handler).
-test("a page's screen share asks about the screen, not the camera it was already allowed", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-screen-share-"));
+test("a page's screen share asks about the screen, not the camera it was already allowed", { tag: ["@site", "@media"] }, async () => {
   const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end("<!doctype html><title>Meeting</title><h1>Meeting</h1>");
@@ -64,16 +46,12 @@ test("a page's screen share asks about the screen, not the camera it was already
   if (address === null || typeof address === "string") throw new Error("Meeting test server did not bind a TCP port");
   const origin = `http://localhost:${address.port}`;
   const pageUrl = `${origin}/`;
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst({ general: { homeUrl: pageUrl } })));
-  // Screen share used to be read as a camera request, so a site allowed the
-  // camera went straight past any question about the screen.
-  await writeFile(join(userData, "site-permissions.json"), JSON.stringify({ version: 1, sites: { [origin]: { camera: "allow" } } }));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  const { app, userData } = await launchApp({
+    settings: pageFirst({ general: { homeUrl: pageUrl } }),
+    // Screen share used to be read as a camera request, so a site allowed the
+    // camera went straight past any question about the screen.
+    files: { "site-permissions.json": { version: 1, sites: { [origin]: { camera: "allow" } } } },
+    name: "screen-share",
   });
   try {
     const shell = await shellReady(app);

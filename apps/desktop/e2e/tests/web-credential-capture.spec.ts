@@ -73,7 +73,7 @@ async function stopProcess(process: ChildProcess): Promise<void> {
 }
 
 for (const surface of ["app", "phone"] as const) {
-test(`an encrypted credential handoff from the ${surface} resumes its run`, async ({ page, browser }) => {
+test(`an encrypted credential handoff from the ${surface} resumes its run`, { tag: ["@web"] }, async ({ page, browser }) => {
   const SCREENSHOTS = `e2e/screenshots/credential-capture/${surface}`;
   test.setTimeout(120_000);
   const controlPort = await availablePort();

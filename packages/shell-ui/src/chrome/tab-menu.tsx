@@ -12,15 +12,12 @@ import type { ChromeTab } from "./tabs";
 export { moveToFolderEntries } from "./tab-menu-entries";
 
 /**
- * The right-click menu of one live tab, declared once for both layouts: the
- * sidebar's rows (components/TabList.tsx) and the strip's tabs
- * (components/TabStrip.tsx) open the same entries, so pinning, favoriting,
- * moving to a folder, duplicating, splitting and closing can never be
- * available in one layout and missing from the other. The sidebar keeps
- * its own multi-selection and pin/folder menus, which have no strip
- * equivalent; a single tab's menu is this — on a desk, with the desk's own
- * entries first (components/desk/DeskSidebarControls.tsx: deskTabEntries)
- * and TabMenuOptions.desk.
+ * The right-click menu of one live tab: pinning, favoriting, moving to a
+ * folder, duplicating, splitting and closing, declared once. The sidebar
+ * keeps its own multi-selection and pin/folder menus; a single tab's menu
+ * is this — on a desk, with the desk's own entries first
+ * (components/desk/DeskSidebarControls.tsx: deskTabEntries) and
+ * TabMenuOptions.desk.
  */
 
 /** The active Space's folders, off the shelf snapshot. */

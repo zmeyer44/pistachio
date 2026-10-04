@@ -1,11 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { shellReady } from "./windows";
+import { launchApp } from "./app";
 
 /**
  * The update flow against a local release feed: a `latest-mac.yml` naming a
@@ -13,20 +10,8 @@ import { shellReady } from "./windows";
  * electron-updater only verifies the archive at install time, so the check
  * and the download are exercised end to end without a real build. The pill
  * in the chrome and the About page are the two places the person acts from.
+ * (A run with no feed at all is settings.spec.ts's: About says so.)
  */
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", executableSuffix),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
 
 const VERSION = "99.0.0";
 const ARCHIVE = `Pistachio-${VERSION}-arm64-mac.zip`;
@@ -67,20 +52,10 @@ async function serveFeed(): Promise<{ server: Server; url: string; requests: str
   return { server, url: `http://127.0.0.1:${address.port}/`, requests };
 }
 
-test("an available update is offered in the chrome and downloaded only on request", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-updates-"));
-  // Skip the first-run wizard so the chrome is up.
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ onboarding: { completed: true } }));
+test("an available update is offered in the chrome and downloaded only on request", { tag: ["@settings"] }, async () => {
   const feed = await serveFeed();
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData, PISTACHIO_UPDATE_FEED: feed.url },
-  });
+  // Skip the first-run wizard so the chrome is up.
+  const { app } = await launchApp({ settings: { onboarding: { completed: true } }, env: { PISTACHIO_UPDATE_FEED: feed.url }, name: "updates" });
   try {
     const shell = await shellReady(app);
 
@@ -108,28 +83,5 @@ test("an available update is offered in the chrome and downloaded only on reques
   } finally {
     await app.close();
     feed.server.close();
-  }
-});
-
-test("a dev run without a feed says updates are for the installed app", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-updates-dev-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ onboarding: { completed: true } }));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData, PISTACHIO_UPDATE_FEED: "" },
-  });
-  try {
-    const shell = await shellReady(app);
-    await expect(shell.getByTestId("update-pill")).toHaveCount(0);
-    await shell.keyboard.press("Meta+,");
-    const page = shell.getByTestId("settings-page");
-    await page.getByRole("button", { name: "About", exact: true }).click();
-    await expect(page.getByText("Updates apply to the installed app")).toBeVisible();
-  } finally {
-    await app.close();
   }
 });

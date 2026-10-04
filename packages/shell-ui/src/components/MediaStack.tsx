@@ -865,15 +865,13 @@ export function MediaStack() {
   const footerMenuOpen = useAppStore((state) => state.footerMenusOpen > 0);
   // Likewise anything that paints over the sidebar itself: the address bar's
   // window-wide veil, the tab switcher, a context menu (it opens at the
-  // pointer, the sidebar's rows included), the footer's status card, and the
-  // first-run wizard. A modal over the PAGE — settings, a Glance, a site's
+  // pointer, the sidebar's rows included), and the first-run wizard. A modal over the PAGE — settings, a Glance, a site's
   // permission prompt — leaves the sidebar alone, so the video plays on.
   const sidebarCovered = useAppStore(
     (state) =>
       state.overlay === "url" ||
       state.overlay === "tab-switcher" ||
       state.overlay === "context-menu" ||
-      state.overlay === "status" ||
       state.onboardingOpen,
   );
   const [hoveredVideoTabId, setHoveredVideoTabId] = useState<string | null>(

@@ -5,8 +5,7 @@
  * "New tab" row becomes a pin, a pin dragged into a folder joins it, a pin
  * dropped on the grid becomes a favorite, a favorite dragged into the list
  * becomes a pin or a day tab — and a row with one live page dragged RIGHT
- * over the page offers the same live split preview the strip has
- * (chrome/tab-drag.ts is the strip's own, single-row version of this).
+ * over the page offers a live split preview (chrome/drag-geometry.ts).
  *
  * The grid and the list are separate manifest features rendered into
  * separate regions of the column (chrome/manifest.ts), so neither can own
@@ -423,7 +422,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       if (overDesk(ev)) return { drop: null, overContent: true, zone: null };
       const area = boundsRef.current;
       if (canSplit && area !== null && ev.clientX >= area.x) {
-        return { drop: null, overContent: true, zone: splitZoneAt("y", area, ev) };
+        return { drop: null, overContent: true, zone: splitZoneAt(area, ev) };
       }
       const list = listRef.current;
       if (list === null) return { drop: null, overContent: false, zone: null };
@@ -842,7 +841,7 @@ async function joinGroup(tabIds: string[], groupId: string, index: number): Prom
  * it, so the unit is translated to its first tab's place in that order —
  * counted with the moved tab lifted out, reorderTab's convention — and a
  * split's second tab is then placed straight after the first, re-read from
- * the live order (the strip does the same). Main takes a tab out of its
+ * the live order. Main takes a tab out of its
  * group when it is set down away from it.
  */
 async function reorderDayTabs(tabIds: string[], index: number): Promise<void> {

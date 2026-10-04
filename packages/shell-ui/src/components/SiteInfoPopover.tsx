@@ -1,6 +1,7 @@
-import { ChevronRight, Lock, LockOpen, Minus, Plus, ShieldCheck, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
+import { ChevronRight, Lock, LockOpen, Minus, Plus, ShieldCheck, ShieldOff, SlidersHorizontal, Volume2, VolumeX, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { ShieldsSiteState } from "@pistachio/shell-contracts/shields";
 import {
   BROWSER_PERMISSIONS,
   type BrowserControlsSnapshot,
@@ -19,9 +20,8 @@ import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 
 /**
- * Chrome's "view site information" for the active tab: a button on the
- * active tab in the strip (the strip's omnibox), or beside the bookmark
- * button in the sidebar layout's pane toolbar — and, on click, a compact
+ * Chrome's "view site information" for the active tab: a button beside the
+ * bookmark button in the pane toolbar — and, on click, a compact
  * popover under it with the things a person flips in a hurry: the connection
  * verdict, per-permission switches (microphone, camera, …), this tab's
  * sound, and zoom, with a way into the full Site controls page for
@@ -29,11 +29,9 @@ import { Switch } from "./ui/switch";
  *
  * The popover is a shell overlay (`overlay: "site-info"`): main paints stills
  * of the pages and hides the native tab views for as long as it is up, the
- * same way the tab's context menu works, so a card can hang below the strip
- * over the page at all. It is portalled to the body and positioned fixed
- * from the button's box, so neither the strip's stacking (the active tab is
- * its own z-index context) nor the sidebar column's clipping and transform
- * can catch it.
+ * same way the tab's context menu works, so a card can hang over the page
+ * at all. It is portalled to the body and positioned fixed from the button's
+ * box, so the pane toolbar's own clipping and transform cannot catch it.
  *
  * A switch is two-state like Chrome's: ON allows, OFF blocks. "Ask", the
  * default, reads as off with a note, and "Reset permissions" is the way back
@@ -79,12 +77,11 @@ export function permissionNote(verdict: BrowserPolicyVerdict<PermissionDecision>
   }
 }
 
-export function SiteInfoButton({ variant }: { variant: "tab" | "pane" }) {
+/** What the popover's owner holds: its state, and when it goes — the active tab switched, or the owner went away. */
+function useSiteInfoOwner(): { controls: BrowserControlsSnapshot | null; open: boolean; close(): void } {
   const controls = useAppStore((state) => state.browserControls);
   const open = useAppStore((state) => state.overlay === "site-info");
-  const toggle = useAppStore((state) => state.toggleSiteInfo);
   const close = useAppStore((state) => state.closeSiteInfo);
-  const triggerRef = useRef<HTMLButtonElement>(null);
   // The tab the popover opened for: a switch of the active tab closes it,
   // since every row would otherwise silently start describing another site.
   const openedFor = useRef<string | null>(null);
@@ -97,7 +94,7 @@ export function SiteInfoButton({ variant }: { variant: "tab" | "pane" }) {
   useEffect(() => {
     if (!open) openedFor.current = null;
   }, [open]);
-  // This button is going away (the tab lost focus, the layout changed): the
+  // The owner is going away (the tab lost focus, the pane toolbar hid): the
   // popover it owns goes with it.
   useEffect(
     () => () => {
@@ -105,6 +102,23 @@ export function SiteInfoButton({ variant }: { variant: "tab" | "pane" }) {
     },
     [],
   );
+  return { controls, open, close };
+}
+
+/**
+ * The popover hung from another control's button: a desk window's ⋯, whose
+ * menu's "Site information" opened it (desk/DeskWindow.tsx) — a desk has no
+ * pane toolbar. Mounted by the active tab's window while the popover is up.
+ */
+export function SiteInfoFrom({ triggerRef, align }: { triggerRef: React.RefObject<HTMLButtonElement | null>; align: "start" | "end" }) {
+  const { controls, open, close } = useSiteInfoOwner();
+  return open && controls !== null ? <SiteInfoPopover controls={controls} triggerRef={triggerRef} align={align} onClose={close} /> : null;
+}
+
+export function SiteInfoButton({ variant }: { variant: "tab" | "pane" }) {
+  const { controls, open, close } = useSiteInfoOwner();
+  const toggle = useAppStore((state) => state.toggleSiteInfo);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const pending = controls === null ? 0 : controls.pendingPermissions.length;
   const attention = pending > 0 || (controls !== null && controls.tabId !== null && !controls.secure);
@@ -173,27 +187,34 @@ function SiteInfoPopover({
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
 
-  // Under the button, on its aligned edge, kept inside the window.
-  // Re-measured on resize: the strip and the pane toolbar reflow with the
-  // window and the button moves with them.
+  // Prefer below the button, but keep the whole card inside the viewport:
+  // a desk window's frame can be near its foot. Measure the layout height,
+  // unaffected by the entrance animation, and follow content size changes.
   const place = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect === undefined) return;
+    const panel = panelRef.current;
+    if (rect === undefined || panel === null) return;
     const left = align === "start" ? rect.left - 4 : rect.right + 4 - POPOVER_W;
-    setPosition({
-      top: rect.bottom + GAP,
+    const next = {
+      top: Math.max(EDGE, Math.min(rect.bottom + GAP, window.innerHeight - panel.offsetHeight - EDGE)),
       left: Math.max(EDGE, Math.min(left, window.innerWidth - POPOVER_W - EDGE)),
-    });
+    };
+    setPosition((current) => current?.top === next.top && current.left === next.left ? current : next);
   }, [triggerRef, align]);
   useLayoutEffect(() => {
     place();
+    const observer = new ResizeObserver(place);
+    if (panelRef.current !== null) observer.observe(panelRef.current);
     window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
   }, [place]);
 
   // Focus lands in the panel so Escape and Tab work from the start; Escape
   // hands it back to the button. Capture-phase, so the page's own Escape
-  // handlers (the tab strip's, say) stay out of it.
+  // handlers (the tab list's, say) stay out of it.
   useEffect(() => {
     panelRef.current?.focus({ preventScroll: true });
     const trigger = triggerRef.current;
@@ -241,10 +262,10 @@ function SiteInfoPopover({
       data-testid="site-info-popover"
       tabIndex={-1}
       className={cn(
-        "no-drag fixed z-80 flex flex-col overflow-hidden rounded-lg border border-alpha-400 bg-background-100 text-gray-1000 shadow-modal outline-none",
+        "no-drag fixed z-80 flex flex-col overflow-x-hidden overflow-y-auto rounded-lg border border-alpha-400 bg-background-100 text-gray-1000 shadow-modal outline-none [&>*]:shrink-0",
         ready && position !== null ? "animate-overlay-in" : "pointer-events-none opacity-0",
       )}
-      style={{ top: position?.top ?? 0, left: position?.left ?? 0, width: POPOVER_W }}
+      style={{ top: position?.top ?? 0, left: position?.left ?? 0, width: POPOVER_W, maxHeight: `calc(100dvh - ${String(EDGE * 2)}px)` }}
     >
       <header className="flex items-center gap-2 px-4 pt-3 pb-2">
         <h2 className="min-w-0 flex-1 truncate text-[13.5px] font-semibold tracking-[-0.01em]">{host}</h2>
@@ -278,6 +299,10 @@ function SiteInfoPopover({
               onSelect={openSiteControls}
             />
           </div>
+
+          {controls.shields !== null && controls.shields.siteKey !== "" ? (
+            <ShieldsRows shields={controls.shields} locked={locked} onToggle={(enabled) => void run({ type: "setShields", enabled })} />
+          ) : null}
 
           <Rule />
 
@@ -417,6 +442,59 @@ function SiteInfoPopover({
       )}
     </div>,
     document.body,
+  );
+}
+
+/** The page's ad and tracker protection: the switch, and what it stopped here (docs/shields.md §6). */
+export function shieldsNote(shields: ShieldsSiteState): string {
+  if (shields.globallyOff) return "Off for every site in Settings";
+  if (shields.exception !== null) return shields.exception === shields.siteKey ? "Down for this site" : `Down for ${shields.exception}`;
+  const parts = [shields.blocked === 0 ? "Nothing blocked on this page" : shields.blocked === 1 ? "1 request blocked" : `${String(shields.blocked)} requests blocked`];
+  if (shields.cleaned > 0) parts.push("address cleaned");
+  if (shields.upgraded) parts.push("moved to HTTPS");
+  return parts.join(" · ");
+}
+
+function ShieldsRows({ shields, locked, onToggle }: { shields: ShieldsSiteState; locked: boolean; onToggle(enabled: boolean): void }) {
+  const [open, setOpen] = useState(false);
+  const hosts = shields.active ? shields.blockedHosts : [];
+  return (
+    <>
+      <Rule />
+      <div className="px-2 py-1" data-testid="site-info-shields">
+        <ToggleRow
+          testId="site-info-shields-toggle"
+          icon={shields.active ? <ShieldCheck /> : <ShieldOff />}
+          label="Shields"
+          note={shieldsNote(shields)}
+          checked={shields.active}
+          disabled={locked || shields.globallyOff}
+          onChange={onToggle}
+        />
+        {hosts.length > 0 ? (
+          <div className="pr-2 pb-1 pl-10">
+            <button
+              type="button"
+              aria-expanded={open}
+              onClick={() => setOpen((value) => !value)}
+              className="cursor-pointer text-[11px] text-gray-700 underline-offset-2 hover:text-gray-1000 hover:underline"
+            >
+              {open ? "Hide what was blocked" : "Show what was blocked"}
+            </button>
+            {open ? (
+              <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto" data-testid="site-info-shields-hosts">
+                {hosts.slice(0, 12).map(({ host, count }) => (
+                  <li key={host} className="flex items-center gap-2 text-[11px] text-gray-900">
+                    <span className="min-w-0 flex-1 truncate font-mono">{host}</span>
+                    <span className="shrink-0 tabular-nums text-gray-700">{count}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </>
   );
 }
 

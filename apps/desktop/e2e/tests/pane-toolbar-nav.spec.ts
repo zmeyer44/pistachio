@@ -1,47 +1,19 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { shellPage } from "./windows";
+import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell, revealPaneToolbar, snapshot } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/pane-toolbar-nav");
+const FOLDER = "pane-toolbar";
+const LONG_TITLE = "A considerably longer page title that needs more room than the minimum allows";
 
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function captureShell(app: ElectronApplication, filename: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
+/** Pages titled by their path; /long wears a title wider than the button's minimum. */
 async function startPages(): Promise<{ server: Server; origin: string }> {
   const server = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(`<!doctype html><title>Page ${request.url ?? ""}</title><p>${request.url ?? ""}</p>`);
+    if (request.url === "/long") response.end(`<!doctype html><title>${LONG_TITLE}</title><p>long</p>`);
+    else response.end(`<!doctype html><title>Page ${request.url ?? ""}</title><p>${request.url ?? ""}</p>`);
   });
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
@@ -52,40 +24,12 @@ async function startPages(): Promise<{ server: Server; origin: string }> {
   return { server, origin: `http://127.0.0.1:${String(address.port)}` };
 }
 
-/** The pane toolbar, revealed the Playwright way (see pane-toolbar-unsplit.spec.ts). */
-async function revealPaneToolbar(shell: Page): Promise<void> {
-  await expect(async () => {
-    const trigger = shell.getByTestId("pane-toolbar-trigger");
-    if ((await trigger.count()) > 0) await trigger.dispatchEvent("pointermove");
-    await expect(shell.getByTestId("pane-toolbar")).not.toHaveAttribute("data-hidden", "", { timeout: 1_000 });
-  }).toPass({ timeout: 15_000 });
-  await shell.getByTestId("browser-surface").evaluate(async (surface) => {
-    await Promise.all(surface.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined)));
-  });
-}
-
 function cluster(shell: Page, tabId: string) {
   return shell.locator(`[data-testid="pane-toolbar-cluster"][data-tab-id="${tabId}"]`);
 }
 
-async function snapshotOf(shell: Page) {
-  return shell.evaluate(async () => (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot());
-}
-
-async function launch(sidebar: "pinned" | "compact") {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-pane-toolbar-nav-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar } }));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
-  const shell = await shellPage(app);
-  await shell.waitForLoadState("domcontentloaded");
-  return { app, shell };
+async function urlOf(shell: Page, tabId: string): Promise<string | undefined> {
+  return (await snapshot(shell)).tabs.find((tab) => tab.id === tabId)?.url;
 }
 
 /** Opens `first`, then navigates the same tab to `second`, so it has a back entry. */
@@ -96,37 +40,72 @@ async function tabWithHistory(shell: Page, first: string, second: string): Promi
     return (await api.getSnapshot()).activeTabId;
   }, first);
   if (tabId === null) throw new Error("no active tab");
-  await expect.poll(async () => (await snapshotOf(shell)).tabs.find((t) => t.id === tabId)?.url).toBe(first);
+  await expect.poll(() => urlOf(shell, tabId)).toBe(first);
   await shell.evaluate(
     ([id, url]) => (window as unknown as { pistachio: PistachioApi }).pistachio.navigate(id, url),
     [tabId, second] as const,
   );
-  await expect.poll(async () => (await snapshotOf(shell)).tabs.find((t) => t.id === tabId)?.canGoBack).toBe(true);
+  await expect.poll(async () => (await snapshot(shell)).tabs.find((t) => t.id === tabId)?.canGoBack).toBe(true);
   return tabId;
 }
 
-test("a pinned sidebar over a single pane leaves navigation to the sidebar", async () => {
-  const { server, origin } = await startPages();
-  const { app, shell } = await launch("pinned");
-  try {
-    const tabId = await tabWithHistory(shell, `${origin}/a`, `${origin}/b`);
-    await revealPaneToolbar(shell);
-    await expect(cluster(shell, tabId).getByTestId("pane-toolbar-close")).toBeVisible();
-    await expect(cluster(shell, tabId).getByTestId("pane-toolbar-back")).toHaveCount(0);
-    await captureShell(app, "01-pinned-single.png");
-  } finally {
-    await app.close();
-    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-  }
-});
-
-test("a compact sidebar puts back, forward and reload on the pane toolbar", async () => {
-  const { server, origin } = await startPages();
-  const { app, shell } = await launch("compact");
-  try {
-    const tabId = await tabWithHistory(shell, `${origin}/a`, `${origin}/b`);
+/** The cluster's and its title button's boxes, read while the row is up. */
+async function titleGeometry(shell: Page, tabId: string): Promise<{ cluster: number; title: number; titleRight: number; closeRight: number; clusterRight: number }> {
+  let geometry: { cluster: number; title: number; titleRight: number; closeRight: number; clusterRight: number } | undefined;
+  await expect(async () => {
     await revealPaneToolbar(shell);
     const row = cluster(shell, tabId);
+    const clusterBox = await row.boundingBox({ timeout: 1_000 });
+    const titleBox = await row.getByTestId("pane-toolbar-title").boundingBox({ timeout: 1_000 });
+    const closeBox = await row.getByTestId("pane-toolbar-close").boundingBox({ timeout: 1_000 });
+    if (clusterBox === null || titleBox === null || closeBox === null) throw new Error("pane toolbar geometry is unavailable");
+    geometry = {
+      cluster: clusterBox.width,
+      title: titleBox.width,
+      titleRight: titleBox.x + titleBox.width,
+      closeRight: closeBox.x + closeBox.width,
+      clusterRight: clusterBox.x + clusterBox.width,
+    };
+  }).toPass({ timeout: 20_000 });
+  if (geometry === undefined) throw new Error("pane toolbar geometry is unavailable");
+  return geometry;
+}
+
+// One window, pinned: the pane toolbar over a single pane, the same pane with
+// the sidebar compact (⌘S), a split's two toolbars, and last — it resizes
+// the window — how the title button gives way.
+test.describe.serial("the pane toolbar", { tag: ["@sidebar", "@split"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let app: ElectronApplication;
+  let shell: Page;
+  let server: Server;
+  let origin: string;
+  let left: string;
+
+  test.beforeAll(async () => {
+    ({ server, origin } = await startPages());
+    ({ app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, name: "pane-toolbar" }));
+    shell = await shellReady(app);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+    await new Promise<void>((resolveClose) => server?.close(() => resolveClose()));
+  });
+
+  test("a pinned sidebar over a single pane leaves navigation to the sidebar", async () => {
+    left = await tabWithHistory(shell, `${origin}/left-1`, `${origin}/left-2`);
+    await revealPaneToolbar(shell);
+    await expect(cluster(shell, left).getByTestId("pane-toolbar-close")).toBeVisible();
+    await expect(cluster(shell, left).getByTestId("pane-toolbar-back")).toHaveCount(0);
+    await captureShell(app, FOLDER, "01-pinned-single.png");
+  });
+
+  test("a compact sidebar puts back, forward and reload on the pane toolbar", async () => {
+    await shell.keyboard.press("Meta+s");
+    await expect(shell.getByTestId("sidebar-edge")).toBeVisible();
+    await revealPaneToolbar(shell);
+    const row = cluster(shell, left);
     await expect(row.getByTestId("pane-toolbar-back")).toBeVisible();
     await expect(row.getByTestId("pane-toolbar-forward")).toHaveAttribute("aria-disabled", "true");
     await expect(row.getByTestId("pane-toolbar-reload")).toBeVisible();
@@ -135,43 +114,79 @@ test("a compact sidebar puts back, forward and reload on the pane toolbar", asyn
     const title = await row.getByTestId("pane-toolbar-title").boundingBox();
     if (back === null || title === null) throw new Error("pane toolbar geometry is unavailable");
     expect(back.x).toBeLessThan(title.x);
-    await captureShell(app, "02-compact.png");
+    await captureShell(app, FOLDER, "02-compact.png");
 
     await row.getByTestId("pane-toolbar-back").click();
-    await expect.poll(async () => (await snapshotOf(shell)).tabs.find((t) => t.id === tabId)?.url).toBe(`${origin}/a`);
+    await expect.poll(() => urlOf(shell, left)).toBe(`${origin}/left-1`);
     await expect(row.getByTestId("pane-toolbar-forward")).not.toHaveAttribute("aria-disabled", "true");
     await row.getByTestId("pane-toolbar-forward").click();
-    await expect.poll(async () => (await snapshotOf(shell)).tabs.find((t) => t.id === tabId)?.url).toBe(`${origin}/b`);
-  } finally {
-    await app.close();
-    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-  }
-});
+    await expect.poll(() => urlOf(shell, left)).toBe(`${origin}/left-2`);
 
-test("a split view gives each pane its own navigation, bound to that pane", async () => {
-  const { server, origin } = await startPages();
-  const { app, shell } = await launch("pinned");
-  try {
-    const left = await tabWithHistory(shell, `${origin}/left-1`, `${origin}/left-2`);
+    // Pinned again for the rest.
+    await shell.keyboard.press("Meta+s");
+    await expect(shell.getByTestId("sidebar-chrome")).toBeVisible();
+  });
+
+  test("a split view gives each pane its own navigation, bound to that pane", async () => {
     const right = await tabWithHistory(shell, `${origin}/right-1`, `${origin}/right-2`);
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.splitWith(tabId, "right"), left);
     await expect(shell.getByTestId("secondary-pane")).toBeVisible();
     await revealPaneToolbar(shell);
     await expect(cluster(shell, left).getByTestId("pane-toolbar-back")).toBeVisible();
     await expect(cluster(shell, right).getByTestId("pane-toolbar-back")).toBeVisible();
-    await captureShell(app, "03-split.png");
+    await captureShell(app, FOLDER, "03-split.png");
 
     // Back on one pane moves that pane's tab only.
     await revealPaneToolbar(shell);
-    const active = (await snapshotOf(shell)).activeTabId;
+    const active = (await snapshot(shell)).activeTabId;
     const other = active === left ? right : left;
     await cluster(shell, other).getByTestId("pane-toolbar-back").click();
-    await expect
-      .poll(async () => (await snapshotOf(shell)).tabs.find((t) => t.id === other)?.url)
-      .toBe(other === left ? `${origin}/left-1` : `${origin}/right-1`);
-    expect((await snapshotOf(shell)).tabs.find((t) => t.id === active)?.url).toBe(active === left ? `${origin}/left-2` : `${origin}/right-2`);
-  } finally {
-    await app.close();
-    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-  }
+    await expect.poll(() => urlOf(shell, other)).toBe(other === left ? `${origin}/left-1` : `${origin}/right-1`);
+    expect(await urlOf(shell, active!)).toBe(active === left ? `${origin}/left-2` : `${origin}/right-2`);
+
+    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.setSplit("single"));
+    await expect(shell.getByTestId("secondary-pane")).toHaveCount(0);
+  });
+
+  test("the pane toolbar's title button is as wide as its title, not the pane", async () => {
+    const shortId = (await snapshot(shell)).activeTabId;
+    if (shortId === null) throw new Error("no active tab");
+
+    // A short title: the button rests at its minimum, well short of the pane,
+    // and close still sits at the pane's far edge.
+    const short = await titleGeometry(shell, shortId);
+    await captureShell(app, FOLDER, "04-short-title.png");
+    expect(short.title).toBeGreaterThanOrEqual(160);
+    expect(short.title).toBeLessThan(short.cluster / 2);
+    expect(short.closeRight).toBeCloseTo(short.clusterRight, 0);
+
+    // A long title widens the button past its minimum.
+    const longId = await shell.evaluate(async (url) => {
+      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
+      await api.createTab(url);
+      return (await api.getSnapshot()).activeTabId;
+    }, `${origin}/long`);
+    if (longId === null) throw new Error("no active tab");
+    await expect(cluster(shell, longId)).toContainText(LONG_TITLE, { timeout: 15_000 });
+    const long = await titleGeometry(shell, longId);
+    await captureShell(app, FOLDER, "05-long-title.png");
+    expect(long.title).toBeGreaterThan(short.title + 100);
+    expect(long.title).toBeLessThan(long.cluster);
+
+    // In a narrow pane the button gives way (the title truncates) instead of
+    // pushing close off the pane.
+    await shell.evaluate(
+      (tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.splitWith(tabId, "right"),
+      shortId,
+    );
+    await expect(shell.getByTestId("secondary-pane")).toBeVisible();
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setSize(820, 700);
+    });
+    await expect.poll(async () => (await titleGeometry(shell, longId)).cluster).toBeLessThan(400);
+    const narrow = await titleGeometry(shell, longId);
+    await captureShell(app, FOLDER, "06-narrow-split.png");
+    expect(narrow.closeRight).toBeLessThanOrEqual(narrow.clusterRight + 0.5);
+    expect(narrow.titleRight).toBeLessThan(narrow.clusterRight);
+  });
 });

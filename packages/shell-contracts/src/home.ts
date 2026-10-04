@@ -9,7 +9,7 @@
  * Chromium, so typing into its search is local, and "now" and "here" are the
  * person's rather than the worker's.
  *
- * What the hosts still own is the TAB: an entry in the strip with its own
+ * What the hosts still own is the TAB: an entry in the tab list with its own
  * back/forward history. The desktop loads the placeholder document below from
  * its `pistachio://` protocol and keeps the view hidden; the cloud host has no
  * such protocol and keeps the page on `about:blank`, reporting the tab under

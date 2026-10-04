@@ -23,8 +23,7 @@ import { nativeApi } from "../api";
  * The sidebar layout is one full-height content row. It begins with the
  * sidebar's persistent column (SidebarColumn). In compact mode its clipped
  * layout slot narrows to the edge trigger and the column translates out with
- * it; after it come the same pieces the top layout has, in the same order:
- * content and console.
+ * it; after it come the content and the console.
  *
  * Pinned and compact are the SAME column in the same place, and the page
  * sits beside it either way: revealing the compact sidebar puts the column
@@ -46,7 +45,7 @@ export function SidebarLayout() {
       className="chrome-container chrome-layout-ground grid h-full w-full grid-rows-[minmax(0,1fr)]"
     >
       <div data-testid="chrome-content-row" className="chrome-layout-ground flex min-h-0 min-w-0">
-        <SidebarColumn layout="sidebar" />
+        <SidebarColumn />
         <ContentArea />
         <AgentConsole />
       </div>
@@ -60,14 +59,13 @@ export function SidebarLayout() {
  * While a tab group's desk is up (docs/desk.md) the column is the desk's
  * dock — pinned, whatever the person's sidebar otherwise is, and either the
  * whole sidebar or a RAIL of its icons (useDeskStore's `rail`, ⌘S), the same
- * chrome drawn narrow (SidebarChrome's rail). The top layout has no sidebar
- * of its own, and shows this column only while a desk is up. The desk waits
- * for the column (useDeskStore's `opening`, released here once the slot has
- * settled at its desk width), so the page it lifts off is already laid out
- * where it will stand; leaving, the desk gives the row back to panes first
- * and the column goes back to what it was beside them.
+ * chrome drawn narrow (SidebarChrome's rail). The desk waits for the
+ * column (useDeskStore's `opening`, released here once the slot has settled
+ * at its desk width), so the page it lifts off is already laid out where it
+ * will stand; leaving, the desk gives the row back to panes first and the
+ * column goes back to what it was beside them.
  */
-export function SidebarColumn({ layout }: { layout: "sidebar" | "top" }) {
+export function SidebarColumn() {
   const pinned = useAppStore((state) => state.settings.layout.sidebar === "pinned");
   const revealed = useAppStore((state) => state.sidebarRevealed);
   const width = useAppStore((state) => state.sidebarWidth);
@@ -75,21 +73,18 @@ export function SidebarColumn({ layout }: { layout: "sidebar" | "top" }) {
   const rail = useDeskStore((state) => state.rail) && desk;
   const opening = useDeskStore((state) => state.opening !== null);
   const slotRef = useRef<HTMLDivElement>(null);
-  const top = layout === "top";
-  const expanded = desk || (!top && (pinned || revealed));
+  const expanded = desk || pinned || revealed;
   const paneWidth = rail ? SIDEBAR_RAIL_W : width;
-  const slotWidth = expanded ? paneWidth : top ? 0 : SIDEBAR_EDGE_W;
+  const slotWidth = expanded ? paneWidth : SIDEBAR_EDGE_W;
   // (A pinned slot has no transition of its own — its width follows a resize drag frame by frame — so the desk's changes run on the compact sidebar's clock.)
   const sliding = useDeskSlide(`${String(desk)}:${String(rail)}`, slotRef);
   useLayoutEffect(
     () =>
-      top
-        ? undefined
-        : nativeApi()?.onSidebarPointerEntered(() => {
-            if (deskHoldsSidebar(useDeskStore.getState())) return;
-            useAppStore.getState().setSidebarRevealed(true);
-          }),
-    [top],
+      nativeApi()?.onSidebarPointerEntered(() => {
+        if (deskHoldsSidebar(useDeskStore.getState())) return;
+        useAppStore.getState().setSidebarRevealed(true);
+      }),
+    [],
   );
   // A desk up, a compact sidebar that was out is not out when it leaves.
   useEffect(() => {
@@ -118,15 +113,13 @@ export function SidebarColumn({ layout }: { layout: "sidebar" | "top" }) {
     // The width it settles at is the one this render set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opening]);
-  // The layout switched while a desk waited: nothing is in its way now.
+  // The column went away while a desk waited: nothing is in its way now.
   useEffect(() => () => useDeskStore.getState().sidebarReady(), []);
-  // The top layout's column is the desk's alone: gone once it has slid away.
-  if (top && !expanded && !sliding) return null;
   return (
     <div
       ref={slotRef}
       data-testid="sidebar-motion-slot"
-      data-compact={!pinned && !desk && !top ? "" : undefined}
+      data-compact={!pinned && !desk ? "" : undefined}
       data-hidden={!expanded ? "" : undefined}
       data-desk={desk ? "" : undefined}
       data-rail={rail ? "" : undefined}
@@ -136,9 +129,9 @@ export function SidebarColumn({ layout }: { layout: "sidebar" | "top" }) {
     >
       {/* (The rail fits its slot: at rest it clips nothing, so a menu from its footer can hang out over the desk.) */}
       <div className={cn("absolute inset-0", rail && !sliding ? "overflow-visible" : "overflow-clip")}>
-        <SidebarPane autoHide={!pinned && !desk && !top} revealed={expanded} rail={rail} lights={!top && !rail} width={paneWidth} slotRef={slotRef} />
+        <SidebarPane autoHide={!pinned && !desk} revealed={expanded} rail={rail} width={paneWidth} slotRef={slotRef} />
       </div>
-      {rail ? <AwayShareNotice /> : !expanded && !top ? <SidebarEdge /> : null}
+      {rail ? <AwayShareNotice /> : !expanded ? <SidebarEdge /> : null}
     </div>
   );
 }
@@ -222,7 +215,6 @@ function SidebarPane({
   autoHide,
   revealed,
   rail,
-  lights,
   width,
   slotRef,
 }: {
@@ -230,8 +222,6 @@ function SidebarPane({
   revealed: boolean;
   /** Drawn as a rail of its icons (a desk's). */
   rail: boolean;
-  /** The window's buttons sit over its top (the sidebar layout): its toolbar keeps clear of them. */
-  lights: boolean;
   width: number;
   slotRef: RefObject<HTMLDivElement | null>;
 }) {
@@ -366,7 +356,7 @@ function SidebarPane({
       onPointerEnter={cancelCheck}
       onPointerLeave={scheduleCheck}
     >
-      <SidebarChrome rail={rail} lights={lights} />
+      <SidebarChrome rail={rail} />
       {rail ? null : (
         <ResizeHandle
           side="right"

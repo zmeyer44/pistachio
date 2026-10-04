@@ -1,8 +1,8 @@
 /**
- * The action registry: every chrome BUTTON, declared once. The strip's
- * trailing cluster, the sidebar's toolbar and footer, and the keyboard
- * shortcuts all read label, icon, hint, and on-state from
- * here, so a control cannot drift between the places it appears.
+ * The action registry: every chrome BUTTON, declared once. The sidebar's
+ * toolbar, its footer menu, the command palette, and the keyboard shortcuts
+ * all read label, icon, hint, and on-state from here, so a control cannot
+ * drift between the places it appears.
  *
  * An action sees the world through an ActionContext assembled by `useAction`
  * from the shell host (state and `run`) and this renderer's store. Anything
@@ -62,7 +62,6 @@ import {
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
 import { arrangeDesk, toggleDeskOfActiveTab } from "../lib/desk/open";
-import { useDeskStore } from "../lib/desk/store";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
 import { useSurface } from "../surface";
 import { useShell, type ShellHost } from "./shell-host";
@@ -397,8 +396,7 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
     icon: ({ settings }) =>
       settings.layout.sidebar === "pinned" ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />,
     shortcutId: "toggleSidebarPinned",
-    // (On a desk, in either layout, it switches the desk's sidebar between whole and rail: shell-host.)
-    enabled: ({ settings }) => settings.layout.mode === "sidebar" || useDeskStore.getState().groupId !== null,
+    // (On a desk it switches the desk's sidebar between whole and rail: shell-host.)
     run: ({ run }) => run({ type: "toggleSidebarPinned" }),
   },
   togglePin: {
@@ -428,7 +426,7 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
       void store.sidebarCommand({ type: "pinTab", tabId: tab.id, folderId: null, index: 10_000 });
       const bookmarkable = tab.kind === "human" && /^https?:/i.test(tab.url);
       store.showNotice(
-        ctx.settings.layout.mode === "top" ? "Pinned (see the address bar)" : "Pinned to the sidebar",
+        "Pinned to the sidebar",
         bookmarkable
           ? {
               tone: "success",
@@ -650,16 +648,8 @@ export function chromeIconButtonClass(state: { enabled: boolean; pressed: boolea
   );
 }
 
-/** The shared 24px button for the strip and sidebar chrome. */
-export function ActionButton({
-  id,
-  variant,
-  testId,
-}: {
-  id: ChromeActionId;
-  variant: "strip" | "sidebar";
-  testId?: string;
-}) {
+/** The shared 24px button for the sidebar chrome. */
+export function ActionButton({ id, testId }: { id: ChromeActionId; testId?: string }) {
   const bound = useAction(id);
   const { enabled, run } = bound;
   // `aria-pressed` only where there is an on-state: its mere presence makes a
@@ -677,7 +667,6 @@ export function ActionButton({
       aria-pressed={active}
       aria-disabled={enabled ? undefined : true}
       data-testid={testId}
-      data-variant={variant}
       onClick={run}
       className={chromeIconButtonClass({ enabled, pressed })}
     >

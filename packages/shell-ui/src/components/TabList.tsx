@@ -89,7 +89,7 @@ import { useAgentWorkingIn } from "./useAgentTab";
  * Right-click opens a context menu on any row (components/ContextMenu.tsx)
  * with the same operations, for the person who does not drag.
  *
- * Three boxes, as the strip's list had: the scroller, the positioned block
+ * Three boxes: the scroller, the positioned block
  * inside it that rows are laid out against (the drag reads offsets against
  * it, at any scroll offset), and the rows. The scroller opts out of the
  * column's window-drag region as a whole, so a press on its scrollbar
@@ -1345,7 +1345,7 @@ export function TabList() {
       }
       // Pressing the tab you are already on is an address press, not a
       // re-selection that would do nothing: the sidebar's row stands in for
-      // the omnibox the way the top layout's active tab does (ActiveTabLabel).
+      // the omnibox.
       // A modified click never reaches here — selectForBulk keeps range and
       // additive presses for bulk selection.
       if (tabs.find((candidate) => candidate.id === tabId)?.active === true) {
@@ -1561,8 +1561,7 @@ export function TabList() {
     );
   };
 
-  // One live tab's menu is the layouts' shared one (chrome/tab-menu.tsx), so
-  // the strip's tabs offer exactly these entries too.
+  // One live tab's menu is the chrome's shared one (chrome/tab-menu.tsx).
   // A group made here is named by the host from its tabs; the name field opens only when it is not.
   const trackNewGroup = useNewGroupNaming(setRenaming);
   const deskUp = useDeskStore((s) => s.groupId !== null);

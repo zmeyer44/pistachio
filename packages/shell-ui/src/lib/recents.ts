@@ -1,6 +1,6 @@
 /**
  * Recently visited sites, kept per renderer in localStorage: the address
- * modal's chips row. Main keeps no history, so the strip records what the
+ * modal's chips row. Main keeps no history, so the shell records what the
  * snapshot shows it — one entry per host, latest visit first.
  */
 

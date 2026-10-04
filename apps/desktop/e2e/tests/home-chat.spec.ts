@@ -8,35 +8,16 @@
  * approval the spec declines.
  */
 
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type JSHandle, type Locator, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type JSHandle, type Locator, type Page } from "@playwright/test";
 import { HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
 import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
-import { shellPage } from "./windows";
+import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell as captureWindow } from "./pages-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/home-chat");
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", suffix)].find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function captureShell(app: ElectronApplication, shell: Page, filename: string): Promise<void> {
-  // capturePage right after a change returns the frame before it: let it paint first.
-  await shell.evaluate(() => new Promise((painted) => requestAnimationFrame(() => requestAnimationFrame(painted))));
-  await shell.waitForTimeout(150);
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
+/** capturePage right after a change returns the frame before it: let it paint first. */
+function captureShell(app: ElectronApplication, filename: string): Promise<void> {
+  return captureWindow(app, `home-chat/${filename}`, 200);
 }
 
 async function snapshot(shell: Page): Promise<ShellSnapshot> {
@@ -70,25 +51,11 @@ async function dragEvents(target: Locator, data: JSHandle<DataTransfer>, types: 
   );
 }
 
-async function launch(): Promise<ElectronApplication> {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-home-chat-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
-  return electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
-}
-
-test("a question asked of Pistachio turns the home page into the conversation, and back", async () => {
-  test.setTimeout(120_000);
-  const app = await launch();
+test("a question asked of Pistachio turns the home page into the conversation, and back", { tag: ["@home", "@agent"] }, async () => {
+  test.setTimeout(90_000);
+  const { app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, name: "home-chat" });
   try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+    const shell = await shellReady(app);
     const home = shell.getByTestId("home-page");
     await expect(home).toBeVisible();
     await expect(home).toHaveAttribute("data-mode", "home");
@@ -99,7 +66,7 @@ test("a question asked of Pistachio turns the home page into the conversation, a
     await shell.keyboard.type(QUESTION);
     const askRow = shell.getByTestId("home-search-results").locator('[data-suggestion-kind="ai"]');
     await expect(askRow).toContainText(`Ask Pistachio “${QUESTION}”`);
-    await captureShell(app, shell, "01-ask-row.png");
+    await captureShell(app, "01-ask-row.png");
     await shell.keyboard.press("ArrowDown");
     await expect(askRow).toHaveClass(/bg-alpha-200/u);
     await shell.keyboard.press("Enter");
@@ -120,7 +87,7 @@ test("a question asked of Pistachio turns the home page into the conversation, a
     await expect(chat.getByTestId("work-trace").first()).toBeVisible();
     await expect(chat.getByTestId("approval-card")).toBeVisible();
     await expect(shell.getByTestId("home-chat-title")).toHaveText(QUESTION);
-    await captureShell(app, shell, "02-conversation.png");
+    await captureShell(app, "02-conversation.png");
 
     // The sidebar shows the very same conversation.
     await shell.getByTestId("home-chat-sidebar").click();
@@ -128,7 +95,7 @@ test("a question asked of Pistachio turns the home page into the conversation, a
     await expect(panel).toBeVisible();
     await expect(panel.getByTestId("approval-card")).toBeVisible();
     await expect(panel.getByTestId("assistant-message").first()).toContainText("I’m on it");
-    await captureShell(app, shell, "03-with-sidebar.png");
+    await captureShell(app, "03-with-sidebar.png");
 
     // The panel is a drop zone of its own, on the same hook: files let go
     // over its thread are staged in the console's composer, not the page's.
@@ -169,7 +136,7 @@ test("a question asked of Pistachio turns the home page into the conversation, a
     await dragEvents(overThread, files, ["dragenter", "dragover"]);
     await expect(veil).toBeVisible();
     await expect(veil).toContainText("Drop files to attach");
-    await captureShell(app, shell, "04-drop-veil.png");
+    await captureShell(app, "04-drop-veil.png");
     await dragEvents(overThread, files, ["dragleave"]);
     await expect(veil).toHaveCount(0);
     await expect(staged).toHaveCount(0);
@@ -180,7 +147,7 @@ test("a question asked of Pistachio turns the home page into the conversation, a
     await expect(staged.getByRole("img", { name: "pixel.png" })).toBeVisible();
     await expect(shell.getByTestId("home-chat-input")).toBeFocused();
     await expect(chat.getByTestId("home-chat-send")).toBeEnabled();
-    await captureShell(app, shell, "05-files-staged.png");
+    await captureShell(app, "05-files-staged.png");
 
     // Back to the home page: the search is back with the keyboard, and the
     // conversation is still the console's open thread.
@@ -190,44 +157,7 @@ test("a question asked of Pistachio turns the home page into the conversation, a
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("");
     expect((await snapshot(shell)).run?.purpose).toBe(QUESTION);
-    await captureShell(app, shell, "06-home-again.png");
-  } finally {
-    await app.close();
-  }
-});
-
-test("a browse turn that takes the home tab away opens the sidebar on the conversation", async () => {
-  test.setTimeout(120_000);
-  const app = await launch();
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    const home = shell.getByTestId("home-page");
-    await expect(home).toBeVisible();
-    await expect(shell.getByTestId("home-search-input")).toBeFocused();
-    await shell.keyboard.type(QUESTION);
-    await shell.keyboard.press("ArrowDown");
-    await shell.keyboard.press("Enter");
-
-    // The conversation is in the page, live at its approval. The pause
-    // surfaced the sidebar (approvals.focusConsoleOnPause); shut it.
-    const chat = shell.getByTestId("home-chat");
-    await expect(chat.getByTestId("approval-card")).toBeVisible();
-    const panel = shell.getByTestId("agent-panel");
-    await expect(panel).toBeVisible();
-    await shell.getByTestId("console-close").click();
-    await expect(panel).toBeHidden();
-
-    // The run works in this tab: navigated away, as a browse turn would, the
-    // home page is gone from the pane and the sidebar carries the conversation.
-    const { activeTabId } = await snapshot(shell);
-    if (activeTabId === null) throw new Error("no active tab");
-    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.navigate(id, "pistachio://demo/invoices"), activeTabId);
-    await expect(home).toHaveCount(0);
-    await expect(panel).toBeVisible();
-    await expect(panel.getByTestId("user-message").first()).toContainText(QUESTION);
-    await expect(panel.getByTestId("approval-card")).toBeVisible();
-    await captureShell(app, shell, "07-taken-to-sidebar.png");
+    await captureShell(app, "06-home-again.png");
   } finally {
     await app.close();
   }

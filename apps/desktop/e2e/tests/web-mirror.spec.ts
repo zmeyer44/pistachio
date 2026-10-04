@@ -25,7 +25,7 @@ async function openTab(page: Page, url: string): Promise<void> {
   await address.press("Enter");
 }
 
-test("the web app mirrors a cloud tab's document and takes typed input", async ({ page }) => {
+test("the web app mirrors a cloud tab's document and takes typed input", { tag: ["@web"] }, async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(20_000);
   const errors: string[] = [];

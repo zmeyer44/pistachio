@@ -4,12 +4,14 @@ import {
   lazy,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import { AudioLines, Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, X } from "lucide-react";
 import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
@@ -30,12 +32,32 @@ import { displayHost } from "../../lib/url";
 import { CONTEXT_MENU_W, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { Favicon } from "../Favicon";
 import { PanePlaceholder } from "../PanePlaceholder";
+import { SiteInfoFrom } from "../SiteInfoPopover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { HomePage } from "../home/HomePage";
 import { BriefPage } from "../reports/BriefPage";
-import { CHROME_CARD_TOP, CHROME_INSETS, MASK_CARD_TOP, MASK_INSETS, type DeskEngine, type DeskWindowView } from "./desk-engine";
+import { CHROME_CARD_TOP, CHROME_INSETS, MASK_CARD_TOP, MASK_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
+import { usePageEntries } from "./page-entries";
 import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
 
 const NotesPage = lazy(() => import("../notes/NotesPage").then((m) => ({ default: m.NotesPage })));
+
+/** A frame button's tooltip opens after this long, as the Bar's do. */
+const TIP_DELAY_MS = 350;
+/** The band under the frame's buttons stays a cover this long after a tooltip closes: moving from one button to the next, the next's does not wait. */
+const TIP_LINGER_MS = 200;
+/** The band under the frame's buttons where their tooltips appear, and how far past the row's ends they may reach. */
+const TIP_BAND_H = 40;
+const TIP_BAND_REACH = 100;
+
+/** A tooltip under one of the frame's buttons (as the Bar's BarTip): open as Base UI says, seen once no live page is under it. */
+interface FrameTip {
+  open: boolean;
+  shown: boolean;
+  /** Not while the frame's menu or the site's card hangs from it, nor while the window is in hand or on its way. */
+  disabled: boolean;
+  onOpenChange: (open: boolean) => void;
+}
 
 /** Whether a pointer event holds the desk's grab key. */
 export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: boolean }, grab: DeskGrab): boolean {
@@ -53,7 +75,9 @@ export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: 
  * or the shell's own drawing for a shell page (home, the brief, a note).
  *
  * Its controls are fill, collapse (−, into its icon in the dock) and close
- * (×); what is wanted less often — masking, minimizing, a document's own
+ * (×), each named in a tooltip under it; what is wanted less often — the page's back, forward and reload,
+ * reader view, bookmark, pin and site information (the pane toolbar's, off
+ * the desk: page-entries.tsx), masking, minimizing, a document's own
  * actions — is on the frame's menu (⋯, or a right-click on the frame).
  *
  * Masked (DeskMask), the window is a region of its page, shown alone and
@@ -173,6 +197,39 @@ export const DeskWindow = memo(function DeskWindow({
   const menu = useContextMenu();
   /** Whether the frame's menu was up as the ⋯ was pressed: the press put it away, and the click is not to bring it back. */
   const menuWasUp = useRef(false);
+  const pageEntries = usePageEntries();
+  /** The ⋯: the site's information, chosen from the menu, hangs from it. */
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const siteInfoHere = useAppStore((state) => state.overlay === "site-info" && state.snapshot?.activeTabId === tabId);
+
+  // A button's tooltip is open: the band under the frame's buttons, where it
+  // appears over the window's own page, is a cover, and stays one a moment
+  // after it closes (the Bar's rule).
+  const controlsRef = useRef<HTMLSpanElement>(null);
+  const [tip, setTip] = useState<string | null>(null);
+  const tipsOff = menu.isOpen || siteInfoHere || view.carried || view.flight !== null || view.closing || view.selecting || view.editing !== null;
+  const openTip = tipsOff ? null : tip;
+  useLayoutEffect(() => {
+    const key = windowTipCover(tabId);
+    const row = controlsRef.current;
+    const stage = row?.closest(".desk-stage");
+    if (openTip === null || row == null || stage == null) {
+      const timer = window.setTimeout(() => engine.setCover(key, null), TIP_LINGER_MS);
+      return () => window.clearTimeout(timer);
+    }
+    // (In the stage's coordinates, through the window's transform.)
+    const box = row.getBoundingClientRect();
+    const origin = stage.getBoundingClientRect();
+    engine.setCover(key, { x: box.left - origin.left - TIP_BAND_REACH, y: box.bottom - origin.top, w: box.width + TIP_BAND_REACH * 2, h: TIP_BAND_H });
+  }, [engine, tabId, openTip]);
+  useEffect(() => () => engine.setCover(windowTipCover(tabId), null), [engine, tabId]);
+  /** A frame button's tooltip, by its label. */
+  const frameTip = (label: string): FrameTip => ({
+    open: openTip === label,
+    shown: view.tipShown,
+    disabled: tipsOff,
+    onOpenChange: (open) => setTip((current) => (open ? label : current === label ? null : current)),
+  });
   // Where the window goes when collapsed: its icon in the dock, or a document's home, the Stack.
   const collapseLabel = parts !== null ? "Collapse into the Stack" : "Collapse into the sidebar";
   /** What the frame's menu offers: what is wanted less often than the buttons; on a right-click, the buttons' too. */
@@ -181,6 +238,7 @@ export const DeskWindow = memo(function DeskWindow({
     if (masked) {
       if (tab !== null && !shellPage) rare.push({ label: "Edit mask", icon: <Crop aria-hidden="true" />, testId: "desk-edit-mask", onSelect: () => engine.editMask(tabId) });
     } else if (!mini) {
+      if (tab !== null && !shellPage) rare.push(...pageEntries(tab));
       for (const action of parts?.actions ?? []) rare.push({ label: action.label, icon: action.icon, testId: action.testId, onSelect: action.run });
       if (canMask)
         rare.push({
@@ -209,9 +267,11 @@ export const DeskWindow = memo(function DeskWindow({
   const more =
     rare.length === 0 ? null : (
       <FrameButton
+        ref={moreRef}
         label="More"
         testId="desk-window-more"
-        pressed={menu.isOpen}
+        tip={frameTip}
+        pressed={menu.isOpen || siteInfoHere}
         onPress={() => {
           menuWasUp.current = menu.isOpen;
         }}
@@ -220,9 +280,9 @@ export const DeskWindow = memo(function DeskWindow({
             menuWasUp.current = false;
             return;
           }
-          // Hung from the button, its trailing edge under the button's.
+          // Hung from the button, its trailing edge under the button's; what is true now (a bookmark kept since, say).
           const box = event.currentTarget.getBoundingClientRect();
-          menu.open({ clientX: box.right - CONTEXT_MENU_W, clientY: box.bottom + 4 }, rare);
+          menu.open({ clientX: box.right - CONTEXT_MENU_W, clientY: box.bottom + 4 }, menuEntries(false));
         }}
       >
         <Ellipsis aria-hidden="true" />
@@ -235,6 +295,7 @@ export const DeskWindow = memo(function DeskWindow({
       <FrameButton
         label={media.hasVideo ? "Pop out the video" : "Pop out the audio"}
         testId="desk-pop-out"
+        tip={frameTip}
         onClick={() => {
           useNowPlaying.getState().pop(tabId);
           engine.putAway(tabId);
@@ -244,43 +305,48 @@ export const DeskWindow = memo(function DeskWindow({
       </FrameButton>
     );
   const collapse = (
-    <FrameButton label={collapseLabel} testId="desk-collapse" onClick={() => engine.putAway(tabId)}>
+    <FrameButton label={collapseLabel} testId="desk-collapse" tip={frameTip} onClick={() => engine.putAway(tabId)}>
       <Minus aria-hidden="true" />
     </FrameButton>
   );
   const close = (
-    <FrameButton label="Close" testId="desk-close" onClick={() => engine.closeWindow(tabId)}>
+    <FrameButton label="Close" testId="desk-close" tip={frameTip} onClick={() => engine.closeWindow(tabId)}>
       <X aria-hidden="true" />
     </FrameButton>
   );
-  const controls = masked ? (
-    <span className="desk-window-controls flex items-center">
+  const buttons = masked ? (
+    <>
       {popOut}
       {more}
-      <FrameButton label="Unmask" testId="desk-unmask" onClick={() => engine.unmask(tabId)}>
+      <FrameButton label="Unmask" testId="desk-unmask" tip={frameTip} onClick={() => engine.unmask(tabId)}>
         <Expand aria-hidden="true" />
       </FrameButton>
       {collapse}
       {close}
-    </span>
+    </>
   ) : mini ? (
-    <span className="desk-window-controls flex items-center">
+    <>
       {popOut}
-      <FrameButton label="Expand" testId="desk-expand" onClick={() => engine.expand(tabId)}>
+      <FrameButton label="Expand" testId="desk-expand" tip={frameTip} onClick={() => engine.expand(tabId)}>
         <Maximize2 aria-hidden="true" />
       </FrameButton>
       {collapse}
       {close}
-    </span>
+    </>
   ) : (
-    <span className="desk-window-controls flex items-center">
+    <>
       {popOut}
       {more}
-      <FrameButton label={view.maximized ? "Restore" : "Fill the desk"} onClick={() => engine.toggleMaximize(tabId)}>
+      <FrameButton label={view.maximized ? "Restore" : "Fill the desk"} tip={frameTip} onClick={() => engine.toggleMaximize(tabId)}>
         {view.maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
       </FrameButton>
       {collapse}
       {close}
+    </>
+  );
+  const controls = (
+    <span ref={controlsRef} className="desk-window-controls flex items-center">
+      <TooltipProvider delay={TIP_DELAY_MS}>{buttons}</TooltipProvider>
     </span>
   );
 
@@ -398,6 +464,7 @@ export const DeskWindow = memo(function DeskWindow({
         <ResizeEdges tabId={tabId} engine={engine} top={frame === "bar"} />
       </div>
       {menu.menu}
+      {siteInfoHere ? <SiteInfoFrom triggerRef={moreRef} align="end" /> : null}
     </div>
   );
 });
@@ -757,45 +824,65 @@ function MaskFade({ from, insets, still }: { from: Rect & { framed: boolean }; i
   );
 }
 
+/** One of the frame's buttons, its label in a tooltip under it. */
 function FrameButton({
+  ref,
   label,
   testId,
   pressed,
+  tip: tipFor,
   onPress,
   onClick,
   children,
 }: {
+  ref?: Ref<HTMLButtonElement>;
   label: string;
   testId?: string;
   pressed?: boolean;
+  tip: (label: string) => FrameTip;
   /** The pointer went down on it (before the click). */
   onPress?: () => void;
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   children: ReactNode;
 }) {
+  const tip = tipFor(label);
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={pressed}
-      data-testid={testId}
-      onPointerDown={(event) => {
-        event.stopPropagation();
-        onPress?.();
-      }}
-      // A press leaves the keyboard where it was (the window's page): a
-      // focused frame button would light its ring at the next key — Shift,
-      // say, held to snap the window it just filled.
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick(event);
-      }}
-      className="grid size-6 cursor-pointer place-items-center rounded-md text-gray-800 outline-none transition-[background-color,color,transform] duration-150 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94] aria-pressed:bg-alpha-300 aria-pressed:text-gray-1000 motion-reduce:transition-none [&_svg]:size-3.5"
-    >
-      {children}
-    </button>
+    <Tooltip open={tip.open} onOpenChange={tip.onOpenChange} disabled={tip.disabled}>
+      <TooltipTrigger
+        ref={ref}
+        type="button"
+        aria-label={label}
+        aria-pressed={pressed}
+        data-testid={testId}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          onPress?.();
+        }}
+        // A press leaves the keyboard where it was (the window's page): a
+        // focused frame button would light its ring at the next key — Shift,
+        // say, held to snap the window it just filled.
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick(event);
+        }}
+        className="grid size-6 cursor-pointer place-items-center rounded-md text-gray-800 outline-none transition-[background-color,color,transform] duration-150 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94] aria-pressed:bg-alpha-300 aria-pressed:text-gray-1000 motion-reduce:transition-none [&_svg]:size-3.5"
+      >
+        {children}
+      </TooltipTrigger>
+      {/* Under the button, over the window's own page, whatever room there is (it never flips above, onto another window). */}
+      <TooltipContent
+        side="bottom"
+        sideOffset={6}
+        collisionAvoidance={{ side: "none", align: "shift" }}
+        data-testid="desk-window-tip"
+        data-shown={tip.shown ? "" : undefined}
+        // Until the page under it has given way, it is there but unseen.
+        className={tip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}
+      >
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 

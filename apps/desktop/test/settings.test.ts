@@ -126,23 +126,19 @@ describe("sanitizeSettings", () => {
       .toEqual([{ title: "Portal", url: "https://portal.example" }]);
   });
 
-  it("starts in the vertical sidebar layout with the sidebar pinned", () => {
-    expect(DEFAULT_SETTINGS.layout).toEqual({ mode: "sidebar", sidebar: "pinned" });
-    expect(sanitizeSettings(null).layout).toEqual({ mode: "sidebar", sidebar: "pinned" });
+  it("starts with the sidebar pinned", () => {
+    expect(DEFAULT_SETTINGS.layout).toEqual({ sidebar: "pinned" });
+    expect(sanitizeSettings(null).layout).toEqual({ sidebar: "pinned" });
   });
 
-  it("refuses an unknown layout mode or presentation per field, keeping the valid one", () => {
-    // A layout the renderer does not have would leave the chrome nowhere;
-    // each field falls back on its own so the good half survives.
-    expect(sanitizeSettings({ layout: { mode: "left", sidebar: "compact" } }).layout).toEqual({
-      mode: "sidebar",
-      sidebar: "compact",
-    });
-    expect(sanitizeSettings({ layout: { mode: "sidebar", sidebar: 3 } }).layout).toEqual({
-      mode: "sidebar",
-      sidebar: "pinned",
-    });
+  it("refuses an unknown sidebar presentation", () => {
+    expect(sanitizeSettings({ layout: { sidebar: 3 } }).layout).toEqual({ sidebar: "pinned" });
     expect(sanitizeSettings({ layout: "sidebar" }).layout).toEqual(DEFAULT_SETTINGS.layout);
+  });
+
+  it("drops the layout mode an older version stored, keeping the sidebar's presentation", () => {
+    // The top-tabs layout is gone: a file that chose it opens in the sidebar.
+    expect(sanitizeSettings({ layout: { mode: "top", sidebar: "compact" } }).layout).toEqual({ sidebar: "compact" });
   });
 
   it("starts the home page at Pistachio's own and accepts any address a tab may load", () => {
@@ -240,18 +236,12 @@ describe("applySettingsPatch", () => {
     expect(applySettingsPatch(swapped, { shortcuts: { editAddress: "Mod+T" } }).shortcuts.editAddress).toBe("Mod+T");
   });
 
-  it("switches the layout without disturbing the sidebar's presentation or other sections", () => {
-    const next = applySettingsPatch(DEFAULT_SETTINGS, { layout: { mode: "top" } });
-    expect(next.layout).toEqual({ mode: "top", sidebar: "pinned" });
+  it("switches the sidebar's presentation without disturbing other sections", () => {
+    const next = applySettingsPatch(DEFAULT_SETTINGS, { layout: { sidebar: "compact" } });
+    expect(next.layout).toEqual({ sidebar: "compact" });
     expect(next.general).toEqual(DEFAULT_SETTINGS.general);
     expect(next.delegation).toEqual(DEFAULT_SETTINGS.delegation);
     expect(next.privacy).toEqual(DEFAULT_SETTINGS.privacy);
-    // And back: a compact sidebar stays compact through a round trip to top tabs.
-    const compact = applySettingsPatch(next, { layout: { sidebar: "compact" } });
-    expect(applySettingsPatch(compact, { layout: { mode: "sidebar" } }).layout).toEqual({
-      mode: "sidebar",
-      sidebar: "compact",
-    });
   });
 
   it("narrows the grant's methods when writes are off", () => {

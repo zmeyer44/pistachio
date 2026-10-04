@@ -17,7 +17,7 @@ import { Markdown } from "@tiptap/markdown";
 import { DragHandle } from "@tiptap/extension-drag-handle-react";
 import { TextSelection } from "@tiptap/pm/state";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { ChevronLeft, Copy, GripVertical, LoaderCircle, LogIn, Share2, Trash2 } from "lucide-react";
+import { ChevronLeft, Copy, GripVertical, LoaderCircle, LogIn, Share2, Trash2, Volume2 } from "lucide-react";
 import {
   MAX_NOTE_BLOBS_PER_NOTE,
   NOTE_UNTITLED,
@@ -39,6 +39,7 @@ import {
 } from "../../lib/notes-autosave";
 import { acceptNoteImage, encodeTarget, imageBlobId, mayHaveAlpha, planDownscale, withinBlobCap } from "../../lib/notes-images";
 import { docToMarkdown, noteExtensions } from "../../lib/notes-markdown";
+import { noteSpeechText } from "../../lib/notes-speech";
 import type { SlashCommand } from "../../lib/notes-slash";
 import { useAppStore } from "../../store";
 import { usePagePreview } from "../page-preview";
@@ -110,6 +111,7 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
   const createTab = useAppStore((state) => state.createTab);
   const openLink = useAppStore((state) => state.openLink);
   const showNotice = useAppStore((state) => state.showNotice);
+  const readAloudText = useAppStore((state) => state.readAloudText);
   const openSettings = useAppStore((state) => state.openSettings);
   const enrolled = useAppStore((state) => state.account.state === "enrolled");
   const [remoteNotice, sayRemote] = useTransient(REMOTE_NOTICE_MS);
@@ -552,6 +554,20 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
         const body = save.current.local.markdown.trimEnd();
         void navigator.clipboard.writeText(title.trim() === "" ? body : `# ${title}\n\n${body}`);
         showNotice("Note copied as markdown", { tone: "success" });
+      },
+    },
+    // The whole note, title first, in the same player and media card as a page's read aloud.
+    {
+      id: "read-aloud",
+      label: "Read aloud",
+      icon: <Volume2 />,
+      run: () => {
+        const text = noteSpeechText(title, save.current.local.markdown);
+        if (text === "") {
+          showNotice("Nothing in this note to read aloud");
+          return;
+        }
+        void readAloudText(text, shown);
       },
     },
     {

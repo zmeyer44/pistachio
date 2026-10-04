@@ -1,60 +1,25 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
 import {
-  _electron as electron,
   expect,
   test,
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { shellPage } from "./windows";
+import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { capturePage, pageAt, pick } from "./pages-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/oauth-popup");
+/**
+ * Authentication popups and the session changes they make: Google OAuth
+ * child windows (with and without an opener), relying parties that reload
+ * or redirect themselves, a passkey request inside a popup, and a Service
+ * Worker that carries a session request — all in one window, each on its
+ * own tabs and its own fixture server.
+ */
+
 const OWNER_URL = "pistachio://demo/auth/relying-party";
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      suffix,
-    ),
-  ].find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function pageAt(
-  app: ElectronApplication,
-  predicate: (page: Page) => boolean,
-): Promise<Page> {
-  const existing = app.windows().find(predicate);
-  if (existing !== undefined) return existing;
-  return app.waitForEvent("window", { predicate });
-}
-
-async function pick(
-  shell: Page,
-  target: ReturnType<Page["locator"]>,
-  item: string,
-): Promise<void> {
-  await target.click({ button: "right" });
-  const menu = shell.getByTestId("context-menu");
-  await expect(menu).toBeVisible();
-  await menu.getByRole("menuitem", { name: item }).click();
-  await expect(menu).toHaveCount(0);
-}
 
 async function delayedSessionServer(): Promise<{
   exchangeCount: () => number;
@@ -201,28 +166,203 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
-test("Google OAuth keeps popup semantics and refreshes same-Space relying-party tabs", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-oauth-popup-"));
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({
-      layout: { mode: "sidebar", sidebar: "pinned" },
-      general: { consoleOpenOnLaunch: false },
-    }),
-  );
+interface SelfRedirectingRelyingParty {
+  origin: string;
+  providerOrigin: string;
+  /** Every main-document and API request the relying party served, in order. */
+  requests: () => string[];
+  servers: Server[];
+}
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+/**
+ * A relying party shaped like Dribbble's Google Identity Services flow: the
+ * provider popup posts a credential to the opener and closes itself; the
+ * opener shows a submitting state, exchanges the credential over fetch, and
+ * navigates itself to the `redirect_to` the exchange returns. The browser has
+ * nothing to do after the popup closes — any reload it issues races the
+ * page's own transition.
+ */
+async function selfRedirectingRelyingParty(options: {
+  exchangeDelayMs: number;
+  /** How long the signed-in home page takes to render, like a real server. */
+  homeDelayMs: number;
+  /** Rewrite a JS-visible analytics cookie on the sign-in page when the popup opens. */
+  analyticsCookieChurn: boolean;
+}): Promise<SelfRedirectingRelyingParty> {
+  const requests: string[] = [];
+  let origin = "";
+
+  const providerServer = createServer((request, response) => {
+    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (path === "/gsi/select") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+        <html><head><title>Choose an account</title></head>
+        <body data-opener="pending"><main>
+          <h1>Choose an account</h1><button>Continue as Avery</button>
+        </main><script>
+          document.body.dataset.opener = window.opener ? "connected" : "isolated";
+          document.querySelector("button").addEventListener("click", () => {
+            window.opener.postMessage({ type: "credential", credential: "jwt" }, "*");
+            window.close();
+          });
+        </script></body></html>`);
+      return;
+    }
+    response.writeHead(404).end();
   });
-  try {
-    const shell = await shellPage(app);
+  const providerOrigin = await listenOnLoopback(providerServer);
+
+  const relyingPartyServer = createServer((request, response) => {
+    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const authenticated = (request.headers.cookie ?? "").includes(
+      "rp-session=connected",
+    );
+    requests.push(`${request.method} ${path}${authenticated ? " [authenticated]" : ""}`);
+    if (path === "/auth/jwt" && request.method === "POST") {
+      setTimeout(() => {
+        response.writeHead(202, {
+          "Content-Type": "application/json",
+          "Set-Cookie": "rp-session=connected; Path=/; HttpOnly; SameSite=Lax",
+        });
+        response.end(JSON.stringify({ redirect_to: "/" }));
+      }, options.exchangeDelayMs);
+      return;
+    }
+    if (path === "/") {
+      if (!authenticated) {
+        response.writeHead(302, { Location: "/session/new" }).end();
+        return;
+      }
+      setTimeout(() => {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        response.end(`<!doctype html><html><head><title>Home</title></head>
+          <body data-authenticated="true"><h1>Welcome home</h1></body></html>`);
+      }, options.homeDelayMs);
+      return;
+    }
+    if (path === "/session/new") {
+      if (authenticated) {
+        response.writeHead(302, { Location: "/" }).end();
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+        <html><head><title>Sign in</title></head>
+        <body data-authenticated="false" data-state="idle"><main>
+          <h1>Sign in</h1>
+          <button>Continue with Google</button>
+        </main><script>
+          document.querySelector("button").addEventListener("click", () => {
+            window.open(
+              "${providerOrigin}/gsi/select",
+              "gsi_popup",
+              "toolbar=no,location=no,status=no,menubar=no,popup=yes,width=500,height=600",
+            );
+            ${
+              options.analyticsCookieChurn
+                ? 'setTimeout(() => { document.cookie = "_ga_session=" + Date.now() + "; Path=/; SameSite=Lax"; }, 300);'
+                : ""
+            }
+          });
+          window.addEventListener("message", async (event) => {
+            if (event.data?.type !== "credential") return;
+            document.body.dataset.state = "submitting";
+            const response = await fetch("/auth/jwt", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ credential: event.data.credential }),
+            });
+            if (response.status !== 202) {
+              document.body.dataset.state = "error";
+              return;
+            }
+            const { redirect_to } = await response.json();
+            window.location.href = redirect_to;
+          });
+        </script></body></html>`);
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  origin = await listenOnLoopback(relyingPartyServer);
+  return {
+    origin,
+    providerOrigin,
+    requests: () => requests,
+    servers: [providerServer, relyingPartyServer],
+  };
+}
+
+/**
+ * Sign in to a self-redirecting relying party at `origin` (its own server's
+ * address, or the same server by another host name) through its Google
+ * popup, and see the page's own navigation land. Answers the page and when
+ * the popup closed: whether the browser reloads it late is judged after.
+ */
+async function signInThroughPopup(
+  app: ElectronApplication,
+  shell: Page,
+  origin: string,
+  relyingParty: SelfRedirectingRelyingParty,
+): Promise<{ owner: Page; closedAt: number }> {
+  const signInUrl = `${origin}/session/new`;
+  await shell.evaluate(
+    (url) =>
+      (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(url),
+    signInUrl,
+  );
+  const owner = await pageAt(app, signInUrl);
+  await expect(owner.getByRole("heading", { name: "Sign in" })).toBeVisible();
+
+  const windowsBefore = new Set(app.windows());
+  const popupPromise = app.waitForEvent("window", {
+    predicate: (page) =>
+      !windowsBefore.has(page) && page.url().startsWith(relyingParty.providerOrigin),
+  });
+  await owner.getByRole("button", { name: "Continue with Google" }).click();
+  const popup = await popupPromise;
+  await expect(popup.locator("body")).toHaveAttribute("data-opener", "connected");
+  await popup.getByRole("button", { name: "Continue as Avery" }).click();
+  await expect.poll(() => popup.isClosed()).toBe(true);
+  const closedAt = Date.now();
+
+  // The page's own navigation must win: it lands on the signed-in home page
+  // and never sits in its submitting state or on a re-served sign-in page.
+  await expect(owner.getByRole("heading", { name: "Welcome home" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(owner.locator("body")).toHaveAttribute("data-authenticated", "true");
+  expect(new URL(owner.url()).pathname).toBe("/");
+  await owner.evaluate(() => {
+    (window as unknown as { __landed: boolean }).__landed = true;
+  });
+  return { owner, closedAt };
+}
+
+test.describe.serial("authentication popups", { tag: ["@site", "@popup"] }, () => {
+  test.describe.configure({ timeout: 45_000 });
+  let app: ElectronApplication;
+  let shell: Page;
+  const servers: Server[] = [];
+
+  test.beforeAll(async () => {
+    ({ app } = await launchApp({
+      settings: {
+        layout: { sidebar: "pinned" },
+        general: { consoleOpenOnLaunch: false },
+      },
+      name: "oauth-popup",
+    }));
+    shell = await shellReady(app);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+    await Promise.all(servers.map(closeServer));
+  });
+
+  test("Google OAuth keeps popup semantics and refreshes same-Space relying-party tabs", async () => {
     await shell.evaluate(
       (url) =>
         (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(
@@ -266,10 +406,7 @@ test("Google OAuth keeps popup semantics and refreshes same-Space relying-party 
       "data-opener",
       "isolated",
     );
-    await youtubePopup.screenshot({
-      path: join(screenshotDirectory, "01-youtube-google-popup.png"),
-      fullPage: true,
-    });
+    await capturePage(youtubePopup, "oauth-popup/01-youtube-google-popup.png", { fullPage: true });
     expect(
       await shell.evaluate(
         async () =>
@@ -292,10 +429,7 @@ test("Google OAuth keeps popup semantics and refreshes same-Space relying-party 
       "data-youtube-authenticated",
       "true",
     );
-    await owner.screenshot({
-      path: join(screenshotDirectory, "02-youtube-owner-authenticated.png"),
-      fullPage: true,
-    });
+    await capturePage(owner, "oauth-popup/02-youtube-owner-authenticated.png", { fullPage: true });
 
     // X opens a named JavaScript popup; the real child context must retain
     // window.opener so its OAuth result can be posted directly to the opener.
@@ -310,10 +444,7 @@ test("Google OAuth keeps popup semantics and refreshes same-Space relying-party 
       "data-opener",
       "connected",
     );
-    await xPopup.screenshot({
-      path: join(screenshotDirectory, "03-x-google-popup-with-opener.png"),
-      fullPage: true,
-    });
+    await capturePage(xPopup, "oauth-popup/03-x-google-popup-with-opener.png", { fullPage: true });
     expect(
       await shell.evaluate(
         async () =>
@@ -337,41 +468,13 @@ test("Google OAuth keeps popup semantics and refreshes same-Space relying-party 
     await expect(owner.locator("#youtube-status")).toHaveText(
       "Connected with Google",
     );
-    await owner.screenshot({
-      path: join(screenshotDirectory, "04-x-and-youtube-authenticated.png"),
-      fullPage: true,
-    });
-  } finally {
-    await app.close();
-  }
-});
-
-test("X signs in and out through session-changing child windows without manual refresh", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const { exchangeCount, origin, providerOrigin, servers } =
-    await delayedSessionServer();
-  const userData = await mkdtemp(
-    join(tmpdir(), "pistachio-oauth-delayed-session-"),
-  );
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({
-      layout: { mode: "sidebar", sidebar: "pinned" },
-      general: { consoleOpenOnLaunch: false },
-    }),
-  );
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+    await capturePage(owner, "oauth-popup/04-x-and-youtube-authenticated.png", { fullPage: true });
   });
-  try {
-    const shell = await shellPage(app);
+
+  test("X signs in and out through session-changing child windows without manual refresh", async () => {
+    const { exchangeCount, origin, providerOrigin, servers: fixture } =
+      await delayedSessionServer();
+    servers.push(...fixture);
     const relyingPartyUrl = `${origin}/`;
     await shell.evaluate(
       (url) =>
@@ -419,10 +522,7 @@ test("X signs in and out through session-changing child windows without manual r
     await expect(
       owner.getByRole("heading", { name: "Welcome to X" }),
     ).toBeVisible();
-    await owner.screenshot({
-      path: join(screenshotDirectory, "05-x-delayed-session-complete.png"),
-      fullPage: true,
-    });
+    await capturePage(owner, "oauth-popup/05-x-delayed-session-complete.png", { fullPage: true });
 
     // Logout must retain a child context too, so the original X document can
     // observe the inverse session transition instead of remaining stale.
@@ -452,10 +552,7 @@ test("X signs in and out through session-changing child windows without manual r
           ).tabs.length,
       ),
     ).toBe(tabCount);
-    await logoutPopup.screenshot({
-      path: join(screenshotDirectory, "06-x-logout-confirmation.png"),
-      fullPage: true,
-    });
+    await capturePage(logoutPopup, "oauth-popup/06-x-logout-confirmation.png", { fullPage: true });
     await logoutPopup.getByRole("button", { name: "Log out" }).click();
     await expect.poll(() => logoutPopup.isClosed()).toBe(true);
 
@@ -467,10 +564,7 @@ test("X signs in and out through session-changing child windows without manual r
     await expect(
       owner.getByRole("heading", { name: "Sign in to X" }),
     ).toBeVisible();
-    await owner.screenshot({
-      path: join(screenshotDirectory, "07-x-logged-out-owner.png"),
-      fullPage: true,
-    });
+    await capturePage(owner, "oauth-popup/07-x-logged-out-owner.png", { fullPage: true });
 
     // A completed sign-out must not leave a terminal URL or stale observer that
     // reverses the next successful identity transition.
@@ -500,38 +594,10 @@ test("X signs in and out through session-changing child windows without manual r
     await expect(
       owner.getByRole("heading", { name: "Welcome to X" }),
     ).toBeVisible();
-    await owner.screenshot({
-      path: join(screenshotDirectory, "08-x-relogin-complete.png"),
-      fullPage: true,
-    });
-  } finally {
-    await app.close();
-    await Promise.all(servers.map(closeServer));
-  }
-});
-
-test("an authentication popup offers to continue in the main app", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-oauth-popup-"));
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({
-      layout: { mode: "sidebar", sidebar: "pinned" },
-      general: { consoleOpenOnLaunch: false },
-    }),
-  );
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+    await capturePage(owner, "oauth-popup/08-x-relogin-complete.png", { fullPage: true });
   });
-  try {
-    const shell = await shellPage(app);
+
+  test("an authentication popup offers to continue in the main app", async () => {
     await shell.evaluate(
       (url) =>
         (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(
@@ -590,14 +656,327 @@ test("an authentication popup offers to continue in the main app", async () => {
       width: layout.content.width,
       height: layout.content.height - 36,
     });
-    await bar.screenshot({
-      path: join(screenshotDirectory, "08-popup-open-in-main-app-bar.png"),
-    });
+    await capturePage(bar, "oauth-popup/08-popup-open-in-main-app-bar.png");
 
     await open.click();
     await expect.poll(() => popup.isClosed()).toBe(true);
     await expect.poll(tabUrls).toEqual([...before, popupUrl].sort());
-  } finally {
-    await app.close();
-  }
+  });
+
+  // A page that redirects itself once its popup closes must not be reloaded
+  // out from under it — with a quiet sign-in page, and with one rewriting an
+  // analytics cookie mid-exchange. The two run on two host names (cookies
+  // are kept per host), and are judged together once both have had the
+  // time a late reload would take (the browser's settle window is 5 s).
+  test("a relying party that redirects itself after a Google popup is not reloaded out from under it, cookie churn or not", async () => {
+    const quiet = await selfRedirectingRelyingParty({
+      exchangeDelayMs: 400,
+      homeDelayMs: 1_000,
+      analyticsCookieChurn: false,
+    });
+    const churning = await selfRedirectingRelyingParty({
+      exchangeDelayMs: 1_200,
+      homeDelayMs: 1_000,
+      analyticsCookieChurn: true,
+    });
+    servers.push(...quiet.servers, ...churning.servers);
+    const first = await signInThroughPopup(app, shell, quiet.origin, quiet);
+    const second = await signInThroughPopup(app, shell, churning.origin.replace("127.0.0.1", "localhost"), churning);
+
+    // Give the browser every chance to issue a late reload before judging.
+    await shell.waitForTimeout(Math.max(0, Math.max(first.closedAt, second.closedAt) + 6_500 - Date.now()));
+    for (const [{ owner }, relyingParty, name] of [
+      [first, quiet, "01-self-redirect"],
+      [second, churning, "02-cookie-churn"],
+    ] as const) {
+      expect(
+        await owner.evaluate(() => (window as unknown as { __landed?: boolean }).__landed),
+      ).toBe(true);
+      await capturePage(owner, `oauth-popup-self-redirect/${name}-home.png`, { fullPage: true });
+      // One sign-in page, one exchange, one home load — the page's own — and
+      // no reload re-serving either document.
+      expect(relyingParty.requests()).toEqual([
+        "GET /session/new",
+        "POST /auth/jwt",
+        "GET / [authenticated]",
+      ]);
+    }
+  });
+
+  test("a Service Worker can deliver a Blob-backed session request", async () => {
+    let deliveredLogouts = 0;
+    const server = createServer((request, response) => {
+      const path = new URL(
+        request.url ?? "/",
+        "http://localhost",
+      ).pathname;
+      if (path === "/sw.js") {
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/javascript; charset=utf-8",
+        });
+        response.end(`
+          self.addEventListener("install", () => self.skipWaiting());
+          self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+          self.addEventListener("fetch", (event) => {
+            const url = new URL(event.request.url);
+            if (url.pathname !== "/session-backed-logout" || event.request.method !== "POST") return;
+            const networkRequest = event.request.clone();
+            event.respondWith(Promise.resolve(new Response("", { status: 202 })));
+            event.waitUntil(fetch(networkRequest));
+          });
+        `);
+        return;
+      }
+      if (path === "/session-backed-logout" && request.method === "POST") {
+        deliveredLogouts += 1;
+        request.resume();
+        response.writeHead(204).end();
+        return;
+      }
+      if (path === "/logout-count") {
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Type": "application/json; charset=utf-8",
+        });
+        response.end(JSON.stringify({ deliveredLogouts }));
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+        <html><head><title>Service Worker session request</title><style>
+          body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f1e8; color: #24221e; font: 16px system-ui; }
+          main { width: min(440px, calc(100vw - 48px)); padding: 40px; border: 1px solid #d8d0c0; border-radius: 20px; background: #fffdf8; }
+          button { border: 0; border-radius: 999px; padding: 12px 20px; background: #24221e; color: white; font: inherit; font-weight: 700; }
+          output { display: block; margin-top: 18px; color: #655f54; }
+        </style></head><body data-worker="starting" data-network-logouts="0"><main>
+          <h1>Session transition</h1>
+          <p>The Service Worker owns this request, matching X's logout path.</p>
+          <button type="button">Log out</button>
+          <output>Waiting</output>
+        </main><script>
+          const output = document.querySelector("output");
+          async function pollDelivery() {
+            const { deliveredLogouts } = await fetch("/logout-count").then((result) => result.json());
+            document.body.dataset.networkLogouts = String(deliveredLogouts);
+            if (deliveredLogouts > 0) {
+              output.textContent = "Server session cleared";
+              return;
+            }
+            setTimeout(() => void pollDelivery(), 25);
+          }
+          document.querySelector("button").addEventListener("click", async () => {
+            const result = await fetch("/session-backed-logout", {
+              method: "POST",
+              body: new Blob(["logout"], { type: "application/json" }),
+            });
+            document.body.dataset.workerStatus = String(result.status);
+            output.textContent = "Worker accepted; waiting for network";
+            void pollDelivery();
+          });
+          void (async () => {
+            await navigator.serviceWorker.register("/sw.js");
+            await navigator.serviceWorker.ready;
+            if (!navigator.serviceWorker.controller) {
+              await new Promise((resolve) => navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+            }
+            document.body.dataset.worker = "controlled";
+          })();
+        </script></body></html>`);
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://localhost:${address.port}`;
+    servers.push(server);
+    await shell.evaluate(
+      (url) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(url),
+      origin,
+    );
+    const page = await pageAt(app, (candidate) => candidate.url().startsWith(origin));
+
+    // The page must be under Service Worker control before the regression path exists.
+    await expect(page.locator("body")).toHaveAttribute(
+      "data-worker",
+      "controlled",
+    );
+    await capturePage(page, "service-worker-session/01-worker-controlled.png", { fullPage: true });
+
+    // A synthetic 202 is insufficient: the Blob-backed request must reach the server too.
+    await page.getByRole("button", { name: "Log out" }).click();
+    await expect(page.locator("body")).toHaveAttribute(
+      "data-worker-status",
+      "202",
+    );
+    await expect(page.locator("body")).toHaveAttribute(
+      "data-network-logouts",
+      "1",
+    );
+    expect(deliveredLogouts).toBe(1);
+    await expect(page.getByText("Server session cleared")).toBeVisible();
+    await capturePage(page, "service-worker-session/02-server-session-cleared.png", { fullPage: true });
+  });
+
+  test("a sign-in popup completes and cancels discoverable passkey requests", async () => {
+    const server = createServer((request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(
+        request.url === "/"
+          ? `<!doctype html><title>Passkey relying party</title>
+        <h1>Sign in</h1><button onclick="window.open('${origin}/oauth/passkey', 'sign-in', 'width=520,height=600')">Sign in with passkey</button>`
+          : `<!doctype html><title>Passkey provider</title><h1>Passkey sign-in</h1>
+        <button id="register">Create test accounts</button><button id="login">Use passkey</button>
+        <p role="status">Ready</p><script>
+          const status = document.querySelector('[role=status]');
+          const bytes = text => new TextEncoder().encode(text);
+          document.querySelector('#register').onclick = async () => {
+            for (const name of ['Avery', 'Blair']) {
+              const credential = await navigator.credentials.create({ publicKey: {
+                challenge: crypto.getRandomValues(new Uint8Array(32)),
+                rp: { id: location.hostname, name: 'Passkey test' },
+                user: { id: bytes(name), name: name + '@example.test', displayName: name },
+                pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+                authenticatorSelection: { residentKey: 'required', userVerification: 'required' }
+              }});
+              if (name === 'Avery') window.expectedCredential = credential.id;
+            }
+            status.textContent = 'Accounts created';
+          };
+          document.querySelector('#login').onclick = async () => {
+            status.textContent = 'Waiting for passkey';
+            try {
+              const credential = await navigator.credentials.get({ publicKey: {
+                challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: location.hostname,
+                userVerification: 'required', timeout: 30000
+              }});
+              status.textContent = credential.id === window.expectedCredential ? 'Signed in as Avery' : 'Wrong account';
+            } catch (error) { status.textContent = error.name; }
+          };
+        </script>`,
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error("No test server");
+    const origin = `http://localhost:${address.port}`;
+    const ownerUrl = `http://127.0.0.1:${address.port}/`;
+    servers.push(server);
+    await shell.evaluate(
+      (url) =>
+        (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(
+          url,
+        ),
+      ownerUrl,
+    );
+    const owner = await pageAt(app, ownerUrl);
+    // Preserve the real child context used by Google/OAuth handoffs.
+    await owner.getByRole("button", { name: "Sign in with passkey" }).click();
+    const popupUrl = `${origin}/oauth/passkey`;
+    const popup = await pageAt(app, popupUrl);
+    await expect(
+      popup.getByRole("heading", { name: "Passkey sign-in" }),
+    ).toBeVisible();
+    await capturePage(popup, "passkey-popup/01-sign-in-popup.png");
+    await app.evaluate(async ({ webContents }, url) => {
+      const page = webContents
+        .getAllWebContents()
+        .find((candidate) => candidate.getURL() === url)!;
+      page.debugger.attach("1.3");
+      await page.debugger.sendCommand("WebAuthn.enable");
+      await page.debugger.sendCommand("WebAuthn.addVirtualAuthenticator", {
+        options: {
+          protocol: "ctap2",
+          transport: "internal",
+          hasResidentKey: true,
+          hasUserVerification: true,
+          automaticPresenceSimulation: true,
+          isUserVerified: true,
+        },
+      });
+    }, popupUrl);
+    // Chromium creates real credentials on a test authenticator; no account event is mocked.
+    await popup.getByRole("button", { name: "Create test accounts" }).click();
+    await expect(popup.getByRole("status")).toHaveText("Accounts created");
+    await popup.getByRole("button", { name: "Use passkey" }).click();
+    const bar = await pageAt(app, (page) => page.url().startsWith("data:text/html"));
+    const chooser = bar.getByTestId("passkey-account-chooser");
+    await expect(chooser).toBeVisible();
+    await expect(chooser).toContainText("localhost");
+    await expect(chooser).toContainText("Avery@example.test");
+    await expect(chooser).toContainText("Blair@example.test");
+    // Only the trusted strip has the bridge; stale messages cannot pick an account.
+    expect(await popup.evaluate(() => "pistachioPopup" in window)).toBe(false);
+    await bar.evaluate(() => {
+      (
+        window as unknown as {
+          pistachioPopup: {
+            selectPasskey(id: string, account: string | null): void;
+          };
+        }
+      ).pistachioPopup.selectPasskey("stale-request", null);
+    });
+    await expect(chooser).toBeVisible();
+    const credentialId = await popup.evaluate(
+      () =>
+        (window as unknown as { expectedCredential: string })
+          .expectedCredential,
+    );
+    expect(await bar.content()).not.toContain(credentialId);
+    await capturePage(bar, "passkey-popup/02-passkey-account-chooser.png");
+    await chooser
+      .getByRole("button", { name: "Avery Avery@example.test", exact: true })
+      .click();
+    await expect(popup.getByRole("status")).toHaveText("Signed in as Avery");
+    await expect(chooser).toBeHidden();
+    const controls = await shell.evaluate(() =>
+      (
+        window as unknown as { pistachio: PistachioApi }
+      ).pistachio.getBrowserControls(),
+    );
+    expect(
+      controls.recentEvents.find((event) => event.capability === "passkey"),
+    ).toMatchObject({
+      origin,
+      decision: "allow",
+    });
+    await capturePage(popup, "passkey-popup/03-signed-in.png");
+
+    // Explicit cancellation rejects the page request and leaves the popup usable.
+    await popup.getByRole("button", { name: "Use passkey" }).click();
+    await expect(chooser).toBeVisible();
+    await chooser.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(popup.getByRole("status")).toHaveText("NotAllowedError");
+    await expect(chooser).toBeHidden();
+    await capturePage(popup, "passkey-popup/04-cancelled.png");
+
+    // Same-document navigation preserves a request; a replacement document cancels it.
+    await popup.getByRole("button", { name: "Use passkey" }).click();
+    await expect(chooser).toBeVisible();
+    await popup.evaluate(() => {
+      location.hash = "still-signing-in";
+    });
+    await expect(chooser).toBeVisible();
+    await popup.goto(`${popupUrl}?replacement=1`);
+    await expect(chooser).toBeHidden();
+    await expect(popup.getByRole("status")).toHaveText("Ready");
+    await capturePage(popup, "passkey-popup/05-navigation-cleared-chooser.png");
+
+    // Closing with an unanswered request removes both popup views without stranding the owner.
+    await popup.getByRole("button", { name: "Use passkey" }).click();
+    await expect(chooser).toBeVisible();
+    await app.evaluate(({ webContents }, url) => {
+      webContents
+        .getAllWebContents()
+        .find((page) => page.getURL() === url)!
+        .close();
+    }, `${popupUrl}?replacement=1`);
+    await expect.poll(() => popup.isClosed() && bar.isClosed()).toBe(true);
+    await expect(
+      owner.getByRole("button", { name: "Sign in with passkey" }),
+    ).toBeVisible();
+    await capturePage(owner, "passkey-popup/06-popup-closed.png");
+  });
 });

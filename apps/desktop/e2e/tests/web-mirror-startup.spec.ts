@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 import { startFixture } from "../../../../services/cloud-browser/test/helpers/fixture-server.js";
 import { chromiumPath, openBrowseShell, openNewTab, signUpInTab, startWebStack, walkFirstRun, type WebStack } from "./web-harness";
 
-test("DOM startup reports missing snapshots and local rendering failures, then recovers on retry", async ({ page }) => {
+test("DOM startup reports missing snapshots and local rendering failures, then recovers on retry", { tag: ["@web"] }, async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);
   const chromium = chromiumPath();

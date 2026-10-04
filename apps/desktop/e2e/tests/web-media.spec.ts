@@ -5,7 +5,7 @@ import { startFixture } from "../../../../services/cloud-browser/test/helpers/fi
 import { chromiumPath, openBrowseShell, openNewTab, signUpInTab, startWebStack, walkFirstRun, type WebStack } from "./web-harness";
 
 const SHOTS = "e2e/screenshots/web-media";
-for (const mode of ["native", "mse", "pixel", "pixel-native"]) test(`${mode} media plays audio locally with synchronized controls and seeking`, async ({ page }) => {
+for (const mode of ["native", "mse", "pixel", "pixel-native"]) test(`${mode} media plays audio locally with synchronized controls and seeking`, { tag: ["@web"] }, async ({ page }) => {
   const mse = mode === "mse" || mode === "pixel";
   const pixel = mode.startsWith("pixel");
   test.setTimeout(240_000);

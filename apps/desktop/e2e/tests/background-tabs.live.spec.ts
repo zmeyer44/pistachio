@@ -5,38 +5,24 @@
  * says which tab is being worked and the tab's row carries the agent's
  * ring — and only "show me…" switches the person to a page (`tab_show`).
  * Runs only with PISTACHIO_AGENT_LIVE=1 and a reachable control plane (the
- * unpackaged app dials localhost:8787), like console-routing.live.
+ * unpackaged app dials localhost:8787), like console-routing.live. The two
+ * console cases share a launch on a web page.
  *
  *   PISTACHIO_AGENT_LIVE=1 pnpm playwright test -c e2e/playwright.config.ts background-tabs.live
  */
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import type { ShellSnapshot, PistachioApi } from "@pistachio/shell-contracts/ipc";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage } from "./windows";
+import { launchApp } from "./app";
+import { captureShell, snapshot } from "./agent-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/background-tabs");
 const live = process.env["PISTACHIO_AGENT_LIVE"] === "1";
 
 test.describe.configure({ timeout: 480_000 });
 test.skip(!live, "needs PISTACHIO_AGENT_LIVE=1 and a reachable control plane");
 
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", suffix)].find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function capture(shell: Page, filename: string): Promise<void> {
-  await mkdir(screenshotDirectory, { recursive: true });
-  await shell.screenshot({ path: join(screenshotDirectory, filename), animations: "disabled", timeout: 15_000 });
-}
-
-async function snapshot(shell: Page): Promise<ShellSnapshot> {
-  return shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot());
+function capture(shell: Page, filename: string): Promise<void> {
+  return captureShell(shell, "background-tabs", filename);
 }
 
 /**
@@ -58,20 +44,12 @@ async function pageFit(app: ElectronApplication, tabUrlPrefix: string): Promise<
 }
 
 async function launch(general: Record<string, unknown> = {}): Promise<{ app: ElectronApplication; shell: Page }> {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-background-tabs-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" }, general, onboarding: { completed: true, completedAt: new Date().toISOString() } }),
-  );
   // Not under PISTACHIO_E2E: that flag keeps the account services — and with
   // them every model — off.
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_AGENT_LIVE: "1", PISTACHIO_USER_DATA: userData },
+  const { app } = await launchApp({
+    name: "background-tabs",
+    settings: { layout: { sidebar: "pinned" }, general, onboarding: { completed: true, completedAt: new Date().toISOString() } },
+    env: { PISTACHIO_E2E: undefined, PISTACHIO_AGENT_LIVE: "1" },
   });
   const shell = await shellPage(app);
   await shell.waitForLoadState("domcontentloaded");
@@ -82,7 +60,7 @@ async function launch(general: Record<string, unknown> = {}): Promise<{ app: Ele
   return { app, shell };
 }
 
-test("a question that needs the web is browsed behind the person's tab, and 'show me' takes them there", async () => {
+test("a question that needs the web is browsed behind the person's tab, and 'show me' takes them there", { tag: ["@agent", "@tabs", "@live"] }, async () => {
   const { app, shell } = await launch();
   try {
     const first = await snapshot(shell);
@@ -158,13 +136,24 @@ test("a question that needs the web is browsed behind the person's tab, and 'sho
   }
 });
 
-test("a page open in the person's tab stays put while the agent works a background tab, which it can picture", async () => {
-  // The first tab is a web page with a native view, so a background tab is
-  // drawn once beneath it (browser-controller #drawUnderCover) and has a
-  // real size, and a picture, before the person ever sees it.
-  const { app, shell } = await launch({ homePage: "url", homeUrl: "https://example.com/", consoleOpenOnLaunch: true });
-  try {
+test.describe.serial("the agent works a background tab from the console", { tag: ["@tabs", "@agent", "@live"] }, () => {
+  let app: ElectronApplication;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    test.setTimeout(120_000);
+    // The first tab is a web page with a native view, so a background tab is
+    // drawn once beneath it (browser-controller #drawUnderCover) and has a
+    // real size, and a picture, before the person ever sees it.
+    ({ app, shell } = await launch({ homePage: "url", homeUrl: "https://example.com/", consoleOpenOnLaunch: true }));
     await expect.poll(async () => (await snapshot(shell)).tabs[0]?.url ?? "", { timeout: 30_000 }).toMatch(/example\.com/u);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a page open in the person's tab stays put while the agent works a background tab, which it can picture", async () => {
     const homeTabId = (await snapshot(shell)).activeTabId;
     await expect(shell.getByTestId("agent-panel")).toBeVisible();
     await shell.getByTestId("delegation-intent").fill("Open example.org in a new tab, take a screenshot of it, and tell me what its main heading says.");
@@ -202,19 +191,17 @@ test("a page open in the person's tab stays put while the agent works a backgrou
     console.log("fit:", JSON.stringify({ fit, pane }));
     expect(fit.visible).toBe(false);
     expect(fit.inner).toEqual(pane.view);
-  } finally {
-    await app.close();
-  }
-});
+  });
 
-test("a tab asleep in the background is woken and read where it is, without switching to it", async () => {
-  // tabs_list names sleeping tabs too; reading one wakes it behind the
-  // person's tab (browser-controller #ensureLiveTab) — it used to take a
-  // tab_focus to wake it, which is gone.
-  const { app, shell } = await launch({ homePage: "url", homeUrl: "https://example.com/", consoleOpenOnLaunch: true });
-  try {
-    await expect.poll(async () => (await snapshot(shell)).tabs[0]?.url ?? "", { timeout: 30_000 }).toMatch(/example\.com/u);
+  test("a tab asleep in the background is woken and read where it is, without switching to it", async () => {
+    // tabs_list names sleeping tabs too; reading one wakes it behind the
+    // person's tab (browser-controller #ensureLiveTab) — it used to take a
+    // tab_focus to wake it, which is gone. A conversation of its own: the
+    // case before's tool calls are not this one's.
+    await shell.getByTestId("new-conversation").click();
+    await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
     const homeTabId = (await snapshot(shell)).activeTabId!;
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === homeTabId)?.url).toMatch(/example\.com/u);
     await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab("https://en.wikipedia.org/wiki/Pistachio"));
     await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => /wikipedia\.org/u.test(tab.url))?.loading ?? true, { timeout: 30_000 }).toBe(false);
     const sleeperId = (await snapshot(shell)).tabs.find((tab) => /wikipedia\.org/u.test(tab.url))!.id;
@@ -254,7 +241,5 @@ test("a tab asleep in the background is woken and read where it is, without swit
     expect(run?.toolCalls.some((call) => call.name === "tab.open" || call.name === "tab.show")).toBe(false);
     expect(done.tabs.find((tab) => tab.id === sleeperId)?.lifecycle).toBe("live");
     expect(run?.messages.at(-1)?.content).toMatch(/Pistacia vera/u);
-  } finally {
-    await app.close();
-  }
+  });
 });

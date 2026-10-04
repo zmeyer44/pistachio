@@ -53,9 +53,9 @@ const NotesPage = lazy(() => import("./notes/NotesPage").then((m) => ({ default:
 const DeskSurface = lazy(() => import("./desk/DeskSurface"));
 
 /**
- * The page area: the browser surface with the settings page over it. Both
- * layouts place this same column beside their chrome (layouts/TopLayout.tsx
- * and the sidebar layout), so it is a layout piece, not a chrome feature.
+ * The page area: the browser surface with the settings page over it. The
+ * sidebar layout places it beside the column, so it is a layout piece, not
+ * a chrome feature.
  */
 export function ContentArea() {
   const settingsOpen = useAppStore((state) => state.overlay === "settings");
@@ -70,10 +70,8 @@ export function ContentArea() {
   const spaceForkOpen = useAppStore((state) => state.overlay === "space-fork");
   const imagePreviewOpen = useAppStore((state) => state.overlay === "image-preview");
   const liveViewOpen = useAppStore((state) => state.overlay === "liveView");
-  const sidebarLayout = useAppStore((state) => state.settings.layout.mode === "sidebar");
   const consoleWidth = useAppStore((state) => state.consoleWidth);
   const settingsCoversConsole = useSettingsCoversConsole();
-  const leading = leadingGutter(sidebarLayout);
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
       {/* The settings page paints over the surface's panes, inside the same
@@ -85,42 +83,27 @@ export function ContentArea() {
           console's room (lib/settings-fit.ts): the page reaches over the
           panel, which keeps its state underneath. */}
       {settingsOpen ? (
-        <SurfacePage leading={leading} reach={settingsCoversConsole ? consoleWidth : 0}>
+        <SurfacePage reach={settingsCoversConsole ? consoleWidth : 0}>
           <SettingsPage />
         </SurfacePage>
       ) : null}
-      {remindersOpen ? <SurfacePage leading={leading}><RemindersPage /></SurfacePage> : null}
-      {watchtowerOpen ? <SurfacePage leading={leading}><WatchtowerPage key={spaceId} /></SurfacePage> : null}
-      {archiveOpen ? <SurfacePage leading={leading}><ArchivePage key={spaceId} /></SurfacePage> : null}
+      {remindersOpen ? <SurfacePage><RemindersPage /></SurfacePage> : null}
+      {watchtowerOpen ? <SurfacePage><WatchtowerPage key={spaceId} /></SurfacePage> : null}
+      {archiveOpen ? <SurfacePage><ArchivePage key={spaceId} /></SurfacePage> : null}
       {/* On the desktop a save is a Watchtower save: the library is its Saved view. */}
-      {bookmarksOpen ? <SurfacePage leading={leading}>{nativeSurface ? <WatchtowerPage key={spaceId} initialView="saved" /> : <BookmarksPage />}</SurfacePage> : null}
-      {siteControlsOpen ? <SurfacePage leading={leading}><SiteControlsPanel /></SurfacePage> : null}
+      {bookmarksOpen ? <SurfacePage>{nativeSurface ? <WatchtowerPage key={spaceId} initialView="saved" /> : <BookmarksPage />}</SurfacePage> : null}
+      {siteControlsOpen ? <SurfacePage><SiteControlsPanel /></SurfacePage> : null}
       {/* A site's request is a small dialog over the page's still, not a
           page of its own: the page stays in view and is back untouched
           once the request is answered or the dialog is put down. */}
-      {permissionPromptOpen ? <SurfacePage leading={leading} overGlance><PermissionPromptDialog /></SurfacePage> : null}
-      {spaceForkOpen ? <SurfacePage leading={leading}><SpaceForkDialog /></SurfacePage> : null}
-      {imagePreviewOpen ? <SurfacePage leading={leading}><ImagePreview /></SurfacePage> : null}
+      {permissionPromptOpen ? <SurfacePage overGlance><PermissionPromptDialog /></SurfacePage> : null}
+      {spaceForkOpen ? <SurfacePage><SpaceForkDialog /></SurfacePage> : null}
+      {imagePreviewOpen ? <SurfacePage><ImagePreview /></SurfacePage> : null}
       {/* A run in the cloud browser, watched here: the same hole the settings
           page fills, since the tab views must be down for either to be seen. */}
-      {liveViewOpen ? <SurfacePage leading={leading}><LiveViewPage /></SurfacePage> : null}
+      {liveViewOpen ? <SurfacePage><LiveViewPage /></SurfacePage> : null}
     </div>
   );
-}
-
-/**
- * The gutter on the card's LEADING edge. In the sidebar layout the column
- * beside the card already ends with its own padding, and the eye reads the
- * distance from the sidebar's ROWS — the only part of the column that paints
- * — to the card. A gutter here would add to that padding and make the one
- * gap the sidebar side has twice every other edge's, so the surface leaves
- * that side to the sidebar: the card sits against the column, one gutter
- * from its rows. With the compact column away, its hidden slot
- * (SIDEBAR_EDGE_W) is the card's inset instead. The top layout has no column
- * beside the card, so the surface owns all four edges there.
- */
-function leadingGutter(sidebarLayout: boolean): number {
-  return sidebarLayout ? 0 : SURFACE_GUTTER;
 }
 
 /**
@@ -129,12 +112,10 @@ function leadingGutter(sidebarLayout: boolean): number {
  * console beside it — and lifts it above the panel's own layer.
  */
 function SurfacePage({
-  leading,
   reach = 0,
   overGlance = false,
   children,
 }: {
-  leading: number;
   reach?: number;
   /** Stand above a Glance (GlanceOverlay, z-40): what the preview asked is answered over it. */
   overGlance?: boolean;
@@ -144,7 +125,7 @@ function SurfacePage({
     <div
       className={cn("no-drag absolute inset-y-2", reach > 0 && "z-10", overGlance && "z-50")}
       data-reach={reach > 0 ? "console" : undefined}
-      style={{ left: leading, right: SURFACE_GUTTER - reach }}
+      style={{ left: 0, right: SURFACE_GUTTER - reach }}
     >
       <Suspense fallback={null}>{children}</Suspense>
     </div>
@@ -154,16 +135,20 @@ function SurfacePage({
 /**
  * The rounded card the tab views are laid over, with an 8px gutter around it.
  * It reports the panes' boxes to main (which sizes the tab views to them) and
- * its own box to the store (tab-drag edge geometry reads it).
+ * its own box to the store (the shelf drag's split zones read it).
  *
- * In the sidebar layout the gutter is a drag region: with the sidebar compact
- * nothing else in the window is draggable. That layout's leading edge belongs
- * to the sidebar's column instead (leadingGutter), so the gutter there is
- * three-sided. The panes and the divider opt out, so the page and the resize
- * gesture keep their pointer. The top gutter is
- * also the pane toolbar's reveal target (PaneToolbar): while the row is up
- * the top padding grows to the row's height, and the same reporting below
- * carries the card's slide to main frame by frame.
+ * The gutter is a drag region: with the sidebar compact nothing else in the
+ * window is draggable. It is three-sided — the card's LEADING edge takes
+ * none. The column beside the card already ends with its own padding, and
+ * the eye reads the distance from the sidebar's ROWS — the only part of the
+ * column that paints — to the card; a gutter there would make that one gap
+ * twice every other edge's, so the card sits against the column, one gutter
+ * from its rows. With the compact column away, its hidden slot
+ * (SIDEBAR_EDGE_W) is the card's inset instead. The panes and the divider
+ * opt out, so the page and the resize gesture keep their pointer. The top
+ * gutter is also the pane toolbar's reveal target (PaneToolbar): while the
+ * row is up the top padding grows to the row's height, and the same
+ * reporting below carries the card's slide to main frame by frame.
  *
  * A snapshot is published on every tab event — a title tick, a favicon, a
  * loading edge — and a split doubles that traffic. The surface selects only
@@ -246,7 +231,6 @@ function BrowserSurfaceImpl() {
   const glance = useAppStore((state) => state.glance);
   const glanceStaged = useAppStore((state) => state.glanceStaged);
   const glanceClosing = useAppStore((state) => state.glanceClosing);
-  const sidebarLayout = useAppStore((state) => state.settings.layout.mode === "sidebar");
   const activeGroup = snapshot.activeTabId === null
     ? undefined
     : snapshot.splitGroups.find((group) => group.tabIds.includes(snapshot.activeTabId!));
@@ -338,11 +322,11 @@ function BrowserSurfaceImpl() {
     <section
       ref={rootRef}
       data-testid="browser-surface"
-      data-toolbar={sidebarLayout && paneToolbarRevealed ? "" : undefined}
-      className={cn("browser-surface relative flex min-h-0 min-w-0 flex-1 bg-background-200 p-2", sidebarLayout && "drag-region")}
+      data-toolbar={paneToolbarRevealed ? "" : undefined}
+      className="browser-surface drag-region relative flex min-h-0 min-w-0 flex-1 bg-background-200 p-2"
       style={{
-        paddingTop: sidebarLayout && paneToolbarRevealed ? PANE_TOOLBAR_H : SURFACE_GUTTER,
-        paddingLeft: leadingGutter(sidebarLayout),
+        paddingTop: paneToolbarRevealed ? PANE_TOOLBAR_H : SURFACE_GUTTER,
+        paddingLeft: 0,
       }}
     >
       <PaneToolbar surfaceRef={rootRef} paneTabIds={paneTabIds} spans={paneSpans} />

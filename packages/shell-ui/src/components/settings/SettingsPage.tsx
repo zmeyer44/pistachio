@@ -40,6 +40,7 @@ import { GeneralPage } from "./sections/general";
 import { IntegrationsPage } from "./sections/integrations";
 import { MemoryPage } from "./sections/memory";
 import { IsolationPage, SiteDataPage, SpacesPage } from "./sections/privacy";
+import { ShieldsPage } from "./sections/shields";
 import { RemindersSettingsPage } from "./sections/reminders";
 import { ShortcutsPage } from "./sections/shortcuts";
 import { SyncPage } from "./sections/sync";
@@ -59,6 +60,7 @@ const PAGES: Record<SettingsSection, () => React.ReactElement> = {
   approvals: ApprovalsPage,
   evidence: EvidencePage,
   privacy: SiteDataPage,
+  "privacy/shields": ShieldsPage,
   "privacy/spaces": SpacesPage,
   "privacy/isolation": IsolationPage,
   account: AccountPage,

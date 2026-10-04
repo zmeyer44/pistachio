@@ -24,7 +24,7 @@
  *
  * This is the contract between the shell page, main, and those utility views. The
  * renderer-side manifest of chrome FEATURES (what the chrome contains, and
- * where each feature goes in each layout) is renderer/src/chrome/manifest.ts.
+ * where each feature goes in the sidebar) is renderer/src/chrome/manifest.ts.
  */
 
 import { isShortcutActionId, type ShortcutActionId } from "./shortcuts.js";
@@ -81,9 +81,8 @@ export const SIDEBAR_RAIL_W = 48;
 /**
  * Clearance for the macOS traffic lights at the window's top-left
  * (BrowserWindow trafficLightPosition {x: 16, y: 15}, three 12px buttons on
- * 20px centers). Whatever chrome occupies that corner — the top tab strip,
- * the sidebar's toolbar — pads its leading edge by this much, measured
- * from the WINDOW's left edge.
+ * 20px centers). The sidebar's toolbar, which occupies that corner, pads
+ * its leading edge by this much, measured from the WINDOW's left edge.
  */
 export const TRAFFIC_LIGHTS_W = 86;
 /**
@@ -125,8 +124,8 @@ export function pointerHoldsSidebar(point: { x: number; y: number }, box: { x: n
 
 /* ---------------------------- pane toolbar ------------------------------ */
 /**
- * The pane toolbar (renderer/src/components/PaneToolbar.tsx): in the sidebar
- * layout the page card sits SURFACE_GUTTER px below the window's top edge,
+ * The pane toolbar (renderer/src/components/PaneToolbar.tsx): the page card
+ * sits SURFACE_GUTTER px below the window's top edge,
  * and pointer movement in that gap slides the card down by the rest of a
  * toolbar row — the same TRAFFIC_LIGHTS_H row the sidebar's toolbar is, so
  * the per-pane controls (close, pin, bookmark) line up with back, forward
@@ -232,7 +231,7 @@ export interface TabDragVisual {
   /**
    * Limits on the ghost's top-left corner, viewport px — the same ones the
    * shell puts on the source element (a sidebar row never moves left of its
-   * slot; a strip tab stays on its row until it lifts). The layer applies
+   * slot). The layer applies
    * them to each pointer sample it predicts from, so its prediction and the
    * shell's next update agree.
    */
@@ -321,21 +320,20 @@ export interface ShellState {
    * The compact sidebar's column is in the layout right now (the pointer
    * brought it out and has not left). Main keys the macOS traffic lights
    * off it: they sit in the sidebar's toolbar, so they hide with the column.
-   * Always true when the sidebar is pinned, meaningless in the top layout.
+   * Always true when the sidebar is pinned.
    */
   sidebarRevealed: boolean;
   /**
    * A tab group's desk is up, or opening (docs/desk.md): the sidebar's
-   * column is the desk's dock — up whole or as its rail, whatever the
-   * layout says — so the traffic lights stay, over its top, and the compact
-   * sidebar's edge brings nothing out.
+   * column is the desk's dock — up whole or as its rail, pinned or compact
+   * — so the traffic lights stay, over its top, and the compact sidebar's
+   * edge brings nothing out.
    */
   sidebarOnDesk: boolean;
   /**
-   * The desk's dock is the sidebar's narrow rail, in the sidebar layout: the
-   * window's buttons, which would hang over the desk's corner, are hidden
-   * (the whole sidebar has room for them in its toolbar). Always false
-   * without a desk, and in the top layout, whose strip holds them.
+   * The desk's dock is the sidebar's narrow rail: the window's buttons,
+   * which would hang over the desk's corner, are hidden (the whole sidebar
+   * has room for them in its toolbar). Always false without a desk.
    */
   sidebarRail: boolean;
   /** The reminders page (pistachio://reminders) is over the content hole. */

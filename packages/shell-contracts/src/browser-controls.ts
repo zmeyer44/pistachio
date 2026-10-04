@@ -4,6 +4,8 @@
  * and the persisted enterprise policy file.
  */
 
+import type { ShieldsSiteState } from "./shields.js";
+
 export const BROWSER_PERMISSIONS = [
   "camera",
   "microphone",
@@ -154,6 +156,11 @@ export interface BrowserControlsSnapshot {
   pendingPasskeyRequests: PendingPasskeyRequest[];
   downloads: BrowserDownload[];
   recentEvents: BrowserPolicyEvent[];
+  /**
+   * Ad and tracker protection on this page (docs/shields.md), or null where
+   * the host has none — the cloud browser and the site preview.
+   */
+  shields: ShieldsSiteState | null;
 }
 
 /** Narrow policy projection sent into an untrusted tab's isolated preload. */
@@ -186,7 +193,9 @@ export type BrowserControlCommand =
   /** Drop one finished record from the list; a live download must be cancelled first. */
   | { type: "removeDownload"; downloadId: string }
   /** Drop every finished record; live downloads stay. */
-  | { type: "clearDownloads" };
+  | { type: "clearDownloads" }
+  /** Raise or lower Shields on the active page's site, and reload it so the change shows. */
+  | { type: "setShields"; enabled: boolean };
 
 /** `exact` is Chromium's own find; `smart` finds by meaning (docs/smart-find.md). */
 export type FindMode = "exact" | "smart";
@@ -321,6 +330,8 @@ export function isBrowserControlCommand(value: unknown): value is BrowserControl
       return typeof command["downloadId"] === "string";
     case "clearDownloads":
       return true;
+    case "setShields":
+      return typeof command["enabled"] === "boolean";
     default:
       return false;
   }

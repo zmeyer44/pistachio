@@ -367,19 +367,16 @@ describe("settings", () => {
     const after = await harness.host.updateSettings({ search: { aiProvider: "claude" } });
     // The patch names one field; spread over the whole section it used to
     // send the other back to its default.
-    expect(after.search).toEqual({ webProvider: "duckduckgo", aiProvider: "claude", smartSuggestions: true });
-    expect(harness.workspace.shellSettings()?.settings.search).toEqual({
-      webProvider: "duckduckgo",
-      aiProvider: "claude",
-      smartSuggestions: true,
-    });
+    // (The section's other fields are the shell's; this pins the two providers.)
+    expect(after.search).toMatchObject({ webProvider: "duckduckgo", aiProvider: "claude" });
+    expect(harness.workspace.shellSettings()?.settings.search).toMatchObject({ webProvider: "duckduckgo", aiProvider: "claude" });
   });
 
   it("a reset does not reopen the Mac's walkthrough over a live browser session", async () => {
     const harness = await makeHost();
-    await harness.host.updateSettings({ layout: { mode: "top" } });
+    await harness.host.updateSettings({ layout: { sidebar: "compact" } });
     const reset = await harness.host.resetSettings();
-    expect(reset.layout.mode).toBe("sidebar");
+    expect(reset.layout.sidebar).toBe("pinned");
     // `DEFAULT_SETTINGS.onboarding.completed` is false, and the shell turns
     // that into the first-run wizard — over a live session with the person's
     // own tabs behind it. Resetting the shell is not asking to be onboarded.

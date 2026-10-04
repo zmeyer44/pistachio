@@ -10,23 +10,13 @@
  * strikes it and then runs the menu's copy itself (`webContents.copy()`,
  * what the Copy role sends the focused page).
  */
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { pageFirst, shellReady } from "./windows";
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", executableSuffix)];
-  return candidates.find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
+import { launchApp } from "./app";
+import { pageAt } from "./pages-harness";
 
 let server: Server;
 let origin: string;
@@ -79,34 +69,27 @@ async function copyInPage(app: ElectronApplication, url: string, menuOnly = fals
 }
 
 async function tabPage(app: ElectronApplication, url: string): Promise<Page> {
-  const found = app.windows().find((page) => page.url() === url);
-  const page = found ?? (await app.waitForEvent("window", { predicate: (candidate) => candidate.url() === url }));
+  const page = await pageAt(app, url);
   await page.waitForLoadState("domcontentloaded");
   return page;
 }
 
-/** What ⌘C left on the clipboard, once it has had the time a stray URL copy would need to land. */
+/**
+ * What ⌘C left on the clipboard, once it has had the time a stray URL copy
+ * would need to land: a copy that must NOT happen has no event to wait for.
+ */
 async function settledClipboard(app: ElectronApplication, page: Page): Promise<string> {
   await page.waitForTimeout(400);
   return readClipboard(app);
 }
 
-test("⌘C with nothing selected copies the page's URL, and nothing else changes", async () => {
-  test.setTimeout(120_000);
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-bare-copy-"));
+test("⌘C with nothing selected copies the page's URL, and nothing else changes", { tag: ["@address"] }, async () => {
+  test.setTimeout(60_000);
   const plainUrl = `${origin}/`;
   const editorUrl = `${origin}/editor`;
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify(pageFirst({ general: { homeUrl: plainUrl }, layout: { mode: "sidebar", sidebar: "pinned" } })),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  const { app } = await launchApp({
+    settings: pageFirst({ general: { homeUrl: plainUrl }, layout: { sidebar: "pinned" } }),
+    name: "bare-copy",
   });
   // The clipboard is the machine's own; give back whatever was on it.
   const kept = await readClipboard(app);

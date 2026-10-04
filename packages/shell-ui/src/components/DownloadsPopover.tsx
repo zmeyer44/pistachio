@@ -18,11 +18,11 @@ import { Button } from "./ui/button";
  *
  * It is a shell overlay (`overlay: "downloads"`) like the site-info popover:
  * main paints stills of the pages and hides the native views while it is
- * up, so a card can hang below the strip over the page at all. It is
- * portalled to the body and positioned fixed from the chip's box; from the
- * sidebar footer, at the window's bottom, it opens upward instead. Opened
- * by key before anything was downloaded there is no chip: it sits at the
- * window's top-right corner then.
+ * up, so a card can hang over the page at all. It is portalled to the body
+ * and positioned fixed from the chip's box; from the sidebar footer, at the
+ * window's bottom, it opens upward. Opened by key before anything was
+ * downloaded there is no chip: it sits at the window's top-right corner
+ * then.
  */
 
 const POPOVER_W = 340;

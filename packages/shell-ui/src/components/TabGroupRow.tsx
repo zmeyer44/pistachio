@@ -10,8 +10,7 @@
  * group closes above it. This file draws the two states and reports the
  * pointer's coming and going.
  *
- * The favicon cluster and the colour tone are shared with the strip's chip
- * (components/TabStrip.tsx) and the archive page.
+ * The favicon cluster and the colour tone are shared with the archive page.
  */
 
 import { useEffect, useState } from "react";
@@ -246,24 +245,31 @@ export function TabGroupRow({
           </span>
         )}
         {renaming ? null : (
-          <span className={cn("relative flex h-6 shrink-0 items-center justify-end", onOpenAsDesk === undefined ? "w-12" : "w-[4.5rem]")}>
-            {/* The count gives way to the controls on hover — both always in layout, so the title's
-                width never changes under the pointer. */}
-            <span data-testid="tab-group-count" className="text-[10.5px] font-normal opacity-80 transition-opacity duration-150 group-focus-within/tg:opacity-0 group-hover/tg:opacity-0 motion-reduce:transition-none">
-              {count}
-            </span>
-            <span className="pointer-events-none absolute right-0 flex items-center opacity-0 transition-opacity duration-150 group-focus-within/tg:pointer-events-auto group-focus-within/tg:opacity-100 group-hover/tg:pointer-events-auto group-hover/tg:opacity-100 motion-reduce:transition-none">
-              {onOpenAsDesk === undefined ? null : (
-                <HeaderButton label={deskOpen ? "Leave the desk" : "Open as desk"} testId="tab-group-desk" onClick={onOpenAsDesk}>
-                  <AppWindow aria-hidden="true" />
+          <span className="flex h-6 shrink-0 items-center">
+            {/* The count gives way to the controls on hover, as a tab's rest mark does (TabTrailing):
+                two clip boxes that cross, so the title runs as wide as the count allows at rest and
+                only gives up the controls' width while they are out. */}
+            <span className="grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-focus-visible/tg:grid-cols-[1fr] group-focus-visible/tg:opacity-100 group-has-[:focus-visible]/tg:grid-cols-[1fr] group-has-[:focus-visible]/tg:opacity-100 group-hover/tg:grid-cols-[1fr] group-hover/tg:opacity-100 motion-reduce:transition-none">
+              <span className="flex min-w-0 items-center overflow-hidden">
+                {onOpenAsDesk === undefined ? null : (
+                  <HeaderButton label={deskOpen ? "Leave the desk" : "Open as desk"} testId="tab-group-desk" onClick={onOpenAsDesk}>
+                    <AppWindow aria-hidden="true" />
+                  </HeaderButton>
+                )}
+                <HeaderButton label={count > 4 ? "Open 4 most recent as split view" : "Open as split view"} testId="tab-group-split" disabled={count < 2} onClick={onOpenAsSplit}>
+                  <Columns2 aria-hidden="true" />
                 </HeaderButton>
-              )}
-              <HeaderButton label={count > 4 ? "Open 4 most recent as split view" : "Open as split view"} testId="tab-group-split" disabled={count < 2} onClick={onOpenAsSplit}>
-                <Columns2 aria-hidden="true" />
-              </HeaderButton>
-              <HeaderButton label="Close group" testId="tab-group-close" onClick={onClose}>
-                <X aria-hidden="true" />
-              </HeaderButton>
+                <HeaderButton label="Close group" testId="tab-group-close" onClick={onClose}>
+                  <X aria-hidden="true" />
+                </HeaderButton>
+              </span>
+            </span>
+            <span className="grid grid-cols-[1fr] transition-[grid-template-columns,opacity] duration-200 ease-out group-focus-visible/tg:grid-cols-[0fr] group-focus-visible/tg:opacity-0 group-has-[:focus-visible]/tg:grid-cols-[0fr] group-has-[:focus-visible]/tg:opacity-0 group-hover/tg:grid-cols-[0fr] group-hover/tg:opacity-0 motion-reduce:transition-none">
+              <span className="flex min-w-0 items-center justify-end overflow-hidden">
+                <span data-testid="tab-group-count" className="text-[10.5px] font-normal opacity-80">
+                  {count}
+                </span>
+              </span>
             </span>
           </span>
         )}

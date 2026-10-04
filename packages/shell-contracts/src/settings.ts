@@ -51,6 +51,7 @@ import {
   type WebSearchProvider,
 } from "./search.js";
 import { DEFAULT_HOME_URL, isAllowedNavigation } from "./url.js";
+import { DEFAULT_SHIELDS, mergeShieldsPatch, sanitizeShields, type ShieldsSettings } from "./shields.js";
 
 /**
  * What ⌘T opens: the home page (`general.homeUrl`), the address bar with
@@ -70,23 +71,10 @@ export const NEW_TAB_BEHAVIORS: readonly NewTabBehavior[] = [
 export type HomePageBehavior = "pistachio" | "url";
 
 /**
- * Where the browser chrome lives. "top" is a single titlebar row of tabs;
- * "sidebar" is a vertical column at the window's left edge.
- * Every chrome feature is declared once with a placement in BOTH layouts
- * (renderer/src/chrome/manifest.ts), so switching is a re-arrangement, never
- * a loss of function.
- */
-export type ChromeLayoutMode = "top" | "sidebar";
-export const CHROME_LAYOUT_MODES: readonly ChromeLayoutMode[] = [
-  "sidebar",
-  "top",
-];
-
-/**
- * How the sidebar behaves when it is the layout. "pinned" keeps it in the
- * window's layout at all times; "compact" hides it (and the window controls
- * with it) and reveals it over the page when the pointer reaches the
- * window's left edge.
+ * How the sidebar — the browser chrome's column at the window's left edge —
+ * behaves. "pinned" keeps it in the window's layout at all times; "compact"
+ * hides it (and the window controls with it) and reveals it over the page
+ * when the pointer reaches the window's left edge.
  */
 export type SidebarPresentation = "pinned" | "compact";
 export const SIDEBAR_PRESENTATIONS: readonly SidebarPresentation[] = [
@@ -130,7 +118,6 @@ export interface DesktopSettings {
     learnFromRuns: boolean;
   };
   layout: {
-    mode: ChromeLayoutMode;
     sidebar: SidebarPresentation;
   };
   organization: {
@@ -241,6 +228,12 @@ export interface DesktopSettings {
     rememberRecents: boolean;
   };
   /**
+   * Ad, tracker, and privacy protection (@pistachio/shell-contracts/shields,
+   * docs/shields.md). Which sites have it lowered is not a setting
+   * (main/shields/site-store.ts — its own file).
+   */
+  shields: ShieldsSettings;
+  /**
    * Tidy (docs/tab-tidy.md): the pass that archives idle tabs, gathers
    * related ones into groups, and sends favorites home. What is archived is
    * not a setting (main/tab-archive-store.ts — its own file); these are the
@@ -296,7 +289,6 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
     learnFromRuns: true,
   },
   layout: {
-    mode: "sidebar",
     sidebar: "pinned",
   },
   organization: {
@@ -349,6 +341,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   privacy: {
     rememberRecents: true,
   },
+  shields: DEFAULT_SHIELDS,
   tabs: {
     archiveAfterHours: DEFAULT_ARCHIVE_AFTER_HOURS,
     groupRelated: true,
@@ -552,6 +545,7 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
   const approvals = section(root["approvals"]);
   const evidence = section(root["evidence"]);
   const privacy = section(root["privacy"]);
+  const shields = section(root["shields"]);
   const tabs = section(root["tabs"]);
   const cloud = section(root["cloud"]);
   // An `ai` section (provider keys) may still be in a file written before
@@ -572,7 +566,6 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
       learnFromRuns: bool(memory["learnFromRuns"], d.memory.learnFromRuns),
     },
     layout: {
-      mode: oneOf(layout["mode"], CHROME_LAYOUT_MODES, d.layout.mode),
       sidebar: oneOf(
         layout["sidebar"],
         SIDEBAR_PRESENTATIONS,
@@ -689,6 +682,7 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
         d.privacy.rememberRecents,
       ),
     },
+    shields: sanitizeShields(shields),
     tabs: {
       archiveAfterHours: oneOf(
         tabs["archiveAfterHours"],
@@ -728,6 +722,8 @@ export function applySettingsPatch(
   if ("homeUrl" in generalPatch && !("homePage" in generalPatch)) {
     (merged["general"] as Record<string, unknown>)["homePage"] = "url";
   }
+  // Changing one knob of a preset makes the choice custom (shields.ts).
+  if ("shields" in p) merged["shields"] = mergeShieldsPatch(current.shields, section(p["shields"]));
   refuseShortcutClash(current.shortcuts, section(p["shortcuts"]));
   return sanitizeSettings(merged);
 }
@@ -785,6 +781,7 @@ export const SETTINGS_SECTIONS = {
   approvals: "Approvals & notifications",
   evidence: "Evidence",
   privacy: "Site data",
+  "privacy/shields": "Ads & trackers",
   "privacy/spaces": "Spaces",
   "privacy/isolation": "Agent isolation",
   account: "Account",

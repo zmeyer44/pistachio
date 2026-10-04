@@ -80,11 +80,10 @@ describe("downloads commands and placement", () => {
     expect(isBrowserControlCommand({ type: "retryDownload", downloadId: 4 })).toBe(false);
   });
 
-  it("has a default key that collides with nothing, and a home in both layouts", () => {
+  it("has a default key that collides with nothing, and a home in the sidebar's footer", () => {
     expect(DEFAULT_SHORTCUTS.openDownloads).toBe("Mod+Shift+J");
     expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+Shift+J", "openDownloads")).toBeNull();
     expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "J", code: "KeyJ", meta: true, shift: true }, "darwin")).toBe("openDownloads");
-    expect(CHROME_MANIFEST.downloads.top).toMatchObject({ region: "trailing" });
-    expect(CHROME_MANIFEST.downloads.sidebar).toMatchObject({ region: "footer" });
+    expect(CHROME_MANIFEST.downloads).toMatchObject({ region: "footer" });
   });
 });

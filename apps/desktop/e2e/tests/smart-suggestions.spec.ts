@@ -1,16 +1,8 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import {
-  _electron as electron,
-  expect,
-  test,
-  type ElectronApplication,
-  type Page,
-} from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { pageFirst, shellPage } from "./windows";
+import { pageFirst, shellReady } from "./windows";
+import { launchApp } from "./app";
+import { capturePage } from "./pages-harness";
 
 /**
  * Smart suggestions, end to end in the real app (docs/smart-suggestions.md):
@@ -27,24 +19,6 @@ const SCRIPT = {
   "explain tls": { intent: "ai_prompt" },
 };
 
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      suffix,
-    ),
-  ].find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
 async function type(shell: Page, query: string): Promise<void> {
   await shell.keyboard.press("Meta+L");
   const input = shell.getByTestId("address-input");
@@ -52,27 +26,15 @@ async function type(shell: Page, query: string): Promise<void> {
   await input.fill(query);
 }
 
-test("the intent model reorders the address bar, and the heuristics keep what is theirs", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined)
-    throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-smart-suggestions-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst()));
-  const app: ElectronApplication = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: {
-      ...process.env,
-      PISTACHIO_E2E: "1",
-      PISTACHIO_USER_DATA: userData,
-      PISTACHIO_INTENT_SCRIPT: JSON.stringify(SCRIPT),
-    },
+test("the intent model reorders the address bar, and the heuristics keep what is theirs", { tag: ["@address"] }, async () => {
+  const { app } = await launchApp({
+    settings: pageFirst(),
+    env: { PISTACHIO_INTENT_SCRIPT: JSON.stringify(SCRIPT) },
+    name: "smart-suggestions",
   });
 
   try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+    const shell = await shellReady(app);
     const results = shell.getByTestId("command-results");
     const first = results.locator('[data-index="0"]');
 
@@ -82,7 +44,11 @@ test("the intent model reorders the address bar, and the heuristics keep what is
     await expect(results).toHaveAttribute("data-intent-ranked", "applied");
     await expect(first).toHaveAttribute("data-action-id", "settings:appearance");
     await expect(results.locator('[data-suggestion-kind="search"]')).toHaveAttribute("data-index", "1");
-    await shell.screenshot({ path: "e2e/screenshots/smart-suggestions-settings.png" });
+    await capturePage(shell, "smart-suggestions-settings.png");
+    // ↵ just after a reorder means the row that was there before it
+    // (shell-ui lib/intent-ranking.ts REORDER_GRACE_MS, 150 ms): a person
+    // looks first, and so does this.
+    await shell.waitForTimeout(200);
     await shell.keyboard.press("Enter");
     await expect(shell.getByRole("heading", { name: "Appearance" })).toBeVisible();
     await shell.keyboard.press("Escape");
@@ -92,7 +58,7 @@ test("the intent model reorders the address bar, and the heuristics keep what is
     await expect(results).toHaveAttribute("data-intent-ranked", "applied");
     await expect(first).toHaveAttribute("data-suggestion-kind", "ai");
     await expect(first).toContainText("↵");
-    await shell.screenshot({ path: "e2e/screenshots/smart-suggestions-ai.png" });
+    await capturePage(shell, "smart-suggestions-ai.png");
 
     // An address is the heuristics' to decide: nobody is asked.
     await shell.getByTestId("address-input").fill("github.com");
@@ -111,7 +77,5 @@ test("the intent model reorders the address bar, and the heuristics keep what is
     await expect(first).toHaveAttribute("data-suggestion-kind", "search");
   } finally {
     await app.close();
-    // These profiles pile up in $TMPDIR otherwise, on a disk with little room.
-    await rm(userData, { recursive: true, force: true });
   }
 });

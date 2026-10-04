@@ -7,6 +7,7 @@ import {
   KeyRound,
   Printer,
   ShieldCheck,
+  ShieldOff,
   Volume2,
   X,
   ZoomIn,
@@ -21,6 +22,7 @@ import {
 } from "@pistachio/shell-contracts/browser-controls";
 import { useAppStore } from "../store";
 import { PERMISSION_ICONS, PERMISSION_LABELS, requestAnswerLabels, requestQuestion } from "./permission-meta";
+import { shieldsNote } from "./SiteInfoPopover";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Select } from "./ui/select";
@@ -41,6 +43,11 @@ const ACTION_ICONS: Record<GuardedBrowserAction, React.ReactNode> = {
   print: <Printer />,
 };
 
+const SHIELDS_ITEMS = [
+  { value: "up", label: "Up" },
+  { value: "down", label: "Down" },
+] as const;
+
 const PERMISSION_ITEMS: ReadonlyArray<{
   value: PermissionDecision;
   label: string;
@@ -60,6 +67,7 @@ export function SiteControlsPanel() {
   const failed = useAppStore((state) => state.failed["getBrowserControls"] ?? null);
   const close = useAppStore((state) => state.closeSiteControls);
   const run = useAppStore((state) => state.browserControl);
+  const openSettings = useAppStore((state) => state.openSettings);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -312,6 +320,46 @@ export function SiteControlsPanel() {
           </div>
 
           <div className="min-w-0 space-y-5">
+            {controls.shields !== null && controls.shields.siteKey !== "" ? (
+              <ControlSection title="Shields" description="Ads, trackers, and fingerprinting protection on this site.">
+                <div data-testid="site-controls-shields" className="flex items-start gap-3 rounded-sm border border-gray-300 bg-gray-50 p-3">
+                  <span
+                    className={`grid size-9 shrink-0 place-items-center rounded-full ${controls.shields.active ? "bg-green-200 text-green-900" : "bg-gray-200 text-gray-700"}`}
+                  >
+                    {controls.shields.active ? <ShieldCheck className="size-4" aria-hidden="true" /> : <ShieldOff className="size-4" aria-hidden="true" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-label-13 font-medium text-gray-1000">
+                      {controls.shields.active ? "Up" : "Down"} for {controls.shields.siteKey}
+                    </span>
+                    <span className="block text-[11px] text-gray-700">{shieldsNote(controls.shields)}</span>
+                  </span>
+                  <Select
+                    aria-label="Shields on this site"
+                    className="w-24"
+                    value={controls.shields.active ? "up" : "down"}
+                    items={SHIELDS_ITEMS}
+                    disabled={controls.tabKind === "agent" || controls.shields.globallyOff}
+                    onValueChange={(value) => void run({ type: "setShields", enabled: value === "up" })}
+                  />
+                </div>
+                {controls.shields.active && controls.shields.blockedHosts.length > 0 ? (
+                  <ul className="mt-3 divide-y divide-gray-200" data-testid="site-controls-shields-hosts">
+                    {controls.shields.blockedHosts.map(({ host, count }) => (
+                      <li key={host} className="flex items-center gap-3 py-1.5 text-copy-12">
+                        <span className="min-w-0 flex-1 truncate font-mono text-gray-1000">{host}</span>
+                        <span className="shrink-0 tabular-nums text-gray-700">{count}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <div className="mt-3 flex justify-end">
+                  <Button variant="tertiary" size="xs" onClick={() => openSettings("privacy/shields")}>
+                    Shields settings
+                  </Button>
+                </div>
+              </ControlSection>
+            ) : null}
             <ControlSection title="Passkeys" description="Phishing-resistant sign-in using this device or a security key.">
               <div data-testid="passkey-status" className="flex items-start gap-3 rounded-sm border border-gray-300 bg-gray-50 p-3">
                 <span

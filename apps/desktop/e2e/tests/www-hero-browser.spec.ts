@@ -75,7 +75,7 @@ function activePage(frame: FrameLocator) {
   return frame.locator('[data-testid="demo-page"]');
 }
 
-test("the hero's browser works: tabs, favorites, addresses, links, console", async ({ page }) => {
+test("the hero's browser works: tabs, favorites, addresses, links, console", { tag: ["@web"] }, async ({ page }) => {
   // A cold `next dev` compiles the site and the shell's chunk on first request.
   test.setTimeout(300_000);
   const site = await startWww();

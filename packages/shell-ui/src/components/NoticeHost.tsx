@@ -21,8 +21,8 @@ import { NoticeStack } from "./NoticeStack";
  * the desktop, where a card in this page would sit under the tab views, and
  * drawn right here on a stream surface, where the panes are DOM.
  *
- * It renders nothing into the chrome, so no layout, and no state of the
- * sidebar, decides whether a notice is seen.
+ * It renders nothing into the chrome, so no state of the sidebar decides
+ * whether a notice is seen.
  */
 export function NoticeHost() {
   const notices = useAppStore((state) => state.notices);

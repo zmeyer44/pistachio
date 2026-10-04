@@ -1,24 +1,11 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test } from "@playwright/test";
-import { findPage, shellReady } from "./windows";
+import { expect, test } from "@playwright/test";
+import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { openSiteInfo } from "./pages-harness";
 
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", suffix),
-  ].find((candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")));
-}
-
-test("managed site controls and native find are enforced across Chromium views", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-browser-basics-"));
+// Find in page (⌘F, Escape) is smart-find.spec.ts's: it opens the same bar.
+test("managed site controls and passkeys are enforced across Chromium views, and the footer menu pins", { tag: ["@site", "@sidebar"] }, async () => {
   const passkeyServer = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end("<!doctype html><title>Passkey test</title><h1>Passkey test</h1>");
@@ -30,29 +17,24 @@ test("managed site controls and native find are enforced across Chromium views",
   const serverAddress = passkeyServer.address();
   if (serverAddress === null || typeof serverAddress === "string") throw new Error("Passkey test server did not bind a TCP port");
   const passkeyUrl = `http://localhost:${serverAddress.port}/`;
-  await writeFile(
-    join(userData, "enterprise-policy.json"),
-    JSON.stringify({
-      version: 1,
-      rules: [
-        {
-          pattern: "pistachio://demo",
-          permissions: { notifications: "block" },
-          actions: { download: "block", copy: "block", print: "block" },
-        },
-      ],
-    }),
-  );
-  // The window opens on the home page, and this spec's managed rules are
-  // written for the demo site — so make the demo page the home page rather
-  // than expecting a demo tab that launch no longer creates.
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ general: { homeUrl: "pistachio://demo/invoices" } }));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  const { app } = await launchApp({
+    // The window opens on the home page, and this spec's managed rules are
+    // written for the demo site — so make the demo page the home page rather
+    // than expecting a demo tab that launch no longer creates.
+    settings: { general: { homeUrl: "pistachio://demo/invoices" } },
+    files: {
+      "enterprise-policy.json": {
+        version: 1,
+        rules: [
+          {
+            pattern: "pistachio://demo",
+            permissions: { notifications: "block" },
+            actions: { download: "block", copy: "block", print: "block" },
+          },
+        ],
+      },
+    },
+    name: "browser-basics",
   });
   try {
     const shell = await shellReady(app);
@@ -228,15 +210,7 @@ test("managed site controls and native find are enforced across Chromium views",
     await expect(footerMenu).toHaveCount(0);
 
     // The page card's site-info popover opens the full Site controls page.
-    // Its button rides the pane toolbar, revealed here by the trigger strip's
-    // own pointer move (main cannot read the OS pointer under Playwright).
-    await expect(async () => {
-      const trigger = shell.getByTestId("pane-toolbar-trigger");
-      if ((await trigger.count()) > 0) await trigger.dispatchEvent("pointermove");
-      await shell.getByTestId("site-info-button").click({ timeout: 1_000 });
-      await expect(shell.getByTestId("site-info-popover")).toBeVisible({ timeout: 1_000 });
-    }).toPass({ timeout: 15_000 });
-    await shell.getByTestId("site-info-popover").getByTestId("site-info-site-controls").click();
+    await (await openSiteInfo(shell)).getByTestId("site-info-site-controls").click();
 
     const controls = shell.getByTestId("site-controls");
     await expect(controls).toBeVisible();
@@ -251,28 +225,7 @@ test("managed site controls and native find are enforced across Chromium views",
     await controls.getByRole("button", { name: "Zoom in" }).click();
     await expect(controls.getByRole("button", { name: "110%" })).toBeVisible();
     await controls.getByRole("button", { name: "Close site controls" }).click();
-
-    await shell.keyboard.press("Meta+f");
-    const find = await findPage(app);
-    const input = find.getByRole("textbox", { name: "Find in page" });
-    await expect(input).toBeFocused();
-    await input.fill("invoice");
-    await expect(input).toHaveValue("invoice");
-    await expect
-      .poll(() =>
-        find.evaluate(() =>
-          (window as unknown as { pistachio: { getFindState(): Promise<unknown> } }).pistachio.getFindState(),
-        ),
-      )
-      .toMatchObject({ open: true, query: "invoice" });
-    await input.press("Escape");
-    await expect
-      .poll(() =>
-        find.evaluate(() =>
-          (window as unknown as { pistachio: { getFindState(): Promise<unknown> } }).pistachio.getFindState(),
-        ),
-      )
-      .toMatchObject({ open: false });
+    await expect(controls).toHaveCount(0);
   } finally {
     passkeyServer.closeAllConnections();
     passkeyServer.close();

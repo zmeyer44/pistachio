@@ -249,6 +249,7 @@ const FILE_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
 export const UNSUPPORTED = {
   watchtower: "Watchtower currently stores browsing memories on the desktop. Open Pistachio on your Mac to search its archive.",
+  shields: "Ad and tracker blocking runs in the desktop app; the cloud browser loads pages as they are.",
   tabGroupCommand: "Tab groups are kept by the desktop app for now. Open Pistachio on your Mac to group tabs.",
   tabArchive: "The tab archive is kept by the desktop app. Open Pistachio on your Mac to see archived tabs.",
   tidy: "Tidy runs in the desktop app for now. Open Pistachio on your Mac to tidy tabs.",
@@ -2360,6 +2361,10 @@ export class ShellHost implements ShellApi, StreamShellApi {
         this.#publishControls();
         return;
       }
+      case "setShields":
+        // The popover hides the switch where `shields` is null; a stale
+        // shell that sends it anyway is told why nothing changed.
+        throw new Error(UNSUPPORTED.shields);
       case "openDownload":
       case "showDownload":
       case "retryDownload": {
@@ -2552,6 +2557,8 @@ export class ShellHost implements ShellApi, StreamShellApi {
       pendingPasskeyRequests: [],
       downloads: this.#downloads?.list() ?? [],
       recentEvents: this.#policyEvents.map((event) => ({ ...event })),
+      // Shields are the desktop's (docs/shields.md): nothing here blocks.
+      shields: null,
     };
   }
 
@@ -3051,6 +3058,8 @@ export class ShellHost implements ShellApi, StreamShellApi {
 
   /** Archive capture and storage belong to the desktop installation. */
   async watchtower(): Promise<never> { return unsupported("watchtower"); }
+
+  async shields(): Promise<never> { return unsupported("shields"); }
 
   /** Tab groups, the tab archive and Tidy are the desktop's in v1 (docs/tab-tidy.md §5). */
   async tabGroupCommand(): Promise<never> { return unsupported("tabGroupCommand"); }

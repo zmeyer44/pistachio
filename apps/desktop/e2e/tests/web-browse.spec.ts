@@ -186,7 +186,7 @@ async function openTab(page: Page, url: string): Promise<void> {
   await address.press("Enter");
 }
 
-test("the web app opens a cloud tab, types into it, and finds it again after a reload", async ({ page }) => {
+test("the web app opens a cloud tab, types into it, and finds it again after a reload", { tag: ["@web"] }, async ({ page }) => {
   // S6 added two more round trips to this walk (a download and an upload), on
   // top of a cold `next dev` and a real Chromium fleet.
   test.setTimeout(600_000);

@@ -102,7 +102,7 @@ async function unavailableLink(settings: Locator, title: string): Promise<string
   return href ?? "";
 }
 
-test("the browser's 'managed from the web app' links reach the dashboard, not the site", async ({ page, request }) => {
+test("the browser's 'managed from the web app' links reach the dashboard, not the site", { tag: ["@web"] }, async ({ page, request }) => {
   // Two cold `next dev` processes, a real Chromium fleet, a claimed session,
   // and a walkthrough walked before settings can be opened at all.
   test.setTimeout(600_000);
@@ -228,8 +228,13 @@ test("the browser's 'managed from the web app' links reach the dashboard, not th
     await page.screenshot({ path: `${SCREENSHOTS}/04-appearance.png`, fullPage: true });
 
     // Privacy & security is a GROUP: selecting it pushes its own menu, whose
-    // header carries a caption too, and lands on Site data.
+    // header carries a caption too, and lands on Ads & trackers — which the
+    // cloud browser refuses with its own reason (Shields are the desktop's).
     const privacy = await openSection(page, "Privacy & security");
+    await expect(privacy.getByRole("heading", { name: "Ads & trackers", exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(privacy.getByText("Not available here")).toBeVisible();
+    await expectNoMacTalk(privacy, "Settings → Privacy & security → Ads & trackers");
+    await privacy.getByRole("button", { name: "Site data", exact: true }).click();
     await expect(privacy.getByRole("heading", { name: "Site data", exact: true })).toBeVisible({ timeout: 30_000 });
     await expectNoMacTalk(privacy, "Settings → Privacy & security → Site data");
     await privacy.getByRole("button", { name: "Spaces", exact: true }).click();

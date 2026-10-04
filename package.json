@@ -6,8 +6,10 @@
     "dev": "turbo run dev",
     "dev:ready": "node scripts/dev-ready.mjs",
     "lint": "turbo run lint",
-    "test": "turbo run test",
+    "test": "turbo run test --concurrency=1",
     "test:e2e": "pnpm --filter @pistachio/desktop test:e2e",
+    "test:e2e:web": "pnpm --filter @pistachio/desktop test:e2e:web",
+    "test:changed": "node scripts/test-changed.mjs",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
     "dev:cloud": "turbo run dev --filter=@pistachio/control --filter=@pistachio/cloud-browser --filter=@pistachio/egress --filter=www --filter=web"

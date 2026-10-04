@@ -1,6 +1,7 @@
 import type { NoteRequest, NoteResponse, NoteSnapshot } from "./notes.js";
 import type { ReportRequest, ReportResponse } from "./reports.js";
 import type { WatchtowerRequest, WatchtowerResponse } from "./watchtower.js";
+import type { ShieldsRequest, ShieldsStatus } from "./shields.js";
 import type { TabArchiveRequest, TabArchiveResponse } from "./tab-archive.js";
 import type { TabGroupCommand, TabGroupCommandResult, TabGroupInfo } from "./tab-groups.js";
 import type { TidyRequest, TidyResponse } from "./tidy.js";
@@ -821,11 +822,12 @@ export interface ShellApi {
   onReadAloudChanged(listener: (jobs: ReadAloudStatus[]) => void): () => void;
   cancelReadAloud(id: string): Promise<void>;
   /**
-   * Speak text the shell shows — a reply in the console — as a read-aloud
-   * job in the current tab's Space: the same player and media card a page
-   * selection gets. Resolves once the first piece is playing.
+   * Speak text the shell shows — a reply in the console, a note — as a
+   * read-aloud job in the current tab's Space: the same player and media
+   * card a page selection gets, under `title` (a note's name), or
+   * "Pistachio". Resolves once the first piece is playing.
    */
-  readAloudText(text: string): Promise<void>;
+  readAloudText(text: string, title?: string): Promise<void>;
   // ── Enterprise browser controls and native find ────────────────────────
   getBrowserControls(): Promise<BrowserControlsSnapshot>;
   onBrowserControlsChanged(
@@ -971,6 +973,12 @@ export interface ShellApi {
   watchtower(request: WatchtowerRequest): Promise<WatchtowerResponse>;
   /** Wipe the active Space's site data (cookies, storage, cache). */
   clearBrowsingData(): Promise<void>;
+  /**
+   * Ad and tracker protection (docs/shields.md): the engine and list status,
+   * the sites it is lowered on, and the counts — the settings themselves are
+   * `DesktopSettings.shields`. A host that blocks nothing refuses it.
+   */
+  shields(request: ShieldsRequest): Promise<ShieldsStatus>;
   /** App version, platform, and where settings live. */
   getAppInfo(): Promise<AppInfo>;
   // ── App updates (@pistachio/shell-contracts/updates) ───────────────────────────────────
@@ -1594,6 +1602,7 @@ export const IPC = {
   reminderAcknowledge: "pistachio:reminder-acknowledge",
   reminderSnooze: "pistachio:reminder-snooze",
   watchtower: "pistachio:watchtower",
+  shields: "pistachio:shields",
   bookmarksGet: "pistachio:bookmarks-get",
   bookmarksChanged: "pistachio:bookmarks-changed",
   bookmarkTab: "pistachio:bookmark-tab",
@@ -1817,6 +1826,7 @@ export const SHELL_METHOD_NAMES = allMethods([  "getSnapshot",
   "openBookmarksPage",
   "watchtower",
   "clearBrowsingData",
+  "shields",
   "getAppInfo",
   "getUpdateState",
   "checkForUpdates",

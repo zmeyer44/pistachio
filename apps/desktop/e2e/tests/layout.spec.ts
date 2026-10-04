@@ -1,119 +1,16 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { sidebarMenuItem } from "./footer";
-import { pageFirst, shellPage, shellReady } from "./windows";
+import { pageFirst, shellReady } from "./windows";
 import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
+import { SIDEBAR_EDGE_W, SIDEBAR_TRIGGER_W } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { DesktopSettings } from "@pistachio/shell-contracts/settings";
+import { captureEnabled, launchApp } from "./app";
+import { captureShell, captureWindow, visibleTabViews } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/layout");
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", executableSuffix),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-/** capturePage throws UnknownVizError until a view's compositor has its first frame. */
-async function withFirstFrame<T>(capture: () => Promise<T>): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    try {
-      return await capture();
-    } catch (error: unknown) {
-      lastError = error;
-      await new Promise((done) => setTimeout(done, 150));
-    }
-  }
-  throw lastError;
-}
-
-/** One capture of the window: the shell's frame plus every visible child view, in stacking order. */
-interface WindowCapture {
-  shell: string;
-  /** The shell frame's pixel size — capturePage renders at the display's scale. */
-  width: number;
-  height: number;
-  /** Pixels per DIP, so a view's DIP bounds land on the right pixels. */
-  scale: number;
-  views: Array<{ bounds: { x: number; y: number }; png: string }>;
-}
-
-/**
- * The whole window: the shell page with every visible child view composited
- * over it in stacking order — the tab panes and any visible utility view —
- * which a plain shell capture never shows.
- *
- * The compositing happens on a canvas INSIDE the shell page rather than in
- * an image tool on the machine: the test then needs nothing installed
- * beyond the Electron it already drives.
- */
-async function captureWindow(app: ElectronApplication, filename: string): Promise<void> {
-  // Let the layout's re-arrangement, the page's 140ms fade-in, and the
-  // sidebar's 220ms slide settle first.
-  await new Promise((done) => setTimeout(done, 400));
-  const capture = await withFirstFrame(() =>
-    app.evaluate(async ({ BrowserWindow }): Promise<WindowCapture> => {
-      const window = BrowserWindow.getAllWindows()[0];
-      if (window === undefined) throw new Error("Pistachio window is unavailable");
-      const shell = await window.capturePage();
-      const size = shell.getSize();
-      const [contentWidth] = window.getContentSize();
-      const views = await Promise.all(
-        window.contentView.children.flatMap((child) => {
-          if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return [];
-          const view = child as WebContentsView;
-          return [
-            view.webContents.capturePage().then((image) => ({
-              bounds: view.getBounds(),
-              png: image.toPNG().toString("base64"),
-            })),
-          ];
-        }),
-      );
-      return {
-        shell: shell.toPNG().toString("base64"),
-        width: size.width,
-        height: size.height,
-        scale: contentWidth === undefined || contentWidth === 0 ? 1 : size.width / contentWidth,
-        views,
-      };
-    }),
-  );
-  const shell = await shellPage(app);
-  const dataUrl = await shell.evaluate(async ({ shell: frame, width, height, scale, views }: WindowCapture) => {
-    const decode = (png: string): Promise<HTMLImageElement> =>
-      new Promise((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => resolve(image);
-        image.onerror = () => reject(new Error("capture failed to decode"));
-        image.src = `data:image/png;base64,${png}`;
-      });
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d");
-    if (context === null) throw new Error("no 2d canvas context");
-    context.drawImage(await decode(frame), 0, 0);
-    for (const view of views) {
-      context.drawImage(await decode(view.png), Math.round(view.bounds.x * scale), Math.round(view.bounds.y * scale));
-    }
-    return canvas.toDataURL("image/png");
-  }, capture);
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64"));
-}
+const FOLDER = "layout";
 
 /**
  * The window buttons as main has them, and whether a sidebar chrome view
@@ -133,33 +30,10 @@ function windowState(app: ElectronApplication) {
   });
 }
 
-/**
- * How many TAB views are on screen. A modal raises the chrome over them and
- * lowering must bring them back — even when the lower outruns the raise's
- * pane captures (BrowserController.setOverlay).
- */
-function visibleTabViews(app: ElectronApplication): Promise<number> {
-  return app.evaluate(({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return window.contentView.children.filter((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return false;
-      const url = (child as WebContentsView).webContents.getURL();
-      return !Object.values(hashes).some((hash) => url.endsWith(hash));
-    }).length;
-  }, CHROME_VIEW_HASHES);
-}
-
-/** The strip's tablist — the sidebar's list is the vertical one. */
-function tabStrip(shell: Page) {
-  return shell.locator('[role="tablist"]:not([aria-orientation="vertical"])');
-}
-
-/** Open Settings by key, or by the layout's own control: the strip's button, or the sidebar footer menu's row. */
+/** Open Settings by key, or by the sidebar footer menu's row. */
 async function openGeneralSettings(shell: Page, viaButton = false) {
   if (!viaButton) await shell.keyboard.press("Meta+,");
-  else if ((await shell.getByTestId("sidebar-chrome").count()) > 0) await (await sidebarMenuItem(shell, "settings-button")).click();
-  else await shell.getByTestId("settings-button").click();
+  else await (await sidebarMenuItem(shell, "settings-button")).click();
   const page = shell.getByTestId("settings-page");
   await expect(page).toBeVisible();
   await page.getByRole("button", { name: "General", exact: true }).click();
@@ -176,63 +50,157 @@ async function storedLayout(userData: string): Promise<DesktopSettings["layout"]
   }
 }
 
-test("the chrome re-arranges between top tabs and the sidebar, pinned and compact, without losing a control", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-layout-"));
-  // This transition test begins in the non-default layout so it can exercise
-  // top tabs → sidebar → top tabs without coupling the sequence to defaults.
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify(pageFirst({ layout: { mode: "top", sidebar: "pinned" } })),
-  );
+interface GeometrySample {
+  time: number;
+  sidebarWidth: number;
+  pageX: number;
+}
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+/** Sample the sidebar's width and the page's left edge on every frame for 420ms: jumps that settled screenshots miss. */
+async function beginGeometrySampling(shell: Page): Promise<void> {
+  await shell.evaluate(() => {
+    const target = window as unknown as { __compactSamples?: GeometrySample[]; __compactSamplingDone?: boolean };
+    target.__compactSamples = [];
+    target.__compactSamplingDone = false;
+    const started = performance.now();
+    const sample = (now: number) => {
+      const slot = document.querySelector<HTMLElement>('[data-testid="sidebar-motion-slot"]');
+      const pane = document.querySelector<HTMLElement>('[data-testid="sidebar-pane"]');
+      const edge = document.querySelector<HTMLElement>('[data-testid="sidebar-edge"]');
+      const primary = document.querySelector<HTMLElement>('[data-testid="primary-pane"]');
+      const sidebar = slot?.getBoundingClientRect() ?? pane?.getBoundingClientRect() ?? edge?.getBoundingClientRect();
+      target.__compactSamples?.push({ time: now - started, sidebarWidth: sidebar?.width ?? 0, pageX: primary?.getBoundingClientRect().x ?? 0 });
+      if (now - started < 420) requestAnimationFrame(sample);
+      else target.__compactSamplingDone = true;
+    };
+    requestAnimationFrame(sample);
   });
-  try {
-    const shell = await shellReady(app);
+}
 
-    // TOP TABS: the strip holds the tab, its new-tab tail, and trailing cluster.
-    await expect(tabStrip(shell)).toBeVisible();
-    await expect(shell.getByTestId("human-tab")).toBeVisible();
-    await expect(shell.getByTestId("split-toggle")).toBeVisible();
-    await expect(shell.getByTestId("agent-panel-toggle")).toBeVisible();
-    await expect(shell.getByTestId("settings-button")).toBeVisible();
-    await expect(shell.getByTestId("new-tab-button")).toBeVisible();
-    await expect(shell.getByTestId("sidebar-chrome")).toHaveCount(0);
-    await expect(shell.getByTestId("side-rail")).toHaveCount(0);
-    await captureWindow(app, "01-top.png");
+async function finishGeometrySampling(shell: Page): Promise<GeometrySample[]> {
+  await expect
+    .poll(() => shell.evaluate(() => (window as unknown as { __compactSamplingDone?: boolean }).__compactSamplingDone === true), { intervals: [20] })
+    .toBe(true);
+  return shell.evaluate(() => (window as unknown as { __compactSamples?: GeometrySample[] }).__compactSamples ?? []);
+}
 
-    // SIDEBAR, PINNED. Choosing the layout re-arranges the chrome live under
-    // the still-open settings page; the strip is gone and every control it
-    // had is in the column.
-    let settings = await openGeneralSettings(shell, true);
-    const sidebarCard = settings.getByTestId("layout-mode-sidebar");
-    await expect(sidebarCard).toHaveAttribute("aria-checked", "false");
-    await sidebarCard.click();
-    await expect(sidebarCard).toHaveAttribute("aria-checked", "true");
-    await expect(settings).toBeVisible();
+function geometrySummary(samples: GeometrySample[]) {
+  const widths = samples.map((sample) => sample.sidebarWidth);
+  const deltas = widths.slice(1).map((width, index) => Math.abs(width - widths[index]!));
+  const pageXs = samples.map((sample) => sample.pageX);
+  return {
+    frames: samples.length,
+    distinctWidths: new Set(widths.map(Math.round)).size,
+    distinctPageXs: new Set(pageXs.map(Math.round)).size,
+    maxWidthDelta: Math.max(0, ...deltas),
+    minWidth: Math.min(...widths),
+    maxWidth: Math.max(...widths),
+  };
+}
+
+function expectSmoothTransition(samples: GeometrySample[]): void {
+  const summary = geometrySummary(samples);
+  expect(summary.distinctWidths).toBeGreaterThanOrEqual(8);
+  expect(summary.distinctPageXs).toBeGreaterThanOrEqual(8);
+  expect(summary.maxWidthDelta).toBeLessThan(100);
+  expect(summary.minWidth).toBeCloseTo(SIDEBAR_EDGE_W, 0);
+  expect(summary.maxWidth).toBeGreaterThan(240);
+}
+
+/** How far the sidebar's width (or slide) transition has run, 0–1; 0 with none running. */
+async function motionProgress(shell: Page): Promise<number> {
+  return shell.getByTestId("sidebar-motion-slot").evaluate((element) => {
+    const transition = element
+      .getAnimations({ subtree: true })
+      .find(
+        (animation) =>
+          animation instanceof CSSTransition && (animation.transitionProperty === "width" || animation.transitionProperty === "transform"),
+      );
+    if (transition === undefined) return 0;
+    const timing = transition.effect?.getComputedTiming();
+    const duration = typeof timing?.duration === "number" ? timing.duration : 0;
+    const current = typeof transition.currentTime === "number" ? transition.currentTime : 0;
+    return duration === 0 ? 1 : current / duration;
+  });
+}
+
+/** The sidebar's side of the shell, mid-motion. */
+async function captureLeft(shell: Page, filename: string): Promise<void> {
+  if (!captureEnabled) return;
+  const viewport = await shell.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  const directory = join(process.cwd(), "e2e/screenshots", FOLDER);
+  await mkdir(directory, { recursive: true });
+  await shell.screenshot({
+    path: join(directory, filename),
+    clip: { x: 0, y: 0, width: Math.min(360, viewport.width), height: viewport.height },
+  });
+}
+
+// One window, pinned over a web page, through the sidebar's two presentations:
+// its context menu over the native page, every control it holds, the move to
+// compact and back, and the compact reveal's motion frame by frame.
+test.describe.serial("the sidebar layout", { tag: ["@sidebar", "@settings"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let app: ElectronApplication;
+  let userData: string;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    ({ app, userData } = await launchApp({ settings: pageFirst({ layout: { sidebar: "pinned" } }), name: "layout" }));
+    shell = await shellReady(app);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a sidebar context menu keeps its pointer anchor above the native page", async () => {
+    const sidebar = shell.getByTestId("sidebar-chrome");
+    const tab = sidebar.getByTestId("human-tab").first();
+    await expect(tab).toBeVisible();
+    await captureShell(app, FOLDER, "context-menu-01-sidebar-ready.png");
+
+    const tabBox = await tab.boundingBox();
+    if (tabBox === null) throw new Error("tab geometry is unavailable");
+    // Preserve the pointer anchor while raising the shell above the native
+    // page, so the card can extend naturally beyond the sidebar.
+    await tab.click({ button: "right" });
+    const menu = shell.getByTestId("context-menu");
+    await expect(menu).toBeVisible();
+    await expect(menu).toHaveCSS("opacity", "1");
+    const sidebarBox = await sidebar.boundingBox();
+    if (sidebarBox === null) throw new Error("sidebar geometry is unavailable");
+    const menuBox = await menu.boundingBox();
+    if (menuBox === null) throw new Error("context-menu geometry is unavailable");
+    const anchoredLeft = await menu.evaluate((element) => Number.parseFloat((element as HTMLElement).style.left));
+    expect(anchoredLeft).toBeCloseTo(tabBox.x + tabBox.width / 2, 0);
+    expect(menuBox.x + menuBox.width).toBeGreaterThan(sidebarBox.x + sidebarBox.width + 40);
+    await expect(shell.locator("img.pane-still")).toHaveCount(1);
+    await expect(menu.getByRole("menuitem", { name: "Close tab" })).toBeVisible();
+    await captureShell(app, FOLDER, "context-menu-02-menu-over-page.png");
+
+    // Dismissal lowers the shell and restores the live native page.
     await shell.keyboard.press("Escape");
-    await expect(settings).toBeHidden();
-    await expect.poll(() => visibleTabViews(app)).toBe(1);
+    await expect(menu).toHaveCount(0);
+    await expect(shell.locator("img.pane-still")).toHaveCount(0);
+    await captureShell(app, FOLDER, "context-menu-03-menu-dismissed.png");
+  });
 
+  test("the sidebar holds every control, pinned and compact", { tag: ["@smoke"] }, async () => {
+    // SIDEBAR, PINNED: the column holds the address, the tab list with its
+    // "New tab" row, and the pin toggle.
     const sidebar = shell.getByTestId("sidebar-chrome");
     await expect(sidebar).toBeVisible();
     await expect(sidebar.getByTestId("sidebar-address")).toBeVisible();
     await expect(sidebar.getByTestId("sidebar-tab-list")).toBeVisible();
     await expect(sidebar.getByTestId("human-tab")).toBeVisible();
-    await expect(tabStrip(shell)).toHaveCount(0);
     await expect(shell.getByRole("tablist", { name: "Open tabs" })).toHaveAttribute("aria-orientation", "vertical");
     await expect(shell.getByTestId("new-tab-button")).toHaveCount(1);
     await expect(sidebar.getByTestId("new-tab-button")).toBeVisible();
     await expect(sidebar.getByRole("button", { name: "Compact sidebar" })).toBeVisible();
 
     // The footer is one button, the Space avatar: its menu has the Space on
-    // top and the strip's trailing cluster as rows below. Hovering it shows
+    // top and the chrome's other controls as rows below. Hovering it shows
     // the menu; moving away hides it again.
     await expect(sidebar.getByTestId("sidebar-menu-button")).toBeVisible();
     await expect(sidebar.getByTestId("split-toggle")).toHaveCount(0);
@@ -247,7 +215,7 @@ test("the chrome re-arranges between top tabs and the sidebar, pinned and compac
     await sidebar.getByTestId("sidebar-address").hover();
     await expect(footerMenu).toHaveCount(0);
 
-    // Split view still works in the sidebar layout (the menu no longer lists it).
+    // Split view works without a button (the menu does not list it).
     await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.setSplit("vertical"));
     await expect(shell.getByTestId("secondary-pane")).toBeVisible();
     await expect(sidebar.getByRole("group", { name: /^Split view:/ })).toBeVisible();
@@ -262,13 +230,14 @@ test("the chrome re-arranges between top tabs and the sidebar, pinned and compac
     await shell.keyboard.press("Escape");
     await expect(shell.getByTestId("url-bar")).toHaveCount(0);
     await expect.poll(() => visibleTabViews(app)).toBe(1);
-    await captureWindow(app, "02-sidebar-pinned.png");
-    await expect.poll(() => storedLayout(userData)).toEqual({ mode: "sidebar", sidebar: "pinned" });
+    // Let the layout's re-arrangement, the page's 140ms fade-in, and the
+    // sidebar's 220ms slide settle first.
+    await captureWindow(app, FOLDER, "01-sidebar-pinned.png", 400);
 
     // SIDEBAR, COMPACT: the column leaves the shell's layout; only the edge
     // trigger stays, and the traffic lights go with the sidebar. No chrome
     // view is involved: the compact sidebar is the pinned column, auto-hidden.
-    settings = await openGeneralSettings(shell, true);
+    const settings = await openGeneralSettings(shell, true);
     await settings.getByTestId("sidebar-presentation").selectOption("compact");
     await shell.keyboard.press("Escape");
     await expect(settings).toBeHidden();
@@ -276,10 +245,10 @@ test("the chrome re-arranges between top tabs and the sidebar, pinned and compac
     // recreating its shelf; hidden makes it inert after the retreat lands.
     await expect(shell.getByTestId("sidebar-chrome")).toBeHidden();
     await expect(shell.getByTestId("sidebar-edge")).toBeVisible();
-    await expect.poll(() => storedLayout(userData)).toEqual({ mode: "sidebar", sidebar: "compact" });
+    await expect.poll(() => storedLayout(userData)).toEqual({ sidebar: "compact" });
     await expect.poll(() => windowState(app)).toMatchObject({ windowButtons: false, sidebarView: false });
     const hiddenPage = await shell.getByTestId("primary-pane").boundingBox();
-    await captureWindow(app, "03-sidebar-compact.png");
+    await captureWindow(app, FOLDER, "02-sidebar-compact.png", 400);
 
     // Pointer movement in the edge puts the SAME column back into the
     // layout, and the page moves over to make room — identical to pinned —
@@ -307,7 +276,7 @@ test("the chrome re-arranges between top tabs and the sidebar, pinned and compac
     expect(revealedPage!.x).toBeGreaterThanOrEqual(paneBox!.x + paneBox!.width);
     expect(revealedPage!.width).toBeLessThan(hiddenPage!.width);
     await expect.poll(() => visibleTabViews(app)).toBe(1);
-    await captureWindow(app, "04-sidebar-compact-revealed.png");
+    await captureWindow(app, FOLDER, "03-sidebar-compact-revealed.png", 400);
 
     // Moving onto the page is the leave: the column goes, the edge returns,
     // and the page takes its width back.
@@ -329,7 +298,7 @@ test("the chrome re-arranges between top tabs and the sidebar, pinned and compac
       .toBe(Math.round((await pane.boundingBox())?.width ?? 0));
     // Resting on the column keeps it: no hide creeps in on its own.
     await shell.mouse.move(60, 400);
-    await new Promise((done) => setTimeout(done, 500));
+    await shell.waitForTimeout(500);
     await expect(shell.getByTestId("sidebar-pane")).toBeVisible();
     await shell.mouse.move(revealedPage!.x + revealedPage!.width / 2, revealedPage!.y + revealedPage!.height / 2);
     await expect(shell.getByTestId("sidebar-pane")).toBeHidden();
@@ -338,34 +307,88 @@ test("the chrome re-arranges between top tabs and the sidebar, pinned and compac
     // ⌘S pins the sidebar back into the layout and again makes it compact
     // (which hides it at once, rather than holding it until the pointer leaves).
     await shell.keyboard.press("Meta+s");
-    await expect.poll(() => storedLayout(userData)).toEqual({ mode: "sidebar", sidebar: "pinned" });
+    await expect.poll(() => storedLayout(userData)).toEqual({ sidebar: "pinned" });
     await expect(shell.getByTestId("sidebar-chrome")).toBeVisible();
     await expect(shell.getByTestId("sidebar-pane")).not.toHaveAttribute("data-auto-hide", "");
     await expect(shell.getByTestId("sidebar-edge")).toHaveCount(0);
     await expect.poll(() => windowState(app)).toMatchObject({ windowButtons: true });
     await shell.keyboard.press("Meta+s");
-    await expect.poll(() => storedLayout(userData)).toEqual({ mode: "sidebar", sidebar: "compact" });
+    await expect.poll(() => storedLayout(userData)).toEqual({ sidebar: "compact" });
     await expect(shell.getByTestId("sidebar-chrome")).toBeHidden();
     await expect(shell.getByTestId("sidebar-edge")).toBeVisible();
+  });
 
-    // BACK TO TOP TABS: the strip returns with its tail and cluster, and the
-    // edge trigger leaves with the sidebar.
-    settings = await openGeneralSettings(shell);
-    await settings.getByTestId("layout-mode-top").click();
-    await expect(settings.getByTestId("sidebar-presentation")).toBeDisabled();
-    await shell.keyboard.press("Escape");
-    await expect(settings).toBeHidden();
-    await expect(tabStrip(shell)).toBeVisible();
-    await expect(tabStrip(shell).getByTestId("human-tab").first()).toBeVisible();
-    await expect(shell.getByTestId("new-tab-button")).toBeVisible();
-    await expect(shell.getByTestId("split-toggle")).toBeVisible();
-    await expect(shell.getByTestId("agent-panel-toggle")).toBeVisible();
-    await expect(shell.getByTestId("sidebar-chrome")).toHaveCount(0);
-    await expect(shell.getByTestId("sidebar-edge")).toHaveCount(0);
-    await expect.poll(() => storedLayout(userData)).toEqual({ mode: "top", sidebar: "compact" });
-    await expect.poll(() => windowState(app)).toMatchObject({ windowButtons: true, sidebarView: false });
-    await captureWindow(app, "05-back-to-top.png");
-  } finally {
-    await app.close();
-  }
+  test("the compact sidebar reveals over multiple stable animation frames", async () => {
+    // Hidden compact mode must be stable before the reveal is measured.
+    const edge = shell.getByTestId("sidebar-edge");
+    await expect(edge).toBeVisible();
+    await expect(shell.getByTestId("sidebar-pane")).toBeHidden();
+    await captureLeft(shell, "compact-01-hidden.png");
+    const box = await edge.boundingBox();
+    if (box === null) throw new Error("compact sidebar edge has no box");
+    expect(box.width).toBeCloseTo(SIDEBAR_TRIGGER_W, 0);
+    const hiddenSlot = await shell.getByTestId("sidebar-motion-slot").boundingBox();
+    const hiddenPage = await shell.getByTestId("primary-pane").boundingBox();
+    if (hiddenSlot === null || hiddenPage === null) throw new Error("compact hidden geometry is missing");
+    expect(hiddenSlot.width).toBeCloseTo(SIDEBAR_EDGE_W, 0);
+    expect(hiddenPage.x).toBeCloseTo(SIDEBAR_EDGE_W, 0);
+
+    // Sampling from before the gesture exposes jumps that settled screenshots miss.
+    await beginGeometrySampling(shell);
+    await shell.mouse.move(box.x + 4, box.y + 200);
+    await shell.mouse.move(box.x + 5, box.y + 210);
+    const pane = shell.getByTestId("sidebar-pane");
+    await expect(pane).toBeVisible();
+    await expect.poll(() => motionProgress(shell), { intervals: [8] }).toBeGreaterThan(0.18);
+    await captureLeft(shell, "compact-02-revealing.png");
+    // Playwright has no OS cursor for main's native drag-region backstop, so
+    // carry its synthetic pointer into the now-open shell column.
+    await shell.mouse.move(60, box.y + 210);
+    const revealSamples = await finishGeometrySampling(shell);
+    expectSmoothTransition(revealSamples);
+    await expect(shell.getByTestId("sidebar-motion-slot")).not.toHaveAttribute("data-hidden", "");
+    await captureLeft(shell, "compact-03-revealed.png");
+
+    // The retreat uses the same continuous geometry rather than disappearing first.
+    const page = await shell.getByTestId("primary-pane").boundingBox();
+    if (page === null) throw new Error("primary pane has no box");
+    await beginGeometrySampling(shell);
+    await shell.mouse.move(page.x + page.width / 2, page.y + page.height / 2);
+    await expect(shell.getByTestId("sidebar-motion-slot")).toHaveAttribute("data-hidden", "");
+    await expect.poll(() => motionProgress(shell), { intervals: [8] }).toBeGreaterThan(0.18);
+    await captureLeft(shell, "compact-04-hiding.png");
+    const hideSamples = await finishGeometrySampling(shell);
+    expectSmoothTransition(hideSamples);
+    await expect(pane).toBeHidden();
+    await expect(edge).toBeVisible();
+
+    // A normal re-entry proves the edge remains live after a completed close.
+    await shell.mouse.move(box.x + 4, box.y + 300);
+    await shell.mouse.move(box.x + 5, box.y + 310);
+    await expect(pane).toBeVisible();
+    await expect.poll(() => motionProgress(shell), { intervals: [8] }).toBeGreaterThan(0.18);
+    await shell.mouse.move(60, box.y + 310);
+    await expect.poll(async () => Math.round((await shell.getByTestId("sidebar-motion-slot").boundingBox())?.width ?? 0)).toBe(248);
+
+    // Re-entering during the next close reverses the live transition instead of snapping.
+    await beginGeometrySampling(shell);
+    await shell.mouse.move(page.x + page.width / 2, page.y + page.height / 2);
+    await expect(shell.getByTestId("sidebar-motion-slot")).toHaveAttribute("data-hidden", "");
+    await expect.poll(() => motionProgress(shell), { intervals: [8] }).toBeGreaterThan(0.18);
+    await captureLeft(shell, "compact-05-reversing.png");
+    await shell.mouse.move(box.x + 4, box.y + 300);
+    await shell.mouse.move(box.x + 5, box.y + 310);
+    await expect(shell.getByTestId("sidebar-motion-slot")).not.toHaveAttribute("data-hidden", "");
+    await shell.mouse.move(60, box.y + 310);
+    const reversalSamples = await finishGeometrySampling(shell);
+    const reversal = geometrySummary(reversalSamples);
+    expect(reversal.distinctWidths).toBeGreaterThanOrEqual(5);
+    expect(reversal.maxWidthDelta).toBeLessThan(100);
+    expect(reversal.minWidth).toBeLessThan(230);
+    expect(reversal.maxWidth).toBeCloseTo(248, 0);
+    await expect(pane).toBeVisible();
+    await captureLeft(shell, "compact-06-reversed-revealed.png");
+
+    console.log(`compact-sidebar geometry ${JSON.stringify({ reveal: geometrySummary(revealSamples), hide: geometrySummary(hideSamples), reversal })}`);
+  });
 });

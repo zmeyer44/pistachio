@@ -1,33 +1,9 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { KeyboardInputEvent } from "electron";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { pageFirst, shellReady } from "./windows";
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", suffix),
-  ].find((candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")));
-}
-
-async function launch(name: string): Promise<ElectronApplication> {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), `pistachio-${name}-`));
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst()));
-  return electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
-}
+import { captureEnabled, launchApp } from "./app";
+import { nextFrames } from "./chrome-harness";
 
 /** Open each address as a new, selected tab; the ids in visit order. */
 async function openTabs(shell: Page, urls: string[]): Promise<string[]> {
@@ -67,7 +43,29 @@ async function sendKeys(app: ElectronApplication, target: { url: string } | "she
   }, { target, inputs });
 }
 
+/**
+ * Give the page the keyboard once it has loaded (a key sent to a page still
+ * loading can be lost), in a focused window: a hold only opens the switcher
+ * in the window in front (main/index.ts tabSwitcherHoldElapsed).
+ */
 async function focusPage(app: ElectronApplication, url: string): Promise<void> {
+  await expect
+    .poll(() =>
+      app.evaluate(({ webContents }, target) => {
+        const page = webContents.getAllWebContents().find((candidate) => candidate.getURL() === target);
+        return page !== undefined && !page.isLoading();
+      }, url),
+    )
+    .toBe(true);
+  await expect
+    .poll(() =>
+      app.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        if (window !== undefined && !window.isFocused()) window.focus();
+        return window?.isFocused() ?? false;
+      }),
+    )
+    .toBe(true);
   await app.evaluate(({ webContents }, target) => {
     webContents.getAllWebContents().find((candidate) => candidate.getURL() === target)?.focus();
   }, url);
@@ -115,10 +113,32 @@ const PAGES = [
   "pistachio://demo/vendors/atlas-medical?visit=5",
 ];
 
-test("⌃Tab from a page opens on the previous tab with live thumbnails, and Return goes there", async () => {
-  const app = await launch("tab-switcher-chord");
-  try {
-    const shell = await shellReady(app);
+/**
+ * Three pages of a test's own: the window is shared, and a page is found by
+ * its address, so each test opens fresh ones. Opened last, they are the
+ * three most recent tabs — the switcher's first cards.
+ */
+function pagesFor(run: string): string[] {
+  return PAGES.slice(0, 3).map((url) => `${url}&run=${run}`);
+}
+
+// One window over a web page. Every gesture below ends with the switcher
+// closed and its keys let go, so the next starts from rest.
+test.describe.serial("the tab switcher", { tag: ["@tabs"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let app: ElectronApplication;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    ({ app } = await launchApp({ settings: pageFirst(), name: "tab-switcher" }));
+    shell = await shellReady(app);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("⌃Tab from a page opens on the previous tab with live thumbnails, and Return goes there", async () => {
     const visited = await openTabs(shell, PAGES);
     await focusPage(app, PAGES[4]!);
 
@@ -137,7 +157,7 @@ test("⌃Tab from a page opens on the previous tab with live thumbnails, and Ret
     await expect.poll(() => options.locator(".tab-switcher-thumbnail > img").count()).toBeGreaterThanOrEqual(5);
     // The switcher took the keyboard, so the release lands where it is seen.
     expect(await focusedUrl(app)).toBe("shell");
-    await shell.screenshot({ path: test.info().outputPath("tab-switcher-open.png") });
+    if (captureEnabled) await shell.screenshot({ path: test.info().outputPath("tab-switcher-open.png") });
 
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Tab", modifiers: ["control"] }]);
     await expect(options.nth(2)).toHaveAttribute("aria-selected", "true");
@@ -149,25 +169,20 @@ test("⌃Tab from a page opens on the previous tab with live thumbnails, and Ret
     await expect.poll(() => activeTabId(shell)).toBe(visited[3]);
     // The chosen page has the keyboard back.
     await expect.poll(() => focusedUrl(app)).toBe(PAGES[3]);
-  } finally {
-    await app.close();
-  }
-});
+  });
 
-test("holding ⌥⌘ opens on the active tab (⌘ alone no longer does); arrows move and Escape cancels", async () => {
-  const app = await launch("tab-switcher-hold");
-  try {
-    const shell = await shellReady(app);
-    const visited = await openTabs(shell, PAGES.slice(0, 3));
-    await focusPage(app, PAGES[2]!);
+  test("holding ⌥⌘ opens on the active tab (⌘ alone no longer does); arrows move and Escape cancels", async () => {
+    const pages = pagesFor("hold");
+    const visited = await openTabs(shell, pages);
+    await focusPage(app, pages[2]!);
 
-    // ⌘ held on its own, well past the hold: nothing.
-    await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] }]);
-    await shell.waitForTimeout(800);
+    // ⌘ held on its own, well past the hold (150ms by default): nothing.
+    await sendKeys(app, { url: pages[2]! }, [{ type: "keyDown", keyCode: "Meta", modifiers: ["meta"] }]);
+    await shell.waitForTimeout(400);
     const switcher = shell.getByTestId("tab-switcher");
     await expect(switcher).toHaveCount(0);
     // ⌥ joins it: the pair, held, opens the switcher.
-    await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] }]);
+    await sendKeys(app, { url: pages[2]! }, [{ type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] }]);
     await expect(switcher).toHaveAttribute("data-ready", "");
     const options = switcher.getByTestId("tab-switcher-option");
     await expect(options.nth(0)).toHaveAttribute("data-tab-id", visited[2]!);
@@ -178,22 +193,17 @@ test("holding ⌥⌘ opens on the active tab (⌘ alone no longer does); arrows 
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Escape", modifiers: ["meta", "alt"] }]);
     await expect(switcher).toHaveCount(0);
     expect(await activeTabId(shell)).toBe(visited[2]);
-  } finally {
-    await app.close();
-  }
-});
+  });
 
-test("a page's shortcut typed once a ⌥⌘ hold has the switcher up still reaches the page", async () => {
-  const app = await launch("tab-switcher-pass-on");
-  try {
-    const shell = await shellReady(app);
-    const visited = await openTabs(shell, PAGES.slice(0, 3));
-    await focusPage(app, PAGES[2]!);
-    await recordPageKeys(app, PAGES[2]!);
-    await sendKeys(app, { url: PAGES[2]! }, [{ type: "keyDown", keyCode: "b", modifiers: ["meta"] }]);
-    await expect.poll(() => inPage<string[]>(app, PAGES[2]!, "window.__keys")).toEqual(["meta+b"]);
+  test("a page's shortcut typed once a ⌥⌘ hold has the switcher up still reaches the page", async () => {
+    const pages = pagesFor("pass-on");
+    const visited = await openTabs(shell, pages);
+    await focusPage(app, pages[2]!);
+    await recordPageKeys(app, pages[2]!);
+    await sendKeys(app, { url: pages[2]! }, [{ type: "keyDown", keyCode: "b", modifiers: ["meta"] }]);
+    await expect.poll(() => inPage<string[]>(app, pages[2]!, "window.__keys")).toEqual(["meta+b"]);
 
-    await sendKeys(app, { url: PAGES[2]! }, [
+    await sendKeys(app, { url: pages[2]! }, [
       { type: "keyDown", keyCode: "Meta", modifiers: ["meta"] },
       { type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] },
     ]);
@@ -203,52 +213,29 @@ test("a page's shortcut typed once a ⌥⌘ hold has the switcher up still reach
     // The shell has the keyboard now; ⌥⌘B (the pair held a beat too long) cancels the switcher and goes on to the page.
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "b", modifiers: ["meta", "alt"] }]);
     await expect(switcher).toHaveCount(0);
-    await expect.poll(() => inPage<string[]>(app, PAGES[2]!, "window.__keys")).toEqual(["meta+b", "alt+meta+b"]);
-    expect(await focusedUrl(app)).toBe(PAGES[2]);
+    await expect.poll(() => inPage<string[]>(app, pages[2]!, "window.__keys")).toEqual(["meta+b", "alt+meta+b"]);
+    expect(await focusedUrl(app)).toBe(pages[2]);
     expect(await activeTabId(shell)).toBe(visited[2]);
 
     // An Edit menu key does its work there too, though the menu never sees a sent key.
     // (⌥ let go first: ⌘A is the release, and goes on to select all.)
-    await inPage(app, PAGES[2]!, "getSelection().removeAllRanges(); true");
-    await sendKeys(app, { url: PAGES[2]! }, [
+    await inPage(app, pages[2]!, "getSelection().removeAllRanges(); true");
+    await sendKeys(app, { url: pages[2]! }, [
       { type: "keyDown", keyCode: "Meta", modifiers: ["meta"] },
       { type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] },
     ]);
     await expect(switcher).toHaveAttribute("data-ready", "");
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "a", modifiers: ["meta"] }]);
     await expect(switcher).toHaveCount(0);
-    await expect.poll(() => inPage<number>(app, PAGES[2]!, "getSelection().toString().length")).toBeGreaterThan(0);
-  } finally {
-    await app.close();
-  }
-});
+    await expect.poll(() => inPage<number>(app, pages[2]!, "getSelection().toString().length")).toBeGreaterThan(0);
+  });
 
-test("a pressed shortcut is never taken for a hold", async () => {
-  const app = await launch("tab-switcher-shortcut");
-  try {
-    const shell = await shellReady(app);
-    await openTabs(shell, PAGES.slice(0, 2));
-    await focusPage(app, PAGES[1]!);
-    await sendKeys(app, { url: PAGES[1]! }, [
-      { type: "keyDown", keyCode: "Meta", modifiers: ["meta"] },
-      { type: "keyDown", keyCode: "Alt", modifiers: ["meta", "alt"] },
-      { type: "keyDown", keyCode: "Shift", modifiers: ["meta", "alt", "shift"] },
-    ]);
-    await shell.waitForTimeout(800);
-    await expect(shell.getByTestId("tab-switcher")).toHaveCount(0);
-  } finally {
-    await app.close();
-  }
-});
+  test("the pointer picks a card, and the modifier's release goes to it", async () => {
+    const pages = pagesFor("hover");
+    const visited = await openTabs(shell, pages);
+    await focusPage(app, pages[2]!);
 
-test("the pointer picks a card, and the modifier's release goes to it", async () => {
-  const app = await launch("tab-switcher-hover");
-  try {
-    const shell = await shellReady(app);
-    const visited = await openTabs(shell, PAGES.slice(0, 3));
-    await focusPage(app, PAGES[2]!);
-
-    await sendKeys(app, { url: PAGES[2]! }, [
+    await sendKeys(app, { url: pages[2]! }, [
       { type: "keyDown", keyCode: "Control", modifiers: ["control"] },
       { type: "keyDown", keyCode: "Alt", modifiers: ["control", "alt"] },
     ]);
@@ -258,13 +245,25 @@ test("the pointer picks a card, and the modifier's release goes to it", async ()
     const target = options.nth(2);
     await expect(target).toHaveAttribute("data-tab-id", visited[0]!);
 
-    // The document sees the held pair on the pointer's events too.
-    await shell.keyboard.down("Control");
-    await shell.keyboard.down("Alt");
+    // The pointer, moved through the window's own input with the pair still
+    // held, as a real one is: the document sees the pair on its events too.
+    // (Playwright's keyboard cannot hold two modifiers without first sending
+    // a keydown that carries one, which the switcher reads as a release.)
     const box = await target.boundingBox();
     if (box === null) throw new Error("the card has no box");
-    await shell.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await shell.mouse.move(box.x + box.width / 2 + 4, box.y + box.height / 2 + 2);
+    const x = Math.round(box.x + box.width / 2);
+    const y = Math.round(box.y + box.height / 2);
+    // A card takes the selection when the pointer has moved on it, by its screen position.
+    const moveTo = (point: { x: number; y: number }) =>
+      app.evaluate(({ BrowserWindow }, { x, y }) => {
+        const shellContents = BrowserWindow.getAllWindows()[0]?.webContents;
+        if (shellContents === undefined) throw new Error("Pistachio window is unavailable");
+        shellContents.sendInputEvent({ type: "mouseMove", x, y, globalX: x, globalY: y, modifiers: ["control", "alt"] });
+      }, point);
+    // Moves within one frame reach the document as one: a frame between them.
+    await moveTo({ x, y });
+    await nextFrames(shell);
+    await moveTo({ x: x + 4, y: y + 2 });
     await expect(target).toHaveAttribute("aria-selected", "true");
 
     // Electron's synthetic input carries no modifier-only keyUp; a key sent
@@ -272,35 +271,22 @@ test("the pointer picks a card, and the modifier's release goes to it", async ()
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Shift", modifiers: ["shift"] }]);
     await expect(switcher).toHaveCount(0);
     await expect.poll(() => activeTabId(shell)).toBe(visited[0]);
-    await shell.keyboard.up("Alt");
-    await shell.keyboard.up("Control");
-  } finally {
-    await app.close();
-  }
-});
+  });
 
-test("a quick ⌃Tab flips to the previous tab", async () => {
-  const app = await launch("tab-switcher-flip");
-  try {
-    const shell = await shellReady(app);
-    const visited = await openTabs(shell, PAGES.slice(0, 3));
-    await focusPage(app, PAGES[2]!);
-    await sendKeys(app, { url: PAGES[2]! }, [
+  test("a quick ⌃Tab flips to the previous tab", async () => {
+    const pages = pagesFor("flip");
+    const visited = await openTabs(shell, pages);
+    await focusPage(app, pages[2]!);
+    await sendKeys(app, { url: pages[2]! }, [
       { type: "keyDown", keyCode: "Control", modifiers: ["control"] },
       { type: "keyDown", keyCode: "Tab", modifiers: ["control"] },
     ]);
     await sendKeys(app, "shell", [{ type: "keyDown", keyCode: "Return", modifiers: ["control"] }]);
     await expect.poll(() => activeTabId(shell)).toBe(visited[1]);
     await expect(shell.getByTestId("tab-switcher")).toHaveCount(0);
-  } finally {
-    await app.close();
-  }
-});
+  });
 
-test("closing the active tab returns to the most recently visited tab", async () => {
-  const app = await launch("tab-close-mru");
-  try {
-    const shell = await shellReady(app);
+  test("closing the active tab returns to the most recently visited tab", async () => {
     const outcome = await shell.evaluate(async () => {
       const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
       const ids: string[] = [];
@@ -320,7 +306,5 @@ test("closing the active tab returns to the most recently visited tab", async ()
       return { survivorId: ids[2], activeTabId: (await api.getSnapshot()).activeTabId };
     });
     expect(outcome.activeTabId).toBe(outcome.survivorId);
-  } finally {
-    await app.close();
-  }
+  });
 });

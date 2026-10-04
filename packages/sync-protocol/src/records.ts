@@ -495,7 +495,6 @@ export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 
 export type ShellNewTabBehavior = "home" | "address" | "url";
 export type ShellHomePageBehavior = "pistachio" | "url";
-export type ShellChromeLayoutMode = "top" | "sidebar";
 export type ShellSidebarPresentation = "pinned" | "compact";
 export type ShellWebSearchProvider = "google" | "duckduckgo" | "yahoo" | "bing";
 export type ShellAiSearchProvider = "chatgpt" | "gemini" | "claude" | "grok" | "perplexity";
@@ -503,6 +502,45 @@ export type ShellAiSearchProvider = "chatgpt" | "gemini" | "claude" | "grok" | "
 export interface ShellPresetLinkRecord {
   title: string;
   url: string;
+}
+
+/** The filter lists Shields can load (@pistachio/shell-contracts/shields FILTER_LISTS). */
+export type ShellFilterListId =
+  | "ubo-filters"
+  | "easylist"
+  | "ubo-quick-fixes"
+  | "ubo-unbreak"
+  | "adguard-base"
+  | "easyprivacy"
+  | "ubo-privacy"
+  | "peter-lowe"
+  | "adguard-tracking"
+  | "adguard-url-tracking"
+  | "ubo-badware"
+  | "urlhaus"
+  | "easylist-cookie"
+  | "ubo-cookie-annoyances"
+  | "ubo-annoyances"
+  | "fanboy-social";
+
+/** Ad and tracker protection (docs/shields.md). */
+export interface ShellShieldsRecord {
+  enabled: boolean;
+  level: "standard" | "strict" | "custom";
+  blocking: "off" | "standard" | "aggressive";
+  lists: Record<ShellFilterListId, boolean>;
+  cookieBanners: "off" | "hide";
+  trackingParams: "off" | "standard" | "strict";
+  bounceTracking: boolean;
+  crossSiteCookies: "allow" | "trackers" | "all";
+  fingerprinting: "off" | "standard" | "strict";
+  https: "off" | "upgrade" | "strict";
+  globalPrivacyControl: boolean;
+  referrer: "default" | "trim" | "strip";
+  webRtc: "default" | "public" | "proxied";
+  blockPings: boolean;
+  dangerousSites: boolean;
+  customFilters: string;
 }
 
 export interface ShellSettingsValue {
@@ -517,7 +555,6 @@ export interface ShellSettingsValue {
     learnFromRuns: boolean;
   };
   layout: {
-    mode: ShellChromeLayoutMode;
     sidebar: ShellSidebarPresentation;
   };
   organization: {
@@ -582,6 +619,11 @@ export interface ShellSettingsValue {
   privacy: {
     rememberRecents: boolean;
   };
+  /**
+   * A record written before Shields existed carries no answer; the shell's
+   * own `sanitizeSettings` reads that absence as the defaults (Standard).
+   */
+  shields: ShellShieldsRecord;
   tabs: {
     archiveAfterHours: number;
     groupRelated: boolean;

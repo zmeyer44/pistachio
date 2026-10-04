@@ -384,6 +384,13 @@ export interface DeskWindowView {
    * window, its page inside its frame; otherwise the page box alone.
    */
   maskFade: (Rect & { framed: boolean }) | null;
+  /** A tooltip under its frame's buttons can be seen: no live page is left under its cover (windowTipCover). */
+  tipShown: boolean;
+}
+
+/** The cover of the band under a window's frame buttons, where their tooltips appear (DeskWindow). */
+export function windowTipCover(tabId: string): string {
+  return `tip:${tabId}`;
 }
 
 export interface DeskView {
@@ -3671,6 +3678,7 @@ export class DeskEngine {
                   framed: this.#maskFade.framed,
                 }
               : null,
+          tipShown: this.#clearCovers.has(windowTipCover(tabId)),
         };
       }),
       drops: this.#drops,

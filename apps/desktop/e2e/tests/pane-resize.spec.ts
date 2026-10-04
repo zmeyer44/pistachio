@@ -1,25 +1,9 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { dragPage, pageFirst, shellPage } from "./windows";
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", executableSuffix),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
+import { dragPage, pageFirst, shellReady } from "./windows";
+import { launchApp } from "./app";
 
 /**
  * Where main currently has each visible TAB view — the boxes the pages are
@@ -43,7 +27,6 @@ function tabViewBoxes(app: ElectronApplication): Promise<Array<{ x: number; widt
   }, CHROME_VIEW_HASHES);
 }
 
-
 /** Whether main has the drag layer up — the view that holds the pointer. */
 function dragLayerVisible(app: ElectronApplication): Promise<boolean> {
   return app.evaluate(({ BrowserWindow }, hash) => {
@@ -63,37 +46,41 @@ async function centreOf(locator: ReturnType<Page["locator"]>): Promise<{ x: numb
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
 
-/**
- * A pane-resize drag must reflow the PAGES as it goes.
- *
- * The regression this guards: the drag used to raise the chrome, which hides
- * every tab view and leaves a captured still of each page in its place. The
- * panes then resized around stretched screenshots and the real pages only
- * caught up when the pointer came up. The drag layer replaced that (see the
- * drag capture section of @pistachio/shell-contracts/chrome), so the assertions below all
- * happen with the pointer still DOWN: views visible, no stills, and main
- * already tracking the views to the new pane boxes.
- */
-test("resizing a split pane reflows the pages during the drag, not after it", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-pane-resize-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst()));
+// One window split in two: a drag of the divider through the shell, then
+// one whose pointer the drag layer holds.
+test.describe.serial("resizing a split", { tag: ["@split"] }, () => {
+  let app: ElectronApplication;
+  let shell: Page;
+  let layer: Page;
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+  test.beforeAll(async () => {
+    ({ app } = await launchApp({ settings: pageFirst(), name: "pane-resize" }));
+    shell = await shellReady(app);
+    layer = await dragPage(app);
+    await layer.waitForLoadState("domcontentloaded");
     await expect(shell.getByTestId("primary-pane")).toBeVisible();
 
     // Split vertically: main opens the second tab itself if there is only one.
     await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.setSplit("vertical"));
     await expect(shell.getByTestId("secondary-pane")).toBeVisible();
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  /**
+   * A pane-resize drag must reflow the PAGES as it goes.
+   *
+   * The regression this guards: the drag used to raise the chrome, which hides
+   * every tab view and leaves a captured still of each page in its place. The
+   * panes then resized around stretched screenshots and the real pages only
+   * caught up when the pointer came up. The drag layer replaced that (see the
+   * drag capture section of @pistachio/shell-contracts/chrome), so the assertions below all
+   * happen with the pointer still DOWN: views visible, no stills, and main
+   * already tracking the views to the new pane boxes.
+   */
+  test("resizing a split pane reflows the pages during the drag, not after it", async () => {
     const divider = shell.getByRole("separator", { name: "Resize split panes" });
     await expect(divider).toBeVisible();
     await expect.poll(() => tabViewBoxes(app).then((boxes) => boxes.length)).toBe(2);
@@ -124,7 +111,17 @@ test("resizing a split pane reflows the pages during the drag, not after it", as
       })
       .toBeLessThan((before[0]?.width ?? 0) - 40);
 
-    const during = await tabViewBoxes(app);
+    // What the drag shows once main has caught up with the last move: two
+    // reads in a row agree (the check above can pass on an earlier move).
+    let during = await tabViewBoxes(app);
+    await expect
+      .poll(async () => {
+        const now = await tabViewBoxes(app);
+        const steady = now[0]?.width === during[0]?.width;
+        during = now;
+        return steady;
+      })
+      .toBe(true);
     await shell.mouse.up();
 
     // Releasing settles on what the drag already showed rather than jumping.
@@ -134,45 +131,25 @@ test("resizing a split pane reflows the pages during the drag, not after it", as
         return Math.abs((boxes[0]?.width ?? 0) - (during[0]?.width ?? 0));
       })
       .toBeLessThanOrEqual(2);
-  } finally {
-    await app.close();
-  }
-});
-
-/**
- * The other half of the fix: the pointer a real drag hands to the drag layer
- * actually comes back. Playwright's synthetic pointer belongs to whichever
- * page it is dispatched into and never crosses views, so the test above
- * exercises the shell's own listeners; here the moves are dispatched INSIDE
- * the drag layer, which is what happens on a real machine the moment the
- * pointer leaves the divider and lands on a page.
- */
-test("the drag layer takes the pointer and relays it back to the shell", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-drag-layer-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst()));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
   });
-  try {
-    const shell = await shellPage(app);
-    const layer = await dragPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await layer.waitForLoadState("domcontentloaded");
 
-    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.setSplit("vertical"));
+  /**
+   * The other half of the fix: the pointer a real drag hands to the drag layer
+   * actually comes back. Playwright's synthetic pointer belongs to whichever
+   * page it is dispatched into and never crosses views, so the test above
+   * exercises the shell's own listeners; here the moves are dispatched INSIDE
+   * the drag layer, which is what happens on a real machine the moment the
+   * pointer leaves the divider and lands on a page. (The divider sits left of
+   * centre after the drag above, so this one goes right.)
+   */
+  test("the drag layer takes the pointer and relays it back to the shell", async () => {
     const divider = shell.getByRole("separator", { name: "Resize split panes" });
     await expect(divider).toBeVisible();
     await expect.poll(() => tabViewBoxes(app).then((boxes) => boxes.length)).toBe(2);
 
     const before = await tabViewBoxes(app);
     const grip = await centreOf(divider);
-    expect(await dragLayerVisible(app)).toBe(false);
+    await expect.poll(() => dragLayerVisible(app)).toBe(false);
 
     await shell.mouse.move(grip.x, grip.y);
     await shell.mouse.down();
@@ -200,19 +177,17 @@ test("the drag layer takes the pointer and relays it back to the shell", async (
     // move of its own the instant the layer appears under it.
     await expect
       .poll(async () => {
-        await relay(grip.x - 130, grip.y, "pointermove");
+        await relay(grip.x + 130, grip.y, "pointermove");
         return (await tabViewBoxes(app))[0]?.width ?? 0;
       })
-      .toBeLessThan((before[0]?.width ?? 0) - 40);
+      .toBeGreaterThan((before[0]?.width ?? 0) + 40);
     // Still live, still nothing standing in for a page.
     expect(await tabViewBoxes(app)).toHaveLength(2);
     await expect(shell.locator("img.pane-still")).toHaveCount(0);
 
     // The layer's pointerup ends the gesture and gives the pointer back.
-    await relay(grip.x - 130, grip.y, "pointerup");
+    await relay(grip.x + 130, grip.y, "pointerup");
     await expect.poll(() => dragLayerVisible(app)).toBe(false);
     await shell.mouse.up();
-  } finally {
-    await app.close();
-  }
+  });
 });

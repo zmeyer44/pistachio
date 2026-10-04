@@ -1,33 +1,30 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
+import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { noticePage, shellPage, shellReady } from "./windows";
+import { noticePage, shellReady } from "./windows";
+import { launchApp } from "./app";
+import { capturePage, captureWindow as captureComposite, settled, snapshot, visibleTabViews } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/notice-stack");
+const FOLDER = "notice-stack";
 
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", executableSuffix),
-  ];
-  return candidates.find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
+function captureWindow(app: ElectronApplication, filename: string, settleMs = 0): Promise<void> {
+  return captureComposite(app, FOLDER, filename, settleMs);
 }
 
-function activeUrl(shell: Page): Promise<string | null> {
-  return shell.evaluate(async () => {
-    const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-    const current = await api.getSnapshot();
-    return current.tabs.find((tab) => tab.id === current.activeTabId)?.url ?? null;
-  });
+async function activeUrl(shell: Page): Promise<string | null> {
+  const current = await snapshot(shell);
+  return current.tabs.find((tab) => tab.id === current.activeTabId)?.url ?? null;
+}
+
+interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** The browser surface's box in the shell page: what the stack is stood in. */
@@ -36,13 +33,6 @@ function surfaceBox(shell: Page): Promise<Box> {
     const rect = document.querySelector(".browser-surface")!.getBoundingClientRect();
     return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
   });
-}
-
-interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
 }
 
 /** The notice view as main has it: on screen or not, where, and the page view it stands over. */
@@ -64,95 +54,65 @@ function noticeViewState(app: ElectronApplication): Promise<{ visible: boolean; 
   });
 }
 
-interface WindowCapture {
-  shell: string;
-  width: number;
-  height: number;
-  scale: number;
-  views: Array<{ bounds: { x: number; y: number }; png: string }>;
-}
-
-/** The window as a person sees it: the shell with its native child views composited in stacking order. */
-async function captureWindow(app: ElectronApplication, filename: string): Promise<void> {
-  const capture = await app.evaluate(async ({ BrowserWindow }): Promise<WindowCapture> => {
+/** The first visible tab view's load state and address. */
+function visibleTabLoadState(app: ElectronApplication): Promise<{ loading: boolean; url: string } | null> {
+  return app.evaluate(({ BrowserWindow }, hashes) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (window === undefined) throw new Error("Pistachio window is unavailable");
-    const shell = await window.capturePage();
-    const size = shell.getSize();
-    const [contentWidth] = window.getContentSize();
-    const views = await Promise.all(
-      window.contentView.children.flatMap((child) => {
-        if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return [];
-        const view = child as WebContentsView;
-        return [view.webContents.capturePage().then((image) => ({ bounds: view.getBounds(), png: image.toPNG().toString("base64") }))];
-      }),
-    );
-    return {
-      shell: shell.toPNG().toString("base64"),
-      width: size.width,
-      height: size.height,
-      scale: contentWidth === undefined || contentWidth === 0 ? 1 : size.width / contentWidth,
-      views,
-    };
-  });
-  const shell = await shellPage(app);
-  const dataUrl = await shell.evaluate(async ({ shell: frame, width, height, scale, views }: WindowCapture) => {
-    const decode = (png: string): Promise<HTMLImageElement> =>
-      new Promise((done, failed) => {
-        const image = new Image();
-        image.onload = () => done(image);
-        image.onerror = () => failed(new Error("capture failed to decode"));
-        image.src = `data:image/png;base64,${png}`;
-      });
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d");
-    if (context === null) throw new Error("no 2d canvas context");
-    context.drawImage(await decode(frame), 0, 0);
-    for (const view of views) context.drawImage(await decode(view.png), Math.round(view.bounds.x * scale), Math.round(view.bounds.y * scale));
-    return canvas.toDataURL("image/png");
-  }, capture);
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64"));
+    const tab = window.contentView.children.find((child) => {
+      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return false;
+      const url = (child as WebContentsView).webContents.getURL();
+      return !Object.values(hashes).some((hash) => url.endsWith(hash));
+    }) as WebContentsView | undefined;
+    return tab === undefined ? null : { loading: tab.webContents.isLoading(), url: tab.webContents.getURL() };
+  }, CHROME_VIEW_HASHES);
 }
 
-/**
- * The notice used to be a feature of the chrome — a pill in the top strip,
- * a card at the foot of the sidebar — so with the compact sidebar hidden,
- * ⌘⇧C copied the address and said nothing anyone could see. It is now a
- * stack in a view of its own over the page, whatever the chrome is doing.
- */
-test("⌘⇧C says so over the page with the compact sidebar hidden, and notices stack", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-notice-"));
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end("<!doctype html><title>A page worth copying</title><body style='font: 16px system-ui; padding: 48px'><h1>A page worth copying</h1><p>Its address is the thing.</p>");
-  });
-  await new Promise<void>((listening, failed) => {
-    server.once("error", failed);
-    server.listen(0, "127.0.0.1", () => listening());
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("The test server did not bind a TCP port");
-  const homeUrl = `http://127.0.0.1:${String(address.port)}/`;
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ general: { homePage: "url", homeUrl, newTab: "address" }, layout: { mode: "sidebar", sidebar: "compact" } }),
-  );
+// One window over a page served here, with the compact sidebar hidden: the
+// notices it says and where they stand, the Appearance pickers, and a shell
+// toast — reader view on a page with no article, which needs no network.
+test.describe.serial("notices", { tag: ["@settings", "@notices", "@pages"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let server: Server;
+  let homeUrl: string;
+  let app: ElectronApplication;
+  let userData: string;
+  let shell: Page;
+  let notices: Page;
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
-  try {
-    const shell = await shellReady(app);
-    const notices = await noticePage(app);
+  test.beforeAll(async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><title>A page worth copying</title><body style='font: 16px system-ui; padding: 48px'><h1>A page worth copying</h1><p>Its address is the thing.</p>");
+    });
+    await new Promise<void>((listening, failed) => {
+      server.once("error", failed);
+      server.listen(0, "127.0.0.1", () => listening());
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("The test server did not bind a TCP port");
+    homeUrl = `http://127.0.0.1:${String(address.port)}/`;
+    ({ app, userData } = await launchApp({
+      settings: { general: { homePage: "url", homeUrl, newTab: "address" }, layout: { sidebar: "compact" } },
+      name: "notice",
+    }));
+    shell = await shellReady(app);
+    notices = await noticePage(app);
     await notices.waitForLoadState("domcontentloaded");
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+    await new Promise<void>((closed) => server?.close(() => closed()));
+  });
+
+  /**
+   * The notice used to be a feature of the chrome — a pill in the top strip,
+   * a card at the foot of the sidebar — so with the compact sidebar hidden,
+   * ⌘⇧C copied the address and said nothing anyone could see. It is now a
+   * stack in a view of its own over the page, whatever the chrome is doing.
+   */
+  test("⌘⇧C says so over the page with the compact sidebar hidden, and notices stack", async () => {
     await expect.poll(() => activeUrl(shell)).toBe(homeUrl);
     await expect.poll(async () => (await noticeViewState(app)).pane).not.toBeNull();
     // Nothing said yet: the view is loaded and out of the way.
@@ -176,13 +136,14 @@ test("⌘⇧C says so over the page with the compact sidebar hidden, and notices
     expect(placed.bounds.y + placed.bounds.height).toBeGreaterThanOrEqual(pane.y + pane.height - 1);
     // And the page is still live under it: a notice is not a shell overlay.
     expect(pane.width).toBeGreaterThan(400);
-    await notices.waitForTimeout(450);
-    await captureWindow(app, "01-url-copied.png");
+    await captureWindow(app, "01-url-copied.png", 450);
 
     // The same words again nudge the card; they do not stack a copy of it.
     await shell.keyboard.press("Meta+Shift+C");
     await expect(cards).toHaveCount(1);
     await expect(notices.locator(".notice-card-body[data-bumped]")).toHaveCount(1);
+    // The oldest clock there is: the card's own, from no later than now.
+    const oldestClockFrom = Date.now();
 
     // Something else joins the front, and the first is pushed back behind it.
     await shell.keyboard.press("Meta+Alt+Shift+C");
@@ -190,18 +151,18 @@ test("⌘⇧C says so over the page with the compact sidebar hidden, and notices
     await expect(notices.locator('[data-testid="notice-card"][data-depth="0"]')).toContainText("Link copied as Markdown");
     await expect(notices.locator('[data-testid="notice-card"][data-depth="1"]')).toContainText("URL copied");
     expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(`[A page worth copying](${homeUrl})`);
-    await notices.waitForTimeout(450);
-    await captureWindow(app, "02-stacked.png");
+    await captureWindow(app, "02-stacked.png", 450);
 
-    // The pointer spreads the stack into a column, and holds the clocks.
+    // The pointer spreads the stack into a column, and holds the clocks:
+    // past the moment the older card would have gone (NOTICE_MS, 4.5s), both stay.
     const stack = notices.getByTestId("notice-stack");
     await stack.hover();
     await expect(stack).toHaveAttribute("data-spread", "");
-    await notices.waitForTimeout(450);
-    await captureWindow(app, "03-spread.png");
+    await captureWindow(app, "03-spread.png", 450);
+    await settled(stack);
     const spreadBoxes = await cards.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().top));
     expect(Math.abs((spreadBoxes[0] ?? 0) - (spreadBoxes[1] ?? 0))).toBeGreaterThan(40);
-    await notices.waitForTimeout(4_600);
+    await notices.waitForTimeout(Math.max(0, oldestClockFrom + 4_500 + 300 - Date.now()));
     await expect(cards).toHaveCount(2);
 
     // A card's own button takes just that card.
@@ -223,38 +184,16 @@ test("⌘⇧C says so over the page with the compact sidebar hidden, and notices
         }),
       )
       .toBe(false);
-  } finally {
-    await app.close();
-    await new Promise<void>((closed) => server.close(() => closed()));
-  }
-});
-
-/**
- * Settings → Appearance says where the stack stands. The edge is also the
- * direction: at the top a pill drops in and the older ones go down behind it.
- */
-test("the notice stack stands where Appearance says, and the picker moves it", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-notice-position-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({
-      general: { homePage: "url", homeUrl: "pistachio://demo/invoices", newTab: "address" },
-      appearance: { toastPosition: "top-right" },
-    }),
-  );
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
   });
-  try {
-    const shell = await shellReady(app);
-    const notices = await noticePage(app);
-    await notices.waitForLoadState("domcontentloaded");
-    await expect.poll(() => activeUrl(shell)).toBe("pistachio://demo/invoices");
+
+  /**
+   * Settings → Appearance says where the stack stands. The edge is also the
+   * direction: at the top a pill drops in and the older ones go down behind it.
+   */
+  test("the notice stack stands where Appearance says, and the picker moves it", async () => {
+    await shell.evaluate(() =>
+      (window as unknown as { pistachio: PistachioApi }).pistachio.updateSettings({ appearance: { toastPosition: "top-right" } }),
+    );
 
     // The seeded corner: the view hangs from the top of the browser surface, against its right side.
     await shell.keyboard.press("Meta+Shift+C");
@@ -272,7 +211,7 @@ test("the notice stack stands where Appearance says, and the picker moves it", a
     // A second one goes in front, and the first retreats DOWNWARD behind it.
     await shell.keyboard.press("Meta+Alt+Shift+C");
     await expect(cards).toHaveCount(2);
-    await notices.waitForTimeout(450);
+    await settled(stack);
     const tops = await notices.evaluate(() => {
       const top = (depth: string): number => document.querySelector(`[data-testid="notice-card"][data-depth="${depth}"]`)!.getBoundingClientRect().top;
       return { front: top("0"), behind: top("1") };
@@ -301,16 +240,93 @@ test("the notice stack stands where Appearance says, and the picker moves it", a
       })
       .toEqual([true, true]);
     expect(placed.visible).toBe(true);
-    await notices.waitForTimeout(450);
-    await captureWindow(app, "05-picker-bottom-left.png");
+    await captureWindow(app, "05-picker-bottom-left.png", 450);
 
-    // It is a setting like any other: written down, and there after a restart.
+    // It is a setting like any other: written down.
     const saved = await shell.evaluate(async () => {
       const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
       return (await api.getSettings()).appearance.toastPosition;
     });
     expect(saved).toBe("bottom-left");
-  } finally {
-    await app.close();
-  }
+  });
+
+  // The same Appearance page. (That a choice is applied at launch is
+  // apps/desktop/test/desktop-icon.test.ts's, and in development both
+  // choices are the same icon file, so a restart would show nothing more.)
+  test("the desktop icon switches at once from Appearance", async () => {
+    test.skip(process.platform !== "darwin", "This journey checks the macOS Dock API.");
+    const settings = shell.getByTestId("settings-page");
+    if (!(await settings.isVisible())) await shell.keyboard.press("Meta+,");
+    await settings.getByRole("button", { name: "Appearance", exact: true }).click();
+    // A fresh profile should visibly choose the white default.
+    await expect(settings.getByTestId("desktop-icon-white")).toBeChecked();
+    await expect(settings.getByTestId("desktop-icon-option-white")).toHaveAttribute("data-selected", "true");
+    await settings.getByTestId("desktop-icon-picker").evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await capturePage(shell, FOLDER, "06-desktop-icon-white-default.png");
+
+    // Observe the real Dock setter while preserving its native behavior.
+    await app.evaluate(({ app }) => {
+      const state = globalThis as typeof globalThis & { iconCalls: string[] };
+      state.iconCalls = [];
+      const dock = app.dock!;
+      const setIcon = dock.setIcon.bind(dock);
+      dock.setIcon = (icon) => {
+        state.iconCalls.push(String(icon));
+        setIcon(icon);
+      };
+    });
+    const storedIcon = async () => (JSON.parse(await readFile(join(userData, "settings.json"), "utf8")) as { appearance: { desktopIcon?: string } }).appearance.desktopIcon;
+    await settings.getByText("Green", { exact: true }).click();
+    await expect(settings.getByTestId("desktop-icon-green")).toBeChecked();
+    await expect(settings.getByTestId("desktop-icon-option-green")).toHaveAttribute("data-selected", "true");
+    await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { iconCalls: string[] }).iconCalls.at(-1))).toMatch(/icon-macos-dev\.png$/);
+    await expect.poll(storedIcon).toBe("green");
+    await capturePage(shell, FOLDER, "07-desktop-icon-green-selected.png");
+
+    // The default remains available after opting into green.
+    await settings.getByTestId("desktop-icon-white").focus();
+    await settings.getByTestId("desktop-icon-white").press("Space");
+    await expect(settings.getByTestId("desktop-icon-white")).toBeChecked();
+    await expect(settings.getByTestId("desktop-icon-option-white")).toHaveAttribute("data-selected", "true");
+    await expect.poll(storedIcon).toBe("white");
+  });
+
+  /**
+   * A navigation that fails is NOT this toast any more: Chromium's empty error
+   * document is dressed in the tab itself (main/navigation-error-page.ts), so
+   * the page keeps its address and the tab view stays up. The shell toast is
+   * for a chrome action that could not do what was asked — reader view on a
+   * page with no article is the smallest of those, and it needs no network.
+   */
+  test("an error toast renders above tab WebContentsViews", async () => {
+    const settings = shell.getByTestId("settings-page");
+    if (await settings.isVisible()) {
+      await shell.keyboard.press("Escape");
+      await expect(settings).toBeHidden();
+    }
+    await expect.poll(() => visibleTabViews(app)).toBe(1);
+    // The page must have settled first: a load that supersedes one still in
+    // flight is aborted by Chromium rather than failed, and an abort is not
+    // an error the shell shows.
+    await expect.poll(() => visibleTabLoadState(app)).toMatchObject({ loading: false, url: homeUrl });
+
+    // ⌘⇧A from the chrome: main finds no article and the shell says so.
+    await shell.keyboard.press("Meta+Shift+A");
+    const alert = shell.getByRole("alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText(/no article to read/i);
+    await expect.poll(() => visibleTabViews(app)).toBe(0);
+    await captureWindow(app, "08-failed-reader-toast.png");
+
+    // A subsequent successful action clears the toast and restores the live
+    // page; the overlay is not allowed to strand a hidden tab view.
+    await shell.keyboard.press("Meta+l");
+    const input = shell.getByTestId("address-input");
+    await input.fill("pistachio://demo/invoices");
+    await input.press("Enter");
+    await expect(alert).toHaveCount(0);
+    await expect.poll(() => visibleTabViews(app)).toBe(1);
+    await expect.poll(() => visibleTabLoadState(app)).toEqual({ loading: false, url: "pistachio://demo/invoices" });
+    await captureWindow(app, "09-live-page-restored.png");
+  });
 });

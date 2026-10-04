@@ -101,6 +101,7 @@ const REASONS: Partial<Record<keyof ShellApi, string>> = {
   getMemory: "Memory is what the app learns from your own errands; a preview has none yet.",
   getReminders: "Reminders are scheduled in the app.",
   clearBrowsingData: "There is no site data in a preview.",
+  shields: "Ads and trackers are blocked by the app; the preview's pages have none to block.",
   transcribeSpeech: PREVIEW,
   extractOnboardingIntake: PREVIEW,
   completeOnboarding: PREVIEW,
@@ -487,6 +488,7 @@ export class DemoShellHost {
       pendingPasskeyRequests: [],
       downloads: [],
       recentEvents: [],
+      shields: null,
     };
   }
 

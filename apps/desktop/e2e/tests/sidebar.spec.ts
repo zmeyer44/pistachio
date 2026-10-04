@@ -1,37 +1,20 @@
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { shellPage } from "./windows";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { shellReady } from "./windows";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { SidebarState } from "@pistachio/shell-contracts/sidebar";
+import { launchApp } from "./app";
+import { captureShell as captureWindowFrame, nextFrames, settled } from "./chrome-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/sidebar");
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", executableSuffix),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-/** The shelf lives in the chrome, so the shell capture shows the whole sidebar. */
-async function captureShell(app: ElectronApplication, filename: string): Promise<void> {
-  await new Promise((done) => setTimeout(done, 400));
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
+/**
+ * Let the column's glides land — a row mid-slide is not where a pointer
+ * aims — then capture it, when captures are asked for. The shelf lives in
+ * the chrome, so the shell capture shows the whole sidebar.
+ */
+async function atRest(app: ElectronApplication, shell: Page, filename: string): Promise<void> {
+  await settled(shell.getByTestId("sidebar-chrome"));
+  await captureWindowFrame(app, "sidebar", filename);
 }
 
 async function storedShelf(userData: string): Promise<SidebarState | null> {
@@ -54,28 +37,31 @@ async function pick(shell: Page, target: ReturnType<Page["locator"]>, item: stri
   await expect(menu).toHaveCount(0);
 }
 
-test("the sidebar keeps favorites, pins, and folders, and the organization's links lead the grid", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-sidebar-"));
-  // Start in the sidebar layout with one preset link, as a managed install would.
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({
-      layout: { mode: "sidebar", sidebar: "pinned" },
-      workspace: { presetLinks: [{ title: "Invoice portal", url: "pistachio://demo/invoices" }] },
-    }),
-  );
+// One window with the organization's preset link: pins, folders and
+// favorites, then a folder's colour and emoji, then selecting several rows.
+test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
+  test.describe.configure({ timeout: 60_000 });
+  let app: ElectronApplication;
+  let userData: string;
+  let shell: Page;
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  test.beforeAll(async () => {
+    // Start in the sidebar layout with one preset link, as a managed install would.
+    ({ app, userData } = await launchApp({
+      settings: {
+        layout: { sidebar: "pinned" },
+        workspace: { presetLinks: [{ title: "Invoice portal", url: "pistachio://demo/invoices" }] },
+      },
+      name: "sidebar",
+    }));
+    shell = await shellReady(app);
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("the sidebar keeps favorites, pins, and folders, and the organization's links lead the grid", async () => {
     const sidebar = shell.getByTestId("sidebar-chrome");
     await expect(sidebar).toBeVisible();
 
@@ -103,7 +89,7 @@ test("the sidebar keeps favorites, pins, and folders, and the organization's lin
     await expect(liveBody).toHaveAttribute("aria-hidden", "false");
     await expect.poll(async () => (await liveBody.boundingBox())?.height ?? 0).toBeGreaterThan(20);
     await expect(sidebar.getByTestId("human-tab")).toHaveCount(1);
-    await captureShell(app, "01-shelf.png");
+    await atRest(app, shell, "01-shelf.png");
 
     // A preset opens as its own tab, bound to the tile: the tile lights up and
     // the day's tabs gain one. Clicking it again shows that tab, not another.
@@ -135,7 +121,7 @@ test("the sidebar keeps favorites, pins, and folders, and the organization's lin
     await expect(pin).toHaveAttribute("data-live", "");
     await expect(pin).toHaveAttribute("aria-selected", "true");
     await expect(sidebar.getByTestId("sidebar-tab-list").getByTestId("human-tab")).toHaveCount(0);
-    await captureShell(app, "02-pinned.png");
+    await atRest(app, shell, "02-pinned.png");
 
     // Closing from the row's hover control leaves the pin, dimmed, and a
     // click brings it back. Keep this on the direct control rather than the
@@ -172,7 +158,7 @@ test("the sidebar keeps favorites, pins, and folders, and the organization's lin
     await pick(shell, pin, "Move to “Finance”");
     await expect(pin).toHaveAttribute("data-folder-id", /.+/);
     await expect(pin).toHaveCSS("margin-left", "18px");
-    await captureShell(app, "03-folder.png");
+    await atRest(app, shell, "03-folder.png");
     await folder.click();
     await expect(folder).toHaveAttribute("aria-expanded", "false");
     await expect(pin).toHaveCount(0);
@@ -203,7 +189,7 @@ test("the sidebar keeps favorites, pins, and folders, and the organization's lin
     await expect(favorite).toHaveCount(1);
     await expect(favorite).toHaveAttribute("data-live", "");
     await expect(sidebar.getByTestId("pinned-tab")).toHaveCount(0);
-    await captureShell(app, "04-favorite.png");
+    await atRest(app, shell, "04-favorite.png");
 
     // The shelf is on disk, and the folder survived the pin leaving it.
     await expect
@@ -228,51 +214,90 @@ test("the sidebar keeps favorites, pins, and folders, and the organization's lin
     await expect(sidebar.getByTestId("pinned-folder")).toHaveCount(0);
     await expect(sidebar.getByTestId("pinned-tab")).toHaveCount(0);
     await expect(sidebar.getByTestId("sidebar-tab-list").getByTestId("human-tab")).toHaveCount(2);
-  } finally {
-    await app.close();
-  }
-});
-
-test("tabs support range and additive selection with bulk context-menu actions", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-sidebar-selection-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await shell.evaluate(async () => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      await api.createTab("pistachio://demo/invoices?selection=second");
-      await api.createTab("pistachio://demo/invoices?selection=third");
-    });
 
+  test("a folder takes a colour and an emoji from its menu, and keeps them on disk", async () => {
+    const sidebar = shell.getByTestId("sidebar-chrome");
+    // The new-folder control shows on the "New tab" row's hover.
+    await sidebar.getByTestId("new-tab-button").hover();
+    await sidebar.getByTestId("new-folder-button").click();
+    const nameInput = sidebar.getByTestId("folder-name-input");
+    await nameInput.fill("Travel");
+    await nameInput.press("Enter");
+    const folder = sidebar.locator('[data-testid="pinned-folder"][aria-label="Folder: Travel"]');
+    const mark = folder.getByTestId("folder-mark");
+    const menu = shell.getByTestId("context-menu");
+    const stored = async () => (await storedShelf(userData))?.entries.find((entry) => entry.kind === "folder" && entry.name === "Travel");
+    // A new folder is the plain icon in the chrome's own ink.
+    await expect(mark).not.toHaveAttribute("data-group-color");
+    await expect(mark.locator("svg")).toHaveCount(1);
+
+    // A colour, from the same swatches a tab group has — after "none", which is where it starts.
+    await folder.click({ button: "right" });
+    await expect(menu.getByTestId("group-color-none")).toHaveAttribute("aria-checked", "true");
+    await atRest(app, shell, "07-folder-style-menu.png");
+    await menu.getByTestId("group-color-purple").click();
+    await expect(menu).toHaveCount(0);
+    await expect(mark).toHaveAttribute("data-group-color", "purple");
+    await atRest(app, shell, "08-folder-colour.png");
+
+    // An emoji from the grid replaces the icon; the colour stays, behind it.
+    await folder.click({ button: "right" });
+    await expect(menu.getByTestId("group-color-purple")).toHaveAttribute("aria-checked", "true");
+    await menu.getByTestId("menu-emoji-choice").filter({ hasText: "✈️" }).click();
+    await expect(menu).toHaveCount(0);
+    await expect(mark).toHaveText("✈️");
+    await expect(mark.locator("svg")).toHaveCount(0);
+    await expect(mark).toHaveAttribute("data-group-color", "purple");
+
+    // Any other emoji, typed: words do nothing, an emoji is taken at once.
+    await folder.click({ button: "right" });
+    const field = menu.getByTestId("menu-emoji-input");
+    await field.fill("beach");
+    await expect(menu).toBeVisible();
+    await field.fill("🏝️");
+    await expect(menu).toHaveCount(0);
+    await expect(mark).toHaveText("🏝️");
+    await atRest(app, shell, "09-folder-emoji.png");
+    await expect.poll(stored).toMatchObject({ name: "Travel", color: "purple", emoji: "🏝️" });
+
+    // The custom one shows in the field next time; the first cell puts the icon back, "none" the ink.
+    await folder.click({ button: "right" });
+    await expect(field).toHaveValue("🏝️");
+    await menu.getByTestId("menu-emoji-reset").click();
+    await expect(mark.locator("svg")).toHaveCount(1);
+    await folder.click({ button: "right" });
+    await menu.getByTestId("group-color-none").click();
+    await expect(mark).not.toHaveAttribute("data-group-color");
+    await expect.poll(stored).toMatchObject({ color: null, emoji: null });
+  });
+
+  test("tabs support range and additive selection with bulk context-menu actions", async () => {
     const sidebar = shell.getByTestId("sidebar-chrome");
     const liveTabs = sidebar.locator('#sidebar-section-live [data-testid="human-tab"]');
+    // Three day tabs: the shelf flow above leaves some open; open the rest.
+    const missing = Math.max(0, 3 - (await liveTabs.count()));
+    await shell.evaluate(async (count) => {
+      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
+      for (let index = 0; index < count; index += 1) await api.createTab(`pistachio://demo/invoices?selection=${String(index)}`);
+    }, missing);
     await expect(liveTabs).toHaveCount(3);
 
     // A plain click establishes the anchor. Shift selects the visible range;
     // Command toggles one member out without activating it.
     await liveTabs.first().click();
     await liveTabs.last().click({ modifiers: ["Shift"] });
-    await expect(sidebar.locator('#sidebar-section-live [data-multi-selected]')).toHaveCount(3);
+    await expect(sidebar.locator("#sidebar-section-live [data-multi-selected]")).toHaveCount(3);
     await liveTabs.nth(1).click({ modifiers: ["Meta"] });
-    await expect(sidebar.locator('#sidebar-section-live [data-multi-selected]')).toHaveCount(2);
-    await captureShell(app, "05-multi-selected.png");
+    await expect(sidebar.locator("#sidebar-section-live [data-multi-selected]")).toHaveCount(2);
+    await atRest(app, shell, "05-multi-selected.png");
 
     await liveTabs.first().click({ button: "right" });
     let menu = shell.getByTestId("context-menu");
     await expect(menu).toContainText("2 tabs selected");
     await expect(menu.getByRole("menuitem", { name: "Pin selected tabs" })).toBeVisible();
     await expect(menu.getByRole("menuitem", { name: "Close selected tabs" })).toBeVisible();
-    await captureShell(app, "06-multi-select-menu.png");
+    await atRest(app, shell, "06-multi-select-menu.png");
     await menu.getByRole("menuitem", { name: "New folder with selected tabs" }).click();
 
     const pins = sidebar.getByTestId("pinned-tab");
@@ -298,90 +323,12 @@ test("tabs support range and additive selection with bulk context-menu actions",
     // and Close applies only to the selected open tabs.
     await liveTabs.first().click({ modifiers: ["Meta"] });
     await liveTabs.last().click({ modifiers: ["Meta"] });
-    await expect(sidebar.locator('#sidebar-section-live [data-multi-selected]')).toHaveCount(2);
+    await expect(sidebar.locator("#sidebar-section-live [data-multi-selected]")).toHaveCount(2);
     await liveTabs.first().click({ button: "right" });
     menu = shell.getByTestId("context-menu");
     await menu.getByRole("menuitem", { name: "Close selected tabs" }).click();
     await expect(liveTabs).toHaveCount(1);
-  } finally {
-    await app.close();
-  }
-});
-
-test("a folder takes a colour and an emoji from its menu, and keeps them on disk", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-folder-style-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    const sidebar = shell.getByTestId("sidebar-chrome");
-    // The new-folder control shows on the "New tab" row's hover.
-    await sidebar.getByTestId("new-tab-button").hover();
-    await sidebar.getByTestId("new-folder-button").click();
-    const nameInput = sidebar.getByTestId("folder-name-input");
-    await nameInput.fill("Travel");
-    await nameInput.press("Enter");
-    const folder = sidebar.getByTestId("pinned-folder");
-    const mark = folder.getByTestId("folder-mark");
-    const menu = shell.getByTestId("context-menu");
-    // A new folder is the plain icon in the chrome's own ink.
-    await expect(mark).not.toHaveAttribute("data-group-color");
-    await expect(mark.locator("svg")).toHaveCount(1);
-
-    // A colour, from the same swatches a tab group has — after "none", which is where it starts.
-    await folder.click({ button: "right" });
-    await expect(menu.getByTestId("group-color-none")).toHaveAttribute("aria-checked", "true");
-    await captureShell(app, "07-folder-style-menu.png");
-    await menu.getByTestId("group-color-purple").click();
-    await expect(menu).toHaveCount(0);
-    await expect(mark).toHaveAttribute("data-group-color", "purple");
-    await captureShell(app, "08-folder-colour.png");
-
-    // An emoji from the grid replaces the icon; the colour stays, behind it.
-    await folder.click({ button: "right" });
-    await expect(menu.getByTestId("group-color-purple")).toHaveAttribute("aria-checked", "true");
-    await menu.getByTestId("menu-emoji-choice").filter({ hasText: "✈️" }).click();
-    await expect(menu).toHaveCount(0);
-    await expect(mark).toHaveText("✈️");
-    await expect(mark.locator("svg")).toHaveCount(0);
-    await expect(mark).toHaveAttribute("data-group-color", "purple");
-
-    // Any other emoji, typed: words do nothing, an emoji is taken at once.
-    await folder.click({ button: "right" });
-    const field = menu.getByTestId("menu-emoji-input");
-    await field.fill("beach");
-    await expect(menu).toBeVisible();
-    await field.fill("🏝️");
-    await expect(menu).toHaveCount(0);
-    await expect(mark).toHaveText("🏝️");
-    await captureShell(app, "09-folder-emoji.png");
-    await expect
-      .poll(async () => (await storedShelf(userData))?.entries.find((entry) => entry.kind === "folder"))
-      .toMatchObject({ name: "Travel", color: "purple", emoji: "🏝️" });
-
-    // The custom one shows in the field next time; the first cell puts the icon back, "none" the ink.
-    await folder.click({ button: "right" });
-    await expect(field).toHaveValue("🏝️");
-    await menu.getByTestId("menu-emoji-reset").click();
-    await expect(mark.locator("svg")).toHaveCount(1);
-    await folder.click({ button: "right" });
-    await menu.getByTestId("group-color-none").click();
-    await expect(mark).not.toHaveAttribute("data-group-color");
-    await expect
-      .poll(async () => (await storedShelf(userData))?.entries.find((entry) => entry.kind === "folder"))
-      .toMatchObject({ color: null, emoji: null });
-  } finally {
-    await app.close();
-  }
 });
 
 /**
@@ -391,7 +338,7 @@ test("a folder takes a colour and an emoji from its menu, and keeps them on disk
  * or it would land on the row still sliding across the one it aims at.
  */
 async function drag(shell: Page, from: ReturnType<Page["locator"]>, to: { x: number; y: number }): Promise<void> {
-  await new Promise((done) => setTimeout(done, 350));
+  await settled(shell.getByTestId("sidebar-chrome"));
   const box = await from.boundingBox();
   if (box === null) throw new Error("drag source has no box");
   const startX = box.x + box.width / 2;
@@ -402,25 +349,17 @@ async function drag(shell: Page, from: ReturnType<Page["locator"]>, to: { x: num
   // on the way sees a move.
   await shell.mouse.move(startX, startY + 8, { steps: 2 });
   await shell.mouse.move(to.x, to.y, { steps: 12 });
-  await new Promise((done) => setTimeout(done, 80));
+  // The drop target follows the last move on the next frame.
+  await nextFrames(shell);
   await shell.mouse.up();
 }
 
-test("rows and tiles drag between the day's tabs, the pinned tree, its folders, and the favorites grid", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-sidebar-drag-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+// Its own window: the drags start from an empty favorites grid, which the
+// shelf's preset link above would fill.
+test("rows and tiles drag between the day's tabs, the pinned tree, its folders, and the favorites grid", { tag: ["@sidebar"] }, async () => {
+  const { app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, name: "sidebar-drag" });
   try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+    const shell = await shellReady(app);
     const sidebar = shell.getByTestId("sidebar-chrome");
     await expect(sidebar).toBeVisible();
     const list = sidebar.getByTestId("sidebar-tab-list");
@@ -461,7 +400,7 @@ test("rows and tiles drag between the day's tabs, the pinned tree, its folders, 
     await expect(favorite).toHaveCount(1);
     await expect(favorite).toHaveAttribute("data-live", "");
     await expect(sidebar.getByTestId("pinned-tab")).toHaveCount(0);
-    await captureShell(app, "05-dragged.png");
+    await atRest(app, shell, "05-dragged.png");
 
     // A favorite dragged below the "New tab" row is a day tab again; the grid
     // empties and disappears.

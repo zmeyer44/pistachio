@@ -7,24 +7,13 @@
  * through CDP, so the shortcuts here are struck through Electron's input
  * pipeline, the way a real key reaches the page's before-input-event hook.
  */
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { expect, test, type ElectronApplication } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage } from "./windows";
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", executableSuffix)];
-  return candidates.find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
+import { launchApp } from "./app";
 
 let server: Server;
 let origin: string;
@@ -80,19 +69,9 @@ function withTabView(app: ElectronApplication, url: string, action: "focus" | "m
   );
 }
 
-test("⌘L and ⌘T struck in a page hand the keyboard to the shell's address bar and home page", async () => {
-  test.setTimeout(120_000);
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-keyboard-handoff-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+test("⌘L and ⌘T struck in a page hand the keyboard to the shell's address bar and home page", { tag: ["@address", "@home"] }, async () => {
+  test.setTimeout(60_000);
+  const { app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, name: "keyboard-handoff" });
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");

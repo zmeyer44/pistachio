@@ -8,10 +8,9 @@ import { deskAvailable, toggleDesk } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
 
 /**
- * A tab group's menu and its close, declared once for both layouts — the
- * sidebar's group row (components/TabGroupRow.tsx) and the strip's chip
- * (components/TabStrip.tsx) — the way chrome/tab-menu.tsx is for one tab
- * (docs/tab-tidy.md §3.3).
+ * A tab group's menu and its close, declared once for the sidebar's group
+ * row (components/TabGroupRow.tsx), the way chrome/tab-menu.tsx is for one
+ * tab (docs/tab-tidy.md §3.3).
  */
 
 /** The colours in the order the menu lays them out, with the words a screen reader says. */

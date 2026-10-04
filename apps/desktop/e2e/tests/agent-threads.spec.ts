@@ -1,54 +1,28 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import type { ShellSnapshot, PistachioApi } from "@pistachio/shell-contracts/ipc";
+import { expect, test } from "@playwright/test";
 import { shellPage } from "./windows";
+import { launchApp } from "./app";
+import { snapshot } from "./agent-harness";
 
 /**
- * Conversations persist and come back: a finished thread stays in the
- * list, a new conversation clears the console without losing it, it
- * reopens with its result, and it is there again after the app restarts.
- * The demo agent (no model) drives the run itself; this spec is about the
- * thread around it.
+ * Conversations persist: a finished thread stays in the list, a new
+ * conversation clears the console without losing it, it reopens with its
+ * result, and deleting it empties both. The demo agent (no model) drives
+ * the run itself; this spec is about the thread around it. That a thread
+ * comes back after a restart is the seeded thread output-card.spec opens
+ * on, and thread-store.test / run-controller.test's restore cases.
  */
 
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", suffix),
-  ].find((candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")));
-}
-
-async function launch(userData: string): Promise<{ app: ElectronApplication; shell: Page }> {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+test("a finished conversation stays in the list, reopens, and can be deleted", { tag: ["@agent"] }, async () => {
+  test.setTimeout(60_000);
+  const { app } = await launchApp({
+    name: "threads",
+    settings: { layout: { sidebar: "pinned" }, general: { consoleOpenOnLaunch: true } },
   });
-  const shell = await shellPage(app);
-  await shell.waitForLoadState("domcontentloaded");
-  await expect(shell.getByTestId("agent-panel")).toBeVisible();
-  return { app, shell };
-}
-
-async function snapshot(shell: Page): Promise<ShellSnapshot> {
-  return shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot());
-}
-
-test("a finished conversation stays in the list, reopens, and survives a restart", async () => {
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-threads-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "top", sidebar: "pinned" }, general: { consoleOpenOnLaunch: true } }));
-
-  let { app, shell } = await launch(userData);
-  let runId: string;
   try {
+    const shell = await shellPage(app);
+    await shell.waitForLoadState("domcontentloaded");
+    await expect(shell.getByTestId("agent-panel")).toBeVisible();
+
     // Nothing yet: no thread, no list.
     expect((await snapshot(shell)).threads).toEqual([]);
     await shell.getByTestId("thread-list-button").click();
@@ -67,7 +41,7 @@ test("a finished conversation stays in the list, reopens, and survives a restart
 
     const first = await snapshot(shell);
     if (first.run === null) throw new Error("the run is missing after completion");
-    runId = first.run.runId;
+    const runId = first.run.runId;
     expect(first.run.title).toBe("Reconcile the invoice and route it for payment");
     expect(first.run.turns).toBe(1);
     expect(first.threads.map((thread) => thread.runId)).toEqual([runId]);
@@ -85,24 +59,13 @@ test("a finished conversation stays in the list, reopens, and survives a restart
     expect((await snapshot(shell)).run).toBeNull();
     expect((await snapshot(shell)).threads.map((thread) => thread.runId)).toEqual([runId]);
 
-    // Reopening brings the result back.
+    // Reopening brings the result back, whole.
     await shell.getByTestId(`recent-thread-${runId}`).click();
     await expect(shell.getByText("I left the draft in place", { exact: false })).toBeVisible();
     await expect(shell.getByTestId("run-status")).toContainText("Rejected");
-    expect((await snapshot(shell)).run?.runId).toBe(runId);
-  } finally {
-    await app.close();
-  }
-
-  // After a restart the thread is open again, whole.
-  ({ app, shell } = await launch(userData));
-  try {
-    await expect(shell.getByText("I left the draft in place", { exact: false })).toBeVisible();
-    await expect(shell.getByTestId("run-status")).toContainText("Rejected");
-    const restored = await snapshot(shell);
-    expect(restored.run?.runId).toBe(runId);
-    expect(restored.run?.messages.length ?? 0).toBeGreaterThan(1);
-    expect(restored.threads.map((thread) => thread.runId)).toEqual([runId]);
+    const reopened = await snapshot(shell);
+    expect(reopened.run?.runId).toBe(runId);
+    expect(reopened.run?.messages.length ?? 0).toBeGreaterThan(1);
 
     // Deleting it empties the console and the list.
     await shell.getByTestId("thread-list-button").click();

@@ -5,30 +5,19 @@
  * (the page's own picture, main's media preview, with the "pip" view's
  * controls over it) and audio as a button in the rail that moves with how
  * loud it is, a card of the stack's controls beside it on hover; in the
- * whole sidebar, the media stack's card. Screenshots in
- * e2e/screenshots/desk-now-playing/, composited with the live pages and the
- * pip view.
+ * whole sidebar, the media stack's card. Screenshots (PISTACHIO_E2E_CAPTURE=1)
+ * in e2e/screenshots/desk-now-playing/, composited with the live pages and
+ * the pip view.
  */
 
-import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
-import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 import { demoPortalHtml, demoToneWav } from "../../src/main/demo-page";
-import { pageFirst, shellReady } from "./windows";
-
-interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+import { box, createGroup, createTab, launchDesk, openGroupDesk, openTabs, screenshots, selectTab, settled, snapshot, type Box } from "./desk-harness";
 
 let server: Server;
 let ORIGIN: string;
@@ -61,17 +50,10 @@ test.afterAll(async () => {
   await new Promise<void>((done) => server.close(() => done()));
 });
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/desk-now-playing");
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", suffix)].find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
+/** The window as a person sees it, the pip view (the floating player's controls) with the pages. */
+const capture = screenshots("desk-now-playing", ["pip"]);
 
 const call = <T>(shell: Page, run: (pistachio: PistachioApi) => Promise<T>): Promise<T> => shell.evaluate(`(${run.toString()})(window.pistachio)`) as Promise<T>;
-const snapshot = (shell: Page): Promise<ShellSnapshot> => call(shell, (pistachio) => pistachio.getSnapshot());
 const mediaOf = async (shell: Page, tabId: string): Promise<BrowserMediaInfo | null> =>
   (await call(shell, (pistachio) => pistachio.getMedia())).find((item) => item.tabId === tabId) ?? null;
 
@@ -113,54 +95,8 @@ function shownViews(app: ElectronApplication): Promise<Array<{ url: string; boun
 
 const viewAt = async (app: ElectronApplication, ending: string): Promise<Box | null> => (await shownViews(app)).find((view) => view.url.endsWith(ending))?.bounds ?? null;
 
-async function box(page: Page, selector: string): Promise<Box> {
-  const found = await page.locator(selector).first().boundingBox();
-  if (found === null) throw new Error(`${selector} has no box`);
-  return found;
-}
-
 function near(a: Box | null, b: Box, within = 2): boolean {
   return a !== null && (["x", "y", "width", "height"] as const).every((key) => Math.abs(a[key] - b[key]) <= within);
-}
-
-/** The window as a person sees it: the shell, then the pages and the pip view over it, in stacking order. */
-async function capture(app: ElectronApplication, shell: Page, filename: string): Promise<void> {
-  const layers = await app.evaluate(async ({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0]!;
-    const base = (await window.capturePage()).toDataURL();
-    const views: Array<{ dataUrl: string; bounds: { x: number; y: number; width: number; height: number } }> = [];
-    for (const child of window.contentView.children) {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) continue;
-      const view = child as WebContentsView;
-      const url = view.webContents.getURL();
-      if (Object.values(hashes).some((hash) => url.endsWith(hash)) && !url.endsWith(hashes.pip)) continue;
-      views.push({ dataUrl: (await view.webContents.capturePage()).toDataURL(), bounds: view.getBounds() });
-    }
-    return { base, views };
-  }, CHROME_VIEW_HASHES);
-  const png = await shell.evaluate(async ({ base, views }) => {
-    const load = (src: string): Promise<HTMLImageElement> =>
-      new Promise((done, fail) => {
-        const image = new Image();
-        image.onload = () => done(image);
-        image.onerror = fail;
-        image.src = src;
-      });
-    const ground = await load(base);
-    const canvas = document.createElement("canvas");
-    canvas.width = ground.naturalWidth;
-    canvas.height = ground.naturalHeight;
-    const context = canvas.getContext("2d")!;
-    context.drawImage(ground, 0, 0);
-    const scale = ground.naturalWidth / window.innerWidth;
-    for (const view of views) {
-      const image = await load(view.dataUrl);
-      const { x, y, width, height } = view.bounds;
-      context.drawImage(image, x * scale, y * scale, width * scale, height * scale);
-    }
-    return canvas.toDataURL("image/png").slice("data:image/png;base64,".length);
-  }, layers);
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
 }
 
 /** A real, continuously painted video, without a network fixture. */
@@ -212,39 +148,17 @@ async function installAudioPlayer(page: Page): Promise<void> {
   });
 }
 
-test("a window playing something pops out: on the rail, a video floats over the desk with its controls on it, audio is a button in the rail moving with its sound; the whole sidebar takes them as cards", async () => {
-  test.setTimeout(150_000);
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  await mkdir(screenshotDirectory, { recursive: true });
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-desk-now-playing-"));
+test("a window playing something pops out: on the rail, a video floats over the desk with its controls on it, audio is a button in the rail moving with its sound; the whole sidebar takes them as cards", { tag: ["@desk", "@media"] }, async () => {
+  test.setTimeout(120_000);
   const VIDEO_URL = `${ORIGIN}/invoices?video`;
   const AUDIO_URL = `${ORIGIN}/invoices?audio`;
-  await writeFile(join(userData, "settings.json"), JSON.stringify(pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl: VIDEO_URL } })));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+  const { app, shell } = await launchDesk({ name: "now-playing", homeUrl: VIDEO_URL });
   try {
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
-    });
-    const shell = await shellReady(app);
-    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === VIDEO_URL)).toBe(true);
-    await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), AUDIO_URL);
-    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === AUDIO_URL)).toBe(true);
-    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
-    const video = byUrl.get(VIDEO_URL)!;
-    const audio = byUrl.get(AUDIO_URL)!;
-    await shell.evaluate(
-      (tabIds) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "media", tabIds, title: "Media", color: "purple" } as never),
-      [video, audio],
-    );
+    const [video, audio] = (await openTabs(shell, [VIDEO_URL, AUDIO_URL])) as [string, string];
+    await createGroup(shell, "media", [video, audio], "Media", "purple");
     // Both playing, each started in its page while it is the one in view.
     const choose = async (tabId: string): Promise<void> => {
-      await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), tabId);
+      await selectTab(shell, tabId);
       await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(tabId);
     };
     await choose(video);
@@ -260,9 +174,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(async () => (await mediaOf(shell, audio))?.playing ?? false).toBe(true);
 
     // The group's desk, both windows out.
-    const header = shell.locator('[data-testid="tab-group"][data-group-id="media"] [data-testid="tab-group-header"]');
-    await header.hover();
-    await shell.locator('[data-testid="tab-group"][data-group-id="media"]').getByTestId("tab-group-desk").click();
+    await openGroupDesk(shell, "media");
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
     await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
     const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
@@ -270,7 +182,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     if ((await windowOf(audio).count()) === 0) await rowOf(audio).click();
     if ((await windowOf(video).count()) === 0) await rowOf(video).click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
-    await shell.waitForTimeout(1_200);
+    await settled(shell, app);
 
     // ── 1. Each window playing something has Pop out on its frame ───────────
     await expect(windowOf(video).getByTestId("desk-pop-out")).toHaveAttribute("aria-label", "Pop out the video");
@@ -288,8 +200,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, pipBox))).toBe(true);
     await expect.poll(() => viewAt(app, CHROME_VIEW_HASHES.pip).then((bounds) => near(bounds, pipBox))).toBe(true);
     await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
-    await shell.waitForTimeout(600);
-    await capture(app, shell, "02-video-floating.png");
+    await capture(app, shell, "02-video-floating.png", 600);
     // Settings over the window: the picture comes down, and nothing of the player lies over Settings.
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.send("pistachio:shell-command", { type: "runShortcut", id: "openSettings" }));
     await expect(shell.getByTestId("settings-page")).toBeVisible();
@@ -307,7 +218,6 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect(faceView).not.toHaveAttribute("data-shown", "");
     await faceView.hover();
     await expect(faceView).toHaveAttribute("data-shown", "");
-    await shell.waitForTimeout(250);
     await capture(app, shell, "03-video-controls.png");
     await face.getByTestId("desk-pip-play").click();
     await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? true).toBe(false);
@@ -351,7 +261,6 @@ test("a window playing something pops out: on the rail, a video floats over the 
     const card = shell.getByTestId("rail-media-card");
     await expect(card).toHaveAttribute("data-shown", "");
     await expect(card.getByTestId(`media-back-${audio}`)).toBeVisible();
-    await shell.waitForTimeout(250);
     await capture(app, shell, "05-audio-card.png");
     // Its speed's popup open, the pointer on it: the card stays, whatever the media says meanwhile (muted, and back).
     await card.getByTestId("media-rate-trigger").click();
@@ -360,6 +269,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await ratePopup.hover();
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.controlMedia(tabId, { type: "mute" }), audio);
     await expect.poll(async () => (await mediaOf(shell, audio))?.muted ?? false).toBe(true);
+    // (Nothing to wait on: a card the media's word put away would have gone by now.)
     await shell.waitForTimeout(600);
     await expect(card).toHaveCount(1);
     await expect(ratePopup).toBeVisible();
@@ -380,9 +290,8 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect(pip).toHaveCount(0);
     const videoCard = shell.getByTestId(`media-video-${video}`);
     await expect(videoCard).toBeVisible();
-    await shell.waitForTimeout(500);
-    const cardBox = await box(shell, `[data-testid="media-video-${video}"]`);
-    await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, cardBox, 3))).toBe(true);
+    // (Against the card's box as it stands each time: it may still be coming in.)
+    await expect.poll(async () => near(await viewAt(app, "?video"), await box(shell, `[data-testid="media-video-${video}"]`), 3)).toBe(true);
     await expect.poll(() => viewAt(app, CHROME_VIEW_HASHES.pip)).toBe(null);
     await capture(app, shell, "06-whole-sidebar-card.png");
 
@@ -405,7 +314,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     expect((await snapshot(shell)).activeTabId).toBe(video);
     // A page come out on the empty desk since — its view made above the picture — goes under the floating player.
     const OTHER_URL = `${ORIGIN}/invoices?other`;
-    await shell.evaluate((address) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(address), OTHER_URL);
+    await createTab(shell, OTHER_URL);
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === "media")?.tabIds.length ?? 0).toBe(3);
     const other = (await snapshot(shell)).tabs.find((tab) => tab.url === OTHER_URL)!.id;
     await expect(windowOf(other)).toHaveCount(1);
@@ -421,7 +330,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(video);
 
     // ── 10. Put away as any window is (not popped out), watched: it floats too; muted there, the whole sidebar still has it ─
-    await shell.waitForTimeout(700);
+    await settled(shell, app);
     await windowOf(video).getByTestId("desk-collapse").click();
     await expect(windowOf(video)).toHaveCount(0);
     await expect(pip).toHaveCount(1);

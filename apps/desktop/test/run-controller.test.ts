@@ -1594,6 +1594,26 @@ describe("routing a request", () => {
     }
   });
 
+  it("asks no router with PISTACHIO_TURN_ROUTER off: a reply-shaped request takes the browser path", async () => {
+    const configured = process.env["PISTACHIO_TURN_ROUTER"];
+    process.env["PISTACHIO_TURN_ROUTER"] = "off";
+    try {
+      const { model } = scriptedModel([tabsList, answer("A hash map keys values by hashing them.")]);
+      const { router, asked } = routing(0.92);
+      const { controller } = build({ model, router });
+      await controller.start("what is a hash map?");
+      const run = controller.snapshot()!;
+      expect(run.status).toBe("completed");
+      expect(asked).toEqual([]);
+      expect(run.activity.map((entry) => entry.label)).toContain("Agent started");
+      expect(run.activity.map((entry) => entry.label)).not.toContain("Answering directly");
+      expect(userTexts(model.doGenerateCalls[0]!.prompt)).toEqual([`Complete this browser task: what is a hash map?${POINTER}`]);
+    } finally {
+      if (configured === undefined) delete process.env["PISTACHIO_TURN_ROUTER"];
+      else process.env["PISTACHIO_TURN_ROUTER"] = configured;
+    }
+  });
+
   it("asks for a follow-up on a finished thread, with the exchange so far, but not for an answer to a question", async () => {
     const { model, script } = scriptedModel([tabsList, answer("Done: the total is $120.")]);
     const { router, asked } = routing(0.4);

@@ -1,7 +1,6 @@
 import { ArrowDownToLine, Check } from "lucide-react";
 import { useEffect, useState } from "react";
 import { chromeIconButtonClass, useAction } from "../chrome/actions";
-import type { ChromeOrientation } from "../chrome/manifest-renderers";
 import { cn } from "../lib/cn";
 import { downloadsChipLabel, FRESH_MS, summarizeDownloads } from "../lib/downloads";
 import { useAppStore } from "../store";
@@ -18,7 +17,7 @@ import { useAppStore } from "../store";
  * the content hole freezes the page under it (App.tsx) — the same reason
  * the update pill does.
  */
-export function DownloadsChip({ orientation }: { orientation: ChromeOrientation }) {
+export function DownloadsChip() {
   const downloads = useAppStore((s) => s.downloads);
   const open = useAppStore((s) => s.overlay === "downloads");
   const { label: actionLabel, hint, run } = useAction("openDownloads");
@@ -72,8 +71,8 @@ export function DownloadsChip({ orientation }: { orientation: ChromeOrientation 
       onClick={run}
       className={cn(
         "no-drag inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-label-12 whitespace-nowrap transition-colors",
+        "min-w-0 flex-1 justify-center",
         live ? "bg-blue-100 text-blue-900 hover:bg-blue-200" : "bg-green-100 text-green-900 hover:bg-green-200",
-        orientation === "vertical" && "min-w-0 flex-1 justify-center",
       )}
     >
       {live ? <ArrowDownToLine className="size-3.5 animate-pulse" aria-hidden="true" /> : <Check className="size-3.5" aria-hidden="true" />}

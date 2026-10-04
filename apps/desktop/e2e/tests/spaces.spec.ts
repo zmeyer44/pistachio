@@ -1,22 +1,10 @@
 import { createServer, type Server } from "node:http";
-import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { expect, test, type ElectronApplication } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { sidebarMenuItem } from "./footer";
 import { shellPage } from "./windows";
-
-function resolveElectronExecutable(): string | undefined {
-  const suffix = "dist/Electron.app/Contents/MacOS/Electron";
-  return [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", suffix),
-    resolve(process.cwd(), "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron", suffix),
-  ].find((candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")));
-}
+import { launchApp } from "./app";
 
 async function forkFixture(): Promise<{ server: Server; url: string }> {
   const server = createServer((_request, response) => {
@@ -55,17 +43,9 @@ async function visiblePageState(app: ElectronApplication): Promise<{ sessionCook
   });
 }
 
-test("a Space fork carries selected sessions and context once, records lineage, and then diverges", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+test("a Space fork carries selected sessions and context once, records lineage, and then diverges", { tag: ["@tabs", "@sidebar"] }, async () => {
   const fixture = await forkFixture();
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-spaces-e2e-"));
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
-  });
+  const { app } = await launchApp({ name: "spaces" });
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");

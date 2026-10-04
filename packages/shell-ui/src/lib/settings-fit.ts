@@ -28,15 +28,12 @@ export function useSettingsCoversConsole(): boolean {
   const settingsOpen = useAppStore((state) => state.overlay === "settings");
   const consoleOpen = useAppStore((state) => state.consoleOpen);
   const consoleWidth = useAppStore((state) => state.consoleWidth);
-  const sidebarLayout = useAppStore(
-    (state) => state.settings.layout.mode === "sidebar",
-  );
   const pinned = useAppStore(
     (state) => state.settings.layout.sidebar === "pinned",
   );
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
   const windowWidth = useWindowWidth();
   if (!settingsOpen || !consoleOpen) return false;
-  const chrome = sidebarLayout ? (pinned ? sidebarWidth : SIDEBAR_EDGE_W) : 0;
+  const chrome = pinned ? sidebarWidth : SIDEBAR_EDGE_W;
   return windowWidth - chrome - consoleWidth < SETTINGS_MIN_CONTENT_W;
 }

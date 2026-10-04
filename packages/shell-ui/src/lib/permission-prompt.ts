@@ -7,7 +7,7 @@ import type { Overlay } from "../store";
  * keeps the screen; the prompt waits in the site-info button (amber) and
  * opens with the next request, or from there.
  */
-const INTERRUPTIBLE: ReadonlySet<Overlay> = new Set<Overlay>(["none", "status", "site-info"]);
+const INTERRUPTIBLE: ReadonlySet<Overlay> = new Set<Overlay>(["none", "site-info"]);
 
 function pendingIds(controls: BrowserControlsSnapshot | null): Set<string> {
   const ids = new Set<string>();

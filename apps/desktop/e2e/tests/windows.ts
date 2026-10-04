@@ -52,10 +52,9 @@ export const noticePage = (app: ElectronApplication): Promise<Page> =>
   pageWhere(app, (page) => isChromeView(page, "notice"));
 
 /**
- * The chrome is on screen. Main has answered the first snapshot and one of
- * the two layouts (top tabs or sidebar) has mounted its ground — the one
- * element both layouts render, so this holds whatever `layout.mode` a spec
- * seeded.
+ * The chrome is on screen. Main has answered the first snapshot and the
+ * sidebar layout has mounted its ground, which it renders pinned or compact,
+ * so this holds whatever `layout.sidebar` a spec seeded.
  *
  * The agent console is NOT a launch readiness signal: `consoleOpenOnLaunch`
  * defaults to false, so a fresh profile opens with the console closed and

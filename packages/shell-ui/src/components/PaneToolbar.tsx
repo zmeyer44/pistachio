@@ -22,8 +22,7 @@ import { nativeApi } from "../api";
 
 /**
  * The pane toolbar: a row of per-pane controls that the page card slides
- * down to make room for, in the sidebar layout, when the pointer moves in
- * the gap between the card and the window's top edge (@pistachio/shell-contracts/chrome,
+ * down to make room for when the pointer moves in the gap between the card and the window's top edge (@pistachio/shell-contracts/chrome,
  * "pane toolbar"). The row is the sidebar toolbar's row — TRAFFIC_LIGHTS_H
  * tall, its buttons on the traffic lights' centre line — so close, pin and
  * bookmark read as one line with back, forward and reload. One cluster per
@@ -60,7 +59,6 @@ export function PaneToolbar({
 }) {
   const revealed = useAppStore((state) => state.paneToolbarRevealed);
   const setRevealed = useAppStore((state) => state.setPaneToolbarRevealed);
-  const sidebarLayout = useAppStore((state) => state.settings.layout.mode === "sidebar");
   // The site-info popover is the row's own: it opens from a button on the
   // row, so it neither disarms the row nor counts as the pointer leaving it.
   const overlayUp = useAppStore(
@@ -71,7 +69,7 @@ export function PaneToolbar({
   const busy = useAppStore((state) => state.paneResizing || state.tabDragging || state.overlay === "site-info");
   // The row can come out only over a bare page: not under a shell page or
   // modal, not during a Glance, and not while a drag is reshaping the panes.
-  const armed = sidebarLayout && !overlayUp && !glancing && !busy;
+  const armed = !overlayUp && !glancing && !busy;
 
   const holdBox = useRef<ContentBounds | null>(null);
   const check = useRef<number | null>(null);
@@ -150,10 +148,7 @@ export function PaneToolbar({
 
   // Main's verdicts, and the page's hints.
   useEffect(() => {
-    const offEntered = nativeApi()?.onPaneToolbarPointerEntered(() => {
-      const state = useAppStore.getState();
-      if (state.settings.layout.mode === "sidebar") state.setPaneToolbarRevealed(true);
-    });
+    const offEntered = nativeApi()?.onPaneToolbarPointerEntered(() => useAppStore.getState().setPaneToolbarRevealed(true));
     const offLeft = nativeApi()?.onPaneToolbarPointerLeft(() => {
       cancelCheck();
       hide();
@@ -205,7 +200,6 @@ export function PaneToolbar({
     });
   }, [tabs, paneTabIds, spans, surfaceRef]);
 
-  if (!sidebarLayout) return null;
   return (
     <>
       {/* The reveal target, under the row. Stays a drag region: a pointer

@@ -25,12 +25,25 @@ export function NoteTitle({
 
   // Grow to the text. Measured after layout, so the first paint is already
   // the right height and the body below it never jumps.
+  useLayoutEffect(() => fit(ref.current), [value]);
+
+  // The same text wraps anew when the width changes — the window resized, the
+  // page drawn at last after opening hidden, the type stepping down under
+  // 561px — so a width change fits it again. Otherwise the height it had at the
+  // old width stays: two lines' worth over one line of text, until a keystroke.
   useLayoutEffect(() => {
     const field = ref.current;
     if (field === null) return;
-    field.style.height = "0px";
-    field.style.height = `${String(field.scrollHeight)}px`;
-  }, [value]);
+    let width = -1;
+    const observer = new ResizeObserver(() => {
+      // (Its own height changing, as it fits, is not a reason to fit again.)
+      if (field.clientWidth === width) return;
+      width = field.clientWidth;
+      fit(field);
+    });
+    observer.observe(field);
+    return () => observer.disconnect();
+  }, []);
 
   useLayoutEffect(() => {
     if (autoFocus) ref.current?.focus();
@@ -60,4 +73,19 @@ export function NoteTitle({
       style={{ userSelect: "text" }}
     />
   );
+}
+
+/**
+ * The field as tall as its text. Collapsed to measure, with the column under
+ * it held at its height meanwhile: a page scrolled to its foot would
+ * otherwise be pulled up by the collapse and land short of where it was.
+ */
+function fit(field: HTMLTextAreaElement | null): void {
+  if (field === null) return;
+  const column = field.parentElement;
+  const hold = column?.style.minHeight ?? "";
+  if (column != null) column.style.minHeight = `${String(column.offsetHeight)}px`;
+  field.style.height = "0px";
+  field.style.height = `${String(field.scrollHeight)}px`;
+  if (column != null) column.style.minHeight = hold;
 }

@@ -1,12 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import { captureEnabled, electronExecutable, newProfile } from "./app";
 
 const screenshotDirectory = join(process.cwd(), "e2e/screenshots/forced-focus");
 
@@ -41,25 +40,6 @@ interface ProbeState {
   events: string[];
   frames: number;
   ticks: number;
-}
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
 }
 
 /**
@@ -155,7 +135,10 @@ interface InspectorReply {
   };
 }
 
-async function capture(app: App, filename: string): Promise<void> {
+/** The window, when captures are asked for; `settleMs` lets a motion finish first. */
+async function capture(app: App, filename: string, settleMs = 0): Promise<void> {
+  if (!captureEnabled) return;
+  if (settleMs > 0) await new Promise((settle) => setTimeout(settle, settleMs));
   const png = await app.main<string>(`async ({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (window === undefined) throw new Error("Pistachio window is unavailable");
@@ -177,9 +160,10 @@ function probe(app: App, urlPrefix: string): Promise<ProbeState> {
   );
 }
 
+/** Animation frames and 20ms timer ticks the page ran in half a second: about 30 and 25 when it runs at full rate. */
 async function measureRates(app: App, urlPrefix: string): Promise<{ frames: number; ticks: number }> {
   const before = await probe(app, urlPrefix);
-  await new Promise((settle) => setTimeout(settle, 1_000));
+  await new Promise((settle) => setTimeout(settle, 500));
   const after = await probe(app, urlPrefix);
   return { frames: after.frames - before.frames, ticks: after.ticks - before.ticks };
 }
@@ -220,12 +204,31 @@ function menuItem(app: App, label: string): Promise<{ checked: boolean } | null>
   })()`);
 }
 
-/** Right-click `row` and wait for its menu to offer `label`; reopens if a stray re-render closed it. */
+/**
+ * The open menu takes clicks and its entry animation has run out, so its
+ * items are where a click aims. It waits, inert, until the shell is raised
+ * over the page (ContextMenu's `ready`), then animates in.
+ */
+async function menuSettled(app: App): Promise<void> {
+  await expect
+    .poll(() =>
+      app.shell<boolean>(`(async () => {
+        const menu = document.querySelector('[data-testid="context-menu"]');
+        if (menu === null || getComputedStyle(menu).pointerEvents === "none") return false;
+        await Promise.all(menu.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined)));
+        return getComputedStyle(menu).opacity === "1";
+      })()`),
+    )
+    .toBe(true);
+}
+
+/** Right-click `row` and wait for its menu to offer `label`, at rest; reopens if a stray re-render closed it. */
 async function openMenuWith(app: App, row: string, label: string): Promise<{ checked: boolean }> {
   for (let attempt = 0; ; attempt++) {
     await click(app, row, "right");
     try {
       await expect.poll(() => menuItem(app, label), { timeout: 3_000 }).not.toBeNull();
+      await menuSettled(app);
       return (await menuItem(app, label)) ?? { checked: false };
     } catch (error) {
       if (attempt === 2) throw error;
@@ -235,9 +238,8 @@ async function openMenuWith(app: App, row: string, label: string): Promise<{ che
 
 const snapshot = (app: App): Promise<ShellSnapshot> => app.shell<ShellSnapshot>("window.pistachio.getSnapshot()");
 
-test("Force focus in a tab's context menu makes a background page believe it is the focused, visible tab", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
+// Its own launch, through the Node inspector (see `launch`): it cannot share a Playwright-driven app.
+test("Force focus in a tab's context menu makes a background page believe it is the focused, visible tab", { tag: ["@tabs"] }, async () => {
   const server: Server = createServer((request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(request.url === "/other" ? "<!doctype html><title>Other tab</title><h1>Other tab</h1>" : PROBE_PAGE);
@@ -250,12 +252,9 @@ test("Force focus in a tab's context menu makes a background page believe it is 
   // navigation, which may move the page to a new renderer process.
   const crossSiteUrl = `http://localhost:${port}/probe`;
 
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-forced-focus-"));
-  await writeFile(
-    join(userData, "settings.json"),
-    JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }),
-  );
-  const app = await launch(executablePath, userData);
+  const userData = await newProfile("forced-focus");
+  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { sidebar: "pinned" } }));
+  const app = await launch(electronExecutable(), userData);
   try {
     // The probe opens in the first tab, then a second tab takes the front:
     // the probe is now a background tab, and it knows it.
@@ -280,7 +279,6 @@ test("Force focus in a tab's context menu makes a background page believe it is 
 
     // Right-click the background tab: the menu offers "Force focus", unchecked.
     expect(await openMenuWith(app, row, "Force focus")).toEqual({ checked: false });
-    await new Promise((settle) => setTimeout(settle, 400)); // the menu's entry animation
     await capture(app, "02-context-menu.png");
     await click(app, { menuItem: "Force focus" });
 
@@ -292,8 +290,8 @@ test("Force focus in a tab's context menu makes a background page believe it is 
     expect(forced.hasFocus).toBe(true);
     expect(forced.events.slice(backgrounded.events.length)).toEqual(expect.arrayContaining(["visibility:visible", "focus"]));
     const forcedRates = await measureRates(app, probeUrl);
-    expect(forcedRates.frames).toBeGreaterThan(20);
-    expect(forcedRates.ticks).toBeGreaterThan(25);
+    expect(forcedRates.frames).toBeGreaterThan(10);
+    expect(forcedRates.ticks).toBeGreaterThan(12);
     const afterToggle = await snapshot(app);
     expect(afterToggle.activeTabId).not.toBe(first.id);
     expect(afterToggle.tabs.find((tab) => tab.id === first.id)?.forcedFocus).toBe(true);
@@ -302,7 +300,6 @@ test("Force focus in a tab's context menu makes a background page believe it is 
 
     // The menu now shows it checked.
     expect(await openMenuWith(app, row, "Force focus")).toEqual({ checked: true });
-    await new Promise((settle) => setTimeout(settle, 400)); // the menu's entry animation
     await capture(app, "04-context-menu-checked.png");
     await app.main(`({ webContents }) => {
       const shell = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith("pistachio-app://shell/"));
@@ -314,7 +311,9 @@ test("Force focus in a tab's context menu makes a background page believe it is 
     // Blurring the whole window does not reach the page either.
     const eventsBefore = (await probe(app, probeUrl)).events.length;
     await app.main(`({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.blur()`);
-    await new Promise((settle) => setTimeout(settle, 500));
+    // The shell hears the blur; a page that was going to would have by a beat after.
+    await expect.poll(() => app.shell<boolean>("document.hasFocus()")).toBe(false);
+    await new Promise((settle) => setTimeout(settle, 200));
     const afterBlur = await probe(app, probeUrl);
     expect(afterBlur.hasFocus).toBe(true);
     expect(afterBlur.visibilityState).toBe("visible");
@@ -332,7 +331,7 @@ test("Force focus in a tab's context menu makes a background page believe it is 
     await expect.poll(() => probe(app, crossSiteUrl).then((state) => state.visibilityState).catch(() => "none")).toBe("visible");
     const crossSite = await probe(app, crossSiteUrl);
     expect(crossSite.hasFocus).toBe(true);
-    expect((await measureRates(app, crossSiteUrl)).frames).toBeGreaterThan(20);
+    expect((await measureRates(app, crossSiteUrl)).frames).toBeGreaterThan(10);
 
     // Pressing the tab's mark turns it off: the page hears the truth at once.
     await click(app, mark);

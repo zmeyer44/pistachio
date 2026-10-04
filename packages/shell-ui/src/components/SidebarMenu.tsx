@@ -8,7 +8,7 @@ import { useDeskStore } from "../lib/desk/store";
 import { useSidebarRail } from "./sidebar-rail";
 import { useAppStore } from "../store";
 import type { PlaneRow } from "../lib/chrome-status";
-import { RenderingStatus, useBrowserStatus } from "./StatusControl";
+import { RenderingStatus, useBrowserStatus } from "./BrowserStatus";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { MenuItem, MenuLabel, MenuPanel, MenuSeparator, useMenuButton } from "./ui/menu";
 
@@ -16,9 +16,8 @@ import { MenuItem, MenuLabel, MenuPanel, MenuSeparator, useMenuButton } from "./
  * The sidebar footer's one menu, at the row's start: the active Space's
  * avatar. Hover shows the menu, a click pins it. The Space and who is
  * signed in head the panel, any other Space to switch to follows, and below
- * them the controls the strip lays out as separate buttons — the agent
- * panel, reminders, bookmarks, settings — folded into one list (the
- * manifest hides each of those in the sidebar and names this as the reason).
+ * them the chrome's controls that have no button of their own in the
+ * column — the agent panel, reminders, bookmarks, settings — as one list.
  */
 export function SidebarMenu() {
   const status = useBrowserStatus();
@@ -179,7 +178,7 @@ export function useMenuOverPages(open: boolean): boolean {
 export function useCompactSidebarHidden(): boolean {
   const onDesk = useDeskStore((state) => state.groupId !== null || state.opening !== null);
   const hidden = useAppStore(
-    (state) => state.settings.layout.mode === "sidebar" && state.settings.layout.sidebar === "compact" && !state.sidebarRevealed,
+    (state) => state.settings.layout.sidebar === "compact" && !state.sidebarRevealed,
   );
   return hidden && !onDesk;
 }

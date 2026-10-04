@@ -1,37 +1,25 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
-import { _electron as electron, expect, test, type ElectronApplication } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { shellReady } from "./windows";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
+import { captureEnabled, launchApp } from "./app";
+import { snapshot } from "./agent-harness";
+
+/**
+ * The console's demo agent (RunController's no-model flow under
+ * PISTACHIO_E2E) in the person's live tab: interrupt, steer, approve once,
+ * replay the record — then the two questions it can ask, a choice and a
+ * typed value, each resuming the same conversation. One launch; each step
+ * leaves the thread where the next one starts.
+ */
 
 const screenshotDirectory = join(process.cwd(), "e2e/screenshots/delegation");
 const execFile = promisify(execFileCallback);
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [
-    process.env["PISTACHIO_ELECTRON_PATH"],
-    join(process.cwd(), "node_modules/electron", executableSuffix),
-    resolve(
-      process.cwd(),
-      "../../../harbor/node_modules/.pnpm/electron@43.3.0/node_modules/electron",
-      executableSuffix,
-    ),
-  ];
-
-  return candidates.find(
-    (candidate) =>
-      candidate !== undefined &&
-      existsSync(candidate) &&
-      existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
 
 /** capturePage throws UnknownVizError until a view's compositor has its first frame. */
 async function withFirstFrame<T>(capture: () => Promise<T>): Promise<T> {
@@ -47,7 +35,9 @@ async function withFirstFrame<T>(capture: () => Promise<T>): Promise<T> {
   throw lastError;
 }
 
+/** The shell with each visible tab view composited over it (ImageMagick `magick`). */
 async function captureWindow(app: ElectronApplication, filename: string): Promise<void> {
+  if (!captureEnabled) return;
   const capture = await withFirstFrame(() => app.evaluate(async ({ BrowserWindow }, hashes) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (window === undefined) throw new Error("Pistachio window is unavailable");
@@ -94,37 +84,31 @@ async function captureWindow(app: ElectronApplication, filename: string): Promis
   await Promise.all([shellPath, ...viewPaths].map((path) => unlink(path)));
 }
 
-test("a person collaborates with the agent in their live tab, steers, approves once, and replays activity", async () => {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) {
-    throw new Error(
-      "No complete Electron runtime is installed. Run pnpm install or set PISTACHIO_ELECTRON_PATH.",
-    );
-  }
+test.describe.serial("the console's agent works in the person's tab", { tag: ["@agent"] }, () => {
+  test.describe.configure({ timeout: 45_000 });
 
-  // A scratch userData, like the other specs: the flow drives the top-tabs
-  // strip, and a developer whose own settings.json chose the sidebar layout
-  // would otherwise watch it fail on the strip's selectors.
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-delegation-"));
-  await writeFile(
-    join(userData, "settings.json"),
+  let app: ElectronApplication;
+  let shell: Page;
+
+  test.beforeAll(async () => {
+    test.setTimeout(60_000);
     // The demo invoice page is the subject of the whole journey, so it is the
     // home page: the window no longer opens on it by itself.
-    JSON.stringify({
-      layout: { mode: "top", sidebar: "pinned" },
-      general: { consoleOpenOnLaunch: true, homeUrl: "pistachio://demo/invoices" },
-    }),
-  );
-
-  const app = await electron.launch({
-    args: ["."],
-    cwd: join(process.cwd()),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+    ({ app } = await launchApp({
+      name: "delegation",
+      settings: {
+        layout: { sidebar: "pinned" },
+        general: { consoleOpenOnLaunch: true, homeUrl: "pistachio://demo/invoices" },
+      },
+    }));
+    shell = await shellReady(app);
   });
-  try {
-    const shell = await shellReady(app);
 
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a person collaborates with the agent in their live tab, steers, approves once, and replays activity", { tag: ["@smoke"] }, async () => {
     // The starting state proves the browser and persistent agent chat arrive together.
     await expect(shell.getByTestId("agent-panel")).toBeVisible();
     await expect(shell.getByTestId("human-tab")).toBeVisible();
@@ -148,7 +132,7 @@ test("a person collaborates with the agent in their live tab, steers, approves o
     }, CHROME_VIEW_HASHES);
 
     // A user-created split remains intact when the agent begins work.
-    await shell.getByTestId("split-toggle").click();
+    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.setSplit("vertical"));
     await expect(shell.getByTestId("secondary-pane")).toBeVisible();
     await captureWindow(app, "02-human-split-view.png");
 
@@ -161,7 +145,11 @@ test("a person collaborates with the agent in their live tab, steers, approves o
     await shell.getByTestId("delegation-intent").fill("Reconcile the invoice and route it for payment");
     await shell.getByTestId("delegate-button").click();
     await expect(shell.getByTestId("run-status")).toContainText("Running");
-    await shell.waitForTimeout(450);
+    // Interrupt once the draft is typed into the page, before the approval
+    // the demo asks for next: the steered run resumes from that page state.
+    await expect
+      .poll(async () => (await snapshot(shell)).run?.toolCalls.some((call) => call.name === "page.type" && call.status === "completed") ?? false, { intervals: [50] })
+      .toBe(true);
     await shell.getByTestId("interrupt-button").click();
     await expect(shell.getByTestId("run-status")).toContainText("Interrupted");
     await expect(shell.getByTestId("approval-card")).toHaveCount(0);
@@ -233,20 +221,55 @@ test("a person collaborates with the agent in their live tab, steers, approves o
     // The completed run must expose its full hash-chained evidence record.
     await shell.getByRole("button", { name: /View \d+ activity records/ }).click();
     await expect(shell.getByTestId("evidence-replay")).toBeVisible();
-    await shell.waitForTimeout(100);
     await captureWindow(app, "06-evidence-replay.png");
-
-    // Ambiguous prompts use the structured questionnaire primitive and
-    // continue the same conversational interaction once answered.
     await shell.getByRole("button", { name: "Close replay" }).click();
+    await expect(shell.getByTestId("evidence-replay")).toHaveCount(0);
+  });
+
+  test("a structured question disappears and the run resumes after Continue", async () => {
+    // Ambiguous prompts use the structured questionnaire primitive: the
+    // finished demo thread starts over, paused on the question and its directions.
     await shell.getByTestId("delegation-intent").fill("Help");
     await shell.getByTestId("delegate-button").click();
-    await expect(shell.getByTestId("questionnaire-card")).toBeVisible();
+    const card = shell.getByTestId("questionnaire-card");
+    await expect(card).toBeVisible();
+    await expect(card.getByText("Inspect and report", { exact: true })).toBeVisible();
     await captureWindow(app, "07-questionnaire.png");
-    await shell.getByText("Inspect and report", { exact: true }).click();
-    await shell.getByRole("button", { name: "Continue" }).click();
+
+    // A chosen direction gives Continue a concrete value to submit.
+    await card.getByText("Inspect and report", { exact: true }).click();
+    await expect(card.getByRole("button", { name: "Continue" })).toBeEnabled();
+
+    // Removing the card is the user-visible contract that the answer resumed this conversation.
+    await card.getByRole("button", { name: "Continue" }).click();
+    await expect(card).toHaveCount(0);
     await expect(shell.getByTestId("run-status")).toContainText("Running");
-  } finally {
-    await app.close();
-  }
+
+    // It runs on to its approval; declined, the thread is finished.
+    await expect(shell.getByTestId("approval-card")).toBeVisible();
+    await shell.getByTestId("reject-button").click();
+    await expect(shell.getByTestId("run-status")).toContainText("Rejected");
+  });
+
+  test("a person types a requested value and the agent resumes with it", async () => {
+    // The agent can request a verbatim value without inventing choices.
+    await shell.getByTestId("delegation-intent").fill("I will provide my ZIP code");
+    await shell.getByTestId("delegate-button").click();
+    const card = shell.getByTestId("questionnaire-card");
+    const input = card.getByTestId("question-text-input");
+    await expect(card.getByText("What ZIP code should I use?", { exact: true })).toBeVisible();
+    await expect(input).toHaveAttribute("placeholder", "ZIP code");
+    await expect(card.getByRole("radio")).toHaveCount(0);
+    await captureWindow(app, "08-text-question.png");
+
+    // The exact value is staged in the dedicated answer field.
+    await input.fill("10001");
+    await expect(input).toHaveValue("10001");
+
+    // Continue consumes the text and returns to the same conversation.
+    await card.getByRole("button", { name: "Continue" }).click();
+    await expect(card).toHaveCount(0);
+    await expect(shell.getByTestId("run-status")).toContainText("Running");
+    await expect(shell.getByText("10001", { exact: true })).toBeVisible();
+  });
 });

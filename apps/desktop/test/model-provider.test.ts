@@ -6,6 +6,7 @@ import {
   intentModelName,
   NOT_SIGNED_IN,
   setAiSession,
+  turnRouterEnabled,
   type AiSession,
 } from "../src/main/model-provider";
 
@@ -148,5 +149,26 @@ describe("the intent model", () => {
     expect(configuredIntentModel()?.id).toBe("typesafe-ai/jev");
     process.env["PISTACHIO_INTENT_MODEL"] = "off";
     expect(configuredIntentModel()).toBeNull();
+  });
+});
+
+describe("the turn router", () => {
+  const configured = process.env["PISTACHIO_TURN_ROUTER"];
+  afterEach(() => {
+    if (configured === undefined) delete process.env["PISTACHIO_TURN_ROUTER"];
+    else process.env["PISTACHIO_TURN_ROUTER"] = configured;
+  });
+
+  it("is on unless the environment turns it off, which sends every turn down the browser path", () => {
+    delete process.env["PISTACHIO_TURN_ROUTER"];
+    expect(turnRouterEnabled()).toBe(true);
+    for (const on of ["", "on", "1", "true"]) {
+      process.env["PISTACHIO_TURN_ROUTER"] = on;
+      expect(turnRouterEnabled()).toBe(true);
+    }
+    for (const off of ["off", "0", "false", " off "]) {
+      process.env["PISTACHIO_TURN_ROUTER"] = off;
+      expect(turnRouterEnabled()).toBe(false);
+    }
   });
 });

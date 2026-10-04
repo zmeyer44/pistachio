@@ -3,63 +3,65 @@
  * window, what ⌘T opens, and what a window whose last tab closed comes back
  * to. The shell draws it in the pane — the tab's own view stays hidden — so
  * this drives it as the shell's DOM and checks main's views alongside.
+ *
+ * The address field's preview of the active row (shell-ui's
+ * lib/use-field-preview.ts) is driven here too, in the home page's search
+ * and the address modal alike, and the schedule's connected calendar last.
  */
 
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
+import { expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import { HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
 import { IPC, type CalendarAgenda, type PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { shellPage } from "./windows";
+import { shellReady } from "./windows";
+import { launchApp } from "./app";
+import { captureShell as captureWindow, humanTabs as tabs, visibleTabViews } from "./pages-harness";
 
-const screenshotDirectory = join(process.cwd(), "e2e/screenshots/home-page");
-
-function resolveElectronExecutable(): string | undefined {
-  const executableSuffix = "dist/Electron.app/Contents/MacOS/Electron";
-  const candidates = [process.env["PISTACHIO_ELECTRON_PATH"], join(process.cwd(), "node_modules/electron", executableSuffix)];
-  return candidates.find(
-    (candidate) => candidate !== undefined && existsSync(candidate) && existsSync(resolve(dirname(candidate), "../Info.plist")),
-  );
-}
-
-async function captureShell(app: ElectronApplication, filename: string): Promise<void> {
-  const png = await app.evaluate(async ({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return (await window.capturePage()).toPNG().toString("base64");
-  });
-  await mkdir(screenshotDirectory, { recursive: true });
-  await writeFile(join(screenshotDirectory, filename), Buffer.from(png, "base64"));
-}
-
-/** Tab views main is showing (the chrome's own utility views excluded). */
-function visibleTabViews(app: ElectronApplication): Promise<number> {
-  return app.evaluate(({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return window.contentView.children.filter((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return false;
-      const url = (child as WebContentsView).webContents.getURL();
-      return !Object.values(hashes).some((hash) => url.endsWith(hash));
-    }).length;
-  }, CHROME_VIEW_HASHES);
-}
-
-async function tabs(shell: Page): Promise<Array<{ id: string; url: string; title: string }>> {
-  return shell.evaluate(async () => {
-    const snapshot = await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot();
-    return snapshot.tabs.filter((tab) => tab.kind === "human").map(({ id, url, title }) => ({ id, url, title }));
-  });
+/** The frame that shows a just-made change has to be painted before it can be captured. */
+function captureShell(app: ElectronApplication, filename: string): Promise<void> {
+  return captureWindow(app, `home-page/${filename}`, 200);
 }
 
 async function activeTabId(shell: Page): Promise<string | null> {
   return shell.evaluate(async () => (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).activeTabId);
+}
+
+/** ↑/↓ until `row` is the active one — chips and groups make the count the list's business. */
+async function arrowTo(shell: Page, list: Locator, row: Locator): Promise<void> {
+  const active = list.locator("[data-index].bg-alpha-200, [data-index].bg-alpha-300");
+  for (let presses = 0; presses < 24; presses++) {
+    const target = Number(await row.getAttribute("data-index"));
+    const at = (await active.count()) === 0 ? -1 : Number(await active.first().getAttribute("data-index"));
+    if (at === target) return;
+    await shell.keyboard.press(at < target ? "ArrowDown" : "ArrowUp");
+  }
+  await expect(row).toHaveClass(/bg-alpha-200/);
+}
+
+/**
+ * Main's answer for the connected calendar, replaced: a profile with no
+ * account has no calendar, and Google is not part of this suite. Everything
+ * after the handler — the shell's read, the merge, the card — is the app's own.
+ */
+async function answerCalendarWith(app: ElectronApplication, agenda: CalendarAgenda): Promise<void> {
+  await app.evaluate(
+    ({ ipcMain }, { channel, answer }) => {
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, () => answer);
+    },
+    { channel: IPC.integrationCalendarEvents, answer: agenda },
+  );
+}
+
+/** ⌘T: a new home tab, in front — the home page of the tab now active. */
+async function newHomeTab(shell: Page): Promise<Locator> {
+  const before = await activeTabId(shell);
+  await shell.keyboard.press("Meta+t");
+  await expect.poll(() => activeTabId(shell)).not.toBe(before);
+  const home = shell.locator(`[data-testid="home-page"][data-tab-id="${(await activeTabId(shell))!}"]`);
+  await expect(home).toBeVisible();
+  return home;
 }
 
 function fixturePage(title: string): string {
@@ -89,23 +91,26 @@ test.afterAll(async () => {
   await new Promise<void>((done) => server.close(() => done()));
 });
 
-test("a new window, a new tab and an emptied window all land on the home page, and its search drives the tab", async () => {
-  test.setTimeout(120_000);
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), "pistachio-home-page-"));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
+// One window, in order: the home page from launch to an emptied window, the
+// field preview over what that left, then the schedule's calendar — whose
+// answers are main's replaced handler and whose clock is moved on, so they
+// come last.
+test.describe.serial("the home page", { tag: ["@address", "@home", "@settings"] }, () => {
+  test.describe.configure({ timeout: 90_000 });
+  let app: ElectronApplication;
+  let shell: Page;
 
-  const app = await electron.launch({
-    args: ["."],
-    cwd: process.cwd(),
-    executablePath,
-    env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData },
+  test.beforeAll(async () => {
+    // No model: the order the preview walks is the heuristics' own.
+    ({ app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, env: { PISTACHIO_INTENT_MODEL: "off" }, name: "home-page" }));
+    shell = await shellReady(app);
   });
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
 
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a new window, a new tab and an emptied window all land on the home page, and its search drives the tab", { tag: ["@smoke"] }, async () => {
     // A fresh window's first tab is the home page, drawn by the shell: the
     // tab's own view stays down under it.
     const home = shell.getByTestId("home-page");
@@ -173,7 +178,7 @@ test("a new window, a new tab and an emptied window all land on the home page, a
     await expect(shell.getByTestId("address-input")).toHaveValue("");
     await shell.keyboard.type("Fixture");
     await expect(shell.getByTestId("command-results").locator('[data-result-kind="history"]').first()).toContainText("Fixture One");
-    // Captured once the open animation has settled, on the theme's ground.
+    // The open animation settles, on the theme's ground.
     await expect(shell.getByTestId("url-bar-veil")).toHaveAttribute("data-ready", "");
     await expect(shell.getByTestId("url-bar")).toHaveCSS("opacity", "1");
     await expect(shell.getByTestId("url-bar")).toHaveClass(/palette-surface/u);
@@ -206,9 +211,12 @@ test("a new window, a new tab and an emptied window all land on the home page, a
     await expect.poll(async () => (await tabs(shell)).map((tab) => tab.url).sort()).toEqual([HOME_PAGE_URL, `${origin}/two`].sort());
     await expect.poll(async () => (await tabs(shell)).some((tab) => tab.id === secondId)).toBe(false);
 
-    // The schedule opens the reminders' calendar.
+    // The schedule opens the reminders' calendar. A Mac with no account
+    // cannot connect a calendar: main says so, and the card does not ask.
     await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), firstId);
     await expect(home).toBeVisible();
+    await expect(shell.getByTestId("home-schedule")).toBeVisible();
+    await expect(shell.getByTestId("home-calendar-connect")).toHaveCount(0);
     await shell.getByTestId("home-open-calendar").click();
     const reminders = shell.getByTestId("reminders-page");
     await expect(reminders).toBeVisible();
@@ -222,42 +230,142 @@ test("a new window, a new tab and an emptied window all land on the home page, a
     await expect.poll(async () => (await tabs(shell)).map((tab) => tab.url)).toEqual([HOME_PAGE_URL]);
     await expect(home).toBeVisible();
     await captureShell(app, "05-after-closing-every-tab.png");
-  } finally {
-    await app.close();
+  });
+
+  test("the address field shows the active row's text, from the arrows and from the pointer", async () => {
+    await expect(shell.getByTestId("home-page")).toBeVisible();
+    const homeId = (await tabs(shell))[0]!.id;
+    const fixtureUrl = `${origin}/one`;
+
+    // A second tab to find, then back to the home tab.
+    await shell.evaluate((url) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(url), fixtureUrl);
+    await expect.poll(async () => (await tabs(shell)).find((tab) => tab.url === fixtureUrl)?.title).toBe("Fixture One");
+    const fixtureId = (await tabs(shell)).find((tab) => tab.url === fixtureUrl)!.id;
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), homeId);
+
+    // ── The home page's search ──────────────────────────────────────────────
+    const homeInput = shell.getByTestId("home-search-input");
+    await homeInput.click();
+    await shell.keyboard.type("Fixture");
+    const homeResults = shell.getByTestId("home-search-results");
+    const homeTabRow = homeResults.locator(`[data-tab-id="${fixtureId}"]`);
+    await expect(homeTabRow).toBeVisible();
+    // The list's own default selection is not a preview.
+    await expect(homeInput).toHaveValue("Fixture");
+
+    // ↓ down the list and ↑ back: the field follows the active row. The rows
+    // that ARE the typed text (the web search, the AI prompt) leave it alone.
+    await shell.keyboard.press("ArrowDown");
+    await arrowTo(shell, homeResults, homeTabRow);
+    await expect(homeInput).toHaveValue(fixtureUrl);
+    await captureShell(app, "address-preview/01-home-arrow-preview.png");
+    await arrowTo(shell, homeResults, homeResults.locator('[data-suggestion-kind="search"]'));
+    await expect(homeInput).toHaveValue("Fixture");
+
+    // A row reached by the arrows is text to edit: what is typed next lands on it.
+    await arrowTo(shell, homeResults, homeTabRow);
+    await shell.keyboard.type("?x");
+    await expect(homeInput).toHaveValue(`${fixtureUrl}?x`);
+    await expect(homeResults.locator('[data-suggestion-kind="navigate"]')).toBeVisible();
+
+    // The pointer shows the row under it, and puts the typed text back when it
+    // leaves the list without a key having landed…
+    await homeInput.fill("Fixture");
+    await expect(homeTabRow).toBeVisible();
+    await homeTabRow.hover();
+    await expect(homeInput).toHaveValue(fixtureUrl);
+    await captureShell(app, "address-preview/02-home-hover-preview.png");
+    await homeInput.hover();
+    await expect(homeInput).toHaveValue("Fixture");
+    // …but a key over a hovered row edits the row's text, which stays when the pointer leaves.
+    await homeTabRow.hover();
+    await expect(homeInput).toHaveValue(fixtureUrl);
+    await shell.keyboard.press("Backspace");
+    await expect(homeInput).toHaveValue(fixtureUrl.slice(0, -1));
+    await shell.keyboard.type("x");
+    await expect(homeInput).toHaveValue(`${fixtureUrl.slice(0, -1)}x`);
+    await homeInput.hover();
+    await expect(homeInput).toHaveValue(`${fixtureUrl.slice(0, -1)}x`);
+    // A key that only moves the caret takes the row's text as well.
+    await homeInput.fill("Fixture");
+    await expect(homeTabRow).toBeVisible();
+    await homeTabRow.hover();
+    await expect(homeInput).toHaveValue(fixtureUrl);
+    await shell.keyboard.press("ArrowLeft");
+    await homeInput.hover();
+    await expect(homeInput).toHaveValue(fixtureUrl);
+    await shell.keyboard.press("Escape");
+    await expect(homeInput).toHaveValue("");
+    await shell.keyboard.press("Escape");
+
+    // ── The address modal ───────────────────────────────────────────────────
+    // Over the home tab the field opens empty; ↓ into the open tabs shows the
+    // tab's address, and ↑ back out of the list shows the empty field again.
+    await shell.keyboard.press("Meta+L");
+    const address = shell.getByTestId("address-input");
+    await expect(address).toBeFocused();
+    await expect(address).toHaveValue("");
+    const modal = shell.getByTestId("url-bar");
+    // The dialog fades in; a capture before it lands shows no dialog at all.
+    await expect(modal).toHaveCSS("opacity", "1");
+    const modalTabRow = modal.locator(`[data-testid="open-tab-result"][data-tab-id="${fixtureId}"]`);
+    await expect(modalTabRow).toBeVisible();
+    await arrowTo(shell, modal, modalTabRow);
+    await expect(address).toHaveValue(fixtureUrl);
+    await captureShell(app, "address-preview/03-modal-arrow-preview.png");
+    for (let presses = 0; presses < 24 && (await address.inputValue()) !== ""; presses++) await shell.keyboard.press("ArrowUp");
+    await expect(address).toHaveValue("");
+    await shell.keyboard.press("Escape");
+    await expect(modal).toHaveCount(0);
+
+    // Over a page the field opens holding its address, selected. Hovering a
+    // row shows its address instead, and typing continues that address.
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), fixtureId);
+    await shell.keyboard.press("Meta+L");
+    await expect(address).toBeFocused();
+    await expect(address).toHaveValue(fixtureUrl);
+    await expect(modal).toHaveCSS("opacity", "1");
+    const homeTabInModal = modal.locator(`[data-testid="open-tab-result"][data-tab-id="${homeId}"]`);
+    await expect(homeTabInModal).toBeVisible();
+    await homeTabInModal.hover();
+    await expect(address).not.toHaveValue(fixtureUrl);
+    const homeTabText = await address.inputValue();
+    await captureShell(app, "address-preview/04-modal-hover-preview.png");
+    await shell.keyboard.type("abc");
+    await expect(address).toHaveValue(`${homeTabText}abc`);
+
+    // The typed face looks, lets go, and hands over its text the same way.
+    const typedHomeRow = modal.getByTestId("command-results").locator(`[data-tab-id="${homeId}"]`);
+    await address.fill("Home");
+    await expect(typedHomeRow).toBeVisible();
+    await typedHomeRow.hover();
+    await expect(address).toHaveValue(homeTabText);
+    await address.hover();
+    await expect(address).toHaveValue("Home");
+    await typedHomeRow.hover();
+    await expect(address).toHaveValue(homeTabText);
+    await shell.keyboard.press("Backspace");
+    await expect(address).toHaveValue(homeTabText.slice(0, -1));
+    await address.hover();
+    await expect(address).toHaveValue(homeTabText.slice(0, -1));
+    await shell.keyboard.press("Escape");
+    await expect(modal).toHaveCount(0);
+  });
+
+  /**
+   * The schedule's calendar is read when a home page appears, and an answer
+   * stands a while (shell-ui home/use-calendar-agenda.ts: 15 s with no
+   * events in it, 5 min with). Rather than wait that out, each step moves
+   * the shell's clock past it (Playwright's clock: `Date` jumps, timers keep
+   * running) and opens a new home page, which asks again.
+   */
+  let skew = 0;
+  async function askAgainAfter(ms: number): Promise<void> {
+    skew += ms;
+    await shell.clock.setSystemTime(Date.now() + skew);
   }
-});
 
-/**
- * Main's answer for the connected calendar, replaced: a profile with no
- * account has no calendar, and Google is not part of this suite. Everything
- * after the handler — the shell's read, the merge, the card — is the app's own.
- */
-async function answerCalendarWith(app: ElectronApplication, agenda: CalendarAgenda): Promise<void> {
-  await app.evaluate(
-    ({ ipcMain }, { channel, answer }) => {
-      ipcMain.removeHandler(channel);
-      ipcMain.handle(channel, () => answer);
-    },
-    { channel: IPC.integrationCalendarEvents, answer: agenda },
-  );
-}
-
-async function launchHome(prefix: string): Promise<ElectronApplication> {
-  const executablePath = resolveElectronExecutable();
-  if (executablePath === undefined) throw new Error("No complete Electron runtime is installed.");
-  const userData = await mkdtemp(join(tmpdir(), prefix));
-  await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { mode: "sidebar", sidebar: "pinned" } }));
-  return electron.launch({ args: ["."], cwd: process.cwd(), executablePath, env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData } });
-}
-
-test("the schedule shows a connected Google Calendar's day: all-day first, what is on now, a way into the call", async () => {
-  test.setTimeout(120_000);
-  const app = await launchHome("pistachio-home-calendar-");
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await expect(shell.getByTestId("home-schedule")).toBeVisible();
-
+  test("the schedule shows a connected Google Calendar's day: all-day first, what is on now, a way into the call", async () => {
     const now = Date.now();
     const at = (minutes: number): string => new Date(now + minutes * 60_000).toISOString();
     const day = (offset: number): string => {
@@ -288,10 +396,9 @@ test("the schedule shows a connected Google Calendar's day: all-day first, what 
         event("stale", "Yesterday's holiday", day(-1), day(0), { allDay: true }),
       ],
     });
-    // The first read was answered before the handler was replaced, by a Mac with no account; a new home page asks again.
-    await shell.waitForTimeout(16_000);
-    await shell.keyboard.press("Meta+t");
-    const schedule = shell.getByTestId("home-schedule").last();
+    // The last read was answered before the handler was replaced, by a Mac with no account.
+    await askAgainAfter(16_000);
+    const schedule = (await newHomeTab(shell)).getByTestId("home-schedule");
     const rows = schedule.getByTestId("home-agenda-item");
     await expect(rows).toHaveCount(3);
     await expect(rows.nth(0)).toContainText("All day");
@@ -310,52 +417,29 @@ test("the schedule shows a connected Google Calendar's day: all-day first, what 
 
     await schedule.getByRole("button", { name: "Join Vendor sync" }).click();
     await expect.poll(async () => (await tabs(shell)).some((tab) => tab.url.startsWith("https://meet.google.com/") || tab.url.includes("google.com"))).toBe(true);
-  } finally {
-    await app.close();
-  }
-});
+  });
 
-test("a calendar whose grant died says so on the schedule and leads to Integrations", async () => {
-  test.setTimeout(120_000);
-  const app = await launchHome("pistachio-home-calendar-dead-");
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    await expect(shell.getByTestId("home-schedule")).toBeVisible();
+  test("a calendar whose grant died says so on the schedule and leads to Integrations", async () => {
     await answerCalendarWith(app, { status: "reconnect_required", connectable: false, accountLabel: "alex@example.com", events: [] });
-    await shell.waitForTimeout(16_000);
-    await shell.keyboard.press("Meta+t");
-    const schedule = shell.getByTestId("home-schedule").last();
+    // A day with events in it stands five minutes.
+    await askAgainAfter(5 * 60_000 + 1_000);
+    const schedule = (await newHomeTab(shell)).getByTestId("home-schedule");
     await expect(schedule).toContainText("Google Calendar needs reconnecting");
     await schedule.getByTestId("home-calendar-reconnect").click();
     await expect(shell.getByTestId("settings-page")).toBeVisible();
     await expect(shell.getByTestId("settings-page")).toContainText("Google Calendar");
-  } finally {
-    await app.close();
-  }
-});
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("settings-page")).toHaveCount(0);
+  });
 
-test("someone with no calendar is invited to connect one from the schedule, once — and can say no for good", async () => {
-  test.setTimeout(120_000);
-  const app = await launchHome("pistachio-home-calendar-invite-");
-  try {
-    const shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
-    const first = shell.getByTestId("home-schedule");
-    await expect(first).toBeVisible();
-    // A Mac with no account cannot connect anything: main says so, and the card does not ask.
-    await expect(first.getByTestId("home-calendar-connect")).toHaveCount(0);
-
+  test("someone with no calendar is invited to connect one from the schedule, once — and can say no for good", async () => {
     await answerCalendarWith(app, { status: "not_connected", connectable: true, accountLabel: null, events: [] });
-    await shell.waitForTimeout(16_000);
-    await shell.keyboard.press("Meta+t");
-    const schedule = shell.getByTestId("home-schedule").last();
+    await askAgainAfter(16_000);
+    const schedule = (await newHomeTab(shell)).getByTestId("home-schedule");
     const invitation = schedule.getByTestId("home-calendar-connect");
     await expect(invitation).toBeVisible();
     await expect(invitation).toContainText("See today’s Google Calendar events here");
     await expect(schedule.getByTestId("home-open-calendar")).toBeVisible();
-    // capturePage hands back the last frame composited, which can trail the DOM by a beat.
-    await shell.waitForTimeout(400);
     await captureShell(app, "07-schedule-invites-to-connect.png");
 
     // The way in is Settings → Integrations, where the connection is made.
@@ -368,11 +452,8 @@ test("someone with no calendar is invited to connect one from the schedule, once
     // “No” is remembered: gone from every home page showing, and from the next one.
     await invitation.getByTestId("home-calendar-connect-dismiss").click();
     await expect(shell.getByTestId("home-calendar-connect")).toHaveCount(0);
-    await shell.keyboard.press("Meta+t");
-    await expect(shell.getByTestId("home-schedule").last()).toBeVisible();
+    await expect((await newHomeTab(shell)).getByTestId("home-schedule")).toBeVisible();
     await expect(shell.getByTestId("home-calendar-connect")).toHaveCount(0);
     expect(await shell.evaluate(() => localStorage.getItem("pistachio.home.calendar-prompt-dismissed"))).toBe("1");
-  } finally {
-    await app.close();
-  }
+  });
 });

@@ -15,7 +15,7 @@ export interface HomeNavigation {
    * Go somewhere that is not this tab (another tab, a favorite's own tab),
    * then close this one if it was only ever a launcher: nothing behind it,
    * nothing ahead of it, not a pane of a split. A home page opened by ⌘T to
-   * reach an open tab would otherwise be left behind in the strip.
+   * reach an open tab would otherwise be left behind in the sidebar.
    */
   leaveFor(go: () => Promise<void>): void;
 }

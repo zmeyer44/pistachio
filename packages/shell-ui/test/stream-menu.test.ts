@@ -77,6 +77,7 @@ function controls(actions: Partial<Record<GuardedBrowserAction, ActionDecision>>
     pendingPasskeyRequests: [],
     downloads: [],
     recentEvents: [],
+    shields: null,
   };
 }
 

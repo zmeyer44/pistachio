@@ -1,4 +1,5 @@
 import type { WatchtowerResponse } from "@pistachio/shell-contracts/watchtower";
+import type { ShieldsStatus } from "@pistachio/shell-contracts/shields";
 import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
@@ -230,8 +231,8 @@ const api: PistachioApi = {
   },
   cancelReadAloud: (id: string) =>
     ipcRenderer.invoke(IPC.readAloudCancel, id) as Promise<void>,
-  readAloudText: (text: string) =>
-    ipcRenderer.invoke(IPC.readAloudSpeak, text) as Promise<void>,
+  readAloudText: (text: string, title?: string) =>
+    ipcRenderer.invoke(IPC.readAloudSpeak, text, title) as Promise<void>,
   getBrowserControls: () =>
     ipcRenderer.invoke(
       IPC.browserControlsGet,
@@ -666,6 +667,7 @@ const api: PistachioApi = {
   openBookmarksPage: (bookmarkId?: string, entityId?: number) =>
     ipcRenderer.send(IPC.bookmarksOpen, bookmarkId, entityId),
   watchtower: (request) => ipcRenderer.invoke(IPC.watchtower, request) as Promise<WatchtowerResponse>,
+  shields: (request) => ipcRenderer.invoke(IPC.shields, request) as Promise<ShieldsStatus>,
   clearBrowsingData: () =>
     ipcRenderer.invoke(IPC.browsingDataClear) as Promise<void>,
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,

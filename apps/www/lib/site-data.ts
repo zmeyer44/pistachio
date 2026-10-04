@@ -254,7 +254,7 @@ export const useCases = [
   {
     n: "05",
     title: "Appearance",
-    body: "Two layouts, sidebar or top tabs, with the same features in each. Pick a gradient, a grain, a corner radius, and how much of the desktop shows through the glass.",
+    body: "Keep the sidebar pinned, or let it hide until the pointer reaches the edge. Pick a gradient, a grain, a corner radius, and how much of the desktop shows through the glass.",
     video: "/video/usecase-appearance.mp4",
     poster: "/img/usecase-appearance.jpg",
   },
