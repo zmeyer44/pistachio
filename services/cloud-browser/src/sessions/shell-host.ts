@@ -249,6 +249,7 @@ const FILE_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
 export const UNSUPPORTED = {
   watchtower: "Watchtower currently stores browsing memories on the desktop. Open Pistachio on your Mac to search its archive.",
+  getArtifacts: "The artifact library opens in the desktop app for now. Open Pistachio on your Mac to browse the pages the agent built.",
   shields: "Ad and tracker blocking runs in the desktop app; the cloud browser loads pages as they are.",
   tabGroupCommand: "Tab groups are kept by the desktop app for now. Open Pistachio on your Mac to group tabs.",
   tabArchive: "The tab archive is kept by the desktop app. Open Pistachio on your Mac to see archived tabs.",
@@ -3058,6 +3059,9 @@ export class ShellHost implements ShellApi, StreamShellApi {
 
   /** Archive capture and storage belong to the desktop installation. */
   async watchtower(): Promise<never> { return unsupported("watchtower"); }
+
+  /** An artifact opens at this Mac's `pistachio://artifact/` copy, which no worker tab can load. */
+  async getArtifacts(): Promise<never> { return unsupported("getArtifacts"); }
 
   async shields(): Promise<never> { return unsupported("shields"); }
 

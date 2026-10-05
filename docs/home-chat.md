@@ -89,7 +89,7 @@ and for citations as links to pages the thread read (`FORMAT_RULES`).
 | `use-smooth-text.ts` + `lib/smooth-text.ts` | The prefix shown trails the draft and closes the gap a frame at a time, faster the further behind, never below a reading pace; lands on word boundaries. |
 | `ReasoningBlock.tsx` | "Thinking · 3s" shimmering over a two-line ticker of the latest reasoning; folds to "Thought for 4s"; opens to the whole. |
 | `ThinkingStatus.tsx` | The status line before any words — "Thinking…", "Searching saved pages…", "Working in your browser…" — swapping states with the rise-out/rise-in motion. |
-| `Sources.tsx` + `lib/chat-sources.ts` | `AgentToolCall.source` (a `page.inspect`, a `watchtower.read`) gathered per turn, numbered, as cards under the reply; a link to one of them draws as a citation chip, and the parentheses the model wraps it in are dropped. |
+| `Sources.tsx` + `lib/chat-sources.ts` | `AgentToolCall.source` (a `page.inspect`, a `watchtower.read`) gathered per turn and numbered; a link to one of them draws as an inline citation chip (no list of cards under the reply), and the parentheses the model wraps it in are dropped. |
 | `LiveReply.tsx` | The in-progress turn: reasoning, then status or streaming words. |
 | `parts.tsx`, `use-thread-layout.ts` | The message rows, trace, cards and grouping the console and the home chat share, at `panel` or `page` density. |
 | `home/HomeChat.tsx` | The page: header, thread, composer, and the pill-to-composer flight (one WAAPI transform from the pill's box). The whole page is a drop zone: files let go anywhere on it are staged in the composer for the next message. |

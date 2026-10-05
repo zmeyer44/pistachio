@@ -44,6 +44,13 @@ import { isProbablyUrl } from "./url";
 export const AI_INTENT_FLOOR = 0.55;
 /** …and only while it leads the web search by at least this much. */
 export const AI_INTENT_LEAD = 0.15;
+/**
+ * Once it has ↵ it keeps it down to this, until the web search leads IT by
+ * `AI_INTENT_LEAD`. Successive answers about one sentence being typed are
+ * noisy readings of one intent, and a row that changed hands every time a
+ * reading crossed a single line would change hands on the noise.
+ */
+export const AI_INTENT_HOLD = 0.4;
 /** A target is considered at all only when the two "a thing" readings sum to this. */
 export const TARGET_INTENT_FLOOR = 0.5;
 /** A target at or above this takes the first row outright. */
@@ -212,6 +219,29 @@ export function buildIntentRequest(input: IntentRequestInput): AddressIntentRequ
 
 // ── 3. The order ───────────────────────────────────────────────────────────
 
+function probability(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Whether the AI prompt leads the web search after this answer, given
+ * whether it led before it (§6).
+ *
+ * Two lines rather than one. To TAKE ↵ the assistant reading needs
+ * `AI_INTENT_FLOOR` and a lead of `AI_INTENT_LEAD`; to LOSE it the web
+ * search has to lead by that same margin, or the assistant reading has to
+ * fall under `AI_INTENT_HOLD`. Between the two lines the row stays where it
+ * is, which is what keeps it still while a sentence is typed
+ * (lib/use-address-intent.ts carries `wasLeading` from one keystroke's
+ * answer to the next). A query read cold has nothing before it.
+ */
+export function aiLeadsSearch(ranking: AddressIntentRanking, wasLeading = false): boolean {
+  const ai = probability(ranking.intents.ai_prompt);
+  const web = probability(ranking.intents.web_search);
+  if (wasLeading) return ai >= AI_INTENT_HOLD && web - ai < AI_INTENT_LEAD;
+  return ai >= AI_INTENT_FLOOR && ai - web >= AI_INTENT_LEAD;
+}
+
 export interface IntentRankingInput {
   /** The order the heuristics produced — what is on screen right now. */
   heuristicEntries: Entry[];
@@ -219,6 +249,12 @@ export interface IntentRankingInput {
   candidateEntries: ReadonlyMap<string, Entry>;
   /** The answer, or null while there is none (or none was asked for). */
   ranking: AddressIntentRanking | null;
+  /**
+   * Whether the AI prompt leads the web search. The address bar passes what
+   * it has settled on for the sentence being typed, which outlives any one
+   * answer; left out, it is read off `ranking` alone, as for words typed cold.
+   */
+  aiLeads?: boolean;
   /** What is typed NOW: an answer to anything else is stale and ignored. */
   query: string;
   /** The heuristics' first result; a typed address is never reordered. */
@@ -251,9 +287,11 @@ function sameOrder(left: readonly Entry[], right: readonly Entry[]): boolean {
  * REORDER of rows the shell already built:
  *
  * - **Search versus AI.** The AI row takes ↵ from the web search when
- *   `P(ai_prompt) ≥ AI_INTENT_FLOOR` and it leads `P(web_search)` by
- *   `AI_INTENT_LEAD`. Nothing else moves; the two searches stay adjacent,
- *   because they are one question — "where should these words go".
+ *   `aiLeads` says so (`aiLeadsSearch`). Nothing else moves; the two
+ *   searches stay adjacent, because they are one question — "where should
+ *   these words go". It is the one move that does not need an answer to the
+ *   words as they stand: while the next answer is awaited, the choice made
+ *   for the sentence so far holds.
  * - **A confident target.** When the two "a thing" readings together reach
  *   `TARGET_INTENT_FLOOR` and the best named row reaches
  *   `TARGET_FIRST_SCORE` — or the row reaches `TARGET_OVERRIDE_SCORE` on its
@@ -273,21 +311,18 @@ function sameOrder(left: readonly Entry[], right: readonly Entry[]): boolean {
  * Returns `heuristicEntries` itself whenever nothing moved.
  */
 export function applyIntentRanking(input: IntentRankingInput): Entry[] {
-  const { heuristicEntries, candidateEntries, ranking, primaryItem } = input;
-  if (ranking === null) return heuristicEntries;
-  // A typed address is settled; no request was made, and a late answer to an
-  // earlier keystroke describes a list that is no longer on screen.
+  const { heuristicEntries, candidateEntries, primaryItem } = input;
+  // A typed address is settled; no request was made.
   if (primaryItem?.kind === "navigate") return heuristicEntries;
-  if (ranking.query !== input.query.trim()) return heuristicEntries;
+  // A late answer to an earlier keystroke names rows for other words.
+  const ranking = input.ranking !== null && input.ranking.query === input.query.trim() ? input.ranking : null;
+  const aiLeads = input.aiLeads ?? (ranking !== null && aiLeadsSearch(ranking));
+  if (ranking === null && !aiLeads) return heuristicEntries;
 
-  const intents = (name: AddressIntent): number => {
-    const value = ranking.intents[name];
-    return Number.isFinite(value) ? value : 0;
-  };
+  const intents = (name: AddressIntent): number => probability(ranking?.intents[name]);
 
   // The search block, reordered in place: the rows keep the slots the
   // heuristics gave them, only their contents may swap.
-  const aiLeads = intents("ai_prompt") >= AI_INTENT_FLOOR && intents("ai_prompt") - intents("web_search") >= AI_INTENT_LEAD;
   const slots: number[] = [];
   const block: Entry[] = [];
   heuristicEntries.forEach((entry, index) => {
@@ -308,7 +343,7 @@ export function applyIntentRanking(input: IntentRankingInput): Entry[] {
   // The targets the model named, best first, ignoring `none`, anything it
   // scored too low to be worth a row, and anything the shell cannot resolve.
   const position = new Map(heuristicEntries.map((entry, index) => [entry.id, index] as const));
-  const targets = Object.entries(ranking.targets)
+  const targets = Object.entries(ranking?.targets ?? {})
     .filter(([id, p]) => id !== NO_TARGET && Number.isFinite(p) && p >= TARGET_KEEP_SCORE)
     .map(([id, p]) => ({ id, p, entry: candidateEntries.get(id) ?? heuristicEntries.find((row) => row.id === id) }))
     .filter((target): target is { id: string; p: number; entry: Entry } => target.entry !== undefined)

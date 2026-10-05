@@ -7,12 +7,19 @@
  * the notch, edge to edge: its shoulders, and the flares into the desk's
  * foot. The pointer on it and a press go back to the shell's Bar, which grows
  * from there as if the pointer were on it — and once it has, this view goes.
+ *
+ * Elsewhere the notch is a hole down to the shell's ground; here a page lies
+ * under it, so the view paints that ground itself (shell.css .desk-notch-view):
+ * the theme's gradient laid over the shell's ground box (`frame.ground`) as
+ * the shell lays it, its grain tiled from the same corner, and cut to the
+ * notch's outline.
  */
 
 import { useEffect, useState } from "react";
 import type { DeskNotchFrame } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "./api";
 import { DeskNotchFace } from "./components/desk/DeskNotchFace";
+import { notchOutline } from "./lib/desk/geometry";
 
 export function NotchApp() {
   const [frame, setFrame] = useState<DeskNotchFrame | null>(null);
@@ -38,11 +45,25 @@ export function NotchApp() {
 
   if (frame === null) return null;
   const send = (input: "enter" | "leave" | "press"): void => nativeApi()?.sendDeskNotchInput(input);
+  const { bounds, ground, flare } = frame;
+  const outline = notchOutline({ x: flare, y: 0, w: bounds.width - flare * 2, h: bounds.height, radius: frame.radius, flare }, bounds.height, 0, 0);
+  const px = (value: number): string => `${value.toFixed(1)}px`;
   return (
     <div
       className="desk-notch-view tab-group-tone"
       data-group-color={frame.color}
-      style={{ "--desk-notch-radius": `${String(frame.radius)}px`, "--desk-notch-flare": `${String(frame.flare)}px` } as React.CSSProperties}
+      style={
+        {
+          "--desk-notch-radius": `${String(frame.radius)}px`,
+          "--desk-notch-flare": `${String(flare)}px`,
+          // The shell's ground box, where it lies from this view's corner.
+          "--desk-notch-ground-x": px(ground.x - bounds.x),
+          "--desk-notch-ground-y": px(ground.y - bounds.y),
+          "--desk-notch-ground-w": px(ground.width),
+          "--desk-notch-ground-h": px(ground.height),
+          clipPath: `path("${outline}")`,
+        } as React.CSSProperties
+      }
     >
       <button
         type="button"

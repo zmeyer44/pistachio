@@ -37,6 +37,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/
 import { HomePage } from "../home/HomePage";
 import { BriefPage } from "../reports/BriefPage";
 import { CHROME_CARD_TOP, CHROME_INSETS, MASK_CARD_TOP, MASK_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
+import { DeskLivePicture } from "./DeskLivePicture";
 import { usePageEntries } from "./page-entries";
 import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
 
@@ -138,6 +139,10 @@ export const DeskWindow = memo(function DeskWindow({
   /** What its page is playing, if anything a player could take (not a call, nor a page presenting itself whole). */
   const media = useAppStore((state) => (tab === null || shellPage ? null : (state.media.find((item) => item.tabId === tabId && !item.call && !item.presenting) ?? null)));
   const mini = view.mini !== null;
+  // Drawn (something lies over it), a window whose page plays a video shows that page live over its still, rather
+  // than stopped on it (DeskLivePicture): not while its still stands for a region, a peek or a flight.
+  const livePicture =
+    view.drawn && media !== null && media.hasVideo && media.playing && !masked && view.unmasking === null && !mini && view.flight === null && !view.closing && !view.selecting && !waking;
   const working = agent !== null;
   // Phased on the wall clock like every other ring, taken as this one goes on.
   const ringDelay = useMemo(() => (working ? `${String(agentRingDelayMs(Date.now()))}ms` : undefined), [working]);
@@ -458,6 +463,7 @@ export const DeskWindow = memo(function DeskWindow({
               />
             )}
           </div>
+          {livePicture ? <DeskLivePicture tabId={tabId} /> : null}
           {/* Its page frozen (drawn), a region can be drawn over it. */}
           {view.selecting && view.drawn ? <MaskSelector tabId={tabId} engine={engine} /> : null}
         </div>

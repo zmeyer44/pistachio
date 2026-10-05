@@ -35,6 +35,7 @@ export const ACTION_INTENT_DETAILS: Readonly<Record<string, string>> = {
   "chrome:openReminders": "Open the list of reminders and scheduled tasks.",
   "chrome:openBookmarks": "Open the list of saved bookmarks.",
   "chrome:openArchive": "Open the archive of tabs that were put away and tab groups that were closed, to restore them.",
+  "chrome:openLibrary": "Open the library of everything kept: the pages the agent built, your notes, saved bookmarks, and pages Watchtower remembers.",
   "chrome:undoTidy": "Take back the last tidy: reopen the tabs it archived and dissolve the groups it made.",
   "chrome:tidyTabs": "Tidy the open tabs now: archive the ones that are done and group the ones that belong together.",
   "chrome:bookmarkPage": "Save this page as a bookmark.",

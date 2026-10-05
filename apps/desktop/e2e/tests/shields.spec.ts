@@ -56,6 +56,7 @@ function fixtureServer(): { server: Server; hits: Hit[]; listen(): Promise<numbe
   window.__gpc = navigator.globalPrivacyControl === true;
   window.__ua = navigator.userAgent;
   window.__scriptlet = String(window.__shieldsScriptlet);
+  window.__shared = [window.__sharedFirst, window.__sharedSecond].join();
 </script></head><body>
 <div class="ad-banner" id="ad-banner">AD</div>
 <div class="sponsor-box" id="sponsor">SPONSOR</div>
@@ -194,6 +195,22 @@ function fixtureServer(): { server: Server; hits: Hit[]; listen(): Promise<numbe
 </body></html>`);
       return;
     }
+    if (url.pathname === "/beacon") {
+      // YouTube's ad pings: a same-origin fetch the server sends on to an ad
+      // host, where the custom header needs a CORS preflight.
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html><title>Beacon</title><script>
+  window.__beacon = "pending";
+  fetch("/hop", { headers: { "x-shields-test": "1" } }).then(() => "loaded", () => "refused").then((result) => { window.__beacon = result; });
+</script>`);
+      return;
+    }
+    if (url.pathname === "/hop") {
+      response.statusCode = 302;
+      response.setHeader("location", `http://localhost:${String(port)}/ads/beacon`);
+      response.end();
+      return;
+    }
     if (url.pathname === "/fp-frame") {
       response.setHeader("content-type", "text/html; charset=utf-8");
       response.end(`<!doctype html><script>parent.postMessage({ kind: "fp-frame", host: location.host, gpc: navigator.globalPrivacyControl === true }, "*");</script>`);
@@ -272,8 +289,14 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
       "shields/lists/easylist.txt": "! Title: EasyList (fixture)\n! Expires: 4 days\n||localhost^*/ads/\n",
       "shields/lists/ubo-badware.txt": "! Title: Badware (fixture)\n||danger.test^\n",
       "shields/lists/resources.json": {
-        scriptlets: [{ name: "shields-test.js", aliases: [], dependencies: [], body: "function shieldsTest(value = '') { window.__shieldsScriptlet = value; }" }],
-        redirects: [],
+        scriptlets: [
+          { name: "shields-test.js", aliases: [], dependencies: [], body: "function shieldsTest(value = '') { window.__shieldsScriptlet = value; }" },
+          // Two scriptlets carrying the same class, as uBO's JSONPath ones do.
+          { name: "shields-shared.fn", aliases: [], dependencies: [], body: "class ShieldsShared { static set(name, value) { window[name] = value; } }" },
+          { name: "shields-first.js", aliases: [], dependencies: ["shields-shared.fn"], body: "function shieldsFirst(value = '') { ShieldsShared.set('__sharedFirst', value); }" },
+          { name: "shields-second.js", aliases: [], dependencies: ["shields-shared.fn"], body: "function shieldsSecond(value = '') { ShieldsShared.set('__sharedSecond', value); }" },
+        ],
+        redirects: [{ name: "noop.txt", aliases: [], body: "", contentType: "text/plain" }],
       },
       "shields/lists/lists.json": { easylist: fresh, "ubo-badware": fresh, resources: { ...fresh, rules: 0 } },
     },
@@ -294,7 +317,15 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
         webRtc: "default",
         blockPings: true,
         dangerousSites: true,
-        customFilters: "##.ad-banner\n##.late-ad\n127.0.0.1##.sponsor-box\n127.0.0.1##+js(shields-test, ran)",
+        customFilters: [
+          "##.ad-banner",
+          "##.late-ad",
+          "127.0.0.1##.sponsor-box",
+          "127.0.0.1##+js(shields-test, ran)",
+          "127.0.0.1##+js(shields-first, one)",
+          "127.0.0.1##+js(shields-second, two)",
+          "||localhost^*/ads/beacon$xhr,redirect=noop.txt",
+        ].join("\n"),
       },
     },
     name: "shields",
@@ -318,6 +349,8 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
     expect(await tabEval<boolean>(app, "document.getElementById('ad').naturalWidth === 0")).toBe(true);
     // The scriptlet ran in the page's world BEFORE the page's first script.
     expect(await tabEval<string>(app, "window.__scriptlet")).toBe("ran");
+    // Scriptlets carrying the same class each run in a scope of their own.
+    expect(await tabEval<string>(app, "window.__shared")).toBe("one,two");
     // The site's own hiding rule is in the style sheet from the first paint…
     expect(await tabEval<string>(app, "getComputedStyle(document.getElementById('sponsor')).display")).toBe("none");
     // …and a generic one arrives once the DOM has said which classes it has.
@@ -366,6 +399,13 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
     await tabEval(app, "document.getElementById('pinglink').click()");
     await expect.poll(() => tabUrl(app)).toContain("/target");
     expect(fixture.hits.some((hit) => hit.path === "/pinged")).toBe(false);
+
+    // A fetch redirected to a blocked host: its CORS preflight is refused —
+    // redirected to the no-op resource, it crashed Electron's main process.
+    await navigate(app, `http://127.0.0.1:${String(port)}/beacon`);
+    await expect.poll(() => tabEval<string>(app, "window.__beacon")).toBe("refused");
+    expect(fixture.hits.some((hit) => hit.path === "/hop")).toBe(true);
+    expect(fixture.hits.some((hit) => hit.path === "/ads/beacon")).toBe(false);
 
     // ── Addresses ────────────────────────────────────────────────────────
     await navigate(app, `http://127.0.0.1:${String(port)}/landing?id=1&fbclid=abc123`);

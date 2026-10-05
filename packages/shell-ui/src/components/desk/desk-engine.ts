@@ -114,12 +114,14 @@ import {
   tileRects,
   uncoveredWindows,
   letGoSize,
+  notchOutline,
   windowSize,
   type DockDrop,
   type DockDrops,
   type Edges,
   type Guide,
   type MinSize,
+  type NotchShape,
   type Placement,
   type Point,
   type Rect,
@@ -193,55 +195,21 @@ const MINI_OVERLAP = 0.5;
  * cut off square there, never pokes out past the corner's curve.
  */
 export const SHELF_INSET = 18;
-/** How far a window's own clip reaches around it, so its shadow is kept (all but past the desk's foot, and where the notch is a hole through it). */
+/** How far a window's own clip reaches around it, so its shadow is kept (up to the desk's edges, and where the notch is a hole through it). */
 const CLIP_MARGIN = 120;
+/** How far a window's clip reaches past its top, leading and trailing sides: its shadow, as far as the desk's edge. */
+interface ClipReach {
+  top: number;
+  left: number;
+  right: number;
+}
 
-/**
- * The Bar's notch as it is drawn now (setNotchShape), in the stage: the
- * Bar's box, rising from the desk's foot; the radius of its shoulders; and
- * of the flares where its sides meet the edge.
- */
 /** A parked window down in the shelf, where it stands in the stage (DeskView.shelf). */
 export interface DeskShelfSpot {
   tabId: string;
   rect: Rect;
 }
 
-export interface NotchShape {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  radius: number;
-  flare: number;
-}
-
-/**
- * The notch's outline, offset by (dx, dy): out of the desk's foot at its
- * left flare, up its side to its shoulder, across, down and out at its right
- * flare, and back along the foot. (Nothing of a window is left past the foot
- * to cut a hole in: #write.)
- */
-function notchOutline(shape: NotchShape, foot: number, dx: number, dy: number): string {
-  const n = (value: number): string => value.toFixed(1);
-  const f = shape.flare;
-  const x0 = shape.x + dx;
-  const x1 = shape.x + shape.w + dx;
-  const top = shape.y + dy;
-  const bottom = foot + dy;
-  const r = Math.max(0, Math.min(shape.radius, shape.w / 2, bottom - f - top));
-  return [
-    `M ${n(x0 - f)} ${n(bottom)}`,
-    `A ${n(f)} ${n(f)} 0 0 0 ${n(x0)} ${n(bottom - f)}`,
-    `V ${n(top + r)}`,
-    `A ${n(r)} ${n(r)} 0 0 1 ${n(x0 + r)} ${n(top)}`,
-    `H ${n(x1 - r)}`,
-    `A ${n(r)} ${n(r)} 0 0 1 ${n(x1)} ${n(top + r)}`,
-    `V ${n(bottom - f)}`,
-    `A ${n(f)} ${n(f)} 0 0 0 ${n(x1 + f)} ${n(bottom)}`,
-    `H ${n(x0 - f)} Z`,
-  ].join(" ");
-}
 /**
  * A raised parked window the pointer has left goes back down after this
  * long: an intent gate (transitions.dev's micro duration), so the pointer
@@ -2066,10 +2034,10 @@ export class DeskEngine {
   /**
    * A window's clip with the notch a hole in it, when the notch is over it:
    * not one carried or flying (it passes over the notch), and only what the
-   * window keeps of itself otherwise — its shadow all round, cut off at the
-   * desk's foot (`foot`, in the window's own box).
+   * window keeps of itself otherwise — its shadow as far as the desk's edges
+   * (`reach`), cut off at the desk's foot (`foot`, in the window's own box).
    */
-  #notchClip(win: Win, foot: number): string | null {
+  #notchClip(win: Win, foot: number, reach: ClipReach): string | null {
     const shape = this.#notchShape;
     if (shape === null || win.flight !== null) return null;
     const gesture = this.#gesture;
@@ -2078,8 +2046,8 @@ export class DeskEngine {
     const stageH = this.#stageBox.height;
     const hole = { x: shape.x - shape.flare, y: shape.y, w: shape.w + shape.flare * 2, h: stageH - shape.y };
     if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: foot + CLIP_MARGIN }, hole)) return null;
-    const m = CLIP_MARGIN;
-    return `path(evenodd, "M ${-m} ${-m} H ${(w + m).toFixed(1)} V ${foot.toFixed(1)} H ${-m} Z ${notchOutline(shape, stageH, -x, -y)}")`;
+    const left = (-reach.left).toFixed(1);
+    return `path(evenodd, "M ${left} ${(-reach.top).toFixed(1)} H ${(w + reach.right).toFixed(1)} V ${foot.toFixed(1)} H ${left} Z ${notchOutline(shape, stageH, -x, -y)}")`;
   }
 
   /** The tab is one of the group's (a tab the agent just opened may not be yet). */
@@ -3460,11 +3428,18 @@ export class DeskEngine {
     // Nothing of a window falls past the desk's foot: its shadow there would darken the surface's gutter, which the
     // Bar's notch rises out of, and the notch would stand out from the edge it is cut from. A window peeking from the
     // foot (parked) is cut off there too, its page's view with it (#report). Under the notch, the notch is a hole
-    // through it (setNotchShape). (Lifted, flying or turned, it passes over the edge as it is.)
-    const stageH = this.#stageBox.height;
+    // through it (setNotchShape). Its shadow stops at the desk's other edges as well: the shell around the desk, the
+    // sidebar and the gutter, lies above it. There only the shadow is cut, never the window, which a live page
+    // would still paint past. (Lifted, flying or turned, it passes over the edges as it is.)
+    const { width: stageW, height: stageH } = this.#stageBox;
     const foot = transformed || stageH <= 0 ? null : stageH - y;
-    const m = CLIP_MARGIN;
-    const clip = foot === null ? "" : (this.#notchClip(win, foot) ?? `inset(-${m}px -${m}px ${(h - foot).toFixed(1)}px -${m}px)`);
+    const reach = (room: number): number => Math.min(CLIP_MARGIN, Math.max(0, room));
+    const sides: ClipReach = { top: reach(y), left: reach(x), right: reach(stageW - x - w) };
+    const clip =
+      foot === null
+        ? ""
+        : (this.#notchClip(win, foot, sides) ??
+          `inset(${(-sides.top).toFixed(1)}px ${(-sides.right).toFixed(1)}px ${(h - foot).toFixed(1)}px ${(-sides.left).toFixed(1)}px)`);
     const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${clip}`;
     if (key === win.written) return;
     win.written = key;

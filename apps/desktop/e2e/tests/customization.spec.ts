@@ -70,10 +70,12 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
   // Glass is a property of every chrome surface, the agent console included,
   // and the console opens closed by default — so ask for it on launch. The
   // home page is the demo site: the last step needs a native page WebContents
-  // to send a key to, and this one is local and always there.
+  // to send a key to, and this one is local and always there. Its pages are
+  // left to the app's scheme, not Playwright's light, for the scheme step.
   const { app, userData } = await launchApp({
     settings: pageFirst({ general: { consoleOpenOnLaunch: true, homeUrl: "pistachio://demo/invoices" } }),
     name: "customization",
+    colorScheme: null,
   });
 
   try {
@@ -138,6 +140,29 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
         return stored === null ? null : { scheme: stored.appearance.scheme, color: stored.appearance.colors[0] };
       })
       .toEqual({ scheme: "dark", color: "#3F67D8" });
+    // The OS is told the scheme, whatever its own: the window's glass, and every page's prefers-color-scheme, go dark.
+    await expect.poll(() => app.evaluate(({ nativeTheme }) => ({ source: nativeTheme.themeSource, dark: nativeTheme.shouldUseDarkColors }))).toEqual({ source: "dark", dark: true });
+    await expect
+      .poll(() =>
+        app.evaluate(({ webContents }) => {
+          const tab = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith("pistachio://demo/invoices"));
+          return tab?.executeJavaScript(`matchMedia("(prefers-color-scheme: dark)").matches`);
+        }),
+      )
+      .toBe(true);
+    // The chrome views over the pages (the desk's notch among them) take the new appearance too, not only at load.
+    await expect
+      .poll(() =>
+        app.evaluate(async ({ webContents }) => {
+          const accents: Record<string, string> = {};
+          for (const contents of webContents.getAllWebContents()) {
+            const view = /#(notice|notch|shelf|pip)$/.exec(contents.getURL())?.[1];
+            if (view !== undefined) accents[view] = (await contents.executeJavaScript(`getComputedStyle(document.documentElement).getPropertyValue("--theme-accent").trim()`)) as string;
+          }
+          return accents;
+        }),
+      )
+      .toEqual({ notice: "#3F67D8", notch: "#3F67D8", shelf: "#3F67D8", pip: "#3F67D8" });
     await captureWindow(app, "03-appearance-custom-dark.png", settings);
 
     // Recording is an explicit mode, so ordinary key presses cannot silently replace a binding.

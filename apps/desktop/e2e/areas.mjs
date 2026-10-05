@@ -103,7 +103,9 @@ export const AREAS = [
     tag: "@settings",
     paths: [
       `${UI}/components/settings/**`,
-      `${UI}/lib/{settings-fit,about-rows,account,account-link,brand-colors}.ts`,
+      `${UI}/components/update-prompt/**`,
+      `${UI}/components/UpdatePill.tsx`,
+      `${UI}/lib/{settings-fit,about-rows,account,account-link,brand-colors,update-prompt}.ts`,
       `${UI}/theme/**`,
       `${UI}/theme.css`,
       `${C}/{settings,appearance,shortcuts,updates,brand-colors}.ts`,
@@ -152,10 +154,10 @@ export const AREAS = [
   {
     tag: "@pages",
     paths: [
-      `${UI}/components/{notes,bookmarks,watchtower,reports,reminders}/**`,
+      `${UI}/components/{notes,bookmarks,watchtower,reports,reminders,library}/**`,
       `${UI}/{BookmarkToastApp,FindApp}.tsx`,
       `${UI}/components/StreamFindBar.tsx`,
-      `${UI}/lib/{notes-autosave,notes-images,notes-markdown,notes-slash,reports,calendar-split,stream-menu}.ts`,
+      `${UI}/lib/{notes-autosave,notes-images,notes-markdown,notes-slash,reports,calendar-split,stream-menu,library}.ts`,
       `${C}/{notes,bookmarks,watchtower,reports,reminders,double-shift,reader,reader-extract,tab-archive}.ts`,
       `${M}/{note-store,bookmark-store,bookmarks,bookmark-extractor,brief-service,brief-scheduler,reminder-store,reminder-scheduler,reader-store,reader-extract,smart-find}.ts`,
       `${M}/watchtower/**`,

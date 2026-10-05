@@ -604,7 +604,7 @@ describe("a minimized window snapped", () => {
 });
 
 describe("the shelf at the foot of the desk's card", () => {
-  it("peeks from the card's own edge, cut off there, its view too; and nothing of any window at rest falls past the card's foot", () => {
+  it("peeks from the card's own edge, cut off there, its view too; and nothing of any window at rest falls past the card's foot, nor its shadow past the card's other edges", () => {
     const { layouts } = native();
     const desk = engine();
     desk.start([], "tab-0", ["tab-0", "tab-1"]);
@@ -618,15 +618,17 @@ describe("the shelf at the foot of the desk's card", () => {
     desk.minimize("tab-0");
     settle();
     expectRect(rectOf(el), PEEKING);
-    // Cut off at the card's edge, its view too: the surface's gutter below it stays clear.
-    expect(el.style["clipPath"]).toBe(`inset(-120px -120px ${(MINI_SIZE.h - PEEK).toFixed(1)}px -120px)`);
+    // Cut off at the card's edge, its view too: the surface's gutter below it stays clear. Its shadow
+    // reaches the card's leading edge, SHELF_INSET away, and no further: the sidebar lies above the desk.
+    expect(el.style["clipPath"]).toBe(`inset(-120.0px -120.0px ${(MINI_SIZE.h - PEEK).toFixed(1)}px -${LEFT.toFixed(1)}px)`);
     const view = layouts.at(-1)!.views.find((entry) => entry.tabId === "tab-0")!;
     expect(view.bounds.y + view.bounds.height).toBe(STAGE.h);
-    // A window filling the desk keeps its shadow all round but past the foot, the gutter the Bar's notch rises out of.
+    // A window filling the desk casts no shadow past any of its edges: not into the gutter the Bar's notch
+    // rises out of, nor onto the sidebar or the gutter at the top and trailing side.
     desk.toggleMaximize("tab-1");
     settle();
     expectRect(rectOf(other), FILLED);
-    expect(other.style["clipPath"]).toBe("inset(-120px -120px 0.0px -120px)");
+    expect(other.style["clipPath"]).toBe("inset(0.0px 0.0px 0.0px 0.0px)");
     desk.destroy();
   });
 });

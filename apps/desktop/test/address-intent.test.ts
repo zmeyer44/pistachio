@@ -181,4 +181,14 @@ describe("the scripted stand-in the e2e suite asks for", () => {
     expect(plain?.intents.web_search).toBeGreaterThan(0.9);
     expect(plain?.targets["none"]).toBeGreaterThan(0.9);
   });
+
+  it("takes as long as the script says, for a spec that watches the bar wait", async () => {
+    const slow = JSON.stringify({ "explain tls": { intent: "ai_prompt", delayMs: 40 } });
+    const model = scriptedIntentModel({ PISTACHIO_E2E: "1", PISTACHIO_INTENT_SCRIPT: slow });
+    if (model === null) throw new Error("no scripted model");
+    const startedAt = Date.now();
+    const prompt = await evaluateAddressIntent({ model, request: request("explain tls") });
+    expect(prompt?.intents.ai_prompt).toBeGreaterThan(0.9);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(35);
+  });
 });

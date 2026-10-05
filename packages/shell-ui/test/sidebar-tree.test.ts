@@ -75,6 +75,13 @@ describe("listDropAt", () => {
     expect(listDropAt(rows, "pin", after(3), 0)).toEqual({ zone: "pinned", folderId: null, index: 2 });
   });
 
+  it("below a folder's last pin is out of the folder, however far in the pointer is", () => {
+    expect(listDropAt(rows, "pin", before(4), 40)).toEqual({ zone: "pinned", folderId: null, index: 2 });
+    // A folder last in the pinned section: the top of the divider is the section's end.
+    const last = stack([pin("a"), folder("F"), pin("f1", "F"), divider()]);
+    expect(listDropAt(last, "pin", before(3), 40)).toEqual({ zone: "pinned", folderId: null, index: 2 });
+  });
+
   it("puts anything below the divider among the day's tabs", () => {
     expect(listDropAt(rows, "pin", after(5), 0)).toEqual({ zone: "today", index: 0 });
     expect(listDropAt(rows, "tab", after(6), 0)).toEqual({ zone: "today", index: 1 });
@@ -131,6 +138,16 @@ describe("listDropAt over tab groups", () => {
   it("resolves the slot below a group's last tab by x: indented stays inside, flush leaves", () => {
     expect(listDropAt(rows, "tab", after(4), GROUP_INDENT)).toEqual({ zone: "group", groupId: "G", index: 2 });
     expect(listDropAt(rows, "tab", after(4), GROUP_INDENT - 1)).toEqual({ zone: "today", index: 2 });
+  });
+
+  it("below a group's last tab is out of the group, however far in the pointer is", () => {
+    // Past g2's bottom edge, over the top of t2: after G.
+    expect(listDropAt(rows, "tab", before(5), 40)).toEqual({ zone: "today", index: 2 });
+    // A group at the end of the list: anywhere below it is the end of the list.
+    const last = stack([divider(), tab("t1"), group("G"), member("g1", "G"), member("g2", "G")]);
+    expect(listDropAt(last, "tab", after(4), 40)).toEqual({ zone: "group", groupId: "G", index: 2 });
+    expect(listDropAt(last, "tab", 5 * H, 40)).toEqual({ zone: "today", index: 2 });
+    expect(listDropAt(last, "tab", 10_000, 40)).toEqual({ zone: "today", index: 2 });
   });
 
   it("the edges of a closed group's header are the slots around it", () => {

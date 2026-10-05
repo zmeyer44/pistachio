@@ -38,11 +38,13 @@ const RemindersPage = lazy(() => import("./reminders/RemindersPage").then((m) =>
 const WatchtowerPage = lazy(() => import("./watchtower/WatchtowerPage").then((m) => ({ default: m.WatchtowerPage })));
 const ArchivePage = lazy(() => import("./archive/ArchivePage").then((m) => ({ default: m.ArchivePage })));
 const BookmarksPage = lazy(() => import("./bookmarks/BookmarksPage").then((m) => ({ default: m.BookmarksPage })));
+const LibraryPage = lazy(() => import("./library/LibraryPage").then((m) => ({ default: m.LibraryPage })));
 const SiteControlsPanel = lazy(() => import("./SiteControlsPanel").then((m) => ({ default: m.SiteControlsPanel })));
 const PermissionPromptDialog = lazy(() =>
   import("./PermissionPromptDialog").then((m) => ({ default: m.PermissionPromptDialog })),
 );
 const SpaceForkDialog = lazy(() => import("./SpaceForkDialog").then((m) => ({ default: m.SpaceForkDialog })));
+const UpdatePrompt = lazy(() => import("./update-prompt/UpdatePrompt").then((m) => ({ default: m.UpdatePrompt })));
 const ImagePreview = lazy(() => import("./ImagePreview").then((m) => ({ default: m.ImagePreview })));
 const LiveViewPage = lazy(() => import("./LiveViewPage").then((m) => ({ default: m.LiveViewPage })));
 // The notes pages carry the whole editor — TipTap, its ProseMirror plugins,
@@ -62,12 +64,14 @@ export function ContentArea() {
   const remindersOpen = useAppStore((state) => state.overlay === "reminders");
   const watchtowerOpen = useAppStore((state) => state.overlay === "watchtower");
   const archiveOpen = useAppStore((state) => state.overlay === "archive");
+  const libraryOpen = useAppStore((state) => state.overlay === "library");
   const spaceId = useAppStore((state) => state.snapshot?.activeSpaceId);
   const bookmarksOpen = useAppStore((state) => state.overlay === "bookmarks");
   const nativeSurface = useSurface().kind === "native";
   const siteControlsOpen = useAppStore((state) => state.overlay === "site");
   const permissionPromptOpen = useAppStore((state) => state.overlay === "permission");
   const spaceForkOpen = useAppStore((state) => state.overlay === "space-fork");
+  const updatePromptOpen = useAppStore((state) => state.overlay === "update");
   const imagePreviewOpen = useAppStore((state) => state.overlay === "image-preview");
   const liveViewOpen = useAppStore((state) => state.overlay === "liveView");
   const consoleWidth = useAppStore((state) => state.consoleWidth);
@@ -90,6 +94,7 @@ export function ContentArea() {
       {remindersOpen ? <SurfacePage><RemindersPage /></SurfacePage> : null}
       {watchtowerOpen ? <SurfacePage><WatchtowerPage key={spaceId} /></SurfacePage> : null}
       {archiveOpen ? <SurfacePage><ArchivePage key={spaceId} /></SurfacePage> : null}
+      {libraryOpen ? <SurfacePage><LibraryPage key={spaceId} /></SurfacePage> : null}
       {/* On the desktop a save is a Watchtower save: the library is its Saved view. */}
       {bookmarksOpen ? <SurfacePage>{nativeSurface ? <WatchtowerPage key={spaceId} initialView="saved" /> : <BookmarksPage />}</SurfacePage> : null}
       {siteControlsOpen ? <SurfacePage><SiteControlsPanel /></SurfacePage> : null}
@@ -98,6 +103,7 @@ export function ContentArea() {
           once the request is answered or the dialog is put down. */}
       {permissionPromptOpen ? <SurfacePage overGlance><PermissionPromptDialog /></SurfacePage> : null}
       {spaceForkOpen ? <SurfacePage><SpaceForkDialog /></SurfacePage> : null}
+      {updatePromptOpen ? <SurfacePage><UpdatePrompt /></SurfacePage> : null}
       {imagePreviewOpen ? <SurfacePage><ImagePreview /></SurfacePage> : null}
       {/* A run in the cloud browser, watched here: the same hole the settings
           page fills, since the tab views must be down for either to be seen. */}

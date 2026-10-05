@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { ADDRESS_INTENT_LIMITS, NO_TARGET, type AddressIntent, type AddressIntentRanking } from "@pistachio/shell-contracts/address-intent";
 import {
   AI_INTENT_FLOOR,
+  AI_INTENT_HOLD,
+  AI_INTENT_LEAD,
+  aiLeadsSearch,
   applyIntentRanking,
   buildIntentRequest,
   MAX_PAGE_CANDIDATES,
@@ -150,6 +153,35 @@ describe("the request", () => {
   });
 });
 
+describe("which search leads", () => {
+  const reading = (ai_prompt: number, web_search: number) => ranked({ intents: { ai_prompt, web_search } });
+
+  it("gives the AI row the lead only past the floor and the margin", () => {
+    expect(aiLeadsSearch(reading(0.7, 0.3))).toBe(true);
+    expect(aiLeadsSearch(reading(0.56, 0.44))).toBe(false);
+    expect(aiLeadsSearch(reading(0.5, 0.1))).toBe(false);
+  });
+
+  it("keeps the lead through the readings in between", () => {
+    // The same sentence, one keystroke later: 0.58 → 0.47 is noise, not a
+    // change of mind, and the row does not move for it.
+    expect(aiLeadsSearch(reading(0.47, 0.53), true)).toBe(true);
+    expect(aiLeadsSearch(reading(0.47, 0.53), false)).toBe(false);
+    expect(aiLeadsSearch(reading(AI_INTENT_HOLD, AI_INTENT_HOLD + AI_INTENT_LEAD / 2), true)).toBe(true);
+  });
+
+  it("gives it up once the web search leads by the same margin", () => {
+    expect(aiLeadsSearch(reading(0.4, 0.6), true)).toBe(false);
+    expect(aiLeadsSearch(reading(0.02, 0.98), true)).toBe(false);
+  });
+
+  it("gives it up when the words stop being a prompt at all", () => {
+    // "amazon" after a question: a place to go, neither search.
+    expect(aiLeadsSearch(ranked({ intents: { open_page: 0.87, web_search: 0.13 } }), true)).toBe(false);
+    expect(AI_INTENT_HOLD).toBeLessThan(AI_INTENT_FLOOR);
+  });
+});
+
 describe("applying a ranking", () => {
   const primary: UrlItem = { id: "search", kind: "search", title: "Search Google", hint: "↵", url: "https://g/?q=x" };
   const base = () => [search(), ai()];
@@ -195,6 +227,41 @@ describe("applying a ranking", () => {
     const entries = base();
     expect(AI_INTENT_FLOOR).toBeGreaterThan(0.5);
     expect(apply(entries, ranked({ intents: { ai_prompt: 0.5, web_search: 0.1 } }))).toBe(entries);
+  });
+
+  it("keeps the AI row first on the sentence's say-so while the next answer is awaited", () => {
+    const entries = base();
+    const held = applyIntentRanking({ heuristicEntries: entries, candidateEntries: candidates, ranking: null, aiLeads: true, query: QUERY, primaryItem: primary });
+    expect(ids(held)).toEqual(["ai-search", "search"]);
+    expect(hintOf(held, "ai-search")).toBe("↵");
+    expect(hintOf(held, "search")).toBe("Web");
+  });
+
+  it("takes the search/AI order from an answer to earlier words, and no row from it", () => {
+    // "change theme" named the Appearance page; the words have moved on, and
+    // only the choice between the two searches came with them.
+    const stale = ranked({ query: "change theme", intents: { browser_command: 0.9 }, targets: { [theme.id]: 0.95 } });
+    const order = applyIntentRanking({ heuristicEntries: base(), candidateEntries: candidates, ranking: stale, aiLeads: true, query: QUERY, primaryItem: primary });
+    expect(ids(order)).toEqual(["ai-search", "search"]);
+  });
+
+  it("lets the sentence's choice stand against one answer that reads the other way", () => {
+    const entries = base();
+    const order = applyIntentRanking({
+      heuristicEntries: entries,
+      candidateEntries: candidates,
+      ranking: ranked({ intents: { ai_prompt: 0.9, web_search: 0.05 } }),
+      aiLeads: false,
+      query: QUERY,
+      primaryItem: primary,
+    });
+    expect(order).toBe(entries);
+  });
+
+  it("never reorders a typed address, whatever the sentence before it was", () => {
+    const entries = [goto(), search("Web"), ai()];
+    const typed: UrlItem = { id: "goto", kind: "navigate", title: "Go to github.com", hint: "↵", url: "github.com" };
+    expect(applyIntentRanking({ heuristicEntries: entries, candidateEntries: candidates, ranking: null, aiLeads: true, query: QUERY, primaryItem: typed })).toBe(entries);
   });
 
   it("puts a confident target first even though it never fuzzy-matched", () => {

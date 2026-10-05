@@ -14,6 +14,7 @@ import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
 import { askDesk, newTabOnDesk } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
+import { updatePromptShows } from "../lib/update-prompt";
 import { useAppStore, type AppState } from "../store";
 import { nextSplitMode } from "./split-mode";
 import { nativeApi, shellApi } from "../api";
@@ -48,6 +49,7 @@ export function shellStateOf(state: AppState): ShellState {
       state.overlay === "site-info" ||
       state.overlay === "permission" ||
       state.overlay === "space-fork" ||
+      state.overlay === "update" ||
       state.overlay === "tab-switcher" ||
       state.overlay === "context-menu" ||
       state.overlay === "downloads" ||
@@ -90,6 +92,7 @@ function useStoreShellState(): ShellState {
       s.overlay === "site-info" ||
       s.overlay === "permission" ||
       s.overlay === "space-fork" ||
+      s.overlay === "update" ||
       s.overlay === "tab-switcher" ||
       s.overlay === "context-menu" ||
       s.overlay === "downloads" ||
@@ -170,6 +173,15 @@ export function runShellCommand(command: ShellCommand): void {
     case "closeSettings":
       s.closeSettings();
       break;
+    case "showUpdate": {
+      // Asked for, the dialog does not wait on the screen as the offer does (lib/update-prompt.ts): it goes up over
+      // whatever was raised, put off or not — except where it never stands, and there the update's controls are About's.
+      const desk = useDeskStore.getState();
+      const dialogStands = !s.onboardingOpen && s.glance === null && desk.opening === null && desk.groupId === null;
+      if (updatePromptShows(s.update) && dialogStands) s.openUpdatePrompt();
+      else s.openSettings("about");
+      break;
+    }
     case "openReminders":
       s.openReminders(command.occurrenceId);
       break;
@@ -201,6 +213,9 @@ export function runShellCommand(command: ShellCommand): void {
       break;
     case "openArchive":
       s.setOverlay("archive");
+      break;
+    case "toggleLibrary":
+      s.toggleLibrary();
       break;
     case "tidyTabs":
       void s.tidyTabs();

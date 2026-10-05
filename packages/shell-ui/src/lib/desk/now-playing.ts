@@ -14,10 +14,11 @@
 
 import { create } from "zustand";
 
-/** The floating player's spot: its top-left corner, as fractions of the window's content box. */
+/** The floating player's spot: its top-left corner, as fractions of the window's content box, and its width once resized (its height follows: pip-box.ts). */
 export interface PipSpot {
   x: number;
   y: number;
+  width?: number;
 }
 
 interface NowPlayingState {
@@ -37,8 +38,9 @@ function readPip(): PipSpot | null {
   try {
     const raw: unknown = JSON.parse(localStorage.getItem(PIP_KEY) ?? "null");
     if (typeof raw !== "object" || raw === null) return null;
-    const { x, y } = raw as Record<string, unknown>;
-    return typeof x === "number" && typeof y === "number" && Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    const { x, y, width } = raw as Record<string, unknown>;
+    if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return typeof width === "number" && Number.isFinite(width) && width > 0 ? { x, y, width } : { x, y };
   } catch {
     return null;
   }

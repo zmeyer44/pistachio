@@ -5,7 +5,7 @@ import { shellReady } from "./windows";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { SidebarState } from "@pistachio/shell-contracts/sidebar";
 import { launchApp } from "./app";
-import { captureShell as captureWindowFrame, nextFrames, settled } from "./chrome-harness";
+import { captureShell as captureWindowFrame, nextFrames, settled, snapshot } from "./chrome-harness";
 
 /**
  * Let the column's glides land — a row mid-slide is not where a pointer
@@ -337,7 +337,7 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
  * follows the transform, so the press waits for the column to settle first —
  * or it would land on the row still sliding across the one it aims at.
  */
-async function drag(shell: Page, from: ReturnType<Page["locator"]>, to: { x: number; y: number }): Promise<void> {
+async function drag(shell: Page, from: ReturnType<Page["locator"]>, to: { x: number; y: number }, whileHeld?: () => Promise<void>): Promise<void> {
   await settled(shell.getByTestId("sidebar-chrome"));
   const box = await from.boundingBox();
   if (box === null) throw new Error("drag source has no box");
@@ -351,6 +351,7 @@ async function drag(shell: Page, from: ReturnType<Page["locator"]>, to: { x: num
   await shell.mouse.move(to.x, to.y, { steps: 12 });
   // The drop target follows the last move on the next frame.
   await nextFrames(shell);
+  await whileHeld?.();
   await shell.mouse.up();
 }
 
@@ -412,6 +413,54 @@ test("rows and tiles drag between the day's tabs, the pinned tree, its folders, 
     await expect(list.getByTestId("human-tab")).toHaveCount(1);
     // The folder is still there for the next page.
     await expect(folder).toHaveCount(1);
+  } finally {
+    await app.close();
+  }
+});
+
+// Its own window: four day tabs, the last two of them an open group.
+test("a row dragged below the last tab lands last, past a group that ends the list, without scrolling the list away", { tag: ["@sidebar"] }, async () => {
+  const { app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, name: "sidebar-drag-end" });
+  try {
+    const shell = await shellReady(app);
+    const list = shell.getByTestId("sidebar-tab-list");
+    const rows = list.locator("[data-tab-id]");
+    for (let i = 0; i < 3; i += 1) await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab("pistachio://home"));
+    await expect(rows).toHaveCount(4);
+    const order = (): Promise<string[]> => rows.evaluateAll((els) => els.map((el) => el.getAttribute("data-tab-id") ?? ""));
+
+    // Held at the very bottom of the column, far below the last tab: the
+    // list has nothing to scroll, so it stays put while the row waits there.
+    const column = await list.boundingBox();
+    if (column === null) throw new Error("no tab list");
+    const [first] = await order();
+    await drag(shell, rows.first(), { x: column.x + column.width / 2, y: column.y + column.height - 6 }, async () => {
+      for (const dx of [3, -3, 3, -3, 3, -3]) {
+        await shell.mouse.move(column.x + column.width / 2 + dx, column.y + column.height - 6);
+        await nextFrames(shell);
+      }
+      expect(await list.evaluate((el) => el.scrollTop)).toBe(0);
+    });
+    await expect.poll(async () => (await order()).at(-1)).toBe(first);
+
+    // The last two tabs grouped and open: a row dropped well below the
+    // group's last tab, however far in, lands after the group, not in it.
+    const grouped = (await order()).slice(-2);
+    await shell.evaluate(
+      async ({ tabIds }) => {
+        const pistachio = (window as unknown as { pistachio: PistachioApi }).pistachio;
+        await pistachio.tabGroupCommand({ type: "create", id: "end-group", tabIds, title: "End", color: "blue" });
+        await pistachio.tabGroupCommand({ type: "setOpen", groupId: "end-group", open: true });
+      },
+      { tabIds: grouped },
+    );
+    await expect(list.locator('[data-row-kind="member"]')).toHaveCount(2);
+    const lastBox = await rows.last().boundingBox();
+    if (lastBox === null) throw new Error("no last tab");
+    const [moved] = await order();
+    await drag(shell, rows.first(), { x: lastBox.x + lastBox.width / 2, y: lastBox.y + lastBox.height + 60 });
+    await expect.poll(async () => (await order()).at(-1)).toBe(moved);
+    expect((await snapshot(shell)).tabGroups.find((group) => group.id === "end-group")?.tabIds).toEqual(grouped);
   } finally {
     await app.close();
   }

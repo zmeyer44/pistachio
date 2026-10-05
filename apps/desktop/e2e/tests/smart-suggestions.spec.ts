@@ -6,7 +6,7 @@ import { capturePage } from "./pages-harness";
 
 /**
  * Smart suggestions, end to end in the real app (docs/smart-suggestions.md):
- * the renderer's debounce, the IPC hop, main's ranker, the real evaluator and
+ * the renderer's asking, the IPC hop, main's ranker, the real evaluator and
  * the real ordering policy — over a SCRIPTED intent model
  * (PISTACHIO_INTENT_SCRIPT, main/address-intent.ts), because what is under
  * test is the address bar, not a model's opinion. The model's own accuracy
@@ -17,6 +17,8 @@ const SCRIPT = {
   // Words that share no letters with the row they mean: only the model can find it.
   "make it prettier": { intent: "browser_command", target: "Theme & colors" },
   "explain tls": { intent: "ai_prompt" },
+  // Slow, so that what the bar shows while it waits can be seen.
+  "explain tls prices": { intent: "web_search", delayMs: 1200 },
 };
 
 async function type(shell: Page, query: string): Promise<void> {
@@ -59,6 +61,17 @@ test("the intent model reorders the address bar, and the heuristics keep what is
     await expect(first).toHaveAttribute("data-suggestion-kind", "ai");
     await expect(first).toContainText("↵");
     await capturePage(shell, "smart-suggestions-ai.png");
+
+    // Typing on does not hand ↵ back to the web search while the next answer
+    // is awaited: the choice belongs to the sentence, not the keystroke. It
+    // moves when an answer says so — and this one, when it comes, does.
+    await shell.getByTestId("address-input").fill("explain tls prices");
+    await expect(
+      shell.locator('[data-testid="command-results"][data-intent-ranked="pending"] [data-index="0"][data-suggestion-kind="ai"]'),
+    ).toBeVisible();
+    await expect(results).toHaveAttribute("data-intent-ranked", "applied");
+    await expect(first).toHaveAttribute("data-suggestion-kind", "search");
+    await expect(first).toContainText("↵");
 
     // An address is the heuristics' to decide: nobody is asked.
     await shell.getByTestId("address-input").fill("github.com");

@@ -700,6 +700,8 @@ const DESK_MASK_WORLD = "pistachio-desk-mask";
 const DESK_RELEASE_SETTLE_MS = 250;
 /** A still of a masked page is taken again, a frame apart, this many times until it comes at its view's size. */
 const DESK_STILL_SIZE_TRIES = 8;
+/** A capture of a desk page handed to the shell is granted if it is asked for this soon (Chromium's own ids last ten seconds). */
+const DESK_LIVE_GRANT_MS = 10_000;
 const DESK_MASK_BINDING = "__pistachioDeskMaskScroll";
 const DESK_MASK_SCRIPT = `(() => {
   if (window !== window.top) return [0, 0];
@@ -837,12 +839,6 @@ function parseScroll(payload: string): { x: number; y: number } | null {
   }
 }
 
-/** Show or hide a native view only on a real transition, as settleViewBounds. */
-function settleViewVisible(view: WebContentsView, visible: boolean): void {
-  if (view.getVisible() === visible) return;
-  view.setVisible(visible);
-}
-
 export class BrowserController {
   readonly #window: BrowserWindow;
   readonly #onChange: () => void;
@@ -953,6 +949,8 @@ export class BrowserController {
    * shell drags it, so its own origin cannot be the reference.
    */
   #deskGrab: { tabId: string; offset: { x: number; y: number } | null } | null = null;
+  /** Captures of desk pages handed to the shell (deskLiveSource), by the captured page's contents: to whom, and until when. */
+  readonly #deskLiveGrants = new Map<number, { origin: string; until: number }>();
   /**
    * The grab key is down, as the keyboard last said. A mouse event reaching
    * `before-mouse-event` carries no modifiers, so the key is followed from
@@ -985,6 +983,8 @@ export class BrowserController {
   readonly #deskReleases = new Map<string, DeskMaskRelease>();
   /** A masked page's mouse event is being re-sent at the page's own point: it goes to the page as it is. */
   #deskMaskForwarding = false;
+  /** A page shown again under the pointer is being told the pointer left it (#releaseRestingPointer). */
+  #releasingPointer = false;
   /** The modifier keys down, as the keyboard last said: a mouse event reaching `before-mouse-event` carries none. */
   #deskModifiers: Array<"shift" | "control" | "alt" | "meta"> = [];
   /** The mouse buttons held on a masked page, so a re-sent move says it is a drag. */
@@ -4968,6 +4968,11 @@ export class BrowserController {
     target.setPermissionRequestHandler(
       (contents, rawPermission, callback, details) => {
         const tab = this.#tabForWebContents(contents.id);
+        // The shell drawing a desk window's page live (deskLiveSource): Electron asks the captured page's session.
+        if (rawPermission === "media" && this.#takeDeskLiveGrant(contents.id, details)) {
+          callback(true);
+          return;
+        }
         // Element fullscreen (a video's ⛶ button) is not a privacy
         // permission: Chromium only asks so the embedder can veto it, and
         // Chrome grants it silently. Without this grant Electron drops the
@@ -7517,6 +7522,34 @@ export class BrowserController {
     return (await Promise.all(captures)).filter((still): still is PaneStill => still !== null);
   }
 
+  /**
+   * A capture of a desk window's page, for the shell to draw it live where its
+   * still is — a covered window whose page plays a video
+   * (components/desk/DeskLivePicture.tsx). Electron asks the captured page's
+   * session, not the shell's, whether the capture may start, and a tab
+   * session grants nothing to a contents not its tab's: so it is granted
+   * here, once, to this shell, for this page (#takeDeskLiveGrant).
+   */
+  deskLiveSource(tabId: string, requester: WebContents): string | null {
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || tab.info.kind !== "human" || tab.view.webContents.isDestroyed() || requester.isDestroyed() || this.#desk?.tabIds.includes(tabId) !== true) return null;
+    const origin = schemeHost(requester.getURL());
+    if (origin === null) return null;
+    this.#deskLiveGrants.set(tab.view.webContents.id, { origin, until: Date.now() + DESK_LIVE_GRANT_MS });
+    return tab.view.webContents.getMediaSourceId(requester);
+  }
+
+  /** The capture deskLiveSource handed out, asked for now: by the shell it went to, of the page alone (no camera, no microphone). */
+  #takeDeskLiveGrant(contentsId: number, details: Electron.PermissionRequest | Electron.MediaAccessPermissionRequest | Electron.FilesystemPermissionRequest | Electron.OpenExternalPermissionRequest): boolean {
+    const grant = this.#deskLiveGrants.get(contentsId);
+    if (grant === undefined) return false;
+    const mediaTypes = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
+    const origin = "securityOrigin" in details && typeof details.securityOrigin === "string" ? schemeHost(details.securityOrigin) : null;
+    if (mediaTypes.length > 0 || origin !== grant.origin) return false;
+    this.#deskLiveGrants.delete(contentsId);
+    return Date.now() <= grant.until;
+  }
+
   /** A picture of the tab's page at its view's size, taken again a frame apart until it is (null if it never is). */
   async #captureAtViewSize(tab: ManagedTab): Promise<NativeImage | null> {
     for (let attempt = 1; ; attempt += 1) {
@@ -7593,8 +7626,9 @@ export class BrowserController {
    * click into one is the only way the browser learns which is in use.
    */
   #handleDeskMouse(tab: ManagedTab, event: Electron.Event, mouse: Electron.MouseInputEvent): void {
-    // A masked page's own event, re-sent at its point on the page (#forwardMaskedMouse).
-    if (this.#deskMaskForwarding) return;
+    // A masked page's own event, re-sent at its point on the page (#forwardMaskedMouse),
+    // or the leave a page shown under a resting pointer is told (#releaseRestingPointer).
+    if (this.#deskMaskForwarding || this.#releasingPointer) return;
     const tabId = tab.info.id;
     const grab = this.#deskGrab;
     if (grab !== null && grab.tabId === tabId) {
@@ -7873,17 +7907,17 @@ export class BrowserController {
     const size = maskViewSize(state);
     const fits = state.applied !== null && state.applied.key === state.key && state.applied.width === size.width && state.applied.height === size.height;
     if (!fits) {
-      settleViewVisible(tab.view, false);
+      this.#settleViewVisible(tab.view, false);
       this.#aimDeskMask(tab, state);
       return;
     }
     const want = state.want;
     if (want !== null && want.shown) {
       settleViewBounds(tab.view, want.bounds);
-      settleViewVisible(tab.view, true);
+      this.#settleViewVisible(tab.view, true);
       return;
     }
-    settleViewVisible(tab.view, false);
+    this.#settleViewVisible(tab.view, false);
     // Down, it is still captured for the window's still: at the size it shows the region at.
     const bounds = tab.view.getBounds();
     if (bounds.width !== size.width || bounds.height !== size.height) settleViewBounds(tab.view, { x: bounds.x, y: bounds.y, ...size });
@@ -7925,7 +7959,7 @@ export class BrowserController {
     const width = Math.round(state.mask.pageWidth);
     const height = Math.round(state.mask.pageHeight);
     // Down, at its box: a still taken meanwhile is of the whole page as it will be.
-    settleViewVisible(tab.view, false);
+    this.#settleViewVisible(tab.view, false);
     const bounds = tab.view.getBounds();
     settleViewBounds(tab.view, { x: bounds.x, y: bounds.y, width, height });
     const release: DeskMaskRelease = { contents, width, height, timer: null };
@@ -8275,21 +8309,21 @@ export class BrowserController {
       // until it leaves fullscreen.
       const { width, height } = this.#window.getContentBounds();
       for (const tab of this.#tabs.values())
-        if (tab !== fullscreen) settleViewVisible(tab.view, false);
+        if (tab !== fullscreen) this.#settleViewVisible(tab.view, false);
       // A masked page gone fullscreen (the player's own button) is the whole page for as long as it is.
       const maskedFullscreen = this.#deskMasks.get(fullscreen.info.id);
       if (maskedFullscreen !== undefined) this.#suspendDeskMask(fullscreen, maskedFullscreen);
       const zoomedFullscreen = this.#deskZooms.get(fullscreen.info.id);
       if (zoomedFullscreen !== undefined) this.#suspendDeskZoom(fullscreen, zoomedFullscreen);
       this.#endDeskRelease(fullscreen);
-      if (this.#glance !== null) settleViewVisible(this.#glance.tab.view, false);
+      if (this.#glance !== null) this.#settleViewVisible(this.#glance.tab.view, false);
       settleViewBounds(fullscreen.view, {
         x: 0,
         y: 0,
         width: Math.max(1, width),
         height: Math.max(1, height),
       });
-      settleViewVisible(fullscreen.view, !this.#overlayActive);
+      this.#settleViewVisible(fullscreen.view, !this.#overlayActive);
       this.#syncMediaPresentation(null);
       return;
     }
@@ -8318,7 +8352,7 @@ export class BrowserController {
         placement.bounds.width < 1 ||
         placement.bounds.height < 1
       ) {
-        settleViewVisible(tab.view, false);
+        this.#settleViewVisible(tab.view, false);
         if (masked !== undefined) {
           masked.want = null;
           this.#placeMaskedView(tab, masked);
@@ -8367,7 +8401,7 @@ export class BrowserController {
             this.#glance?.ownerRecessed !== true &&
             visible.has(tabId)
           : previewPlacement !== null);
-      settleViewVisible(tab.view, shown);
+      this.#settleViewVisible(tab.view, shown);
       this.#settleDeskRelease(tab, shown ? bounds : null);
       // Drawn at a real size now: a viewport emulated while it was off
       // screen (#ensureViewport) gives way to the pane's own.
@@ -8383,10 +8417,49 @@ export class BrowserController {
       if (glance.bounds !== null) settleViewBounds(glance.tab.view, glance.bounds);
       // Bounds go null when the shell takes the view down for its closing
       // flight; until then a layout pass must not hide a page mid-capture.
-      settleViewVisible(
+      this.#settleViewVisible(
         glance.tab.view,
         !this.#overlayActive && glance.bounds !== null,
       );
+    }
+  }
+
+  /** Show or hide a page's native view only on a real transition, as settleViewBounds. */
+  #settleViewVisible(view: WebContentsView, visible: boolean): void {
+    if (view.getVisible() === visible) return;
+    view.setVisible(visible);
+    if (visible) this.#releaseRestingPointer(view);
+  }
+
+  /**
+   * A page shown again under a resting pointer is told the pointer left it.
+   * Down, it heard nothing of the pointer going (the shell drew its still
+   * there and set its own cursor), and Chromium on macOS sets a page's cursor
+   * only when the page asks for a different one: its links and buttons kept
+   * the shell's arrow, as if something invisible lay over them, until the
+   * pointer crossed text or left the page. The leave makes the next move an
+   * entry, which sets the page's cursor afresh. (Launched by Playwright,
+   * Chromium sends that leave itself as the page goes down: specs never see
+   * the stale cursor.)
+   * Only under the pointer, since coming onto the page later is an entry
+   * anyway, and at the pointer's own point: a leave at the page's corner is
+   * what exit-intent scripts take for the pointer heading off the page. The
+   * desk hears nothing of it (#handleDeskMouse): the pointer has not moved.
+   */
+  #releaseRestingPointer(view: WebContentsView): void {
+    const contents = view.webContents;
+    if (contents.isDestroyed() || this.#window.isDestroyed()) return;
+    const cursor = screen.getCursorScreenPoint();
+    const content = this.#window.getContentBounds();
+    const box = view.getBounds();
+    const x = cursor.x - content.x - box.x;
+    const y = cursor.y - content.y - box.y;
+    if (x < 0 || y < 0 || x >= box.width || y >= box.height) return;
+    this.#releasingPointer = true;
+    try {
+      contents.sendInputEvent({ type: "mouseLeave", x: Math.round(x), y: Math.round(y) });
+    } finally {
+      this.#releasingPointer = false;
     }
   }
 
@@ -9273,6 +9346,16 @@ function requestPage(
     request.on("error", (error: Error) => finish(() => reject(error)));
     request.end();
   });
+}
+
+/** An address's scheme and host, for any scheme (the shell's own included, which URL gives no origin). */
+function schemeHost(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return null;
+  }
 }
 
 function webOrigin(value: string): string | null {

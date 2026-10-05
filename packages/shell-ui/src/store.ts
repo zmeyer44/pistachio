@@ -128,6 +128,7 @@ import { clearRecents, dismissRecent, loadRecents, recordVisit, refaviconVisit, 
 import { share } from "./lib/share";
 import { clampPanelWidth, getStoredPanelWidth, storePanelWidth } from "./lib/panel";
 import { permissionPromptOverlay } from "./lib/permission-prompt";
+import { updatePromptShows } from "./lib/update-prompt";
 import { homeChatLeftHome } from "./lib/home";
 import { pushNotice, type NoticeOptions, type ShellNotice } from "./lib/notices";
 import { clampSidebarWidth, getStoredSidebarWidth, storeSidebarWidth } from "./lib/sidebar";
@@ -140,7 +141,7 @@ import {
 import { noteUrl } from "@pistachio/shell-contracts/notes";
 import { BRIEF_PAGE_URL } from "@pistachio/shell-contracts/reports";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
-import { updateVersion, type UpdateState } from "@pistachio/shell-contracts/updates";
+import { updateVersion, type UpdateSnooze, type UpdateState } from "@pistachio/shell-contracts/updates";
 import { nativeApi, shellApi } from "./api";
 
 /** The one raised shell surface at a time, including the chrome status card. */
@@ -153,6 +154,8 @@ export type Overlay =
   | "watchtower"
   /** The archive of tabs Tidy put away and groups that were closed (components/archive/ArchivePage.tsx). */
   | "archive"
+  /** Everything kept, in one place: artifacts, notes, saved pages, Watchtower (components/library/LibraryPage.tsx). */
+  | "library"
   | "site"
   /** The quick site-info popover under the active tab (components/SiteInfoPopover.tsx). */
   | "site-info"
@@ -167,11 +170,23 @@ export type Overlay =
   | "context-menu"
   | "image-preview"
   /** The downloads list under its chip (components/DownloadsPopover.tsx). */
-  | "downloads";
+  | "downloads"
+  /**
+   * A newer Pistachio, offered over the page until it is installed or put
+   * off (components/update-prompt; lib/update-prompt.ts).
+   */
+  | "update";
 
 /** The overlays that are a full-window page over the content hole (components/ContentArea.tsx). */
 export function isPageOverlay(overlay: Overlay): boolean {
-  return overlay === "settings" || overlay === "reminders" || overlay === "bookmarks" || overlay === "watchtower" || overlay === "archive";
+  return (
+    overlay === "settings" ||
+    overlay === "reminders" ||
+    overlay === "bookmarks" ||
+    overlay === "watchtower" ||
+    overlay === "archive" ||
+    overlay === "library"
+  );
 }
 
 export type { NoticeOptions, ShellNotice } from "./lib/notices";
@@ -392,6 +407,12 @@ export interface AppState {
   /** The version whose corner card the person waved away; it stays in Settings → About. */
   updateDismissed: string | null;
   /**
+   * The person chose "Update now" in the update dialog: once the download
+   * is in, the dialog restarts into it. Putting the dialog down while it
+   * downloads clears this, and the pill offers the restart instead.
+   */
+  updateRestartPending: boolean;
+  /**
    * The account, the devices holding its keys, and the three planes that
    * only exist once this Mac is enrolled (docs/cloud-sync-design.md §10).
    * Every one of these is DEFAULT_* until main's first answer lands, and
@@ -415,6 +436,14 @@ export interface AppState {
   downloadUpdate(): Promise<void>;
   installUpdate(): void;
   dismissUpdate(): void;
+  /** Raise the update dialog (App.tsx does, when main says it is due). */
+  openUpdatePrompt(): void;
+  /** Download from the dialog, and restart into the update once it is in. */
+  updateNow(): Promise<void>;
+  /** Put the dialog off: main keeps the answer, the pill stays. */
+  snoozeUpdate(choice: UpdateSnooze): void;
+  /** Put the dialog down without an answer: a download keeps going, without the restart. */
+  closeUpdatePrompt(): void;
   openSettings(section?: SettingsSection): void;
   closeSettings(): void;
   openReminders(occurrenceId?: string): void;
@@ -425,6 +454,8 @@ export interface AppState {
    * one (docs/notes.md §4).
    */
   openNotes(noteId?: string): void;
+  /** Lower any full-window page, then show an address: the tab already showing it, else a new one. */
+  openAddress(url: string): void;
   /** A blank note in a tab. There is nothing to save, so there is nothing to confirm. */
   newNote(): Promise<void>;
   /** The same note, beside whatever is open now. */
@@ -441,6 +472,8 @@ export interface AppState {
    */
   closePage(): void;
   toggleBookmarks(): void;
+  /** The Library: artifacts, notes, saved pages and Watchtower's visits in one page. */
+  toggleLibrary(): void;
   openDownloads(): void;
   closeDownloads(): void;
   toggleDownloads(): void;
@@ -995,6 +1028,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   onboardingReplay: false,
   update: { status: "idle", checkedAt: null },
   updateDismissed: null,
+  updateRestartPending: false,
   account: DEFAULT_ACCOUNT,
   devices: [],
   syncStatus: DEFAULT_SYNC_STATUS,
@@ -1043,7 +1077,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const offReminders = shellApi().onReminders((next) => set({ reminders: next, remindersLoaded: true }));
     const offBookmarks = shellApi().onBookmarks((next) => set({ bookmarks: next, bookmarksLoaded: true }));
     const offBookmarkToast = shellApi().onBookmarkToast((next) => set({ bookmarkToast: next }));
-    const offUpdate = nativeApi()?.onUpdateState((next) => set({ update: next }));
+    const offUpdate = nativeApi()?.onUpdateState((next) =>
+      set((state) => ({
+        update: next,
+        ...(state.overlay === "update" && !updatePromptShows(next) ? { overlay: "none" as const, updateRestartPending: false } : {}),
+      })),
+    );
     const offGlance = shellApi().onGlanceChanged((next) =>
       set((state) => {
         const same = next !== null && next.tab.id === state.glance?.tab.id;
@@ -1108,6 +1147,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   installUpdate: () => nativeApi()?.installUpdate(),
   dismissUpdate: () => set((state) => ({ updateDismissed: updateVersion(state.update) })),
+  openUpdatePrompt: () => set({ overlay: "update", urlBarTabId: null, urlBarNew: false, updateRestartPending: false }),
+  updateNow: async () => {
+    set({ updateRestartPending: true });
+    set({ update: await shellApi().downloadUpdate() });
+  },
+  snoozeUpdate: (choice) => {
+    nativeApi()?.snoozeUpdate(choice);
+    set((state) => ({
+      ...(state.overlay === "update" ? { overlay: "none" as const } : {}),
+      // Put off here at once, before main's republish lands: the screen
+      // coming free would otherwise raise the dialog again.
+      ...(state.update.status === "available"
+        ? { update: { ...state.update, prompt: { due: false, snoozes: state.update.prompt.snoozes + 1 } } }
+        : {}),
+    }));
+  },
+  closeUpdatePrompt: () =>
+    set((state) => ({ updateRestartPending: false, ...(state.overlay === "update" ? { overlay: "none" as const } : {}) })),
   // Opened without a section, Settings starts at its root rather than the
   // sub-page it was last closed on.
   openSettings: (section) =>
@@ -1120,17 +1177,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeSettings: () => set((state) => (state.overlay === "settings" ? { overlay: "none" } : {})),
   openReminders: (occurrenceId) =>
     set({ overlay: "reminders", remindersFocus: occurrenceId ?? null, urlBarTabId: null, urlBarNew: false }),
-  openBrief: () => {
+  openBrief: () => get().openAddress(BRIEF_PAGE_URL),
+  openNotes: (noteId) => get().openAddress(noteUrl(noteId)),
+  openAddress: (url) => {
     const state = get();
     state.closePage();
-    const open = state.snapshot?.tabs.find((tab) => sameAddress(tab.url, BRIEF_PAGE_URL));
-    if (open !== undefined) void state.selectTab(open.id);
-    else void state.createTab(BRIEF_PAGE_URL);
-  },
-  openNotes: (noteId) => {
-    const state = get();
-    state.closePage();
-    const url = noteUrl(noteId);
     const open = state.snapshot?.tabs.find((tab) => sameAddress(tab.url, url));
     if (open !== undefined) void state.selectTab(open.id);
     else void state.createTab(url);
@@ -1179,6 +1230,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.overlay === "bookmarks"
         ? { overlay: "none", bookmarksFocus: null }
         : { overlay: "bookmarks", bookmarksFocus: null, urlBarTabId: null, urlBarNew: false },
+    ),
+  toggleLibrary: () =>
+    set((state) =>
+      state.overlay === "library" ? { overlay: "none" } : { overlay: "library", urlBarTabId: null, urlBarNew: false },
     ),
   openDownloads: () => set({ overlay: "downloads", urlBarTabId: null, urlBarNew: false }),
   closeDownloads: () => set((state) => (state.overlay === "downloads" ? { overlay: "none" } : {})),

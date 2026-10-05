@@ -1,6 +1,6 @@
 /**
  * Where a reply came from: the pages a turn's tool calls read (AgentToolCall.source),
- * gathered once each under the reply, and matched against the links the
+ * gathered once each per turn, and matched against the links the
  * reply makes so a link to a page the agent read draws as a citation chip
  * rather than as a bare address. Pure.
  */

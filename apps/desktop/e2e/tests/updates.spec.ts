@@ -1,6 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { expect, test } from "@playwright/test";
+import { join } from "node:path";
+import { expect, test, type Page } from "@playwright/test";
+import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
+import type { UpdateSnoozeRecord } from "@pistachio/shell-contracts/updates";
 import { shellReady } from "./windows";
 import { launchApp } from "./app";
 
@@ -8,8 +12,9 @@ import { launchApp } from "./app";
  * The update flow against a local release feed: a `latest-mac.yml` naming a
  * far-future version and a small stand-in "zip" whose sha512 it carries.
  * electron-updater only verifies the archive at install time, so the check
- * and the download are exercised end to end without a real build. The pill
- * in the chrome and the About page are the two places the person acts from.
+ * and the download are exercised end to end without a real build. The dialog
+ * over the page, the pill in the chrome, and the About page are the places
+ * the person acts from.
  * (A run with no feed at all is settings.spec.ts's: About says so.)
  */
 
@@ -80,6 +85,66 @@ test("an available update is offered in the chrome and downloaded only on reques
     await expect(pill).toHaveText("Restart");
     await expect(page.getByTestId("update-install")).toBeVisible();
     expect(feed.requests.some((url) => url.endsWith(ARCHIVE))).toBe(true);
+  } finally {
+    await app.close();
+    feed.server.close();
+  }
+});
+
+/** The scheduled check waits fifteen seconds; ask now, the way About's "Check now" does. */
+async function checkNow(shell: Page): Promise<void> {
+  await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.checkForUpdates());
+}
+
+test("an available update is offered over the page until it is put off", { tag: ["@settings"] }, async () => {
+  const feed = await serveFeed();
+  const options = { settings: { onboarding: { completed: true } }, env: { PISTACHIO_UPDATE_FEED: feed.url } };
+  const launched = await launchApp({ ...options, name: "update-prompt" });
+  const { userData } = launched;
+  let { app } = launched;
+  const snoozeFile = join(userData, "update-prompt.json");
+  try {
+    // First offer: over the page, with only "tomorrow" to put it off.
+    let shell = await shellReady(app);
+    await checkNow(shell);
+    const prompt = shell.getByTestId("update-prompt");
+    await expect(prompt).toHaveAttribute("data-phase", "offer");
+    await expect(prompt).toContainText(VERSION);
+    await expect(shell.getByTestId("update-prompt-later")).toHaveCount(0);
+    await shell.getByTestId("update-prompt-tomorrow").click();
+    await expect(prompt).toHaveCount(0);
+    // The pill stays, and nothing was downloaded.
+    await expect(shell.getByTestId("update-pill")).toHaveAttribute("data-status", "available");
+    expect(feed.requests.some((url) => url.endsWith(ARCHIVE))).toBe(false);
+    await expect
+      .poll(async () => JSON.parse(await readFile(snoozeFile, "utf8").catch(() => "null")) as UpdateSnoozeRecord | null)
+      .toMatchObject({ version: VERSION, count: 1 });
+
+    // A relaunch within the day keeps it put off.
+    await app.close();
+    ({ app } = await launchApp({ ...options, userData }));
+    shell = await shellReady(app);
+    await checkNow(shell);
+    await expect
+      .poll(() => shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.getUpdateState()))
+      .toMatchObject({ status: "available", prompt: { due: false, snoozes: 1 } });
+    await expect(shell.getByTestId("update-pill")).toHaveAttribute("data-status", "available");
+    await expect(shell.getByTestId("update-prompt")).toHaveCount(0);
+
+    // A day later it is back, and now "later" is on offer too.
+    await app.close();
+    const record = JSON.parse(await readFile(snoozeFile, "utf8")) as UpdateSnoozeRecord;
+    await writeFile(snoozeFile, JSON.stringify({ ...record, until: new Date(Date.now() - 1_000).toISOString() }));
+    ({ app } = await launchApp({ ...options, userData }));
+    shell = await shellReady(app);
+    await checkNow(shell);
+    await expect(shell.getByTestId("update-prompt")).toHaveAttribute("data-phase", "offer");
+    await shell.getByTestId("update-prompt-later").click();
+    await expect(shell.getByTestId("update-prompt")).toHaveCount(0);
+    await expect
+      .poll(async () => JSON.parse(await readFile(snoozeFile, "utf8")) as UpdateSnoozeRecord)
+      .toMatchObject({ version: VERSION, until: null, count: 2 });
+    await expect(shell.getByTestId("update-pill")).toHaveAttribute("data-status", "available");
   } finally {
     await app.close();
     feed.server.close();

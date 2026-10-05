@@ -93,7 +93,11 @@ export class RequestHub {
           continue;
         }
         if (response !== undefined && (response.cancel === true || response.redirectURL !== undefined)) {
-          callback(response);
+          // A CORS preflight is refused, never redirected: Electron's main
+          // process crashes on a redirected preflight (43.4.1, to any
+          // address — YouTube's ad pings met uBO's no-op resources), and
+          // the Fetch standard fails a preflight that redirects anyway.
+          callback(details.method === "OPTIONS" ? { cancel: true } : response);
           return;
         }
       }

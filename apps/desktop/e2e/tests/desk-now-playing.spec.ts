@@ -14,6 +14,7 @@ import { createServer, type Server } from "node:http";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
+import { deskPipSlot } from "@pistachio/shell-contracts/desk";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 import { demoPortalHtml, demoToneWav } from "../../src/main/demo-page";
@@ -198,7 +199,8 @@ test("a window playing something pops out: on the rail, a video floats over the 
     expect(pipBox.width).toBe(320);
     expect(pipBox.height).toBe(180);
     await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, pipBox))).toBe(true);
-    await expect.poll(() => viewAt(app, CHROME_VIEW_HASHES.pip).then((bounds) => near(bounds, pipBox))).toBe(true);
+    // (Its view stands out from the picture all round, the ring its edges are on.)
+    await expect.poll(() => viewAt(app, CHROME_VIEW_HASHES.pip).then((bounds) => near(bounds, deskPipSlot(pipBox)))).toBe(true);
     await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
     await capture(app, shell, "02-video-floating.png", 600);
     // Settings over the window: the picture comes down, and nothing of the player lies over Settings.
@@ -226,13 +228,44 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await face.getByTestId("desk-pip-play").click();
     await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
 
-    // ── 4. Moved: a press on the picture, held — the drag layer's samples — and it stays where it is let go ─
-    const send = (channel: string, payload: unknown): Promise<void> =>
-      app.evaluate(({ BrowserWindow }, { channel, payload }) => BrowserWindow.getAllWindows()[0]!.webContents.send(channel, payload), { channel, payload });
-    const from = { x: pipBox.x + 160, y: pipBox.y + 90 };
-    await send("pistachio:desk-pip-input", { type: "grab", ...from });
-    for (let step = 1; step <= 6; step += 1) await send("pistachio:drag-sample", { x: from.x + step * 60, y: from.y - step * 50, phase: "move" });
-    // Held, the drag layer keeps the pointer: the player raised as it follows (its pip view) stays under it.
+    // ── 4. Moved: a press on the picture, held and dragged, and it stays where it is let go ─
+    // The OS gives a press's moves and release to the view it began on, whatever is raised over it since: they go
+    // to the pip view, as the real pointer's would, at window points (the view moving under them as it follows).
+    const pipMouse = (type: "mouseDown" | "mouseMove" | "mouseUp", at: { x: number; y: number }): Promise<void> =>
+      app.evaluate(
+        ({ BrowserWindow }, { type, at, hash }) => {
+          const view = BrowserWindow.getAllWindows()[0]!.contentView.children.find(
+            (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith(hash),
+          ) as WebContentsView;
+          const bounds = view.getBounds();
+          view.webContents.sendInputEvent({
+            type,
+            x: at.x - bounds.x,
+            y: at.y - bounds.y,
+            globalX: at.x + 1000,
+            globalY: at.y + 1000,
+            button: "left",
+            clickCount: 1,
+            modifiers: type === "mouseMove" ? ["leftbuttondown"] : [],
+          });
+        },
+        { type, at, hash: CHROME_VIEW_HASHES.pip },
+      );
+    const dragLayerUp = async (): Promise<boolean> => (await viewAt(app, CHROME_VIEW_HASHES.drag)) !== null;
+    // Between the controls at its head and its middle.
+    const from = { x: pipBox.x + 160, y: pipBox.y + 55 };
+    await pipMouse("mouseDown", from);
+    await expect.poll(dragLayerUp).toBe(true);
+    for (let step = 1; step <= 5; step += 1) await pipMouse("mouseMove", { x: from.x + step * 60, y: from.y - step * 50 });
+    // (The last again until it lands: a real cursor resting over the window, where the harness could not move it
+    // from, is relayed once by the drag layer as it comes up under it.)
+    await expect
+      .poll(async () => {
+        await pipMouse("mouseMove", { x: from.x + 360, y: from.y - 300 });
+        return (await box(shell, '[data-testid="desk-pip"]')).x;
+      })
+      .toBeCloseTo(pipBox.x + 360, -1);
+    // Held, the drag layer keeps the rest of the window, over the player's pip view as it follows.
     const topView = (): Promise<string> =>
       app.evaluate(({ BrowserWindow }) => {
         const children = BrowserWindow.getAllWindows()[0]!.contentView.children;
@@ -240,12 +273,55 @@ test("a window playing something pops out: on the rail, a video floats over the 
         return top.webContents.getURL();
       });
     await expect.poll(async () => (await topView()).endsWith(CHROME_VIEW_HASHES.drag)).toBe(true);
-    await send("pistachio:drag-sample", { x: from.x + 360, y: from.y - 300, phase: "up" });
-    await expect.poll(async () => (await box(shell, '[data-testid="desk-pip"]')).x).toBeCloseTo(pipBox.x + 360, -1);
+    await pipMouse("mouseUp", { x: from.x + 360, y: from.y - 300 });
+    // Let go, the move is over: no second click wanted to put it down.
+    await expect.poll(dragLayerUp).toBe(false);
     const moved = await box(shell, '[data-testid="desk-pip"]');
+    expect(Math.abs(moved.x - (pipBox.x + 360))).toBeLessThan(2);
     expect(Math.abs(moved.y - (pipBox.y - 300))).toBeLessThan(2);
     await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, moved))).toBe(true);
     expect(await shell.evaluate(() => localStorage.getItem("pistachio.desk.pip.v1"))).not.toBe(null);
+    // A click on the picture moves nothing, and leaves nothing holding the pointer (once its face has
+    // heard the release, its word of the press has gone ahead of it to main, and on to the shell).
+    await face.evaluate(() => {
+      (window as { pipReleased?: Promise<void> }).pipReleased = new Promise((done) => window.addEventListener("pointerup", () => done(), { once: true }));
+    });
+    await pipMouse("mouseDown", { x: moved.x + 160, y: moved.y + 55 });
+    await pipMouse("mouseUp", { x: moved.x + 160, y: moved.y + 55 });
+    await face.evaluate(() => (window as { pipReleased?: Promise<void> }).pipReleased);
+    await shell.evaluate(() => new Promise((done) => requestAnimationFrame(done)));
+    await expect.poll(dragLayerUp).toBe(false);
+    expect(near(await box(shell, '[data-testid="desk-pip"]'), moved)).toBe(true);
+
+    // ── 4b. Resized: a corner held and dragged, its shape kept; an edge, no smaller than its controls want ─
+    const pipNow = (): Promise<Box> => box(shell, '[data-testid="desk-pip"]');
+    // Each drag's last move again until it lands, as above.
+    const resize = async (at: { x: number; y: number }, to: { x: number; y: number }, width: number): Promise<Box> => {
+      await pipMouse("mouseDown", at);
+      await expect.poll(dragLayerUp).toBe(true);
+      await expect
+        .poll(async () => {
+          await pipMouse("mouseMove", to);
+          return (await pipNow()).width;
+        })
+        .toBe(width);
+      await pipMouse("mouseUp", to);
+      await expect.poll(dragLayerUp).toBe(false);
+      return pipNow();
+    };
+    // On the ring just outside the picture's corner: the opposite corner holds still.
+    const corner = { x: moved.x + moved.width + 2, y: moved.y + moved.height + 2 };
+    const grown = await resize(corner, { x: corner.x + 160, y: corner.y + 40 }, 480);
+    expect(near(grown, { x: moved.x, y: moved.y, width: 480, height: 270 })).toBe(true);
+    await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, grown))).toBe(true);
+    await expect.poll(() => viewAt(app, CHROME_VIEW_HASHES.pip).then((bounds) => near(bounds, deskPipSlot(grown)))).toBe(true);
+    expect(JSON.parse((await shell.evaluate(() => localStorage.getItem("pistachio.desk.pip.v1"))) ?? "null")).toMatchObject({ width: 480 });
+    await capture(app, shell, "03b-video-resized.png");
+    // The left edge pulled far in: its right edge holds still, and it stops at its smallest.
+    const west = { x: grown.x - 3, y: grown.y + grown.height / 2 };
+    const shrunk = await resize(west, { x: west.x + 400, y: west.y }, 240);
+    expect(near(shrunk, { x: grown.x + grown.width - 240, y: grown.y, width: 240, height: 135 })).toBe(true);
+    await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, shrunk))).toBe(true);
 
     // ── 5. The audio popped out: a button in the rail, moving with how loud the page measures it ─
     await windowOf(audio).getByTestId("desk-pop-out").click();
@@ -340,6 +416,75 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await shell.getByTestId("desk-rail-toggle").click();
     await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
     await expect(shell.getByTestId(`media-card-${video}`)).toBeVisible();
+  } finally {
+    await closeApp(app);
+  }
+});
+
+test("a window playing a video with another window over it shows its page live, not a still, and its own page again once it is uncovered", { tag: ["@desk", "@media"] }, async () => {
+  test.setTimeout(120_000);
+  const VIDEO_URL = `${ORIGIN}/invoices?video`;
+  const OTHER_URL = `${ORIGIN}/invoices?other`;
+  const { app, shell } = await launchDesk({ name: "live-picture", homeUrl: VIDEO_URL });
+  try {
+    const [video, other] = (await openTabs(shell, [VIDEO_URL, OTHER_URL])) as [string, string];
+    await createGroup(shell, "watch", [video, other], "Watch", "blue");
+    await selectTab(shell, video);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(video);
+    const videoPage = await pageAt(app, VIDEO_URL);
+    await installVideoPlayer(videoPage);
+    await videoPage.locator("#start-video").click();
+    await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
+
+    await openGroupDesk(shell, "watch");
+    await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
+    const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
+    const rowOf = (tabId: string) => shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`);
+    await expect(shell.getByTestId("desk-window")).not.toHaveCount(0);
+    await settled(shell, app);
+    if ((await windowOf(video).count()) === 0) await rowOf(video).click();
+    if ((await windowOf(other).count()) === 0) await rowOf(other).click();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell, app);
+    const videoView = (): Promise<boolean> =>
+      app.evaluate(({ BrowserWindow }, url) => {
+        const view = BrowserWindow.getAllWindows()[0]!.contentView.children.find((child) => "webContents" in child && (child as WebContentsView).webContents.getURL() === url) as WebContentsView;
+        return view.getVisible();
+      }, VIDEO_URL);
+    const live = windowOf(video).getByTestId("desk-live-picture");
+
+    // In use, the video's window is its own page.
+    await selectTab(shell, video);
+    await expect.poll(videoView).toBe(true);
+    await expect(live).toHaveCount(0);
+
+    // The other window in use, over it: the video's window is drawn, from a capture of its page that moves as it plays.
+    await selectTab(shell, other);
+    const [videoBox, otherBox] = [await box(shell, `[data-testid="desk-window"][data-tab-id="${video}"]`), await box(shell, `[data-testid="desk-window"][data-tab-id="${other}"]`)];
+    expect(videoBox.x < otherBox.x + otherBox.width && otherBox.x < videoBox.x + videoBox.width && videoBox.y < otherBox.y + otherBox.height && otherBox.y < videoBox.y + videoBox.height, "the windows overlap").toBe(true);
+    await expect.poll(videoView).toBe(false);
+    await expect(live).toHaveAttribute("data-shown", "", { timeout: 15_000 });
+    const frames = await live.evaluate(
+      (element) =>
+        new Promise<number>((done) => {
+          const player = element as HTMLVideoElement;
+          let count = 0;
+          const start = performance.now();
+          const tick = (): void => {
+            count += 1;
+            if (performance.now() - start < 1000) player.requestVideoFrameCallback(tick);
+            else done(count);
+          };
+          player.requestVideoFrameCallback(tick);
+          setTimeout(() => done(count), 2000);
+        }),
+    );
+    expect(frames).toBeGreaterThan(5);
+
+    // In use again: its own page, and the capture let go.
+    await selectTab(shell, video);
+    await expect.poll(videoView).toBe(true);
+    await expect(live).toHaveCount(0);
   } finally {
     await closeApp(app);
   }

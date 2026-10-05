@@ -61,6 +61,16 @@ describe("the request hub", () => {
     expect(seen).toEqual(["policy", "shields"]);
   });
 
+  it("refuses a preflight a handler would redirect, which would crash Electron", async () => {
+    const { session, fire } = fakeSession();
+    const hub = RequestHub.for(session);
+    hub.onBeforeRequest("shields", { priority: 10, handler: () => ({ redirectURL: "data:text/plain;base64," }) });
+    expect(await fire("beforeRequest", { url: "https://ads.example/ping", resourceType: "xhr", method: "OPTIONS" })).toEqual({ cancel: true });
+    expect(await fire("beforeRequest", { url: "https://ads.example/ping", resourceType: "xhr", method: "GET" })).toEqual({
+      redirectURL: "data:text/plain;base64,",
+    });
+  });
+
   it("replaces a handler of the same name instead of running both", async () => {
     const { session, fire } = fakeSession();
     const hub = RequestHub.for(session);

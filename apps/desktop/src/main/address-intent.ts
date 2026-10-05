@@ -3,15 +3,16 @@
  * and no more (docs/smart-suggestions.md §7).
  *
  * Someone typing "change theme color" produces a dozen candidate keystrokes
- * in under a second. The renderer debounces, but a debounce is not a lock:
- * requests still overlap, they finish out of order, and an answer to
- * "change th" that lands after the answer to "change theme color" would
- * reorder the list under the person's hands with an opinion about words
- * they have already finished typing. So the ranker keeps exactly one
- * AbortController per asking `WebContents`: a new question aborts the one
- * before it, and the superseded call answers null AT ONCE rather than
- * waiting for the gateway to notice — the renderer is already ignoring it,
- * and a pending IPC reply that never settles is a leak.
+ * in under a second. The address bar asks one question at a time
+ * (shell-ui lib/use-address-intent.ts), but that is one asker's manners, not
+ * a lock: a window can hold two bars, and questions that overlap finish out
+ * of order — an answer to "change th" that lands after the answer to
+ * "change theme color" would reorder the list under the person's hands with
+ * an opinion about words they have already finished typing. So the ranker
+ * keeps exactly one AbortController per asking `WebContents`: a new question
+ * aborts the one before it, and the superseded call answers null AT ONCE
+ * rather than waiting for the gateway to notice — the renderer is already
+ * ignoring it, and a pending IPC reply that never settles is a leak.
  *
  * The three cheap refusals come first, before anything is spent: a request
  * not worth asking about (`sanitizeAddressIntentRequest`), the person's own
@@ -112,12 +113,14 @@ export interface ScriptedIntent {
   intent: "web_search" | "ai_prompt" | "open_page" | "browser_command";
   /** The label of the candidate to choose, as the row is titled; absent means "none". */
   target?: string;
+  /** How long the answer takes: a spec that tests what the bar shows WHILE it waits needs a wait. */
+  delayMs?: number;
 }
 
 /**
  * A stand-in for the intent model under Playwright, like the scripted
  * extractor and the offline embedder: the e2e suite dials no gateway, and a
- * test of the ADDRESS BAR — the debounce, the reorder, what ↵ does — needs
+ * test of the ADDRESS BAR — the asking, the reorder, what ↵ does — needs
  * an answer it can state in advance, not a real model's opinion.
  *
  * It exists only when a spec asks for it: `PISTACHIO_E2E=1` AND a JSON
@@ -171,7 +174,9 @@ export function scriptedIntentModel(env: NodeJS.ProcessEnv = process.env): Exper
         if (!options.includes(chosen)) chosen = options[0] ?? "none";
         answers[id] = { type: "choice", choice: chosen, probabilities: spread(options, chosen) };
       }
-      return Promise.resolve({ answers, warnings: [] });
+      const result = { answers, warnings: [] };
+      const delayMs = scripted.delayMs ?? 0;
+      return delayMs > 0 ? new Promise((resolve) => setTimeout(() => resolve(result), delayMs)) : Promise.resolve(result);
     },
   };
 }

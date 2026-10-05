@@ -71,6 +71,13 @@ describe("ArtifactStore", () => {
     expect(store.all().map((artifact) => artifact.id)).toEqual([first.id, second.id]);
   });
 
+  it("lists for the Library at this Mac's own copy, even with an account's web origin", () => {
+    const directory = scratch();
+    const store = new ArtifactStore(directory, { webUrl: () => "https://pistachio.run" });
+    const created = feed(store);
+    expect(store.listing()).toEqual([{ ...created, url: `pistachio://artifact/${created.id}` }]);
+  });
+
   it("refuses an unknown id, an empty page, and a blank title", () => {
     const { store } = open();
     expect(() => store.update("aaaabbbbcccc", { html: DOC, builtWith: "m" }, AGENT)).toThrow(/no artifact/);

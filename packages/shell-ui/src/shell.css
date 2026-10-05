@@ -2236,7 +2236,11 @@
 }
 
 /* A small monochrome turbulence layer gives the gradient the paper/acrylic
-   grain called texture. It is visual only and never takes the pointer. */
+   grain called texture. It is visual only and never takes the pointer. (The
+   desk's notch view lays the same grain over the ground it paints.) */
+:root {
+  --theme-grain-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.72'/%3E%3C/svg%3E");
+}
 body:not([data-chrome-view])::after {
   content: "";
   position: fixed;
@@ -2244,7 +2248,7 @@ body:not([data-chrome-view])::after {
   inset: 0;
   pointer-events: none;
   opacity: var(--theme-texture-opacity);
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.72'/%3E%3C/svg%3E");
+  background-image: var(--theme-grain-image);
   background-size: 180px 180px;
   mix-blend-mode: soft-light;
 }
@@ -4453,80 +4457,6 @@ body:not([data-chrome-view])::after {
   font-variant-numeric: tabular-nums;
 }
 
-/* Every page a turn read, as cards under its reply. */
-.chat-sources {
-  display: grid;
-  gap: 8px;
-}
-.chat-sources-label {
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: 500;
-  color: var(--color-gray-700);
-}
-.chat-sources-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.chat-source {
-  display: grid;
-  gap: 4px;
-  width: 200px;
-  max-width: 100%;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: var(--color-background-200);
-  box-shadow: var(--shadow-border);
-  text-decoration: none;
-  color: var(--color-gray-1000);
-  cursor: pointer;
-  transition:
-    background-color 120ms ease,
-    box-shadow 120ms ease,
-    translate 120ms ease;
-}
-.chat-source:hover {
-  background: var(--color-background-100);
-  box-shadow: var(--shadow-small);
-  translate: 0 -1px;
-}
-.chat-source:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--color-ring);
-}
-.chat-source-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-size: 11.5px;
-  line-height: 16px;
-  color: var(--color-gray-700);
-}
-.chat-source-host {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-source-index {
-  font-variant-numeric: tabular-nums;
-}
-.chat-source-title {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  font-size: 12.5px;
-  line-height: 17px;
-  font-weight: 500;
-}
-
 /* What the model thought: a header that shimmers while it thinks, over a
    two-line ticker of the latest reasoning; folded to "Thought for 4s"
    once the reply begins, opening to the whole of it on a click. */
@@ -4771,36 +4701,51 @@ body:not([data-chrome-view])::after {
     border-radius 250ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 /* The idle notch over a live page (NotchApp, main's "notch" view): the whole view is the notch — its face with
-   its shoulders, and the flares at its foot's ends — painted in the shell's ground, since over a page there is no
-   ground to cut down to. */
+   its shoulders, and the flares at its foot's ends, cut to the notch's outline (NotchApp's clip-path) — painted
+   in the shell's ground, since over a page there is no ground to cut down to. The ground as the shell paints it
+   around the desk's foot: the desk surface's background-200 (glass off), or the window's glass under the
+   chrome's tint and the theme's gradient (glass on); its grain over either. Gradient and grain are laid over the
+   shell's ground box (--desk-notch-ground-*, from this view's corner), so they run on from the gutter around it. */
 body[data-chrome-view="notch"] {
   background: transparent;
 }
 .desk-notch-view {
-  --desk-notch-fill: var(--color-background-200);
   position: fixed;
   inset: 0;
+  background-color: var(--color-background-200);
 }
 :root[data-desktop-glass="on"] .desk-notch-view {
-  /* The window's glass is not under a page: as near as its tint and gradient come. */
-  --desk-notch-fill: color-mix(in srgb, var(--color-background-200) 96%, var(--color-gray-500));
+  /* The window's glass itself is not under a page: a stand-in for it, the chrome's tint and the theme's gradient
+     over it, as over the glass. The stand-in is AppKit's under-window material as measured behind the gutter (it
+     follows what lies behind the window: in light, the gutter read 202 over black and 219 over white, so a
+     neutral grey a little past the dark end; in dark, the theme's own recessed ground already reads as it). */
+  background-color: oklch(0.862 0 0);
+  background-image:
+    var(--theme-glass-gradient),
+    linear-gradient(
+      color-mix(in srgb, var(--color-background-200) var(--theme-glass-tint-opacity-percent), transparent),
+      color-mix(in srgb, var(--color-background-200) var(--theme-glass-tint-opacity-percent), transparent)
+    );
+  background-position: var(--desk-notch-ground-x) var(--desk-notch-ground-y);
+  background-size: var(--desk-notch-ground-w) var(--desk-notch-ground-h);
+  background-repeat: no-repeat;
 }
-.desk-notch-view::before,
+:root[data-desktop-glass="on"][data-color-scheme="dark"] .desk-notch-view {
+  background-color: color-mix(in srgb, var(--color-background-200) 96%, var(--color-gray-500));
+}
 .desk-notch-view::after {
   content: "";
   position: absolute;
-  bottom: 0;
-  width: var(--desk-notch-flare);
-  height: var(--desk-notch-flare);
+  inset: 0;
   pointer-events: none;
+  opacity: var(--theme-texture-opacity);
+  background-image: var(--theme-grain-image);
+  background-position: var(--desk-notch-ground-x) var(--desk-notch-ground-y);
+  background-size: 180px 180px;
+  mix-blend-mode: soft-light;
 }
-.desk-notch-view::before {
-  left: 0;
-  background: radial-gradient(circle at 0 0, transparent calc(var(--desk-notch-flare) - 0.5px), var(--desk-notch-fill) var(--desk-notch-flare));
-}
-.desk-notch-view::after {
-  right: 0;
-  background: radial-gradient(circle at 100% 0, transparent calc(var(--desk-notch-flare) - 0.5px), var(--desk-notch-fill) var(--desk-notch-flare));
+:root[data-texture="off"] .desk-notch-view::after {
+  display: none;
 }
 .desk-notch-view-face {
   position: absolute;
@@ -4811,7 +4756,7 @@ body[data-chrome-view="notch"] {
   padding: 0;
   border: 0;
   border-radius: var(--desk-notch-radius) var(--desk-notch-radius) 0 0;
-  background: var(--desk-notch-fill);
+  background: transparent;
   color: inherit;
   cursor: pointer;
   outline: none;
@@ -6282,6 +6227,19 @@ body[data-chrome-view="pip"] {
   user-select: none;
   -webkit-user-select: none;
 }
+/* The whole view: the picture, and the clear ring its edges stand on (PipApp's EDGES). */
+.desk-pip {
+  position: fixed;
+  inset: 0;
+}
+.desk-pip-edges {
+  position: fixed;
+  pointer-events: none;
+}
+.desk-pip-edge {
+  position: absolute;
+  pointer-events: auto;
+}
 .desk-pip-view > * {
   opacity: 0;
   pointer-events: none;
@@ -6497,4 +6455,65 @@ body[data-chrome-view="pip"] {
   .rail-media-card {
     transition: none;
   }
+}
+
+/* Sliding tabs (transitions.dev "Tabs sliding"): the Library's view switcher
+   (components/library/LibraryPage.tsx). One pill under the tabs slides to
+   the chosen one; JS writes its offset and width, CSS owns the tween. The
+   colours are the theme's, so the pill reads in both schemes. */
+:root {
+  --tabs-dur: 250ms;
+  --tabs-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --tabs-text-muted: var(--color-gray-900);
+  --tabs-text-active: var(--color-gray-1000);
+  --tabs-bar-bg: var(--color-gray-100);
+  --tabs-pill-bg: var(--color-background-100);
+}
+:root[data-color-scheme="dark"] {
+  --tabs-pill-bg: var(--color-gray-400);
+}
+.t-tabs {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 48px;
+  background: var(--tabs-bar-bg);
+}
+.t-tab {
+  position: relative;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  height: 30px;
+  padding: 4px 12px;
+  color: var(--tabs-text-muted);
+  cursor: pointer;
+  border-radius: 48px;
+  z-index: 1;
+  transition: color var(--tabs-dur) var(--tabs-ease);
+}
+.t-tab:not([aria-selected="true"]):hover,
+.t-tab[aria-selected="true"] {
+  color: var(--tabs-text-active);
+}
+.t-tabs-pill {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  height: 30px;
+  width: 0;
+  background: var(--tabs-pill-bg);
+  border-radius: 48px;
+  transform: translateX(0);
+  transition:
+    transform var(--tabs-dur) var(--tabs-ease),
+    width     var(--tabs-dur) var(--tabs-ease);
+  will-change: transform, width;
+  z-index: 0;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .t-tabs-pill, .t-tab { transition: none !important; }
 }

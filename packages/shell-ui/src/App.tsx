@@ -6,6 +6,8 @@ import { ChromeLayoutRoot } from "./ChromeLayoutRoot";
 import { NoticeHost } from "./components/NoticeHost";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { PistachioMark } from "./components/PistachioMark";
+import { useDeskStore } from "./lib/desk/store";
+import { updatePromptWaiting } from "./lib/update-prompt";
 import { useAppStore } from "./store";
 
 const DownloadsList = lazy(() => import("./components/DownloadsPopover").then((m) => ({ default: m.DownloadsPopover })));
@@ -84,6 +86,24 @@ export function App() {
     const state = useAppStore.getState();
     if (paused && state.settings.approvals.focusConsoleOnPause) state.setConsoleOpen(true);
   }, [paused]);
+
+  // A newer Pistachio nobody has put off is offered over the page, as soon
+  // as the screen is free (lib/update-prompt.ts).
+  const deskUp = useDeskStore((desk) => desk.opening !== null || desk.groupId !== null);
+  const updateWaiting = useAppStore(
+    (state) =>
+      state.snapshot !== null &&
+      updatePromptWaiting({
+        update: state.update,
+        overlay: state.overlay,
+        onboardingOpen: state.onboardingOpen,
+        glanceOpen: state.glance !== null,
+        deskUp,
+      }),
+  );
+  useEffect(() => {
+    if (updateWaiting) useAppStore.getState().openUpdatePrompt();
+  }, [updateWaiting]);
 
   return (
     <ShellHostProvider>

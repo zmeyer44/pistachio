@@ -40,7 +40,6 @@ import { Button } from "../ui/button";
 import { MessageText } from "../MessageText";
 import { Markdown } from "./Markdown";
 import { ReasoningBlock } from "./ReasoningBlock";
-import { SourcesRow } from "./Sources";
 
 /**
  * The pieces a conversation is drawn from, shared by the sidebar console
@@ -131,7 +130,7 @@ export function MessageAttachments({
  * The assistant's reply runs the full width: the header already carries
  * the mark, and the user's bubble on the right tells the two voices apart.
  * Its Markdown is drawn (chat/Markdown.tsx); what the model thought first
- * folds above it, the pages the turn read line up under it as sources, and
+ * folds above it, the pages the turn read are cited inline in its text, and
  * its footer holds what a person does with a reply — hear it, copy it, ask
  * for another. The person's own bubbles carry none of that.
  */
@@ -215,7 +214,6 @@ export const MessageRow = memo(function MessageRow({
           <OutputCards outputs={outputs} />
         </div>
       )}
-      {sources.length === 0 ? null : <SourcesRow sources={sources} className={page ? "mt-1" : undefined} />}
       {message.content === "" ? null : <MessageActions text={message.content} canRetry={canRetry} />}
     </div>
   );

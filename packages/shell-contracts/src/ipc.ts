@@ -1,3 +1,4 @@
+import type { ArtifactListing } from "./artifacts.js";
 import type { NoteRequest, NoteResponse, NoteSnapshot } from "./notes.js";
 import type { ReportRequest, ReportResponse } from "./reports.js";
 import type { WatchtowerRequest, WatchtowerResponse } from "./watchtower.js";
@@ -82,7 +83,7 @@ import type {
   FindState,
 } from "./browser-controls.js";
 import type { SidebarCommand, SidebarState } from "./sidebar.js";
-import type { UpdateState } from "./updates.js";
+import type { UpdateSnooze, UpdateState } from "./updates.js";
 import type {
   ForkSpaceRequest,
   ForkSpaceResult,
@@ -971,6 +972,9 @@ export interface ShellApi {
   openBookmarksPage(bookmarkId?: string, entityId?: number): void;
   /** Read or manage the active Space's desktop-local browsing archive. */
   watchtower(request: WatchtowerRequest): Promise<WatchtowerResponse>;
+  // ── Artifacts (@pistachio/shell-contracts/artifacts) ─────────────────
+  /** The pages the agent built for the person, the most recently updated first. */
+  getArtifacts(): Promise<ArtifactListing[]>;
   /** Wipe the active Space's site data (cookies, storage, cache). */
   clearBrowsingData(): Promise<void>;
   /**
@@ -1137,6 +1141,13 @@ export interface NativeSurfaceApi {
    * A tab with no page to capture (asleep, shell-drawn, crashed) is left out.
    */
   captureTabStills(tabIds: string[], width: number): Promise<PaneStill[]>;
+  /**
+   * A capture of a desk window's page for the shell to draw live where its
+   * still is (a covered window playing a video): a tab media source id for
+   * getUserMedia, granted to this shell once; null when the tab is not on
+   * the desk or has no page.
+   */
+  deskLiveSource(tabId: string): Promise<string | null>;
   /** Make this tab the active one and give its page the keyboard, if its view is on screen. */
   focusTab(tabId: string): void;
   /** The grab key was held as a desk page was pressed: the move is the shell's from here. */
@@ -1287,6 +1298,8 @@ export interface NativeSurfaceApi {
   onUpdateState(listener: (state: UpdateState) => void): () => void;
   /** Quit and relaunch into a downloaded update. */
   installUpdate(): void;
+  /** Put the update dialog off: for a day, or for the rest of this release. */
+  snoozeUpdate(choice: UpdateSnooze): void;
   // ── First-run onboarding (@pistachio/shell-contracts/onboarding) ───────────────────────
   /** The browsers on this Mac and their profiles, for the import step. */
   detectBrowsers(): Promise<InstalledBrowser[]>;
@@ -1336,6 +1349,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   setOverlay: "Hides and restores the native tab views under a shell overlay.",
   setDesk: "Arms main's hook on the desk windows' native page views for the grab key.",
   captureTabStills: "Captures native tab views, shown or hidden, for the desk's drawn windows.",
+  deskLiveSource: "Hands the shell a capture of a native tab view, granted by main for that view's session.",
   focusTab: "Hands the keyboard to one native tab view among the desk's several.",
   onDeskGrab: "Fires from main's mouse hook on a native page view.",
   onDeskShift: "Fires from main's relay of every view's keys, native page views included.",
@@ -1397,6 +1411,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   onNoticeEvent: "Receives the native notice view's clicks.",
   onUpdateState: "Electron auto-update progress; W12 declares updates unsupported.",
   installUpdate: "Quits and relaunches this installed Electron application.",
+  snoozeUpdate: "Puts off the Electron auto-update dialog; W12 declares updates unsupported.",
   detectBrowsers: "Reads the browser profiles installed on this Mac (W12).",
   importBrowserProfiles: "Imports sessions from local browsers on this Mac (W12).",
   requestMicrophone: "Asks the OS for the microphone through a native permission dialog.",
@@ -1499,6 +1514,7 @@ export const IPC = {
   overlaySet: "pistachio:overlay-set",
   deskSet: "pistachio:desk-set",
   deskStillsCapture: "pistachio:desk-stills-capture",
+  deskLiveSource: "pistachio:desk-live-source",
   deskFocus: "pistachio:desk-focus",
   deskGrab: "pistachio:desk-grab",
   deskShift: "pistachio:desk-shift",
@@ -1604,6 +1620,7 @@ export const IPC = {
   watchtower: "pistachio:watchtower",
   shields: "pistachio:shields",
   bookmarksGet: "pistachio:bookmarks-get",
+  artifactsGet: "pistachio:artifacts-get",
   bookmarksChanged: "pistachio:bookmarks-changed",
   bookmarkTab: "pistachio:bookmark-tab",
   bookmarkAdd: "pistachio:bookmark-add",
@@ -1627,6 +1644,7 @@ export const IPC = {
   updateCheck: "pistachio:update-check",
   updateDownload: "pistachio:update-download",
   updateInstall: "pistachio:update-install",
+  updateSnooze: "pistachio:update-snooze",
   browsersDetect: "pistachio:browsers-detect",
   browserImport: "pistachio:browser-import",
   microphoneRequest: "pistachio:microphone-request",
@@ -1825,6 +1843,7 @@ export const SHELL_METHOD_NAMES = allMethods([  "getSnapshot",
   "getBookmarkToast",
   "openBookmarksPage",
   "watchtower",
+  "getArtifacts",
   "clearBrowsingData",
   "shields",
   "getAppInfo",

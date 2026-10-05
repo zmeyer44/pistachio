@@ -125,6 +125,7 @@ import {
   type WorkspaceSyncAction,
   type WorkspaceSyncStatus,
 } from "@pistachio/shell-contracts/ipc";
+import type { ArtifactListing } from "@pistachio/shell-contracts/artifacts";
 import type { NoteResponse, NoteSnapshot } from "@pistachio/shell-contracts/notes";
 import type { ReportResponse } from "@pistachio/shell-contracts/reports";
 
@@ -282,6 +283,10 @@ const api: PistachioApi = {
   setDesk: (state: DeskState | null) => ipcRenderer.send(IPC.deskSet, state),
   captureTabStills: (tabIds: string[], width: number) =>
     ipcRenderer.invoke(IPC.deskStillsCapture, tabIds, width) as Promise<PaneStill[]>,
+  deskLiveSource: async (tabId: string) => {
+    const id: unknown = await ipcRenderer.invoke(IPC.deskLiveSource, tabId);
+    return typeof id === "string" ? id : null;
+  },
   focusTab: (tabId: string) => ipcRenderer.send(IPC.deskFocus, tabId),
   judgeDeskLayout: (request) => ipcRenderer.invoke(IPC.deskLayoutJudge, request) as Promise<DeskLayoutEvaluation | null>,
   onDeskGrab(listener) {
@@ -667,6 +672,7 @@ const api: PistachioApi = {
   openBookmarksPage: (bookmarkId?: string, entityId?: number) =>
     ipcRenderer.send(IPC.bookmarksOpen, bookmarkId, entityId),
   watchtower: (request) => ipcRenderer.invoke(IPC.watchtower, request) as Promise<WatchtowerResponse>,
+  getArtifacts: () => ipcRenderer.invoke(IPC.artifactsGet) as Promise<ArtifactListing[]>,
   shields: (request) => ipcRenderer.invoke(IPC.shields, request) as Promise<ShieldsStatus>,
   clearBrowsingData: () =>
     ipcRenderer.invoke(IPC.browsingDataClear) as Promise<void>,
@@ -686,6 +692,7 @@ const api: PistachioApi = {
   downloadUpdate: () =>
     ipcRenderer.invoke(IPC.updateDownload) as Promise<UpdateState>,
   installUpdate: () => ipcRenderer.send(IPC.updateInstall),
+  snoozeUpdate: (choice) => ipcRenderer.send(IPC.updateSnooze, choice),
   detectBrowsers: () =>
     ipcRenderer.invoke(IPC.browsersDetect) as Promise<InstalledBrowser[]>,
   importBrowserProfiles: (requests: BrowserImportRequest[]) =>

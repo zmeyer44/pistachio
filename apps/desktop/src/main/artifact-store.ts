@@ -20,6 +20,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import {
   ARTIFACT_HOST,
+  artifactPageUrl,
   artifactUrl,
   isArtifactId,
   MAX_ARTIFACT_BRIEF,
@@ -29,6 +30,7 @@ import {
   sanitizeArtifactDocument,
   type Artifact,
   type ArtifactDocument,
+  type ArtifactListing,
   type ArtifactSource,
 } from "@pistachio/shell-contracts/artifacts";
 import type { ArtifactRecord } from "@pistachio/sync-protocol";
@@ -114,7 +116,7 @@ export class ArtifactStore {
    */
   #link(id: string): string {
     const web = this.#webUrl();
-    return web === null || web === "" ? `pistachio://${ARTIFACT_HOST}/${id}` : artifactUrl(id, web);
+    return web === null || web === "" ? artifactPageUrl(id) : artifactUrl(id, web);
   }
 
   /** Every artifact, the most recently touched first. */
@@ -122,6 +124,14 @@ export class ArtifactStore {
     return [...this.#artifacts]
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((artifact) => structuredClone(artifact));
+  }
+
+  /**
+   * What the shell's Library lists: every artifact at this Mac's own copy,
+   * which opens with no account and no network, unlike the web address.
+   */
+  listing(): ArtifactListing[] {
+    return this.all().map((artifact) => ({ ...artifact, url: artifactPageUrl(artifact.id) }));
   }
 
   get(id: string): Artifact | null {

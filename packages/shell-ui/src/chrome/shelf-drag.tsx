@@ -62,6 +62,8 @@ export interface ShelfItem {
   tabs: ChromeTab[];
   /** An organization preset: opened, never moved. */
   managed?: boolean;
+  /** Carried out over a desk, this tab's window (as a tab's row is): on the rail, a group of one tab's header. */
+  deskTab?: ChromeTab;
 }
 
 export type ShelfDrop = ListDrop | { zone: "favorites"; index: number };
@@ -376,7 +378,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
     // On a desk the sidebar is its dock: a tab's row carried out over it is
     // its window (`overDesk`), and nothing splits.
     const onDesk = deskEngine() !== null;
-    const deskTab = onDesk && item.kind === "tab" && item.tabs.length === 1 ? item.tabs[0] : undefined;
+    const deskTab = !onDesk ? undefined : (item.deskTab ?? (item.kind === "tab" && item.tabs.length === 1 ? item.tabs[0] : undefined));
     const canSplit = !onDesk && item.kind !== "group" && item.tabs.length === 1 && (useAppStore.getState().snapshot?.visibleTabIds.length ?? 0) < 4;
     const origin = originDrop(item, listRef.current, gridRef.current);
     // A tile moves freely; a row stays in its slot horizontally unless it
@@ -454,7 +456,12 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       if (ev.clientX < box.left || ev.clientX > box.right) return 0;
       if (ev.clientY < box.top + AUTO_SCROLL_EDGE) return -Math.min(AUTO_SCROLL_STEP, Math.max(0, scroller.scrollTop));
       if (ev.clientY > box.bottom - AUTO_SCROLL_EDGE) {
-        return Math.min(AUTO_SCROLL_STEP, Math.max(0, scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop));
+        // As far as the rows go, not scrollHeight: the dragged row's transform
+        // counts toward the scroller's overflow, so a row held at the bottom
+        // edge would make room below itself every frame and scroll the list
+        // away into the space it made.
+        const extent = listRef.current?.offsetHeight ?? scroller.scrollHeight;
+        return Math.min(AUTO_SCROLL_STEP, Math.max(0, extent - scroller.clientHeight - scroller.scrollTop));
       }
       return 0;
     };

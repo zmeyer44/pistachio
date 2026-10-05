@@ -46,6 +46,12 @@ export interface LaunchOptions {
   userData?: string;
   /** The profile folder's name prefix, which shows up in a kept run's temp folder. */
   name?: string;
+  /**
+   * Playwright's prefers-color-scheme emulation, laid on every page it attaches
+   * to (light unless said). `null` lifts it: the pages answer to the app's
+   * scheme (nativeTheme) and the OS, as they do outside a spec.
+   */
+  colorScheme?: null | "light" | "dark";
 }
 
 export interface LaunchedApp {
@@ -72,6 +78,7 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
     cwd: process.cwd(),
     executablePath: electronExecutable(),
     env: { ...process.env, PISTACHIO_E2E: "1", PISTACHIO_USER_DATA: userData, ...options.env },
+    ...(options.colorScheme === undefined ? {} : { colorScheme: options.colorScheme }),
   });
   return { app, userData };
 }

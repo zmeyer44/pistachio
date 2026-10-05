@@ -101,6 +101,7 @@ import { spacesFileHasIdentitySpace } from "./egress/egress-state";
 import { featureHandlers, installFeatureHandlers } from "./feature-handlers";
 import { WorkspaceRecords } from "./sync/records";
 import { DeskBridge } from "./desk-bridge";
+import { DeskPipPress } from "./desk-pip-press";
 import { DeskConversationStore } from "./desk-conversations";
 import { GroupContextStore } from "./group-context-store";
 import { macDocumentConverter } from "./document-convert";
@@ -213,9 +214,10 @@ import {
   type NoteSource,
 } from "@pistachio/shell-contracts/notes";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
+import { isUpdateSnooze } from "@pistachio/shell-contracts/updates";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
-import { isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
+import { deskPipSlot, isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
 import {
   isDeskConversationCommand,
   isGroupContextCommand,
@@ -381,14 +383,23 @@ function applyDeskShelf(): void {
 /** The desk's floating player on the rail: its controls over the media preview's picture (the "pip" view). */
 let pipLayer: ChromeOverlayView | null = null;
 let deskPip: DeskPipFrame | null = null;
+/** A press on its picture: the view keeps the pointer while it is held, so its moves are relayed from here (desk-pip-press.ts). */
+const deskPipPress = new DeskPipPress(
+  () => pipLayer?.bounds() ?? null,
+  (sample) => {
+    if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.dragSample, sample);
+  },
+);
 
 function applyDeskPip(): void {
   const layer = pipLayer;
   if (layer === null) return;
-  layer.setSlot(deskPip?.bounds ?? null);
+  // Its edges straddle the picture's border: the view stands out from the picture all round.
+  layer.setSlot(deskPip === null ? null : deskPipSlot(deskPip.bounds));
   layer.setVeiled(shellState.veiled);
   layer.setShown(deskPip !== null);
-  if (deskPip !== null) raiseDeskLayer(layer);
+  // Not while a press on it moves it: re-adding a view takes it out, from under the press it holds.
+  if (deskPip !== null && !deskPipPress.grabbed) raiseDeskLayer(layer);
   if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskPipChanged, deskPip);
 }
 
@@ -2082,6 +2093,8 @@ let notifications: NotificationRouter | null = null;
 async function createWindow(): Promise<void> {
   const store = requireSettings();
   const initialSettings = store.get();
+  // Before the window: its first frame is already on the glass of the chosen scheme.
+  applyColorScheme(initialSettings);
   const initialGlass = desktopGlassEnabled(initialSettings);
   const windowIcon =
     process.platform === "darwin" ? null : desktopIconPath(initialSettings.appearance.desktopIcon);
@@ -2157,6 +2170,7 @@ async function createWindow(): Promise<void> {
     preload,
   });
   pipLayer = pipView;
+  pipView.webContents.on("before-mouse-event", (_event, mouse) => deskPipPress.mouse(mouse));
   const notices = new NoticeLayer(noticeView, window, () => {
     if (browser?.focusActivePage() === true) return;
     if (!window.isDestroyed()) window.webContents.focus();
@@ -2188,6 +2202,7 @@ async function createWindow(): Promise<void> {
     const wasOpen = tabSwitcher.open;
     tabSwitcher.reset();
     if (wasOpen) publishTabSwitcherInput({ type: "cancel" });
+    deskPipPress.cancel();
   });
   sidebarWatch = new SidebarWatch(window);
   paneToolbarWatch = new PaneToolbarWatch(window);
@@ -2382,9 +2397,9 @@ async function createWindow(): Promise<void> {
   const offSettings = store.onChange((next) => {
     if (window.isDestroyed()) return;
     window.webContents.send(IPC.settingsChanged, next);
-    dragView.webContents.send(IPC.settingsChanged, next);
-    findView.webContents.send(IPC.settingsChanged, next);
-    bookmarkView.webContents.send(IPC.settingsChanged, next);
+    // Every chrome view runs the theme (ThemeRuntime): each hears the appearance as it changes.
+    for (const view of [dragView, findView, bookmarkView, noticeView, notchView, shelfView, pipView])
+      if (!view.webContents.isDestroyed()) view.webContents.send(IPC.settingsChanged, next);
     const nextPaneMaterialSignature = nativePaneMaterialSignature(next);
     if (nextPaneMaterialSignature !== paneMaterialSignature) {
       paneMaterialSignature = nextPaneMaterialSignature;
@@ -2393,6 +2408,7 @@ async function createWindow(): Promise<void> {
     const nextWindowMaterialSignature = nativeWindowMaterialSignature(next);
     if (nextWindowMaterialSignature !== windowMaterialSignature) {
       windowMaterialSignature = nextWindowMaterialSignature;
+      applyColorScheme(next);
       applyWindowMaterial(window, next);
     }
     const nextShortcutsSignature = JSON.stringify(next.shortcuts);
@@ -2526,6 +2542,19 @@ function nativePaneMaterialSignature(settings: DesktopSettings): string {
 
 function nativeWindowMaterialSignature(settings: DesktopSettings): string {
   return `${settings.appearance.scheme}:${settings.appearance.desktopGlass ? "glass" : "solid"}`;
+}
+
+/**
+ * The app's colour scheme, told to the OS. The window's glass (AppKit's
+ * material under the chrome) takes the window's appearance, which follows the
+ * system unless told: a dark app on a light Mac sat on light glass, and the
+ * desk's notch over a page, painted for dark, stood out from it. Told, the
+ * native window, its menus and dialogs, and every page's
+ * prefers-color-scheme — the shell's and the tabs' — answer to the scheme
+ * chosen in Settings; "system" leaves them all with the OS.
+ */
+function applyColorScheme(settings: DesktopSettings): void {
+  if (nativeTheme.themeSource !== settings.appearance.scheme) nativeTheme.themeSource = settings.appearance.scheme;
 }
 
 function applyWindowMaterial(
@@ -3108,6 +3137,10 @@ function installIpc(): void {
       typeof width === "number" ? width : 0,
     );
   });
+  ipcMain.handle(IPC.deskLiveSource, (event, tabId: unknown) => {
+    if (!isShell(event.sender) || typeof tabId !== "string") return null;
+    return requireBrowser().deskLiveSource(tabId, event.sender);
+  });
   ipcMain.on(IPC.deskFocus, (event, tabId: unknown) => {
     if (isShell(event.sender) && typeof tabId === "string") void requireBrowser().focusTab(tabId);
   });
@@ -3426,6 +3459,12 @@ function installIpc(): void {
       );
     },
   );
+  // ── Artifacts: the pages the agent built (@pistachio/shell-contracts/artifacts) ─
+  // What they hold is the person's own; only the shell lists them.
+  ipcMain.handle(IPC.artifactsGet, (event) => {
+    if (!isShell(event.sender)) throw new Error("The artifact library is shell-only.");
+    return artifacts?.listing() ?? [];
+  });
   // ── Bookmarks: the store, the capture, and the card (@pistachio/shell-contracts/bookmarks) ─
   ipcMain.handle(IPC.bookmarksGet, () => requireBookmarks().snapshot());
   ipcMain.handle(IPC.bookmarkTab, (_event, tabId: unknown) =>
@@ -3510,6 +3549,7 @@ function installIpc(): void {
   ipcMain.on(IPC.deskPipInput, (event, input: unknown) => {
     if (chromeViewOf(event.sender) !== "pip" || !isDeskPipInput(input) || (input.type === "control" && !isMediaControl(input.control))) return;
     if (shellWindow === null || shellWindow.isDestroyed()) return;
+    if (input.type === "grab" && !deskPipPress.grab(input)) return;
     shellWindow.webContents.send(IPC.deskPipInput, input);
   });
   ipcMain.on(IPC.noticeEvent, (event, noticeEvent: unknown) => {
@@ -3897,6 +3937,9 @@ function installIpc(): void {
   ipcMain.on(IPC.updateInstall, (event) => {
     if (isShell(event.sender)) requireUpdates().install();
   });
+  ipcMain.on(IPC.updateSnooze, (event, choice: unknown) => {
+    if (isShell(event.sender) && isUpdateSnooze(choice)) requireUpdates().snooze(choice);
+  });
   // ── First-run onboarding (@pistachio/shell-contracts/onboarding) ──────────────────────
   ipcMain.handle(IPC.browsersDetect, (event) =>
     isShell(event.sender) ? detectBrowsers() : [],
@@ -4144,6 +4187,7 @@ function setDragCapture(cursor: DragCursor | null): void {
   layer.webContents.send(IPC.tabDragVisualChanged, null);
   // A desk page grabbed with the grab key may never have heard its release — the layer took it.
   browser?.releaseDeskGrab();
+  deskPipPress.end();
   // The pointerdown that ended over the layer left the keyboard there; a
   // A hidden utility view must never keep keyboard focus.
   if (layer.webContents.isFocused()) shellWindow.webContents.focus();
@@ -4738,13 +4782,16 @@ app.whenReady().then(async () => {
     },
     focusUpdates: async () => {
       // Checks outlive the last window on macOS; a click on the notification
-      // then needs a window before it has anywhere to open About. createWindow
-      // resolves once the shell has loaded, so the command has a listener.
+      // then needs a window before there is anywhere to show the dialog.
+      // createWindow resolves once the shell has loaded, so the command has a
+      // listener. Asked for, the update's controls come up whatever the
+      // screen: the shell's own offer waits for a free one, and an open
+      // window may never be (shell-host's showUpdate).
       if (shellWindow === null || shellWindow.isDestroyed()) await createWindow();
       if (shellWindow === null || shellWindow.isDestroyed()) return;
       shellWindow.show();
       shellWindow.focus();
-      sendShellCommand({ type: "openSettings", section: "about" });
+      sendShellCommand({ type: "showUpdate" });
     },
   });
   installMenu();

@@ -6,23 +6,35 @@
  * person asks and the install when they choose to restart, so a browser full
  * of signed-in tabs is never yanked out from under them. A downloaded update
  * is also applied on the next ordinary quit.
+ *
+ * An available update also carries whether the shell's dialog is due
+ * (`UpdatePrompt`). The person's "remind me tomorrow" and "later" are kept
+ * here, in their own file, so they hold across launches.
  */
-import { writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { app, Notification } from "electron";
+import { app, BrowserWindow, Notification } from "electron";
 // electron-updater is CommonJS; a named import fails to load under ESM.
 import electronUpdater, { type UpdateInfo } from "electron-updater";
 const { autoUpdater } = electronUpdater;
 import {
+  parseUpdateSnoozeRecord,
+  snoozeUpdate,
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_FIRST_CHECK_DELAY_MS,
+  updatePrompt,
+  type UpdateSnooze,
+  type UpdateSnoozeRecord,
   type UpdateState,
 } from "@pistachio/shell-contracts/updates";
+
+/** The person's answers to the update dialog, under userData. */
+const SNOOZE_FILE = "update-prompt.json";
 
 export interface UpdateServiceOptions {
   /** Where the current state goes whenever it changes (shell window). */
   publish(state: UpdateState): void;
-  /** Bring the person to Settings → About, where the update controls live. */
+  /** Bring the window forward, where the shell's update dialog is waiting. */
   focusUpdates(): Promise<void>;
 }
 
@@ -33,6 +45,9 @@ export class UpdateService {
   #firstCheck: NodeJS.Timeout | null = null;
   #notifiedVersion: string | null = null;
   #checkedAt: string | null = null;
+  #snooze: UpdateSnoozeRecord | null = null;
+  /** Republishes the offer when a "tomorrow" runs out, so the dialog comes back on time. */
+  #snoozeTimer: NodeJS.Timeout | null = null;
   readonly #options: UpdateServiceOptions;
 
   constructor(options: UpdateServiceOptions) {
@@ -48,6 +63,7 @@ export class UpdateService {
       return;
     }
     this.#state = { status: "idle", checkedAt: null };
+    this.#snooze = this.#readSnooze();
     if (feed !== "") {
       // electron-updater reads its provider config from a yml next to the app
       // in dev; write one into userData so a dev run needs no checked-in file.
@@ -67,12 +83,9 @@ export class UpdateService {
     });
     autoUpdater.on("update-available", (info: UpdateInfo) => {
       this.#checkedAt = new Date().toISOString();
-      this.#set({
-        status: "available",
-        version: info.version,
-        releaseDate: info.releaseDate ?? null,
-      });
-      this.#notify(info.version);
+      this.#offer(info.version, info.releaseDate ?? null);
+      // Put off is put off: no system notification while the dialog waits.
+      if (this.#state.status === "available" && this.#state.prompt.due) this.#notify(info.version);
     });
     autoUpdater.on("download-progress", (progress) => {
       const version = this.#version() ?? "";
@@ -122,6 +135,8 @@ export class UpdateService {
     this.#firstCheck = null;
     if (this.#timer !== null) clearInterval(this.#timer);
     this.#timer = null;
+    if (this.#snoozeTimer !== null) clearTimeout(this.#snoozeTimer);
+    this.#snoozeTimer = null;
   }
 
   async check(): Promise<UpdateState> {
@@ -163,6 +178,50 @@ export class UpdateService {
     autoUpdater.quitAndInstall();
   }
 
+  /** Put the dialog off for the release on offer; the sidebar pill stays. */
+  snooze(choice: UpdateSnooze): UpdateState {
+    if (this.#state.status !== "available") return this.#state;
+    this.#snooze = snoozeUpdate(this.#snooze, app.getVersion(), this.#state.version, choice, new Date());
+    this.#writeSnooze(this.#snooze);
+    this.#offer(this.#state.version, this.#state.releaseDate);
+    return this.#state;
+  }
+
+  /** Publish the release on offer with whether its dialog is due now. */
+  #offer(version: string, releaseDate: string | null): void {
+    const prompt = updatePrompt(this.#snooze, app.getVersion(), version, new Date());
+    this.#set({ status: "available", version, releaseDate, prompt });
+    if (this.#snoozeTimer !== null) clearTimeout(this.#snoozeTimer);
+    this.#snoozeTimer = null;
+    const until = prompt.due ? null : (this.#snooze?.until ?? null);
+    if (until === null) return;
+    this.#snoozeTimer = setTimeout(() => {
+      this.#snoozeTimer = null;
+      const s = this.#state;
+      if (s.status === "available") this.#offer(s.version, s.releaseDate);
+    }, Math.max(0, Date.parse(until) - Date.now()));
+    this.#snoozeTimer.unref();
+  }
+
+  #readSnooze(): UpdateSnoozeRecord | null {
+    try {
+      return parseUpdateSnoozeRecord(JSON.parse(readFileSync(join(app.getPath("userData"), SNOOZE_FILE), "utf8")));
+    } catch {
+      return null;
+    }
+  }
+
+  #writeSnooze(record: UpdateSnoozeRecord): void {
+    const path = join(app.getPath("userData"), SNOOZE_FILE);
+    try {
+      writeFileSync(`${path}.tmp`, JSON.stringify(record), { mode: 0o600 });
+      renameSync(`${path}.tmp`, path);
+    } catch (error) {
+      // The answer still holds for this run; only the next launch asks again.
+      console.error("[updates] could not save the snooze:", error instanceof Error ? error.message : error);
+    }
+  }
+
   #version(): string | null {
     const s = this.#state;
     return s.status === "available" || s.status === "downloading" || s.status === "ready"
@@ -187,9 +246,11 @@ export class UpdateService {
     if (this.#notifiedVersion === version) return;
     this.#notifiedVersion = version;
     if (process.env["PISTACHIO_E2E"] === "1" || !Notification.isSupported()) return;
+    // In front, the shell's dialog is the notice.
+    if (BrowserWindow.getFocusedWindow() !== null) return;
     const notice = new Notification({
       title: `Pistachio ${version} is available`,
-      body: "Open Settings → About to download it. Nothing changes until you choose to restart.",
+      body: "Update now or pick a time. Nothing changes until Pistachio restarts.",
       silent: true,
     });
     notice.on("click", () => void this.#options.focusUpdates());

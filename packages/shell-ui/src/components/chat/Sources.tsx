@@ -1,5 +1,4 @@
-import { memo, type MouseEvent } from "react";
-import { cn } from "../../lib/cn";
+import type { MouseEvent } from "react";
 import { sourceHost, type CitedSource } from "../../lib/chat-sources";
 import { recentFaviconUrl } from "../../lib/recents";
 import { useAppStore } from "../../store";
@@ -53,57 +52,6 @@ export function SourceChip({
       <Favicon src={favicon} seed={host} className="size-3.5 rounded-[3px] text-[8px]" />
       <span className="chat-cite-host">{host}</span>
       {index === null ? null : <span className="chat-cite-index">{index}</span>}
-    </a>
-  );
-}
-
-/**
- * Every page a turn read, under its reply: the answer's provenance at a
- * glance, and a way to each page. Cards, not chips — here there is room
- * for the title — and the whole card opens the page as a Glance.
- */
-export const SourcesRow = memo(function SourcesRow({ sources, className }: { sources: readonly CitedSource[]; className?: string }) {
-  const openLink = useAppStore((state) => state.openLink);
-  if (sources.length === 0) return null;
-  const open = (event: MouseEvent<HTMLElement>, href: string, inNewTab: boolean): void => {
-    event.preventDefault();
-    const { x, y, width, height } = event.currentTarget.getBoundingClientRect();
-    void openLink(href, { x, y, width, height }, inNewTab);
-  };
-  return (
-    <div className={cn("chat-sources", className)} data-testid="sources-row">
-      <span className="chat-sources-label">Sources</span>
-      <ul className="chat-sources-list">
-        {sources.map((source) => (
-          <li key={source.url}>
-            <SourceCard source={source} onOpen={open} />
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-});
-
-function SourceCard({ source, onOpen }: { source: CitedSource; onOpen: (event: MouseEvent<HTMLElement>, href: string, inNewTab: boolean) => void }) {
-  const favicon = useSourceFavicon(source.url);
-  return (
-    <a
-      href={source.url}
-      title={source.url}
-      draggable={false}
-      data-testid="source-card"
-      className="chat-source"
-      onClick={(event) => onOpen(event, source.url, event.metaKey || event.ctrlKey)}
-      onAuxClick={(event) => {
-        if (event.button === 1) onOpen(event, source.url, true);
-      }}
-    >
-      <span className="chat-source-head">
-        <Favicon src={favicon} seed={source.host} className="size-4 rounded-[4px]" />
-        <span className="chat-source-host">{source.host}</span>
-        <span className="chat-source-index">{source.index}</span>
-      </span>
-      <span className="chat-source-title">{source.title}</span>
     </a>
   );
 }

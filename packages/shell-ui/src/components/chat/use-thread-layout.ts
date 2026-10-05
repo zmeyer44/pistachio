@@ -11,7 +11,7 @@ export interface ThreadLayout {
   outputsAt: Map<number, AgentToolOutput[]>;
   /** What a turn made while its reply is not written yet, by turn. */
   pendingOutputs: Map<number, AgentToolOutput[]>;
-  /** The pages each turn read, under the reply that finished it. */
+  /** The pages each turn read, keyed by the reply that finished it: its citations resolve against them. */
   sourcesAt: Map<number, CitedSource[]>;
   /** The pages the turn still in progress has read: the live reply cites them. */
   pendingSources: CitedSource[];

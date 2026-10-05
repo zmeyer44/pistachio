@@ -19,9 +19,22 @@ describe("shell command: notice", () => {
   });
 });
 
+describe("shell command: toggleLibrary", () => {
+  it("crosses from main as a bare command", () => {
+    expect(isShellCommand({ type: "toggleLibrary" })).toBe(true);
+  });
+});
+
 describe("copy url notice", () => {
   it("says which form of the address was copied", () => {
     expect(copyUrlNotice("plain")).toBe("URL copied");
     expect(copyUrlNotice("markdown")).toBe("Link copied as Markdown");
+  });
+});
+
+describe("shell command: showUpdate", () => {
+  it("is the update notification's ask for the update's controls, and carries nothing", () => {
+    expect(isShellCommand({ type: "showUpdate" })).toBe(true);
+    expect(isShellCommand({ type: "showUpdates" })).toBe(false);
   });
 });

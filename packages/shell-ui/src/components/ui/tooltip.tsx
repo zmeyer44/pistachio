@@ -8,13 +8,18 @@ import { cn } from "../../lib/cn";
  * its tooltip at once. It animates on Base UI's own starting and ending
  * styles (the shell has no tw-animate-css), and the popup renders into a
  * portal.
+ *
+ * A tooltip only names its trigger, so it closes as the pointer leaves the
+ * trigger, even onto the tooltip (Base UI keeps a hovered one open). On the
+ * desk a tooltip is a cover and the page under it a still until it closes:
+ * one held open under the pointer was a patch of page nothing reached.
  */
 function TooltipProvider({ delay = 0, ...props }: TooltipPrimitive.Provider.Props) {
   return <TooltipPrimitive.Provider data-slot="tooltip-provider" delay={delay} {...props} />;
 }
 
-function Tooltip(props: TooltipPrimitive.Root.Props) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
+function Tooltip({ disableHoverablePopup = true, ...props }: TooltipPrimitive.Root.Props) {
+  return <TooltipPrimitive.Root data-slot="tooltip" disableHoverablePopup={disableHoverablePopup} {...props} />;
 }
 
 function TooltipTrigger(props: TooltipPrimitive.Trigger.Props) {

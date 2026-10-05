@@ -33,6 +33,7 @@ import {
   NotebookPen,
   Globe,
   Grid2X2,
+  LibraryBig,
   Link,
   PanelLeftClose,
   PanelLeftOpen,
@@ -85,6 +86,7 @@ export type ChromeActionId =
   | "openBookmarks"
   | "openWatchtower"
   | "openArchive"
+  | "openLibrary"
   | "tidyTabs"
   | "undoTidy"
   | "bookmarkPage"
@@ -339,6 +341,14 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
     icon: () => <Archive aria-hidden="true" />,
     active: ({ store }) => store.overlay === "archive",
     run: ({ run }) => run({ type: "openArchive" }),
+  },
+  openLibrary: {
+    id: "openLibrary",
+    label: () => "Library",
+    icon: () => <LibraryBig aria-hidden="true" />,
+    active: ({ store }) => store.overlay === "library",
+    // Toggles, as Bookmarks does: the row that opened the page closes it again.
+    run: ({ run }) => run({ type: "toggleLibrary" }),
   },
   tidyTabs: {
     id: "tidyTabs",

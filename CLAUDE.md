@@ -2,9 +2,9 @@
 
 ## Testing
 
-Test what the change touches while working, and the whole suite once before merging.
+Don't run tests after every change or feature. Run them only when necessary — when asked, when writing or fixing a test, or when a risky change can't be checked any other way — and then the narrowest run that answers the question (one spec or one unit file before `test:changed`). Run the whole suite once before merging.
 
-- **While developing:** `pnpm test:changed`. It runs the unit tests related to the change (turbo picks the affected packages, vitest the test files that import a changed file) and the desktop e2e areas the changed files belong to, plus the `@smoke` tests. The change is measured against where the branch left `main`, or against `HEAD` on `main` itself, so uncommitted work counts either way.
+- **When a change does need testing:** `pnpm test:changed`. It runs the unit tests related to the change (turbo picks the affected packages, vitest the test files that import a changed file) and the desktop e2e areas the changed files belong to, plus the `@smoke` tests. The change is measured against where the branch left `main`, or against `HEAD` on `main` itself, so uncommitted work counts either way.
   - `--dry --explain` prints the plan and which area each changed file fell into.
   - `--files a,b --dry` answers "what would changing these run?".
   - `--unit` or `--e2e` runs one half; `--base <ref>` measures against another ref.

@@ -979,3 +979,44 @@ export function dockDropAt(point: Point, drops: DockDrops, edge: number, slack =
   return point.y >= split ? "close" : "away";
 }
 
+/**
+ * The Bar's notch as it is drawn now (the engine's setNotchShape), in the
+ * stage: the Bar's box, rising from the desk's foot; the radius of its
+ * shoulders; and of the flares where its sides meet the edge.
+ */
+export interface NotchShape {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  radius: number;
+  flare: number;
+}
+
+/**
+ * The notch's outline, offset by (dx, dy): out of the desk's foot at its
+ * left flare, up its side to its shoulder, across, down and out at its right
+ * flare, and back along the foot. (Nothing of a window is left past the foot
+ * to cut a hole in: the engine's #write.) The notch view over a live page
+ * (NotchApp) is cut to the same outline.
+ */
+export function notchOutline(shape: NotchShape, foot: number, dx: number, dy: number): string {
+  const n = (value: number): string => value.toFixed(1);
+  const f = shape.flare;
+  const x0 = shape.x + dx;
+  const x1 = shape.x + shape.w + dx;
+  const top = shape.y + dy;
+  const bottom = foot + dy;
+  const r = Math.max(0, Math.min(shape.radius, shape.w / 2, bottom - f - top));
+  return [
+    `M ${n(x0 - f)} ${n(bottom)}`,
+    `A ${n(f)} ${n(f)} 0 0 0 ${n(x0)} ${n(bottom - f)}`,
+    `V ${n(top + r)}`,
+    `A ${n(r)} ${n(r)} 0 0 1 ${n(x0 + r)} ${n(top)}`,
+    `H ${n(x1 - r)}`,
+    `A ${n(r)} ${n(r)} 0 0 1 ${n(x1)} ${n(top + r)}`,
+    `V ${n(bottom - f)}`,
+    `A ${n(f)} ${n(f)} 0 0 0 ${n(x1 + f)} ${n(bottom)}`,
+    `H ${n(x0 - f)} Z`,
+  ].join(" ");
+}

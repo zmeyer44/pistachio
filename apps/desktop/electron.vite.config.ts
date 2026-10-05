@@ -67,7 +67,8 @@ export default defineConfig({
       // only meets these on the first ⌘⌥N — and answers by optimizing them
       // and reloading the whole shell mid-keystroke. Named here, they are
       // ready before the window opens. They are shell-ui's dependencies, hence
-      // the nested form.
+      // the nested form. The desk's tooltip is the same case: met on the first
+      // visit to the desk.
       include: [
         "@pistachio/shell-ui > @tiptap/core",
         "@pistachio/shell-ui > @tiptap/react",
@@ -83,6 +84,7 @@ export default defineConfig({
         "@pistachio/shell-ui > @tiptap/extension-table",
         "@pistachio/shell-ui > @tiptap/extension-drag-handle-react",
         "@pistachio/shell-ui > @floating-ui/react",
+        "@pistachio/shell-ui > @base-ui/react/tooltip",
       ],
     },
     build: {

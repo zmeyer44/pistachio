@@ -294,14 +294,32 @@ export interface DeskNotchFrame {
   /** The notch's shoulders' radius and its flares' (px). */
   radius: number;
   flare: number;
+  /**
+   * The box the shell's ground is painted over (its `.chrome-container`, in
+   * the window's coordinates): the view lays the same ground under itself,
+   * the theme's gradient sized to this box and its grain tiled from its
+   * corner, so the notch reads as the ground it rises out of.
+   */
+  ground: { x: number; y: number; width: number; height: number };
 }
 
 export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
   if (typeof value !== "object" || value === null) return false;
   const frame = value as Partial<DeskNotchFrame>;
   const bounds = frame.bounds;
+  const ground = frame.ground;
   const finite = (n: unknown): boolean => typeof n === "number" && Number.isFinite(n);
   return (
+    typeof ground === "object" &&
+    ground !== null &&
+    finite(ground.x) &&
+    finite(ground.y) &&
+    finite(ground.width) &&
+    finite(ground.height) &&
+    ground.width > 0 &&
+    ground.height > 0 &&
+    ground.width <= 16384 &&
+    ground.height <= 16384 &&
     typeof bounds === "object" &&
     bounds !== null &&
     finite(bounds.x) &&
@@ -439,8 +457,35 @@ export interface DeskPipMedia {
   canNext: boolean;
 }
 
-/** From the floating player's view: a control for what is playing, or a press on the picture (a move, should it travel). */
-export type DeskPipInput = { type: "control"; control: MediaControl } | { type: "grab"; x: number; y: number };
+/** An edge or corner of the floating player, by the compass: a press on it resizes the player. */
+export type DeskPipEdge = "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
+
+const DESK_PIP_EDGES: readonly string[] = ["n", "s", "e", "w", "nw", "ne", "sw", "se"];
+
+/**
+ * How far the pip view stands out from the picture all round: its edges and
+ * corners straddle the picture's border, mostly outside it, as a desk
+ * window's do. The ring is clear, but a view takes the pointer over its whole
+ * box, so it works over anything (a desk page included).
+ */
+export const DESK_PIP_OUTSET = 6;
+
+/** The pip view's box for the player's picture at `bounds` (the window's coordinates). */
+export function deskPipSlot(bounds: DeskPipFrame["bounds"]): DeskPipFrame["bounds"] {
+  return {
+    x: bounds.x - DESK_PIP_OUTSET,
+    y: bounds.y - DESK_PIP_OUTSET,
+    width: bounds.width + DESK_PIP_OUTSET * 2,
+    height: bounds.height + DESK_PIP_OUTSET * 2,
+  };
+}
+
+/**
+ * From the floating player's view: a control for what is playing, or a press
+ * at a point of the window — on the picture (a move, should it travel), or on
+ * one of its edges (a resize).
+ */
+export type DeskPipInput = { type: "control"; control: MediaControl } | { type: "grab"; x: number; y: number; edge?: DeskPipEdge };
 
 export function isDeskPipFrame(value: unknown): value is DeskPipFrame {
   if (typeof value !== "object" || value === null) return false;
@@ -483,7 +528,14 @@ export function isDeskPipInput(value: unknown): value is DeskPipInput {
   const input = value as Record<string, unknown>;
   const control = input["control"];
   if (input["type"] === "control") return typeof control === "object" && control !== null && typeof (control as Record<string, unknown>)["type"] === "string";
-  return input["type"] === "grab" && typeof input["x"] === "number" && Number.isFinite(input["x"]) && typeof input["y"] === "number" && Number.isFinite(input["y"]);
+  return (
+    input["type"] === "grab" &&
+    typeof input["x"] === "number" &&
+    Number.isFinite(input["x"]) &&
+    typeof input["y"] === "number" &&
+    Number.isFinite(input["y"]) &&
+    (input["edge"] === undefined || (typeof input["edge"] === "string" && DESK_PIP_EDGES.includes(input["edge"])))
+  );
 }
 
 /** The pointer onto the notch view and off it, and a press on it: the Bar's, as if on the Bar itself. */

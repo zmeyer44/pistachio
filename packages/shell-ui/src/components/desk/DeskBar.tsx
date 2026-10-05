@@ -340,6 +340,7 @@ export const DeskBar = memo(function DeskBar({
     }
     const send = (): void => {
       const box = el.getBoundingClientRect();
+      const ground = el.closest(".chrome-container")?.getBoundingClientRect() ?? { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
       api.setDeskNotch({
         bounds: { x: box.left - NOTCH_FLARE, y: box.top, width: box.width + NOTCH_FLARE * 2, height: box.height },
         label: `Ask about ${group.title}`,
@@ -347,6 +348,7 @@ export const DeskBar = memo(function DeskBar({
         color: group.color,
         radius: Number.parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0,
         flare: NOTCH_FLARE,
+        ground: { x: ground.x, y: ground.y, width: ground.width, height: ground.height },
       });
     };
     send();

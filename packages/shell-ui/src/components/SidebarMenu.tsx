@@ -17,7 +17,8 @@ import { MenuItem, MenuLabel, MenuPanel, MenuSeparator, useMenuButton } from "./
  * avatar. Hover shows the menu, a click pins it. The Space and who is
  * signed in head the panel, any other Space to switch to follows, and below
  * them the chrome's controls that have no button of their own in the
- * column — the agent panel, reminders, bookmarks, settings — as one list.
+ * column — the agent panel, the library, reminders, bookmarks, settings —
+ * as one list.
  */
 export function SidebarMenu() {
   const status = useBrowserStatus();
@@ -107,6 +108,7 @@ export function SidebarMenu() {
           {status.rendering !== null || planes.length > 0 ? <MenuSeparator /> : null}
           <ActionMenuItem id="toggleConsole" testId="agent-panel-toggle" />
           <ActionMenuItem id="openBrief" testId="brief-button" />
+          <ActionMenuItem id="openLibrary" testId="library-button" />
           <ActionMenuItem id="openNotes" testId="notes-button" />
           <ActionMenuItem id="openReminders" testId="reminders-button" />
           <ActionMenuItem id="openBookmarks" testId="bookmarks-button" />

@@ -85,6 +85,7 @@ const ACTION_KEYWORDS: Partial<Record<ChromeActionId, readonly string[]>> = {
   openReminders: ["schedule alarm calendar scheduled tasks pistachio://reminders"],
   openWatchtower: ["browsing memory history archive saved pages recall wiki pistachio://watchtower"],
   openArchive: ["archive archived tabs closed groups put away restore old tabs"],
+  openLibrary: ["library everything kept my stuff artifacts pages built notes saved bookmarks watchtower history"],
   undoTidy: ["undo tidy bring back archived tabs restore ungroup revert clean up"],
   tidyTabs: ["tidy clean up declutter organize group tabs archive idle old tabs auto group"],
   openBookmarks: ["saved items favorites reading list collection pistachio://bookmarks"],
@@ -582,8 +583,7 @@ export function useTypedEntries({
         : null,
     [ask, q, currentPage, recentPages, inventory],
   );
-  const intent = useAddressIntent(request);
-  const ranking = intent?.ranking ?? null;
+  const { ranking, settled, aiLeads } = useAddressIntent(request);
 
   const entries = useMemo(
     () =>
@@ -591,17 +591,18 @@ export function useTypedEntries({
         heuristicEntries: inventory.entries,
         candidateEntries: inventory.candidateEntries,
         ranking,
+        aiLeads,
         query: q,
         primaryItem,
       }),
-    [inventory, ranking, q, primaryItem],
+    [inventory, ranking, aiLeads, q, primaryItem],
   );
 
-  const intentState: IntentRankState = request === null ? "none" : intent === null ? "pending" : ranking === null ? "none" : "applied";
+  const intentState: IntentRankState = request === null ? "none" : !settled ? "pending" : ranking === null ? "none" : "applied";
 
   return useMemo<TypedFace>(
-    () => ({ entries, heuristicEntries: inventory.entries, candidateEntries: inventory.candidateEntries, ranking, intentState }),
-    [entries, inventory, ranking, intentState],
+    () => ({ entries, heuristicEntries: inventory.entries, candidateEntries: inventory.candidateEntries, ranking, aiLeads, intentState }),
+    [entries, inventory, ranking, aiLeads, intentState],
   );
 }
 

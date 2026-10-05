@@ -6,7 +6,7 @@ import type { DesktopIconStyle } from "@pistachio/shell-contracts/appearance";
  * it in the surrounding text colour instead — the quiet corner mark of a
  * page whose subject is something else (the home page).
  */
-export function PistachioMark({ size, tone = "brand", variant = "green", desktopIcon = false }: { size: 20 | 24 | 48; tone?: "brand" | "muted"; variant?: DesktopIconStyle; desktopIcon?: boolean }) {
+export function PistachioMark({ size, tone = "brand", variant = "green", desktopIcon = false }: { size: 20 | 24 | 48 | 64; tone?: "brand" | "muted"; variant?: DesktopIconStyle; desktopIcon?: boolean }) {
   const muted = tone === "muted";
   return (
     <svg viewBox="0 0 48 48" width={size} height={size} fill="none" aria-hidden="true" className="block shrink-0">

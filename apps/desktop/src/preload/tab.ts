@@ -87,7 +87,11 @@ function startShields(): void {
   }
   for (const script of boot.scripts) {
     try {
-      void webFrame.executeJavaScript(script).catch(() => undefined);
+      // Each in a block of its own, as Ghostery's injector does: every
+      // scriptlet carries its dependencies, and two that declare the same
+      // class (uBO's JSONPath) would otherwise collide in the page's global
+      // scope, the second failing to parse at all.
+      void webFrame.executeJavaScript(`try{\n${script}\n}catch(e){}`).catch(() => undefined);
     } catch {
       // One broken scriptlet does not stop the rest.
     }

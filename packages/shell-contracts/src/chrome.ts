@@ -409,6 +409,12 @@ export type ShellCommand =
   | { type: "openSettings"; section: SettingsSection }
   /** Lower the settings page — main opened a tab the person must see. */
   | { type: "closeSettings" }
+  /**
+   * The update's notification was clicked: the update dialog, asked for, so
+   * even while it is put off — or About in Settings where the dialog does not
+   * go up (a Glance, the desk, the first-run wizard).
+   */
+  | { type: "showUpdate" }
   /** The reminders page, optionally landing on one occurrence. */
   | { type: "openReminders"; occurrenceId?: string }
   | { type: "toggleReminders" }
@@ -432,6 +438,8 @@ export type ShellCommand =
   | { type: "openWatchtower"; entityId?: number; view?: "saved" }
   /** The archive of tabs Tidy put away and groups that were closed (docs/tab-tidy.md §3.6). */
   | { type: "openArchive" }
+  /** Everything kept, in one place: artifacts, notes, saved pages and what Watchtower read. */
+  | { type: "toggleLibrary" }
   /** Run Tidy now for the active Space, and say what it did (§3.2). */
   | { type: "tidyTabs" }
   /** Take the last Tidy run back. */
@@ -495,6 +503,7 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "toggleReminders":
     case "openBrief":
     case "openArchive":
+    case "toggleLibrary":
     case "tidyTabs":
     case "undoTidy":
     case "toggleBookmarks":
@@ -502,6 +511,7 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "openDownloads":
     case "toggleDownloads":
     case "closeLiveView":
+    case "showUpdate":
       return true;
     case "openLiveView": {
       const runId = (value as { runId?: unknown }).runId;

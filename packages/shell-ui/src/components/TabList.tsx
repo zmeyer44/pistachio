@@ -1225,6 +1225,9 @@ export function TabList() {
     setHoverBlockedId(null);
     void tabGroupCommand({ type: "setOpen", groupId: id, open: true });
   };
+  // On the rail a group of one tab is that tab: its mark is the tab's icon already, so the tab's row is not drawn under
+  // it again, and the mark does the row's work — its window's dot, a press bringing the window out.
+  const railLone = (unit: Extract<DayUnit, { kind: "group" }>): ChromeTab | null => (rail && unit.tabs.length === 1 ? (unit.tabs[0] ?? null) : null);
   const isExpanded = (unit: Extract<DayUnit, { kind: "group" }>): boolean =>
     isHeld(unit) ||
     receivingGroupId === unit.group.id ||
@@ -2014,21 +2017,24 @@ export function TabList() {
               // that takes a few seconds reads as work under way on these rows.
               className={cn("flex flex-col gap-0.5", tidyRunning && "tidy-sweep")}
             >
-              {units.map((unit) =>
-                unit.kind === "row" ? (
-                  <Fragment key={unit.id}>
-                    {renderRow(unit.row, null)}
-                    {/* A loose tab's desk: its context — the Stack — under its row, as a group's is under its tabs. */}
-                    {deskLoose !== null && unit.row.tabs[0]?.id === deskLoose.tabIds[0] ? <DeskContextRow group={deskLoose} /> : null}
-                  </Fragment>
-                ) : (
+              {units.map((unit) => {
+                if (unit.kind === "row")
+                  return (
+                    <Fragment key={unit.id}>
+                      {renderRow(unit.row, null)}
+                      {/* A loose tab's desk: its context — the Stack — under its row, as a group's is under its tabs. */}
+                      {deskLoose !== null && unit.row.tabs[0]?.id === deskLoose.tabIds[0] ? <DeskContextRow group={deskLoose} /> : null}
+                    </Fragment>
+                  );
+                const lone = railLone(unit);
+                return (
                   <TabGroupRow
                     key={unit.id}
                     group={unit.group}
                     flipId={unit.id}
                     tabs={unit.tabs}
-                    // A group in hand is drawn closed: it is one thing being moved.
-                    expanded={grabbedId !== unit.id && isExpanded(unit)}
+                    // A group in hand is drawn closed: it is one thing being moved. A lone tab's on the rail has nothing to open but the desk's Stack.
+                    expanded={grabbedId !== unit.id && isExpanded(unit) && (lone === null || deskGroupId === unit.group.id)}
                     held={isHeld(unit)}
                     snapClose={drag !== null || snapCloseId === unit.group.id}
                     renaming={renaming === unit.group.id}
@@ -2039,6 +2045,7 @@ export function TabList() {
                       if (justDragged()) return;
                       // On the rail the groups are the desk's dock's: another group's passes the desk to it, as the Dock's did.
                       if (rail && deskGroupId !== null && deskGroupId !== unit.group.id) toggleDesk(unit.group.id);
+                      else if (lone !== null) activate(lone.id, { shiftKey: false, metaKey: false, ctrlKey: false });
                       else toggleGroup(unit);
                     }}
                     onRename={(title) => (renaming === unit.group.id ? finishGroupRename(unit.group.id, title) : setRenaming(unit.group.id))}
@@ -2046,19 +2053,23 @@ export function TabList() {
                     onOpenAsDesk={deskAvailable() ? () => toggleDesk(unit.group.id) : undefined}
                     deskOpen={deskGroupId === unit.group.id}
                     onClose={() => closeGroup(unit.group)}
-                    onPointerDown={(e) => beginPress(groupItem(unit), e)}
+                    // A lone tab's header is its row: carried out over the desk it is that tab's window, as its row's would be
+                    // (in the sidebar it is still the group, moved as one), and under the pointer it is the row ⇧⌫ closes.
+                    onPointerDown={(e) => beginPress(lone === null ? groupItem(unit) : { ...groupItem(unit), deskTab: lone }, e)}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setMenuGroupId(unit.group.id);
-                      menu.open(e, groupMenu(unit.group));
+                      menu.open(e, lone === null ? groupMenu(unit.group) : [...deskTabEntries(lone.id), ...groupMenu(unit.group)]);
                     }}
+                    mark={lone === null ? undefined : <DeskRowMark tabId={lone.id} />}
+                    onHeaderHover={lone === null ? undefined : (inside) => hoverDeskRow(lone.id, inside)}
                   >
-                    {unit.rows.map((row) => renderRow(row, unit.group.id))}
+                    {lone === null ? unit.rows.map((row) => renderRow(row, unit.group.id)) : null}
                     {/* The desk's group: its context — the Stack — under its tabs (docs/desk-agent.md §1). */}
                     {deskGroupId === unit.group.id ? <DeskContextRow group={unit.group} /> : null}
                   </TabGroupRow>
-                ),
-              )}
+                );
+              })}
             </div>
           </SectionBody>
         </div>

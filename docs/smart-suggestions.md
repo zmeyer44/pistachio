@@ -86,6 +86,13 @@ One `evaluate` call, two `choice` questions (the docs' "speculative fan-out"):
 Titles and hosts only. Never full URLs, paths, or query strings.
 
 `intent` — options `web_search`, `ai_prompt`, `open_page`, `browser_command`.
+The line between the first two is drawn by what comes BACK, not by the
+subject: a page of results, or a question whose answer is one live or local
+fact (the weather, a score, opening hours), is the web's; an explanation —
+how or why, reasons, differences, pros and cons, advice, ideas — or a task
+handed over is the assistant's. The first wording gave the web "a fact, a
+company, any thing they want to find pages about", and open questions about
+a company or a cause read as searches or sat at 50/50 (§10).
 
 `target` — one option per candidate the shell sent, plus `none`. Candidates:
 
@@ -123,9 +130,14 @@ so a new settings page cannot be added without a way to find it.
 Inputs: the heuristic entry list, the full candidate map, the ranking.
 Confidence-gated, per the model's own guidance:
 
-- **Search versus AI.** The AI row takes ↵ from the web search only when
-  `P(ai_prompt) ≥ 0.55` and it leads `P(web_search)` by `≥ 0.15`. Otherwise
-  the web search stays first. Hints are rewritten so ↵ is always on row one.
+- **Search versus AI.** The AI row takes ↵ from the web search when
+  `P(ai_prompt) ≥ 0.55` and it leads `P(web_search)` by `≥ 0.15`. Having
+  taken it, it keeps it until the web search leads IT by 0.15, or
+  `P(ai_prompt)` falls under 0.4 (`aiLeadsSearch`): two lines rather than
+  one, because successive answers about a sentence being typed are noisy
+  readings of one intent, and a single line is crossed on the noise. Which
+  side it is on belongs to the sentence, not the keystroke (§7). Hints are
+  rewritten so ↵ is always on row one.
 - **A target.** When `P(open_page) + P(browser_command) ≥ 0.5` and the best
   target (not `none`) has `P ≥ 0.5`, that row moves to the top. Other targets
   with `P ≥ 0.15` follow in probability order, then the rest of the heuristic
@@ -152,15 +164,35 @@ The heuristic list paints immediately; the model's answer arrives 200–500 ms
 later and may reorder it. Rules so that ↵ never does something the person did
 not see:
 
-- an answer applies only if its `query` equals what is typed now;
+- the rows an answer NAMES apply only if its `query` equals what is typed
+  now: "amazon" names the Amazon tab, and ↵ on "amazon stock" a moment later
+  must not open it;
+- the choice between the two searches is held for the sentence. Typing on
+  from words already answered ("how does this" → "how does this c") keeps
+  the AI row where it was while the next answer is awaited, instead of
+  handing ↵ back to the web search on every keystroke and taking it again
+  300 ms later; a paste over the lot, or a new thought, starts from the
+  heuristics;
+- one question is in flight at a time, and when it comes back the next one
+  is whatever is typed by then (`IntentAsker`). Every answer lands, at the
+  model's own rate. Asking on each pause and dropping what was overtaken
+  meant that at an ordinary typing speed nothing landed until the hands
+  stopped — a question typed straight through and sent was a web search;
+- an answer to EARLIER words of the same sentence, landing while the words
+  as they stand are still unanswered, may move the search/AI choice and
+  nothing else;
+- answers are kept in a small LRU; a null (superseded, timed out, no model)
+  is not an answer and is never kept, so the same words typed again are
+  asked about again;
 - once the person has moved the selection (arrows or mouse), the order is
   frozen for that query;
-- if ↵ lands within 150 ms of a model-driven change to the list — a
-  reorder, or a row the fuzzy pass never matched arriving on top — it acts
-  on the row that was there BEFORE it, the one they were looking at when
-  they decided;
-- requests are debounced (120 ms), de-duplicated through a small LRU, and
-  only the latest is awaited (a sequence number; the host aborts the rest).
+- if ↵ lands within 150 ms of a model-driven change to the list for the
+  same words — a reorder, or a row the fuzzy pass never matched arriving on
+  top — it acts on the row that was there BEFORE it, the one they were
+  looking at when they decided.
+
+The hosts still keep one live question per window and abort the one before
+it; with one asker per bar that is a backstop, not the mechanism.
 
 ## 8. Privacy and abuse
 
@@ -187,7 +219,7 @@ changes that, so:
 | Desktop model handle | `apps/desktop/src/main/model-provider.ts` (`configuredIntentModel`) |
 | Usage kind | `services/control/src/ai-usage.ts` |
 | Settings intents, action descriptions, policy | `packages/shell-ui/src/lib/{settings-intents,action-intents,intent-ranking}.ts` |
-| Asking, and stability under the hands | `packages/shell-ui/src/lib/use-address-intent.ts`, wired in `components/address-palette.tsx`, `UrlBar.tsx`, `home/HomeSearch.tsx` |
+| Asking (`IntentAsker`), and stability under the hands | `packages/shell-ui/src/lib/use-address-intent.ts`, wired in `components/address-palette.tsx`, `UrlBar.tsx`, `home/HomeSearch.tsx` |
 | Live accuracy check | `packages/shell-ui/test/address-intent.live.test.ts` |
 | End to end in the app, over a scripted model | `apps/desktop/e2e/tests/smart-suggestions.spec.ts` |
 
@@ -195,23 +227,39 @@ Model id: `PISTACHIO_INTENT_MODEL`, default `typesafe-ai/jev`; `off` disables.
 
 ## 10. Checking it
 
-**Live accuracy** — the real model, catalog, request builder and policy;
-measures which row ends up under ↵ for 53 labeled queries, eight of them
-traps that name a row without asking for it:
+**Live accuracy** — the real model, catalog, request builder and policy.
+Three measurements: which row ends up under ↵ for 55 labeled queries, eight
+of them traps that name a row without asking for it; which of the two
+searches leads for 149 open questions and lookups (65 of them written after
+the option wording was fixed, to check it had not learned the rest); and how
+often that choice changes while eight sentences are typed a character at a
+time:
 
 ```
 cd packages/shell-ui
 PISTACHIO_INTENT_LIVE=1 pnpm vitest run test/address-intent.live.test.ts
 ```
 
-As of 2026-09-19: heuristics alone 31/53, with the model 50/53, no plain
-web search made worse, median 257 ms (p90 354 ms) from a laptop straight to
-the gateway. The three misses are ambiguous phrasings ("sign out of my
-account", "which version am i on", "sync my tabs"). The test asserts a floor
-(≥ 75%, better than the heuristics, at most one search broken, a destructive
-row never first), not the measured figure. Descriptions are what the model
-reads — a miss is usually fixed in `settings-intents.ts` or
-`action-intents.ts`, not in a threshold.
+As of 2026-10-05: heuristics alone 31/55, with the model 50/55, no plain
+web search made worse, median 253 ms (p90 387 ms) from a laptop straight to
+the gateway. The misses are ambiguous phrasings ("sign out of my account",
+"which version am i on", "sync my tabs", "delete my browsing history",
+"write something down"). Open questions that reach the assistant: 75/76
+(the miss is a bare noun phrase, "advantages of nuclear power"); lookups
+that stay web searches: 73/73. Typed out, each question changes sides once —
+when the words become a question — and each lookup never: 5 changes over the
+eight sentences, where every answer read alone gives 7.
+
+The same test over the wording before it (2026-09-19 to 2026-10-05): 48/55,
+26/76 open questions, 73/73 lookups, and 17 changes read alone — "how does
+this company work" crossed the line seven times on its way to being typed.
+
+The test asserts floors (≥ 75% and better than the heuristics, at most one
+search broken, ≥ 85% of open questions and ≥ 95% of lookups, about one
+change per sentence, a destructive row never first), not the measured
+figures. Descriptions are what the model reads — a miss is usually fixed in
+the option wording (`agent-runtime/src/address-intent.ts`),
+`settings-intents.ts` or `action-intents.ts`, not in a threshold.
 
 **In the app** — `PISTACHIO_INTENT_SCRIPT` (with `PISTACHIO_E2E=1`) replaces
 the model with a scripted stand-in (`main/address-intent.ts`), so the spec

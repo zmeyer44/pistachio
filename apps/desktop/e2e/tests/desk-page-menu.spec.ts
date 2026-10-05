@@ -96,6 +96,13 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
     const placed = await box(shell, '[data-testid="desk-window-tip"][data-shown][data-open]');
     expect(placed.y).toBeGreaterThanOrEqual(button.y + button.height);
     await capture(app, shell, "00-tooltip.png");
+    // It only names the button: the pointer onto it, over the page's corner, closes it and the
+    // page there is live again (held open, it was a patch of page nothing reached).
+    await shell.mouse.move(placed.x + placed.width / 2, placed.y + placed.height / 2);
+    await expect(tip).toHaveCount(0);
+    await expect(win()).not.toHaveAttribute("data-drawn", "");
+    await close.hover();
+    await expect(tip).toHaveText("Close");
     // Its neighbour's, at once.
     await more.hover();
     await expect(tip).toHaveText("More");

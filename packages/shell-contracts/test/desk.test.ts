@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { deskMaskKey, holdsDeskModifier, inDeskBox, isDeskGrab, isDeskMask, isDeskPageInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
+import { DESK_PIP_OUTSET, deskMaskKey, deskPipSlot, holdsDeskModifier, inDeskBox, isDeskGrab, isDeskMask, isDeskNotchFrame, isDeskPageInput, isDeskPipInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
 import { isDragCursor, isDragSample } from "../src/chrome.js";
 
 describe("the desk's contract", () => {
+  it("takes the notch view's frame only with the box the shell's ground is painted over", () => {
+    const frame = { bounds: { x: 653, y: 860, width: 174, height: 32 }, label: "Ask about Research", shortcut: "⌘I", color: "blue", radius: 14, flare: 10, ground: { x: 0, y: 0, width: 1440, height: 900 } };
+    expect(isDeskNotchFrame(frame)).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, ground: undefined })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, ground: { x: 0, y: 0, width: 0, height: 900 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, ground: { x: Number.NaN, y: 0, width: 1440, height: 900 } })).toBe(false);
+  });
+
   it("accepts a desk state and refuses anything else", () => {
     expect(isDeskState({ tabIds: ["a", "b"], grab: "shift" })).toBe(true);
     expect(isDeskState({ tabIds: [], grab: null })).toBe(true);
@@ -85,6 +93,20 @@ describe("the desk's contract", () => {
     expect(isDragSample({ x: 1, y: 2, phase: "move", shift: true })).toBe(true);
     expect(isDragSample({ x: 1, y: 2, phase: "up", shift: false })).toBe(true);
     expect(isDragSample({ x: 1, y: 2, phase: "move", shift: "yes" })).toBe(false);
+  });
+
+  it("takes a press from the floating player's view on its picture or one of its edges, and its view stands out from the picture all round", () => {
+    expect(isDeskPipInput({ type: "grab", x: 1, y: 2 })).toBe(true);
+    expect(isDeskPipInput({ type: "grab", x: 1, y: 2, edge: "se" })).toBe(true);
+    expect(isDeskPipInput({ type: "grab", x: 1, y: 2, edge: "middle" })).toBe(false);
+    expect(isDeskPipInput({ type: "grab", x: 1, y: 2, edge: 3 })).toBe(false);
+    expect(isDeskPipInput({ type: "grab", x: Number.NaN, y: 2 })).toBe(false);
+    expect(deskPipSlot({ x: 100, y: 50, width: 320, height: 180 })).toEqual({
+      x: 100 - DESK_PIP_OUTSET,
+      y: 50 - DESK_PIP_OUTSET,
+      width: 320 + DESK_PIP_OUTSET * 2,
+      height: 180 + DESK_PIP_OUTSET * 2,
+    });
   });
 
   it("lets the drag layer hold the resize cursors a window's corners need", () => {

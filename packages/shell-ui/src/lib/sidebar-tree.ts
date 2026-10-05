@@ -73,11 +73,13 @@ export type ListDrop =
  * Dragging a pin left of this x at the end of a folder's run leaves the
  * folder; at or right of it, the pin stays inside. The one ambiguous slot in
  * the tree — below a folder's last pin — is resolved by the pointer's x, the
- * way an outliner does it.
+ * way an outliner does it, but only while the pointer is still over that
+ * pin: past its bottom edge the pointer has left the folder, whatever its x,
+ * so the rows after the run (and the end of the list) are always in reach.
  */
 export const PIN_INDENT = 18;
 
-/** The same rule for the slot below a tab group's last tab: at or right of this x stays in the group. */
+/** The same rule for the slot below a tab group's last tab: over it, at or right of this x stays in the group. */
 export const GROUP_INDENT = 18;
 
 /**
@@ -114,6 +116,8 @@ export function listDropAt(measured: readonly MeasuredRow[], kind: ShelfDragKind
   /** The day's index counts UNITS — a group's tabs are not slots among the day's rows. */
   const unitsBefore = (i: number): number => rows.slice(divider + 1, i).filter((row) => row.kind === "tab" || row.kind === "group").length;
   const membersBefore = (groupId: string, i: number): number => rows.slice(0, i).filter((row) => row.kind === "member" && row.groupId === groupId).length;
+  /** The pointer is still over `row`, the last of a run: only then does its x keep the drop in the run. */
+  const stillOver = (row: MeasuredRow): boolean => y < row.top + row.height;
 
   if (kind !== "folder" && !dayOnly(kind)) {
     const over = rows.find((row) => y >= row.top && y < row.top + row.height);
@@ -140,10 +144,11 @@ export function listDropAt(measured: readonly MeasuredRow[], kind: ShelfDragKind
     if (above?.kind === "group" && typeof above.groupId === "string" && below?.kind === "member" && below.groupId === above.groupId) {
       return { zone: "group", groupId: above.groupId, index: 0 };
     }
-    // Between two of its tabs — or under its last, where the pointer's x decides, as it does for a folder.
+    // Between two of its tabs — or on its last, where the pointer's x decides, as it does for a folder.
+    // Below its last the pointer is out of the group: the slot after it, the end of the list included.
     if (above?.kind === "member" && typeof above.groupId === "string") {
       const between = below?.kind === "member" && below.groupId === above.groupId;
-      if (between || x >= GROUP_INDENT) return { zone: "group", groupId: above.groupId, index: membersBefore(above.groupId, i) };
+      if (between || (stillOver(above) && x >= GROUP_INDENT)) return { zone: "group", groupId: above.groupId, index: membersBefore(above.groupId, i) };
     }
   }
 
@@ -163,7 +168,7 @@ export function listDropAt(measured: readonly MeasuredRow[], kind: ShelfDragKind
   if (prev !== undefined && prev.kind === "pin" && prev.folderId !== null) {
     const folderId = prev.folderId;
     const nextInside = next !== undefined && next.kind === "pin" && next.folderId === folderId;
-    if (nextInside || x >= PIN_INDENT) return { zone: "pinned", folderId, index: childrenBefore(folderId, i) };
+    if (nextInside || (stillOver(prev) && x >= PIN_INDENT)) return { zone: "pinned", folderId, index: childrenBefore(folderId, i) };
   }
   return { zone: "pinned", folderId: null, index: topLevelBefore(i) };
 }

@@ -8,7 +8,8 @@
  *   (main's media preview, presenting only its video), with no frame or
  *   controls around it. Its controls are the "pip" view's, over the picture
  *   while the pointer is on it (PipApp.tsx); a press on it away from them
- *   moves it, wherever it is let go (kept on this device). A cover over it —
+ *   moves it, wherever it is let go, and one on its edges or corners resizes
+ *   it, its shape kept (both kept on this device: lib/desk/pip-box.ts). A cover over it —
  *   a card, a menu, the address palette — takes the picture down while it
  *   lies there, its place drawn here instead;
  * - anything else, a button in the rail: bars that move with how loud it is
@@ -24,18 +25,16 @@ import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 import { nativeApi } from "../../api";
 import { showOnDesk, useDeskEngine, useDeskWindowKey } from "../../lib/desk/open";
 import { useNowPlaying, type PipSpot } from "../../lib/desk/now-playing";
+import { PIP_EDGE_CURSORS, PIP_W, clampPipBox, pipHeight, pipWidth, resizedPipBox, type PipBox } from "../../lib/desk/pip-box";
 import { useAppStore } from "../../store";
 import { MediaCard, useBackgroundMedia } from "../MediaStack";
 import { Play } from "../media-icons";
 import type { DeskEngine, DeskView } from "./desk-engine";
 
-/** The floating player's picture: a widescreen frame, as a browser's picture in picture opens at. */
-const PIP_W = 320;
-const PIP_H = 180;
 /** Its first place: beside the rail, clear of the desk's foot (the notch, a shelf of parked windows). */
 const PIP_GAP = 12;
 const PIP_FOOT = 64;
-/** A press on the picture that travels less than this is no move. */
+/** A press on the picture or an edge that travels less than this is no move. */
 const PIP_SLOP = 3;
 /** The pointer resting on a rail button opens its card; leaving both, the card goes a moment after (the desk's cards' grace). */
 const CARD_OPEN_MS = 120;
@@ -44,13 +43,6 @@ const CARD_W = 300;
 const CARD_COVER = "now-playing";
 /** The card is the stack's, every control out already: nothing to engage. */
 const NO_ENGAGE = (): void => undefined;
-
-interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
 
 function useDeskView(engine: DeskEngine | null): DeskView | null {
   return useSyncExternalStore(
@@ -74,22 +66,15 @@ function stageBox(): DOMRect | null {
   return document.querySelector<HTMLElement>(".desk-stage")?.getBoundingClientRect() ?? null;
 }
 
-/** The player kept whole in the window. */
-function clampBox(box: Box, size: { width: number; height: number }): Box {
-  return {
-    ...box,
-    x: Math.round(Math.min(Math.max(0, box.x), Math.max(0, size.width - box.width))),
-    y: Math.round(Math.min(Math.max(0, box.y), Math.max(0, size.height - box.height))),
-  };
-}
-
-/** Where the player stands: where it was left, or its first place. */
-function placedBox(spot: PipSpot | null, size: { width: number; height: number }): Box {
-  if (spot !== null) return clampBox({ x: spot.x * size.width, y: spot.y * size.height, width: PIP_W, height: PIP_H }, size);
+/** Where the player stands, and how large: where it was left, as it was left (as large as the window allows), or its first place. */
+function placedBox(spot: PipSpot | null, size: { width: number; height: number }): PipBox {
+  const width = pipWidth(spot?.width ?? PIP_W, size);
+  const height = pipHeight(width);
+  if (spot !== null) return clampPipBox({ x: spot.x * size.width, y: spot.y * size.height, width, height }, size);
   const stage = stageBox();
   const x = stage === null ? 60 : stage.left + PIP_GAP;
-  const y = (stage === null ? size.height : stage.bottom) - PIP_H - PIP_FOOT;
-  return clampBox({ x, y, width: PIP_W, height: PIP_H }, size);
+  const y = (stage === null ? size.height : stage.bottom) - height - PIP_FOOT;
+  return clampPipBox({ x, y, width, height }, size);
 }
 
 function pipMedia(media: BrowserMediaInfo): DeskPipMedia {
@@ -144,7 +129,7 @@ function DeskPip({ media }: { media: BrowserMediaInfo }) {
   // Its window still on its way into its row: the page is the desk's until it has gone.
   const leaving = useDeskWindowKey().split(" ").includes(media.tabId);
   const covered = raised || leaving || view?.floatCovered === true;
-  const [held, setHeld] = useState<Box | null>(null);
+  const [held, setHeld] = useState<PipBox | null>(null);
   const box = held ?? placedBox(spot, size);
   const pip = pipMedia(media);
   const pipKey = JSON.stringify(pip);
@@ -178,34 +163,45 @@ function DeskPip({ media }: { media: BrowserMediaInfo }) {
   }, [engine, covered, box.x, box.y, box.width, box.height]);
   useLayoutEffect(() => () => engine?.setFloat(null), [engine]);
 
-  // The pip view's word: a control to run, or a press to move the player by.
-  const latest = useRef({ media, box, size });
-  latest.current = { media, box, size };
+  // The pip view's word: a control to run, or a press to move the player by (on the picture) or resize it by (on an edge).
+  const latest = useRef({ media, box, size, spot });
+  latest.current = { media, box, size, spot };
   useEffect(() => {
     const api = nativeApi();
     if (api === null) return;
     return api.onDeskPipInput((input) => {
-      const { media: playing, box: from, size: area } = latest.current;
+      const { media: playing, box: from, size: area, spot: left } = latest.current;
       if (input.type === "control") {
         if (input.control.type === "focus" && showOnDesk(playing.tabId)) return;
         void useAppStore.getState().controlMedia(playing.tabId, input.control);
         return;
       }
-      // Held: the drag layer has the pointer until the button comes up, wherever it goes.
-      api.setDragCapture("grabbing");
+      const { edge } = input;
+      // Held: the pointer's moves come back until the button comes up, wherever it goes — main's relay of
+      // the pip view's own (which keeps the pointer for the press), or the drag layer's, raised over the rest.
+      api.setDragCapture(edge === undefined ? "grabbing" : PIP_EDGE_CURSORS[edge]);
       let moved = false;
+      let last = { x: input.x, y: input.y };
+      const boxAt = (point: { x: number; y: number }): PipBox =>
+        edge === undefined
+          ? clampPipBox({ ...from, x: from.x + point.x - input.x, y: from.y + point.y - input.y }, area)
+          : resizedPipBox(from, edge, point.x - input.x, point.y - input.y, area);
       const off = api.onDragSample((sample) => {
+        // A cancel carries no position (the window lost the pointer): the player stays where it last was.
+        if (sample.phase !== "cancel") last = { x: sample.x, y: sample.y };
         if (sample.phase === "move") {
-          if (!moved && Math.hypot(sample.x - input.x, sample.y - input.y) < PIP_SLOP) return;
+          if (!moved && Math.hypot(last.x - input.x, last.y - input.y) < PIP_SLOP) return;
           moved = true;
-          setHeld(clampBox({ ...from, x: from.x + sample.x - input.x, y: from.y + sample.y - input.y }, area));
+          setHeld(boxAt(last));
           return;
         }
         off();
         api.setDragCapture(null);
         if (moved) {
-          const end = clampBox({ ...from, x: from.x + sample.x - input.x, y: from.y + sample.y - input.y }, area);
-          useNowPlaying.getState().placePip({ x: end.x / area.width, y: end.y / area.height });
+          const end = boxAt(last);
+          // Moved, it keeps the size it was left at (which a smaller window may only have shrunk for now).
+          const width = edge === undefined ? left?.width : end.width;
+          useNowPlaying.getState().placePip({ x: end.x / area.width, y: end.y / area.height, ...(width === undefined ? {} : { width }) });
         }
         setHeld(null);
       });
