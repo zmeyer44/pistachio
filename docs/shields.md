@@ -235,10 +235,22 @@ appears — per realm, so a frame navigated to another same-origin document
 is patched again, and never a frame its own preload already protected.
 Floating-point readbacks (`rgba-float16`) move by 2⁻¹¹ instead of a flipped
 bit, and an export's noised copy is drawn in the canvas's own color space
-(a Display-P3 canvas keeps its gamut). With fingerprinting on, the session's **user
-agent** is Chrome's (`Chrome/150.0.0.0`, frozen as Chrome does), without
-Electron's `Pistachio/x Electron/y` tokens — a rare string, and one some
-sites refuse. **GPC** sets `navigator.globalPrivacyControl`.
+(a Display-P3 canvas keeps its gamut). The **user agent** stays Electron's
+own (`Pistachio/x Chrome/… Electron/y`) at every level: Cloudflare Turnstile
+fails a page whose user agent hides the `Electron/` token (error 600010 —
+measured 2026-10-06 on a Clerk sign-up; dropping only `Electron/` failed,
+Shields off passed), so reducing it for the whole session, as Shields first
+did with fingerprinting on, broke every Turnstile CAPTCHA. Only the sites
+that refuse Electron's (`CHROME_USER_AGENT_HOSTS` in `url-rules.ts`: Google's
+sign-in, kept on Chrome's as a precaution — never measured either way) get
+Chrome's (`Chrome/150.0.0.0`, frozen as Chrome does): their documents and
+whatever their documents ask for, rewritten in `onBeforeSendHeaders`, and
+`navigator.userAgent`/`appVersion` in their frames through the protections —
+a blank or srcdoc frame judged by the frame it inherits its origin from, a
+blob frame by the origin that made it, never by the top page (a per-tab `setUserAgent` cannot do it: set at navigation start it misses
+that request's header, and set during a redirect it stalls the load). It is
+there for the site to work, so a site's exception keeps it.
+**GPC** sets `navigator.globalPrivacyControl`.
 
 **WebRTC**: `webContents.setWebRTCIPHandlingPolicy` per tab — `default`
 (Chromium already hides local addresses behind mDNS), `public`
@@ -304,7 +316,10 @@ other shell setting.
 - End to end: `apps/desktop/e2e/tests/shields.spec.ts` — a two-site local
   fixture with seeded list cache: request blocking, site and generic hiding,
   a scriptlet that runs before the page's first script, GPC (header and
-  property), the Chrome user agent, stable farbled canvas that differs once
+  property), Electron's user agent kept on the page and Chrome's on a listed
+  host (`PISTACHIO_SHIELDS_CHROME_UA_HOSTS=localhost`, E2E only) for its
+  requests, its page reached by a redirect, and the srcdoc and blob frames
+  its cross-site iframe makes, stable farbled canvas that differs once
   Shields are down, the cross-site cookie kept out, the popover count and
   hosts, `<a ping>`, tracking parameters, bounce pages, the dangerous-site
   warning and its way through, lowering Shields for the site, and the
@@ -320,7 +335,9 @@ other shell setting.
 ## 9. Not done, and known limits
 
 - **Workers** (dedicated, shared, service) run no Shields script: an
-  OffscreenCanvas or audio read inside one is not noised.
+  OffscreenCanvas or audio read inside one is not noised, and on a site that
+  gets Chrome's user agent a worker's `navigator` still reports Electron's,
+  as do its requests to other hosts.
 - **Procedural cosmetic filters** (`:has-text`, `:upward`, …) are not applied
   (`loadExtendedSelectors: false`): they need Ghostery's extended-selector
   matcher in the preload.

@@ -28,6 +28,9 @@ function captureShell(app: ElectronApplication, filename: string): Promise<void>
   return captureWindow(app, `shields/${filename}`);
 }
 
+/** Chrome's user agent as Shields spell it: no app or Electron token, the version frozen. */
+const CHROME_UA = /\) Chrome\/\d+\.0\.0\.0 Safari\/[\d.]+$/;
+
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 
 interface Hit {
@@ -35,6 +38,7 @@ interface Hit {
   path: string;
   gpc: string | undefined;
   cookie: string | undefined;
+  ua: string | undefined;
 }
 
 function fixtureServer(): { server: Server; hits: Hit[]; listen(): Promise<number> } {
@@ -46,6 +50,7 @@ function fixtureServer(): { server: Server; hits: Hit[]; listen(): Promise<numbe
       path: `${url.pathname}${url.search}`,
       gpc: request.headers["sec-gpc"] as string | undefined,
       cookie: request.headers.cookie,
+      ua: request.headers["user-agent"],
     });
     response.setHeader("cache-control", "no-store");
     const port = (server.address() as { port: number }).port;
@@ -153,8 +158,10 @@ function fixtureServer(): { server: Server; hits: Hit[]; listen(): Promise<numbe
   // Frames the HTML parser makes run their own scripts — protected from
   // their first line, same-origin or not.
   window.__frames = {};
+  window.__uas = {};
   window.addEventListener("message", (event) => {
     if (event.data && event.data.kind === "fp-frame") window.__frames[event.data.host] = event.data.gpc;
+    if (event.data && (event.data.kind === "fp-frame" || event.data.kind === "fp-ua") && event.data.ua) window.__uas[event.data.host] = event.data.ua;
   });
   document.body.insertAdjacentHTML("beforeend", '<iframe src="/fp-frame"></iframe><iframe src="http://localhost:${String(port)}/fp-frame"></iframe>');
   // A blob: frame inherits the page's origin and must not be a clean room either.
@@ -211,9 +218,32 @@ function fixtureServer(): { server: Server; hits: Hit[]; listen(): Promise<numbe
       response.end();
       return;
     }
+    if (url.pathname === "/to-chrome-ua") {
+      response.statusCode = 302;
+      response.setHeader("location", `http://localhost:${String(port)}/ua`);
+      response.end();
+      return;
+    }
+    if (url.pathname === "/ua") {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html><title>UA</title><script>window.__ua = navigator.userAgent;</script>`);
+      return;
+    }
     if (url.pathname === "/fp-frame") {
       response.setHeader("content-type", "text/html; charset=utf-8");
-      response.end(`<!doctype html><script>parent.postMessage({ kind: "fp-frame", host: location.host, gpc: navigator.globalPrivacyControl === true }, "*");</script>`);
+      response.end(`<!doctype html><body><script>parent.postMessage({ kind: "fp-frame", host: location.host, gpc: navigator.globalPrivacyControl === true, ua: navigator.userAgent }, "*");
+  // On the site that gets Chrome's user agent, a srcdoc and a blob frame
+  // inherit this frame's site — not the page's — and so does what they ask for.
+  if (location.hostname === "localhost") {
+    const report = (host) => '<script>parent.parent.postMessage({ kind: "fp-ua", host: "' + host + '", ua: navigator.userAgent }, "*");<\\/script>';
+    const srcdoc = document.createElement("iframe");
+    srcdoc.srcdoc = report("localhost-srcdoc");
+    document.body.append(srcdoc);
+    const blob = document.createElement("iframe");
+    blob.src = URL.createObjectURL(new Blob([report("localhost-blob") + '<img src="http://127.0.0.1:${String(port)}/blob-pixel.png">'], { type: "text/html" }));
+    document.body.append(blob);
+  }
+</script>`);
       return;
     }
     if (url.pathname.endsWith(".png")) {
@@ -300,6 +330,8 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
       },
       "shields/lists/lists.json": { easylist: fresh, "ubo-badware": fresh, resources: { ...fresh, rules: 0 } },
     },
+    // localhost stands in for a site that refuses Electron's user agent (Google's sign-in).
+    env: { PISTACHIO_SHIELDS_CHROME_UA_HOSTS: "localhost" },
     settings: {
       ...pageFirst({ layout: { sidebar: "pinned" }, general: { homeUrl: page } }),
       shields: {
@@ -362,9 +394,20 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
     // ── Privacy ──────────────────────────────────────────────────────────
     expect(await tabEval<boolean>(app, "window.__gpc")).toBe(true);
     expect(fixture.hits.find((hit) => hit.path === "/page")?.gpc).toBe("1");
+    // The page keeps Electron's user agent — Cloudflare Turnstile fails one
+    // that hides it — while what it asks of a site that refuses it carries Chrome's.
     const ua = await tabEval<string>(app, "window.__ua");
-    expect(ua).not.toContain("Electron");
-    expect(ua).toMatch(/Chrome\/\d+\.0\.0\.0/);
+    expect(ua).toContain("Electron/");
+    expect(fixture.hits.find((hit) => hit.path === "/page")?.ua).toBe(ua);
+    await expect.poll(() => fixture.hits.find((hit) => hit.host === "localhost" && hit.path === "/pixel.png")?.ua).toMatch(CHROME_UA);
+    // A frame reads what its requests send: the page's own frame Electron's,
+    // the listed site's frame Chrome's, and the srcdoc and blob frames it makes
+    // Chrome's too — the blob frame's request to the page's host included.
+    await expect.poll(() => tabEval<string | undefined>(app, `window.__uas["127.0.0.1:${String(port)}"]`)).toContain("Electron/");
+    await expect.poll(() => tabEval<string | undefined>(app, `window.__uas["localhost:${String(port)}"]`)).toMatch(CHROME_UA);
+    await expect.poll(() => tabEval<string | undefined>(app, `window.__uas["localhost-srcdoc"]`)).toMatch(CHROME_UA);
+    await expect.poll(() => tabEval<string | undefined>(app, `window.__uas["localhost-blob"]`)).toMatch(CHROME_UA);
+    await expect.poll(() => fixture.hits.find((hit) => hit.path === "/blob-pixel.png")?.ua).toMatch(CHROME_UA);
     // Farbled canvas reads the same twice on this site…
     const farbled = await tabEval<string>(app, "window.__canvas");
     expect(await tabEval<string>(app, "window.__canvasAgain")).toBe(farbled);
@@ -413,6 +456,14 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
     expect(fixture.hits.some((hit) => hit.path.includes("fbclid"))).toBe(false);
     await navigate(app, `https://www.google.com/url?q=${encodeURIComponent(`http://127.0.0.1:${String(port)}/bounced`)}&sa=D`);
     await expect.poll(() => tabUrl(app)).toBe(`http://127.0.0.1:${String(port)}/bounced`);
+
+    // ── A site that refuses Electron's user agent ────────────────────────
+    // Reached through a server redirect, its page reads from navigator what its requests sent.
+    await navigate(app, `http://127.0.0.1:${String(port)}/to-chrome-ua`);
+    await expect.poll(() => tabUrl(app)).toBe(`http://localhost:${String(port)}/ua`);
+    await expect.poll(() => tabEval<string>(app, "String(window.__ua)")).toMatch(CHROME_UA);
+    expect(fixture.hits.find((hit) => hit.path === "/ua")?.ua).toMatch(CHROME_UA);
+    expect(fixture.hits.find((hit) => hit.path === "/to-chrome-ua")?.ua).toContain("Electron/");
 
     // ── A dangerous page ─────────────────────────────────────────────────
     await navigate(app, "http://danger.test/download");

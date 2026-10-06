@@ -248,7 +248,7 @@ export function ShieldsPage() {
       <Group title="Fingerprinting and connections">
         <Row
           label="Fingerprinting"
-          note="Standard adds per-site noise to what canvas, WebGL, and audio read back and reports a plain Chrome user agent, as Brave does. Strict also hides your graphics card, battery, network, voices, and screen size."
+          note="Standard adds per-site noise to what canvas, WebGL, and audio read back, as Brave does. Strict also hides your graphics card, battery, network, voices, and screen size."
         >
           <Select aria-label="Fingerprinting" value={shields.fingerprinting} items={FINGERPRINTING} disabled={off} onValueChange={(fingerprinting) => apply({ fingerprinting })} />
         </Row>

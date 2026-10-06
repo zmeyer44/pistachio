@@ -144,13 +144,15 @@ export interface SavedDesk {
 }
 
 /**
- * A page's own desk (docs/desk.md, "A loose tab's desk"): a favorite's or a
- * pinned page's tab — which no group can hold — chosen while a desk is up
- * comes up on a desk of its own, with only its window out and no group's
+ * A page's own desk (docs/desk.md, "A loose tab's desk"): a tab that no
+ * group can hold and that is no sidebar entry's page chosen while a desk is
+ * up comes up on a desk of its own, with only its window out and no group's
  * Bar or Stack. (A day tab in no group gets a group of its own instead, a
- * loose tab's: TabGroupInfo.loose.) The store's `groupId` then holds this
+ * loose tab's: TabGroupInfo.loose; a favorite's or pin's page, a page's
+ * group: TabGroupInfo.anchorId. This desk is theirs only should that fail.) The store's `groupId` then holds this
  * id, which no group's can be (theirs are UUIDs), so everything that asks
- * whether a desk is up still asks the one field. It is never saved.
+ * whether a desk is up still asks the one field. Its window is saved under
+ * it as a group's are, so it comes back where it was left.
  */
 const TAB_DESK = "tab:";
 
@@ -163,16 +165,28 @@ export function tabDeskOf(deskId: string | null): string | null {
   return deskId !== null && deskId.startsWith(TAB_DESK) ? deskId.slice(TAB_DESK.length) : null;
 }
 
-/** Every group of the Space in view a desk may be up for: the ones drawn, and the loose tabs'. */
+/** Every group of the Space in view a desk may be up for: the ones drawn, the loose tabs', and the pages' (a favorite's, a pin's). */
 export function deskGroups(snapshot: ShellSnapshot | null): readonly TabGroupInfo[] {
   if (snapshot === null) return [];
   const loose = snapshot.looseGroups ?? [];
-  return loose.length === 0 ? snapshot.tabGroups : [...snapshot.tabGroups, ...loose];
+  const pages = snapshot.anchorGroups ?? [];
+  return loose.length === 0 && pages.length === 0 ? snapshot.tabGroups : [...snapshot.tabGroups, ...loose, ...pages];
+}
+
+/** A page's group's page (TabGroupInfo.anchorId): the tab of it that is its entry's. */
+export function groupPageOf(group: TabGroupInfo, tabs: ReadonlyArray<Pick<BrowserTabInfo, "id" | "anchorId">>): string | null {
+  if (group.anchorId === undefined) return null;
+  return group.tabIds.find((tabId) => tabs.some((tab) => tab.id === tabId && tab.anchorId === group.anchorId)) ?? null;
 }
 
 /** A tab a group can hold (main's #groupable): a listed day tab of the person's, not a pinned page's or a favorite's. */
 export function isDayTab(tab: BrowserTabInfo): boolean {
   return tab.kind === "human" && !tab.unlisted && tab.anchorId === null;
+}
+
+/** A favorite's, preset's or pin's page: the tab a page's group (TabGroupInfo.anchorId) is made for. */
+export function isEntryPage(tab: BrowserTabInfo): boolean {
+  return tab.kind === "human" && !tab.unlisted && tab.anchorId !== null;
 }
 
 /**
@@ -343,8 +357,6 @@ export const useDeskStore = create<DeskStore>((set, get) => ({
     get().setVariant(key, next as DeskVariants[typeof key]);
   },
   save: (groupId, desk) => {
-    // A page's own desk is its one window.
-    if (tabDeskOf(groupId) !== null) return;
     const saved = { ...get().saved };
     delete saved[groupId];
     saved[groupId] = desk;

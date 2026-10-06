@@ -38,13 +38,13 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
-import { dayRowUnits } from "@pistachio/shell-contracts/tab-groups";
+import { anchorGroupTabIds, dayRowUnits } from "@pistachio/shell-contracts/tab-groups";
 import { favoriteDropAt, listDropAt, type ListDrop, type MeasuredRow, type MeasuredTile, type ShelfDragKind } from "../lib/sidebar-tree";
 import { useAppStore } from "../store";
 import { splitZoneAt, type PointerLike, type SplitZone } from "./drag-geometry";
 import type { ChromeTab } from "./tabs";
 import { nativeApi } from "../api";
-import { deskEngine, dropTabOnDesk } from "../lib/desk/open";
+import { deskEngine, dropEntryOnDesk, dropTabOnDesk } from "../lib/desk/open";
 
 /** Anything on the shelf a drag can carry, with what the ghost draws. */
 export interface ShelfItem {
@@ -379,6 +379,8 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
     // its window (`overDesk`), and nothing splits.
     const onDesk = deskEngine() !== null;
     const deskTab = !onDesk ? undefined : (item.deskTab ?? (item.kind === "tab" && item.tabs.length === 1 ? item.tabs[0] : undefined));
+    // A favorite or pin with no page open is let go over the desk too: a fresh page of it comes out there (dropEntryOnDesk).
+    const toDesk = deskTab !== undefined || (onDesk && (item.kind === "favorite" || item.kind === "pin"));
     const canSplit = !onDesk && item.kind !== "group" && item.tabs.length === 1 && (useAppStore.getState().snapshot?.visibleTabIds.length ?? 0) < 4;
     const origin = originDrop(item, listRef.current, gridRef.current);
     // A tile moves freely; a row stays in its slot horizontally unless it
@@ -443,7 +445,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       return { zone: "favorites", index: favoriteDropAt(tilesOf(grid), ev.clientX - box.left, ev.clientY - box.top) };
     };
     const overDesk = (ev: PointerLike): boolean => {
-      if (deskTab === undefined) return false;
+      if (!toDesk) return false;
       const column = rootRef.current?.getBoundingClientRect();
       return column !== undefined && ev.clientX > column.right + DESK_EDGE_PX;
     };
@@ -652,11 +654,13 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       store.setTabDragging(false);
-      // Let go over the desk: the tab's window comes out there (joining the group, if it was not the group's) — unless
-      // it was over the favorites' sheet out over the desk (RailFavorites), which takes it.
-      if (deskTab !== undefined && overDesk(pointer) && overFavorites(pointer) === null) {
+      // Let go over the desk: the tab's window comes out there (joining the group, if it was not the group's; a
+      // favorite's or pin's page coming down into it) — unless it was over the favorites' sheet out over the desk
+      // (RailFavorites), which takes it.
+      if (overDesk(pointer) && overFavorites(pointer) === null) {
         setDrag(null);
-        void dropTabOnDesk(deskTab.id, { x: pointer.clientX, y: pointer.clientY });
+        const at = { x: pointer.clientX, y: pointer.clientY };
+        void (deskTab !== undefined ? dropTabOnDesk(deskTab.id, at) : dropEntryOnDesk(item.entityId, at));
         return;
       }
       if (done.drop === null || sameDrop(done.drop, origin)) {
@@ -738,7 +742,8 @@ function originDrop(item: ShelfItem, list: HTMLElement | null, grid: HTMLElement
   if (list === null) return null;
   const rows = [...list.querySelectorAll<HTMLElement>("[data-flip-id][data-row-kind]")];
   const at = rows.findIndex((el) => el.dataset["flipId"] === item.flipId);
-  if (at < 0) return null;
+  // (A row under a favorite or pin — its page's group's, its desk up — is no slot among the rows: every drop moves it.)
+  if (at < 0 || rows[at]?.dataset["rowKind"] === "entry") return null;
   const before = rows.slice(0, at);
   if (item.kind === "tab" || item.kind === "split" || item.kind === "group") {
     // A tab inside a group sits at its place among the group's tabs…
@@ -785,8 +790,9 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
         : Promise.resolve();
     case "pin":
       if (drop.zone === "pinned") return send({ type: "movePin", pinId: item.entityId, folderId: drop.folderId, index: drop.index });
-      if (drop.zone === "today") return send({ type: "unpin", pinId: item.entityId, index: drop.index });
-      if (drop.zone === "group") return Promise.resolve();
+      // Down into the day's tabs or a group, its page (and its page's group) a day tab's from then on; the pin stays, closed.
+      if (drop.zone === "today") return send({ type: "bringDown", anchorId: item.entityId, index: drop.index });
+      if (drop.zone === "group") return send({ type: "bringDown", anchorId: item.entityId, groupId: drop.groupId, index: groupTabIndex(item.tabs.map((t) => t.id), drop.groupId, drop.index) });
       return send({ type: "addFavorite", source: { pinId: item.entityId }, index: drop.index });
     case "folder":
       return drop.zone === "pinned" && drop.folderId === null
@@ -795,9 +801,10 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
     case "favorite":
       if (item.managed === true) return Promise.resolve();
       if (drop.zone === "favorites") return send({ type: "moveFavorite", favoriteId: item.entityId, index: drop.index });
-      if (drop.zone === "group") return Promise.resolve();
       if (drop.zone === "pinned") return send({ type: "favoriteToPin", favoriteId: item.entityId, folderId: drop.folderId, index: drop.index });
-      return send({ type: "removeFavorite", favoriteId: item.entityId, index: drop.index });
+      // Down into the day's tabs or a group, its page (and its page's group) a day tab's from then on; the favorite stays, closed.
+      if (drop.zone === "group") return send({ type: "bringDown", anchorId: item.entityId, groupId: drop.groupId, index: groupTabIndex(item.tabs.map((t) => t.id), drop.groupId, drop.index) });
+      return send({ type: "bringDown", anchorId: item.entityId, index: drop.index });
   }
 }
 
@@ -807,6 +814,15 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
  * same act as bringing one in. A split's panes go in side by side.
  */
 async function joinGroup(tabIds: string[], groupId: string, index: number): Promise<void> {
+  const store = useAppStore.getState();
+  const at = groupTabIndex(tabIds, groupId, index);
+  for (const [offset, tabId] of tabIds.entries()) {
+    await store.tabGroupCommand({ type: "addTab", groupId, tabId, index: at + offset });
+  }
+}
+
+/** A drop's place inside a tab group, `index` among its ROWS, as main counts it: among its tabs, without `tabIds` (those in hand). */
+function groupTabIndex(tabIds: readonly string[], groupId: string, index: number): number {
   const store = useAppStore.getState();
   // The drop counted ROWS, and a split inside the group is one row of several
   // tabs; main counts tabs. The rows are the group's tabs without the ones in
@@ -835,9 +851,7 @@ async function joinGroup(tabIds: string[], groupId: string, index: number): Prom
     if (split === undefined || previous === undefined || !split.tabIds.includes(previous)) break;
     at += 1;
   }
-  for (const [offset, tabId] of tabIds.entries()) {
-    await store.tabGroupCommand({ type: "addTab", groupId, tabId, index: at + offset });
-  }
+  return at;
 }
 
 /**
@@ -859,12 +873,14 @@ async function reorderDayTabs(tabIds: string[], index: number): Promise<void> {
   const moving = new Set(tabIds);
   // In the list a group is ONE slot, so a member set down among the day's
   // rows has left it — said outright, because in the browser's flat order
-  // "last in the group" and "just below the group" are the same place.
-  for (const group of store.snapshot?.tabGroups ?? []) {
+  // "last in the group" and "just below the group" are the same place. (So has
+  // a tab of a page's group, drawn under its favorite or pin.)
+  for (const group of [...(store.snapshot?.tabGroups ?? []), ...(store.snapshot?.anchorGroups ?? [])]) {
     for (const tabId of group.tabIds) if (moving.has(tabId)) await store.tabGroupCommand({ type: "removeTab", tabId });
   }
   const snapshot = useAppStore.getState().snapshot;
-  const day = liveTabs().filter((t) => t.anchorId === null && !moving.has(t.id)).map((t) => t.id);
+  const underEntries = anchorGroupTabIds(snapshot?.anchorGroups ?? []);
+  const day = liveTabs().filter((t) => t.anchorId === null && !moving.has(t.id) && !underEntries.has(t.id)).map((t) => t.id);
   const splits = (snapshot?.splitGroups ?? []).filter((split) => !split.tabIds.some((id) => moving.has(id)));
   const groups = (snapshot?.tabGroups ?? [])
     .map((group) => ({ ...group, tabIds: group.tabIds.filter((id) => !moving.has(id)) }))

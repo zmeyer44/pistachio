@@ -1,7 +1,8 @@
 /**
  * The address rules Shields applies on its own, without a filter list
  * (docs/shields.md §4): tracking parameters, bounce-tracking redirect pages,
- * cross-site referrers, and which http:// addresses may be tried over HTTPS.
+ * cross-site referrers, which http:// addresses may be tried over HTTPS, and
+ * which sites get Chrome's user agent (§5).
  *
  * Pure — URLs in, URLs out — so vitest pins every rule without Electron.
  */
@@ -251,6 +252,26 @@ export function httpsUpgradeFor(url: string, failedHosts: Pick<ReadonlySet<strin
   if (failedHosts.has(host)) return null;
   parsed.protocol = "https:";
   return parsed.toString();
+}
+
+/**
+ * Hosts that get Chrome's user agent rather than Electron's (docs/shields.md
+ * §5): Google's sign-in, which refuses embedded browsers. Everywhere else the
+ * user agent stays Electron's own — Cloudflare Turnstile fails a page whose
+ * user agent hides the `Electron/` token (error 600010), so it is never
+ * reduced across the board.
+ */
+export const CHROME_USER_AGENT_HOSTS: readonly string[] = ["accounts.google.com"];
+
+/** Whether this address is on one of `hosts` (or below it). */
+export function wantsChromeUserAgent(url: string, hosts: readonly string[]): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host !== "" && hosts.some((listed) => host === listed || host.endsWith(`.${listed}`));
 }
 
 /**

@@ -223,6 +223,12 @@ export interface ShellSnapshot {
    * desk can be (the web shell).
    */
   looseGroups?: TabGroupInfo[];
+  /**
+   * The active Space's pages' groups (TabGroupInfo.anchorId): each led by a
+   * favorite's or pin's page and drawn under that entry, so listed apart
+   * from the groups among the day's tabs. Absent where no desk can be.
+   */
+  anchorGroups?: TabGroupInfo[];
   run: RunSummary | null;
   /** Every saved conversation, newest first, the open one included (main/thread-store.ts). */
   threads: ThreadListItem[];

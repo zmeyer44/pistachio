@@ -4717,9 +4717,11 @@ body[data-chrome-view="notch"] {
 :root[data-desktop-glass="on"] .desk-notch-view {
   /* The window's glass itself is not under a page: a stand-in for it, the chrome's tint and the theme's gradient
      over it, as over the glass. The stand-in is AppKit's under-window material as measured behind the gutter (it
-     follows what lies behind the window: in light, the gutter read 202 over black and 219 over white, so a
-     neutral grey a little past the dark end; in dark, the theme's own recessed ground already reads as it). */
-  background-color: oklch(0.862 0 0);
+     follows what lies behind the window: in light, the gutter read 202 over black and 219 over white). A light
+     desktop puts it at the white end, so the stand-in is a neutral grey there (oklch 0.862, at the dark end, read
+     14 levels darker than the gutter over a light wallpaper); with something dark behind the window the notch
+     reads lighter than the gutter. In dark, the theme's own recessed ground already reads as it. */
+  background-color: oklch(0.925 0 0);
   background-image:
     var(--theme-glass-gradient),
     linear-gradient(

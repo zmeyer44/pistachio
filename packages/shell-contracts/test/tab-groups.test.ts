@@ -59,6 +59,31 @@ describe("sanitizeTabGroups", () => {
     expect(groups.filter((candidate) => candidate.loose !== true)).toHaveLength(50);
   });
 
+  it("keeps a page's group with its entry's page, and without it makes it a group like any other", () => {
+    const groups = sanitizeTabGroups(
+      [
+        { id: "led", tabIds: ["page", "a"], anchorId: "fav" },
+        // Its page is some other entry's now: the group is a plain one, and the page is not its.
+        { id: "strayed", tabIds: ["other-page", "b", "c"], anchorId: "fav-2" },
+        { id: "alone", tabIds: ["d"], anchorId: "pin-gone" },
+        // An entry's page is never a plain group's.
+        { id: "plain", tabIds: ["page-2", "e"] },
+      ],
+      new Set(["a", "b", "c", "d", "e"]),
+      new Map([
+        ["page", "fav"],
+        ["other-page", "pin-1"],
+        ["page-2", "fav-3"],
+      ]),
+    );
+    expect(groups.map((candidate) => [candidate.id, candidate.tabIds, candidate.anchorId ?? null, candidate.loose === true])).toEqual([
+      ["led", ["page", "a"], "fav", false],
+      ["strayed", ["b", "c"], null, false],
+      ["alone", ["d"], null, true],
+      ["plain", ["e"], null, false],
+    ]);
+  });
+
   it("keeps a loose tab's group loose only while it holds the one tab", () => {
     const groups = sanitizeTabGroups(
       [
@@ -123,6 +148,10 @@ describe("group helpers", () => {
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1"], loose: true })).toBe(true);
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1", "t2"], loose: true })).toBe(false);
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1"], loose: "yes" })).toBe(false);
+    // A page's group is of the one page, and never a loose tab's too.
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1"], anchored: true })).toBe(true);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1", "t2"], anchored: true })).toBe(false);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1"], anchored: true, loose: true })).toBe(false);
     expect(isTabGroupCommand({ type: "recolor", groupId: "g", color: "teal" })).toBe(false);
     expect(isTabGroupCommand({ type: "move", groupId: "g", index: -1 })).toBe(false);
     expect(isTabGroupCommand({ type: "close", groupId: "g" })).toBe(true);

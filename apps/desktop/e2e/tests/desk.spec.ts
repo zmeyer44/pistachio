@@ -1051,7 +1051,7 @@ test("on the rail the favorites are one folder: its sheet slides out of the rail
     await expect(openRows).toHaveCount(1);
     await expect(shell.locator('[data-testid="rail-favorite-open"][title*="favorite=mail"]')).toHaveCount(0);
 
-    // ── 7. A favorite chosen opens it, as from the whole sidebar: a page in no group, on a desk of its own ─
+    // ── 7. A favorite chosen opens it, as from the whole sidebar: its page on a desk of its own — its page's group's, with a Bar ─
     await folder.hover();
     await expect(sheet).toHaveAttribute("data-shown", "");
     await sheet.getByRole("listitem", { name: "Vendor" }).click();
@@ -1065,17 +1065,24 @@ test("on the rail the favorites are one folder: its sheet slides out of the rail
     await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
     await expect(shell.locator(windowSelector(vendorTab))).toHaveCount(1);
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
-    await expect(shell.getByTestId("desk-bar")).toHaveCount(0);
+    await expect.poll(async () => (await snapshot(shell)).anchorGroups?.find((group) => group.tabIds.includes(vendorTab))?.anchorId ?? null).not.toBe(null);
+    await expect(shell.getByTestId("desk-bar")).toHaveCount(1);
     // Its window put away, its tab is still the one in use: the favorite chosen again brings the window back out.
     await settled(shell, app);
     await shell.locator(windowSelector(vendorTab)).getByTestId("desk-collapse").click();
     await expect(shell.locator(windowSelector(vendorTab))).toHaveCount(0);
     expect((await snapshot(shell)).activeTabId).toBe(vendorTab);
-    await shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${vendorTab}"]`).click();
+    // (Its desk up, its page's row is the list's, under the favorites — not one of the folder's open rows.)
+    await expect(shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${vendorTab}"]`)).toHaveCount(0);
+    await expect(shell.locator(`[data-testid="entry-tabs"] [data-tab-id="${vendorTab}"]`)).toHaveCount(1);
+    await folder.hover();
+    await expect(sheet).toHaveAttribute("data-shown", "");
+    await sheet.getByRole("listitem", { name: "Vendor" }).click();
     await expect(shell.locator(windowSelector(vendorTab))).toHaveCount(1);
-    // With no Bar to put the keyboard in, ⌘I opens the console, as anywhere.
+    // ⌘I puts the keyboard in its Bar, as on any group's desk, rather than opening the console.
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.send("pistachio:shell-command", { type: "toggleConsole" }));
-    await expect(shell.getByTestId("agent-panel")).toBeVisible();
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
+    await expect(shell.getByTestId("agent-panel")).not.toBeVisible();
   } finally {
     await app.close();
   }
@@ -1760,9 +1767,10 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expect(shell.locator(windowSelector(loose))).toHaveCount(1);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(loose);
     await expectLiveIn(app, shell, urls[5]!, loose);
+    // The desk's one tab: its window fills the desk.
     const alone = await box(shell, windowSelector(loose));
     const desk = await box(shell, ".desk-stage");
-    expect(Math.abs(alone.x + alone.width / 2 - (desk.x + desk.width / 2))).toBeLessThan(4);
+    for (const key of ["x", "y", "width", "height"] as const) expect(Math.abs(alone[key] - desk[key])).toBeLessThan(2);
     // No group's row in the sidebar: the tab's own, with the Stack under it; the Bar, asking about the tab.
     await expect(shell.locator(groupSelector(made.id))).toHaveCount(0);
     await expect(shell.locator(rowSelector(loose))).toHaveCount(1);

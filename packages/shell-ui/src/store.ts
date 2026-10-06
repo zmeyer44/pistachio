@@ -37,7 +37,7 @@ import type {
 } from "@pistachio/shell-contracts/ipc";
 import { DEFAULT_SETTINGS, type DesktopSettings, type SettingsPatch, type SettingsSection } from "@pistachio/shell-contracts/settings";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
-import type { TabGroupCommand, TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
+import { anchorGroupTabIds, type TabGroupCommand, type TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import { tidyDidSomething, tidySummaryText, type TidySummary } from "@pistachio/shell-contracts/tidy";
 import type { BrowserMediaInfo, MediaControl, ReadAloudStatus } from "@pistachio/shell-contracts/media";
 import {
@@ -1641,9 +1641,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   restoreClosedTab: () => safeAction(() => shellApi().restoreClosedTab(), set),
   clearUnpinnedTabs: () => {
     const state = get();
+    const underEntries = anchorGroupTabIds(state.snapshot?.anchorGroups ?? []);
     const unpinnedIds = new Set(
       (state.snapshot?.tabs ?? [])
-        .filter((tab) => tab.kind === "human" && tab.anchorId === null)
+        .filter((tab) => tab.kind === "human" && tab.anchorId === null && !underEntries.has(tab.id))
         .map((tab) => tab.id),
     );
     const run = state.snapshot?.run ?? null;

@@ -143,8 +143,9 @@ function sanitizeSpaceSession(value: unknown, spaceId: string): DurableSpaceSess
     ? [...new Set(raw["recentTabIds"].filter((id): id is string => typeof id === "string" && ids.has(id)))].slice(0, tabs.length)
     : [];
   const splitGroups = sanitizeSplitGroups(raw["splitGroups"], ids);
-  // Only a day tab can be grouped: a pinned or favorite tab belongs to its shelf entry.
-  const tabGroups = sanitizeTabGroups(raw["tabGroups"], new Set(tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id)));
+  // Only a day tab can be grouped: a pinned or favorite tab belongs to its shelf entry — and leads only its page's group.
+  const anchored = new Map(tabs.flatMap((tab) => (tab.anchorId === null ? [] : [[tab.id, tab.anchorId] as const])));
+  const tabGroups = sanitizeTabGroups(raw["tabGroups"], new Set(tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id)), anchored);
   const updatedAt = raw["updatedAt"];
   return { tabs, activeTabId, recentTabIds, splitGroups, ...(tabGroups.length > 0 ? { tabGroups } : {}), ...(typeof updatedAt === "number" && Number.isFinite(updatedAt) && updatedAt >= 0 ? { updatedAt } : {}) };
 }

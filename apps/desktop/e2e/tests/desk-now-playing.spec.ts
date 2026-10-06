@@ -489,3 +489,87 @@ test("a window playing a video with another window over it shows its page live, 
     await closeApp(app);
   }
 });
+
+test("a window closed while another's video floats leaves the floating player its video, and a tab closed while its video floats goes", { tag: ["@desk", "@media"] }, async () => {
+  test.setTimeout(120_000);
+  const VIDEO_URL = `${ORIGIN}/invoices?video`;
+  const CLOSING_URL = `${ORIGIN}/invoices?closing`;
+  const OTHER_URL = `${ORIGIN}/invoices?other`;
+  const { app, shell } = await launchDesk({ name: "close-beside-pip", homeUrl: VIDEO_URL });
+  try {
+    const [video, closing, other] = (await openTabs(shell, [VIDEO_URL, CLOSING_URL, OTHER_URL])) as [string, string, string];
+    await createGroup(shell, "watch", [video, closing, other], "Watch", "green");
+    const choose = async (tabId: string): Promise<void> => {
+      await selectTab(shell, tabId);
+      await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(tabId);
+    };
+    // The one to float plays muted, as a feed's does; the other page's player is there, not yet started.
+    await choose(video);
+    const videoPage = await pageAt(app, VIDEO_URL);
+    await installVideoPlayer(videoPage);
+    await videoPage.evaluate(() => {
+      (document.getElementById("test-video") as HTMLVideoElement).muted = true;
+    });
+    await videoPage.locator("#start-video").click();
+    await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
+    await choose(closing);
+    const closingPage = await pageAt(app, CLOSING_URL);
+    await installVideoPlayer(closingPage);
+
+    await openGroupDesk(shell, "watch");
+    await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
+    const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
+    const rowOf = (tabId: string) => shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`);
+    await expect(shell.getByTestId("desk-window")).not.toHaveCount(0);
+    await settled(shell, app);
+    for (const tabId of [other, closing, video]) if ((await windowOf(tabId).count()) === 0) await rowOf(tabId).click();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(3);
+    await settled(shell, app);
+
+    // The muted video popped out floats.
+    await windowOf(video).getByTestId("desk-pop-out").click();
+    await expect(windowOf(video)).toHaveCount(0);
+    const pip = shell.getByTestId("desk-pip");
+    await expect(pip).toHaveAttribute("data-tab-id", video);
+    const pipBox = await box(shell, '[data-testid="desk-pip"]');
+    await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, pipBox))).toBe(true);
+    // The other window's video starts after it, its sound on (a page that plays once it is in use): the later of the two.
+    await choose(closing);
+    await closingPage.locator("#start-video").click();
+    await expect.poll(async () => (await mediaOf(shell, closing))?.playing ?? false).toBe(true);
+
+    // ── Its window closed from its frame: the page takes a moment to unload (as a heavy site's does), and all the
+    // while — its window gone, another in use, its video still playing — the floating player keeps its own.
+    await closingPage.evaluate(() =>
+      window.addEventListener("beforeunload", () => {
+        const until = Date.now() + 1000;
+        while (Date.now() < until);
+      }),
+    );
+    await shell.evaluate(() => {
+      const seen: string[] = [];
+      (window as unknown as { pipTabs: string[] }).pipTabs = seen;
+      const note = (): void => {
+        const tabId = document.querySelector<HTMLElement>('[data-testid="desk-pip"]')?.dataset["tabId"];
+        if (tabId !== undefined && seen.at(-1) !== tabId) seen.push(tabId);
+      };
+      note();
+      new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-tab-id"] });
+    });
+    await windowOf(closing).getByTestId("desk-close").click();
+    await expect(windowOf(closing)).toHaveCount(0);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.id === closing), { timeout: 15_000 }).toBe(false);
+    expect(await shell.evaluate(() => (window as unknown as { pipTabs: string[] }).pipTabs)).toEqual([video]);
+    await expect(pip).toHaveAttribute("data-tab-id", video);
+    await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, pipBox))).toBe(true);
+    await expect.poll(() => viewAt(app, "?closing")).toBe(null);
+
+    // ── The floating video's own tab closed (a row's ×): its page goes with the player showing it, and the tab with it.
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(tabId), video);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.id === video), { timeout: 15_000 }).toBe(false);
+    await expect(pip).toHaveCount(0);
+    await expect.poll(async () => (await call(shell, (pistachio) => pistachio.getMedia())).length).toBe(0);
+  } finally {
+    await closeApp(app);
+  }
+});

@@ -155,11 +155,17 @@ describe("listDropAt over tab groups", () => {
     expect(listDropAt(rows, "tab", after(6), 0)).toEqual({ zone: "today", index: 4 });
   });
 
-  it("a group, a pin, or a favorite never lands inside a group: its tabs are not rows to them", () => {
+  it("a group never lands inside a group: its tabs are not rows to it", () => {
     expect(listDropAt(rows, "group", mid(3), 40)).toEqual({ zone: "today", index: 2 });
     expect(listDropAt(rows, "group", mid(6), 40)).toEqual({ zone: "today", index: 3 });
-    expect(listDropAt(rows, "pin", mid(2), 40)).toEqual({ zone: "today", index: 1 });
-    expect(listDropAt(rows, "favorite", mid(4), 40)).toEqual({ zone: "today", index: 2 });
+  });
+
+  it("a pin or a favorite does, as a tab would: its page comes down into the group", () => {
+    expect(listDropAt(rows, "pin", mid(2), 40)).toEqual({ zone: "group", groupId: "G", index: GROUP_END });
+    expect(listDropAt(rows, "favorite", after(3), 0)).toEqual({ zone: "group", groupId: "G", index: 1 });
+    expect(listDropAt(rows, "favorite", mid(6), 0)).toEqual({ zone: "group", groupId: "H", index: GROUP_END });
+    // Its edges, and the day's rows, are slots among the day's tabs as ever.
+    expect(listDropAt(rows, "pin", before(5), 40)).toEqual({ zone: "today", index: 2 });
   });
 });
 

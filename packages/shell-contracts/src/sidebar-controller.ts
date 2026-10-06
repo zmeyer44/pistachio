@@ -63,6 +63,12 @@ export interface SidebarTabHost {
   createTab(url: string, options?: { anchorId?: string; activate?: boolean }): Promise<string>;
   navigate(tabId: string, url: string): Promise<void>;
   /**
+   * Put a day tab — with the tab group it is in, as one — at `index` among the day's row units (lone tabs, split
+   * views, groups), or into the tab group `groupId`, at `index` among its tabs. A host without tab groups leaves this
+   * out, and the controller places the tab by counting the day's tabs, each one row.
+   */
+  placeDayTab?(tabId: string, place: { index: number } | { groupId: string; index?: number }): void;
+  /**
    * Set by the controller: whether a tab pulled into a split view stops
    * following its shelf entry. A favorite becomes an independent tab; a pin
    * paired with a day tab is still that pin.
@@ -223,6 +229,8 @@ export class SidebarController {
         this.#set({ ...state, favorites: placeFavorite(state.favorites, favorite, command.index) });
         return;
       }
+      case "bringDown":
+        return this.#bringDown(command.anchorId, command.index, command.groupId);
       case "favoriteToPin": {
         const state = this.#state();
         const favorite = favoriteOf(state, command.favoriteId);
@@ -288,12 +296,37 @@ export class SidebarController {
     const live = this.#browser.tabForAnchor(anchorId);
     if (live !== null) {
       this.#browser.setAnchor(live.id, null);
-      if (index !== undefined) this.#browser.reorderTab(live.id, this.#dayIndexToGlobal(index, live.id));
+      if (index !== undefined) this.#place(live.id, { index });
       return;
     }
     if (index === undefined) return;
     const tabId = await this.#browser.createTab(url, { activate: false });
-    this.#browser.reorderTab(tabId, this.#dayIndexToGlobal(index, tabId));
+    this.#place(tabId, { index });
+  }
+
+  /**
+   * An entry's page brought down into the day's tabs, or into a tab group:
+   * it lets go of its entry (its page's group, a group like any other now,
+   * comes with it), and the entry stays where it is, closed. Nothing open,
+   * a fresh tab opens there at the entry's address.
+   */
+  async #bringDown(anchorId: string, index: number | undefined, groupId: string | undefined): Promise<void> {
+    const live = this.#browser.tabForAnchor(anchorId);
+    const url = live === null ? this.#urlOf(this.#state(), anchorId) : null;
+    if (live === null && url === null) return;
+    const tabId = live?.id ?? (await this.#browser.createTab(url!, { activate: false }));
+    if (live !== null) this.#browser.setAnchor(live.id, null);
+    if (groupId !== undefined) this.#place(tabId, { groupId, index });
+    else if (index !== undefined) this.#place(tabId, { index });
+  }
+
+  #place(tabId: string, place: { index: number } | { groupId: string; index?: number }): void {
+    if (this.#browser.placeDayTab !== undefined) {
+      this.#browser.placeDayTab(tabId, place);
+      return;
+    }
+    // (Without tab groups there is no group to go into.)
+    if (!("groupId" in place)) this.#browser.reorderTab(tabId, this.#dayIndexToGlobal(place.index, tabId));
   }
 
   /**

@@ -568,6 +568,7 @@ export function isShellCommand(value: unknown): value is ShellCommand {
         ["archivedTabs", "newGroups", "joinedTabs", "favoritesReset"].every(
           (key) => typeof raw[key] === "number" && Number.isInteger(raw[key]) && (raw[key] as number) >= 0,
         ) &&
+        (raw["favoriteGroups"] === undefined || (typeof raw["favoriteGroups"] === "number" && Number.isInteger(raw["favoriteGroups"]) && raw["favoriteGroups"] >= 0)) &&
         typeof raw["usedModel"] === "boolean" &&
         typeof raw["firstRun"] === "boolean"
       );

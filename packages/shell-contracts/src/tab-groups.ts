@@ -53,13 +53,28 @@ export interface TabGroupInfo {
    * gone, as any group emptied is.
    */
   loose?: boolean;
+  /**
+   * A page's group (docs/desk.md, "A page's group"): led by the page of a
+   * sidebar entry — a favorite, an organization's preset or a pin, whose
+   * anchor this is — and holding the tabs opened on that page's desk (⌘T, a
+   * link, a tab dropped there) as day tabs. Its desk has all a group's does.
+   * The page stays its entry's, and the group is never drawn among the
+   * day's tabs: the snapshot lists it apart (ShellSnapshot.anchorGroups),
+   * the sidebar draws its tabs under its entry while its desk is up, and
+   * Tidy leaves them be until the favorites reset archives the group or
+   * brings it down (docs/tab-tidy.md §3.7). Its page let go of its entry —
+   * brought down into the day's tabs, closed, put in a split view — it is a
+   * group like any other (or, of one tab, a loose tab's).
+   */
+  anchorId?: string;
 }
 
 export const MAX_TAB_GROUPS_PER_SPACE = 50;
 /**
- * Loose tabs' groups (TabGroupInfo.loose) are kept apart from that bound:
- * one is made for every day tab chosen on a desk, so a Space has as many as
- * it has such tabs, and none may push a drawn group (or another) out.
+ * Loose tabs' groups (TabGroupInfo.loose) are kept apart from that bound,
+ * with pages' groups (TabGroupInfo.anchorId): one is made for every day tab
+ * or sidebar entry's page chosen on a desk, so a Space has as many as it has
+ * such tabs, and none may push a drawn group (or another) out.
  */
 export const MAX_LOOSE_TAB_GROUPS_PER_SPACE = 2_000;
 export const MAX_TAB_GROUP_TITLE = 40;
@@ -91,10 +106,13 @@ export function nextTabGroupColor(groups: readonly Pick<TabGroupInfo, "color">[]
 
 /**
  * Groups read back from a file, or handed over by another device. A member
- * that is not one of the Space's groupable tabs is dropped, a tab belongs to
- * the first group that names it, and a group left with no members is gone.
+ * that is not one of the Space's groupable tabs is dropped — except a page's
+ * group's own page (`anchoredTabs`: each anchored tab's anchor) — a tab
+ * belongs to the first group that names it, and a group left with no
+ * members is gone. A page's group whose page is gone is a group like any
+ * other, or of one tab a loose tab's.
  */
-export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<string>): TabGroupInfo[] {
+export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<string>, anchoredTabs: ReadonlyMap<string, string> = new Map()): TabGroupInfo[] {
   if (!Array.isArray(value)) return [];
   const groups: TabGroupInfo[] = [];
   const claimed = new Set<string>();
@@ -106,20 +124,27 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
     const raw = candidate as Record<string, unknown>;
     const id = raw["id"];
     if (!isTabGroupId(id) || seen.has(id) || !Array.isArray(raw["tabIds"])) continue;
+    const anchor = typeof raw["anchorId"] === "string" && raw["anchorId"] !== "" ? raw["anchorId"] : undefined;
     const tabIds: string[] = [];
+    let led = false;
     for (const tabId of raw["tabIds"]) {
-      if (typeof tabId !== "string" || !groupableTabIds.has(tabId) || claimed.has(tabId)) continue;
+      if (typeof tabId !== "string" || claimed.has(tabId)) continue;
+      const page = anchor !== undefined && anchoredTabs.get(tabId) === anchor;
+      if (!page && !groupableTabIds.has(tabId)) continue;
+      led ||= page;
       claimed.add(tabId);
       tabIds.push(tabId);
     }
     if (tabIds.length === 0) continue;
-    // Each kind within its own bound: a loose tab's group is of its one tab.
-    const isLoose = raw["loose"] === true && tabIds.length === 1;
-    if (isLoose ? loose >= MAX_LOOSE_TAB_GROUPS_PER_SPACE : drawn >= MAX_TAB_GROUPS_PER_SPACE) {
+    // A page's group with its page; without it, its tabs are a group like any other — a loose tab's, of one.
+    const anchorId = led ? anchor : undefined;
+    // Each kind within its own bound: a loose tab's group is of its one tab, and neither it nor a page's is drawn.
+    const isLoose = anchorId === undefined && (raw["loose"] === true || anchor !== undefined) && tabIds.length === 1;
+    if (isLoose || anchorId !== undefined ? loose >= MAX_LOOSE_TAB_GROUPS_PER_SPACE : drawn >= MAX_TAB_GROUPS_PER_SPACE) {
       for (const tabId of tabIds) claimed.delete(tabId);
       continue;
     }
-    if (isLoose) loose += 1;
+    if (isLoose || anchorId !== undefined) loose += 1;
     else drawn += 1;
     seen.add(id);
     const createdAt = raw["createdAt"];
@@ -133,9 +158,15 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
       createdAt: typeof createdAt === "number" && Number.isFinite(createdAt) && createdAt >= 0 ? createdAt : 0,
       // (A loose tab's group holds its one tab: with more, it is a group like any other.)
       ...(isLoose ? { loose: true } : {}),
+      ...(anchorId !== undefined ? { anchorId } : {}),
     });
   }
   return groups;
+}
+
+/** The tabs of the pages' groups (TabGroupInfo.anchorId): listed under their entries, never among the day's tabs. */
+export function anchorGroupTabIds(groups: readonly TabGroupInfo[]): Set<string> {
+  return new Set(groups.flatMap((group) => (group.anchorId === undefined ? [] : group.tabIds)));
 }
 
 /** The group a tab is in, or null. */
@@ -250,8 +281,12 @@ export interface TabGroupCommandResult {
  * an error — the row it came from was already stale.
  */
 export type TabGroupCommand =
-  /** Make a group from day tabs (they leave any group they were in). The renderer names the id so it can start renaming at once. `loose`: a loose tab's group (TabGroupInfo.loose), of one tab. */
-  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean }
+  /**
+   * Make a group from day tabs (they leave any group they were in). The renderer names the id so it can start renaming at
+   * once. `loose`: a loose tab's group (TabGroupInfo.loose), of one tab. `anchored`: a page's group (TabGroupInfo.anchorId),
+   * of one tab, a sidebar entry's page — or, that entry having one already, nothing.
+   */
+  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean; anchored?: boolean }
   | { type: "rename"; groupId: string; title: string }
   | { type: "recolor"; groupId: string; color: TabGroupColor }
   /** Hold the group open, or let it close when the pointer leaves. */
@@ -309,7 +344,8 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
         raw["tabIds"].every(isTabId) &&
         (raw["title"] === undefined || typeof raw["title"] === "string") &&
         (raw["color"] === undefined || isTabGroupColor(raw["color"])) &&
-        (raw["loose"] === undefined || (typeof raw["loose"] === "boolean" && (raw["loose"] === false || raw["tabIds"].length === 1)))
+        (raw["loose"] === undefined || (typeof raw["loose"] === "boolean" && (raw["loose"] === false || raw["tabIds"].length === 1))) &&
+        (raw["anchored"] === undefined || (typeof raw["anchored"] === "boolean" && (raw["anchored"] === false || (raw["tabIds"].length === 1 && raw["loose"] !== true))))
       );
     case "rename":
       return isTabGroupId(raw["groupId"]) && typeof raw["title"] === "string";

@@ -17,6 +17,8 @@ interface FakeTab {
   url: string;
   lastActiveAt: number;
   visible?: boolean;
+  /** A favorite's or pin's page: the sidebar entry it is the page of. */
+  anchorId?: string;
 }
 
 /** The tabs' owner, reduced to what Tidy asks of it: one Space, an ordered row, groups by id. */
@@ -40,16 +42,17 @@ class FakeHost implements TidyHost<{ tabId: string; url: string }> {
     const idle = (tab: FakeTab): boolean => idleMs > 0 && tab.visible !== true && now - tab.lastActiveAt >= idleMs;
     return {
       tabs: this.row.filter((tab) => !grouped.has(tab.id)).map((tab) => ({ id: tab.id, title: tab.title, url: tab.url, lastActiveAt: tab.lastActiveAt, eligible: idle(tab) })),
-      groups: this.groups.map((group) => ({ id: group.id, title: group.title, tabCount: group.tabIds.length })),
-      idleAutoGroupIds: this.groups
+      groups: this.tabGroups().map((group) => ({ id: group.id, title: group.title, tabCount: group.tabIds.length })),
+      idleAutoGroupIds: this.tabGroups()
         .filter((group) => group.origin === "auto" && group.tabIds.every((id) => this.row.some((tab) => tab.id === id && idle(tab))))
         .map((group) => group.id),
       staleHomeTabIds: [],
     };
   }
 
+  /** The groups drawn among the day's tabs: not the pages' (TabGroupInfo.anchorId). */
   tabGroups(): TabGroupInfo[] {
-    return this.groups.map((group) => ({ ...group, tabIds: [...group.tabIds] }));
+    return this.groups.filter((group) => group.anchorId === undefined).map((group) => ({ ...group, tabIds: [...group.tabIds] }));
   }
 
   archiveTabs(tabIds: readonly string[]): Array<{ tabId: string; index: number; tab: ArchivedTab }> {
@@ -145,6 +148,46 @@ class FakeHost implements TidyHost<{ tabId: string; url: string }> {
       const favorite = this.favorites.find((candidate) => candidate.tabId === was.tabId);
       if (favorite !== undefined) favorite.url = was.url;
     }
+  }
+
+  favoriteGroupsDue(_spaceId: string, isFavorite: (anchorId: string) => boolean, now: number, idleMs: number, minIdleMs: number): Array<{ groupId: string; idle: boolean }> {
+    return this.groups.flatMap((group) => {
+      const members = group.tabIds.flatMap((id) => this.row.find((tab) => tab.id === id) ?? []);
+      if (group.anchorId === undefined || members.length < 2 || !isFavorite(group.anchorId)) return [];
+      if (members.some((tab) => tab.visible === true || now - tab.lastActiveAt < minIdleMs)) return [];
+      return [{ groupId: group.id, idle: idleMs > 0 && members.every((tab) => now - tab.lastActiveAt >= idleMs) }];
+    });
+  }
+
+  archivePageGroup(groupId: string): { anchorId: string; pageTabId: string; tabs: Array<{ tabId: string; index: number; tab: ArchivedTab }> } | null {
+    const group = this.groups.find((candidate) => candidate.id === groupId);
+    const page = this.row.find((tab) => group?.anchorId !== undefined && tab.anchorId === group.anchorId);
+    if (group?.anchorId === undefined || page === undefined) return null;
+    const anchorId = group.anchorId;
+    page.anchorId = undefined;
+    this.groups = this.groups.filter((candidate) => candidate.id !== groupId);
+    this.groups.push({ ...group, anchorId: undefined });
+    return { anchorId, pageTabId: page.id, tabs: this.archiveTabs(group.tabIds) };
+  }
+
+  bringDownPageGroup(groupId: string): { anchorId: string; pageTabId: string } | null {
+    const group = this.groups.find((candidate) => candidate.id === groupId);
+    const page = this.row.find((tab) => group?.anchorId !== undefined && tab.anchorId === group.anchorId);
+    if (group?.anchorId === undefined || page === undefined) return null;
+    const anchorId = group.anchorId;
+    page.anchorId = undefined;
+    delete group.anchorId;
+    // After the day's tabs.
+    this.row = [...this.row.filter((tab) => !group.tabIds.includes(tab.id)), ...group.tabIds.flatMap((id) => this.row.find((tab) => tab.id === id) ?? [])];
+    return { anchorId, pageTabId: page.id };
+  }
+
+  leadGroup(groupId: string, tabId: string, anchorId: string): void {
+    const group = this.groups.find((candidate) => candidate.id === groupId);
+    const page = this.row.find((tab) => tab.id === tabId);
+    if (group === undefined || page === undefined) return;
+    group.anchorId = anchorId;
+    page.anchorId = anchorId;
   }
 
   commitTidy(): void {
@@ -344,6 +387,72 @@ describe("TabTidy", () => {
     const summary = await tidy.run("work", "manual");
     expect(summary).toMatchObject({ archivedTabs: 0, newGroups: 1 });
     expect(host.titles()).toEqual(["A", "B"]);
+  });
+});
+
+describe("a favorite's group, at the favorites reset", () => {
+  /** X's page (a favorite's), with two tabs opened on its desk, after a lone day tab. */
+  const withGroup = (idleHours: [number, number, number], extra: Partial<FakeTab> = {}): FakeHost => {
+    const host = new FakeHost([tab("Day", 1), tab("X page", idleHours[0], { anchorId: "fav-x", ...extra }), tab("X one", idleHours[1]), tab("X two", idleHours[2])]);
+    host.groups.push({ id: "x-group", title: "New group", color: "gray", tabIds: ["x-page", "x-one", "x-two"], origin: "manual", open: false, createdAt: 0, anchorId: "fav-x" });
+    return host;
+  };
+  const page = (host: FakeHost) => host.row.find((candidate) => candidate.id === "x-page");
+
+  it("comes down into the day's tabs as a group like any other, after them, the favorite left closed — and Undo makes it the favorite's again", async () => {
+    const host = withGroup([2, 1, 30], {});
+    host.row.push(tab("Later", 1));
+    const { tidy, announced } = tidyOver(host);
+    const summary = await tidy.run("work", "manual");
+    expect(summary).toMatchObject({ favoriteGroups: 1, archivedTabs: 0 });
+    expect(host.groups.find((group) => group.id === "x-group")?.anchorId).toBeUndefined();
+    expect(page(host)?.anchorId).toBeUndefined();
+    expect(host.titles()).toEqual(["Day", "Later", "X page", "X one", "X two"]);
+    expect(announced).toEqual([]);
+    expect(tidy.undo()).toBe(true);
+    expect(host.groups.find((group) => group.id === "x-group")?.anchorId).toBe("fav-x");
+    expect(page(host)?.anchorId).toBe("fav-x");
+    expect(host.titles()).toEqual(["Day", "X page", "X one", "X two", "Later"]);
+  });
+
+  it("goes to the archive whole, under the favorite's name, once all of it has gone idle — and Undo brings it back led by its page", async () => {
+    const host = withGroup([20, 30, 40]);
+    const { tidy, archive } = tidyOver(host);
+    const summary = await tidy.run("work", "manual");
+    expect(summary).toMatchObject({ archivedTabs: 3, favoriteGroups: 0 });
+    expect(host.titles()).toEqual(["Day"]);
+    const [entry] = archive.list("work");
+    expect(entry?.kind === "group" ? [entry.group.title, entry.tabs.map((archived) => archived.title)] : null).toEqual(["X", ["X page", "X one", "X two"]]);
+    expect(tidy.undo()).toBe(true);
+    expect(host.titles()).toEqual(["Day", "X page", "X one", "X two"]);
+    const back = host.groups.find((group) => group.anchorId === "fav-x");
+    expect(back?.tabIds.map((id) => host.row.find((candidate) => candidate.id === id)?.title)).toEqual(["X page", "X one", "X two"]);
+    expect(host.row.find((candidate) => candidate.title === "X page")?.anchorId).toBe("fav-x");
+  });
+
+  it("is left alone while any of it is in view, by the clock until it has settled, and never for a pin", async () => {
+    const shown = withGroup([2, 1, 30], { visible: true });
+    expect(await tidyOver(shown).tidy.run("work", "manual")).toMatchObject({ favoriteGroups: 0, archivedTabs: 0 });
+    expect(shown.groups[0]?.anchorId).toBe("fav-x");
+
+    // Its own clock waits a quarter of an hour after the last of it was used; asked, it does not wait.
+    const recent = withGroup([2, 1, 30]);
+    recent.row.find((candidate) => candidate.id === "x-one")!.lastActiveAt = NOW - 5 * 60_000;
+    const { tidy } = tidyOver(recent);
+    expect(await tidy.run("work", "auto")).toMatchObject({ favoriteGroups: 0 });
+    expect(await tidy.run("work", "manual")).toMatchObject({ favoriteGroups: 1 });
+
+    const pinned = withGroup([20, 30, 40], { anchorId: "pin-1" });
+    pinned.groups[0]!.anchorId = "pin-1";
+    expect(await tidyOver(pinned).tidy.run("work", "manual")).toMatchObject({ favoriteGroups: 0, archivedTabs: 0 });
+    expect(pinned.titles()).toEqual(["Day", "X page", "X one", "X two"]);
+  });
+
+  it("makes a Space due on Tidy's own clock, which says what it did", async () => {
+    const host = withGroup([2, 1, 3]);
+    const { tidy, announced } = tidyOver(host);
+    await tidy.sweep();
+    expect(announced.map((summary) => summary.favoriteGroups)).toEqual([1]);
   });
 });
 

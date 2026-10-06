@@ -56,7 +56,7 @@ import {
 import { UpdateService } from "./update-service";
 import { ReadAloudService } from "./read-aloud";
 import { WatchtowerService } from "./watchtower/service";
-import { ShieldsService } from "./shields/service";
+import { frameOwnerUrl, ShieldsService } from "./shields/service";
 import { isShieldsRequest } from "@pistachio/shell-contracts/shields";
 import { SHIELDS_COSMETICS_CHANNEL, SHIELDS_FRAME_CHANNEL, type ShieldsDomFeatures } from "@pistachio/shell-contracts/shields-page";
 import { watchtowerRequestSchema } from "@pistachio/shell-contracts/watchtower";
@@ -2775,7 +2775,7 @@ function installIpc(): void {
     const address = frame !== null && frame.url !== "" ? frame.url : typeof url === "string" ? url : "";
     let boot: ReturnType<ShieldsService["frameBootstrap"]> = null;
     try {
-      boot = answers && shields !== null ? shields.frameBootstrap(address, frameTopUrl(frame) ?? address) : null;
+      boot = answers && shields !== null ? shields.frameBootstrap(address, frameTopUrl(frame) ?? address, frameOwnerUrl(frame)) : null;
     } catch (error) {
       // The page waits on this answer: it gets one, whatever went wrong.
       console.error("[shields] bootstrap failed", error);
@@ -4699,6 +4699,10 @@ app.whenReady().then(async () => {
     onPageChanged: (contentsId) => browser?.shieldsChanged(contentsId),
     // An identity Space's WebRTC may only go through the gateway (D13).
     webRtcFloor: () => (featureEnabled ? "proxied" : "default"),
+    // Specs name a local host of their own as a site that refuses Electron's user agent.
+    ...(process.env["PISTACHIO_E2E"] === "1" && process.env["PISTACHIO_SHIELDS_CHROME_UA_HOSTS"] !== undefined
+      ? { chromeUserAgentHosts: process.env["PISTACHIO_SHIELDS_CHROME_UA_HOSTS"].split(",") }
+      : {}),
   });
   settings.onChange((next) => shields?.applySettings(next.shields));
   await shields.start();

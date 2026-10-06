@@ -24,13 +24,14 @@ import {
   childrenOf,
   DEFAULT_SIDEBAR_STATE,
   folderEmoji,
+  isPresetAnchorId,
   placeEntry,
   type SidebarEntry,
   type SidebarFolder,
   type SidebarFolderColor,
   type SidebarPin,
 } from "@pistachio/shell-contracts/sidebar";
-import { dayRowUnits, tabGroupUnitId, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { anchorGroupTabIds, dayRowUnits, tabGroupUnitId, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { useAction } from "../chrome/actions";
 import { useShell } from "../chrome/shell-host";
 import {
@@ -55,11 +56,12 @@ import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useDeskChrome } from "../lib/desk/chrome";
 import { deskAvailable, deskEngine, showOnDesk, toggleDesk } from "../lib/desk/open";
-import { tabDeskOf, useDeskStore } from "../lib/desk/store";
+import { groupPageOf, tabDeskOf, useDeskStore } from "../lib/desk/store";
 import { DeskContextRow, DeskRowMark, deskTabEntries, hoverDeskRow } from "./desk/DeskSidebarControls";
 import { useSidebarRail } from "./sidebar-rail";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { Favicon, TabMark } from "./Favicon";
+import { EntryTabCount } from "./EntryTabCount";
 import { TabGroupRow } from "./TabGroupRow";
 import { useAgentWorkingIn } from "./useAgentTab";
 
@@ -170,6 +172,7 @@ function TabRow({
   selected = false,
   dragging = false,
   memberOf = null,
+  underEntry = false,
   onActivate,
   onPointerDown,
   onContextMenu,
@@ -181,6 +184,8 @@ function TabRow({
   dragging?: boolean;
   /** The tab group this row is drawn inside: to the drag it is a slot IN that group, not one of the day's. */
   memberOf?: string | null;
+  /** A page's group's, drawn under its favorite or pin while its desk is up: no slot among the rows to the drag. */
+  underEntry?: boolean;
   onActivate: (event: TabSelectionEvent) => void;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -214,7 +219,7 @@ function TabRow({
       }}
       title={rowTitle(tab.title, tab.url)}
       data-flip-id={flipId}
-      data-row-kind={memberOf === null ? "tab" : "member"}
+      data-row-kind={underEntry ? "entry" : memberOf === null ? "tab" : "member"}
       data-group-id={memberOf ?? undefined}
       data-entity-id={flipId}
       style={{ height: ROW_H }}
@@ -302,6 +307,7 @@ function SplitRow({
   tabs,
   dragging = false,
   memberOf = null,
+  underEntry = false,
   selectedTabIds,
   onActivate,
   onPointerDown,
@@ -311,6 +317,8 @@ function SplitRow({
   tabs: ChromeTab[];
   dragging?: boolean;
   memberOf?: string | null;
+  /** As TabRow's. */
+  underEntry?: boolean;
   selectedTabIds: ReadonlySet<string>;
   onActivate: (tabId: string, event: TabSelectionEvent) => void;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
@@ -324,7 +332,7 @@ function SplitRow({
       onPointerDown={onPointerDown}
       data-flip-id={flipId}
       data-split-group-id={flipId}
-      data-row-kind={memberOf === null ? "tab" : "member"}
+      data-row-kind={underEntry ? "entry" : memberOf === null ? "tab" : "member"}
       data-group-id={memberOf ?? undefined}
       data-entity-id={flipId}
       className={cn(
@@ -399,6 +407,7 @@ function PinRow({
   pin,
   depth,
   live,
+  tabCount = 0,
   selected = false,
   dragging = false,
   onOpen,
@@ -408,6 +417,8 @@ function PinRow({
   pin: SidebarPin;
   depth: 0 | 1;
   live: ChromeTab | null;
+  /** The tabs of its page's group besides its page (TabGroupInfo.anchorId), waiting on its desk: said beside its title. */
+  tabCount?: number;
   selected?: boolean;
   dragging?: boolean;
   onOpen: (event: TabSelectionEvent) => void;
@@ -476,6 +487,7 @@ function PinRow({
       <span className="min-w-0 flex-1 truncate">
         {live === null ? title : <TabTitle tab={live} />}
       </span>
+      {tabCount > 0 ? <EntryTabCount count={tabCount} testId="pin-tab-count" /> : null}
       <span className="-my-1 -mr-1 flex shrink-0 items-center">
         <span className="grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-hover:grid-cols-[1fr] group-hover:opacity-100 group-has-[:focus-visible]:grid-cols-[1fr] group-has-[:focus-visible]:opacity-100">
           <span className="flex min-w-0 items-center gap-0.5 overflow-hidden">
@@ -893,6 +905,9 @@ export function TabList() {
   const closeTab = useAppStore((s) => s.closeTab);
   const sidebarCommand = useAppStore((s) => s.sidebarCommand);
   const tabGroups = useAppStore((s) => s.snapshot?.tabGroups ?? NO_TAB_GROUPS);
+  // The pages' groups (a favorite's, a pin's): their tabs are under their entries, not among the day's.
+  const pageGroups = useAppStore((s) => s.snapshot?.anchorGroups ?? NO_TAB_GROUPS);
+  const pageGroupTabIds = useMemo(() => anchorGroupTabIds(pageGroups), [pageGroups]);
   const splitGroups = useAppStore((s) => s.snapshot?.splitGroups);
   const tabGroupCommand = useAppStore((s) => s.tabGroupCommand);
   const tidyRunning = useAppStore((s) => s.tidyRunning);
@@ -939,13 +954,13 @@ export function TabList() {
     return map;
   }, [tabs]);
   const dayItems = useMemo(
-    () => rowItems(tabs.filter((tab) => tab.anchorId === null)),
-    [tabs],
+    () => rowItems(tabs.filter((tab) => tab.anchorId === null && !pageGroupTabIds.has(tab.id))),
+    [tabs, pageGroupTabIds],
   );
   const dayUnits = useMemo<DayUnit[]>(() => {
     const byId = new Map(tabs.map((tab) => [tab.id, tab]));
     const groupByUnit = new Map(tabGroups.map((group) => [tabGroupUnitId(group.id), group]));
-    const day = tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id);
+    const day = tabs.filter((tab) => tab.anchorId === null && !pageGroupTabIds.has(tab.id)).map((tab) => tab.id);
     return dayRowUnits(day, splitGroups ?? [], tabGroups).flatMap((unit): DayUnit[] => {
       const members = unit.tabIds.flatMap((tabId) => byId.get(tabId) ?? []);
       if (members.length === 0) return [];
@@ -953,7 +968,7 @@ export function TabList() {
       if (unit.kind === "group" && group !== undefined) return [{ kind: "group", id: unit.id, group, tabs: members, rows: rowItems(members) }];
       return [{ kind: "row", id: unit.id, row: { id: unit.id, tabs: members, active: members.some((tab) => tab.active) } }];
     });
-  }, [tabs, tabGroups, splitGroups]);
+  }, [tabs, tabGroups, splitGroups, pageGroupTabIds]);
 
   // ── Which groups are open ────────────────────────────────────────────────
   // A group is open while it is held open (a click on its header), holds a
@@ -1149,11 +1164,13 @@ export function TabList() {
         const next = [...units];
         next.splice(Math.min(drop.index, next.length), 0, ghost);
         units = next;
-      } else if (drop.zone === "group" && (item.kind === "tab" || item.kind === "split") && item.tabs.length > 0) {
+      } else if (drop.zone === "group" && (((item.kind === "tab" || item.kind === "split") && item.tabs.length > 0) || item.kind === "favorite" || item.kind === "pin")) {
         // Into a tab group: the row is drawn where it would sit among the
         // group's tabs, and the group is open for as long as it is the target.
+        // (A favorite's or pin's page comes down into it — a fresh one, with none open.)
         receivingGroupId = drop.groupId;
-        const ghost: RowItem = { id: item.entityId, tabs: item.tabs, active: item.tabs.some((t) => t.active) };
+        const rowTabs = item.tabs.length > 0 ? item.tabs : [phantomTab(item.entityId, item.title, item.url, item.faviconUrl)];
+        const ghost: RowItem = { id: item.entityId, tabs: rowTabs, active: rowTabs.some((t) => t.active) };
         units = units.map((unit): DayUnit => {
           if (unit.kind !== "group" || unit.group.id !== drop.groupId) return unit;
           const rows = [...unit.rows];
@@ -1603,6 +1620,18 @@ export function TabList() {
   const deskGroupId = useDeskStore((s) => s.groupId);
   // The desk is a loose tab's (TabGroupInfo.loose): its tab is drawn alone, and the Stack goes under its row.
   const deskLoose = useAppStore((s) => s.snapshot?.looseGroups?.find((group) => group.id === deskGroupId) ?? null);
+  // The desk is a page's (TabGroupInfo.anchorId), a favorite's or pin's: the tabs of its group are drawn under its entry
+  // — a pin's under its row, a favorite's at the head of the list, under the favorites, its page's row first — and the
+  // Stack after them.
+  const deskPage = pageGroups.find((group) => group.id === deskGroupId) ?? null;
+  const deskPageTabId = deskPage === null ? null : groupPageOf(deskPage, tabs);
+  const deskPageTab = deskPageTabId === null ? null : (tabs.find((tab) => tab.id === deskPageTabId) ?? null);
+  const deskPageRows = useMemo(
+    () => (deskPage === null ? [] : rowItems(deskPage.tabIds.flatMap((tabId) => (tabId === deskPageTabId ? [] : (tabs.find((tab) => tab.id === tabId) ?? []))))),
+    [deskPage, deskPageTabId, tabs],
+  );
+  /** Each entry's page's group's tabs besides its page, by entry: said beside it while its desk is not up. */
+  const entryTabCounts = useMemo(() => new Map(pageGroups.map((group) => [group.anchorId ?? "", group.tabIds.length - 1])), [pageGroups]);
 
   const pinMenu = (pin: SidebarPin): MenuEntry[] => {
     const live = liveByAnchor.get(pin.id) ?? null;
@@ -1820,9 +1849,10 @@ export function TabList() {
     };
   };
   /** One of the day's rows — at the top level, or inside the tab group `groupId`. */
-  const renderRow = (item: RowItem, groupId: string | null): React.ReactNode => {
+  const renderRow = (item: RowItem, groupId: string | null, options: { underEntry?: boolean; drag?: ShelfItem } = {}): React.ReactNode => {
     const [first] = item.tabs;
     if (first === undefined) return null;
+    const underEntry = options.underEntry === true;
     const openMenu = (tab: ChromeTab, e: React.MouseEvent): void => {
       setMenuGroupId(groupId);
       // The desk's tab: what the desk does with its window first.
@@ -1834,10 +1864,11 @@ export function TabList() {
         flipId={item.id}
         tab={first}
         memberOf={groupId}
+        underEntry={underEntry}
         selected={isShownSelected(tabSelectionKey(first.id))}
         dragging={grabbedId === item.id}
         onActivate={(event) => activate(first.id, event)}
-        onPointerDown={(e) => beginPress(itemFor(item), e)}
+        onPointerDown={(e) => beginPress(options.drag ?? itemFor(item), e)}
         onContextMenu={(e) => openMenu(first, e)}
       />
     ) : (
@@ -1846,12 +1877,36 @@ export function TabList() {
         flipId={item.id}
         tabs={item.tabs}
         memberOf={groupId}
+        underEntry={underEntry}
         selectedTabIds={selectedDayTabIds}
         dragging={grabbedId === item.id}
         onActivate={activate}
-        onPointerDown={(e) => beginPress(itemFor(item), e)}
+        onPointerDown={(e) => beginPress(options.drag ?? itemFor(item), e)}
         onContextMenu={openMenu}
       />
+    );
+  };
+
+  /**
+   * The desk's page's group under its entry: its page's row (none under a
+   * pin, whose own row it is), the tabs beside it, and the Stack. Carried
+   * off, the page's row is its entry, as the tile or the pin's row is.
+   */
+  const entryTabs = (group: TabGroupInfo, withPage: boolean): React.ReactNode => {
+    const anchorId = group.anchorId ?? "";
+    const pin = shelf.entries.some((entry) => entry.kind === "pin" && entry.id === anchorId);
+    const page = withPage ? deskPageTab : null;
+    return (
+      <div data-testid="entry-tabs" data-anchor-id={anchorId} className="flex flex-col gap-0.5">
+        {page === null
+          ? null
+          : renderRow({ id: page.id, tabs: [page], active: page.active }, null, {
+              underEntry: true,
+              drag: { flipId: page.id, kind: pin ? "pin" : "favorite", entityId: anchorId, title: page.title, url: page.url, faviconUrl: page.faviconUrl, tabs: [page], deskTab: page, managed: isPresetAnchorId(anchorId) },
+            })}
+        <div className={cn("flex flex-col gap-0.5", !rail && "pl-[18px]")}>{deskPageRows.map((row) => renderRow(row, group.id, { underEntry: true }))}</div>
+        <DeskContextRow group={group} />
+      </div>
     );
   };
 
@@ -1877,6 +1932,8 @@ export function TabList() {
       url: pin.url,
       faviconUrl: pin.faviconUrl,
       tabs: live === undefined ? [] : [live],
+      // Carried out over a desk, its page's window (chrome/shelf-drag.tsx).
+      ...(live === undefined ? {} : { deskTab: live }),
     };
   };
   const folderItem = (folder: SidebarFolder): ShelfItem => ({
@@ -1904,6 +1961,8 @@ export function TabList() {
           className="relative flex flex-col gap-0.5 px-2 py-1"
           style={{ paddingBottom: mediaInset + 4 }}
         >
+          {/* A favorite's desk (or a pin's whose row is folded away): its page and the tabs of its group, under the favorites. */}
+          {deskPage !== null && !(sectionOpen("pinned") && rows.some((row) => row.kind === "pin" && row.pin.id === deskPage.anchorId)) ? entryTabs(deskPage, true) : null}
           {rows.length > 0 ? (
             <SectionHeader
               id="pinned"
@@ -1953,23 +2012,27 @@ export function TabList() {
                     }}
                   />
                 ) : (
-                  <PinRow
-                    key={row.pin.id}
-                    pin={row.pin}
-                    depth={row.depth}
-                    live={liveFor(row.pin)}
-                    selected={isShownSelected(pinSelectionKey(row.pin.id))}
-                    dragging={grabbedId === row.pin.id}
-                    onOpen={(event) => openPin(row.pin, event)}
-                    onPointerDown={(e) => beginPress(pinItem(row.pin), e)}
-                    onContextMenu={(e) => {
-                      openTabContextMenu(
-                        pinSelectionKey(row.pin.id),
-                        e,
-                        () => pinMenu(row.pin),
-                      );
-                    }}
-                  />
+                  <Fragment key={row.pin.id}>
+                    <PinRow
+                      pin={row.pin}
+                      depth={row.depth}
+                      live={liveFor(row.pin)}
+                      tabCount={deskPage?.anchorId === row.pin.id ? 0 : (entryTabCounts.get(row.pin.id) ?? 0)}
+                      selected={isShownSelected(pinSelectionKey(row.pin.id))}
+                      dragging={grabbedId === row.pin.id}
+                      onOpen={(event) => openPin(row.pin, event)}
+                      onPointerDown={(e) => beginPress(pinItem(row.pin), e)}
+                      onContextMenu={(e) => {
+                        openTabContextMenu(
+                          pinSelectionKey(row.pin.id),
+                          e,
+                          () => pinMenu(row.pin),
+                        );
+                      }}
+                    />
+                    {/* Its desk up: the tabs of its page's group under it, and the Stack. */}
+                    {deskPage !== null && deskPage.anchorId === row.pin.id ? entryTabs(deskPage, false) : null}
+                  </Fragment>
                 ),
               )}
             </div>

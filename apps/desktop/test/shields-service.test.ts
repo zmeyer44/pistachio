@@ -81,7 +81,6 @@ function fakeContents(id: number, url = "https://news.example/", session?: Sessi
   const contents = {
     id,
     session,
-    setUserAgent: vi.fn(),
     getURL: () => url,
     isDestroyed: () => false,
     setWebRTCIPHandlingPolicy: vi.fn(),
@@ -352,13 +351,45 @@ describe("the Shields service", () => {
     expect(service.cosmetics("https://ads.example.net/frame", { classes: ["creative"], ids: [], hrefs: [] }, "https://news.example/")).toBe("");
   });
 
-  it("changes the user agent of tabs already open, not only the session's default", async () => {
-    const { tab, update } = await setup();
-    const setUserAgent = tab.contents.setUserAgent as unknown as { mock: { calls: string[][] } };
-    update({ fingerprinting: "off" });
-    expect(setUserAgent.mock.calls.at(-1)?.[0]).toContain("Electron/");
-    update({ fingerprinting: "standard" });
-    expect(setUserAgent.mock.calls.at(-1)?.[0]).toMatch(/Chrome\/150\.0\.0\.0 Safari/);
+  it("keeps Electron's user agent, and gives Chrome's only to the sites that refuse it", async () => {
+    const { fire, service, update, userAgent } = await setup();
+    // At every level: Cloudflare Turnstile fails a page whose user agent hides the Electron/ token.
+    const electron = userAgent();
+    expect(electron).toContain("Electron/");
+    update({ fingerprinting: "strict" });
+    expect(userAgent()).toBe(electron);
+    const chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+    const sent = async (details: Record<string, unknown>) =>
+      ((await fire("send", { ...details, requestHeaders: { "User-Agent": electron } })).requestHeaders as Record<string, string>)["User-Agent"];
+    const google = { url: "https://accounts.google.com/signin", top: { url: "https://accounts.google.com/signin" } };
+    const news = { url: "https://news.example/", top: { url: "https://news.example/" } };
+    // Google's sign-in, what its pages ask for, and what other sites ask of it…
+    expect(await sent(page("https://accounts.google.com/signin"))).toBe(chrome);
+    expect(await sent(sub("https://www.gstatic.com/a.js", "script", { frame: google }))).toBe(chrome);
+    expect(await sent(sub("https://accounts.google.com/gsi/client", "script", { frame: news }))).toBe(chrome);
+    // …but not another site's own requests, nor the page a Google frame goes on to.
+    expect(await sent(sub("https://news.example/a.js", "script", { frame: news }))).toBe(electron);
+    expect(await sent(page("https://news.example/", { frame: google }))).toBe(electron);
+    // Its pages read the same from navigator, a blank frame as its page does.
+    expect(service.frameBootstrap("https://accounts.google.com/signin")?.protections.userAgent).toBe(chrome);
+    expect(service.frameBootstrap("about:blank", "https://accounts.google.com/signin", "https://accounts.google.com/signin")?.protections.userAgent).toBe(chrome);
+    expect(service.frameBootstrap("https://news.example/")?.protections.userAgent).toBeNull();
+    // A blank or blob frame belongs to the frame it inherits its origin from,
+    // not to the top page: navigator and requests agree either way round.
+    const googleFrame = { url: "https://accounts.google.com/gsi/iframe", parent: { url: "https://news.example/", parent: null }, top: { url: "https://news.example/" } };
+    const newsFrame = { url: "https://news.example/frame", parent: { url: "https://accounts.google.com/signin", parent: null }, top: { url: "https://accounts.google.com/signin" } };
+    for (const url of ["about:srcdoc", "blob:https://accounts.google.com/2c0b"]) {
+      expect(await sent(sub("https://news.example/a.js", "script", { frame: { url, parent: googleFrame, top: { url: "https://news.example/" } } })), url).toBe(chrome);
+      expect(service.frameBootstrap(url, "https://news.example/", "https://accounts.google.com/gsi/iframe")?.protections.userAgent, url).toBe(chrome);
+    }
+    expect(await sent(sub("https://news.example/a.js", "script", { frame: { url: "about:srcdoc", parent: newsFrame, top: { url: "https://accounts.google.com/signin" } } }))).toBe(electron);
+    expect(service.frameBootstrap("about:srcdoc", "https://accounts.google.com/signin", "https://news.example/frame")?.protections.userAgent).toBeNull();
+    // A data: frame has an origin of its own: Electron's, whatever its page.
+    expect(service.frameBootstrap("data:text/html,x", "https://accounts.google.com/signin", null)?.protections.userAgent).toBeNull();
+    // The site working is not a protection: lowering Shields there keeps it.
+    service.setSite("google.com", false);
+    expect(await sent(page("https://accounts.google.com/signin"))).toBe(chrome);
+    expect(service.frameBootstrap("https://accounts.google.com/signin")?.protections).toMatchObject({ fingerprinting: "off", userAgent: chrome });
   });
 
   it("matches requests from about:blank and about:srcdoc frames in the site they inherit", async () => {
@@ -409,17 +440,14 @@ describe("the Shields service", () => {
     });
   });
 
-  it("hands the page its hiding rules and protections, and reports a plain Chrome user agent", async () => {
-    const { service, update, userAgent } = await setup({ customFilters: "news.example##.promo\n##.ad-slot" });
+  it("hands the page its hiding rules and protections", async () => {
+    const { service } = await setup({ customFilters: "news.example##.promo\n##.ad-slot" });
     const boot = service.frameBootstrap("https://news.example/a");
     expect(boot?.styles).toContain(".promo");
     expect(boot?.watchDom).toBe(true);
     expect(boot?.protections.fingerprinting).toBe("standard");
     expect(service.cosmetics("https://news.example/a", { classes: ["ad-slot"], ids: [], hrefs: [] })).toContain(".ad-slot");
     expect(service.frameBootstrap("pistachio://home/")).toBeNull();
-    expect(userAgent()).not.toContain("Electron");
-    update({ fingerprinting: "off" });
-    expect(userAgent()).toContain("Electron");
     // The same site gets the same seed for the run; another site another.
     expect(service.frameBootstrap("https://a.news.example/")?.protections.seed).toBe(boot?.protections.seed);
     expect(service.frameBootstrap("https://elsewhere.example/")?.protections.seed).not.toBe(boot?.protections.seed);

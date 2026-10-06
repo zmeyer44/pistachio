@@ -133,11 +133,12 @@ describe("the desks a tab can be on", () => {
     expect(isDayTab(tab({ unlisted: true }))).toBe(false);
   });
 
-  it("a page's own desk is told from a group's by its id, and never saved", () => {
+  it("a page's own desk is told from a group's by its id, and saved as a group's is, to come back where it was left", () => {
     expect(tabDeskOf(tabDeskId("page"))).toBe("page");
     expect(tabDeskOf("g1")).toBe(null);
     expect(tabDeskOf(null)).toBe(null);
-    useDeskStore.getState().save(tabDeskId("page"), { windows: [{ tabId: "page", rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 } }] });
-    expect(useDeskStore.getState().saved[tabDeskId("page")]).toBeUndefined();
+    const windows = [{ tabId: "page", rect: { x: 0, y: 0, w: 1, h: 1 } }];
+    useDeskStore.getState().save(tabDeskId("page"), { windows });
+    expect(useDeskStore.getState().saved[tabDeskId("page")]).toEqual({ windows });
   });
 });

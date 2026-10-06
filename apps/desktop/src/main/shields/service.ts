@@ -8,8 +8,9 @@
  *   fails open, never closed.
  * - Requests: one set of handlers per session on the RequestHub — tracking
  *   parameters, bounce pages, HTTPS upgrades, dangerous pages, the blocking
- *   engine; then headers: Global Privacy Control, referrer trimming,
- *   cross-site cookies, `<a ping>`, `$csp`.
+ *   engine; then headers: Global Privacy Control, Chrome's user agent for the
+ *   sites that refuse Electron's, referrer trimming, cross-site cookies,
+ *   `<a ping>`, `$csp`.
  * - Pages: the tab preload asks (synchronously, at document start) for the
  *   page's hiding CSS, scriptlets, and protections, and later for the generic
  *   CSS its DOM calls for.
@@ -55,7 +56,17 @@ import { interstitialHtml, proceedHtml, type InterstitialPage } from "./intersti
 import { ListStore, RESOURCES_ID, type FetchLike } from "./lists";
 import { HUB_PRIORITY, RequestHub } from "./request-hub";
 import { ShieldsSiteStore } from "./site-store";
-import { bounceDestination, chromeUserAgent, httpsUpgradeFor, isCrossSite, referrerFor, siteOf, stripTrackingParams } from "./url-rules";
+import {
+  bounceDestination,
+  CHROME_USER_AGENT_HOSTS,
+  chromeUserAgent,
+  httpsUpgradeFor,
+  isCrossSite,
+  referrerFor,
+  siteOf,
+  stripTrackingParams,
+  wantsChromeUserAgent,
+} from "./url-rules";
 
 /** How often lists are checked for staleness while the app runs. */
 const CHECK_EVERY_MS = 60 * 60_000;
@@ -94,6 +105,8 @@ export interface ShieldsServiceOptions {
   onStatusChanged?: () => void;
   /** The least WebRTC may be held to whatever Shields says (identity egress needs `proxied`). */
   webRtcFloor: () => ShieldsWebRtc;
+  /** The hosts that get Chrome's user agent: CHROME_USER_AGENT_HOSTS unless a spec names its own. */
+  chromeUserAgentHosts?: readonly string[];
 }
 
 interface PageStats {
@@ -133,7 +146,8 @@ export class ShieldsService {
   readonly #fingerprintKey = randomBytes(32);
   readonly #seeds = new Map<string, number>();
   readonly #sessions = new Set<Session>();
-  readonly #userAgents = new WeakMap<Session, string>();
+  /** Electron's user agent as Chrome spells it, for the sites that refuse Electron's; null until a session is attached. */
+  #chromeUserAgent: string | null = null;
   readonly #contents = new Map<number, WebContents>();
   readonly #pages = new Map<number, PageStats>();
   /** A main-frame redirect Shields made, so the page it lands on keeps the count. */
@@ -208,15 +222,6 @@ export class ShieldsService {
     if (previous.webRtc !== next.webRtc || previous.enabled !== next.enabled) {
       for (const contents of this.#contents.values()) this.#applyWebRtc(contents);
     }
-    if (previous.fingerprinting !== next.fingerprinting || previous.enabled !== next.enabled) {
-      for (const session of this.#sessions) this.#applyUserAgent(session);
-      // A session's user agent reaches only pages created after it is set;
-      // the tabs already open take it one by one.
-      for (const contents of this.#contents.values()) {
-        const original = contents.isDestroyed() ? undefined : this.#userAgents.get(contents.session);
-        if (original !== undefined) contents.setUserAgent(this.#userAgentFor(original));
-      }
-    }
     if (previous.enabled !== next.enabled) for (const session of this.#sessions) this.#wire(session);
     this.#notifyAll();
     this.#options.onStatusChanged?.();
@@ -234,11 +239,16 @@ export class ShieldsService {
     return this.#sessions.has(session);
   }
 
-  /** Protect a Space session: its request handlers, and its user agent. */
+  /**
+   * Protect a Space session: its request handlers. Its user agent stays
+   * Electron's own (`Pistachio/x … Electron/y`): Cloudflare Turnstile passes
+   * a page only while that token is there, so Shields never reduce it for the
+   * whole session — only for the sites that refuse it (#sendHeaders, and the
+   * page's own `navigator` through frameBootstrap).
+   */
   attachSession(session: Session): void {
     this.#sessions.add(session);
-    if (!this.#userAgents.has(session)) this.#userAgents.set(session, session.getUserAgent());
-    this.#applyUserAgent(session);
+    this.#chromeUserAgent ??= chromeUserAgent(session.getUserAgent());
     this.#wire(session);
   }
 
@@ -304,20 +314,9 @@ export class ShieldsService {
     contents.setWebRTCIPHandlingPolicy(WEBRTC_POLICY[policy]);
   }
 
-  /**
-   * Electron's user agent names the app and Electron (`Pistachio/0.0.29 …
-   * Electron/43.4.1`): a rare string any site can read, and one some sites
-   * refuse. With fingerprinting protection on, the session reports what
-   * Chrome of the same version reports.
-   */
-  #applyUserAgent(session: Session): void {
-    const original = this.#userAgents.get(session);
-    if (original !== undefined) session.setUserAgent(this.#userAgentFor(original));
-  }
-
-  #userAgentFor(original: string): string {
-    const reduce = this.#settings.enabled && this.#settings.fingerprinting !== "off";
-    return reduce ? chromeUserAgent(original) : original;
+  /** Whether this address is on a site that refuses Electron's user agent. */
+  #wantsChromeUserAgent(url: string): boolean {
+    return wantsChromeUserAgent(url, this.#options.chromeUserAgentHosts ?? CHROME_USER_AGENT_HOSTS);
   }
 
   /* -------------------------------- requests ------------------------------- */
@@ -433,6 +432,15 @@ export class ShieldsService {
     // GPC speaks for the person, not for the page: it is sent where Shields are down too.
     if (settings.globalPrivacyControl) headers["Sec-GPC"] = "1";
     const isMain = resourceType === "mainFrame";
+    // Chrome's user agent for a site that refuses Electron's: its documents,
+    // and whatever its documents ask for. A document is judged by its own
+    // address — the frame that requests it still shows the page it leaves.
+    // The site working is not a protection, so its exception keeps this too.
+    const isDocument = isMain || resourceType === "subFrame";
+    if (this.#wantsChromeUserAgent(url) || (!isDocument && this.#wantsChromeUserAgent(frameUrlOf(details) ?? ""))) {
+      const key = headerKey(headers, "user-agent");
+      if (key !== null) headers[key] = chromeUserAgent(headers[key] ?? "");
+    }
     const topUrl = isMain ? url : (this.#topUrl(details) ?? details.referrer);
     if (topUrl !== "" && this.#exceptionFor(topUrl) !== null) return;
     if (settings.blockPings && resourceType === "ping" && headerKey(headers, "ping-to") !== null) {
@@ -548,16 +556,20 @@ export class ShieldsService {
    * exception lowers Shields in every frame of the page, and its seed is the
    * whole page's, so a frame cannot read different noise than its page. An
    * about:, blob:, or data: frame gets the protections and nothing else.
+   * `ownerUrl` is the site the frame itself belongs to (frameOwnerUrl), which
+   * decides its user agent as it does its requests'.
    */
-  frameBootstrap(url: string, topUrl: string = url): ShieldsFrameBootstrap | null {
+  frameBootstrap(url: string, topUrl: string = url, ownerUrl: string | null = /^https?:/.test(url) ? url : null): ShieldsFrameBootstrap | null {
     const settings = this.#settings;
     const web = /^https?:/.test(url);
     if (!settings.enabled || !/^https?:/.test(topUrl) || !(web || /^(about|blob|data):/.test(url))) return null;
     const exception = this.#exceptionFor(topUrl) !== null;
+    const chrome = this.#chromeUserAgent !== null && ownerUrl !== null && this.#wantsChromeUserAgent(ownerUrl);
     const protections = {
       globalPrivacyControl: settings.globalPrivacyControl,
       fingerprinting: exception ? ("off" as const) : settings.fingerprinting,
       seed: this.#seedFor(topUrl),
+      userAgent: chrome ? this.#chromeUserAgent : null,
     };
     if (exception || !web) return { styles: "", scripts: [], watchDom: false, protections };
     let styles = "";
@@ -973,12 +985,26 @@ export class ShieldsService {
  * or about:srcdoc frame, of the nearest ancestor it inherits its origin from,
  * so `$domain=` rules match in it as they do in its page.
  */
-function frameUrlOf(details: OnBeforeRequestListenerDetails): string | null {
+function frameUrlOf(details: { frame?: WebFrameMain | null }): string | null {
+  return frameOwnerUrl(details.frame ?? null);
+}
+
+/**
+ * The web address whose site a frame belongs to: its own; a blob: document's
+ * origin, where it was made; for about:blank and about:srcdoc, the nearest
+ * ancestor's they inherit from. Null for a data: frame (an origin of its own)
+ * or a frame already gone.
+ */
+export function frameOwnerUrl(start: WebFrameMain | null): string | null {
   try {
-    let frame = details.frame ?? null;
+    let frame = start;
     for (let depth = 0; frame !== null && depth < 16; depth += 1) {
       const url = frame.url;
       if (/^https?:/.test(url)) return url;
+      if (url.startsWith("blob:")) {
+        const origin = new URL(url).origin;
+        return /^https?:/.test(origin) ? `${origin}/` : null;
+      }
       if (!url.startsWith("about:") && url !== "") return null;
       frame = frame.parent;
     }

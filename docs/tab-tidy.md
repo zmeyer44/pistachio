@@ -129,8 +129,9 @@ the model is asked (≤ 12 s). With nothing to do: "Tabs are already tidy".
     its own group. Under the group's LAST tab the pointer's x decides, the
     way an outliner does it: indented stays in, flush left leaves.
   - A tab dragged from a group down among the day's rows **leaves** it.
-  - A **group** drags as one unit and never lands inside another; pins and
-    favorites dropped over a group land beside it.
+  - A **group** drags as one unit and never lands inside another. A pin or
+    favorite dropped in a group brings its page down into it, the entry
+    staying, closed (docs/desk.md, "Bringing an entry's page down").
   - Dropping is the person's hand, so it makes an `auto` group theirs.
   - After a drop the group stays open while the pointer is seen to be on it,
     and otherwise lets go after a moment — the drop settles only once main
@@ -174,6 +175,18 @@ put to sleep and re-addressed rather than navigated — nothing loads until the
 favorite is next opened — with the page it was on kept in its stack, so
 **Back** still returns to it. Pins are left alone: they already have "Return to pinned
 page", and a pin is often a deliberate deep link.
+
+A favorite with a group of its own — tabs opened on its desk (docs/desk.md, "A
+page's group") — goes home whole, and first: once every tab of it is out of
+view, silent and settled (a quarter of an hour on Tidy's own clock; at once
+when asked), the group goes to the archive as one entry under the favorite's
+name if all of it has gone idle (the archive age), or else comes down into the
+day's tabs, after them, as a group like any other, named from its tabs. Either
+way the favorite is left closed, to open afresh at its address. Such a group
+makes a Space due on Tidy's clock, and the notice says "Brought down 1
+favorite's group"; Undo makes it the favorite's again (an archived one
+reopened, led by its page). A pin's group is never reset. (`favoriteGroupsDue`,
+`archivePageGroup`, `bringDownPageGroup`, `leadGroup`.)
 
 ### 3.8 Keeping a tab
 

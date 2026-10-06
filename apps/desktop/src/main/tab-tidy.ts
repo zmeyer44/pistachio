@@ -54,6 +54,17 @@ export interface TidyHost<R> {
     minIdleMs: number,
   ): Promise<R[]>;
   restoreFavoriteTabs(previous: readonly R[]): void;
+  /**
+   * The favorites' groups (TabGroupInfo.anchorId) the reset may take now: all of each out of view and left alone for
+   * `minIdleMs`; `idle`, all of it past the archive age as well (docs/tab-tidy.md §3.7).
+   */
+  favoriteGroupsDue(spaceId: string, isFavorite: (anchorId: string) => boolean, now: number, idleMs: number, minIdleMs: number): Array<{ groupId: string; idle: boolean }>;
+  /** A favorite's group to the archive whole, its page with it, the favorite left closed; null when any of it may not go. */
+  archivePageGroup(groupId: string): { anchorId: string; pageTabId: string; tabs: Array<{ tabId: string; index: number; tab: ArchivedTab }> } | null;
+  /** A favorite's group down into the day's tabs, after them, a group like any other; the favorite left closed. */
+  bringDownPageGroup(groupId: string): { anchorId: string; pageTabId: string } | null;
+  /** Undo of the two above: the tab is its favorite's page again, leading the group. */
+  leadGroup(groupId: string, tabId: string, anchorId: string): void;
   /** A Space's tabs in row order. */
   tabOrderOf(spaceId: string): string[];
   /** Put a Space's tabs back in a recorded order; tabs it does not name follow, ids that are gone are skipped. */
@@ -95,11 +106,13 @@ interface UndoRecord<R> {
   order: string[];
   /** What the run closed, by the id each tab had. */
   archived: Array<{ tabId: string; tab: ArchivedTab; group: number | null }>;
-  /** Live groups the run archived whole, to be formed again. */
-  groups: Array<{ title: string; color: TabGroupColor; origin: TabGroupInfo["origin"] }>;
+  /** Live groups the run archived whole, to be formed again — a favorite's led by its page again (`lead`). */
+  groups: Array<{ title: string; color: TabGroupColor; origin: TabGroupInfo["origin"]; lead?: { anchorId: string; pageTabId: string } }>;
   createdGroupIds: string[];
   joinedTabIds: string[];
   favorites: R[];
+  /** Favorites' groups the run brought down into the day's tabs, to be their favorites' again. */
+  broughtDown: Array<{ groupId: string; anchorId: string; pageTabId: string }>;
 }
 
 export class TabTidy<R> {
@@ -139,11 +152,13 @@ export class TabTidy<R> {
       const now = this.#now();
       if (now - (this.#lastRunAt.get(spaceId) ?? 0) < TIDY_LIMITS.minIntervalMs) continue;
       const found = this.#options.host.tidyCandidates(spaceId, now, idleMs);
-      const due = found.tabs.some((tab) => tab.eligible) || found.idleAutoGroupIds.length > 0 || found.staleHomeTabIds.length > 0;
+      const resetFavorites = this.#options.settings().resetFavorites;
+      const favoriteGroups = resetFavorites && this.#options.host.favoriteGroupsDue(spaceId, this.#isFavorite(spaceId), now, idleMs, FAVORITE_SETTLE_MS).length > 0;
+      const due = found.tabs.some((tab) => tab.eligible) || found.idleAutoGroupIds.length > 0 || found.staleHomeTabIds.length > 0 || favoriteGroups;
       if (due) {
         const summary = await this.run(spaceId, "auto");
-        if (summary.archivedTabs + summary.newGroups + summary.joinedTabs > 0) this.#options.announce(summary);
-      } else if (this.#options.settings().resetFavorites) {
+        if (summary.archivedTabs + summary.newGroups + summary.joinedTabs + (summary.favoriteGroups ?? 0) > 0) this.#options.announce(summary);
+      } else if (resetFavorites) {
         // Nothing to archive, but a favorite left on a deep page all day
         // still goes home — quietly: it is asleep, and Back returns to it.
         const reset = await this.#options.host.resetFavoriteTabs(spaceId, (anchorId) => this.#options.favoriteHome(spaceId, anchorId), now, idleMs);
@@ -162,6 +177,7 @@ export class TabTidy<R> {
       newGroups: 0,
       joinedTabs: 0,
       favoritesReset: 0,
+      favoriteGroups: 0,
       usedModel: false,
       firstRun: false,
     };
@@ -183,7 +199,7 @@ export class TabTidy<R> {
       const found = host.tidyCandidates(spaceId, now, idleMs);
       const plan = tidyPlan({ now, tabs: found.tabs, groups: found.groups }, answer);
 
-      const undo: UndoRecord<R> = { runId, spaceId, order: host.tabOrderOf(spaceId), archived: [], groups: [], createdGroupIds: [], joinedTabIds: [], favorites: [] };
+      const undo: UndoRecord<R> = { runId, spaceId, order: host.tabOrderOf(spaceId), archived: [], groups: [], createdGroupIds: [], joinedTabIds: [], favorites: [], broughtDown: [] };
       const drafts: ArchiveDraft[] = [];
       const wasEmpty = archive.isEmpty();
 
@@ -215,12 +231,23 @@ export class TabTidy<R> {
       }
       for (const join of plan.joins) undo.joinedTabIds.push(...host.addToTabGroup(join.groupId, join.tabIds, { byPerson: false }));
       if (settings.resetFavorites) {
-        undo.favorites = await host.resetFavoriteTabs(
-          spaceId,
-          (anchorId) => this.#options.favoriteHome(spaceId, anchorId),
-          now,
-          trigger === "manual" ? 0 : FAVORITE_SETTLE_MS,
-        );
+        const settle = trigger === "manual" ? 0 : FAVORITE_SETTLE_MS;
+        // A favorite with a group of its own goes home too, the group first: to the archive whole when all of it has gone
+        // idle, or else down into the day's tabs as a group like any other. The favorite is left closed, to open afresh.
+        for (const due of host.favoriteGroupsDue(spaceId, this.#isFavorite(spaceId), now, idleMs, settle)) {
+          if (!due.idle) {
+            const down = host.bringDownPageGroup(due.groupId);
+            if (down !== null) undo.broughtDown.push({ groupId: due.groupId, ...down });
+            continue;
+          }
+          const filed = host.archivePageGroup(due.groupId);
+          if (filed === null) continue;
+          const title = this.#options.favoriteHome(spaceId, filed.anchorId)?.title || "Favorite";
+          undo.groups.push({ title, color: "gray", origin: "manual", lead: { anchorId: filed.anchorId, pageTabId: filed.pageTabId } });
+          for (const tab of filed.tabs) undo.archived.push({ tabId: tab.tabId, tab: tab.tab, group: undo.groups.length - 1 });
+          drafts.push({ kind: "group", spaceId, reason: "idle", runId, group: { title, color: "gray", origin: "manual" }, tabs: filed.tabs.map((tab) => tab.tab) });
+        }
+        undo.favorites = await host.resetFavoriteTabs(spaceId, (anchorId) => this.#options.favoriteHome(spaceId, anchorId), now, settle);
       }
 
       host.commitTidy();
@@ -230,8 +257,9 @@ export class TabTidy<R> {
       summary.newGroups = undo.createdGroupIds.length;
       summary.joinedTabs = undo.joinedTabIds.length;
       summary.favoritesReset = undo.favorites.length;
+      summary.favoriteGroups = undo.broughtDown.length;
       summary.firstRun = wasEmpty && summary.archivedTabs > 0;
-      const didSomething = summary.archivedTabs + summary.newGroups + summary.joinedTabs + summary.favoritesReset > 0;
+      const didSomething = summary.archivedTabs + summary.newGroups + summary.joinedTabs + summary.favoritesReset + summary.favoriteGroups > 0;
       if (didSomething) this.#undo = undo;
       this.#lastRunAt.set(spaceId, now);
       this.#last = summary;
@@ -282,13 +310,24 @@ export class TabTidy<R> {
     // A reopened tab has a new id; it takes the place its old one had.
     host.restoreTabOrder(undo.spaceId, undo.order.map((tabId) => reopenedAs.get(tabId) ?? tabId));
     for (const [index, tabIds] of regrouped) {
-      const group = undo.groups[index];
+      const wanted = undo.groups[index];
       // A group of which one tab is left is not a group to make again.
-      if (group !== undefined && tabIds.length >= 2) host.createTabGroup({ ...group, tabIds });
+      if (wanted === undefined || tabIds.length < 2) continue;
+      const { lead, ...group } = wanted;
+      const made = host.createTabGroup({ ...group, tabIds });
+      // A favorite's group is its page's again.
+      const page = lead === undefined ? undefined : reopenedAs.get(lead.pageTabId);
+      if (made !== null && lead !== undefined && page !== undefined) host.leadGroup(made.id, page, lead.anchorId);
     }
+    for (const down of undo.broughtDown) host.leadGroup(down.groupId, down.pageTabId, down.anchorId);
     host.restoreFavoriteTabs(undo.favorites);
     host.commitTidy();
     return true;
+  }
+
+  /** Whether an anchor is a favorite's (or a preset's) in the Space — whose group the favorites reset takes; a pin's it never does. */
+  #isFavorite(spaceId: string): (anchorId: string) => boolean {
+    return (anchorId) => this.#options.favoriteHome(spaceId, anchorId) !== null;
   }
 
   #idleMs(): number {

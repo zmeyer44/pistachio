@@ -9,6 +9,7 @@ import { useShelfDrag, type ShelfItem } from "../chrome/shelf-drag";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { cn } from "../lib/cn";
 import { showOnDesk } from "../lib/desk/open";
+import { useDeskStore } from "../lib/desk/store";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
@@ -16,6 +17,7 @@ import { useBrandColors } from "../lib/brand-colors";
 import { BrandWash, brandBorderStyle } from "./BrandTile";
 import { Favicon, TabMark } from "./Favicon";
 import { RailFavorites } from "./RailFavorites";
+import { EntryTabCount } from "./EntryTabCount";
 import { useSidebarRail } from "./sidebar-rail";
 
 /**
@@ -74,6 +76,12 @@ export function FavoritesGrid() {
   const menu = useContextMenu();
   // On the desk's rail the favorites are one folder, its sheet holding this grid (RailFavorites).
   const rail = useSidebarRail();
+  // A favorite's page's group (TabGroupInfo.anchorId): how many tabs wait on its desk besides its page — and, its desk
+  // up, the favorite whose rows the list draws (TabList's entryTabs).
+  const pageGroups = useAppStore((s) => s.snapshot?.anchorGroups);
+  const deskGroupId = useDeskStore((s) => s.groupId);
+  const deskFavorite = pageGroups?.find((group) => group.id === deskGroupId)?.anchorId ?? null;
+  const tabCounts = useMemo(() => new Map((pageGroups ?? []).map((group) => [group.anchorId ?? "", group.tabIds.length - 1])), [pageGroups]);
 
   const liveByAnchor = useMemo(() => {
     const map = new Map<string, ChromeTab>();
@@ -154,6 +162,8 @@ export function FavoritesGrid() {
       faviconUrl: tile.faviconUrl,
       tabs: live === undefined ? [] : [live],
       managed: tile.managed,
+      // Carried out over a desk, its page's window (chrome/shelf-drag.tsx).
+      ...(live === undefined ? {} : { deskTab: live }),
     };
   };
 
@@ -215,6 +225,7 @@ export function FavoritesGrid() {
         ? glance.tab
         : null;
     const label = tile.title || prettyUrl(tile.url);
+    const waiting = tile.ghost || deskFavorite === tile.id ? 0 : (tabCounts.get(tile.id) ?? 0);
     return (
       <FavoriteTile
         key={tile.id}
@@ -309,6 +320,7 @@ export function FavoritesGrid() {
                 className="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 animate-pulse-dot rounded-full bg-green-700"
               />
             ) : null}
+            {waiting > 0 ? <EntryTabCount count={waiting} testId="favorite-tab-count" className="absolute -right-1 -bottom-1 bg-background-100 shadow-border" /> : null}
           </button>
         )}
       </FavoriteTile>
@@ -320,8 +332,11 @@ export function FavoritesGrid() {
     // closed with the middle button, the tile's own menu on a right-click.
     const open = tiles.flatMap((tile) => {
       const live = tile.ghost ? null : liveFor(tile);
-      if (live === null) return [];
+      // (Its desk up, its page's row is the list's, with the tabs of its group: TabList's entryTabs.)
+      if (live === null || deskFavorite === tile.id) return [];
       const label = tile.title || prettyUrl(tile.url);
+      const waiting = tabCounts.get(tile.id) ?? 0;
+      const flipId = `open:${tile.id}`;
       return [
         <button
           key={tile.id}
@@ -330,10 +345,15 @@ export function FavoritesGrid() {
           data-testid="rail-favorite-open"
           data-active={live.active ? "" : undefined}
           data-live-tab-id={live.id}
+          // Carried as its tile is: into the list, a group, the pinned, or out over the desk as its page's window.
+          data-flip-id={flipId}
+          data-drag-handle="true"
           aria-label={`${label}, open`}
           title={`${label}\n${prettyUrl(tile.url)}`}
-          className="rail-favorite-open no-drag"
+          className={cn("rail-favorite-open no-drag relative touch-none", grabbedId === tile.id && "z-30 cursor-grabbing")}
+          onPointerDown={(e) => beginPress({ ...itemFor(tile), flipId }, e)}
           onClick={() => {
+            if (justDragged()) return;
             if (!showOnDesk(live.id)) void sidebarCommand({ type: "open", anchorId: tile.id });
           }}
           onAuxClick={(e) => {
@@ -347,6 +367,7 @@ export function FavoritesGrid() {
           <span aria-hidden="true" className="[&>*]:size-5 [&>*]:rounded-[5px]">
             <TabMark tab={live} fallbackFaviconUrl={tile.faviconUrl} />
           </span>
+          {waiting > 0 ? <EntryTabCount count={waiting} testId="favorite-tab-count" className="absolute -right-0.5 -bottom-0.5 h-3.5 min-w-3.5 bg-background-100 text-[9px] shadow-border" /> : null}
         </button>,
       ];
     });

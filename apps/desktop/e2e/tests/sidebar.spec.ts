@@ -403,14 +403,14 @@ test("rows and tiles drag between the day's tabs, the pinned tree, its folders, 
     await expect(sidebar.getByTestId("pinned-tab")).toHaveCount(0);
     await atRest(app, shell, "05-dragged.png");
 
-    // A favorite dragged below the "New tab" row is a day tab again; the grid
-    // empties and disappears.
+    // A favorite dragged below the "New tab" row brings its page down: a day
+    // tab again, and the favorite stays, closed (its menu's Remove removes it).
     const newTab = await sidebar.getByTestId("new-tab-button").boundingBox();
     if (newTab === null) throw new Error("no new tab row");
     await drag(shell, favorite, { x: newTab.x + 40, y: newTab.y + newTab.height + 20 });
-    await expect(sidebar.getByTestId("favorite-tile")).toHaveCount(0);
-    await expect(sidebar.getByTestId("favorites-grid")).toHaveCount(0);
     await expect(list.getByTestId("human-tab")).toHaveCount(1);
+    await expect(sidebar.getByTestId("favorite-tile")).toHaveCount(1);
+    await expect(sidebar.getByTestId("favorite-tile")).not.toHaveAttribute("data-live", /.*/);
     // The folder is still there for the next page.
     await expect(folder).toHaveCount(1);
   } finally {

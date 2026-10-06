@@ -215,6 +215,8 @@ import {
   type DurableTabSession,
 } from "@pistachio/shell-contracts/tab-session";
 import {
+  anchorGroupTabIds,
+  DEFAULT_TAB_GROUP_TITLE,
   dayRowUnits,
   groupedTabOrder,
   nextTabGroupColor,
@@ -1418,6 +1420,7 @@ export class BrowserController {
         .map((group) => ({ ...group, tabIds: [...group.tabIds] })),
       tabGroups: this.tabGroups(),
       looseGroups: this.looseTabGroups(),
+      anchorGroups: this.anchorTabGroups(),
       run: scopedRun,
       threads,
       sidebar,
@@ -1841,7 +1844,7 @@ export class BrowserController {
         splitGroups: [...this.#splitGroups.values()]
           .filter((group) => group.tabIds.every((tabId) => ids.has(tabId)))
           .map((group) => ({ ...group, tabIds: [...group.tabIds] })),
-        tabGroups: [...this.tabGroups(space.id), ...this.looseTabGroups(space.id)],
+        tabGroups: [...this.tabGroups(space.id), ...this.looseTabGroups(space.id), ...this.anchorTabGroups(space.id)],
       };
     }
     this.#tabSessionStore.save({ version: TAB_SESSION_VERSION, spaces });
@@ -3267,6 +3270,10 @@ export class BrowserController {
         }
       }
     }
+    // A page's group follows its page to the entry it is the page of now (a favorite made a pin); let go of its entry,
+    // the page leaves its group a group like any other (#reconcileTabGroups).
+    const led = info.anchorId === null ? undefined : [...this.#tabGroups.values()].find((group) => group.anchorId === info.anchorId && group.tabIds.includes(info.id));
+    if (led !== undefined && anchorId !== null) this.#tabGroups.set(led.id, { ...led, anchorId });
     info.anchorId = anchorId;
     const managed = this.#tabs.get(info.id);
     if (managed !== undefined) changed.add(managed);
@@ -3723,8 +3730,9 @@ export class BrowserController {
     order.splice(order.indexOf(beside) + 1, 0, tabId);
     this.#tabOrder.splice(0, this.#tabOrder.length, ...order);
     const group = tabGroupOf([...this.#tabGroups.values()], beside);
-    // (A loose tab's group takes it only while its desk is up: elsewhere its tab is drawn alone, and a copy of it is a tab of its own.)
-    if (group !== null && (group.loose !== true || this.#onDesk(beside))) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: true });
+    // (A loose tab's group, or a page's, takes it only while its desk is up: elsewhere its tab is drawn alone, or is its entry's,
+    // and a copy of it is a tab of its own.)
+    if (group !== null && ((group.loose !== true && group.anchorId === undefined) || this.#onDesk(beside))) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: true });
   }
 
   async createAgentTab(
@@ -6118,7 +6126,6 @@ export class BrowserController {
     const info = tab?.info ?? dormant?.info;
     if (info === undefined) return null;
     const closingSpaceId = info.spaceId;
-    if (this.#glance?.ownerTabId === tabId) this.#discardGlance();
     const group = this.#splitGroupFor(tabId);
     const activeGroup =
       this.#activeTabId === null
@@ -6131,6 +6138,16 @@ export class BrowserController {
     const closingActiveTab = this.#activeTabId === tabId;
     if (info.kind === "human") this.#rememberClosedTab(info, history);
     if (tab !== undefined) {
+      // Out of the window and the map first: what follows may lay the
+      // window out (the Glance it owned, its video in the media preview, the
+      // fullscreen it held), and #confirmUnload already took the page down —
+      // a view whose page is gone reports no webContents at all, so a layout
+      // pass that met it would throw and leave the tab listed with nothing
+      // behind it.
+      this.#window.contentView.removeChildView(tab.view);
+      const contents = tab.view.webContents as WebContents | undefined;
+      if (contents !== undefined && !contents.isDestroyed()) contents.close();
+      this.#tabs.delete(tabId);
       this.#cancelPermissionsForTab(tabId);
       this.#cancelPasskeysForTab(tabId);
       this.#passkeySupport.delete(tabId);
@@ -6142,15 +6159,10 @@ export class BrowserController {
       this.#removeMedia(tabId);
       this.#readAloudTabGone(tabId, "closed");
       this.#releaseFullscreen(tabId);
-      this.#window.contentView.removeChildView(tab.view);
-      // #confirmUnload already took the page down; a view whose page is
-      // gone reports no webContents at all.
-      const contents = tab.view.webContents as WebContents | undefined;
-      if (contents !== undefined && !contents.isDestroyed()) contents.close();
-      this.#tabs.delete(tabId);
     } else {
       this.#dormantTabs.delete(tabId);
     }
+    if (this.#glance?.ownerTabId === tabId) this.#discardGlance();
     const orderIndex = this.#tabOrder.indexOf(tabId);
     if (orderIndex >= 0) this.#tabOrder.splice(orderIndex, 1);
     this.#tabThumbnails.delete(tabId);
@@ -6446,9 +6458,11 @@ export class BrowserController {
   }
 
   async clearUnpinnedTabs(): Promise<void> {
+    // (A favorite's or pin's page's group is its entry's, under it: not the day's tabs to clear.)
+    const underEntries = anchorGroupTabIds([...this.#tabGroups.values()]);
     const tabIds = this.#spaceTabIds(this.activeSpaceId()).filter((tabId) => {
       const info = this.#tabInfo(tabId);
-      return info?.kind === "human" && info.anchorId === null;
+      return info?.kind === "human" && info.anchorId === null && !underEntries.has(tabId);
     });
     for (const tabId of tabIds) await this.closeTab(tabId);
   }
@@ -6608,6 +6622,18 @@ export class BrowserController {
     return info !== null && info.kind === "human" && !info.unlisted && info.anchorId === null;
   }
 
+  /** What a group may hold: day tabs — and a page's group (TabGroupInfo.anchorId), its entry's page too. */
+  #canHold(group: TabGroupInfo, info: BrowserTabInfo | null): info is BrowserTabInfo {
+    if (info === null || info.kind !== "human" || info.unlisted) return false;
+    return info.anchorId === null || (group.anchorId !== undefined && info.anchorId === group.anchorId);
+  }
+
+  /** A Space's day tabs as the sidebar lists them, in row order: groupable, and none of a page's group (listed under its entry). */
+  #dayTabIds(spaceId: string, without: ReadonlySet<string> = new Set()): string[] {
+    const pages = anchorGroupTabIds([...this.#tabGroups.values()]);
+    return this.#spaceTabIds(spaceId).filter((tabId) => !without.has(tabId) && !pages.has(tabId) && this.#groupable(this.#tabInfo(tabId)));
+  }
+
   /**
    * A group lives in the Space its tabs do — the one MOST of them are in (the
    * earliest on a tie), so one tab that strays to another Space leaves the
@@ -6624,14 +6650,19 @@ export class BrowserController {
     return home;
   }
 
-  /** A Space's groups as the chrome draws them, and Tidy and the namer see them: not the loose tabs' (looseTabGroups). */
+  /** A Space's groups as the chrome draws them, and Tidy and the namer see them: not the loose tabs' (looseTabGroups), nor the pages' (anchorTabGroups). */
   tabGroups(spaceId = this.activeSpaceId()): TabGroupInfo[] {
-    return this.#spaceTabGroups(spaceId).filter((group) => group.loose !== true);
+    return this.#spaceTabGroups(spaceId).filter((group) => group.loose !== true && group.anchorId === undefined);
   }
 
   /** A Space's loose tabs' groups (TabGroupInfo.loose): each a desk's for one day tab, drawn as that tab alone. */
   looseTabGroups(spaceId = this.activeSpaceId()): TabGroupInfo[] {
     return this.#spaceTabGroups(spaceId).filter((group) => group.loose === true);
+  }
+
+  /** A Space's pages' groups (TabGroupInfo.anchorId): each led by a favorite's or pin's page, and drawn under that entry. */
+  anchorTabGroups(spaceId = this.activeSpaceId()): TabGroupInfo[] {
+    return this.#spaceTabGroups(spaceId).filter((group) => group.anchorId !== undefined);
   }
 
   #spaceTabGroups(spaceId: string): TabGroupInfo[] {
@@ -6659,22 +6690,39 @@ export class BrowserController {
       const spaceId = this.#tabGroupSpaceId(group);
       for (const tabId of group.tabIds) {
         const info = this.#tabInfo(tabId);
-        if (!this.#groupable(info) || info.spaceId !== spaceId) gone.add(tabId);
+        if (!this.#canHold(group, info) || info.spaceId !== spaceId) gone.add(tabId);
       }
     }
-    const groups = withoutTabs([...this.#tabGroups.values()], gone);
-    if (gone.size > 0) this.#setTabGroups(groups);
+    let groups = withoutTabs([...this.#tabGroups.values()], gone);
+    // A page's group whose page let go of its entry — brought down, closed, put in a split view — is a group like any other.
+    const unled = groups.filter((group) => group.anchorId !== undefined && !group.tabIds.some((tabId) => this.#tabInfo(tabId)?.anchorId === group.anchorId));
+    if (unled.length > 0) groups = groups.map((group) => (unled.includes(group) ? this.#letGoOfPage(group, groups) : group));
+    if (gone.size > 0 || unled.length > 0) this.#setTabGroups(groups);
+    for (const group of unled) {
+      const now = this.#tabGroups.get(group.id);
+      if (now !== undefined && now.loose !== true) this.#nameTabGroup(now);
+    }
     const order = groupedTabOrder(this.#tabOrder, groups);
     if (order.some((tabId, index) => tabId !== this.#tabOrder[index])) this.#tabOrder.splice(0, this.#tabOrder.length, ...order);
+  }
+
+  /** A page's group without its page: drawn, coloured beside its neighbours (named by the caller) — or, of one tab, a loose tab's. */
+  #letGoOfPage(group: TabGroupInfo, groups: readonly TabGroupInfo[]): TabGroupInfo {
+    const { anchorId: _anchorId, ...rest } = group;
+    if (rest.tabIds.length === 1) return { ...rest, color: "gray", loose: true };
+    const spaceId = this.#tabGroupSpaceId(group);
+    const drawn = groups.filter((other) => other.id !== group.id && other.loose !== true && other.anchorId === undefined && this.#tabGroupSpaceId(other) === spaceId);
+    return { ...rest, title: DEFAULT_TAB_GROUP_TITLE, origin: "manual", color: nextTabGroupColor(drawn) };
   }
 
   /**
    * Form a group from day tabs of one Space (the first tab's); they leave any
    * group they were in and gather where the first of them sits.
    */
-  createTabGroup(options: { id?: string; title?: string; color?: TabGroupColor; tabIds: readonly string[]; origin: TabGroupInfo["origin"]; loose?: boolean }): TabGroupInfo | null {
+  createTabGroup(options: { id?: string; title?: string; color?: TabGroupColor; tabIds: readonly string[]; origin: TabGroupInfo["origin"]; loose?: boolean; anchored?: boolean }): TabGroupInfo | null {
     const id = options.id ?? randomUUID();
     if (this.#tabGroups.has(id)) return null;
+    if (options.anchored === true) return this.#createPageGroup(id, options.tabIds);
     const spaceId = this.#tabInfo(options.tabIds[0] ?? "")?.spaceId;
     const position = new Map(this.#tabOrder.map((tabId, index) => [tabId, index]));
     const tabIds = [...new Set(options.tabIds)]
@@ -6698,6 +6746,21 @@ export class BrowserController {
       ...(loose ? { loose: true } : {}),
     };
     this.#setTabGroups([...others, group]);
+    return group;
+  }
+
+  /**
+   * A page's group (TabGroupInfo.anchorId) for a sidebar entry's page: of
+   * that one tab, grey as a loose tab's, and called by its page (the desk
+   * names it so). One per entry: with one already, nothing is made.
+   */
+  #createPageGroup(id: string, tabIds: readonly string[]): TabGroupInfo | null {
+    const info = tabIds.length === 1 ? this.#tabInfo(tabIds[0]!) : null;
+    if (info === null || info.anchorId === null || info.kind !== "human" || info.unlisted) return null;
+    const anchorId = info.anchorId;
+    if ([...this.#tabGroups.values()].some((group) => group.anchorId === anchorId && this.#tabGroupSpaceId(group) === info.spaceId)) return null;
+    const group: TabGroupInfo = { id, title: DEFAULT_TAB_GROUP_TITLE, color: "gray", tabIds: [info.id], origin: "manual", open: false, createdAt: Date.now(), anchorId };
+    this.#setTabGroups([...this.#tabGroups.values(), group]);
     return group;
   }
 
@@ -6847,8 +6910,8 @@ export class BrowserController {
     const before = groupAt(at - 1);
     const after = groupAt(at + 1);
     const own = tabGroupOf(groups, tabId);
-    // (A loose tab's group is its one tab, wherever it is set down.)
-    if (own !== null && own.loose !== true) {
+    // (A loose tab's group is its one tab, wherever it is set down; a page's group is under its entry, not in the row.)
+    if (own !== null && own.loose !== true && own.anchorId === undefined) {
       if (before?.id === own.id || after?.id === own.id) {
         const position = new Map(order.map((id, index) => [id, index]));
         this.#tabGroups.set(own.id, { ...own, tabIds: [...own.tabIds].sort((a, b) => (position.get(a) ?? 0) - (position.get(b) ?? 0)) });
@@ -6856,7 +6919,7 @@ export class BrowserController {
       }
       this.#setTabGroups(withoutTabs(groups, new Set([tabId])));
     }
-    if (before === null || before.id !== after?.id || before.id === own?.id || !this.#groupable(info)) return;
+    if (before === null || before.id !== after?.id || before.id === own?.id || before.anchorId !== undefined || !this.#groupable(info)) return;
     const next = order[at + 1];
     this.addToTabGroup(before.id, [tabId], { index: next === undefined ? undefined : before.tabIds.indexOf(next), byPerson: true });
   }
@@ -6865,9 +6928,9 @@ export class BrowserController {
   async tabGroupCommand(command: Exclude<TabGroupCommand, { type: "close" }>): Promise<void> {
     switch (command.type) {
       case "create": {
-        const group = this.createTabGroup({ id: command.id, title: command.title, color: command.color, tabIds: command.tabIds, origin: "manual", loose: command.loose });
-        // (A loose tab's group is called by its tab, drawn as it is; it is named once it has a second.)
-        if (group !== null && command.title === undefined && group.loose !== true) this.#nameTabGroup(group);
+        const group = this.createTabGroup({ id: command.id, title: command.title, color: command.color, tabIds: command.tabIds, origin: "manual", loose: command.loose, anchored: command.anchored });
+        // (A loose tab's group is called by its tab, drawn as it is; it is named once it has a second. A page's, by its page.)
+        if (group !== null && command.title === undefined && group.loose !== true && group.anchorId === undefined) this.#nameTabGroup(group);
         break;
       }
       case "rename":
@@ -6917,17 +6980,50 @@ export class BrowserController {
         const group = this.#tabGroups.get(command.groupId);
         const spaceId = group === undefined ? null : this.#tabGroupSpaceId(group);
         if (group === undefined || spaceId === null) return;
-        const members = new Set(group.tabIds);
-        const rest = this.#spaceTabIds(spaceId).filter((tabId) => !members.has(tabId));
-        const day = rest.filter((tabId) => this.#groupable(this.#tabInfo(tabId)));
-        const spaceGroups = this.tabGroups(spaceId).filter((other) => other.id !== group.id);
-        const target = dayRowUnits(day, [...this.#splitGroups.values()], spaceGroups)[command.index]?.tabIds[0];
-        rest.splice(target === undefined ? rest.length : rest.indexOf(target), 0, ...group.tabIds);
-        const others = this.#tabOrder.filter((tabId) => this.#tabInfo(tabId)?.spaceId !== spaceId);
-        this.#tabOrder.splice(0, this.#tabOrder.length, ...others, ...rest);
+        this.#placeAtDayUnit(spaceId, group.tabIds, command.index);
         break;
       }
     }
+    this.#onChange();
+  }
+
+  /**
+   * Set a run of a Space's tabs — a group's, or one tab — down before the
+   * `index`th of the day's ROW UNITS (lone tabs, splits, groups), counted
+   * without them; past the last, after everything.
+   */
+  #placeAtDayUnit(spaceId: string, tabIds: readonly string[], index: number): void {
+    const moving = new Set(tabIds);
+    const rest = this.#spaceTabIds(spaceId).filter((tabId) => !moving.has(tabId));
+    const spaceGroups = this.tabGroups(spaceId).filter((other) => !other.tabIds.some((tabId) => moving.has(tabId)));
+    const target = dayRowUnits(this.#dayTabIds(spaceId, moving), [...this.#splitGroups.values()], spaceGroups)[index]?.tabIds[0];
+    rest.splice(target === undefined ? rest.length : rest.indexOf(target), 0, ...tabIds);
+    const others = this.#tabOrder.filter((tabId) => this.#tabInfo(tabId)?.spaceId !== spaceId);
+    this.#tabOrder.splice(0, this.#tabOrder.length, ...others, ...rest);
+  }
+
+  /**
+   * A day tab set down by the sidebar (SidebarTabHost.placeDayTab: an
+   * entry's page brought down, or a pin or favorite let go): at `index`
+   * among the day's row units, the group it is in going with it as one —
+   * the page's group it led, which is a group like any other now — or into
+   * the group `groupId`, its own group's tabs with it.
+   */
+  placeDayTab(tabId: string, place: { index: number } | { groupId: string; index?: number }): void {
+    // A page that just let go of its entry: its group is a group like any other from here.
+    this.#reconcileTabGroups();
+    const info = this.#tabInfo(tabId);
+    if (!this.#groupable(info)) return;
+    const own = tabGroupOf([...this.#tabGroups.values()], tabId);
+    // (A loose tab's group is its one tab's desk, not something it carries.)
+    const carried = own === null || own.loose === true ? [tabId] : own.tabIds;
+    if ("groupId" in place) {
+      if (own?.id === place.groupId) return;
+      this.addToTabGroup(place.groupId, carried, { index: place.index, byPerson: true });
+    } else {
+      this.#placeAtDayUnit(info.spaceId, carried, place.index);
+    }
+    this.#reconcileTabGroups();
     this.#onChange();
   }
 
@@ -7019,7 +7115,8 @@ export class BrowserController {
     const idle = (info: BrowserTabInfo): boolean =>
       idleMs > 0 && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null;
     const groups = this.tabGroups(spaceId);
-    const grouped = new Set(groups.flatMap((group) => group.tabIds));
+    // (A page's group's tabs are its entry's until the favorites reset: theirs is favoriteGroupsDue.)
+    const grouped = new Set([...groups, ...this.anchorTabGroups(spaceId)].flatMap((group) => group.tabIds));
     const tabs: TidyTabCandidate[] = [];
     const staleHomeTabIds: string[] = [];
     for (const tabId of this.#spaceTabIds(spaceId)) {
@@ -7132,6 +7229,78 @@ export class BrowserController {
       this.#pageResume.delete(tabId);
     }
     return reset;
+  }
+
+  /**
+   * The favorites' groups the reset may take now (docs/tab-tidy.md §3.7): a
+   * favorite's (or preset's) page's group holding more than its page, every
+   * tab of it out of view, silent, settled and left alone for `minIdleMs`.
+   * `idle`: every one of them past the archive age too — the group goes to
+   * the archive; otherwise it comes down into the day's tabs. A pin's group
+   * is never reset.
+   */
+  favoriteGroupsDue(spaceId: string, isFavorite: (anchorId: string) => boolean, now: number, idleMs: number, minIdleMs: number): Array<{ groupId: string; idle: boolean }> {
+    const visible = new Set(this.activeSpaceId() === spaceId ? this.#visibleTabIds() : []);
+    return this.anchorTabGroups(spaceId).flatMap((group) => {
+      if (group.tabIds.length < 2 || !isFavorite(group.anchorId!)) return [];
+      const members = group.tabIds.map((tabId) => this.#tabInfo(tabId));
+      const settled = members.every(
+        (info) => info !== null && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null && now - info.lastActiveAt >= minIdleMs,
+      );
+      if (!settled) return [];
+      const idle = idleMs > 0 && members.every((info) => info !== null && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs);
+      return [{ groupId: group.id, idle }];
+    });
+  }
+
+  /**
+   * A page's group goes to the archive whole, its page with it — or none of
+   * it, a tab of it being in view, playing or a run's — and its entry is
+   * left closed. What each was and where it sat, as archiveTabs says.
+   */
+  archivePageGroup(groupId: string): { anchorId: string; pageTabId: string; tabs: Array<{ tabId: string; index: number; tab: ArchivedTab }> } | null {
+    const group = this.#tabGroups.get(groupId);
+    if (group?.anchorId === undefined) return null;
+    const visible = new Set(this.#visibleTabIds());
+    const members = group.tabIds.map((tabId) => this.#tabInfo(tabId));
+    if (members.some((info) => info === null || !this.#canHold(group, info) || visible.has(info.id) || this.#media.has(info.id) || info.runId !== null)) return null;
+    const pageTabId = members.find((info) => info?.anchorId === group.anchorId)?.id;
+    if (pageTabId === undefined) return null;
+    const tabs = members.flatMap((info) => {
+      const tab = info === null ? null : this.#archivedTabOf(info.id);
+      return info === null || tab === null ? [] : [{ tabId: info.id, index: this.#spaceTabIds(info.spaceId).indexOf(info.id), tab }];
+    });
+    for (const { tabId } of tabs) this.#discardTab(tabId);
+    return { anchorId: group.anchorId, pageTabId, tabs };
+  }
+
+  /**
+   * A page's group comes down into the day's tabs, after the last of them:
+   * its page lets go of its entry, which is left closed, and the group is a
+   * group like any other, named from its tabs.
+   */
+  bringDownPageGroup(groupId: string): { anchorId: string; pageTabId: string } | null {
+    const group = this.#tabGroups.get(groupId);
+    const spaceId = group === undefined ? null : this.#tabGroupSpaceId(group);
+    if (group?.anchorId === undefined || spaceId === null) return null;
+    const page = group.tabIds.map((tabId) => this.#tabInfo(tabId)).find((info) => info?.anchorId === group.anchorId);
+    if (page == null) return null;
+    this.setAnchor(page.id, null);
+    this.#reconcileTabGroups();
+    const now = this.#tabGroups.get(groupId);
+    if (now !== undefined) this.#placeAtDayUnit(spaceId, now.tabIds, Number.MAX_SAFE_INTEGER);
+    return { anchorId: group.anchorId, pageTabId: page.id };
+  }
+
+  /** Undo of the two above: the tab is its entry's page again, leading the group — unless the entry has another page by now. */
+  leadGroup(groupId: string, tabId: string, anchorId: string): void {
+    const group = this.#tabGroups.get(groupId);
+    const info = this.#tabInfo(tabId);
+    if (group === undefined || info === null || !group.tabIds.includes(tabId)) return;
+    if (this.#spaceTabIds(info.spaceId).some((other) => this.#tabInfo(other)?.anchorId === anchorId)) return;
+    const { loose: _loose, ...rest } = group;
+    this.#tabGroups.set(groupId, { ...rest, title: DEFAULT_TAB_GROUP_TITLE, color: "gray", naming: false, anchorId });
+    this.setAnchor(tabId, anchorId);
   }
 
   /** Undo of the above: a favorite still asleep at its home address goes back to where it had been. */

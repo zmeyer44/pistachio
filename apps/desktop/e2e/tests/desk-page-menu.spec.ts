@@ -194,6 +194,9 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
   });
 
   test("site information stays on screen for a low frame and scrolls in a short viewport", async () => {
+    // The desk's one tab fills the desk: made a window in the middle first.
+    await shell.locator(`${windowSelector(tabId)} button[aria-label="Restore"]`).click();
+    await settled(shell, app);
     // Shrink from the top so the frame sits low while the page stays on screen.
     const edge = center(await box(shell, `${windowSelector(tabId)} [data-desk-edge="n"]`));
     await shell.mouse.move(edge.x, edge.y);

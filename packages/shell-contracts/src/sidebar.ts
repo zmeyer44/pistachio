@@ -314,7 +314,14 @@ export type SidebarCommand =
   | { type: "removeFavorite"; favoriteId: string; index?: number }
   | { type: "moveFavorite"; favoriteId: string; index: number }
   /** A favorite becomes a pin at a place in the tree, its live tab following. */
-  | { type: "favoriteToPin"; favoriteId: string; folderId: string | null; index: number };
+  | { type: "favoriteToPin"; favoriteId: string; folderId: string | null; index: number }
+  /**
+   * The page behind a favorite, preset or pin comes down into the day's tabs — its page's group with it
+   * (TabGroupInfo.anchorId), a group like any other from then on — at `index` among the day's row units, or into the
+   * tab group `groupId`, at `index` among its tabs. The entry stays, closed: opened again, it is a page of its own. With
+   * no page open, a fresh tab opens there at the entry's address.
+   */
+  | { type: "bringDown"; anchorId: string; index?: number; groupId?: string };
 
 function isIndex(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10_000;
@@ -381,6 +388,13 @@ export function isSidebarCommand(value: unknown): value is SidebarCommand {
       return isId(c["favoriteId"]) && isIndex(c["index"]);
     case "favoriteToPin":
       return isId(c["favoriteId"]) && isFolderRef(c["folderId"]) && isIndex(c["index"]);
+    case "bringDown":
+      return (
+        isId(c["anchorId"]) &&
+        (c["anchorId"] as string).length <= MAX_URL + PRESET_ANCHOR_PREFIX.length &&
+        isOptionalIndex(c["index"]) &&
+        (c["groupId"] === undefined || isId(c["groupId"]))
+      );
     default:
       return false;
   }

@@ -8,8 +8,8 @@
  * player over the desk and audio as a button in the rail.
  *
  * Kept here: which tabs were sent (they play on muted or not, which the
- * stack's own rule for a video leaving its pane would not keep), and where
- * the floating player was left (on this device).
+ * stack's own rule for a video leaving its pane would not keep), which are
+ * being closed, and where the floating player was left (on this device).
  */
 
 import { create } from "zustand";
@@ -24,11 +24,19 @@ export interface PipSpot {
 interface NowPlayingState {
   /** The tabs whose media the person sent from their windows on a desk. */
   popped: readonly string[];
+  /**
+   * The tabs whose windows the desk closed (×, the Close pad), until main has
+   * them gone — their page may take a moment to unload, or ask to stay. The
+   * window is gone and the next one in use, so what the page plays would
+   * otherwise play on: the floating player taking it up from the one it shows.
+   */
+  closing: readonly string[];
   /** Where the floating player was left, or null for its first place (beside the rail, at the desk's foot). */
   pip: PipSpot | null;
   pop(tabId: string): void;
   /** The tab is back in a window (or its media is gone): no longer sent. */
   forget(tabId: string): void;
+  setClosing(tabId: string, closing: boolean): void;
   placePip(spot: PipSpot): void;
 }
 
@@ -48,12 +56,17 @@ function readPip(): PipSpot | null {
 
 export const useNowPlaying = create<NowPlayingState>((set, get) => ({
   popped: [],
+  closing: [],
   pip: readPip(),
   pop: (tabId) => {
     if (!get().popped.includes(tabId)) set({ popped: [...get().popped, tabId] });
   },
   forget: (tabId) => {
     if (get().popped.includes(tabId)) set({ popped: get().popped.filter((id) => id !== tabId) });
+  },
+  setClosing: (tabId, closing) => {
+    if (get().closing.includes(tabId) === closing) return;
+    set({ closing: closing ? [...get().closing, tabId] : get().closing.filter((id) => id !== tabId) });
   },
   placePip: (spot) => {
     set({ pip: spot });

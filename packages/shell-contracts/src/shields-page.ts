@@ -24,6 +24,12 @@ export interface PageProtections {
   fingerprinting: "off" | "standard" | "strict";
   /** This run's seed for this site: the same canvas reads the same here, and differently on any other site. */
   seed: number;
+  /**
+   * Chrome's user agent, for a site that refuses Electron's (Google's
+   * sign-in): `navigator` reports it as the requests do. Null elsewhere —
+   * the page sees the session's own.
+   */
+  userAgent: string | null;
 }
 
 /** What the preload reports as the DOM grows (`pistachio:shields-cosmetics`). */
@@ -52,7 +58,8 @@ export const MAX_DOM_FEATURES = 2_000;
  * count is rounded down at random. `strict` also takes away the APIs that
  * are mostly fingerprint — battery, network information, voices, the WebGL
  * renderer string — and reports the screen as the window, as Firefox's
- * resistFingerprinting does.
+ * resistFingerprinting does. Whatever the level, a site that refuses
+ * Electron's user agent reads Chrome's from `navigator`.
  *
  * SELF-CONTAINED ON PURPOSE: Electron serializes the function into the page,
  * so it closes over nothing — no import, no module constant.
@@ -220,6 +227,13 @@ export function installPageProtections(config: PageProtections): void {
         return result;
       };
       win.Node.prototype[method] = disguise(fake, original) as never;
+    }
+
+    // The page's user agent as its requests send it (docs/shields.md §5).
+    const userAgent = config.userAgent;
+    if (userAgent !== null) {
+      defineGetter(win.Navigator.prototype, "userAgent", () => userAgent);
+      defineGetter(win.Navigator.prototype, "appVersion", () => userAgent.replace(/^Mozilla\//, ""));
     }
 
     if (config.fingerprinting === "off") return;

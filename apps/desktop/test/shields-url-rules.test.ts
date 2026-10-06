@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   bounceDestination,
+  CHROME_USER_AGENT_HOSTS,
   chromeUserAgent,
   httpsUpgradeFor,
   isCrossSite,
   referrerFor,
   siteOf,
   stripTrackingParams,
+  wantsChromeUserAgent,
 } from "../src/main/shields/url-rules";
 
 describe("tracking parameters", () => {
@@ -103,5 +105,15 @@ describe("user agent", () => {
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
     );
     expect(chromeUserAgent(chromeUserAgent(electron))).toBe(chromeUserAgent(electron));
+  });
+
+  it("is Chrome's only on the listed hosts and below them", () => {
+    expect(CHROME_USER_AGENT_HOSTS).toContain("accounts.google.com");
+    expect(wantsChromeUserAgent("https://accounts.google.com/v3/signin/identifier", CHROME_USER_AGENT_HOSTS)).toBe(true);
+    expect(wantsChromeUserAgent("https://ACCOUNTS.GOOGLE.COM/", CHROME_USER_AGENT_HOSTS)).toBe(true);
+    expect(wantsChromeUserAgent("https://eu.accounts.google.com/", CHROME_USER_AGENT_HOSTS)).toBe(true);
+    for (const url of ["https://www.google.com/", "https://accounts.google.com.evil.example/", "https://notaccounts.google.com/", "https://challenges.cloudflare.com/", "not a url"]) {
+      expect(wantsChromeUserAgent(url, CHROME_USER_AGENT_HOSTS), url).toBe(false);
+    }
   });
 });

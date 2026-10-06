@@ -526,7 +526,8 @@ describe("a window's title", () => {
     const edited: string[] = [];
     const desk = engine({ editAddress: (tabId) => edited.push(tabId) });
     const win = element();
-    desk.start([], "tab-0", tabIds(1));
+    // (A group of two: a desk of one tab fills the desk.)
+    desk.start([], "tab-0", tabIds(2));
     desk.attachWindow("tab-0", win as unknown as HTMLElement);
     settle();
     const title = { x: rectOf(win).x + 60, y: rectOf(win).y + 17 };
@@ -1066,7 +1067,7 @@ describe("passing the desk to another group", () => {
     desk.destroy();
   });
 
-  it("brings a loose tab's desk up as its one window, in the middle", () => {
+  it("brings a loose tab's desk up as its one window, filling the desk — and, put away and brought back out, filling it again", () => {
     native();
     const desk = engine();
     desk.start([], "tab-0", tabIds(2));
@@ -1076,7 +1077,57 @@ describe("passing the desk to another group", () => {
     desk.attachWindow("loose", win as unknown as HTMLElement);
     settle();
     expect(desk.windowTabIds()).toEqual(["loose"]);
+    expectRect(rectOf(win), usable);
+    desk.putAway("loose");
+    settle();
+    expect(desk.windowTabIds()).toEqual([]);
+    desk.add("loose", { focus: true });
+    const back = element();
+    desk.attachWindow("loose", back as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(back), usable);
+    desk.destroy();
+  });
+
+  it("brings a desk of one tab back where it was left, its window filled or not, while a group's tab used last still comes out in the middle", () => {
+    native();
+    const saves = new Map<string, SavedDeskWindow[]>();
+    let shown = "lone";
+    const desk = engine({ save: (windows) => saves.set(shown, windows) });
+    desk.start([], "a", ["a"]);
+    const win = element();
+    desk.attachWindow("a", win as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(win), usable);
+    // Made a smaller window, then passed from: a group of two, never on a desk, comes up on its tab used last, in the middle.
+    desk.toggleMaximize("a");
+    settle();
     expectRect(rectOf(win), centeredRect(usable));
+    desk.switchGroup({ from: "lone", groupId: "pair", tabIds: ["b-0", "b-1"], saved: [], entry: "b-1" });
+    shown = "pair";
+    const pair = element();
+    desk.attachWindow("b-1", pair as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(pair), centeredRect(usable));
+    // Back: where it was left, not filling the desk.
+    desk.switchGroup({ from: "pair", groupId: "lone", tabIds: ["a"], saved: saves.get("lone")!, entry: "a" });
+    shown = "lone";
+    const back = element();
+    desk.attachWindow("a", back as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(back), centeredRect(usable));
+    // Filled, passed from and back: filled.
+    desk.toggleMaximize("a");
+    settle();
+    desk.switchGroup({ from: "lone", groupId: "pair", tabIds: ["b-0", "b-1"], saved: saves.get("pair")!, entry: "b-1" });
+    shown = "pair";
+    settle();
+    desk.switchGroup({ from: "pair", groupId: "lone", tabIds: ["a"], saved: saves.get("lone")!, entry: "a" });
+    shown = "lone";
+    const again = element();
+    desk.attachWindow("a", again as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(again), usable);
     desk.destroy();
   });
 

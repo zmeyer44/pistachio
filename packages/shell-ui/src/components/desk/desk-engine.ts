@@ -1415,9 +1415,9 @@ export class DeskEngine {
   /**
    * A group's windows as they come out onto the desk (start, switchGroup):
    * each where it was left, in the desk as it is now, and the
-   * tab the desk comes up on — out too, alone in the middle or in the room
-   * left beside the others — on top. Past the desk's limit, the bottom ones
-   * stay in the dock.
+   * tab the desk comes up on — out too, alone in the middle (filling the
+   * desk when it is the desk's one tab) or in the room left beside the
+   * others — on top. Past the desk's limit, the bottom ones stay in the dock.
    */
   #laidOut(
     saved: readonly SavedDeskWindow[],
@@ -1445,7 +1445,7 @@ export class DeskEngine {
     });
     if (entry !== null && !windows.some((window) => window.tabId === entry)) {
       const out = windows.filter((window) => window.mini?.parked !== true).map((window) => window.rect);
-      const rect = out.length === 0 ? centeredRect(usable) : freeSpot(out, { w: usable.w * 0.6, h: usable.h * 0.76 }, usable);
+      const rect = out.length === 0 ? (tabIds.length === 1 ? { ...usable } : centeredRect(usable)) : freeSpot(out, { w: usable.w * 0.6, h: usable.h * 0.76 }, usable);
       windows.push({ tabId: entry, rect, mask: null, mini: null });
     }
     windows.sort((a, b) => Number(a.tabId === entry) - Number(b.tabId === entry));
@@ -1617,7 +1617,13 @@ export class DeskEngine {
     const inUse = this.#focused === null || this.#wins.get(this.#focused)?.mask != null || this.#wins.get(this.#focused)?.mini != null ? -1 : staying.indexOf(this.#focused);
     // Where it goes is read from the desk as it is (placeNewWindow): a tiled
     // desk's hole, or half of the window in use, or a free spot.
-    const placed: Placement = options.rect !== undefined ? { rect: options.rect, split: null, kind: "free" } : placeNewWindow(rects, usable, inUse < 0 ? null : inUse);
+    // A desk of one tab (a loose tab's, a page's own, a group of one) is that page: alone, it fills the desk.
+    const placed: Placement =
+      options.rect !== undefined
+        ? { rect: options.rect, split: null, kind: "free" }
+        : rects.length === 0 && this.#groupTabIds.length === 1
+          ? { rect: { ...usable }, split: null, kind: "first" }
+          : placeNewWindow(rects, usable, inUse < 0 ? null : inUse);
     if (placed.split !== null) {
       const giving = this.#wins.get(staying[placed.split.index]!)!;
       giving.target = placed.split.rect;

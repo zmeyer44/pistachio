@@ -8,7 +8,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import type { DeskEngine } from "../../components/desk/desk-engine";
 import { nativeApi } from "../../api";
 import { useAppStore } from "../../store";
-import { deskGroups, isDayTab, tabDeskId, tabDeskOf, useDeskStore } from "./store";
+import { deskGroups, isDayTab, isEntryPage, tabDeskId, tabDeskOf, useDeskStore } from "./store";
 
 export function deskAvailable(): boolean {
   return nativeApi() !== null;
@@ -61,11 +61,13 @@ const JOIN_WAIT_MS = 1500;
 
 /**
  * The desk a tab is shown on (docs/desk.md): its group's — one the chrome
- * draws, or a loose tab's. A day tab in no group gets a loose tab's group
- * made for it now (TabGroupInfo.loose), so that its desk has all a group's
- * does; a favorite's or a pinned page's, which no group can hold, a desk of
- * its own (tabDeskId). Null for a tab that is gone, or not in the Space in
- * view, or when its group could not be made.
+ * draws, a loose tab's or a page's. A day tab in no group gets a loose
+ * tab's group made for it now (TabGroupInfo.loose), and a favorite's or a
+ * pinned page's a page's group (TabGroupInfo.anchorId), so that its desk has
+ * all a group's does; any other tab, which no group can hold, a desk of its
+ * own (tabDeskId), as a page's does should its group not come. Null for a
+ * tab that is gone, or not in the Space in view, or when a day tab's group
+ * could not be made.
  */
 export async function deskFor(tabId: string): Promise<string | null> {
   const snapshot = useAppStore.getState().snapshot;
@@ -73,16 +75,22 @@ export async function deskFor(tabId: string): Promise<string | null> {
   if (snapshot === null || tab === undefined || tab.spaceId !== snapshot.activeSpaceId) return null;
   const group = deskGroups(snapshot).find((candidate) => candidate.tabIds.includes(tabId));
   if (group !== undefined) return group.id;
-  if (!isDayTab(tab)) return tabDeskId(tabId);
+  const page = isEntryPage(tab);
+  if (!page && !isDayTab(tab)) return tabDeskId(tabId);
+  const fallback = page ? tabDeskId(tabId) : null;
   const id = crypto.randomUUID();
-  const made = await useAppStore.getState().tabGroupCommand({ type: "create", id, tabIds: [tabId], loose: true });
-  if (made === null) return null;
+  const made = await useAppStore.getState().tabGroupCommand({ type: "create", id, tabIds: [tabId], ...(page ? { anchored: true } : { loose: true }) });
+  if (made === null) return fallback;
   // Its desk can be up once the snapshot lists it.
   const until = performance.now() + JOIN_WAIT_MS;
   while (!deskGroups(useAppStore.getState().snapshot).some((candidate) => candidate.id === id)) {
-    if (performance.now() > until) return null;
+    if (performance.now() > until) return fallback;
     await new Promise((resolve) => requestAnimationFrame(resolve));
   }
+  // A page whose own desk was up before it had a group: its window comes back where that desk left it.
+  const desk = useDeskStore.getState();
+  const before = desk.saved[tabDeskId(tabId)];
+  if (page && before !== undefined && desk.saved[id] === undefined) desk.save(id, before);
   return id;
 }
 
@@ -215,8 +223,10 @@ export async function newTabOnDesk(): Promise<void> {
 /**
  * A tab's row let go over the desk (chrome/shelf-drag.tsx): its window comes
  * out where it was let go. A tab that is not the group's joins it first —
- * the desk hears of it with the snapshot that says so. (A page's own desk
- * has no group to take it: the tab is chosen, and the desk passes to it.)
+ * the desk hears of it with the snapshot that says so. A favorite's or a
+ * pin's page comes down into the group (its page's group with it), the
+ * entry staying, closed. (A page's own desk has no group to take it: the
+ * tab is chosen, and the desk passes to it.)
  */
 export async function dropTabOnDesk(tabId: string, client: { x: number; y: number }): Promise<void> {
   const groupId = useDeskStore.getState().groupId;
@@ -227,8 +237,10 @@ export async function dropTabOnDesk(tabId: string, client: { x: number; y: numbe
     return;
   }
   if (!engine.hasGroupTab(tabId)) {
-    const joined = await useAppStore.getState().tabGroupCommand({ type: "addTab", groupId, tabId });
-    if (joined === null) return;
+    const store = useAppStore.getState();
+    const anchorId = store.snapshot?.tabs.find((tab) => tab.id === tabId)?.anchorId ?? null;
+    if (anchorId !== null) await store.sidebarCommand({ type: "bringDown", anchorId, groupId });
+    else if ((await store.tabGroupCommand({ type: "addTab", groupId, tabId })) === null) return;
     const until = performance.now() + JOIN_WAIT_MS;
     while (deskEngine()?.hasGroupTab(tabId) !== true) {
       if (performance.now() > until || useDeskStore.getState().groupId !== groupId) return;
@@ -236,4 +248,30 @@ export async function dropTabOnDesk(tabId: string, client: { x: number; y: numbe
     }
   }
   deskEngine()?.addAt(tabId, client);
+}
+
+/**
+ * A favorite or pin with no page open let go over the desk: a fresh page of
+ * it comes down into the desk's group, its window out where it was let go,
+ * the entry staying as it was. (A page's own desk has no group: the entry
+ * opens, and the desk passes to it.)
+ */
+export async function dropEntryOnDesk(anchorId: string, client: { x: number; y: number }): Promise<void> {
+  const groupId = useDeskStore.getState().groupId;
+  const store = useAppStore.getState();
+  if (groupId === null || deskEngine() === null) return;
+  if (tabDeskOf(groupId) !== null) {
+    await store.sidebarCommand({ type: "open", anchorId });
+    return;
+  }
+  const members = (): readonly string[] => deskGroups(useAppStore.getState().snapshot).find((group) => group.id === groupId)?.tabIds ?? [];
+  const before = new Set(members());
+  await store.sidebarCommand({ type: "bringDown", anchorId, groupId });
+  const until = performance.now() + JOIN_WAIT_MS;
+  let fresh: string | undefined;
+  while ((fresh = members().find((tabId) => !before.has(tabId) && deskEngine()?.hasGroupTab(tabId) === true)) === undefined) {
+    if (performance.now() > until || useDeskStore.getState().groupId !== groupId) return;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  deskEngine()?.addAt(fresh, client);
 }

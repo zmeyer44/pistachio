@@ -270,6 +270,8 @@ export interface TidySummary {
   /** Tabs added to groups that already existed. */
   joinedTabs: number;
   favoritesReset: number;
+  /** Favorites' groups brought down into the day's tabs (one archived counts among archivedTabs) — docs/tab-tidy.md §3.7. */
+  favoriteGroups?: number;
   /** False when the run fell back to the clock alone. */
   usedModel: boolean;
   /** The first run this profile has seen: the notice explains the feature. */
@@ -277,7 +279,7 @@ export interface TidySummary {
 }
 
 export function tidyDidSomething(summary: TidySummary): boolean {
-  return summary.archivedTabs + summary.newGroups + summary.joinedTabs + summary.favoritesReset > 0;
+  return summary.archivedTabs + summary.newGroups + summary.joinedTabs + summary.favoritesReset + (summary.favoriteGroups ?? 0) > 0;
 }
 
 /** The notice's words (docs/tab-tidy.md §3.1). */
@@ -287,6 +289,7 @@ export function tidySummaryText(summary: TidySummary): string {
   if (summary.archivedTabs > 0) parts.push(`archived ${count(summary.archivedTabs, "tab", "tabs")}`);
   if (summary.newGroups > 0) parts.push(`made ${count(summary.newGroups, "group", "groups")}`);
   if (summary.joinedTabs > 0) parts.push(`grouped ${count(summary.joinedTabs, "tab", "tabs")}`);
+  if ((summary.favoriteGroups ?? 0) > 0) parts.push(`brought down ${count(summary.favoriteGroups ?? 0, "favorite's group", "favorites' groups")}`);
   if (summary.favoritesReset > 0 && parts.length === 0) parts.push(`reset ${count(summary.favoritesReset, "favorite", "favorites")}`);
   if (parts.length === 0) return "Tabs are already tidy";
   const said = parts.join(" · ");

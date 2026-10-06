@@ -95,4 +95,39 @@ describe("the shelf controller", () => {
     // A folder that is gone is a no-op, never an error.
     await controller.run({ type: "styleFolder", folderId: "gone", color: "red" });
   });
+
+  it("brings an entry's page down into the day's tabs, or into a group, and keeps the entry — closed", async () => {
+    const { controller, browser, state } = harness();
+    const anchors = new Map<string, string | null>([["page", "fav"]]);
+    const placed: Array<[string, unknown]> = [];
+    const opened: string[] = [];
+    browser.tabForAnchor = (anchorId) => {
+      const tabId = [...anchors].find(([, anchor]) => anchor === anchorId)?.[0];
+      return tabId === undefined ? null : ({ id: tabId, anchorId } as ReturnType<SidebarTabHost["tabForAnchor"]>);
+    };
+    browser.setAnchor = (tabId, anchorId) => void anchors.set(tabId, anchorId);
+    browser.createTab = async (url) => {
+      opened.push(url);
+      return "fresh";
+    };
+    browser.placeDayTab = (tabId, place) => void placed.push([tabId, place]);
+    await controller.run({ type: "addFavorite", source: { url: "https://example.com/", title: "Example" } });
+    const favorite = state().favorites[0]!;
+    anchors.set("page", favorite.id);
+
+    await controller.run({ type: "bringDown", anchorId: favorite.id, index: 2 });
+    expect(anchors.get("page")).toBe(null);
+    expect(placed).toEqual([["page", { index: 2 }]]);
+    expect(state().favorites.map((kept) => kept.id)).toEqual([favorite.id]);
+
+    // Closed, it brings down a fresh page at its address — here into a group.
+    await controller.run({ type: "bringDown", anchorId: favorite.id, groupId: "g", index: 1 });
+    expect(opened).toEqual(["https://example.com/"]);
+    expect(placed.at(-1)).toEqual(["fresh", { groupId: "g", index: 1 }]);
+    expect(state().favorites).toHaveLength(1);
+
+    // An entry that is not there, open or not, is a no-op.
+    await controller.run({ type: "bringDown", anchorId: "gone", index: 0 });
+    expect(placed).toHaveLength(2);
+  });
 });

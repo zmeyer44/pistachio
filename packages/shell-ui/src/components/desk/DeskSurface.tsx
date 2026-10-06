@@ -15,7 +15,7 @@ import { fileItemOf, fileWindowId, isTabWindow } from "../../lib/desk/windows";
 import { displayHost } from "../../lib/url";
 import { deskFor, lendDeskArrange, lendDeskAsk, lendDeskEngine } from "../../lib/desk/open";
 import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
-import { deskGroups, isDayTab, passedEntry, tabDeskOf, useDeskStore, type DeskVariants } from "../../lib/desk/store";
+import { deskGroups, groupPageOf, isDayTab, passedEntry, tabDeskOf, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay } from "../GlanceOverlay";
 import { DeskBar } from "./DeskBar";
@@ -73,9 +73,15 @@ function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string
     inSight(pane.querySelector<HTMLElement>(`[role='tab'][data-tab-id='${CSS.escape(tabId)}']`)) ??
     // A favorite's page: its tile, or on the rail its row under the folder.
     shown(pane.querySelector<HTMLElement>(`[data-live-tab-id='${CSS.escape(tabId)}']`));
-  // A page's own desk, or a loose tab's group, has no group's row: its tab's own is its home.
+  // A page's own desk, a loose tab's group or a page's group has no group's row: its tab's own is its home (a page's, its
+  // favorite's tile or pin's row).
   const groupRow = (gid: string): HTMLElement | null => {
-    const lone = tabDeskOf(gid) ?? useAppStore.getState().snapshot?.looseGroups?.find((group) => group.id === gid)?.tabIds[0] ?? null;
+    const snapshot = useAppStore.getState().snapshot;
+    const pageGroup = snapshot?.anchorGroups?.find((group) => group.id === gid);
+    const lone =
+      tabDeskOf(gid) ??
+      snapshot?.looseGroups?.find((group) => group.id === gid)?.tabIds[0] ??
+      (pageGroup === undefined ? null : groupPageOf(pageGroup, snapshot?.tabs ?? []));
     if (lone !== null) return tabRow(lone);
     return inSight(pane.querySelector<HTMLElement>(`[data-testid='tab-group'][data-group-id='${CSS.escape(gid)}'] [data-group-header]`));
   };
@@ -107,9 +113,14 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   // The desk's group: one the chrome draws, or a loose tab's (TabGroupInfo.loose).
   const group = useAppStore((state) => deskGroups(state.snapshot).find((candidate) => candidate.id === groupId) ?? null);
   const tabs = useAppStore(useShallow((state) => (pageTabId === null ? groupTabs(state.snapshot, group) : tabsOf(state.snapshot, [pageTabId]))));
-  // A loose tab's group goes by its tab's name, as the sidebar draws it: the Bar asks about it, the Stack is its.
-  const looseTitle = useAppStore((state) => (group?.loose === true ? (state.snapshot?.tabs.find((tab) => tab.id === group.tabIds[0])?.title ?? "") : ""));
-  const deskGroup = useMemo(() => (group?.loose === true ? { ...group, title: tabGroupTitle(looseTitle) } : group), [group, looseTitle]);
+  // A loose tab's group goes by its tab's name, as the sidebar draws it, and a page's group by its page's: the Bar asks
+  // about it, the Stack is its.
+  const ownTitle = useAppStore((state) => {
+    if (group === null || (group.loose !== true && group.anchorId === undefined)) return null;
+    const own = group.anchorId === undefined ? group.tabIds[0] : groupPageOf(group, state.snapshot?.tabs ?? []);
+    return state.snapshot?.tabs.find((tab) => tab.id === own)?.title ?? "";
+  });
+  const deskGroup = useMemo(() => (group !== null && ownTitle !== null ? { ...group, title: tabGroupTitle(ownTitle) } : group), [group, ownTitle]);
   const allTabIds = useAppStore(useShallow((state) => state.snapshot?.tabs.map((tab) => tab.id) ?? EMPTY_IDS));
   const activeTabId = useAppStore((state) => state.snapshot?.activeTabId ?? null);
   const wakingTabIds = useAppStore((state) => state.snapshot?.wakingTabIds ?? EMPTY_IDS);
@@ -121,7 +132,11 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const threads = useAppStore((state) => state.snapshot?.threads ?? EMPTY_THREADS);
   const drawnGroups = useAppStore((state) => state.snapshot?.tabGroups ?? EMPTY_GROUPS);
   const looseGroups = useAppStore((state) => state.snapshot?.looseGroups ?? EMPTY_GROUPS);
-  const groups = useMemo(() => (looseGroups.length === 0 ? drawnGroups : [...drawnGroups, ...looseGroups]), [drawnGroups, looseGroups]);
+  const pageGroups = useAppStore((state) => state.snapshot?.anchorGroups ?? EMPTY_GROUPS);
+  const groups = useMemo(
+    () => (looseGroups.length === 0 && pageGroups.length === 0 ? drawnGroups : [...drawnGroups, ...looseGroups, ...pageGroups]),
+    [drawnGroups, looseGroups, pageGroups],
+  );
   const contexts = useGroupContexts();
   const contextsLoaded = useGroupContextsLoaded();
   const variants = useDeskStore((state) => state.variants);
@@ -166,7 +181,10 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
       focusWindow: (id) => useFileWindows.getState().requestFocus(id),
       // A document's window let go on Close only closes the window: the file stays in the Stack.
       close: (tabId) => {
-        if (isTabWindow(tabId)) void useAppStore.getState().closeTab(tabId);
+        if (!isTabWindow(tabId)) return;
+        // Going, not playing on, until main has it gone (lib/desk/now-playing.ts).
+        useNowPlaying.getState().setClosing(tabId, true);
+        void useAppStore.getState().closeTab(tabId).finally(() => useNowPlaying.getState().setClosing(tabId, false));
       },
       editAddress: (tabId) => {
         if (isTabWindow(tabId)) useAppStore.getState().openUrlBar(tabId);

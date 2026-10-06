@@ -101,10 +101,10 @@ export const GROUP_END = 10_000;
  * between rows, read off the rows' centres.
  */
 export function listDropAt(measured: readonly MeasuredRow[], kind: ShelfDragKind, y: number, x: number): ListDrop {
-  // Only a live row — a tab, a split — can be set down inside a tab group.
-  // For everything else a group is the one slot its header is, and its open
-  // tabs are not rows at all.
-  const canJoin = kind === "tab" || kind === "split";
+  // Only a live row — a tab, a split — or a favorite or pin, whose page comes
+  // down into it, can be set down inside a tab group. For everything else a
+  // group is the one slot its header is, and its open tabs are not rows at all.
+  const canJoin = kind === "tab" || kind === "split" || kind === "favorite" || kind === "pin";
   const rows = canJoin ? measured : measured.filter((row) => row.kind !== "member");
   const dividerAt = rows.findIndex((row) => row.kind === "divider");
   const divider = dividerAt < 0 ? rows.length : dividerAt;
