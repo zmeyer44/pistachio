@@ -330,6 +330,14 @@ export interface AppState {
   /** The stills are painted and main has hidden the native views. */
   overlayReady: boolean;
   paneStills: PaneStill[];
+  /**
+   * An area of the window is being dragged out for a screenshot
+   * (components/ScreenshotOverlay.tsx, lib/screenshot.ts). Not an `overlay`:
+   * the selector lies over whatever is up — a dialog, Settings, the palette —
+   * which stays as it is under it, draft and all.
+   */
+  screenshotSelecting: boolean;
+  setScreenshotSelecting(selecting: boolean): void;
   /** The held-modifier tab switcher, from the gesture's start to its end; null when none is running. */
   tabSwitcher: TabSwitcherSession | null;
   /** Ephemeral link preview, owned by main but composed by this shell. */
@@ -1000,6 +1008,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   overlayActive: false,
   overlayReady: false,
   paneStills: [],
+  screenshotSelecting: false,
+  setScreenshotSelecting: (screenshotSelecting) => set((state) => (state.screenshotSelecting === screenshotSelecting ? {} : { screenshotSelecting })),
   tabSwitcher: null,
   glance: null,
   media: [],
@@ -1465,7 +1475,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       // No native views to capture on a stream surface: the overlay goes up
       // over panes that keep painting themselves (§10).
-      const stills = (await nativeApi()?.prepareOverlay()) ?? [];
+      // (The screenshot selector leaves a fullscreen page fullscreen: lib/screenshot.ts.)
+      const stills = (await nativeApi()?.prepareOverlay({ keepFullscreen: get().screenshotSelecting })) ?? [];
       if (request !== overlayReportRequest || !get().overlayActive) return;
       set({ paneStills: stills });
       await afterPaneStillsPaint();

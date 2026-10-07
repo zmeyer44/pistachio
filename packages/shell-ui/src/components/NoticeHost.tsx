@@ -32,6 +32,9 @@ export function NoticeHost() {
   const surface = useSurface();
   const [hovering, setHovering] = useState(false);
   const items = useMemo(() => notices.map(noticeItem), [notices]);
+  // The screenshot selector has the whole window while it is up: the stack steps aside — its view would lie over
+  // the area being chosen and take the press — and is back once an area is chosen.
+  const selecting = useAppStore((state) => state.screenshotSelecting);
 
   const onEvent = useCallback(
     (event: NoticeEvent) => {
@@ -45,8 +48,8 @@ export function NoticeHost() {
   useNoticeClocks(notices, hovering, dismissNotice);
   // Nothing left to hover: a view that was taken down never says "left".
   useEffect(() => {
-    if (notices.length === 0) setHovering(false);
-  }, [notices.length]);
+    if (notices.length === 0 || selecting) setHovering(false);
+  }, [notices.length, selecting]);
 
   // Both surfaces stand the stack in the browser surface — the page, not
   // the window — so its box is measured here, and again whenever it moves
@@ -79,9 +82,9 @@ export function NoticeHost() {
 
   useEffect(() => {
     if (native === null) return;
-    const frame: NoticeFrame = { items, position, anchor: box };
+    const frame: NoticeFrame = { items: selecting ? [] : items, position, anchor: box };
     native.setNotices(frame);
-  }, [native, items, position, box]);
+  }, [native, items, position, box, selecting]);
   useEffect(() => {
     if (native === null) return;
     const off = native.onNoticeEvent(onEvent);

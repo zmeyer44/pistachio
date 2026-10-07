@@ -65,6 +65,7 @@ import type {
 import { IPC } from "@pistachio/shell-contracts/ipc";
 import type { DragSample, ShellCommand } from "@pistachio/shell-contracts/chrome";
 import {
+  DESK_DRAWER_TRIGGER,
   deskMaskKey,
   holdsDeskModifier,
   inDeskBox,
@@ -519,7 +520,7 @@ export interface BrowserControllerHooks {
    * open over the desk (@pistachio/shell-contracts/desk DeskPageInput).
    */
   onDeskPageInput?: (input: DeskPageInput) => void;
-  /** The pointer came onto a zoomed desk page (a minimized window's), or went off it (@pistachio/shell-contracts/desk DeskHover). */
+  /** The pointer came onto a desk page, or went off it, or into or out of its top band (@pistachio/shell-contracts/desk DeskHover). */
   onDeskHover?: (hover: DeskHover) => void;
   /** A fresher capture of a card the open tab switcher shows. */
   onTabSwitcherThumbnail?: (thumbnail: TabSwitcherThumbnail) => void;
@@ -906,6 +907,8 @@ export class BrowserController {
    * keyboard as soon as it is laid out and uncovered (0 when nothing waits).
    */
   #focusPageUntil = 0;
+  /** A page view to have the keyboard back once it is on screen again (giveKeyboardBack), and until when. */
+  #keyboardBack: { contents: Electron.WebContents; until: number } | null = null;
   /** A key the switcher passed on while it had the keyboard: it goes with the keyboard. */
   #passedKeystroke: PassedKeystroke | null = null;
   /**
@@ -977,8 +980,8 @@ export class BrowserController {
    * window's tab asleep: 0.0.28).
    */
   readonly #committedPages = new WeakSet<WebContents>();
-  /** The zoomed desk page the pointer is on, as main last told the shell (onDeskHover). */
-  #deskHovered: string | null = null;
+  /** The desk page the pointer is on, and whether in its top band, as main last told the shell (onDeskHover). */
+  #deskHovered: { tabId: string; top: boolean } | null = null;
   /** The latest work on a tab's mask (set up, re-aim, clear): a still of the tab waits for it. */
   readonly #deskMaskWork = new Map<string, Promise<void>>();
   /** Pages whose masks came off, laying out at their own box until shown there (DeskMaskRelease), by tab. */
@@ -5262,6 +5265,56 @@ export class BrowserController {
     }
   }
 
+  /**
+   * The corner radius a page's native view is cut to (setBorderRadius has no
+   * getter), for a screenshot that lays the window up as the compositor
+   * does; null for contents that are no page's.
+   */
+  /** The page view that has the keyboard — a tab's, or the Glance preview's — or null (the shell, a utility view). */
+  pageWithKeyboard(): Electron.WebContents | null {
+    for (const tab of this.#tabs.values()) if (!tab.view.webContents.isDestroyed() && tab.view.webContents.isFocused()) return tab.view.webContents;
+    const glance = this.#glance?.tab.view.webContents;
+    return glance !== undefined && !glance.isDestroyed() && glance.isFocused() ? glance : null;
+  }
+
+  /**
+   * Give the keyboard back to this page view (pageWithKeyboard's) once the
+   * overlay that took it is down and the view is on screen again — within
+   * PAGE_FOCUS_WAIT_MS, or not at all (another tab came to the front).
+   */
+  giveKeyboardBack(contents: Electron.WebContents): void {
+    this.#keyboardBack = { contents, until: Date.now() + PAGE_FOCUS_WAIT_MS };
+    this.#settleKeyboardBack();
+  }
+
+  #settleKeyboardBack(): void {
+    const back = this.#keyboardBack;
+    if (back === null) return;
+    if (back.contents.isDestroyed() || Date.now() > back.until) {
+      this.#keyboardBack = null;
+      return;
+    }
+    if (this.#overlayActive) return;
+    const view =
+      [...this.#tabs.values()].find((tab) => tab.view.webContents === back.contents)?.view ??
+      (this.#glance?.tab.view.webContents === back.contents ? this.#glance.tab.view : undefined);
+    if (view === undefined || !view.getVisible()) return;
+    this.#keyboardBack = null;
+    back.contents.focus();
+  }
+
+  /** Where the page in HTML fullscreen lies (the whole window, over the shell's layout), or null when none is. */
+  fullscreenPageBounds(): ContentBounds | null {
+    const tab = this.#fullscreenTab();
+    return tab === null || !tab.view.getVisible() ? null : tab.view.getBounds();
+  }
+
+  pageViewRadius(contents: Electron.WebContents): number | null {
+    const tab = this.#tabForWebContents(contents.id);
+    if (tab === undefined) return null;
+    return tab.info.id === this.#fullscreenTabId ? 0 : this.#settings().appearance.radius;
+  }
+
   #tabForWebContents(id: number): ManagedTab | undefined {
     for (const tab of this.#tabs.values())
       if (tab.view.webContents.id === id) return tab;
@@ -7608,6 +7661,9 @@ export class BrowserController {
           };
     // A pointer already at the dock's place says so again on its next move.
     this.#deskAtDock = false;
+    // A page off the desk is no page of its: the pointer on it is on nothing of the desk's.
+    const hovered = this.#deskHovered;
+    if (hovered !== null && !(this.#desk?.tabIds.includes(hovered.tabId) ?? false)) this.#noteDeskHover(hovered.tabId, false);
     // Every window on the desk is a page to see: one whose tab is asleep (a
     // desk reopened on its saved windows, a window the agent brought out) is
     // woken at once, never left for a click — shown, as any wake is, once
@@ -7682,7 +7738,14 @@ export class BrowserController {
         if (taken === null || taken.isEmpty()) return null;
         const image = zoomed === undefined || zoomed.applied === null ? taken : zoomedStill(taken, zoomed);
         const masked = this.#deskMasks.get(tabId);
-        const still: PaneStill = { tabId, dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}` };
+        // (Its size as the page box it pictures: a view resized while down is drawn at the size it had until it is shown.)
+        const pictured = image.getSize();
+        const still: PaneStill = {
+          tabId,
+          dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}`,
+          width: pictured.width,
+          height: pictured.height,
+        };
         return masked?.applied != null ? { ...still, mask: masked.applied.key } : still;
       } catch {
         return null;
@@ -7746,7 +7809,7 @@ export class BrowserController {
    * page shows — or drops — the open hand at once. Shift is passed on to the
    * shell as it changes, whatever the grab key: it is the desk's snap key.
    */
-  noteDeskKey(input: Electron.Input): void {
+  noteDeskKey(input: Electron.Input, quiet = false): void {
     const desk = this.#desk;
     if (desk === null || (input.type !== "keyDown" && input.type !== "keyUp")) return;
     this.#noteDeskShift(input.shift);
@@ -7756,7 +7819,8 @@ export class BrowserController {
       ...(input.alt ? (["alt"] as const) : []),
       ...(input.meta ? (["meta"] as const) : []),
     ];
-    if (input.type === "keyDown" && input.key === "Escape") this.#hooks.onDeskPageInput?.("escape");
+    // (Quiet: the keys are followed, but no press is the desk's — the screenshot selector has them.)
+    if (!quiet && input.type === "keyDown" && input.key === "Escape") this.#hooks.onDeskPageInput?.("escape");
     if (desk.grab === null) return;
     const held = desk.grab === "shift" ? input.shift : desk.grab === "alt" ? input.alt : input.meta;
     if (held === this.#deskKeyHeld) return;
@@ -7828,7 +7892,7 @@ export class BrowserController {
       case "mouseEnter":
         this.#setDeskCursor(tab, armed ? "grab" : null);
         this.#noteDeskDock(tab, mouse);
-        this.#noteDeskHover(tabId, true);
+        this.#noteDeskHover(tabId, true, mouse.y < DESK_DRAWER_TRIGGER);
         this.#forwardMaskedMouse(tab, event, mouse);
         return;
       case "mouseLeave":
@@ -8191,7 +8255,6 @@ export class BrowserController {
       // Gone from the list, or its page is another now (it slept, and woke): set back, or forgotten.
       if (!wanted.has(tabId) || tab === undefined || tab.view.webContents !== state.contents) this.#clearDeskZoom(tabId);
     }
-    if (this.#deskHovered !== null && !wanted.has(this.#deskHovered)) this.#noteDeskHover(this.#deskHovered, false);
     for (const page of pages) {
       const tab = this.#tabs.get(page.tabId);
       if (tab === undefined || tab.view.webContents.isDestroyed()) continue;
@@ -8251,7 +8314,6 @@ export class BrowserController {
     const state = this.#deskZooms.get(tabId);
     if (state === undefined) return;
     this.#deskZooms.delete(tabId);
-    if (this.#deskHovered === tabId) this.#noteDeskHover(tabId, false);
     if (state.contents.isDestroyed()) return;
     state.contents.removeListener("did-navigate", state.onNavigate);
     if (state.applied !== null && this.#presentation?.tabId !== tabId) state.contents.disableDeviceEmulation();
@@ -8266,21 +8328,23 @@ export class BrowserController {
   }
 
   /**
-   * The pointer came onto a zoomed desk page, or went off it: a minimized
-   * window peeking from the desk's foot rises while it is on it, and over
-   * its live page the shell hears no pointer (onDeskHover). Told once each way.
+   * The pointer came onto a desk page, or went off it, or into or out of
+   * its top band: a minimized window peeking from the desk's foot rises
+   * while it is on it, and a window's drawer comes out — and over a live
+   * page the shell hears no pointer (onDeskHover). Told once each change.
    */
-  #noteDeskHover(tabId: string, over: boolean): void {
+  #noteDeskHover(tabId: string, over: boolean, top = false): void {
+    const hovered = this.#deskHovered;
     if (over) {
-      if (this.#deskHovered === tabId || !this.#deskZooms.has(tabId)) return;
-      if (this.#deskHovered !== null) this.#hooks.onDeskHover?.({ tabId: this.#deskHovered, over: false });
-      this.#deskHovered = tabId;
-      this.#hooks.onDeskHover?.({ tabId, over: true });
+      if (hovered?.tabId === tabId && hovered.top === top) return;
+      if (hovered !== null && hovered.tabId !== tabId) this.#hooks.onDeskHover?.({ tabId: hovered.tabId, over: false, top: false });
+      this.#deskHovered = { tabId, top };
+      this.#hooks.onDeskHover?.({ tabId, over: true, top });
       return;
     }
-    if (this.#deskHovered !== tabId) return;
+    if (hovered?.tabId !== tabId) return;
     this.#deskHovered = null;
-    this.#hooks.onDeskHover?.({ tabId, over: false });
+    this.#hooks.onDeskHover?.({ tabId, over: false, top: false });
   }
 
   /**
@@ -8352,15 +8416,17 @@ export class BrowserController {
    * these frames first, then calls setOverlay(true): the native-to-still swap
    * is between identical composited frames instead of exposing a blank pane.
    */
-  async prepareOverlay(): Promise<PaneStill[]> {
+  async prepareOverlay(options: { keepFullscreen?: boolean } = {}): Promise<PaneStill[]> {
     const request = ++this.#overlayRequest;
     // Another overlay is coming up; it keeps the keyboard.
     this.#focusPageUntil = 0;
     this.#passedKeystroke = null;
     if (this.#overlayActive) return [];
     // A modal over a fullscreen video would veil the whole screen; end the
-    // presentation the way Chrome does when its own UI comes up.
-    this.#exitHtmlFullscreen();
+    // presentation the way Chrome does when its own UI comes up. Not for the
+    // screenshot selector: it is drawn over a picture of the fullscreen page,
+    // which is back, still fullscreen, once an area is chosen.
+    if (options.keepFullscreen !== true) this.#exitHtmlFullscreen();
     const stills = await this.#captureVisibleStills("jpeg");
     // A later prepare or lower owns the hand-off now.
     if (request !== this.#overlayRequest) return [];
@@ -8494,6 +8560,10 @@ export class BrowserController {
       });
       this.#settleViewVisible(fullscreen.view, !this.#overlayActive);
       this.#syncMediaPresentation(null);
+      // Under an overlay that keeps the page fullscreen (the screenshot selector) the keyboard is the shell's,
+      // and the page's again once it is down, as below.
+      if (this.#overlayActive) this.#handKeyboardToShell();
+      this.#settleKeyboardBack();
       return;
     }
     const visible = new Set(layout.views.map(({ tabId }) => tabId));
@@ -8591,6 +8661,7 @@ export class BrowserController {
         !this.#overlayActive && glance.bounds !== null,
       );
     }
+    this.#settleKeyboardBack();
   }
 
   /** Show or hide a page's native view only on a real transition, as settleViewBounds. */
@@ -8598,6 +8669,21 @@ export class BrowserController {
     if (view.getVisible() === visible) return;
     view.setVisible(visible);
     if (visible) this.#releaseRestingPointer(view);
+    else this.#forgetDeskHover(view);
+  }
+
+  /**
+   * A desk page taken down under the pointer (its window drawn, or an
+   * overlay raised over the desk) hears nothing of it going on macOS, and
+   * shown again it is told the pointer left without the desk hearing
+   * (#releaseRestingPointer): the shell would keep the pointer on it — a
+   * drawer left out, a parked window left raised — and the next move on it
+   * would be a repeat main keeps to itself. Say it left now, as Chromium
+   * itself does under Playwright, so the next move on it is an entry.
+   */
+  #forgetDeskHover(view: WebContentsView): void {
+    const hovered = this.#deskHovered;
+    if (hovered !== null && this.#tabs.get(hovered.tabId)?.view === view) this.#noteDeskHover(hovered.tabId, false);
   }
 
   /**

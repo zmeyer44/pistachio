@@ -50,6 +50,7 @@ import type {
   ReminderPatch,
   ReminderSnapshot,
 } from "./reminders.js";
+import type { ScreenshotReplies, ScreenshotRequest } from "./screenshot.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
 import type { DeskGrab, DeskHover, DeskNotchFrame, DeskNotchInput, DeskPageInput, DeskPipFrame, DeskPipInput, DeskShelfFrame, DeskShelfInput, DeskState } from "./desk.js";
 import type { DeskLayoutEvaluation, DeskLayoutRequest } from "./desk-layout.js";
@@ -289,6 +290,12 @@ export interface PaneStill {
    * shows that region, absent when it shows the whole page.
    */
   mask?: string;
+  /**
+   * The size, in CSS px, of the page box the still is a picture of: what its
+   * view was drawn at when it was taken. Absent where it is not known.
+   */
+  width?: number;
+  height?: number;
 }
 
 /**
@@ -1134,9 +1141,12 @@ export interface NativeSurfaceApi {
   setLayout(layout: BrowserLayout): void;
   /**
    * Capture the visible panes while their native views remain on screen.
-   * The shell paints these stills before it raises an overlay.
+   * The shell paints these stills before it raises an overlay. A page in
+   * HTML fullscreen leaves it, as for the browser's own UI — unless
+   * `keepFullscreen`: the screenshot selector, drawn over a picture of the
+   * window as it was, fullscreen page and all.
    */
-  prepareOverlay(): Promise<PaneStill[]>;
+  prepareOverlay(options?: { keepFullscreen?: boolean }): Promise<PaneStill[]>;
   /** Hide or restore the native tab views after the shell has painted their stills. */
   setOverlay(active: boolean): Promise<void>;
   // ── The desk (@pistachio/shell-contracts/desk) ───────────────────────────────
@@ -1283,6 +1293,12 @@ export interface NativeSurfaceApi {
    * moves nothing the OS reports).
    */
   getCursorPoint(): Promise<CursorPoint | null>;
+  /**
+   * Shell only: screenshot the pages (@pistachio/shell-contracts/screenshot)
+   * — copied and saved — or hold the whole window for an area to be chosen
+   * over it, then keep that area.
+   */
+  screenshot<R extends ScreenshotRequest>(request: R): Promise<ScreenshotReplies[R["type"]]>;
   /** Shell → main: state needed for native window and utility-view coordination. */
   setShellState(state: ShellState): void;
   dismissBookmarkToast(): void;
@@ -1406,6 +1422,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   onPaneToolbarPointerEntered: "Fires from main's OS cursor poll over the pane toolbar trigger.",
   onPaneToolbarPointerLeft: "Fires from main's OS cursor poll leaving the pane toolbar.",
   getCursorPoint: "Reads the OS cursor position, which only a native window knows.",
+  screenshot: "Composites the shell page with the native views over it, which only main can capture.",
   setShellState: "Drives the native window chrome and the utility view placement.",
   dismissBookmarkToast: "Takes the native bookmark card view down over the page.",
   resizeBookmarkToast: "Sizes the native bookmark card view to its rendered height.",
@@ -1586,6 +1603,7 @@ export const IPC = {
   paneToolbarPointerEntered: "pistachio:pane-toolbar-pointer-entered",
   paneToolbarPointerLeft: "pistachio:pane-toolbar-pointer-left",
   cursorPoint: "pistachio:cursor-point",
+  screenshot: "pistachio:screenshot",
   shellStateSet: "pistachio:shell-state-set",
   shellCommand: "pistachio:shell-command",
   runStart: "pistachio:run-start",

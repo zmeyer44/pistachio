@@ -35,7 +35,9 @@ export type ShortcutActionId =
   | "tileDesk"
   | "cascadeDesk"
   | "arrangeDesk"
-  | "toggleDesk";
+  | "toggleDesk"
+  | "screenshotView"
+  | "screenshotArea";
 
 export type ShortcutSettings = Record<ShortcutActionId, string | null>;
 export type ShortcutPlatform = "darwin" | "other";
@@ -86,6 +88,8 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "cascadeDesk", group: "Window", label: "Cascade desk windows", note: "On a tab group's desk: every window out, fanned from the corner." },
   { id: "arrangeDesk", group: "Window", label: "Arrange desk windows", note: "On a tab group's desk: the windows laid out the way the layout model judges they are used." },
   { id: "toggleDesk", group: "Window", label: "Toggle desk", note: "Opens the desk of the tab group you are in, or leaves the desk that is up." },
+  { id: "screenshotView", group: "Window", label: "Screenshot the page", note: "The pages without the sidebar or the window around them; on a desk, the whole desk. Copied, and saved where your Mac saves screenshots." },
+  { id: "screenshotArea", group: "Window", label: "Screenshot an area", note: "Drag over the part of the window to keep; Escape cancels. Copied, and saved where your Mac saves screenshots." },
 ];
 
 export const SHORTCUT_ACTION_IDS = SHORTCUT_DEFINITIONS.map((definition) => definition.id) as readonly ShortcutActionId[];
@@ -127,6 +131,9 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   arrangeDesk: "Mod+Alt+L",
   // Beside ⌘\ (split view); ⌥⌘D is the Mac's own Dock toggle.
   toggleDesk: "Mod+Alt+Backslash",
+  // Beside the Mac's own ⌘⇧3 and ⌘⇧4, which take the whole screen.
+  screenshotView: "Mod+Shift+1",
+  screenshotArea: "Mod+Shift+2",
 };
 
 const NAMED_KEYS = new Set([

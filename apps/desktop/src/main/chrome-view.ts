@@ -56,6 +56,11 @@ export class ChromeOverlayView {
     return this.#shown;
   }
 
+  /** Whether the view is on screen now: shown, placed, and not veiled. */
+  get onScreen(): boolean {
+    return this.#view.getVisible();
+  }
+
   async load(rendererUrl: string | undefined, file: string): Promise<void> {
     const hash = CHROME_VIEW_HASHES[this.id];
     if (rendererUrl !== undefined) await this.#view.webContents.loadURL(`${rendererUrl}${hash}`);

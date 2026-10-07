@@ -53,6 +53,7 @@ export function shellStateOf(state: AppState): ShellState {
       state.overlay === "tab-switcher" ||
       state.overlay === "context-menu" ||
       state.overlay === "downloads" ||
+      state.screenshotSelecting ||
       state.error !== null ||
       state.glance !== null,
     sidebarRevealed: sidebarRevealedOf(state, deskUp(useDeskStore.getState())),
@@ -96,6 +97,7 @@ function useStoreShellState(): ShellState {
       s.overlay === "tab-switcher" ||
       s.overlay === "context-menu" ||
       s.overlay === "downloads" ||
+      s.screenshotSelecting ||
       s.error !== null ||
       s.glance !== null,
   );

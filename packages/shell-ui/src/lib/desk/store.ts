@@ -17,7 +17,7 @@ import { GLIDE_DECELERATION } from "./motion";
 export type DeskPhysics = "glide" | "snap" | "free";
 export type DeskSpringFeel = "snappy" | "bouncy" | "smooth" | "eased";
 export type DeskMotion = "lifted" | "live";
-export type DeskChrome = "bar" | "tab" | "bare";
+export type DeskChrome = "bar" | "tab" | "bare" | "drawer";
 export type DeskGrab = DeskGrabModifier | "off";
 /** Whether windows coming and going may move the others (docs/desk-layout.md). */
 export type DeskLayoutFeel = "smart" | "hand";
@@ -97,6 +97,7 @@ export const DESK_AXES: readonly [
       { id: "bar", label: "Title bar", hint: "A title bar above each page" },
       { id: "tab", label: "Tab", hint: "A folder tab on each page's shoulder" },
       { id: "bare", label: "Bare", hint: "Just the page, with a handle above it" },
+      { id: "drawer", label: "Drawer", hint: "Just the page: its controls slide out from behind its top edge, on hover or while you are using it" },
     ],
   },
   {
@@ -123,7 +124,7 @@ export const DEFAULT_DESK_VARIANTS: DeskVariants = {
   physics: "glide",
   spring: "snappy",
   motion: "lifted",
-  chrome: "bar",
+  chrome: "drawer",
   grab: "shift",
   layout: "smart",
   deceleration: GLIDE_DECELERATION.default,
@@ -220,6 +221,9 @@ interface DeskStore {
   saved: Record<string, SavedDesk>;
   /** While a desk is up, the sidebar is a rail of icons (or, false, the whole sidebar): ⌘S switches. Kept on this device. */
   rail: boolean;
+  /** A screenshot of the desk is being taken: the Bar steps out of the picture (lib/screenshot.ts). */
+  capturing: boolean;
+  setCapturing(capturing: boolean): void;
   /** Open the group's desk — once the sidebar has settled at its desk width, with `afterSidebar`. */
   open(groupId: string, options?: { afterSidebar?: boolean }): void;
   /** The sidebar has settled at its desk width: the desk waiting for it opens. */
@@ -238,6 +242,13 @@ interface DeskStore {
 
 const STORAGE_KEY = "pistachio.desk.v1";
 const MAX_SAVED_DESKS = 40;
+/**
+ * What is saved, as of 2026-10-07: the Drawer is the default frame. Every
+ * save wrote all the variants, chosen or not, so a desk saved before has the
+ * old default's "bar" whether or not it was chosen: it is read as the Drawer
+ * (once — the next save is this version, whatever the frame is then).
+ */
+const PERSISTED_VERSION = 2;
 
 interface Persisted {
   variants: DeskVariants;
@@ -245,15 +256,25 @@ interface Persisted {
   rail: boolean;
 }
 
-function readPersisted(): Persisted {
+export function readPersistedDesk(raw: string | null): Persisted {
   const fallback: Persisted = { variants: DEFAULT_DESK_VARIANTS, saved: {}, rail: true };
+  if (raw === null) return fallback;
   try {
-    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return fallback;
-    const value = JSON.parse(raw) as Partial<Persisted>;
-    return { variants: sanitizeVariants(value.variants), saved: sanitizeSaved(value.saved), rail: typeof value.rail === "boolean" ? value.rail : true };
+    const value = JSON.parse(raw) as Partial<Persisted> & { version?: unknown };
+    const variants = sanitizeVariants(value.variants);
+    const version = typeof value.version === "number" ? value.version : 1;
+    if (version < 2 && variants.chrome === "bar") variants.chrome = "drawer";
+    return { variants, saved: sanitizeSaved(value.saved), rail: typeof value.rail === "boolean" ? value.rail : true };
   } catch {
     return fallback;
+  }
+}
+
+function readPersisted(): Persisted {
+  try {
+    return readPersistedDesk(typeof localStorage === "undefined" ? null : localStorage.getItem(STORAGE_KEY));
+  } catch {
+    return readPersistedDesk(null);
   }
 }
 
@@ -304,7 +325,7 @@ export function sanitizeSaved(value: unknown): Record<string, SavedDesk> {
 }
 
 function persist(state: Persisted): void {
-  writeStorageLater(STORAGE_KEY, JSON.stringify(state));
+  writeStorageLater(STORAGE_KEY, JSON.stringify({ ...state, version: PERSISTED_VERSION }));
 }
 
 const initial = readPersisted();
@@ -317,6 +338,8 @@ export const useDeskStore = create<DeskStore>((set, get) => ({
   variants: initial.variants,
   saved: initial.saved,
   rail: initial.rail,
+  capturing: false,
+  setCapturing: (capturing) => set({ capturing }),
   open: (groupId, options) =>
     set(
       options?.afterSidebar === true

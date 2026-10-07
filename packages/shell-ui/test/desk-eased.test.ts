@@ -19,6 +19,9 @@ import { type Rect } from "../src/lib/desk/geometry";
 import { EASE_SMOOTH_OUT } from "../src/lib/desk/motion";
 import { DEFAULT_DESK_VARIANTS, sanitizeVariants, type DeskVariants } from "../src/lib/desk/store";
 
+/** The frame these were written for: the Title bar (its insets; a window held by its title bar). */
+const BAR_VARIANTS: DeskVariants = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" };
+
 let frames: Array<(now: number) => void> = [];
 let clock = 0;
 
@@ -49,7 +52,7 @@ function rectOf(el: ReturnType<typeof element>): Rect {
   return { x: x!, y: y!, w: Number.parseFloat(el.style["width"]!), h: Number.parseFloat(el.style["height"]!) };
 }
 
-const EASED: DeskVariants = { ...DEFAULT_DESK_VARIANTS, spring: "eased" };
+const EASED: DeskVariants = { ...BAR_VARIANTS, spring: "eased" };
 const STAGE = { w: 1600, h: 1000 };
 
 beforeEach(() => {
@@ -233,7 +236,7 @@ describe("the Eased feel", () => {
       return Math.max(...xs) - Math.min(...xs.slice(peak));
     };
     // The springs rebound off the edge; Eased does not.
-    expect(rebound(thrown({ ...DEFAULT_DESK_VARIANTS, spring: "bouncy" }))).toBeGreaterThan(2);
+    expect(rebound(thrown({ ...BAR_VARIANTS, spring: "bouncy" }))).toBeGreaterThan(2);
     expect(rebound(thrown(EASED))).toBeLessThan(0.5);
   });
 });

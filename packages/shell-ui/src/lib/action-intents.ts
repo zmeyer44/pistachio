@@ -43,6 +43,8 @@ export const ACTION_INTENT_DETAILS: Readonly<Record<string, string>> = {
   "chrome:forkSpace": "Create a new Space branched from this one.",
   "chrome:toggleSidebarPinned": "Keep the sidebar pinned open, or make it compact.",
   "chrome:togglePin": "Pin this tab to the sidebar to keep it, or unpin it.",
+  "chrome:screenshotView": "Take a screenshot of the page you are looking at (on a desk, the whole desk), copied to the clipboard and saved as a picture.",
+  "chrome:screenshotArea": "Take a screenshot of a part of the window, dragged out with the pointer, copied to the clipboard and saved as a picture.",
   "tab:close-current": "Close the tab you are looking at.",
   "tab:restore-closed": "Reopen the tab that was closed most recently.",
   "tabs:clear-unpinned": "Close every unpinned tab in this Space at once.",

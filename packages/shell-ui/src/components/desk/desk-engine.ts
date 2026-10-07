@@ -69,6 +69,7 @@
 
 import { TRAFFIC_LIGHTS_H, type DragCursor } from "@pistachio/shell-contracts/chrome";
 import {
+  DESK_DRAWER_TRIGGER,
   DESK_MINI_ZOOM,
   deskMaskKey,
   MAX_DESK_STILL_WIDTH,
@@ -86,6 +87,7 @@ import {
   cellZone,
   centeredRect,
   clampRect,
+  containsPoint,
   DESK_GAP,
   denormalizeRect,
   dockDropAt,
@@ -115,7 +117,9 @@ import {
   uncoveredWindows,
   letGoSize,
   notchOutline,
+  roundedRectPath,
   windowSize,
+  type CornerRadii,
   type DockDrop,
   type DockDrops,
   type Edges,
@@ -166,10 +170,42 @@ export const CHROME_INSETS: Record<DeskChrome, Insets> = {
   bar: { top: 34, right: 5, bottom: 5, left: 5 },
   tab: { top: 30, right: 4, bottom: 4, left: 4 },
   bare: { top: 18, right: 0, bottom: 0, left: 0 },
+  drawer: { top: 0, right: 0, bottom: 0, left: 0 },
 };
 
 /** How far below the window's top edge its card begins (the tab or the handle rides above it). */
-export const CHROME_CARD_TOP: Record<DeskChrome, number> = { bar: 0, tab: 26, bare: 18 };
+export const CHROME_CARD_TOP: Record<DeskChrome, number> = { bar: 0, tab: 26, bare: 18, drawer: 0 };
+
+/**
+ * The Drawer frame: at rest a window is its page and nothing else. Its
+ * controls are on a strip this tall behind its top edge, which slides up
+ * out of it — or, with less room than that above the window, as far as
+ * there is, the window sliding down the rest, as the main window's page
+ * slides down for its pane toolbar.
+ */
+export const DRAWER_H = 34;
+/** The drawer comes out as a hover lift does, and goes back in as a close, quicker (transitions.dev's motion tokens, by usage). */
+const DRAWER_OUT_MS = DURATION_FAST_MS;
+const DRAWER_IN_MS = DURATION_QUICK_MS;
+/** It goes back in this long after the pointer has gone: from the page onto the drawer is two processes' word, a moment apart. */
+const DRAWER_LINGER_MS = 120;
+/** A window let go by its drawer keeps it out this long for the pointer still on it, which the shell hears again only once it moves. */
+const DRAWER_DROP_GRACE_MS = 400;
+/** A drawer waits at most this long for the live pages it is to slide over to give way to their stills. */
+const DRAWER_CLEAR_WAIT_MS = 400;
+/** A page its drawer pushed past the desk's foot stays held at its own size this long once the window is back up, until its view is whole again. */
+const DRAWER_HOLD_MS = 120;
+
+/** Where the pointer is on a window, for its drawer: the shell's word (on any of it, on its drawer or top strip, its menu up) and main's (on its live page, in the page's top band). */
+interface DrawerHover {
+  window: boolean;
+  strip: boolean;
+  menu: boolean;
+  page: boolean;
+  top: boolean;
+}
+
+const NO_HOVER: DrawerHover = { window: false, strip: false, menu: false, page: false, top: false };
 
 /** A masked window's frame is the bare frame's handle, riding above its region: nothing beside or below it. */
 export const MASK_INSETS: Insets = CHROME_INSETS.bare;
@@ -310,6 +346,8 @@ export interface DeskWindowView {
   /** The shell paints this window's page (its still, a placeholder or a shell page); no live view is over it. */
   drawn: boolean;
   still: string | null;
+  /** The page box `still` pictures, in CSS px: it is drawn no larger than that (a window grown while drawn shows it at its own size, never blown up). */
+  stillSize: { w: number; h: number } | null;
   /** In hand: above everything on the desk, the inventory included. */
   carried: boolean;
   lifted: boolean;
@@ -481,6 +519,8 @@ interface Still {
   at: number;
   /** The mask it shows the region of (deskMaskKey), or null: the whole page. */
   mask: string | null;
+  /** The page box it pictures, in CSS px (PaneStill's width and height), or null where main did not say. */
+  size: { w: number; h: number } | null;
 }
 
 interface Win {
@@ -532,9 +572,12 @@ interface Win {
    * grows there live, revealing the page — never its still, a picture of the
    * smaller window stretched to the larger, nor laid out anew once there.
    * It goes no further than `to` on the way (#step), so the page never shows
-   * past what it is laid out at.
+   * past what it is laid out at. Drawn meanwhile (something lies over it),
+   * it shows a still taken `since` it set out, of the page laid out at `to`;
+   * and drawn when it gets there, it keeps its page held at `to` until it is
+   * live there (#latchGrowth).
    */
-  growTo: { from: Rect; to: Rect } | null;
+  growTo: { from: Rect; to: Rect; since: number } | null;
   /**
    * A mask to put back (the desk reopened on this masked window): it lands
    * whole, and once a still of it as it now stands is painted it is masked
@@ -553,6 +596,25 @@ interface Win {
   homeward: boolean;
   /** Closed from its frame (×): drawing in where it stands and fading, quicker than a flight's fade. */
   closing: boolean;
+  /**
+   * Its drawer (the Drawer frame): how far out it is (`t`, 0 in, 1 out), the
+   * timed ease taking it to `target`, when it was last wanted out (it
+   * lingers a moment after), since when it has waited for the pages under it
+   * to give way, until when its page stays held at its own size once it is
+   * back in from pushing the window past the desk's foot, and what main said
+   * of the pointer when the shell's word was that it had gone (#askCursor).
+   */
+  drawer: {
+    t: number;
+    target: 0 | 1;
+    from: number;
+    start: number;
+    ms: number;
+    wantedAt: number;
+    waitingSince: number | null;
+    holdUntil: number;
+    cursor: "asking" | "gone" | null;
+  };
 }
 
 /**
@@ -643,8 +705,17 @@ export class DeskEngine {
   /** Bottom to top. */
   #order: string[] = [];
   #focused: string | null = null;
+  /**
+   * The window in use, put out of use by a press on the desk's own surface:
+   * its tab stays the browser's tab in use, but the person has left it — it
+   * looks it (no focus ring, its title dimmed, its drawer in) until it is
+   * pressed, chosen or given the keyboard again. Only while it is `#focused`.
+   */
+  #blurred: string | null = null;
   #stage: HTMLElement | null = null;
   #stageBox = { left: 0, top: 0, width: 0, height: 0 };
+  /** The desk's corner radius, a window's (`.desk-stage`'s --desk-window-radius), read as it is measured. */
+  #corner = 0;
   #zoneEl: HTMLElement | null = null;
   #dropsEl: HTMLElement | null = null;
   /** What the shell draws over the desk (setCover): a card beside the sidebar, the Bar — in the stage's coordinates. */
@@ -726,6 +797,8 @@ export class DeskEngine {
   /** Where the pointer is said to be on a minimized window: its frame (the shell's own pointer), or its live page (main's word). */
   #miniHover: { tabId: string; frame: boolean; page: boolean } | null = null;
   #lowerTimer = 0;
+  /** Where the pointer is on each window, for its drawer (hoverWindow, hoverPage). */
+  readonly #drawerHover = new Map<string, DrawerHover>();
 
   constructor(host: DeskHost) {
     this.#host = host;
@@ -1158,6 +1231,7 @@ export class DeskEngine {
     const before = this.#usable();
     const resized = this.#stageBox.width > 0 && (box.width !== this.#stageBox.width || box.height !== this.#stageBox.height);
     this.#stageBox = { left: box.left, top: box.top, width: box.width, height: box.height };
+    this.#corner = cornerRadiusOf(stage);
     this.#writeWell();
     this.#measureSide();
     if (resized && this.#phase === "open") {
@@ -1551,6 +1625,7 @@ export class DeskEngine {
   /** The browser's active tab changed; if it is on the desk it comes to the top, if not it comes out. */
   activeChanged(tabId: string): void {
     if (this.#phase === "leaving") return;
+    this.#unblur();
     if (this.#wins.has(tabId)) {
       // Chosen from outside the desk (the sidebar, a shortcut), not by a raise of the desk's own.
       const chosen = this.#focused !== tabId;
@@ -1566,6 +1641,38 @@ export class DeskEngine {
       return;
     }
     this.add(tabId, { focus: true });
+  }
+
+  /** A press on the desk's own surface, between its windows: the window in use is left (#blurred). */
+  pressDesk(): void {
+    const focused = this.#focused;
+    if (focused === null || this.#blurred === focused || this.#gesture !== null || this.#phase !== "open") return;
+    this.#blurred = focused;
+    // (The keyboard is not to follow a click it had been waiting on.)
+    this.#pendingFocus = null;
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /** A press on a live page (main's word: the shell never hears it): the person is on a window again. */
+  pagePressed(): void {
+    if (!this.#unblur()) return;
+    this.#render();
+    this.#kick();
+  }
+
+  /** The window in use is the person's again, if the desk had taken it from them. True if it had. */
+  #unblur(): boolean {
+    if (this.#blurred === null) return false;
+    this.#blurred = null;
+    this.#dirtyView = true;
+    return true;
+  }
+
+  /** The window is in use and the person is on it: not left for the desk's own surface (#blurred). */
+  #attended(tabId: string): boolean {
+    return this.#focused === tabId && this.#blurred !== tabId;
   }
 
   /** Which window's tab is in use — the top one, unless one was just put away. */
@@ -1867,6 +1974,32 @@ export class DeskEngine {
     }, MINI_LOWER_MS);
   }
 
+  /**
+   * The pointer on a window as the shell hears it, for its drawer (the
+   * Drawer frame): on any of it ("window"), or on its drawer or the strip at
+   * its top that brings out a drawer with no room above it ("strip"); or its
+   * frame's menu is up ("menu"), which keeps the drawer out.
+   */
+  hoverWindow(tabId: string, part: "window" | "strip" | "menu", over: boolean): void {
+    this.#noteDrawerHover(tabId, { [part]: over });
+  }
+
+  /** Main's word on a window's live page (DeskHover): the pointer on it, and in its top band. */
+  hoverPage(tabId: string, over: boolean, top: boolean): void {
+    this.hoverMini(tabId, "page", over);
+    this.#noteDrawerHover(tabId, { page: over, top: over && top });
+  }
+
+  #noteDrawerHover(tabId: string, change: Partial<DrawerHover>): void {
+    // Wanted out until now (at rest, no frame has said so lately): it lingers from here.
+    const win = this.#wins.get(tabId);
+    if (win !== undefined && this.#drawerWanted(win)) win.drawer.wantedAt = Math.max(win.drawer.wantedAt, performance.now());
+    const hover = { ...(this.#drawerHover.get(tabId) ?? NO_HOVER), ...change };
+    if (Object.values(hover).some(Boolean)) this.#drawerHover.set(tabId, hover);
+    else this.#drawerHover.delete(tabId);
+    if (this.#host.variants().chrome === "drawer") this.#kick();
+  }
+
   /** Raise this parked window into full view (the others down), or put the raised one back down (null). */
   #raiseParked(tabId: string | null): void {
     const next = tabId !== null && this.#parked.includes(tabId) ? tabId : null;
@@ -2043,17 +2176,29 @@ export class DeskEngine {
    * window keeps of itself otherwise — its shadow as far as the desk's edges
    * (`reach`), cut off at the desk's foot (`foot`, in the window's own box).
    */
-  #notchClip(win: Win, foot: number, reach: ClipReach): string | null {
+  #notchClip(win: Win, y: number, foot: number, reach: ClipReach, radii: CornerRadii): string | null {
     const shape = this.#notchShape;
     if (shape === null || win.flight !== null) return null;
     const gesture = this.#gesture;
     if (gesture !== null && gesture.tabId === win.tabId && gesture.kind !== "resize") return null;
-    const { x, y, w } = win.rect;
+    const { x, w } = win.rect;
     const stageH = this.#stageBox.height;
     const hole = { x: shape.x - shape.flare, y: shape.y, w: shape.w + shape.flare * 2, h: stageH - shape.y };
     if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: foot + CLIP_MARGIN }, hole)) return null;
-    const left = (-reach.left).toFixed(1);
-    return `path(evenodd, "M ${left} ${(-reach.top).toFixed(1)} H ${(w + reach.right).toFixed(1)} V ${foot.toFixed(1)} H ${left} Z ${notchOutline(shape, stageH, -x, -y)}")`;
+    return `path(evenodd, "${roundedRectPath(-reach.left, -reach.top, w + reach.right, foot, radii)} ${notchOutline(shape, stageH, -x, -y)}")`;
+  }
+
+  /**
+   * A window's clip (from its corner at x, y; its foot always the desk's)
+   * rounded at those of its corners that reach the desk's own, as the desk
+   * is rounded there.
+   */
+  #cornerRadii(x: number, y: number, w: number, reach: ClipReach): CornerRadii {
+    const r = this.#corner;
+    const top = y - reach.top <= 0.5;
+    const left = x - reach.left <= 0.5;
+    const right = x + w + reach.right >= this.#stageBox.width - 0.5;
+    return { tl: top && left ? r : 0, tr: top && right ? r : 0, br: right ? r : 0, bl: left ? r : 0 };
   }
 
   /** The tab is one of the group's (a tab the agent just opened may not be yet). */
@@ -2250,6 +2395,7 @@ export class DeskEngine {
     if (event.button !== 0 || this.#phase !== "open" || !this.#wins.has(tabId) || this.#gesture !== null) return;
     this.#noteShift(event.shiftKey);
     this.#raise(tabId);
+    this.#unblur();
     this.#emit();
     this.#render();
     const start = { x: event.clientX, y: event.clientY };
@@ -2305,6 +2451,7 @@ export class DeskEngine {
     // (A parked window is resized once it is out on the desk: half of it is below the desk's edge.)
     if (event.button !== 0 || win === undefined || this.#phase !== "open" || this.#gesture !== null || win.flight !== null || win.mini?.parked === true) return;
     this.#raise(tabId);
+    this.#unblur();
     const start = this.#toStage({ x: event.clientX, y: event.clientY });
     const joint = this.#jointAt(win, edges, start);
     // The windows on its seams are resized with it: none goes on moving as it was.
@@ -2387,9 +2534,14 @@ export class DeskEngine {
     win.vel = { ...ZERO_RECT };
     const lifted = this.#host.variants().motion === "lifted";
     win.lift = { scale: lifted ? LIFT_SCALE : 1, tilt: 0 };
-    win.origin = { x: origin.x - win.rect.x, y: origin.y - win.rect.y };
+    // (From the window where it is shown: pushed down by its drawer, its box is a drawer's height above.)
+    win.origin = { x: origin.x - win.rect.x, y: origin.y - this.#shownRect(win).y };
     const usable = this.#usable();
     const barHeight = this.#insets(win).top;
+    // Held by its drawer, out above it: the pointer's place on the drawer, above the window's top edge as it is shown.
+    // Carried away from the desk's top, the drawer stays where it was taken hold of; carried up against it, the drawer
+    // stops there and the window under it.
+    const byDrawer = win.drawer.t > 0 && win.origin.y >= -DRAWER_H * win.drawer.t && win.origin.y < 0;
     if (this.#selecting === tabId) this.#selecting = null;
     this.#gesture = {
       kind: "move",
@@ -2398,8 +2550,8 @@ export class DeskEngine {
       start: origin,
       pointer: origin,
       startRect: { ...win.rect },
-      grab: { x: (origin.x - win.rect.x) / Math.max(1, win.rect.w), y: (origin.y - win.rect.y) / Math.max(1, win.rect.h) },
-      pinTop: win.origin.y >= 0 && win.origin.y <= barHeight ? win.origin.y : null,
+      grab: { x: win.origin.x / Math.max(1, win.rect.w), y: win.origin.y / Math.max(1, win.rect.h) },
+      pinTop: byDrawer || (win.origin.y >= 0 && win.origin.y <= barHeight) ? win.origin.y : null,
       edges: null,
       joint: null,
       tracker: new VelocityTracker(),
@@ -2740,6 +2892,8 @@ export class DeskEngine {
     }
     win.lift = { scale: 1, tilt: 0 };
     this.#pendingFocus = win.tabId;
+    // Let go with its drawer out, the pointer most likely still on it: it stays out until the shell hears where the pointer is.
+    if (win.drawer.target === 1) win.drawer.wantedAt = performance.now() + DRAWER_DROP_GRACE_MS;
     if (gesture.kind === "resize") {
       this.#save();
       this.#emit();
@@ -3108,6 +3262,8 @@ export class DeskEngine {
   #render(): void {
     if (this.#destroyed) return;
     const now = performance.now();
+    let drawersMoving = false;
+    for (const win of this.#wins.values()) if (this.#stepDrawer(win, now)) drawersMoving = true;
     // A mask being edited: its page shown around the region, and its bar,
     // are drawn over the desk, above every window — a cover (clearCovers says when it can be seen).
     const editing = this.#editing === null ? undefined : this.#wins.get(this.#editing);
@@ -3122,7 +3278,7 @@ export class DeskEngine {
       this.#covers.delete("maskedit");
     }
     const frames = new Map<string, Rect>();
-    for (const tabId of this.#order) frames.set(tabId, this.#wins.get(tabId)!.rect);
+    for (const tabId of this.#order) frames.set(tabId, this.#shownRect(this.#wins.get(tabId)!));
     // The parked windows peeking up at the desk's foot cover no window under them: over a live page there, main's
     // shelf view draws them (shelfOver), and they are drawn (stills) meanwhile.
     const lowered = new Set(this.#loweredShelf());
@@ -3149,6 +3305,14 @@ export class DeskEngine {
         frames.set(`\u0000cover:${key}`, rect);
       }
     }
+    // A drawer out, or about to come out, is its window's, just under it in the stack (it comes from behind it): the
+    // pages under it give way, never its own, which its slot overlaps while a window it pushes down slides.
+    order = order.flatMap((id) => {
+      const win = this.#wins.get(id);
+      if (win === undefined || !this.#drawerActive(win)) return [id];
+      frames.set(`\u0000drawer:${id}`, this.#drawerSlot(win));
+      return [`\u0000drawer:${id}`, id];
+    });
     for (const win of this.#wins.values()) this.#putMaskBack(win, now);
     const uncovered = uncoveredWindows(
       order.filter((id) => !lowered.has(id)),
@@ -3163,7 +3327,7 @@ export class DeskEngine {
         win.unmasking = null;
         this.#dirtyView = true;
       }
-      this.#latchGrowth(win);
+      this.#latchGrowth(win, now);
       // (A parked window under main's shelf view wants its still: that view shows it.)
       const wants = !uncovered.has(win.tabId) || this.#wantsStillForMotion(win) || (shelfOver && lowered.has(win.tabId));
       if (wants) {
@@ -3187,9 +3351,17 @@ export class DeskEngine {
         win.miniMotion === "in" ||
         (shelfOver && lowered.has(win.tabId));
       const drawn = !native || forced || (wants && this.#fresh(win));
+      const grow = win.growTo;
+      // Drawn growing, or grown: its still is of its page laid out at the box it grows to, or one is on its way.
+      if (drawn && grow !== null && (win.still?.at ?? Number.NEGATIVE_INFINITY) < grow.since) this.#queueCapture(win.tabId, false);
+      // Live again in the box it grew to: its page is let go a frame from now, once main has shown it there (#latchGrowth).
+      if (!drawn && grow !== null && win.target === null) this.#kick();
       if (drawn !== win.drawn) {
         win.drawn = drawn;
         this.#dirtyView = true;
+        // Its page down, main hears the pointer leave it no more: the shell's own word on it stands.
+        const hover = this.#drawerHover.get(win.tabId);
+        if (drawn && hover !== undefined && (hover.page || hover.top)) this.#noteDrawerHover(win.tabId, { page: false, top: false });
       }
       this.#write(win);
     }
@@ -3207,6 +3379,158 @@ export class DeskEngine {
     this.#report();
     this.#flushCaptures();
     this.#focusPending();
+    if (drawersMoving) this.#kick();
+  }
+
+  // ── The Drawer frame ───────────────────────────────────────────────────
+
+  /** A window's room above it on the desk: as much of its drawer as comes out without moving it. */
+  #drawerRoom(win: Win): number {
+    return Math.max(0, win.rect.y - this.#usable().y);
+  }
+
+  /** How far its drawer has pushed the window down now: what the drawer needs past the room above it, as far as it is out. */
+  #drawerShift(win: Win): number {
+    return win.drawer.t === 0 ? 0 : win.drawer.t * Math.max(0, DRAWER_H - this.#drawerRoom(win));
+  }
+
+  /** The window where it is shown: its box, pushed down by its drawer. */
+  #shownRect(win: Win): Rect {
+    const shift = this.#drawerShift(win);
+    return shift === 0 ? win.rect : { ...win.rect, y: win.rect.y + shift };
+  }
+
+  /** Where its drawer stands all the way out, in the stage. */
+  #drawerSlot(win: Win): Rect {
+    const push = Math.max(0, DRAWER_H - this.#drawerRoom(win));
+    return { x: win.rect.x, y: win.rect.y + push - DRAWER_H, w: win.rect.w, h: DRAWER_H };
+  }
+
+  /** Its drawer is out, on its way, or waiting to come out: it covers what is under it. */
+  #drawerActive(win: Win): boolean {
+    return win.drawer.t > 0 || win.drawer.target === 1 || win.drawer.waitingSince !== null;
+  }
+
+  /** Pushed all the way down by its drawer, its page would pass the desk's foot. */
+  #drawerPastFoot(win: Win): boolean {
+    return win.rect.y + win.rect.h + Math.max(0, DRAWER_H - this.#drawerRoom(win)) > this.#stageBox.height + 0.5;
+  }
+
+  /** Its page is held at its own size (DeskZoomedPage at zoom 1): its drawer pushes it past the desk's foot, where its view is cut short, or did a moment ago. */
+  #drawerHeld(win: Win, now: number): boolean {
+    if (win.mask !== null || win.mini !== null) return false;
+    return ((win.drawer.t > 0 || win.drawer.target === 1) && this.#drawerPastFoot(win)) || now < win.drawer.holdUntil;
+  }
+
+  /** The window has a drawer now: the Drawer frame, on the open desk, at rest in it (not masked, flying or closing; parked, only while raised). */
+  #hasDrawer(win: Win): boolean {
+    if (this.#host.variants().chrome !== "drawer" || this.#phase !== "open") return false;
+    if (win.mask !== null || win.unmasking !== null || win.flight !== null || win.closing || win.hold || !win.framed) return false;
+    if (win.mini?.parked === true && this.#raised !== win.tabId) return false;
+    return this.#editing !== win.tabId && this.#selecting !== win.tabId;
+  }
+
+  /**
+   * Whether its drawer is wanted out. With room for it above the window:
+   * while the pointer is anywhere on the window, or it is in use. With less
+   * (it would push the window down): only for the pointer at the window's
+   * top — its page's top band, or the strip there — or on the drawer
+   * itself. Its menu up keeps it out, and in hand it stays as it was.
+   */
+  #drawerWanted(win: Win): boolean {
+    if (!this.#hasDrawer(win)) return false;
+    if (this.#gesture?.tabId === win.tabId) return win.drawer.target === 1;
+    const hover = this.#drawerHover.get(win.tabId) ?? NO_HOVER;
+    if (hover.menu) return true;
+    const roomy = this.#drawerRoom(win) >= DRAWER_H;
+    if (roomy && this.#attended(win.tabId)) return true;
+    // (Anything in hand has the pointer: what it was on before says nothing now.)
+    if (this.#gesture !== null) return false;
+    return hover.strip || (roomy ? hover.window || hover.page : hover.top);
+  }
+
+  /**
+   * The shell's word is that the pointer has left a drawer that pushed its
+   * window down: worth a look, not yet a fact, as for the main window's pane
+   * toolbar. The window slid its page out from under a resting pointer, so
+   * main heard the pointer leave the page, and the shell hears it on the
+   * drawer only once it moves. Main reads the OS's pointer: on the drawer, or
+   * the top of the page, the drawer stays out (asked again a linger later);
+   * anywhere else, or unknown (Playwright), it goes back in.
+   */
+  async #askCursor(win: Win): Promise<void> {
+    let point: { x: number; y: number } | null = null;
+    try {
+      point = (await nativeApi()?.getCursorPoint()) ?? null;
+    } catch {
+      point = null;
+    }
+    if (this.#destroyed || win.drawer.cursor !== "asking") return;
+    const slot = this.#drawerSlot(win);
+    const holds = point !== null && containsPoint({ x: slot.x, y: slot.y, w: slot.w, h: DRAWER_H + DESK_DRAWER_TRIGGER }, this.#toStage(point));
+    if (holds) win.drawer.wantedAt = performance.now();
+    win.drawer.cursor = holds ? null : "gone";
+    this.#kick();
+  }
+
+  /** No live page under the window in the stack is under its drawer: it can come out over them. */
+  #drawerClear(win: Win): boolean {
+    const slot = this.#drawerSlot(win);
+    for (const id of this.#order) {
+      // (The windows above it lie over its drawer as they lie over it.)
+      if (id === win.tabId) return true;
+      const other = this.#wins.get(id)!;
+      if (!other.drawn && this.#host.hasLivePage(id) && rectsOverlap(this.#shownRect(other), slot)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * One window's drawer this frame: wanted out or not (lingering a moment
+   * after it was), and eased there. Coming out over live pages, it waits
+   * for them to give way to their stills (its slot covers them meanwhile).
+   * True while it needs frames.
+   */
+  #stepDrawer(win: Win, now: number): boolean {
+    const drawer = win.drawer;
+    const has = this.#hasDrawer(win);
+    if (!has && drawer.t === 0 && drawer.target === 0) {
+      drawer.waitingSince = null;
+      return now < drawer.holdUntil;
+    }
+    const wanted = this.#drawerWanted(win);
+    if (wanted) {
+      drawer.wantedAt = Math.max(drawer.wantedAt, now);
+      drawer.cursor = null;
+    }
+    const lingering = !wanted && has && now - drawer.wantedAt < DRAWER_LINGER_MS;
+    // Out and about to go back in, a window it pushed down: where the pointer really is first (#askCursor).
+    if (!wanted && !lingering && has && drawer.target === 1 && this.#gesture === null && this.#drawerRoom(win) < DRAWER_H) {
+      if (drawer.cursor === null) {
+        drawer.cursor = "asking";
+        void this.#askCursor(win);
+      }
+      if (drawer.cursor === "asking") return true;
+    }
+    const target: 0 | 1 = wanted || lingering ? 1 : 0;
+    if (target === 1 && drawer.target === 0) {
+      drawer.waitingSince ??= now;
+      if (!this.#drawerClear(win) && now - drawer.waitingSince < DRAWER_CLEAR_WAIT_MS) return true;
+    } else drawer.waitingSince = null;
+    if (target !== drawer.target) {
+      drawer.target = target;
+      drawer.from = drawer.t;
+      drawer.start = now;
+      drawer.ms = reducedMotion() ? 0 : (target === 1 ? DRAWER_OUT_MS : DRAWER_IN_MS) * Math.abs(target - drawer.t);
+      drawer.waitingSince = null;
+      drawer.cursor = null;
+    }
+    const progress = drawer.ms <= 0 ? 1 : clamp((now - drawer.start) / drawer.ms, 0, 1);
+    const was = drawer.t;
+    drawer.t = progress >= 1 ? drawer.target : drawer.from + (drawer.target - drawer.from) * EASE_SMOOTH_OUT(progress);
+    // Back in from pushing its page past the desk's foot: the page stays held a moment, until its view is whole again.
+    if (was > 0 && drawer.t === 0 && win.mask === null && this.#drawerPastFoot(win)) drawer.holdUntil = now + DRAWER_HOLD_MS;
+    return progress < 1 || lingering || now < drawer.holdUntil;
   }
 
   /** Whether a live page is under the Bar's idle notch (the view's `notchOver`): main's notch view draws it over the page then. */
@@ -3227,7 +3551,8 @@ export class DeskEngine {
 
   /** A window's page in the stage: its frame less its frame's insets. */
   #pageBox(win: Win, insets: Insets = this.#insets(win)): Rect {
-    return { x: win.rect.x + insets.left, y: win.rect.y + insets.top, w: win.rect.w - insets.left - insets.right, h: win.rect.h - insets.top - insets.bottom };
+    const y = win.rect.y + this.#drawerShift(win);
+    return { x: win.rect.x + insets.left, y: y + insets.top, w: win.rect.w - insets.left - insets.right, h: win.rect.h - insets.top - insets.bottom };
   }
 
   /** The parked windows down in the shelf, peeking up (not the raised one, nor one in hand or on its way), left to right. */
@@ -3275,7 +3600,7 @@ export class DeskEngine {
     let floatCovered = false;
     for (const [key, rect] of this.#covers) {
       let live = false;
-      for (const win of this.#wins.values()) if (!win.drawn && rectsOverlap(win.rect, rect)) live = true;
+      for (const win of this.#wins.values()) if (!win.drawn && rectsOverlap(this.#shownRect(win), rect)) live = true;
       // (The floating player's picture is live over the windows until it comes down for the cover.)
       if (this.#float !== null && rectsOverlap(this.#float.rect, rect)) {
         floatCovered = true;
@@ -3301,8 +3626,9 @@ export class DeskEngine {
   #wantsStillForMotion(win: Win): boolean {
     // Leaving, the window in use grows into the pane as its live page: its page is laid out at the pane's box already.
     if (this.#phase === "leaving" && this.#leaveTop === win.tabId) return false;
-    // So does any window growing into a larger box (growTo), once it is let go.
-    if (win.growTo !== null && this.#gesture?.tabId !== win.tabId) return false;
+    // So does any window growing into a larger box (growTo), once it is let go. (Landed, its page held there while
+    // it is drawn, it is a window at rest.)
+    if (win.growTo !== null && win.target !== null && this.#gesture?.tabId !== win.tabId) return false;
     if (
       win.flight !== null ||
       win.hold ||
@@ -3351,16 +3677,35 @@ export class DeskEngine {
 
   /**
    * Whether a window is growing into a larger box (growTo), read as it sets
-   * out — and kept until it gets there, or is sent somewhere else. Only a
+   * out — and kept until it gets there (and is live there), or is sent somewhere else. Only a
    * tab's live page, at its own size and its own zoom: a masked one, a
    * minimized one and one coming off its mask have their own ways, a window
    * in hand or in flight is a picture anyway, and leaving, only the window
    * becoming the pane.
    */
-  #latchGrowth(win: Win): void {
+  #latchGrowth(win: Win, now: number): void {
     const target = win.target;
     const latched = win.growTo;
     if (latched !== null && target !== null && sameRect(latched.to, target, 0.5)) return;
+    // There, but drawn (a card, a tooltip, a window over it): its page stays
+    // laid out at the box it grew to until the window is live in it. Let go
+    // while its view is down, the page would go back to the size it set out
+    // at — a hidden view's new size never reaches its page — and the window
+    // would be that, blown up to the box, in every still and when it is shown.
+    if (
+      latched !== null &&
+      target === null &&
+      win.drawn &&
+      win.flight === null &&
+      win.mask === null &&
+      win.maskWanted === null &&
+      win.unmasking === null &&
+      win.mini === null &&
+      this.#phase !== "leaving" &&
+      Math.abs(win.rect.w - latched.to.w) < 0.5 &&
+      Math.abs(win.rect.h - latched.to.h) < 0.5
+    )
+      return;
     win.growTo = null;
     if (
       target === null ||
@@ -3378,7 +3723,9 @@ export class DeskEngine {
     )
       return;
     if (target.w <= win.rect.w + 2 && target.h <= win.rect.h + 2) return;
-    win.growTo = { from: { ...win.rect }, to: { ...target } };
+    win.growTo = { from: { ...win.rect }, to: { ...target }, since: now };
+    // Drawn as it sets out, its still is of the smaller window: one of the page laid out at `to`, at once.
+    if (win.drawn) this.#queueCapture(win.tabId, true);
     this.#dirtyView = true;
   }
 
@@ -3424,7 +3771,9 @@ export class DeskEngine {
   #write(win: Win): void {
     const el = win.el;
     if (el === null) return;
-    const { x, y, w, h } = win.rect;
+    const { x, w, h } = win.rect;
+    // (Pushed down by its drawer, the window is drawn there: its shadow, its clip and its page with it.)
+    const y = win.rect.y + this.#drawerShift(win);
     const transformed = win.drawn && (win.scale !== 1 || win.tilt !== 0);
     const transform = transformed
       ? `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0) rotate(${win.tilt.toFixed(3)}deg) scale(${win.scale.toFixed(4)})`
@@ -3441,14 +3790,34 @@ export class DeskEngine {
     const foot = transformed || stageH <= 0 ? null : stageH - y;
     const reach = (room: number): number => Math.min(CLIP_MARGIN, Math.max(0, room));
     const sides: ClipReach = { top: reach(y), left: reach(x), right: reach(stageW - x - w) };
+    // Where the clip reaches one of the desk's corners, it is rounded as the desk is there: a window filling the desk
+    // fills it to its curve, and neither its focus ring nor its shadow shows past it.
+    const radii = this.#cornerRadii(x, y, w, sides);
+    const round =
+      radii.tl + radii.tr + radii.br + radii.bl === 0 ? "" : ` round ${radii.tl.toFixed(1)}px ${radii.tr.toFixed(1)}px ${radii.br.toFixed(1)}px ${radii.bl.toFixed(1)}px`;
     const clip =
       foot === null
         ? ""
-        : (this.#notchClip(win, foot, sides) ??
-          `inset(${(-sides.top).toFixed(1)}px ${(-sides.right).toFixed(1)}px ${(h - foot).toFixed(1)}px ${(-sides.left).toFixed(1)}px)`);
-    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${clip}`;
+        : (this.#notchClip(win, y, foot, sides, radii) ??
+          `inset(${(-sides.top).toFixed(1)}px ${(-sides.right).toFixed(1)}px ${(h - foot).toFixed(1)}px ${(-sides.left).toFixed(1)}px${round})`);
+    // Its drawer: how far out (the strip's own slide, CSS), and whether it would push the window down (the strip at its top brings it out then).
+    const drawer = this.#host.variants().chrome === "drawer" && win.mask === null;
+    const tight = drawer && this.#drawerRoom(win) < DRAWER_H;
+    // (Whether it is out at all too: the last frame of its going in can round to the same thousandth as all the way in.)
+    const drawerKey = drawer ? `${win.drawer.t.toFixed(3)}:${win.drawer.t > 0 ? "out" : "in"}:${tight ? "tight" : "roomy"}` : "";
+    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${clip}|${drawerKey}`;
     if (key === win.written) return;
     win.written = key;
+    if (drawer) {
+      el.style.setProperty("--drawer-t", win.drawer.t.toFixed(3));
+      el.dataset["drawerRoom"] = tight ? "tight" : "roomy";
+      if (win.drawer.t > 0) el.dataset["drawerOut"] = "";
+      else delete el.dataset["drawerOut"];
+    } else if (el.dataset["drawerRoom"] !== undefined) {
+      el.style.removeProperty("--drawer-t");
+      delete el.dataset["drawerRoom"];
+      delete el.dataset["drawerOut"];
+    }
     el.style.clipPath = clip;
     el.style.transform = transform;
     el.style.width = `${w.toFixed(1)}px`;
@@ -3500,8 +3869,8 @@ export class DeskEngine {
       const win = this.#wins.get(tabId)!;
       if (win.drawn) continue;
       const insets = this.#insets(win);
-      const y = Math.round(top + win.rect.y + insets.top);
-      // Peeking from the desk's foot, its view is cut short at the desk's edge: main shows the top of its (zoomed) page.
+      const y = Math.round(top + win.rect.y + this.#drawerShift(win) + insets.top);
+      // Peeking from the desk's foot, or pushed past it by its drawer, its view is cut short at the desk's edge: main shows the top of its page.
       const foot = Math.round(top + this.#stageBox.height);
       // Growing, its view is never larger than the page it is laid out at (growTo): one dimension may be shrinking meanwhile.
       const grow = win.growTo?.to ?? null;
@@ -3578,6 +3947,19 @@ export class DeskEngine {
         zoom: 1,
       });
     }
+    // Pushed past the desk's foot by its drawer: held at its own size, so it never lays out at the box its view is cut to.
+    const now = performance.now();
+    for (const tabId of leavingLast(this.#order)) {
+      const win = this.#wins.get(tabId)!;
+      if (!isTabWindow(tabId) || zoomed.some((page) => page.tabId === tabId) || !this.#drawerHeld(win, now)) continue;
+      const insets = this.#insets(win);
+      zoomed.push({
+        tabId,
+        width: Math.max(1, Math.round(win.rect.w - insets.left - insets.right)),
+        height: Math.max(1, Math.round(win.rect.h - insets.top - insets.bottom)),
+        zoom: 1,
+      });
+    }
     // Leaving, the window in use: laid out at the pane's box at once, as it grows there.
     if (this.#leaveTop !== null && this.#wins.has(this.#leaveTop) && !zoomed.some((page) => page.tabId === this.#leaveTop))
       zoomed.push({ tabId: this.#leaveTop, width: Math.max(1, Math.round(this.#stageBox.width)), height: Math.max(1, Math.round(this.#stageBox.height)), zoom: 1 });
@@ -3603,6 +3985,8 @@ export class DeskEngine {
       this.#pendingFocus = null;
       return;
     }
+    // Given the keyboard, a window is the person's again (#blurred).
+    if (this.#unblur()) this.#emit();
     // A document's own content takes the keyboard, in the shell.
     if (!isTabWindow(tabId)) {
       this.#pendingFocus = null;
@@ -3630,9 +4014,10 @@ export class DeskEngine {
         return {
           tabId,
           z: index,
-          focused: tabId === this.#focused,
+          focused: this.#attended(tabId),
           drawn: win.drawn,
           still: win.still?.src ?? this.#thumbs.get(tabId)?.src ?? null,
+          stillSize: (win.still ?? this.#thumbs.get(tabId))?.size ?? null,
           carried,
           lifted: carried && this.#host.variants().motion === "lifted",
           aiming: carried && gesture.zone !== null,
@@ -3740,10 +4125,10 @@ export class DeskEngine {
           const win = this.#wins.get(still.tabId);
           const mask = still.mask ?? null;
           if (win === undefined) {
-            this.#thumbs.set(still.tabId, { src: still.dataUrl, at, mask });
+            this.#thumbs.set(still.tabId, { src: still.dataUrl, at, mask, size: stillSize(still) });
             continue;
           }
-          win.still = { src: still.dataUrl, at, mask };
+          win.still = { src: still.dataUrl, at, mask, size: stillSize(still) };
           landed.push({ win, src: still.dataUrl });
         }
         this.#emit();
@@ -3771,7 +4156,7 @@ export class DeskEngine {
         if (this.#destroyed || stills.length === 0) return;
         for (const still of stills) {
           const current = this.#thumbs.get(still.tabId);
-          if (current === undefined || current.at < at) this.#thumbs.set(still.tabId, { src: still.dataUrl, at, mask: still.mask ?? null });
+          if (current === undefined || current.at < at) this.#thumbs.set(still.tabId, { src: still.dataUrl, at, mask: still.mask ?? null, size: stillSize(still) });
         }
         this.#emit();
       });
@@ -3827,6 +4212,7 @@ export class DeskEngine {
       revealed: false,
       homeward: false,
       closing: false,
+      drawer: { t: 0, target: 0, from: 0, start: 0, ms: 0, wantedAt: Number.NEGATIVE_INFINITY, waitingSince: null, holdUntil: 0, cursor: null },
     };
   }
 
@@ -4239,6 +4625,12 @@ export class DeskEngine {
   }
 }
 
+/** The page box a still from main pictures, in CSS px, where main said. */
+function stillSize(still: { width?: number; height?: number }): { w: number; h: number } | null {
+  const { width, height } = still;
+  return width !== undefined && height !== undefined && width > 0 && height > 0 ? { w: width, h: height } : null;
+}
+
 /** What a still can stand for, for a window masked with `mask` (or not): its region, the whole page (cropped if masked), or nothing. */
 function stillShows(still: Still | null, mask: DeskMask | null): "page" | "region" | "none" {
   if (still === null) return "none";
@@ -4252,6 +4644,16 @@ function stillShows(still: Still | null, mask: DeskMask | null): "page" | "regio
 /** A mask's page box, all of it: what main shows while the mask is edited. */
 function wholeDeskMask(mask: DeskMask): DeskMask {
   return { x: 0, y: 0, width: mask.pageWidth, height: mask.pageHeight, pageWidth: mask.pageWidth, pageHeight: mask.pageHeight };
+}
+
+/** An element's corner radius in px, as laid out (0 where it cannot be read). */
+function cornerRadiusOf(el: HTMLElement): number {
+  if (typeof getComputedStyle !== "function") return 0;
+  try {
+    return Number.parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function reducedMotion(): boolean {

@@ -13,6 +13,7 @@ import { activeMention, insertMention, mentionCandidates, mentionQuery, mentions
 import { agentActivity } from "../../lib/desk/agent";
 import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictation";
 import { DESK_GAP, type Rect } from "../../lib/desk/geometry";
+import { useDeskStore } from "../../lib/desk/store";
 import { agentIsActing, relativeTime, sortThreads } from "../../lib/run";
 import { useAppStore } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
@@ -329,7 +330,9 @@ export const DeskBar = memo(function DeskBar({
   useEffect(() => () => engine.setNotch(null), [engine]);
   // Over a live page, idle, the notch is main's notch view (NotchApp), drawn over the page as nothing of the
   // shell's can be: it is told where (the notch and its flares, in the window) and what it says.
-  const overPage = compact && view.notchOver && !leaving;
+  // A screenshot of the desk is the windows without the Bar: neither it nor its hole is drawn while one is taken.
+  const capturing = useDeskStore((state) => state.capturing);
+  const overPage = compact && view.notchOver && !leaving && !capturing;
   useLayoutEffect(() => {
     const api = nativeApi();
     const el = barRef.current;
@@ -376,7 +379,7 @@ export const DeskBar = memo(function DeskBar({
   // The notch as it is drawn now, as it grows and shrinks: the engine cuts it through the well and the windows under it.
   useLayoutEffect(() => {
     const el = barRef.current;
-    if (el === null || leaving) {
+    if (el === null || leaving || capturing) {
       engine.setNotchShape(null);
       return;
     }
@@ -395,7 +398,7 @@ export const DeskBar = memo(function DeskBar({
       window.removeEventListener("resize", measure);
       engine.setNotchShape(null);
     };
-  }, [engine, leaving]);
+  }, [engine, leaving, capturing]);
 
   // A button's tooltip is open: the band above the Bar, where it appears, is
   // a cover, and stays one a moment after it closes (the dock's rule).
@@ -421,7 +424,11 @@ export const DeskBar = memo(function DeskBar({
 
   return (
     // Centred on the desk, on its foot.
-    <div className="desk-bar-lane" data-testid="desk-bar-lane" style={{ left: DESK_GAP, right: DESK_GAP, bottom: 0 }}>
+    <div
+      className="desk-bar-lane"
+      data-testid="desk-bar-lane"
+      style={{ left: DESK_GAP, right: DESK_GAP, bottom: 0, visibility: capturing ? "hidden" : undefined }}
+    >
       {/* One column, the Bar's width: the answer rests on the Bar, however tall the Bar grows. */}
       <div className="desk-bar-column">
         {cardShown ? (

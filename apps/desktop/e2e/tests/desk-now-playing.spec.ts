@@ -213,6 +213,15 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect(shell.getByTestId("settings-page")).toHaveCount(0);
     await expect(pip).not.toHaveAttribute("data-covered");
     await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, pipBox))).toBe(true);
+    // The screenshot selector (⌘⇧2) likewise: nothing of the player lies over the area being chosen.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.send("pistachio:shell-command", { type: "runShortcut", id: "screenshotArea" }));
+    await expect(shell.locator("[data-testid='screenshot-overlay'][data-ready]")).toHaveCount(1);
+    await expect(pip).toHaveAttribute("data-covered", "raised");
+    await expect.poll(() => viewAt(app, CHROME_VIEW_HASHES.pip)).toBe(null);
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("screenshot-overlay")).toHaveCount(0);
+    await expect(pip).not.toHaveAttribute("data-covered");
+    await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, pipBox))).toBe(true);
 
     // ── 3. Its controls are the pip view's, over the picture while the pointer is on it ─
     const face = await pipPage(app);

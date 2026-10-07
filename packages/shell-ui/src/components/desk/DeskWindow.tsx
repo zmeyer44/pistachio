@@ -13,9 +13,9 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { AudioLines, Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, X } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, RotateCw, X } from "lucide-react";
 import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
-import { DESK_MINI_ZOOM, MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
+import { DESK_DRAWER_TRIGGER, DESK_MINI_ZOOM, MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
@@ -36,7 +36,7 @@ import { SiteInfoFrom } from "../SiteInfoPopover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { HomePage } from "../home/HomePage";
 import { BriefPage } from "../reports/BriefPage";
-import { CHROME_CARD_TOP, CHROME_INSETS, MASK_CARD_TOP, MASK_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
+import { CHROME_CARD_TOP, CHROME_INSETS, DRAWER_H, MASK_CARD_TOP, MASK_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
 import { DeskLivePicture } from "./DeskLivePicture";
 import { usePageEntries } from "./page-entries";
 import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
@@ -50,6 +50,8 @@ const TIP_LINGER_MS = 200;
 /** The band under the frame's buttons where their tooltips appear, and how far past the row's ends they may reach. */
 const TIP_BAND_H = 40;
 const TIP_BAND_REACH = 100;
+/** The drawer's page controls, at its leading edge (their tooltips' band is under them, not under the window's own buttons). */
+const NAV_TIPS: ReadonlySet<string> = new Set(["Back", "Forward", "Reload"]);
 
 /** A tooltip under one of the frame's buttons (as the Bar's BarTip): open as Base UI says, seen once no live page is under it. */
 interface FrameTip {
@@ -58,6 +60,8 @@ interface FrameTip {
   /** Not while the frame's menu or the site's card hangs from it, nor while the window is in hand or on its way. */
   disabled: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Its button pressed: the tooltip goes, and its band at once — what the button does may move the window (filled, it would grow as its still). */
+  dismiss: () => void;
 }
 
 /** Whether a pointer event holds the desk's grab key. */
@@ -87,6 +91,12 @@ export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: 
  * Unmask, Collapse and Close, and Edit mask on its menu. Choosing the region, its
  * page is frozen under a MaskSelector; editing it, the whole page is shown
  * around it under a MaskEditor.
+ *
+ * In the Drawer frame the window is its page alone: its title and controls
+ * are on a strip behind its top edge that the engine slides out above it
+ * (`--drawer-t`), pushing the window down where there is no room above
+ * it. The pointer on the window, on the drawer, or on the strip at its
+ * top is said to the engine (hoverWindow), which decides when.
  *
  * Minimized, the window is small and its page zoomed out (DESK_MINI_ZOOM):
  * a web page by main, a page the shell draws by a CSS scale here. Its
@@ -206,17 +216,34 @@ export const DeskWindow = memo(function DeskWindow({
   /** The ⋯: the site's information, chosen from the menu, hangs from it. */
   const moreRef = useRef<HTMLButtonElement>(null);
   const siteInfoHere = useAppStore((state) => state.overlay === "site-info" && state.snapshot?.activeTabId === tabId);
+  // The frame's menu, or the site's card, hangs from the drawer: it stays out meanwhile.
+  const menuUp = menu.isOpen || siteInfoHere;
+  useEffect(() => {
+    if (!menuUp) return;
+    engine.hoverWindow(tabId, "menu", true);
+    return () => engine.hoverWindow(tabId, "menu", false);
+  }, [engine, tabId, menuUp]);
+  // Gone (or framed otherwise), the pointer is on it no more.
+  const drawer = frame === "drawer";
+  useEffect(() => {
+    if (!drawer) return;
+    return () => {
+      engine.hoverWindow(tabId, "window", false);
+      engine.hoverWindow(tabId, "strip", false);
+    };
+  }, [engine, tabId, drawer]);
 
   // A button's tooltip is open: the band under the frame's buttons, where it
   // appears over the window's own page, is a cover, and stays one a moment
   // after it closes (the Bar's rule).
   const controlsRef = useRef<HTMLSpanElement>(null);
+  const navRef = useRef<HTMLSpanElement>(null);
   const [tip, setTip] = useState<string | null>(null);
   const tipsOff = menu.isOpen || siteInfoHere || view.carried || view.flight !== null || view.closing || view.selecting || view.editing !== null;
   const openTip = tipsOff ? null : tip;
   useLayoutEffect(() => {
     const key = windowTipCover(tabId);
-    const row = controlsRef.current;
+    const row = openTip !== null && NAV_TIPS.has(openTip) ? navRef.current : controlsRef.current;
     const stage = row?.closest(".desk-stage");
     if (openTip === null || row == null || stage == null) {
       const timer = window.setTimeout(() => engine.setCover(key, null), TIP_LINGER_MS);
@@ -234,6 +261,10 @@ export const DeskWindow = memo(function DeskWindow({
     shown: view.tipShown,
     disabled: tipsOff,
     onOpenChange: (open) => setTip((current) => (open ? label : current === label ? null : current)),
+    dismiss: () => {
+      setTip(null);
+      engine.setCover(windowTipCover(tabId), null);
+    },
   });
   // Where the window goes when collapsed: its icon in the dock, or a document's home, the Stack.
   const collapseLabel = parts !== null ? "Collapse into the Stack" : "Collapse into the sidebar";
@@ -354,6 +385,24 @@ export const DeskWindow = memo(function DeskWindow({
       <TooltipProvider delay={TIP_DELAY_MS}>{buttons}</TooltipProvider>
     </span>
   );
+  // The drawer's page controls, as the pane toolbar's over a page off the desk (PaneToolbar's PaneNavButtons): a
+  // direction with no history stays where it is, dimmed. A web page's, at its own size (the ⋯ menu has them too).
+  const nav =
+    drawer && tab !== null && !shellPage && !mini ? (
+      <span ref={navRef} className="desk-window-nav flex items-center" data-testid="desk-window-nav">
+        <TooltipProvider delay={TIP_DELAY_MS}>
+          <FrameButton label="Back" testId="desk-back" tip={frameTip} enabled={tab.canGoBack} onClick={() => void useAppStore.getState().goBack(tab.id)}>
+            <ChevronLeft aria-hidden="true" />
+          </FrameButton>
+          <FrameButton label="Forward" testId="desk-forward" tip={frameTip} enabled={tab.canGoForward} onClick={() => void useAppStore.getState().goForward(tab.id)}>
+            <ChevronRight aria-hidden="true" />
+          </FrameButton>
+          <FrameButton label="Reload" testId="desk-reload" tip={frameTip} onClick={() => void useAppStore.getState().reload(tab.id)}>
+            <RotateCw aria-hidden="true" />
+          </FrameButton>
+        </TooltipProvider>
+      </span>
+    ) : null;
 
   return (
     <div
@@ -381,10 +430,31 @@ export const DeskWindow = memo(function DeskWindow({
       data-framed={view.framed ? undefined : "off"}
       data-agent={working ? "" : undefined}
       className="desk-window"
-      style={{ zIndex: view.carried || view.flight !== null ? 60 + view.z : 10 + view.z }}
-      // Parked at the desk's foot, the pointer on it raises it into view (over its live page, main says so instead).
-      onPointerEnter={mini ? () => engine.hoverMini(tabId, "frame", true) : undefined}
-      onPointerLeave={mini ? () => engine.hoverMini(tabId, "frame", false) : undefined}
+      style={
+        {
+          zIndex: view.carried || view.flight !== null ? 60 + view.z : 10 + view.z,
+          "--desk-drawer-h": `${String(DRAWER_H)}px`,
+          "--desk-drawer-trigger": `${String(DESK_DRAWER_TRIGGER)}px`,
+        } as CSSProperties
+      }
+      // Parked at the desk's foot, the pointer on it raises it into view; in the Drawer frame, it may bring out its drawer
+      // (over its live page, main says so instead).
+      onPointerEnter={
+        mini || drawer
+          ? () => {
+              if (mini) engine.hoverMini(tabId, "frame", true);
+              if (drawer) engine.hoverWindow(tabId, "window", true);
+            }
+          : undefined
+      }
+      onPointerLeave={
+        mini || drawer
+          ? () => {
+              if (mini) engine.hoverMini(tabId, "frame", false);
+              if (drawer) engine.hoverWindow(tabId, "window", false);
+            }
+          : undefined
+      }
     >
       {view.maskFade !== null && view.stillShows === "page" && still !== null ? (
         <MaskFade from={view.maskFade} insets={view.maskFade.framed ? CHROME_INSETS[chrome] : NO_INSETS} still={still} />
@@ -418,11 +488,37 @@ export const DeskWindow = memo(function DeskWindow({
           <span className="desk-window-pill" />
           {controls}
         </div>
+      ) : drawer ? (
+        // Behind the card (which lies over its foot), slid up out of it as far as the engine says.
+        <div className="desk-window-drawer-clip">
+          <div
+            className="desk-window-chrome desk-window-drawer"
+            data-testid="desk-window-drawer"
+            onPointerDown={onFrameDown}
+            onContextMenu={onFrameMenu}
+            onPointerEnter={() => engine.hoverWindow(tabId, "strip", true)}
+            onPointerLeave={() => engine.hoverWindow(tabId, "strip", false)}
+          >
+            {nav}
+            {parts !== null ? (
+              parts.title()
+            ) : (
+              <span className="desk-window-address" data-testid="desk-window-address" title={tab?.url}>
+                <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
+                <span className="min-w-0 truncate font-medium text-gray-1000">{title}</span>
+                {host !== "" && host !== title ? <span className="desk-window-host min-w-0 shrink-[2] truncate">{host}</span> : null}
+              </span>
+            )}
+            <span className="flex-1" />
+            {marks}
+            {controls}
+          </div>
+        </div>
       ) : null}
-      {frame === "bar" || marks === null ? null : <div className="desk-window-marks-float">{marks}</div>}
+      {frame === "bar" || drawer || marks === null ? null : <div className="desk-window-marks-float">{marks}</div>}
       <div
         className={cn("desk-window-card", working && "agent-ring")}
-        style={{ top: cardTop, "--agent-ring-delay": ringDelay, "--agent-ring-radius": "calc(var(--radius-md) + 4px)" } as CSSProperties}
+        style={{ top: cardTop, "--agent-ring-delay": ringDelay, "--agent-ring-radius": "var(--desk-window-radius)" } as CSSProperties}
       >
         {frame === "bar" ? (
           <div className="desk-window-chrome desk-window-bar" style={{ height: insets.top }} onPointerDown={onFrameDown} onContextMenu={onFrameMenu}>
@@ -455,6 +551,7 @@ export const DeskWindow = memo(function DeskWindow({
               <WindowPage
                 tab={tab}
                 still={still}
+                stillSize={view.stillSize}
                 stillShows={view.stillShows}
                 mask={view.mask}
                 unmasking={view.unmasking}
@@ -469,6 +566,19 @@ export const DeskWindow = memo(function DeskWindow({
         </div>
         <ResizeEdges tabId={tabId} engine={engine} top={frame === "bar"} />
       </div>
+      {/* With no room above it, its drawer comes out for the pointer at its top: over a live page main says so (the page's
+          own top band), here over a drawn one, and just above the window. A press here is the frame's. */}
+      {drawer ? (
+        <div
+          aria-hidden="true"
+          className="desk-window-drawer-trigger"
+          data-testid="desk-window-drawer-trigger"
+          onPointerDown={onFrameDown}
+          onContextMenu={onFrameMenu}
+          onPointerEnter={() => engine.hoverWindow(tabId, "strip", true)}
+          onPointerLeave={() => engine.hoverWindow(tabId, "strip", false)}
+        />
+      ) : null}
       {menu.menu}
       {siteInfoHere ? <SiteInfoFrom triggerRef={moreRef} align="end" /> : null}
     </div>
@@ -494,6 +604,7 @@ export function pageKind(url: string): ShellPage | null {
 function WindowPage({
   tab,
   still,
+  stillSize,
   stillShows,
   mask,
   unmasking,
@@ -502,6 +613,7 @@ function WindowPage({
 }: {
   tab: BrowserTabInfo;
   still: string | null;
+  stillSize: DeskWindowView["stillSize"];
   stillShows: DeskWindowView["stillShows"];
   mask: DeskMask | null;
   unmasking: DeskMask | null;
@@ -524,7 +636,10 @@ function WindowPage({
     if (stillShows === "page") return <img className="desk-still-crop" src={still} alt="" draggable={false} style={cropStyle(mask)} />;
     return null;
   }
-  if (still !== null && stillShows !== "none") return <img className="desk-still" src={still} alt="" draggable={false} />;
+  // Shrunk, or moved, it covers the window; larger than the page box it pictures (grown while drawn: a view
+  // resized while down is drawn at the size it had), it is that box, from the top left — never blown up.
+  if (still !== null && stillShows !== "none")
+    return <img className="desk-still" src={still} alt="" draggable={false} style={stillSize === null ? undefined : { maxWidth: stillSize.w + 1, maxHeight: stillSize.h + 1 }} />;
   if (still !== null) return null;
   return (
     <div className="grid size-full place-items-center">
@@ -836,6 +951,7 @@ function FrameButton({
   label,
   testId,
   pressed,
+  enabled = true,
   tip: tipFor,
   onPress,
   onClick,
@@ -845,6 +961,8 @@ function FrameButton({
   label: string;
   testId?: string;
   pressed?: boolean;
+  /** False: there, dimmed, and a click does nothing (Back with no history) — and is not the frame's to drag. */
+  enabled?: boolean;
   tip: (label: string) => FrameTip;
   /** The pointer went down on it (before the click). */
   onPress?: () => void;
@@ -859,9 +977,11 @@ function FrameButton({
         type="button"
         aria-label={label}
         aria-pressed={pressed}
+        aria-disabled={enabled ? undefined : true}
         data-testid={testId}
         onPointerDown={(event) => {
           event.stopPropagation();
+          tip.dismiss();
           onPress?.();
         }}
         // A press leaves the keyboard where it was (the window's page): a
@@ -870,9 +990,9 @@ function FrameButton({
         onMouseDown={(event) => event.preventDefault()}
         onClick={(event) => {
           event.stopPropagation();
-          onClick(event);
+          if (enabled) onClick(event);
         }}
-        className="grid size-6 cursor-pointer place-items-center rounded-md text-gray-800 outline-none transition-[background-color,color,transform] duration-150 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94] aria-pressed:bg-alpha-300 aria-pressed:text-gray-1000 motion-reduce:transition-none [&_svg]:size-3.5"
+        className="grid size-6 cursor-pointer place-items-center rounded-md text-gray-800 outline-none transition-[background-color,color,transform] duration-150 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.94] aria-pressed:bg-alpha-300 aria-pressed:text-gray-1000 aria-disabled:cursor-default aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-gray-800 aria-disabled:active:scale-100 motion-reduce:transition-none [&_svg]:size-3.5"
       >
         {children}
       </TooltipTrigger>

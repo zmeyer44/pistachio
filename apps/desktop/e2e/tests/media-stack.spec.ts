@@ -738,6 +738,13 @@ test("a playing video becomes a live extension of the sidebar mini player", { ta
     await shell.keyboard.press("Escape");
     await expect.poll(previewUp).toBe(true);
     await expect.poll(previewViewVisible).toBe(true);
+    // So does the screenshot selector (⌘⇧2): nothing live lies over the area being chosen.
+    await shell.keyboard.press("Meta+Shift+Digit2");
+    await expect(shell.locator("[data-testid='screenshot-overlay'][data-ready]")).toHaveCount(1);
+    await expect.poll(previewUp).toBe(false);
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("screenshot-overlay")).toHaveCount(0);
+    await expect.poll(previewUp).toBe(true);
     await expect
       .poll(() =>
         mediaPage

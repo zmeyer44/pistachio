@@ -251,12 +251,14 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     const onKey = (event: KeyboardEvent): void => created.setShift(event.shiftKey);
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKey);
-    // The pointer on a minimized window's live page, which the shell never hears: main's word (a parked one rises into view).
-    const offHover = nativeApi()?.onDeskHover((hover) => created.hoverMini(hover.tabId, "page", hover.over));
+    // The pointer on a window's live page, which the shell never hears: main's word (a parked one rises into view, a drawer comes out).
+    const offHover = nativeApi()?.onDeskHover((hover) => created.hoverPage(hover.tabId, hover.over, hover.top));
     const offPage = nativeApi()?.onDeskPageInput((input) => {
       // A press on a live page while a document was in use: that page is in use now. (Pressed, a page
       // the browser had not selected is selected, and comes up that way; the one it had, only here.)
       if (input === "press") {
+        // And a window left for the desk's surface is the person's again.
+        created.pagePressed();
         window.setTimeout(() => {
           const focused = created.focusedTabId();
           const active = useAppStore.getState().snapshot?.activeTabId ?? null;
@@ -635,6 +637,15 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     if (leaving) engine?.leave();
   }, [engine, leaving]);
 
+  // The desk's corners are a window's (the frame's, at the Appearance radius): read again as either changes, a frame
+  // later, once the radius is on the page (ThemeRuntime), so windows filling the desk are clipped to its curve.
+  const cornerRadius = useAppStore((state) => state.settings.appearance.radius);
+  useEffect(() => {
+    if (engine === null) return;
+    const frame = requestAnimationFrame(() => engine.measure());
+    return () => cancelAnimationFrame(frame);
+  }, [engine, variants.chrome, cornerRadius]);
+
   // The grab key held over the desk: the frames show an open hand.
   useEffect(() => {
     const stage = stageRef.current;
@@ -752,7 +763,13 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         data-gesture={view?.gesture ?? undefined}
         data-snapping={view?.snapping === true ? "" : undefined}
         data-group-color={group?.color}
+        data-chrome={variants.chrome}
         className="desk-stage no-drag tab-group-tone relative min-h-0 min-w-0 flex-1"
+        // A press on the desk's own surface, between its windows (not on one, nor on anything drawn over it):
+        // the window in use is left, as a click on the desktop leaves an app's window.
+        onPointerDown={(event) => {
+          if (event.button === 0 && event.target === event.currentTarget) engine?.pressDesk();
+        }}
       >
         <div ref={attachZone} className="desk-zone" aria-hidden="true" />
         <div ref={attachGuides} className="desk-guides" aria-hidden="true">
@@ -770,7 +787,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
               return (
                 <DeskWindow
                   key={window.tabId}
-                  view={overlayStill === undefined || window.stillShows === "page" ? window : { ...window, stillShows: "page" }}
+                  view={overlayStill === undefined || (window.stillShows === "page" && window.stillSize === null) ? window : { ...window, stillShows: "page", stillSize: null }}
                   tab={tabsById.get(window.tabId) ?? null}
                   chrome={variants.chrome}
                   grab={variants.grab}

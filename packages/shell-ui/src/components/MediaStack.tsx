@@ -875,7 +875,9 @@ export function MediaStack() {
       state.overlay === "url" ||
       state.overlay === "tab-switcher" ||
       state.overlay === "context-menu" ||
-      state.onboardingOpen,
+      state.onboardingOpen ||
+      // The screenshot selector covers the whole window (lib/screenshot.ts).
+      state.screenshotSelecting,
   );
   const [hoveredVideoTabId, setHoveredVideoTabId] = useState<string | null>(
     null,

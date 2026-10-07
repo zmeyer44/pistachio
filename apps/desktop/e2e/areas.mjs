@@ -165,6 +165,10 @@ export const AREAS = [
     ],
   },
   {
+    tag: "@screenshot",
+    paths: [`${UI}/components/ScreenshotOverlay.tsx`, `${UI}/lib/screenshot.ts`, `${C}/screenshot.ts`, `${M}/{screenshots,window-compose}.ts`],
+  },
+  {
     tag: "@startup",
     paths: [`${M}/{tab-session-store,session-gate,feature-handlers}.ts`],
   },

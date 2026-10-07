@@ -124,8 +124,9 @@ function DeskPip({ media }: { media: BrowserMediaInfo }) {
   const view = useDeskView(engine);
   const size = useWindowSize();
   const spot = useNowPlaying((state) => state.pip);
-  // Anything the shell raises over the window (a menu, the address palette, settings, the tab switcher) may lie over it.
-  const raised = useAppStore((state) => state.overlay !== "none" || state.onboardingOpen);
+  // Anything the shell raises over the window (a menu, the address palette, settings, the tab switcher, the
+  // screenshot selector) may lie over it.
+  const raised = useAppStore((state) => state.overlay !== "none" || state.onboardingOpen || state.screenshotSelecting);
   // Its window still on its way into its row: the page is the desk's until it has gone.
   const leaving = useDeskWindowKey().split(" ").includes(media.tabId);
   const covered = raised || leaving || view?.floatCovered === true;

@@ -27,6 +27,9 @@ import { CHROME_INSETS, DeskEngine, type DeskHost } from "../src/components/desk
 import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
+/** The frame these were written for: the Title bar (its insets; a window held by its title bar). */
+const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const };
+
 let frames: Array<(now: number) => void> = [];
 let clock = 0;
 
@@ -80,7 +83,7 @@ const SIDEBAR: Rect = { x: -48, y: 0, w: 48, h: 1000 };
 /** A desk whose pages are all shell-drawn (no live views), over a 1600×1000 stage. */
 function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const created = new DeskEngine({
-    variants: () => DEFAULT_DESK_VARIANTS,
+    variants: () => BAR_VARIANTS,
     hasLivePage: () => false,
     select: () => undefined,
     close: () => undefined,
@@ -281,7 +284,7 @@ describe("a window in hand", () => {
 
   it("coasts a shorter way, thrown alike, the more Glide decelerates", () => {
     const thrownWith = (deceleration: number): number => {
-      const { desk, win, move, release } = open({ variants: () => ({ ...DEFAULT_DESK_VARIANTS, deceleration }) });
+      const { desk, win, move, release } = open({ variants: () => ({ ...BAR_VARIANTS, deceleration }) });
       const start = rectOf(win);
       const at = { x: start.x + 200, y: start.y + 17 };
       desk.grab("tab-0", at);
@@ -292,7 +295,7 @@ describe("a window in hand", () => {
       desk.destroy();
       return travelled;
     };
-    const usual = thrownWith(DEFAULT_DESK_VARIANTS.deceleration);
+    const usual = thrownWith(BAR_VARIANTS.deceleration);
     const quick = thrownWith(60);
     const gentle = thrownWith(12);
     // Past where the pointer let go, by the coast.

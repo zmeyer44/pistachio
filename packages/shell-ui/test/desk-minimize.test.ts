@@ -21,6 +21,9 @@ import { CHROME_INSETS, DeskEngine, MINI_SIZE, SHELF_INSET, type DeskHost } from
 import { DESK_GAP, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
+/** The frame these were written for: the Title bar (its insets; a window held by its title bar). */
+const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const };
+
 let frames: Array<(now: number) => void> = [];
 let timers: Array<{ id: number; run: () => void; at: number }> = [];
 let clock = 0;
@@ -55,6 +58,8 @@ function wait(ms: number): void {
 function native(options: { stills?: boolean } = {}) {
   const layouts: BrowserLayout[] = [];
   const desks: Array<DeskState | null> = [];
+  /** The tabs each capture asked for, with the desk main had been told of then. */
+  const captures: Array<{ ids: readonly string[]; desk: DeskState | null | undefined }> = [];
   const drag: { sample: ((sample: DragSample) => void) | null } = { sample: null };
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
   setShellApi({
@@ -62,8 +67,10 @@ function native(options: { stills?: boolean } = {}) {
     setLayout: (layout: BrowserLayout) => layouts.push(layout),
     setDesk: (state: DeskState | null) => desks.push(state),
     // No pictures, unless asked for (a test that is then awaited): none comes back after a test is over to ask for a frame.
-    captureTabStills: (ids: readonly string[]) =>
-      Promise.resolve(options.stills === true ? ids.map((tabId) => ({ tabId, dataUrl: `data:image/jpeg;base64,${tabId}` })) : []),
+    captureTabStills: (ids: readonly string[]) => {
+      captures.push({ ids, desk: desks.at(-1) });
+      return Promise.resolve(options.stills === true ? ids.map((tabId) => ({ tabId, dataUrl: `data:image/jpeg;base64,${tabId}`, width: 640, height: 400 })) : []);
+    },
     focusTab: () => Promise.resolve(),
     onDragSample: (listener: (sample: DragSample) => void) => {
       drag.sample = listener;
@@ -72,13 +79,13 @@ function native(options: { stills?: boolean } = {}) {
       };
     },
   } as unknown as ShellApiBridge);
-  return { layouts, desks, drag };
+  return { layouts, desks, drag, captures };
 }
 
 /** A desk over a 1600×1000 stage whose tabs' pages are live. */
 function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const created = new DeskEngine({
-    variants: () => DEFAULT_DESK_VARIANTS,
+    variants: () => BAR_VARIANTS,
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,
@@ -113,7 +120,7 @@ function expectRect(actual: Rect, expected: Rect, within = 1): void {
 }
 
 const STAGE = { w: 1600, h: 1000 };
-const insets = CHROME_INSETS[DEFAULT_DESK_VARIANTS.chrome];
+const insets = CHROME_INSETS[BAR_VARIANTS.chrome];
 /** How much of a parked window shows above the desk's foot: a quarter of it (the engine's MINI_PEEK). */
 const PEEK = MINI_SIZE.h / 4;
 /** The shelf's band at the desk's foot: where they peek up, and a gap above (a minimized window let go in it parks). */
@@ -320,7 +327,7 @@ describe("minimizing a window", () => {
   });
 
   it("rises and goes back down smoothly, never past its place, even with the Bouncy spring", () => {
-    const { desk, rect } = open({ variants: () => ({ ...DEFAULT_DESK_VARIANTS, spring: "bouncy" }) });
+    const { desk, rect } = open({ variants: () => ({ ...BAR_VARIANTS, spring: "bouncy" }) });
     desk.minimize("tab-0");
     settle();
     const path = (): number[] => {
@@ -580,7 +587,7 @@ describe("a minimized window snapped", () => {
   });
 
   it("with the Snap throw lands in a tile wherever it is let go, as any window does", () => {
-    const { desk, drag, view } = open({ variants: () => ({ ...DEFAULT_DESK_VARIANTS, physics: "snap" }) });
+    const { desk, drag, view } = open({ variants: () => ({ ...BAR_VARIANTS, physics: "snap" }) });
     desk.minimize("tab-0");
     settle();
     carry(desk, drag, "tab-0", titleOf(PEEKING), { x: 800, y: 450 });
@@ -646,7 +653,7 @@ describe("a window growing into a larger box", () => {
         return Promise.resolve();
       }
     });
-    const { desk, desks, layouts, rect, view } = open({ variants: () => ({ ...DEFAULT_DESK_VARIANTS, spring: "bouncy" }) }, { stills: true });
+    const { desk, desks, layouts, rect, view } = open({ variants: () => ({ ...BAR_VARIANTS, spring: "bouncy" }) }, { stills: true });
     const start = rect("tab-0");
     desk.toggleMaximize("tab-0");
     run(1);
@@ -671,6 +678,54 @@ describe("a window growing into a larger box", () => {
     expect(desks.at(-1)?.zoomed).toEqual([]);
     await new Promise((done) => setImmediate(done));
     run(3);
+    desk.destroy();
+  });
+
+  it("under a cover, shows a still of its page laid out at the box it grows to, and keeps the page there until it is live in it", async () => {
+    vi.stubGlobal("Image", class {
+      src = "";
+      decode(): Promise<void> {
+        return Promise.resolve();
+      }
+    });
+    const { desk, desks, layouts, captures, view } = open({}, { stills: true });
+    const flush = async (): Promise<void> => {
+      for (let round = 0; round < 4; round += 1) {
+        await Promise.resolve();
+        await new Promise((done) => setImmediate(done));
+        run(3);
+      }
+    };
+    const held = { tabId: "tab-0", ...pageOf(filled), zoom: 1 };
+    // A card over the desk: its windows are their stills.
+    desk.setCover("card", { x: 0, y: 0, w: STAGE.w, h: STAGE.h });
+    settle();
+    await flush();
+    expect(view("tab-0").drawn).toBe(true);
+    // Drawn at the size it pictures, never blown up to the window.
+    expect(view("tab-0").stillSize).toEqual({ w: 640, h: 400 });
+    const asked = captures.length;
+    desk.toggleMaximize("tab-0");
+    run(1);
+    // Laid out at the desk's size at once, and pictured anew as that: the still it had is of the smaller window.
+    expect(desks.at(-1)?.zoomed).toEqual([held]);
+    const anew = captures.slice(asked).find((capture) => capture.ids.includes("tab-0"));
+    expect(anew?.desk?.zoomed).toEqual([held]);
+    settle();
+    await flush();
+    // There, still under the card: its page stays laid out at the box it grew to (let go while its view is
+    // down, it would go back to the size it had).
+    expect(view("tab-0").drawn).toBe(true);
+    expect(desks.at(-1)?.zoomed).toEqual([held]);
+    // The card gone: live in its box with its page still held there, and let go a frame later.
+    desk.setCover("card", null);
+    expect(view("tab-0").drawn).toBe(false);
+    expect(layouts.at(-1)!.views.find((entry) => entry.tabId === "tab-0")?.bounds).toMatchObject(pageOf(filled));
+    expect(desks.at(-1)?.zoomed).toEqual([held]);
+    run(1);
+    expect(desks.at(-1)?.zoomed).toEqual([]);
+    settle();
+    await flush();
     desk.destroy();
   });
 
@@ -705,7 +760,7 @@ describe("leaving the desk", () => {
 
   it("grows the window in use into the pane as its live page, laid out at the pane's box from the start, never past it", () => {
     let left = false;
-    const { desk, desks, layouts, rect, view } = open({ variants: () => ({ ...DEFAULT_DESK_VARIANTS, spring: "bouncy" }), leaveDone: () => (left = true) });
+    const { desk, desks, layouts, rect, view } = open({ variants: () => ({ ...BAR_VARIANTS, spring: "bouncy" }), leaveDone: () => (left = true) });
     desk.leave();
     // Main lays the page out at the pane's box at once, before it has grown at all.
     expect(desks.at(-1)?.zoomed).toEqual([{ tabId: "tab-0", width: STAGE.w, height: STAGE.h, zoom: 1 }]);

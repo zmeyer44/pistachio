@@ -44,6 +44,7 @@ import { IntegrationService } from "./account/integration-service";
 import { ChromeOverlayView } from "./chrome-view";
 import { NoticeLayer } from "./notice-layer";
 import { PointerZoneWatch } from "./pointer-zone-watch";
+import { Screenshots } from "./screenshots";
 import { submitFeedback } from "./feedback";
 import {
   demoAuthRelyingPartyHtml,
@@ -217,6 +218,7 @@ import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { isUpdateSnooze } from "@pistachio/shell-contracts/updates";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
+import { isScreenshotRequest } from "@pistachio/shell-contracts/screenshot";
 import { deskPipSlot, isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
 import {
   isDeskConversationCommand,
@@ -743,8 +745,18 @@ function relayChromeInput(
   input: Electron.Input,
   source?: WebContents,
 ): boolean {
-  // The desk follows its grab key from every view's keys (@pistachio/shell-contracts/desk).
-  browser?.noteDeskKey(input);
+  // The desk follows its grab key from every view's keys (@pistachio/shell-contracts/desk) — only follows them while
+  // an area is being chosen for a screenshot, when no key is the desk's (below).
+  browser?.noteDeskKey(input, screenshots.selecting);
+  // An area being chosen for a screenshot has every key (the shell's lib/screenshot.ts): none of main's gestures
+  // runs under it, and none is left half-pressed for after. The shell's keys go on to its guard; a page's or a
+  // utility view's are kept from them.
+  if (screenshots.selecting) {
+    forgetKeyGestures();
+    if (source !== undefined && shellWindow !== null && !shellWindow.isDestroyed() && source.id === shellWindow.webContents.id) return false;
+    event.preventDefault();
+    return true;
+  }
   // Shift tapped while a drag holds the pointer is a snap key being tried
   // (a desk window's move), never a double-Shift bookmark.
   if (dragLayer?.shown === true) doubleShift.reset();
@@ -755,6 +767,15 @@ function relayChromeInput(
     relayTabSwitcherInput(event, input, source) ||
     browser?.takeDeskDockKey(event, input) === true
   );
+}
+
+/** Every key gesture main follows starts afresh: a double Shift, a tab switcher hold (an open switcher is cancelled). */
+function forgetKeyGestures(): void {
+  doubleShift.reset();
+  clearTabSwitcherHold();
+  const wasOpen = tabSwitcher.open;
+  tabSwitcher.reset();
+  if (wasOpen) publishTabSwitcherInput({ type: "cancel" });
 }
 
 /** The compact sidebar: the column hides itself, and the window buttons with it. */
@@ -2197,11 +2218,7 @@ async function createWindow(): Promise<void> {
     });
   }
   window.on("blur", () => {
-    doubleShift.reset();
-    clearTabSwitcherHold();
-    const wasOpen = tabSwitcher.open;
-    tabSwitcher.reset();
-    if (wasOpen) publishTabSwitcherInput({ type: "cancel" });
+    forgetKeyGestures();
     deskPipPress.cancel();
   });
   sidebarWatch = new SidebarWatch(window);
@@ -2384,6 +2401,7 @@ async function createWindow(): Promise<void> {
   window.webContents.on("did-start-loading", () => {
     deskBridge.cancelAll("the desk reloaded");
     void runs?.deskConversation({ type: "leave" });
+    screenshots.reset();
   });
   sidebarController = new SidebarController({
     store: requireSidebar(),
@@ -2648,6 +2666,17 @@ function installMenu(): void {
           },
           { type: "separator" },
           {
+            label: "Screenshot Page",
+            accelerator: shortcutAccelerator(shortcuts.screenshotView),
+            click: () => sendShellCommand({ type: "runShortcut", id: "screenshotView" }),
+          },
+          {
+            label: "Screenshot Area…",
+            accelerator: shortcutAccelerator(shortcuts.screenshotArea),
+            click: () => sendShellCommand({ type: "runShortcut", id: "screenshotArea" }),
+          },
+          { type: "separator" },
+          {
             label: "Toggle Page Developer Tools",
             accelerator:
               process.platform === "darwin"
@@ -2751,6 +2780,51 @@ const addressIntent = new AddressIntentRanker({
 const deskLayout = new DeskLayoutJudge({
   model: () => scriptedLayoutModel() ?? configuredIntentModel()?.model ?? null,
 });
+
+/**
+ * The window's screenshots (@pistachio/shell-contracts/screenshot): the
+ * shell names the box, this lays the window's layers up into it. Pages are
+ * cut to the corners main gave them; the notices are never in a picture.
+ */
+const screenshots = new Screenshots({
+  window: () => (shellWindow === null || shellWindow.isDestroyed() ? null : shellWindow),
+  radiusOf: (contents) => browser?.pageViewRadius(contents) ?? 0,
+  fullscreenPage: () => browser?.fullscreenPageBounds() ?? null,
+  keyboardHolder: () => browser?.pageWithKeyboard() ?? utilityWithKeyboard()?.webContents ?? null,
+  giveKeyboardBack: (contents) => {
+    const layer = [findLayer, bookmarkLayer].find((candidate) => candidate !== null && candidate.webContents.id === contents.id) ?? null;
+    if (layer === null) browser?.giveKeyboardBack(contents);
+    else {
+      utilityKeyboardBack = { layer, until: Date.now() + UTILITY_KEYBOARD_WAIT_MS };
+      settleUtilityKeyboard();
+    }
+  },
+  leftOut: (contents) => chromeViewOf(contents) === "notice",
+});
+
+/** A utility view to have the keyboard back once it is on screen again (the screenshot selector veiled it), and until when. */
+let utilityKeyboardBack: { layer: ChromeOverlayView; until: number } | null = null;
+const UTILITY_KEYBOARD_WAIT_MS = 1_500;
+
+/** The utility view with a field that has the keyboard (the find bar, the bookmark card), or null. */
+function utilityWithKeyboard(): ChromeOverlayView | null {
+  for (const layer of [findLayer, bookmarkLayer])
+    if (layer !== null && layer.shown && !layer.webContents.isDestroyed() && layer.webContents.isFocused()) return layer;
+  return null;
+}
+
+/** Hand the keyboard back to the utility view waiting for it, once it is on screen; forget it after a while. */
+function settleUtilityKeyboard(): void {
+  const back = utilityKeyboardBack;
+  if (back === null) return;
+  if (back.layer.webContents.isDestroyed() || Date.now() > back.until || !back.layer.shown) {
+    utilityKeyboardBack = null;
+    return;
+  }
+  if (!back.layer.onScreen) return;
+  utilityKeyboardBack = null;
+  back.layer.webContents.focus();
+}
 
 /** The address of the top frame above `frame` (the site being visited), or null when it is gone. */
 function frameTopUrl(frame: Electron.WebFrameMain | null): string | null {
@@ -3120,8 +3194,12 @@ function installIpc(): void {
     publishFind(requireBrowser().findState());
     syncBookmarkLayer();
   });
-  ipcMain.handle(IPC.overlayPrepare, (event) =>
-    isShell(event.sender) ? requireBrowser().prepareOverlay() : [],
+  ipcMain.handle(IPC.overlayPrepare, (event, options: unknown) =>
+    isShell(event.sender)
+      ? requireBrowser().prepareOverlay({
+          keepFullscreen: typeof options === "object" && options !== null && (options as { keepFullscreen?: unknown }).keepFullscreen === true,
+        })
+      : [],
   );
   ipcMain.handle(IPC.overlaySet, (event, active: unknown) => {
     if (isShell(event.sender)) requireBrowser().setOverlay(active === true);
@@ -3258,6 +3336,11 @@ function installIpc(): void {
     if (!isShell(event.sender) || shellWindow === null) return null;
     return cursorPoint(shellWindow);
   });
+  ipcMain.handle(IPC.screenshot, (event, request: unknown) => {
+    if (!isShell(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error("Screenshots are shell-only.");
+    if (!isScreenshotRequest(request)) throw new Error("That is not a screenshot request.");
+    return screenshots.request(request);
+  });
   ipcMain.on(IPC.shellStateSet, (event, state: unknown) => {
     if (!isShell(event.sender) || !isShellState(state)) return;
     const switcherEnded = shellState.tabSwitcherOpen && !state.tabSwitcherOpen;
@@ -3278,6 +3361,8 @@ function installIpc(): void {
     shelfLayer?.setVeiled(state.veiled);
     pipLayer?.setVeiled(state.veiled);
     syncBookmarkLayer();
+    // A utility view the screenshot selector veiled is back: its field has the keyboard again.
+    settleUtilityKeyboard();
   });
   // ── The drag layer: shell → main → layer, and the samples back ──────────
   ipcMain.on(IPC.dragCaptureSet, (event, cursor: unknown) => {

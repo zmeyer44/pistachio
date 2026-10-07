@@ -489,7 +489,9 @@ export type ShellShortcutAction =
   | "tileDesk"
   | "cascadeDesk"
   | "arrangeDesk"
-  | "toggleDesk";
+  | "toggleDesk"
+  | "screenshotView"
+  | "screenshotArea";
 
 export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 

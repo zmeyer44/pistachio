@@ -51,6 +51,7 @@ import type {
 import type {
   AddressIntentRanking,
 } from "@pistachio/shell-contracts/address-intent";
+import type { ScreenshotReplies, ScreenshotRequest } from "@pistachio/shell-contracts/screenshot";
 import type { DesktopSettings, SettingsPatch } from "@pistachio/shell-contracts/settings";
 import type { UpdateState } from "@pistachio/shell-contracts/updates";
 import type {
@@ -276,8 +277,8 @@ const api: PistachioApi = {
   tabArchive: (request) => ipcRenderer.invoke(IPC.tabArchive, request) as Promise<TabArchiveResponse>,
   tidy: (request) => ipcRenderer.invoke(IPC.tidy, request) as Promise<TidyResponse>,
   setLayout: (layout: BrowserLayout) => ipcRenderer.send(IPC.layoutSet, layout),
-  prepareOverlay: () =>
-    ipcRenderer.invoke(IPC.overlayPrepare) as Promise<PaneStill[]>,
+  prepareOverlay: (options?: { keepFullscreen?: boolean }) =>
+    ipcRenderer.invoke(IPC.overlayPrepare, options) as Promise<PaneStill[]>,
   setOverlay: (active) =>
     ipcRenderer.invoke(IPC.overlaySet, active) as Promise<void>,
   setDesk: (state: DeskState | null) => ipcRenderer.send(IPC.deskSet, state),
@@ -515,6 +516,8 @@ const api: PistachioApi = {
   },
   getCursorPoint: () =>
     ipcRenderer.invoke(IPC.cursorPoint) as Promise<CursorPoint | null>,
+  screenshot: <R extends ScreenshotRequest>(request: R) =>
+    ipcRenderer.invoke(IPC.screenshot, request) as Promise<ScreenshotReplies[R["type"]]>,
   setShellState: (state: ShellState) =>
     ipcRenderer.send(IPC.shellStateSet, state),
   onShellCommand(listener) {

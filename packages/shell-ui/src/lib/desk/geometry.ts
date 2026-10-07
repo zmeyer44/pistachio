@@ -1000,6 +1000,26 @@ export interface NotchShape {
  * to cut a hole in: the engine's #write.) The notch view over a live page
  * (NotchApp) is cut to the same outline.
  */
+/** A box's corner radii, from its top-left round (0: square). */
+export interface CornerRadii {
+  tl: number;
+  tr: number;
+  br: number;
+  bl: number;
+}
+
+/** A box from (x0, y0) to (x1, y1) as an SVG path, clockwise, its corners rounded as given. */
+export function roundedRectPath(x0: number, y0: number, x1: number, y1: number, radii: CornerRadii): string {
+  const n = (value: number): string => value.toFixed(1);
+  const arc = (r: number, x: number, y: number): string => (r > 0 ? ` A ${n(r)} ${n(r)} 0 0 1 ${n(x)} ${n(y)}` : "");
+  return (
+    `M ${n(x0 + radii.tl)} ${n(y0)} H ${n(x1 - radii.tr)}${arc(radii.tr, x1, y0 + radii.tr)}` +
+    ` V ${n(y1 - radii.br)}${arc(radii.br, x1 - radii.br, y1)}` +
+    ` H ${n(x0 + radii.bl)}${arc(radii.bl, x0, y1 - radii.bl)}` +
+    ` V ${n(y0 + radii.tl)}${arc(radii.tl, x0 + radii.tl, y0)} Z`
+  );
+}
+
 export function notchOutline(shape: NotchShape, foot: number, dx: number, dy: number): string {
   const n = (value: number): string => value.toFixed(1);
   const f = shape.flare;

@@ -158,20 +158,30 @@ function isDeskZoomedPage(value: unknown): value is DeskZoomedPage {
 }
 
 /**
- * Main → shell: the pointer came onto a zoomed desk page (`over`), or went
- * off it. A minimized window peeking from the desk's foot rises into view
- * while the pointer is on it, and over its live page the shell hears no
- * pointer of its own.
+ * How far down a desk page the pointer brings out a drawer that has to push
+ * its window down to come out (the shell's Drawer frame, docs/desk.md): the
+ * top of the page, as the pointer at the top of the main window's pane
+ * brings out its toolbar.
+ */
+export const DESK_DRAWER_TRIGGER = 10;
+
+/**
+ * Main → shell: the pointer came onto a desk page (`over`), or went off it,
+ * or moved into or out of the page's top band (`top`, DESK_DRAWER_TRIGGER).
+ * Over a live page the shell hears no pointer of its own: a minimized window
+ * peeking from the desk's foot rises into view while the pointer is on it,
+ * and a window's drawer comes out.
  */
 export interface DeskHover {
   tabId: string;
   over: boolean;
+  top: boolean;
 }
 
 export function isDeskHover(value: unknown): value is DeskHover {
   if (typeof value !== "object" || value === null) return false;
   const hover = value as Record<string, unknown>;
-  return typeof hover["tabId"] === "string" && hover["tabId"].length > 0 && typeof hover["over"] === "boolean";
+  return typeof hover["tabId"] === "string" && hover["tabId"].length > 0 && typeof hover["over"] === "boolean" && typeof hover["top"] === "boolean";
 }
 
 /** Shell → main: the desk that is up, or null when none is. */

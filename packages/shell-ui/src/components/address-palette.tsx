@@ -93,6 +93,8 @@ const ACTION_KEYWORDS: Partial<Record<ChromeActionId, readonly string[]>> = {
   forkSpace: ["branch workspace context"],
   toggleSidebarPinned: ["compact sidebar"],
   togglePin: ["unpin keep page"],
+  screenshotView: ["screenshot screen shot capture snapshot snap grab picture image page window desk copy save"],
+  screenshotArea: ["screenshot screen shot capture snapshot snap grab picture image area region part selection select drag crop snip"],
 };
 
 interface SettingsPaletteItem {

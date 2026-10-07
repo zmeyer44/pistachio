@@ -22,6 +22,7 @@ import {
   Bookmark,
   BookmarkPlus,
   BookOpen,
+  Camera,
   ChevronLeft,
   ChevronRight,
   Columns2,
@@ -46,6 +47,7 @@ import {
   Settings,
   Sparkles,
   SplitSquareHorizontal,
+  SquareDashedMousePointer,
   Undo2,
 } from "lucide-react";
 import type { ShellCommand, ShellState } from "@pistachio/shell-contracts/chrome";
@@ -60,9 +62,11 @@ import {
   type ShortcutActionId,
   type ShortcutPlatform,
 } from "@pistachio/shell-contracts/shortcuts";
+import { nativeApi } from "../api";
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
 import { arrangeDesk, toggleDeskOfActiveTab } from "../lib/desk/open";
+import { screenshotArea, screenshotView } from "../lib/screenshot";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
 import { useSurface } from "../surface";
 import { useShell, type ShellHost } from "./shell-host";
@@ -96,7 +100,9 @@ export type ChromeActionId =
   | "copyUrlMarkdown"
   | "forkSpace"
   | "toggleSidebarPinned"
-  | "togglePin";
+  | "togglePin"
+  | "screenshotView"
+  | "screenshotArea";
 
 /**
  * The slice of the snapshot an action reads. Selected with useShallow, so a
@@ -454,6 +460,23 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
           : { tone: "success" },
       );
     },
+  },
+  // The window's (lib/screenshot.ts): a stream surface has no window to capture.
+  screenshotView: {
+    id: "screenshotView",
+    label: () => "Take screenshot",
+    icon: () => <Camera aria-hidden="true" />,
+    shortcutId: "screenshotView",
+    enabled: () => nativeApi() !== null,
+    run: () => void screenshotView(),
+  },
+  screenshotArea: {
+    id: "screenshotArea",
+    label: () => "Take screenshot of an area",
+    icon: () => <SquareDashedMousePointer aria-hidden="true" />,
+    shortcutId: "screenshotArea",
+    enabled: () => nativeApi() !== null,
+    run: () => void screenshotArea(),
   },
 };
 

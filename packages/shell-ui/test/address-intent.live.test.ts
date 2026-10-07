@@ -89,6 +89,8 @@ const ACTION_LABELS: Record<string, string> = {
   "chrome:forkSpace": "Fork Space",
   "chrome:toggleSidebarPinned": "Compact sidebar",
   "chrome:togglePin": "Pin tab",
+  "chrome:screenshotView": "Take screenshot",
+  "chrome:screenshotArea": "Take screenshot of an area",
   "tab:close-current": "Close current tab",
   "tabs:clear-unpinned": "Clear unpinned tabs",
 };

@@ -110,6 +110,17 @@ describe("editable shortcuts", () => {
     expect(shortcutAccelerator("Mod+Alt+Shift+C")).toBe("CommandOrControl+Alt+Shift+C");
   });
 
+  it("takes screenshots on ⌘⇧1 and ⌘⇧2, read from the digit under Shift", () => {
+    expect(DEFAULT_SHORTCUTS.screenshotView).toBe("Mod+Shift+1");
+    expect(DEFAULT_SHORTCUTS.screenshotArea).toBe("Mod+Shift+2");
+    // Shift turns the digit into its symbol ("!" on a US keyboard, "&" on a French one): the key is the binding.
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "!", code: "Digit1", meta: true, shift: true }, "darwin")).toBe("screenshotView");
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "@", code: "Digit2", metaKey: true, shiftKey: true }, "darwin")).toBe("screenshotArea");
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "@", code: "Digit2", ctrlKey: true, shiftKey: true }, "other")).toBe("screenshotArea");
+    expect(shortcutLabel("Mod+Shift+1", "darwin")).toBe("⌘⇧1");
+    expect(shortcutAccelerator("Mod+Shift+2")).toBe("CommandOrControl+Shift+2");
+  });
+
   it("binds the familiar reopen-closed-tab key, and yields it to an older custom binding", () => {
     expect(DEFAULT_SHORTCUTS.restoreClosedTab).toBe("Mod+Shift+T");
     expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "T", code: "KeyT", meta: true, shift: true }, "darwin")).toBe("restoreClosedTab");

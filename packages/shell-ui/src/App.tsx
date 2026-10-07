@@ -6,6 +6,7 @@ import { ChromeLayoutRoot } from "./ChromeLayoutRoot";
 import { NoticeHost } from "./components/NoticeHost";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { PistachioMark } from "./components/PistachioMark";
+import { ScreenshotOverlay } from "./components/ScreenshotOverlay";
 import { useDeskStore } from "./lib/desk/store";
 import { updatePromptWaiting } from "./lib/update-prompt";
 import { useAppStore } from "./store";
@@ -70,9 +71,10 @@ export function App() {
   // The first-run wizard covers the whole window, tab views included.
   const shellOverlayActive = useAppStore(
     (state) =>
-      state.overlay !== "none" || state.error !== null || state.onboardingOpen,
+      state.overlay !== "none" || state.error !== null || state.onboardingOpen || state.screenshotSelecting,
   );
   const downloadsOpen = useAppStore((state) => state.overlay === "downloads");
+  const screenshotOpen = useAppStore((state) => state.screenshotSelecting);
   const onboardingOpen = useAppStore((state) => state.onboardingOpen);
   const reportOverlayActive = useAppStore((state) => state.reportOverlayActive);
   useEffect(() => {
@@ -143,6 +145,8 @@ export function App() {
             </div>
           )}
           {downloadsOpen ? <DownloadsPopover /> : null}
+          {/* An area of the window dragged out for a screenshot (⌘⇧2): over everything, the sidebar too. */}
+          {screenshotOpen ? <ScreenshotOverlay /> : null}
           {/* The notice stack is no part of the chrome (components/NoticeHost.tsx):
               it shows whatever layout is up and whatever the sidebar is doing. */}
           <NoticeHost />

@@ -42,7 +42,7 @@ import {
   type Rect,
 } from "../src/lib/desk/geometry";
 import { cubicBezier, EASE_SMOOTH_OUT, GLIDE_DECELERATION, GLIDE_TAU_S, glideDecay, glideTauFor, SPRING_PRESETS, springAtRest, stepSpring, VelocityTracker } from "../src/lib/desk/motion";
-import { sanitizeVariants, DEFAULT_DESK_VARIANTS } from "../src/lib/desk/store";
+import { readPersistedDesk, sanitizeVariants, DEFAULT_DESK_VARIANTS } from "../src/lib/desk/store";
 
 const desk: Rect = { x: 184, y: 0, w: 1000, h: 700 };
 
@@ -450,6 +450,17 @@ describe("variants", () => {
       physics: "snap",
       grab: "alt",
     });
+  });
+
+  it("frames windows with the Drawer by default; a desk saved before it was, with the old default's Title bar, comes back with the Drawer once", () => {
+    expect(DEFAULT_DESK_VARIANTS.chrome).toBe("drawer");
+    expect(readPersistedDesk(null).variants.chrome).toBe("drawer");
+    // Saved before (no version): "bar" was every desk's, chosen or not.
+    expect(readPersistedDesk(JSON.stringify({ variants: { chrome: "bar", grab: "alt" } })).variants).toMatchObject({ chrome: "drawer", grab: "alt" });
+    // Another frame was a choice.
+    expect(readPersistedDesk(JSON.stringify({ variants: { chrome: "tab" } })).variants.chrome).toBe("tab");
+    // Saved since: the Title bar is a choice too.
+    expect(readPersistedDesk(JSON.stringify({ version: 2, variants: { chrome: "bar" } })).variants.chrome).toBe("bar");
   });
 
   it("keeps Glide's deceleration a whole percent within its range, and the default for anything else", () => {

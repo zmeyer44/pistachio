@@ -66,13 +66,19 @@ export interface DeskLaunch {
   userData: string;
 }
 
+/** A desk window's frame (the Feel's Frame; the shell's DeskChrome). */
+export type DeskFrame = "bar" | "tab" | "bare" | "drawer";
+
 /**
  * The app at the desk's size (1440 × 900), off the real cursor, its chrome
  * up and — on a new profile — its first tab on `homeUrl` (the demo's
- * invoices unless said), seeded so the first tab is a page.
+ * invoices unless said), seeded so the first tab is a page, and its desk
+ * windows framed by `chrome`: the Title bar unless said, the frame the
+ * desk's specs were written for (the default until 2026-10-07, when the
+ * Drawer became it).
  */
-export async function launchDesk(options: Omit<LaunchOptions, "settings"> & { homeUrl?: string } = {}): Promise<DeskLaunch> {
-  const { homeUrl = INVOICES, ...launch } = options;
+export async function launchDesk(options: Omit<LaunchOptions, "settings"> & { homeUrl?: string; chrome?: DeskFrame } = {}): Promise<DeskLaunch> {
+  const { homeUrl = INVOICES, chrome = "bar", ...launch } = options;
   const fresh = launch.userData === undefined;
   const { app, userData } = await launchApp({
     ...launch,
@@ -85,7 +91,25 @@ export async function launchDesk(options: Omit<LaunchOptions, "settings"> & { ho
   await clearOfCursor(app);
   const shell = await shellReady(app);
   if (fresh) await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === homeUrl)).toBe(true);
+  if (fresh && chrome !== "drawer") await frameDeskWindows(shell, chrome);
   return { app, shell, userData };
+}
+
+/**
+ * Frame the desk's windows with `chrome`, as the More card's Feel would:
+ * the desk keeps its Feel in the shell's storage and reads it as the shell
+ * loads, so it is written there and the shell loaded again.
+ */
+async function frameDeskWindows(shell: Page, chrome: DeskFrame): Promise<void> {
+  const framed = (): Promise<unknown> =>
+    shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.v1") ?? "{}") as { variants?: { chrome?: unknown } }).variants?.chrome);
+  await shell.evaluate((chrome) => {
+    const saved = JSON.parse(localStorage.getItem("pistachio.desk.v1") ?? "{}") as { variants?: Record<string, unknown> };
+    localStorage.setItem("pistachio.desk.v1", JSON.stringify({ ...saved, version: 2, variants: { ...saved.variants, chrome } }));
+  }, chrome);
+  await shell.reload();
+  await expect(shell.getByTestId("chrome-layout-ground")).toBeVisible();
+  expect(await framed()).toBe(chrome);
 }
 
 /** A tab group's row in the sidebar (its icon on the rail). */

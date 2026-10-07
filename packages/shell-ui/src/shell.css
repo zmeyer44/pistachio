@@ -2770,8 +2770,15 @@ body:not([data-chrome-view])::after {
 .desk-stage {
   --desk-well-shade: oklch(0 0 0 / 0.13);
   --desk-well-light: oklch(1 0 0 / 0.85);
-  /* (The engine's SHELF_INSET keeps the shelf clear of these corners.) */
-  border-radius: 18px;
+  /* A window's corner, so one filling the desk fills it to the curve: a framed window's card (the title bar's, the
+     tab's) is the page's radius and 4px more; a bare or drawer window is its page, rounded as main rounds the live
+     page (the Appearance radius, --radius-md). The windows, the drawer and a lit tile all read it from here.
+     (The engine's SHELF_INSET keeps the shelf clear of these corners.) */
+  --desk-window-radius: calc(var(--radius-md) + 4px);
+  border-radius: var(--desk-window-radius);
+}
+.desk-stage:is([data-chrome="bare"], [data-chrome="drawer"]) {
+  --desk-window-radius: var(--radius-md);
 }
 /* The well itself, under everything on the desk: the Bar's notch is a hole in it down to the shell's ground (the
    engine's --desk-notch-clip), as it is through the windows under it. */
@@ -2833,7 +2840,7 @@ body:not([data-chrome-view])::after {
 .desk-window-card {
   position: absolute;
   inset: 0;
-  border-radius: calc(var(--radius-md) + 4px);
+  border-radius: var(--desk-window-radius);
   background: var(--color-background-100);
   box-shadow:
     0 0 0 1px var(--color-alpha-300),
@@ -2955,7 +2962,7 @@ body:not([data-chrome-view])::after {
   align-items: center;
   gap: 6px;
   padding: 0 3px 0 10px;
-  border-radius: calc(var(--radius-md) + 4px) calc(var(--radius-md) + 4px) 0 0;
+  border-radius: var(--desk-window-radius) var(--desk-window-radius) 0 0;
   background: var(--color-background-100);
   box-shadow: 0 0 0 1px var(--color-alpha-300);
   /* The ring stops at the join, so tab and card read as one piece. */
@@ -3011,6 +3018,76 @@ body:not([data-chrome-view])::after {
 }
 .desk-window-handle:hover .desk-window-controls {
   opacity: 1;
+}
+
+/* Drawer: the page alone. Its title and controls are on a strip behind the
+   window's top edge, slid up out of it as far as the engine says
+   (--drawer-t, 0 in to 1 out); the card lies over the strip's foot, so it
+   comes from behind the window. With no room above, the engine pushes the
+   window down for it instead. */
+.desk-window-drawer-clip {
+  position: absolute;
+  top: calc(-1 * var(--desk-drawer-h));
+  right: 0;
+  left: 0;
+  height: calc(var(--desk-drawer-h) + 12px);
+  overflow: hidden;
+  border-radius: var(--desk-window-radius) var(--desk-window-radius) 0 0;
+  pointer-events: none;
+}
+.desk-window-drawer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 5px 12px 11px;
+  border-radius: inherit;
+  background: var(--color-background-200);
+  box-shadow: inset 0 0 0 1px var(--color-alpha-300);
+  font-size: 12px;
+  color: var(--color-gray-900);
+  transform: translateY(calc((1 - var(--drawer-t, 0)) * var(--desk-drawer-h)));
+  pointer-events: auto;
+}
+/* The window's shadow on the strip, where it goes in under the window. */
+.desk-window-drawer::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 12px;
+  left: 0;
+  height: 8px;
+  background: linear-gradient(to top, oklch(0 0 0 / 0.06), transparent);
+  pointer-events: none;
+}
+.desk-window:not([data-drawer-out]) .desk-window-drawer {
+  visibility: hidden;
+}
+.desk-window-drawer .desk-window-controls {
+  opacity: 1;
+}
+/* Its page controls at the leading edge, as far in as the window's own buttons at the trailing one. */
+.desk-window-drawer:has(> .desk-window-nav) {
+  padding-left: 5px;
+}
+/* Where the pointer brings out a drawer with no room above its window: the window's top edge, either side of it.
+   With the drawer out, only the page's side: the drawer, and its controls to their lower edge, are the pointer's. */
+.desk-window-drawer-trigger {
+  position: absolute;
+  top: calc(-1 * var(--desk-drawer-trigger));
+  right: 0;
+  left: 0;
+  z-index: 2;
+  display: none;
+  height: calc(2 * var(--desk-drawer-trigger));
+}
+.desk-window[data-drawer-out] .desk-window-drawer-trigger {
+  top: 0;
+  height: var(--desk-drawer-trigger);
+}
+.desk-window[data-drawer-room="tight"] .desk-window-drawer-trigger {
+  display: block;
 }
 
 .desk-window-page {
@@ -3344,7 +3421,7 @@ body:not([data-chrome-view])::after {
   top: 0;
   left: 0;
   z-index: 45;
-  border-radius: calc(var(--radius-md) + 4px);
+  border-radius: var(--desk-window-radius);
   /* Frosted: what it lies over blurs, as a window's landing place, not a stain on it. */
   background:
     linear-gradient(180deg, color-mix(in oklch, var(--color-background-100) 22%, transparent), transparent 70%),
