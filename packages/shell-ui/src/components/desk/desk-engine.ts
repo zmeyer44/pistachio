@@ -578,6 +578,8 @@ interface Win {
    * live there (#latchGrowth).
    */
   growTo: { from: Rect; to: Rect; since: number } | null;
+  /** Settling into a smaller box (#shrinking): the box, read as it sets out and kept until it gets there. It shrinks live. */
+  shrinkTo: Rect | null;
   /**
    * A mask to put back (the desk reopened on this masked window): it lands
    * whole, and once a still of it as it now stands is painted it is masked
@@ -3328,6 +3330,7 @@ export class DeskEngine {
         this.#dirtyView = true;
       }
       this.#latchGrowth(win, now);
+      this.#latchShrink(win);
       // (A parked window under main's shelf view wants its still: that view shows it.)
       const wants = !uncovered.has(win.tabId) || this.#wantsStillForMotion(win) || (shelfOver && lowered.has(win.tabId));
       if (wants) {
@@ -3394,10 +3397,15 @@ export class DeskEngine {
     return win.drawer.t === 0 ? 0 : win.drawer.t * Math.max(0, DRAWER_H - this.#drawerRoom(win));
   }
 
-  /** The window where it is shown: its box, pushed down by its drawer. */
+  /**
+   * The window where it is shown: its box, pushed down by its drawer — and cut
+   * there at its own foot, so it reaches over nothing below it (the window
+   * under it in a split one above the other, which one of the two would have
+   * been the still of, as long as the drawer was out).
+   */
   #shownRect(win: Win): Rect {
     const shift = this.#drawerShift(win);
-    return shift === 0 ? win.rect : { ...win.rect, y: win.rect.y + shift };
+    return shift === 0 ? win.rect : { ...win.rect, y: win.rect.y + shift, h: Math.max(1, win.rect.h - shift) };
   }
 
   /** Where its drawer stands all the way out, in the stage. */
@@ -3411,12 +3419,12 @@ export class DeskEngine {
     return win.drawer.t > 0 || win.drawer.target === 1 || win.drawer.waitingSince !== null;
   }
 
-  /** Pushed all the way down by its drawer, its page would pass the desk's foot. */
+  /** Its drawer pushes it down (it has less room above it than the drawer needs): its page is cut short at its own foot. */
   #drawerPastFoot(win: Win): boolean {
-    return win.rect.y + win.rect.h + Math.max(0, DRAWER_H - this.#drawerRoom(win)) > this.#stageBox.height + 0.5;
+    return this.#drawerRoom(win) < DRAWER_H;
   }
 
-  /** Its page is held at its own size (DeskZoomedPage at zoom 1): its drawer pushes it past the desk's foot, where its view is cut short, or did a moment ago. */
+  /** Its page is held at its own size (DeskZoomedPage at zoom 1): its drawer pushes it down, its view cut short at its foot, or did a moment ago. */
   #drawerHeld(win: Win, now: number): boolean {
     if (win.mask !== null || win.mini !== null) return false;
     return ((win.drawer.t > 0 || win.drawer.target === 1) && this.#drawerPastFoot(win)) || now < win.drawer.holdUntil;
@@ -3432,7 +3440,8 @@ export class DeskEngine {
 
   /**
    * Whether its drawer is wanted out. With room for it above the window:
-   * while the pointer is anywhere on the window, or it is in use. With less
+   * while the pointer is anywhere on the window, or it is in use (and its
+   * drawer would lie over no other window: #drawerOverOthers). With less
    * (it would push the window down): only for the pointer at the window's
    * top — its page's top band, or the strip there — or on the drawer
    * itself. Its menu up keeps it out, and in hand it stays as it was.
@@ -3443,7 +3452,8 @@ export class DeskEngine {
     const hover = this.#drawerHover.get(win.tabId) ?? NO_HOVER;
     if (hover.menu) return true;
     const roomy = this.#drawerRoom(win) >= DRAWER_H;
-    if (roomy && this.#attended(win.tabId)) return true;
+    // (In use, only where it lies over no other window: it would be out for as long as the window is in use.)
+    if (roomy && this.#attended(win.tabId) && !this.#drawerOverOthers(win)) return true;
     // (Anything in hand has the pointer: what it was on before says nothing now.)
     if (this.#gesture !== null) return false;
     return hover.strip || (roomy ? hover.window || hover.page : hover.top);
@@ -3483,6 +3493,28 @@ export class DeskEngine {
       if (!other.drawn && this.#host.hasLivePage(id) && rectsOverlap(this.#shownRect(other), slot)) return false;
     }
     return true;
+  }
+
+  /**
+   * Its drawer out would lie over a window under it in the stack that the
+   * window itself lies nowhere over — one it would turn into its still on its
+   * own: the window above it, in a split one above the other. Out there for
+   * as long as the window below was in use, it left the one above a picture,
+   * dead to the pointer, until that changed. (For the pointer on the window
+   * it still comes out over it, for as long as the pointer is there.)
+   */
+  #drawerOverOthers(win: Win): boolean {
+    const slot = this.#drawerSlot(win);
+    const own = this.#shownRect(win);
+    for (const id of this.#order) {
+      // (The windows above it in the stack lie over its drawer as they lie over it.)
+      if (id === win.tabId) return false;
+      const other = this.#wins.get(id)!;
+      if (other.flight !== null || other.closing || other.mini?.parked === true) continue;
+      const box = this.#shownRect(other);
+      if (rectsOverlap(box, slot) && !rectsOverlap(box, own)) return true;
+    }
+    return false;
   }
 
   /**
@@ -3643,12 +3675,35 @@ export class DeskEngine {
     const carried = gesture?.tabId === win.tabId ? gesture : null;
     // A parked window rising into view, or going back down, stays live: its page never changes size (main holds it at its zoomed box).
     if (win.mini?.parked === true && carried === null) return false;
+    // So does a window settling into a smaller box, let go: its page laid out at every size it passes through.
+    if (carried === null && win.shrinkTo !== null) return false;
     if (carried?.kind === "spawn") return true;
     // A picture being resized is its still, stretched.
     if (carried?.kind === "resize" && win.mask !== null) return true;
     if (this.#host.variants().motion === "live") return false;
     if (carried?.kind === "move") return true;
     return win.coasting || win.target !== null || win.scale !== 1 || win.tilt !== 0;
+  }
+
+  /** Whether a window settles into a smaller box (#shrinking), read as it sets out — and kept until it gets there, or is sent somewhere else. */
+  #latchShrink(win: Win): void {
+    const target = win.target;
+    if (win.shrinkTo !== null && target !== null && sameRect(win.shrinkTo, target, 0.5)) return;
+    win.shrinkTo = target !== null && this.#shrinking(win) ? { ...target } : null;
+  }
+
+  /**
+   * Settling into a smaller box (a dimension shrinking, none growing: that is
+   * growTo's), at its own size and zoom — not a masked or minimized window (nor
+   * one landing to be masked again), one in flight or thrown. It shrinks as its live page, the view resized each
+   * frame and the page laid out at each size: never its still scaled down, a
+   * picture dead to the pointer until it landed. (Until 2026-10-07 it was.)
+   */
+  #shrinking(win: Win): boolean {
+    const target = win.target;
+    if (target === null || win.coasting || win.flight !== null || win.mask !== null || win.maskWanted !== null || win.mini !== null || win.miniMotion !== null || win.unmasking !== null) return false;
+    if (!isTabWindow(win.tabId)) return false;
+    return target.w < win.rect.w - 2 || target.h < win.rect.h - 2;
   }
 
   /** Eased: a timed ease from where the window is to `target`, for as long as what it does takes (EASED_*), its scale along with it in flight. */
@@ -3787,7 +3842,9 @@ export class DeskEngine {
     // sidebar and the gutter, lies above it. There only the shadow is cut, never the window, which a live page
     // would still paint past. (Lifted, flying or turned, it passes over the edges as it is.)
     const { width: stageW, height: stageH } = this.#stageBox;
-    const foot = transformed || stageH <= 0 ? null : stageH - y;
+    // (Pushed down by its drawer, it is cut at its own foot as well: it reaches over nothing below it.)
+    const bottom = y > win.rect.y ? Math.min(stageH, win.rect.y + h) : stageH;
+    const foot = transformed || stageH <= 0 ? null : bottom - y;
     const reach = (room: number): number => Math.min(CLIP_MARGIN, Math.max(0, room));
     const sides: ClipReach = { top: reach(y), left: reach(x), right: reach(stageW - x - w) };
     // Where the clip reaches one of the desk's corners, it is rounded as the desk is there: a window filling the desk
@@ -3870,8 +3927,10 @@ export class DeskEngine {
       if (win.drawn) continue;
       const insets = this.#insets(win);
       const y = Math.round(top + win.rect.y + this.#drawerShift(win) + insets.top);
-      // Peeking from the desk's foot, or pushed past it by its drawer, its view is cut short at the desk's edge: main shows the top of its page.
-      const foot = Math.round(top + this.#stageBox.height);
+      // Peeking from the desk's foot, its view is cut short at the desk's edge, and pushed down by its drawer, at its own
+      // foot (or the desk's): main shows the top of its page.
+      const shifted = this.#drawerShift(win) > 0;
+      const foot = Math.round(top + (shifted ? Math.min(this.#stageBox.height, win.rect.y + win.rect.h - insets.bottom) : this.#stageBox.height));
       // Growing, its view is never larger than the page it is laid out at (growTo): one dimension may be shrinking meanwhile.
       const grow = win.growTo?.to ?? null;
       const width = Math.round(win.rect.w - insets.left - insets.right);
@@ -4207,6 +4266,7 @@ export class DeskEngine {
       miniMotion: null,
       tween: null,
       growTo: null,
+      shrinkTo: null,
       maskWanted: null,
       unmasking: null,
       revealed: false,

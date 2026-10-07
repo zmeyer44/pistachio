@@ -16,6 +16,9 @@ import { box, createGroup, INVOICES, launchDesk, liveViews, openGroupDesk, openM
 
 const capture = screenshots("desk-drawer");
 
+/** A page's title as long as a shop's product page's. */
+const SECOND_TITLE = "Second page: Anker Prime Charger, 100W Max 3-Port Compact Foldable USB C Charger | Fast Laptop Charger Power Adapter";
+
 /** The drawer's height (the engine's DRAWER_H). */
 const DRAWER_H = 34;
 
@@ -182,7 +185,7 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
     const server = await new Promise<Server>((done) => {
       const created = createServer((_request, response) => {
         response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        response.end("<!doctype html><title>Second page</title><h1>Second page</h1>");
+        response.end(`<!doctype html><title>${SECOND_TITLE}</title><h1>Second page</h1>`);
       });
       created.listen(0, "127.0.0.1", () => done(created));
     });
@@ -205,12 +208,19 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
       await expect(forward).not.toHaveAttribute("aria-disabled", "true");
       await forward.click();
       await expect.poll(urlNow).toBe(second);
-      await expect.poll(() => inPage<string>(app, second, "document.title").catch(() => "")).toBe("Second page");
+      await expect.poll(() => inPage<string>(app, second, "document.title").catch(() => "")).toBe(SECOND_TITLE);
       await inPage(app, second, "window.__before = true");
       await drawerOf.getByTestId("desk-reload").click();
       await expect.poll(() => inPage<boolean>(app, second, "window.__before === undefined").catch(() => false)).toBe(true);
       await away();
       await settled(shell, app);
+      // A long title is cut short (45% of the drawer, 160–480px), and the strip past it is the window's to be taken by.
+      await expect(win.locator('[data-testid="desk-window-drawer"] [data-testid="desk-window-address"]')).toContainText(SECOND_TITLE.slice(0, 20));
+      const strip = await box(shell, `${windowSelector(tabId)} [data-testid="desk-window-drawer"]`);
+      const title = await box(shell, `${windowSelector(tabId)} [data-testid="desk-window-drawer"] [data-testid="desk-window-address"]`);
+      expect(title.width).toBeLessThanOrEqual(Math.min(480, Math.max(160, strip.width * 0.45)) + 1);
+      const buttons = await box(shell, `${windowSelector(tabId)} [data-testid="desk-window-drawer"] .desk-window-controls`);
+      expect(buttons.x - (title.x + title.width)).toBeGreaterThan(strip.width * 0.2);
       await capture(app, shell, "05-drawer-page-controls.png");
     } finally {
       server.close();

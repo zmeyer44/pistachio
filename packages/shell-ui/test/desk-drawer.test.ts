@@ -343,6 +343,82 @@ describe("the Drawer frame", () => {
     desk.destroy();
   });
 
+  it("stays in while the window is merely in use, where it would lie over the window above it: that window stays live", async () => {
+    vi.stubGlobal("Image", class {
+      src = "";
+      decode(): Promise<void> {
+        return Promise.resolve();
+      }
+    });
+    const { desk, out } = await open({ stills: true });
+    // One above the other, the gutter apart: the one in use below.
+    desk.applyLayout(
+      new Map([
+        ["tab-1", { x: 100, y: 0, w: 600, h: ROOMY.y - 8 }],
+        ["tab-0", ROOMY],
+      ]),
+    );
+    const above = (): boolean => desk.getView().windows.find((window) => window.tabId === "tab-1")!.drawn;
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 200 && frames.length > 0; i += 1) {
+        await frame();
+        await new Promise((done) => setImmediate(done));
+      }
+      await pass(600);
+    };
+    await flush();
+    expect(desk.focusedTabId()).toBe("tab-0");
+    // In use: in, and the window above it live.
+    expect(out("tab-0")).toBe(0);
+    expect(above()).toBe(false);
+    // The pointer on it: out, over the other's foot (which gives way to its still meanwhile).
+    desk.hoverWindow("tab-0", "window", true);
+    await flush();
+    expect(out("tab-0")).toBe(1);
+    expect(above()).toBe(true);
+    // Gone from it: in again, and the window above live again.
+    desk.hoverWindow("tab-0", "window", false);
+    await flush();
+    expect(out("tab-0")).toBe(0);
+    expect(above()).toBe(false);
+    desk.destroy();
+  });
+
+  it("pushing the window above in a split down, keeps it within its own box: the window below stays live", async () => {
+    vi.stubGlobal("Image", class {
+      src = "";
+      decode(): Promise<void> {
+        return Promise.resolve();
+      }
+    });
+    const { desk, out, page } = await open({ stills: true });
+    const top: Rect = { x: 100, y: 0, w: 600, h: 400 };
+    const below: Rect = { x: 100, y: 408, w: 600, h: 400 };
+    desk.applyLayout(
+      new Map([
+        ["tab-1", below],
+        ["tab-0", top],
+      ]),
+    );
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 200 && frames.length > 0; i += 1) {
+        await frame();
+        await new Promise((done) => setImmediate(done));
+      }
+      await pass(600);
+    };
+    await flush();
+    // The pointer at the top of the window above (no room over it): its drawer out, its page pushed down and cut at its foot.
+    desk.hoverPage("tab-0", true, true);
+    await flush();
+    expect(out("tab-0")).toBe(1);
+    expect(page("tab-0")).toEqual({ x: top.x, y: DRAWER_H, width: top.w, height: top.h - DRAWER_H });
+    // The window below it: live, never under the one above.
+    expect(desk.getView().windows.find((window) => window.tabId === "tab-1")!.drawn).toBe(false);
+    expect(page("tab-1")).toEqual({ x: below.x, y: below.y, width: below.w, height: below.h });
+    desk.destroy();
+  });
+
   it("held by its drawer, a window it pushed down keeps the drawer under the pointer as it is carried down the desk", async () => {
     const { desk, els, drag, out } = await open();
     desk.toggleMaximize("tab-0");
@@ -376,7 +452,7 @@ describe("the Drawer frame", () => {
     desk.destroy();
   });
 
-  it("with some room above a window, comes out as far as it can and pushes the window down the rest", async () => {
+  it("with some room above a window, comes out as far as it can and pushes the window's page down the rest, within the window's own box", async () => {
     const { desk, els, out, page, held } = await open();
     const near: Rect = { ...ROOMY, y: 10 };
     desk.applyLayout(
@@ -391,9 +467,10 @@ describe("the Drawer frame", () => {
     await settle();
     expect(out("tab-0")).toBe(1);
     expect(shownTop(els.get("tab-0")!)).toBeCloseTo(DRAWER_H, 0);
-    // Its page moved whole, clear of the desk's foot: nothing to hold.
-    expect(page("tab-0")).toEqual({ x: near.x, y: DRAWER_H, width: near.w, height: near.h });
-    expect(held("tab-0")).toBeUndefined();
+    // Its page moved down the rest, cut at the window's own foot (it reaches over nothing below it), and held at its own size.
+    const push = DRAWER_H - near.y;
+    expect(page("tab-0")).toEqual({ x: near.x, y: DRAWER_H, width: near.w, height: near.h - push });
+    expect(held("tab-0")).toMatchObject({ width: near.w, height: near.h, zoom: 1 });
     desk.destroy();
   });
 });

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { Building2, Copy, Star, StarOff, X } from "lucide-react";
 import {
   DEFAULT_SIDEBAR_STATE,
@@ -8,7 +8,9 @@ import {
 import { useShelfDrag, type ShelfItem } from "../chrome/shelf-drag";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { cn } from "../lib/cn";
+import { useDeskChrome } from "../lib/desk/chrome";
 import { showOnDesk } from "../lib/desk/open";
+import { hoverDeskRow } from "./desk/DeskSidebarControls";
 import { useDeskStore } from "../lib/desk/store";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
@@ -81,6 +83,21 @@ export function FavoritesGrid() {
   const pageGroups = useAppStore((s) => s.snapshot?.anchorGroups);
   const deskGroupId = useDeskStore((s) => s.groupId);
   const deskFavorite = pageGroups?.find((group) => group.id === deskGroupId)?.anchorId ?? null;
+  // On the rail, the place under that favorite's row where the list draws its desk's tabs and Stack (TabList's entryTabs).
+  const entryEl = useRef<HTMLDivElement | null>(null);
+  const entryRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      const chrome = useDeskChrome.getState();
+      if (el === null) {
+        if (chrome.favoriteEntry !== null && chrome.favoriteEntry.el === entryEl.current) chrome.setFavoriteEntry(null);
+        entryEl.current = null;
+        return;
+      }
+      entryEl.current = el;
+      if (deskFavorite !== null) chrome.setFavoriteEntry({ anchorId: deskFavorite, el });
+    },
+    [deskFavorite],
+  );
   const tabCounts = useMemo(() => new Map((pageGroups ?? []).map((group) => [group.anchorId ?? "", group.tabIds.length - 1])), [pageGroups]);
 
   const liveByAnchor = useMemo(() => {
@@ -329,13 +346,17 @@ export function FavoritesGrid() {
 
   if (rail) {
     // Under the folder, the favorites whose pages are open, a row each (as a tab's on the rail): shown on a click,
-    // closed with the middle button, the tile's own menu on a right-click.
+    // closed with the middle button, the tile's own menu on a right-click. They keep the favorites' order: the one
+    // whose desk is up stays where it is, its desk's tabs and Stack under it (the list draws them there:
+    // TabList's entryTabs) — not taken out to stand under the folder's rows, as it was until 2026-10-07, so that
+    // choosing one moved it to the end.
     const open = tiles.flatMap((tile) => {
       const live = tile.ghost ? null : liveFor(tile);
-      // (Its desk up, its page's row is the list's, with the tabs of its group: TabList's entryTabs.)
-      if (live === null || deskFavorite === tile.id) return [];
+      if (live === null) return [];
+      const here = deskFavorite === tile.id;
       const label = tile.title || prettyUrl(tile.url);
-      const waiting = tabCounts.get(tile.id) ?? 0;
+      // (Its desk up, its tabs are under it, not counted on it.)
+      const waiting = here ? 0 : (tabCounts.get(tile.id) ?? 0);
       const flipId = `open:${tile.id}`;
       return [
         <button
@@ -359,6 +380,9 @@ export function FavoritesGrid() {
           onAuxClick={(e) => {
             if (e.button === 1) void closeTab(live.id);
           }}
+          // A desk up, ⇧⌫ closes the tab whose row is under the pointer — this one's page, its desk's (as any tab's row: TabList).
+          onPointerEnter={() => hoverDeskRow(live.id, true)}
+          onPointerLeave={() => hoverDeskRow(live.id, false)}
           onContextMenu={(e) => {
             e.preventDefault();
             menu.open(e, tileMenu(tile));
@@ -369,6 +393,7 @@ export function FavoritesGrid() {
           </span>
           {waiting > 0 ? <EntryTabCount count={waiting} testId="favorite-tab-count" className="absolute -right-0.5 -bottom-0.5 h-3.5 min-w-3.5 bg-background-100 text-[9px] shadow-border" /> : null}
         </button>,
+        ...(here ? [<div key={`entry:${tile.id}`} ref={entryRef} role="group" aria-label={`${label}, its desk`} data-testid="rail-favorite-entry" className="rail-favorite-entry" />] : []),
       ];
     });
     return (

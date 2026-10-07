@@ -10,6 +10,8 @@
  * blown up to the window, and shown at last it was laid out anew. And a
  * frame button's tooltip, itself a cover, goes as the button is pressed:
  * Fill the desk grew its window as its still while the tooltip stayed up.
+ * Shrinking, a window is its live page too, laid out at each size it
+ * passes through (it was its still, scaled down, until it landed).
  *
  * The pages are a local server's, each counting the resizes it hears.
  */
@@ -66,7 +68,7 @@ async function watchDrawnFromPress(shell: Page, tabId: string): Promise<() => Pr
     });
 }
 
-test.describe.serial("a desk window growing", { tag: ["@desk"] }, () => {
+test.describe.serial("a desk window growing, and shrinking", { tag: ["@desk"] }, () => {
   let server: Server;
   let app: ElectronApplication;
   let shell: Page;
@@ -133,8 +135,17 @@ test.describe.serial("a desk window growing", { tag: ["@desk"] }, () => {
   });
 
   test("grown under the More card, its page stays laid out at the box it grew to, and is shown there without a resize", async () => {
-    // Back beside its neighbour.
+    // Back beside its neighbour. Shrinking, it stays its live page, laid out at the sizes it passes through.
+    const filled = await pageSize(app, urls[0]);
+    const shrink = await watchDrawnFromPress(shell, tabs[0]);
     await shell.locator(windowSelector(tabs[0])).getByRole("button", { name: "Restore" }).click();
+    await settled(shell, app);
+    const shrinkFrames = await shrink();
+    expect(shrinkFrames.length).toBeGreaterThan(8);
+    expect(shrinkFrames.slice(2).filter(Boolean)).toEqual([]);
+    const restored = await pageSize(app, urls[0]);
+    expect(restored.width).toBeLessThan(filled.width - 100);
+    expect(restored.resizes - filled.resizes).toBeGreaterThan(3);
     await sideBySide();
     const half = await pageSize(app, urls[0]);
     // The More card up over the desk's side: the window under it is its still.

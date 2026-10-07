@@ -1072,9 +1072,10 @@ test("on the rail the favorites are one folder: its sheet slides out of the rail
     await shell.locator(windowSelector(vendorTab)).getByTestId("desk-collapse").click();
     await expect(shell.locator(windowSelector(vendorTab))).toHaveCount(0);
     expect((await snapshot(shell)).activeTabId).toBe(vendorTab);
-    // (Its desk up, its page's row is the list's, under the favorites — not one of the folder's open rows.)
-    await expect(shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${vendorTab}"]`)).toHaveCount(0);
-    await expect(shell.locator(`[data-testid="entry-tabs"] [data-tab-id="${vendorTab}"]`)).toHaveCount(1);
+    // (Its desk up, its page's row stays among the folder's open rows, first as the favorite is, its desk's Stack under it.)
+    await expect(openRows.first()).toHaveAttribute("data-live-tab-id", vendorTab);
+    await expect(shell.locator('[data-testid="rail-favorite-entry"] [data-testid="entry-tabs"] [data-testid="desk-stack"]')).toHaveCount(1);
+    await expect(shell.locator(`[data-testid="entry-tabs"] [data-tab-id="${vendorTab}"]`)).toHaveCount(0);
     await folder.hover();
     await expect(sheet).toHaveAttribute("data-shown", "");
     await sheet.getByRole("listitem", { name: "Vendor" }).click();
@@ -1185,7 +1186,10 @@ test.describe.serial("the desk's keys: ⇧⌫ on a row, the window buttons, ⌘T
     await shiftBackspace("shell");
     await expect.poll(tabIdsNow).not.toContain(player);
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
-    await expect(groupRows).toHaveCount(1);
+    // On the rail a group of one tab is that tab: no row under its header, which carries the tab's window mark.
+    const groupHeader = shell.locator(`${groupSelector("desk-close")} [data-testid="tab-group-header"]`);
+    await expect(groupRows).toHaveCount(0);
+    await expect(groupHeader.getByTestId("desk-row-mark")).toHaveCount(1);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(atlas);
     await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
     await capture(app, shell, "45-row-closed.png");
@@ -1196,7 +1200,7 @@ test.describe.serial("the desk's keys: ⇧⌫ on a row, the window buttons, ⌘T
     await shiftBackspace(urls[1]!);
     await expect.poll(() => inPage<string[]>(urls[1]!, "heard")).toEqual(["⇧Backspace"]);
     expect(await tabIdsNow()).toContain(atlas);
-    await expect(groupRows).toHaveCount(1);
+    await expect(groupHeader.getByTestId("desk-row-mark")).toHaveCount(1);
   });
 
   test("on a desk the window buttons hide with the rail and come back with the whole sidebar, ⌘T brings a new tab out as a window, and ⌘L or a click on a window's title edits its address", async () => {
@@ -1926,7 +1930,20 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await awayFromDock();
     await settled(shell, app);
 
-    // ── 5. Duplicated: the copy joins the group beside it and comes out on the desk, in use ─
+    // ── 5. On the rail a group of one tab is that tab: no row under its header, whose menu is what the desk does
+    //       with the tab's window, then the group's ─
+    await expect(rowsOf("menu-a")).toHaveCount(0);
+    await menuOn(groupHeader("menu-a"));
+    await expect(item("Collapse into the sidebar")).toBeVisible();
+    await expect(item("Ungroup tabs")).toBeVisible();
+    await shell.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+
+    // ── 5b. Duplicated, from its row in the whole sidebar: the copy joins the group beside it and comes out on the desk, in use ─
+    // (The head's toggle, not ⌘S: a page has the keyboard, and Playwright's keys reach only the shell's.)
+    await shell.getByTestId("desk-rail-toggle").click();
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
+    await expect(rowsOf("menu-a")).toHaveCount(1);
     await menuOn(rowSelector(a0));
     await choose("Duplicate tab");
     await expect.poll(async () => (await members("menu-a"))?.length).toBe(2);
@@ -1936,6 +1953,8 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expect(shell.locator(windowSelector(copy))).toHaveCount(1);
     await awayFromDock();
     await settled(shell, app);
+    // (Back to the rail, where the rename below has no room for a name.)
+    await onRail();
 
     // ── 6. Another group's row: the sidebar's menu for the group ─────────────────
     // (A real press on the sidebar gives the shell the keyboard; Playwright's does not.)
@@ -1948,11 +1967,32 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expect(shell.locator(`${windowSelector(copy)} [data-testid="desk-window-page"] img.desk-still`)).toHaveCount(1);
     await capture(app, shell, "59-row-group-menu.png");
     // Rename: the rail has no room for a name, so the whole sidebar comes back, the name a field in its row with the keyboard.
+    // (Every hand-over of the keyboard to a page from here on is counted: there is to be none.)
+    await app.evaluate(({ BrowserWindow, webContents }) => {
+      const shellContents = BrowserWindow.getAllWindows()[0]!.webContents;
+      const state = globalThis as unknown as { pageFocuses: number };
+      state.pageFocuses = 0;
+      for (const contents of webContents.getAllWebContents()) {
+        if (contents === shellContents || !contents.getURL().startsWith("pistachio://demo/")) continue;
+        const focus = contents.focus.bind(contents);
+        contents.focus = () => {
+          state.pageFocuses += 1;
+          focus();
+        };
+      }
+    });
     await choose("Rename");
     await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
     const rename = groupIcon("menu-b").getByTestId("tab-group-name-input");
     await expect(rename).toBeFocused();
-    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.isFocused())).toBe(true);
+    expect(await app.evaluate(() => (globalThis as unknown as { pageFocuses: number }).pageFocuses)).toBe(0);
+    // The shell's view has it — asked only while the app is frontmost: with another app in front no view of its
+    // window is focused (CLAUDE.md, known environment failures).
+    const { frontmost, shellFocused } = await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]!;
+      return { frontmost: window.isFocused(), shellFocused: window.webContents.isFocused() };
+    });
+    if (frontmost) expect(shellFocused).toBe(true);
     await shell.keyboard.press("Meta+a");
     await shell.keyboard.type("Places");
     await capture(app, shell, "60-row-group-rename.png");

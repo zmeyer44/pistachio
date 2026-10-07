@@ -12,6 +12,9 @@
  *   (`hovered`): ⇧⌫ closes that tab, wherever the keyboard is.
  * - The desk says which tab its agent is working in (`agentTab`), for that
  *   row to wear the agent's ring, as the window does.
+ * - On the rail, the row of the favorite whose desk is up stands under the
+ *   favorites' folder (FavoritesGrid), and the tab list draws that desk's
+ *   tabs and Stack under it (`favoriteEntry`, a place in the favorites).
  */
 
 import { create } from "zustand";
@@ -41,11 +44,14 @@ interface DeskChromeState {
   card: DeskCard | null;
   hovered: string | null;
   agentTab: string | null;
+  /** On the rail, the place under the row of the favorite whose desk is up (its anchor's id), for its desk's tabs and Stack. */
+  favoriteEntry: { anchorId: string; el: HTMLElement } | null;
   setMarks(marks: ReadonlyMap<string, DeskMark>): void;
   openCard(card: DeskCard): void;
   closeCard(kind?: DeskCard["kind"]): void;
   setHovered(tabId: string | null): void;
   setAgentTab(tabId: string | null): void;
+  setFavoriteEntry(entry: { anchorId: string; el: HTMLElement } | null): void;
 }
 
 const NO_MARKS: ReadonlyMap<string, DeskMark> = new Map();
@@ -55,6 +61,7 @@ export const useDeskChrome = create<DeskChromeState>((set, get) => ({
   card: null,
   hovered: null,
   agentTab: null,
+  favoriteEntry: null,
   setMarks: (marks) => {
     const before = get().marks;
     if (before.size === marks.size && [...marks].every(([id, mark]) => before.get(id) === mark)) return;
@@ -70,6 +77,11 @@ export const useDeskChrome = create<DeskChromeState>((set, get) => ({
   },
   setAgentTab: (tabId) => {
     if (get().agentTab !== tabId) set({ agentTab: tabId });
+  },
+  setFavoriteEntry: (entry) => {
+    const before = get().favoriteEntry;
+    if (before?.anchorId === entry?.anchorId && before?.el === entry?.el) return;
+    set({ favoriteEntry: entry });
   },
 }));
 

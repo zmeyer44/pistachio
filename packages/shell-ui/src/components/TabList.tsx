@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   Check,
@@ -1624,6 +1625,8 @@ export function TabList() {
   // — a pin's under its row, a favorite's at the head of the list, under the favorites, its page's row first — and the
   // Stack after them.
   const deskPage = pageGroups.find((group) => group.id === deskGroupId) ?? null;
+  // On the rail, the place under that favorite's row in the favorites, where its desk's tabs and Stack go.
+  const favoriteEntry = useDeskChrome((state) => state.favoriteEntry);
   const deskPageTabId = deskPage === null ? null : groupPageOf(deskPage, tabs);
   const deskPageTab = deskPageTabId === null ? null : (tabs.find((tab) => tab.id === deskPageTabId) ?? null);
   const deskPageRows = useMemo(
@@ -1961,8 +1964,13 @@ export function TabList() {
           className="relative flex flex-col gap-0.5 px-2 py-1"
           style={{ paddingBottom: mediaInset + 4 }}
         >
-          {/* A favorite's desk (or a pin's whose row is folded away): its page and the tabs of its group, under the favorites. */}
-          {deskPage !== null && !(sectionOpen("pinned") && rows.some((row) => row.kind === "pin" && row.pin.id === deskPage.anchorId)) ? entryTabs(deskPage, true) : null}
+          {/* A favorite's desk (or a pin's whose row is folded away): its page and the tabs of its group, under the favorites —
+              on the rail, under the favorite's own row there, which is its page's (FavoritesGrid's rail-favorite-entry). */}
+          {deskPage !== null && !(sectionOpen("pinned") && rows.some((row) => row.kind === "pin" && row.pin.id === deskPage.anchorId))
+            ? rail && favoriteEntry !== null && favoriteEntry.anchorId === deskPage.anchorId
+              ? createPortal(entryTabs(deskPage, false), favoriteEntry.el)
+              : entryTabs(deskPage, true)
+            : null}
           {rows.length > 0 ? (
             <SectionHeader
               id="pinned"

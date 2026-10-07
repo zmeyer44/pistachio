@@ -11,7 +11,7 @@
  */
 
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
+import { IPC, type PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
 import {
   api,
@@ -183,8 +183,8 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     const group = (await pageGroupOf("fav-mail"))!;
     const stage = await box(shell, ".desk-stage");
 
-    // ── 1. Its page's row, under the favorites, carried down the column into the day's tabs ─
-    const from = center(await box(shell, `[data-testid="entry-tabs"] [data-tab-id="${page}"]`));
+    // ── 1. Its page's row, under the favorites' folder, carried down the column into the day's tabs ─
+    const from = center(await box(shell, `[data-testid="rail-favorite-open"][data-live-tab-id="${page}"]`));
     const live = await box(shell, "#sidebar-section-live");
     await carry(shell, from, { x: from.x, y: live.y + live.height + 12 });
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === group.id)?.tabIds).toEqual(group.tabIds);
@@ -278,5 +278,97 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     expect(await pageOf("fav-mail")).toBe(null);
     expect((await snapshot(shell)).sidebar.favorites.map((favorite) => favorite.id)).toEqual(["fav-mail", "fav-vendor"]);
     await expect(shell.locator(`#sidebar-section-live [data-testid="tab-group"][data-group-id="${group.id}"]`)).toHaveCount(1);
+  });
+
+  test("on the rail, the open favorites keep their order as the desk passes from one's to the other's, its tabs and Stack under the one up", async () => {
+    test.setTimeout(60_000);
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
+    for (const anchorId of ["fav-mail", "fav-vendor"]) {
+      await sidebarCommand(shell, { type: "open", anchorId });
+      await expect.poll(async () => (await pageGroupOf(anchorId))?.tabIds.length ?? 0).toBe(1);
+    }
+    const mail = (await pageOf("fav-mail"))!;
+    const vendor = (await pageOf("fav-vendor"))!;
+    const openRows = shell.getByTestId("rail-favorite-open");
+    const order = async (): Promise<string[]> => openRows.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-live-tab-id") ?? ""));
+    /** The tab whose row the desk's tabs and Stack stand under (none: -1). */
+    const entryUnder = (): Promise<string | null> =>
+      shell.evaluate(() => document.querySelector('[data-testid="rail-favorite-entry"]')?.previousElementSibling?.getAttribute("data-live-tab-id") ?? null);
+    for (const [up, row] of [
+      [vendor, null],
+      [mail, mail],
+      [vendor, vendor],
+    ] as const) {
+      // Chosen by its row (the first time, it was just opened).
+      if (row !== null) await shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${row}"]`).click();
+      await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(up);
+      await expect(shell.locator(windowSelector(up))).toHaveCount(1);
+      // The favorites' order, whichever is up, and its Stack under its own row — not its page's row a second time.
+      await expect.poll(order).toEqual([mail, vendor]);
+      await expect.poll(entryUnder).toBe(up);
+      await expect(shell.locator('[data-testid="rail-favorite-entry"] [data-testid="desk-stack"]')).toHaveCount(1);
+      await expect(shell.locator(`[data-testid="entry-tabs"] [data-tab-id="${up}"]`)).toHaveCount(0);
+      // (Its desk up, its tabs are under it: none counted on its row.)
+      await expect(shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${up}"] [data-testid="favorite-tab-count"]`)).toHaveCount(0);
+    }
+    await settled(shell, app);
+    await capture(app, shell, "05-rail-favorites-in-order.png");
+
+    // ⇧⌫ with the pointer on that row closes its page, as on any tab's row on a desk.
+    await app.evaluate(({ ipcMain }, channel) => {
+      ipcMain.on(channel, (_event, state: { dockHover?: boolean } | null) => {
+        (globalThis as unknown as { deskDockHover: boolean }).deskDockHover = state?.dockHover === true;
+      });
+    }, IPC.deskSet);
+    await shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${vendor}"]`).hover();
+    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { deskDockHover?: boolean }).deskDockHover === true)).toBe(true);
+    await app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0]!.webContents;
+      contents.sendInputEvent({ type: "keyDown", keyCode: "Backspace", modifiers: ["shift"] });
+      contents.sendInputEvent({ type: "keyUp", keyCode: "Backspace", modifiers: ["shift"] });
+    });
+    await expect.poll(() => pageOf("fav-vendor")).toBe(null);
+    expect((await snapshot(shell)).sidebar.favorites.map((favorite) => favorite.id)).toEqual(["fav-mail", "fav-vendor"]);
+  });
+
+  test("on the rail, a favorite's desk with more tabs than the column holds scrolls under its row, and leaves the tab list its room", async () => {
+    test.setTimeout(90_000);
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 560));
+    try {
+      await sidebarCommand(shell, { type: "open", anchorId: "fav-mail" });
+      await expect.poll(() => pageOf("fav-mail")).not.toBe(null);
+      // Tabs enough on its desk to run the column out.
+      for (let added = 0; added < 12; added += 1) {
+        const before = (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0;
+        await strikeInShell(app, "t");
+        await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(before + 1);
+      }
+      const stack = shell.locator('[data-testid="rail-favorite-entry"] [data-testid="desk-stack"]');
+      await expect(stack).toHaveCount(1);
+      await stack.scrollIntoViewIfNeeded();
+      const height = await shell.evaluate(() => window.innerHeight);
+      const reached = (await stack.boundingBox())!;
+      expect(reached.y + reached.height).toBeLessThanOrEqual(height);
+      // The day's tabs and groups still have their list.
+      expect((await box(shell, '[data-testid="sidebar-tab-list"]')).height).toBeGreaterThan(80);
+      await capture(app, shell, "06-rail-favorite-desk-scrolls.png");
+      // One of its rows carried, the rows scrolled: it stays under the pointer (its place read within the scrolled rows).
+      const last = shell.locator('[data-testid="rail-favorite-entry"] [data-row-kind="entry"]').last();
+      await last.scrollIntoViewIfNeeded();
+      expect(await shell.evaluate(() => document.querySelector('[data-testid="rail-favorites-open"]')!.scrollTop)).toBeGreaterThan(20);
+      const row = (await last.boundingBox())!;
+      const grab = { x: row.x + row.width / 2, y: row.y + row.height / 2 };
+      await shell.mouse.move(grab.x, grab.y);
+      await shell.mouse.down();
+      await shell.mouse.move(grab.x, grab.y + 6, { steps: 2 });
+      await shell.mouse.move(grab.x, grab.y + 14, { steps: 4 });
+      await shell.waitForTimeout(100);
+      const held = (await last.boundingBox())!;
+      expect(Math.abs(held.y + held.height / 2 - (grab.y + 14))).toBeLessThan(6);
+      await shell.mouse.up();
+    } finally {
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900));
+    }
   });
 });

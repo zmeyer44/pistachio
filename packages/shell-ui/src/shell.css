@@ -3071,6 +3071,11 @@ body:not([data-chrome-view])::after {
 .desk-window-drawer:has(> .desk-window-nav) {
   padding-left: 5px;
 }
+/* Its title and site (a click opens the address palette) no wider than this, cut short with an ellipsis: a long
+   one — a shop's product page — took the whole strip, leaving nothing of the drawer to take the window by. */
+.desk-window-drawer > :is(.desk-window-address, .desk-window-title) {
+  max-width: clamp(160px, 45%, 480px);
+}
 /* Where the pointer brings out a drawer with no room above its window: the window's top edge, either side of it.
    With the drawer out, only the page's side: the drawer, and its controls to their lower edge, are the pointer's. */
 .desk-window-drawer-trigger {
@@ -4117,10 +4122,23 @@ body:not([data-chrome-view])::after {
   color: var(--color-gray-700);
   font-weight: 400;
 }
-/* The favorites whose pages are open, under the folder: a row each, with the grid's own open dot under the icon. */
+/* The favorites whose pages are open, under the folder: a row each, with the grid's own open dot under the icon.
+   No taller than this, scrolled within: a favorite's desk with many tabs (its rows and Stack are drawn here) would
+   otherwise run past the column's foot, out of reach, and squeeze the tab list below to nothing. The box reaches the
+   column's edges, so a row's count past its corner is not cut off. */
 .rail-favorites-open {
+  max-height: 45vh;
+  margin: 4px -8px 0;
+  padding: 0 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-gray-500) transparent;
+}
+/* The rows' own box: positioned, so it is their offsetParent, and it moves with the scroll (a row in hand). */
+.rail-favorites-open-rows {
+  position: relative;
   display: flex;
-  margin-top: 4px;
   flex-direction: column;
   align-items: center;
   gap: 2px;
@@ -4153,6 +4171,13 @@ body:not([data-chrome-view])::after {
   margin-left: -2px;
   border-radius: 999px;
   background: var(--color-gray-700);
+}
+/* Under the row of the favorite whose desk is up: its desk's tabs and Stack (the list's, drawn here: TabList's entryTabs). */
+.rail-favorite-entry {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 2px;
 }
 /* The page in view (as the rail's tab in use, no card: the dot says it in the group's way, longer). */
 .rail-favorite-open[data-active]::after {
@@ -4671,6 +4696,223 @@ body:not([data-chrome-view])::after {
     opacity: 0;
     transform: translateY(calc(var(--think-distance) * -1));
     filter: blur(var(--think-blur));
+  }
+}
+/* A status line in a row it must not widen: it shrinks to the room left
+   and cuts itself short. Clipped across only, so a swap still rises out
+   of the box and into it. */
+.chat-think-fit {
+  display: block;
+  flex: 0 1 auto;
+  overflow-x: clip;
+}
+.chat-think-fit .chat-think-sizer,
+.chat-think-fit .chat-think-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-think-fit .chat-think-text {
+  right: 0;
+}
+
+/* ── A turn's steps (chat/parts.tsx WorkTrace, chat/StepMark.tsx) ──
+
+   One line for the turn — its mark, and the step in hand narrated by the
+   thinking-states line above — over the steps themselves, each a mark and
+   its words, threaded mark to mark. The rows sit under the header's words,
+   so the turn reads as the parent of its steps. */
+.agent-steps {
+  --step-mark: 16px;
+  --step-gap: 8px;
+}
+.agent-steps-head {
+  display: flex;
+  align-items: center;
+  gap: var(--step-gap);
+  min-height: 28px;
+  margin-inline: -6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--color-gray-900);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  outline: none;
+  transition: background-color 140ms ease;
+}
+.agent-steps-head::-webkit-details-marker {
+  display: none;
+}
+.agent-steps-head:hover {
+  background: var(--color-alpha-200);
+}
+.agent-steps-head:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-ring);
+}
+.agent-steps-head .chat-think {
+  color: inherit;
+}
+.agent-steps-chevron {
+  transition: rotate 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.agent-steps[open] .agent-steps-chevron {
+  rotate: 180deg;
+}
+.agent-steps-list {
+  margin: 2px 0 0;
+  padding: 0 0 2px calc(var(--step-mark) + var(--step-gap));
+  list-style: none;
+}
+.agent-step {
+  --step-pad: 5px;
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--step-mark) minmax(0, 1fr);
+  gap: var(--step-gap);
+  padding-block: var(--step-pad);
+}
+/* A step's mark is a size down from the turn's, centred in the same
+   column and on its label's first line. */
+.agent-step-mark {
+  --mark-size: 14px;
+  margin: 1px 0 0 1px;
+}
+/* The thread from one step's mark to the next, 3px clear of each. */
+.agent-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--step-mark) / 2 - 0.5px);
+  top: calc(var(--step-pad) + 1px + 14px + 3px);
+  bottom: calc(var(--step-pad) * -1 - 1px + 3px);
+  width: 1px;
+  background: var(--color-alpha-400);
+}
+
+/* The spinner-to-check morph, put together from transitions.dev's icon
+   swap (the disc crossing in through a blur and a scale) and success check
+   (the glyph's stroke drawing). A running mark is a faint ring with an arc
+   going round it; settling, the ring fades as the disc pops in over it on
+   a bouncy ease, and then the glyph draws. All of it is transitions, never
+   keyframes, so a mark that mounts settled — an earlier turn, a reopened
+   thread — is drawn settled rather than replayed; only a step seen running
+   morphs. Paths carry pathLength="1", so the dash needs no measuring. */
+.step-mark {
+  --mark-size: 16px;
+  --mark-ring: 1.5px;
+  --mark-fill: var(--color-gray-1000);
+  --mark-ink: var(--color-background-100);
+  --mark-spin: 800ms;
+  /* --duration-quick: the ring leaves. */
+  --mark-out: 150ms;
+  /* --duration-fast and --ease-bounce: the disc pops in. */
+  --mark-pop: 250ms;
+  --mark-pop-ease: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --mark-pop-from: 0.4;
+  /* --blur-small: the disc crosses in through it. */
+  --mark-blur: 2px;
+  /* The glyph draws once the disc is most of the way in (--ease-smooth-out). */
+  --mark-draw: 300ms;
+  --mark-draw-delay: 120ms;
+  --mark-draw-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: var(--mark-size);
+  height: var(--mark-size);
+}
+.step-mark[data-state="failed"] {
+  --mark-fill: var(--color-red-700);
+  --mark-ink: #fff;
+}
+.step-mark[data-state="paused"] {
+  --mark-fill: var(--color-amber-700);
+  --mark-ink: #000;
+}
+.step-mark-ring {
+  position: absolute;
+  inset: 0;
+  border: var(--mark-ring) solid var(--color-alpha-400);
+  border-radius: 50%;
+  transition:
+    opacity var(--mark-out) ease-out,
+    scale var(--mark-out) ease-out;
+}
+.step-mark-ring::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--mark-ring) * -1);
+  border: var(--mark-ring) solid transparent;
+  border-top-color: var(--color-gray-900);
+  border-radius: 50%;
+  animation: step-mark-spin var(--mark-spin) linear infinite;
+}
+.step-mark-disc {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--mark-fill);
+  opacity: 0;
+  scale: var(--mark-pop-from);
+  filter: blur(var(--mark-blur));
+  transition:
+    opacity var(--mark-out) ease-in-out,
+    scale var(--mark-pop) var(--mark-pop-ease),
+    filter var(--mark-pop) ease-in-out,
+    background-color var(--mark-pop) ease-in-out;
+  will-change: scale, filter, opacity;
+}
+.step-mark svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.step-mark-glyph {
+  opacity: 0;
+  transition: opacity var(--mark-out) ease-out;
+}
+.step-mark path {
+  fill: none;
+  stroke: var(--mark-ink);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  /* A glyph leaving fades first, then rewinds out of sight. */
+  transition: stroke-dashoffset 0s linear var(--mark-out);
+}
+.step-mark:not([data-state="running"]) .step-mark-ring {
+  opacity: 0;
+  scale: 0.8;
+}
+/* The arc stops where it stands as it fades; a settled mark never spins. */
+.step-mark:not([data-state="running"]) .step-mark-ring::after {
+  animation-play-state: paused;
+}
+.step-mark:not([data-state="running"]) .step-mark-disc {
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+.step-mark[data-state="done"] [data-glyph="done"],
+.step-mark[data-state="failed"] [data-glyph="failed"],
+.step-mark[data-state="paused"] [data-glyph="paused"] {
+  opacity: 1;
+  transition: opacity 0s linear var(--mark-draw-delay);
+}
+.step-mark[data-state="done"] [data-glyph="done"] path,
+.step-mark[data-state="failed"] [data-glyph="failed"] path,
+.step-mark[data-state="paused"] [data-glyph="paused"] path {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset var(--mark-draw) var(--mark-draw-ease) var(--mark-draw-delay);
+}
+@keyframes step-mark-spin {
+  to {
+    rotate: 360deg;
   }
 }
 
@@ -5378,6 +5620,14 @@ body[data-chrome-view="shelf"] {
   }
   .chat-reasoning-scroll {
     transition: none;
+  }
+  /* A step settles in place; the arc keeps going, the one sign it runs. */
+  .step-mark-ring,
+  .step-mark-disc,
+  .step-mark-glyph,
+  .step-mark path,
+  .agent-steps-chevron {
+    transition: none !important;
   }
 }
 

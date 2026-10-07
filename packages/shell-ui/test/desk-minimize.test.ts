@@ -729,6 +729,43 @@ describe("a window growing into a larger box", () => {
     desk.destroy();
   });
 
+  it("shrinking back from filling the desk, stays its live page, laid out at every size it passes through", async () => {
+    vi.stubGlobal("Image", class {
+      src = "";
+      decode(): Promise<void> {
+        return Promise.resolve();
+      }
+    });
+    const { desk, desks, layouts, rect, view } = open({}, { stills: true });
+    desk.toggleMaximize("tab-0");
+    for (let frame = 0; frame < 200 && frames.length > 0; frame += 1) {
+      await Promise.resolve();
+      await new Promise((done) => setImmediate(done));
+      run(1);
+    }
+    expectRect(rect("tab-0"), filled, 0.01);
+    desk.toggleMaximize("tab-0");
+    const widths = new Set<number>();
+    for (let frame = 0; frame < 200 && frames.length > 0; frame += 1) {
+      // Whatever pictures were asked for, landed: a window that wanted one for the motion would be drawn with it.
+      await Promise.resolve();
+      await new Promise((done) => setImmediate(done));
+      run(1);
+      expect(view("tab-0").drawn).toBe(false);
+      expect(desks.at(-1)?.zoomed).toEqual([]);
+      // Its view is the window's page wherever the window is: the page lays out at that size.
+      const shown = layouts.at(-1)!.views.find((entry) => entry.tabId === "tab-0")!.bounds;
+      const now = rect("tab-0");
+      expect(Math.abs(shown.width - (now.w - insets.left - insets.right))).toBeLessThanOrEqual(1);
+      widths.add(shown.width);
+    }
+    expect(rect("tab-0").w).toBeLessThan(filled.w - 100);
+    expect(widths.size).toBeGreaterThan(5);
+    await new Promise((done) => setImmediate(done));
+    run(3);
+    desk.destroy();
+  });
+
   it("shrinking back from filling the desk, is not laid out ahead: nothing is zoomed", () => {
     const { desk, desks } = open();
     desk.toggleMaximize("tab-0");

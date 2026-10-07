@@ -241,8 +241,12 @@ export function RailFavorites({
         </button>
       </div>
       {openRows.length === 0 ? null : (
-        <div role="list" aria-label="Open favorites" data-testid="rail-favorites-open" className="rail-favorites-open">
-          {openRows}
+        // Scrolled within (a favorite's desk's rows run long): the rows' own box, positioned, moves with the scroll,
+        // so a row in hand is placed by where it is now (the sidebar's drag reads offsetParent + offsetTop).
+        <div data-testid="rail-favorites-open" className="rail-favorites-open">
+          <div role="list" aria-label="Open favorites" className="rail-favorites-open-rows">
+            {openRows}
+          </div>
         </div>
       )}
       <div

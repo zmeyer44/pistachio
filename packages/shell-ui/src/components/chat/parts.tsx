@@ -1,45 +1,34 @@
 import { type FormEvent, memo, useEffect, useState } from "react";
 import { Questionnaire } from "@shadcn/react/questionnaire";
 import {
-  AlarmClock,
   ArrowRight,
-  ArrowUp,
-  Bookmark,
-  Bot,
-  Brain,
   Check,
   ChevronDown,
   Copy,
   FileClock,
   FileText,
   Fingerprint,
-  Globe2,
-  LayoutTemplate,
-  ListTree,
   Loader2,
   Maximize2,
-  MousePointerClick,
   NotebookPen,
-  PanelTop,
-  Plug,
   RotateCcw,
   ShieldCheck,
   TextQuote,
   Volume2,
-  X,
 } from "lucide-react";
 import type { AgentAttachment, AgentToolCall, AgentToolOutput, RunSummary } from "@pistachio/protocol";
 import { selectionChipLabel, splitAttachedText } from "../../lib/chat-attachments";
 import { cn } from "../../lib/cn";
 import type { CitedSource } from "../../lib/chat-sources";
-import { currentFamily, toolFamily, traceLabel, type ToolFamily, type TraceTurn } from "../../lib/run";
+import { traceLabel, type TraceTurn } from "../../lib/run";
 import { useAppStore } from "../../store";
 import { OutputCards } from "../OutputCard";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { MessageText } from "../MessageText";
 import { Markdown } from "./Markdown";
 import { ReasoningBlock } from "./ReasoningBlock";
+import { StepMark, type StepState } from "./StepMark";
+import { ThinkingStatus } from "./ThinkingStatus";
 
 /**
  * The pieces a conversation is drawn from, shared by the sidebar console
@@ -313,18 +302,6 @@ function MessageAction({
   );
 }
 
-/** The trace's badge: the surface the run is acting on right now. */
-const FAMILY_ICON: Record<ToolFamily, typeof PanelTop> = {
-  browser: PanelTop,
-  memory: Brain,
-  reminder: AlarmClock,
-  bookmark: Bookmark,
-  watchtower: NotebookPen,
-  note: FileText,
-  notes: NotebookPen,
-  integration: Plug,
-};
-
 /**
  * The agent's pinned plan: what it wrote to keep for itself across steps
  * and compactions. Open while the run is live so progress reads at a
@@ -358,7 +335,61 @@ export function TaskNotes({ run }: { run: RunSummary }) {
   );
 }
 
+/** A tool call or a specialist, as one row of a turn's steps. */
+interface Step {
+  id: string;
+  label: string;
+  detail: string;
+  state: StepState;
+}
+
+const TOOL_STATE: Record<AgentToolCall["status"], StepState> = {
+  running: "running",
+  completed: "done",
+  paused: "paused",
+  failed: "failed",
+};
+
+const SUBAGENT_STATE: Record<TraceTurn["subagents"][number]["status"], StepState> = {
+  working: "running",
+  completed: "done",
+  paused: "paused",
+  failed: "failed",
+};
+
+function traceSteps(turn: TraceTurn): Step[] {
+  return [
+    ...turn.toolCalls.map((tool) => ({ id: tool.id, label: tool.label, detail: tool.detail, state: TOOL_STATE[tool.status] })),
+    ...turn.subagents.map((agent) => ({ id: agent.id, label: agent.name, detail: agent.detail, state: SUBAGENT_STATE[agent.status] })),
+  ];
+}
+
 /**
+ * Where the turn as a whole stands: working while any step runs, waiting
+ * while one is held for the person, failed only when nothing it tried
+ * worked — a step that failed on the way is the agent's to route around.
+ */
+function turnState(steps: readonly Step[]): StepState {
+  if (steps.some((step) => step.state === "running")) return "running";
+  if (steps.some((step) => step.state === "paused")) return "paused";
+  if (steps.length > 0 && steps.every((step) => step.state === "failed")) return "failed";
+  return "done";
+}
+
+function lastStep(steps: readonly Step[], state: StepState): Step | undefined {
+  for (let index = steps.length - 1; index >= 0; index--) {
+    if (steps[index]!.state === state) return steps[index];
+  }
+  return undefined;
+}
+
+/**
+ * What a turn did, as steps. The header narrates the step in hand — its
+ * mark spinning, its name shimmering and swapping as the agent moves to
+ * the next (the thinking-states line) — and settles into the turn's
+ * headline once nothing runs, the spinner morphing into a check. Open
+ * while the turn works; a finished one folds to that one line.
+ *
  * Memoized on the turn and two facts about the run, rather than the run
  * itself: the run object changes on every publish, the turn only when one of
  * its tool calls does.
@@ -372,126 +403,54 @@ export const WorkTrace = memo(function WorkTrace({
   latest: boolean;
   awaitingApproval: boolean;
 }) {
-  const running = turn.toolCalls.filter(
-    (tool) => tool.status === "running",
-  ).length;
-  const family = currentFamily(turn);
-  const TraceIcon = family === null ? ListTree : FAMILY_ICON[family];
+  const steps = traceSteps(turn);
+  const state = turnState(steps);
+  // The step to name: the newest call running, over a specialist working
+  // in the background through several of them; else the one held for the person.
+  const tools = turn.toolCalls.length;
+  const active =
+    lastStep(steps.slice(0, tools), "running") ?? lastStep(steps.slice(tools), "running") ?? lastStep(steps, "paused");
   return (
     <details
-      className="agent-trace mt-3 min-w-0 rounded-md border border-alpha-400 bg-background-200/70"
+      className="agent-steps mt-3 min-w-0"
       data-testid="work-trace"
       data-turn={turn.turn}
-      open={running > 0 || (latest && awaitingApproval)}
+      data-state={state}
+      open={state === "running" || (latest && awaitingApproval)}
     >
-      <summary className="flex h-9 cursor-pointer list-none items-center gap-2 px-2.5 text-label-12 font-medium text-gray-900 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <span className="grid size-5 place-items-center rounded-sm bg-background-100 text-gray-900 shadow-border">
-          <TraceIcon className="size-3" aria-hidden="true" />
-        </span>
-        <span className="truncate" data-testid="trace-label">
-          {traceLabel(turn)}
-        </span>
-        <span className="ml-auto shrink-0 text-gray-700">
-          {turn.toolCalls.length + turn.subagents.length}
-        </span>
-        <ChevronDown
-          className="size-3.5 shrink-0 transition-transform group-open:rotate-180"
-          aria-hidden="true"
+      <summary className="agent-steps-head">
+        <StepMark state={state} />
+        <ThinkingStatus
+          text={active === undefined ? traceLabel(turn) : active.label}
+          shimmer={state === "running"}
+          announce={false}
+          testId="trace-label"
+          className="chat-think-fit"
         />
+        <span className="ml-auto shrink-0 text-gray-700 tabular-nums">{steps.length}</span>
+        <ChevronDown className="agent-steps-chevron size-3.5 shrink-0 text-gray-700" aria-hidden="true" />
       </summary>
-      <div className="border-t border-alpha-400 px-2.5 py-1.5">
-        {turn.toolCalls.map((tool) => (
-          <ToolRow key={tool.id} tool={tool} />
+      <ol className="agent-steps-list">
+        {steps.map((step) => (
+          <StepRow key={step.id} label={step.label} detail={step.detail} state={step.state} />
         ))}
-        {turn.subagents.map((agent) => (
-          <div
-            key={agent.id}
-            className="grid min-w-0 grid-cols-[20px_1fr_auto] gap-2 py-2"
-          >
-            <span className="grid size-5 place-items-center rounded-full bg-blue-100 text-blue-900">
-              <Bot className="size-3" aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <strong className="block truncate text-label-12 font-medium text-gray-1000">
-                {agent.name}
-              </strong>
-              <span className="block truncate text-[11px] leading-4 text-gray-700">
-                {agent.detail}
-              </span>
-            </div>
-            <Badge
-              variant={
-                agent.status === "completed" ? "green-subtle" : "blue-subtle"
-              }
-              size="sm"
-            >
-              {agent.status}
-            </Badge>
-          </div>
-        ))}
-      </div>
+      </ol>
     </details>
   );
 });
 
-/** A browser tool's icon: a few named actions, else the globe. */
-function browserToolIcon(name: AgentToolCall["name"]): typeof Globe2 {
-  if (name.startsWith("artifact.")) return LayoutTemplate;
-  if (name === "page.type") return MousePointerClick;
-  if (name === "page.press") return ArrowUp;
-  if (name === "tabs.list") return ListTree;
-  if (name === "page.submit") return ArrowUp;
-  return Globe2;
-}
-
-const ToolRow = memo(function ToolRow({ tool }: { tool: AgentToolCall }) {
-  // Non-browser families wear the badge their trace does; the browser
-  // family keeps its own set so a click and a submit read differently.
-  const family = toolFamily(tool.name);
-  const Icon =
-    family === "browser" ? browserToolIcon(tool.name) : FAMILY_ICON[family];
+/** Memoized on its fields: a publish that did not touch the step leaves the row be. */
+const StepRow = memo(function StepRow({ label, detail, state }: { label: string; detail: string; state: StepState }) {
   return (
-    <div className="grid min-w-0 grid-cols-[20px_1fr_auto] gap-2 py-2">
-      <span className="grid size-5 place-items-center text-gray-700">
-        <Icon className="size-3.5" aria-hidden="true" />
-      </span>
+    <li className="agent-step" data-state={state}>
+      <StepMark state={state} className="agent-step-mark" />
       <div className="min-w-0">
-        <strong className="block truncate text-label-12 font-medium text-gray-1000">
-          {tool.label}
-        </strong>
-        <span className="block truncate text-[11px] leading-4 text-gray-700">
-          {tool.detail}
-        </span>
+        <span className={cn("block truncate text-label-12 font-medium text-gray-1000", state === "running" && "agent-shimmer")}>{label}</span>
+        {detail === "" ? null : <span className="block truncate text-[11px] leading-4 text-gray-700">{detail}</span>}
       </div>
-      <ToolStatus status={tool.status} />
-    </div>
+    </li>
   );
 });
-
-function ToolStatus({ status }: { status: AgentToolCall["status"] }) {
-  if (status === "completed")
-    return (
-      <Check
-        className="mt-0.5 size-3.5 text-green-900"
-        aria-label="Completed"
-      />
-    );
-  if (status === "running")
-    return (
-      <span
-        className="mt-1 size-2 animate-pulse rounded-full bg-blue-700"
-        aria-label="Running"
-      />
-    );
-  if (status === "paused")
-    return (
-      <span
-        className="mt-1 size-2 rounded-full bg-amber-700"
-        aria-label="Paused"
-      />
-    );
-  return <X className="mt-0.5 size-3.5 text-red-900" aria-label="Failed" />;
-}
 
 export function ClarificationCard({ run }: { run: RunSummary }) {
   const question = run.pendingQuestion!;
