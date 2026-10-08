@@ -84,7 +84,9 @@ function parsePage(url: string, html: string): Page {
 
 /**
  * The browser the controller drives: tabs whose pages come from fetch.
- * Clicking a link navigates; typing has nothing to type into.
+ * Clicking a link navigates; typing has nothing to type into. A tab the
+ * agent opens is hidden, as main keeps it (openHiddenTab): out of the
+ * person's tabs, its conversation's, until it is shown.
  */
 class FetchBrowser {
   readonly #tabs = new Map<string, { info: BrowserTabInfo; page: Page | null; history: string[]; index: number }>();
@@ -97,10 +99,14 @@ class FetchBrowser {
     this.#active = id;
   }
 
-  #add(url: string): string {
+  #add(url: string, hiddenFor?: string): string {
     const id = `tab-${String(this.#next++)}`;
     this.#tabs.set(id, {
-      info: { id, spaceId: "work", title: url, url, faviconUrl: null, loading: false, canGoBack: false, canGoForward: false, kind: "human", runId: null, anchorId: null, lifecycle: "live", lastActiveAt: Date.now(), unlisted: false },
+      info: {
+        id, spaceId: "work", title: url, url, faviconUrl: null, loading: false, canGoBack: false, canGoForward: false, kind: "human", runId: null, anchorId: null, lifecycle: "live", lastActiveAt: Date.now(),
+        unlisted: hiddenFor !== undefined,
+        ...(hiddenFor === undefined ? {} : { hiddenFor }),
+      },
       page: null,
       history: [url],
       index: 0,
@@ -130,7 +136,26 @@ class FetchBrowser {
   }
 
   allTabs(): BrowserTabInfo[] {
-    return [...this.#tabs.values()].map((tab) => ({ ...tab.info }));
+    return [...this.#tabs.values()].filter((tab) => tab.info.hiddenFor === undefined).map((tab) => ({ ...tab.info }));
+  }
+
+  hiddenTabs(owner?: string): BrowserTabInfo[] {
+    return [...this.#tabs.values()].filter((tab) => tab.info.hiddenFor !== undefined && (owner === undefined || tab.info.hiddenFor === owner)).map((tab) => ({ ...tab.info }));
+  }
+
+  async openHiddenTab(owner: string, url?: string): Promise<string> {
+    const id = this.#add(url ?? "about:blank", owner);
+    if (url !== undefined) await this.#load(id, url);
+    return id;
+  }
+
+  closeHiddenTabs(owner: string): void {
+    for (const tab of this.hiddenTabs(owner)) this.#tabs.delete(tab.id);
+  }
+
+  /** No page here opens a new tab: there is nothing to hold hidden. */
+  holdPopupsHidden(): () => void {
+    return () => undefined;
   }
 
   activeTab(): BrowserTabInfo | null {
@@ -148,8 +173,13 @@ class FetchBrowser {
     return id;
   }
 
+  /** Shown, a hidden tab becomes one of the person's. */
   async selectTab(tabId: string): Promise<void> {
-    this.#require(tabId);
+    const tab = this.#require(tabId);
+    if (tab.info.hiddenFor !== undefined) {
+      delete tab.info.hiddenFor;
+      tab.info.unlisted = false;
+    }
     this.#active = tabId;
   }
 

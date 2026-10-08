@@ -50,6 +50,8 @@ const TIP_LINGER_MS = 200;
 /** The band under the frame's buttons where their tooltips appear, and how far past the row's ends they may reach. */
 const TIP_BAND_H = 40;
 const TIP_BAND_REACH = 100;
+/** How often a live page under a bar has its top corners' colours read again (deskPageCorners): it scrolls, it changes. */
+const PAGE_CORNER_EVERY_MS = 1000;
 /** The drawer's page controls, at its leading edge (their tooltips' band is under them, not under the window's own buttons). */
 const NAV_TIPS: ReadonlySet<string> = new Set(["Back", "Forward", "Reload"]);
 
@@ -110,6 +112,7 @@ export const DeskWindow = memo(function DeskWindow({
   grab,
   still,
   waking,
+  behind = false,
   engine,
   agent = null,
   note = null,
@@ -125,6 +128,8 @@ export const DeskWindow = memo(function DeskWindow({
   /** What to paint where the page goes when it is not live. */
   still: string | null;
   waking: boolean;
+  /** Behind a window filling the desk: out of sight, its video floating instead (DeskPip). */
+  behind?: boolean;
   engine: DeskEngine;
   /** The agent is working in this window: what it is doing, in a word (docs/desk-agent.md §1). */
   agent?: string | null;
@@ -133,7 +138,14 @@ export const DeskWindow = memo(function DeskWindow({
   onDismissNote?: (tabId: string) => void;
 }) {
   const tabId = view.tabId;
-  const attach = useCallback((el: HTMLDivElement | null) => engine.attachWindow(tabId, el), [engine, tabId]);
+  const root = useRef<HTMLDivElement | null>(null);
+  const attach = useCallback(
+    (el: HTMLDivElement | null) => {
+      root.current = el;
+      engine.attachWindow(tabId, el);
+    },
+    [engine, tabId],
+  );
   const masked = view.mask !== null;
   // A masked window is framed by the bare frame's handle, whatever the frame variant.
   const frame: DeskChrome = masked ? "bare" : chrome;
@@ -150,9 +162,50 @@ export const DeskWindow = memo(function DeskWindow({
   const media = useAppStore((state) => (tab === null || shellPage ? null : (state.media.find((item) => item.tabId === tabId && !item.call && !item.presenting) ?? null)));
   const mini = view.mini !== null;
   // Drawn (something lies over it), a window whose page plays a video shows that page live over its still, rather
-  // than stopped on it (DeskLivePicture): not while its still stands for a region, a peek or a flight.
+  // than stopped on it (DeskLivePicture): not while its still stands for a region, a peek or a flight, nor behind a
+  // window filling the desk (no one sees it there; its video floats).
   const livePicture =
-    view.drawn && media !== null && media.hasVideo && media.playing && !masked && view.unmasking === null && !mini && view.flight === null && !view.closing && !view.selecting && !waking;
+    view.drawn && media !== null && media.hasVideo && media.playing && !masked && view.unmasking === null && !mini && view.flight === null && !view.closing && !view.selecting && !waking && !behind;
+  // A bar over its page's top — the Bar and Tab frames' title row, the Drawer frame's drawer while it is out (the
+  // engine writes data-drawer-out) — and the page meets it square, its foot still round (shell.css). Main cuts a live
+  // page round at all four corners alike: what shows through its top corners is the page box behind it, painted there
+  // in the page's own colours (deskPageCorners), read again now and then while it is so.
+  const [drawerOut, setDrawerOut] = useState(false);
+  useEffect(() => {
+    const el = root.current;
+    if (el === null || frame !== "drawer") {
+      setDrawerOut(false);
+      return;
+    }
+    const read = (): void => setDrawerOut(el.hasAttribute("data-drawer-out"));
+    read();
+    const observer = new MutationObserver(read);
+    observer.observe(el, { attributes: true, attributeFilter: ["data-drawer-out"] });
+    return () => observer.disconnect();
+  }, [frame]);
+  const barOver = view.framed && (frame === "bar" || frame === "tab" || (frame === "drawer" && drawerOut));
+  const readCorners = barOver && !view.drawn && tab !== null && !shellPage && !mini;
+  const [corners, setCorners] = useState<{ left: string; right: string } | null>(null);
+  const pageUrl = tab?.url;
+  useEffect(() => {
+    const api = nativeApi();
+    if (!readCorners || api === null) return;
+    let gone = false;
+    const read = (): void => {
+      void api
+        .deskPageCorners(tabId)
+        .then((next) => {
+          if (!gone && next !== null) setCorners((was) => (was !== null && was.left === next.left && was.right === next.right ? was : next));
+        })
+        .catch(() => undefined);
+    };
+    read();
+    const timer = window.setInterval(read, PAGE_CORNER_EVERY_MS);
+    return () => {
+      gone = true;
+      window.clearInterval(timer);
+    };
+  }, [readCorners, tabId, pageUrl]);
   const working = agent !== null;
   // Phased on the wall clock like every other ring, taken as this one goes on.
   const ringDelay = useMemo(() => (working ? `${String(agentRingDelayMs(Date.now()))}ms` : undefined), [working]);
@@ -423,7 +476,6 @@ export const DeskWindow = memo(function DeskWindow({
       data-carried={view.carried ? "" : undefined}
       data-lifted={view.lifted ? "" : undefined}
       data-aiming={view.aiming ? "" : undefined}
-      data-into-dock={view.intoDock ? "" : undefined}
       data-flight={view.flight ?? undefined}
       data-closing={view.closing ? "" : undefined}
       data-menu={menu.isOpen ? "" : undefined}
@@ -541,7 +593,16 @@ export const DeskWindow = memo(function DeskWindow({
           className="desk-window-page"
           data-testid="desk-window-page"
           onPointerDown={onPageDown}
-          style={{ top: insets.top - cardTop, left: insets.left, right: insets.right, bottom: insets.bottom }}
+          style={
+            {
+              top: insets.top - cardTop,
+              left: insets.left,
+              right: insets.right,
+              bottom: insets.bottom,
+              "--page-corner-l": corners?.left,
+              "--page-corner-r": corners?.right,
+            } as CSSProperties
+          }
         >
           {/* A page the shell draws is zoomed out here when minimized (a web page is main's to zoom); always this box, so nothing in it is made anew. */}
           <div className="desk-window-zoom" style={mini && shellPage ? ZOOMED_STYLE : undefined}>

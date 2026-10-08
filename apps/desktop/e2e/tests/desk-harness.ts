@@ -161,6 +161,13 @@ export async function reachBar(shell: Page): Promise<void> {
   await expect(bar).not.toHaveAttribute("data-compact", "");
 }
 
+/** The Bar's tray let out, as the pointer on its plus lets it out: attach, the conversations, a new one. */
+export async function openTray(shell: Page): Promise<void> {
+  await reachBar(shell);
+  await shell.getByTestId("desk-bar-more").hover();
+  await expect(shell.getByTestId("desk-bar-tray")).toHaveAttribute("data-open", "");
+}
+
 /** The tab views main has on screen, bottom to top, with their boxes. */
 export function liveViews(app: ElectronApplication): Promise<Array<{ url: string; bounds: Box }>> {
   return app.evaluate(({ BrowserWindow }, hashes) => {

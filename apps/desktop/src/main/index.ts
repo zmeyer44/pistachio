@@ -3219,6 +3219,10 @@ function installIpc(): void {
     if (!isShell(event.sender) || typeof tabId !== "string") return null;
     return requireBrowser().deskLiveSource(tabId, event.sender);
   });
+  ipcMain.handle(IPC.deskPageCorners, (event, tabId: unknown) => {
+    if (!isShell(event.sender) || typeof tabId !== "string") return null;
+    return requireBrowser().deskPageCorners(tabId);
+  });
   ipcMain.on(IPC.deskFocus, (event, tabId: unknown) => {
     if (isShell(event.sender) && typeof tabId === "string") void requireBrowser().focusTab(tabId);
   });

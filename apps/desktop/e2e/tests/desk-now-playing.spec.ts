@@ -237,6 +237,26 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await face.getByTestId("desk-pip-play").click();
     await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
 
+    // ── 3b. Its own volume: the slider beside the speaker, out while the pointer is on it, sets the page's player
+    //        alone; all the way down it is silent, and Unmute brings it back where it was ─
+    const elementVolume = (): Promise<number> => videoPage.locator("#test-video").evaluate((element) => (element as HTMLVideoElement).volume);
+    const slider = face.getByTestId("desk-pip-volume");
+    await faceView.hover();
+    await face.getByTestId("desk-pip-mute").hover();
+    await expect.poll(() => slider.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(40);
+    await capture(app, shell, "03a-video-volume.png");
+    await slider.fill("0.4");
+    await expect.poll(elementVolume).toBeCloseTo(0.4, 2);
+    await expect.poll(async () => (await mediaOf(shell, video))?.volume ?? 1).toBeCloseTo(0.4, 2);
+    await slider.blur();
+    await slider.fill("0");
+    await expect.poll(elementVolume).toBe(0);
+    await expect.poll(async () => (await mediaOf(shell, video))?.muted ?? false).toBe(true);
+    await face.getByTestId("desk-pip-mute").click();
+    await expect.poll(elementVolume).toBeCloseTo(0.4, 2);
+    await expect.poll(async () => (await mediaOf(shell, video))?.muted ?? true).toBe(false);
+    await face.mouse.move(2, 2);
+
     // ── 4. Moved: a press on the picture, held and dragged, and it stays where it is let go ─
     // The OS gives a press's moves and release to the view it began on, whatever is raised over it since: they go
     // to the pip view, as the real pointer's would, at window points (the view moving under them as it follows).
@@ -494,6 +514,58 @@ test("a window playing a video with another window over it shows its page live, 
     await selectTab(shell, video);
     await expect.poll(videoView).toBe(true);
     await expect(live).toHaveCount(0);
+  } finally {
+    await closeApp(app);
+  }
+});
+
+test("a window playing a video behind a window filling the desk: its video floats, and is its window's again once that one is let down", { tag: ["@desk", "@media"] }, async () => {
+  test.setTimeout(120_000);
+  const VIDEO_URL = `${ORIGIN}/invoices?video`;
+  const OTHER_URL = `${ORIGIN}/invoices?other`;
+  const { app, shell } = await launchDesk({ name: "behind-filled", homeUrl: VIDEO_URL });
+  try {
+    const [video, other] = (await openTabs(shell, [VIDEO_URL, OTHER_URL])) as [string, string];
+    await createGroup(shell, "watch", [video, other], "Watch", "blue");
+    await selectTab(shell, video);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(video);
+    const videoPage = await pageAt(app, VIDEO_URL);
+    await installVideoPlayer(videoPage);
+    await videoPage.locator("#start-video").click();
+    await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
+
+    await openGroupDesk(shell, "watch");
+    await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
+    const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
+    const rowOf = (tabId: string) => shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`);
+    await expect(shell.getByTestId("desk-window")).not.toHaveCount(0);
+    await settled(shell, app);
+    if ((await windowOf(video).count()) === 0) await rowOf(video).click();
+    if ((await windowOf(other).count()) === 0) await rowOf(other).click();
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell, app);
+    const pip = shell.getByTestId("desk-pip");
+    await expect(pip).toHaveCount(0);
+
+    // The other window in use, filling the desk: the video's window is behind it, out of sight — its video floats,
+    // the page's own picture, and its window draws no live picture of it there.
+    await selectTab(shell, other);
+    await windowOf(other).getByRole("button", { name: "Fill the desk" }).click();
+    await expect(pip).toHaveCount(1);
+    await expect(pip).toHaveAttribute("data-tab-id", video);
+    await settled(shell, app);
+    const pipBox = await box(shell, '[data-testid="desk-pip"]');
+    await expect.poll(async () => near((await shownViews(app)).find((view) => view.url === VIDEO_URL)?.bounds ?? null, pipBox)).toBe(true);
+    await expect(windowOf(video).getByTestId("desk-live-picture")).toHaveCount(0);
+    await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
+    await capture(app, shell, "08-behind-a-filled-window.png");
+
+    // Let down: the video is its window's again, playing on.
+    await windowOf(other).getByRole("button", { name: "Restore" }).click();
+    await expect(pip).toHaveCount(0);
+    await settled(shell, app);
+    await expect.poll(async () => (await shownViews(app)).some((view) => view.url === VIDEO_URL && near(view.bounds, pipBox))).toBe(false);
+    await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
   } finally {
     await closeApp(app);
   }

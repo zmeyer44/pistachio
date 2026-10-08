@@ -77,23 +77,23 @@ function agentTab(id: string, title = id): AgentTabInfo {
   return { id, spaceId: "work", title, url: `https://${id}.example/`, loading: false, canGoBack: false, canGoForward: false, kind: "human" };
 }
 
-/** `opens`: what happens meanwhile when the agent clicks — the page opens a tab (which the browser puts in the group), or the person opens one of their own. */
-function scopedBrowser(members: string[], opens: "grouped" | "unrelated" = "grouped") {
+/** The browser a desk turn is given: three of the person's tabs, `members` of them in group g1, and the agent's hidden tabs as it opens them. */
+function scopedBrowser(members: string[]) {
   const all = [agentTab("tab-1"), agentTab("tab-2"), agentTab("mail")];
   const inner = {
     kind: "desktop" as const,
     listTabs: vi.fn(() => all),
-    openTab: vi.fn(async () => "never"),
+    openTab: vi.fn(async () => {
+      all.push({ ...agentTab("hidden"), hidden: true });
+      return "hidden";
+    }),
     focusTab: vi.fn(async () => undefined),
     navigate: vi.fn(async () => undefined),
     back: vi.fn(async () => undefined),
     forward: vi.fn(async () => undefined),
     reload: vi.fn(async () => undefined),
     inspect: vi.fn(async (tabId: string) => ({ title: tabId, url: "", text: "", controls: [] })),
-    click: vi.fn(async () => {
-      all.push(agentTab("popup"));
-      if (opens === "grouped") members.push("popup");
-    }),
+    click: vi.fn(async () => undefined),
     type: vi.fn(async () => ""),
     press: vi.fn(async () => undefined),
     scroll: vi.fn(async () => undefined),
@@ -101,11 +101,13 @@ function scopedBrowser(members: string[], opens: "grouped" | "unrelated" = "grou
   } satisfies BrowserBackend;
   const group = {
     tabGroupMembers: vi.fn((groupId: string) => (groupId === "g1" ? members : null)),
-    openTabInGroup: vi.fn(async (groupId: string) => {
-      if (groupId !== "g1") return null;
-      all.push(agentTab("fresh"));
-      members.push("fresh");
-      return "fresh";
+    tabGroupSpaceId: vi.fn((groupId: string) => (groupId === "g1" ? "work" : null)),
+    showHiddenTabInGroup: vi.fn((groupId: string, tabId: string) => {
+      const tab = all.find((candidate) => candidate.id === tabId);
+      if (groupId !== "g1" || tab?.hidden !== true) return false;
+      delete tab.hidden;
+      members.push(tabId);
+      return true;
     }),
   };
   const cameOut: string[] = [];
@@ -124,29 +126,39 @@ describe("the desk's browser", () => {
     expect(inner.inspect).toHaveBeenCalledWith("tab-2");
   });
 
-  it("opens a tab into the group and brings it out onto the desk", async () => {
-    const { scope, group, cameOut, inner } = scopedBrowser(["tab-1"]);
-    await expect(scope.openTab("https://air.example")).resolves.toBe("fresh");
-    expect(group.openTabInGroup).toHaveBeenCalledWith("g1", "https://air.example");
-    expect(inner.openTab).not.toHaveBeenCalled();
-    expect(cameOut).toEqual(["fresh"]);
-    expect(scope.listTabs().map((tab) => tab.id)).toContain("fresh");
-  });
-
-  it("brings out a page the click opened, which the browser put in the group", async () => {
-    const { scope, cameOut } = scopedBrowser(["tab-1"], "grouped");
-    await scope.click("tab-1", "Open the itinerary");
-    expect(cameOut).toEqual(["popup"]);
-    expect(scope.listTabs().map((tab) => tab.id)).toContain("popup");
-  });
-
-  it("never takes in a tab the person opened while the click settled", async () => {
-    const { scope, cameOut, members } = scopedBrowser(["tab-1"], "unrelated");
-    await scope.click("tab-1", "Submit");
+  it("opens a hidden tab, off the desk, and works in it", async () => {
+    const { scope, inner, group, cameOut, members } = scopedBrowser(["tab-1"]);
+    await expect(scope.openTab("https://air.example")).resolves.toBe("hidden");
+    // In the group's Space — its session — whichever Space the person is in now.
+    expect(inner.openTab).toHaveBeenCalledWith("https://air.example", "work");
     expect(members).toEqual(["tab-1"]);
     expect(cameOut).toEqual([]);
-    expect(scope.listTabs().map((tab) => tab.id)).not.toContain("popup");
-    await expect(scope.inspect("popup")).rejects.toThrow(/not on this desk/);
+    expect(scope.listTabs().find((tab) => tab.id === "hidden")).toMatchObject({ hidden: true });
+    await scope.inspect("hidden");
+    await scope.click("hidden", "Search");
+    expect(inner.click).toHaveBeenCalledWith("hidden", "Search");
+    expect(group.showHiddenTabInGroup).not.toHaveBeenCalled();
+  });
+
+  it("opens no tab for a group that is gone", async () => {
+    const { scope, inner, group } = scopedBrowser(["tab-1"]);
+    group.tabGroupSpaceId.mockReturnValue(null);
+    await expect(scope.openTab("https://air.example")).rejects.toThrow(/group is gone/);
+    expect(inner.openTab).not.toHaveBeenCalled();
+  });
+
+  it("puts a hidden tab on the desk only through tab_show: into the group, and out beside the window in use", async () => {
+    const { scope, inner, group, cameOut, members } = scopedBrowser(["tab-1"]);
+    await scope.openTab("https://air.example");
+    await scope.focusTab("hidden");
+    expect(group.showHiddenTabInGroup).toHaveBeenCalledWith("g1", "hidden");
+    expect(members).toEqual(["tab-1", "hidden"]);
+    expect(cameOut).toEqual(["hidden"]);
+    expect(inner.focusTab).not.toHaveBeenCalled();
+    // One of the group's own is switched to, as before; another's is refused.
+    await scope.focusTab("tab-1");
+    expect(inner.focusTab).toHaveBeenCalledWith("tab-1");
+    await expect(scope.focusTab("mail")).rejects.toThrow(/not on this desk/);
   });
 });
 
@@ -235,10 +247,19 @@ function browserTab(id: string, title: string): BrowserTabInfo {
 function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
   const dir = scratch();
   const tabs = [browserTab("tab-1", "Flight TP 1234"), browserTab("tab-2", "Hotel Avenida"), browserTab("mail", "Inbox")];
+  /** The agent's hidden tabs, as main keeps them: out of the tab order. */
+  const hidden: BrowserTabInfo[] = [];
   const browser = {
     allTabs: vi.fn(() => tabs),
     activeTab: vi.fn(() => tabs[0] ?? null),
     createTab: vi.fn(async () => "tab-9"),
+    openHiddenTab: vi.fn(async (owner: string, url?: string) => {
+      hidden.push({ ...browserTab("tab-9", "Air"), url: url ?? "", unlisted: true, hiddenFor: owner });
+      return "tab-9";
+    }),
+    hiddenTabs: vi.fn((owner?: string) => hidden.filter((tab) => owner === undefined || tab.hiddenFor === owner)),
+    closeHiddenTabs: vi.fn(),
+    holdPopupsHidden: vi.fn(() => () => undefined),
     selectTab: vi.fn(async () => undefined),
     inspectPage: vi.fn(async (tabId: string) => ({ title: tabId, url: "", text: "Departs 09:40", controls: [] })),
     tab: vi.fn((id: string) => tabs.find((item) => item.id === id) ?? null),
@@ -267,7 +288,17 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
     bindings,
     browser: {
       tabGroupMembers: (groupId) => members[groupId] ?? null,
-      openTabInGroup: vi.fn(async () => "tab-9"),
+      tabGroupSpaceId: (groupId) => (members[groupId] === undefined ? null : "work"),
+      showHiddenTabInGroup: vi.fn((groupId: string, tabId: string) => {
+        const at = hidden.findIndex((tab) => tab.id === tabId);
+        const group = members[groupId];
+        if (at < 0 || group === undefined) return false;
+        const shown = hidden.splice(at, 1)[0]!;
+        delete shown.hiddenFor;
+        tabs.push({ ...shown, unlisted: false });
+        group.push(tabId);
+        return true;
+      }),
       ungroupTabs: vi.fn((_groupId, tabIds) => [...tabIds]),
       holdGroup: vi.fn((groupId: string) => {
         events.push(`hold ${groupId}`);
@@ -347,23 +378,39 @@ describe("a turn at a desk", () => {
     expect(events).toEqual(["hold g1", "model", "model", "release g1"]);
   });
 
-  it("works in the group's tabs only", async () => {
+  it("works in the group's tabs and its own hidden ones only, and puts a hidden one on the desk only through tab_show", async () => {
     const model = scripted([
       calls({ name: "tabs_list", input: {} }),
       calls({ name: "page_inspect", input: { tabId: "mail" } }),
       calls({ name: "tab_open", input: { url: "https://air.example/" } }),
+      calls({ name: "page_inspect", input: { tabId: "tab-9" } }),
+      calls({ name: "tabs_list", input: {} }),
+      calls({ name: "tab_show", input: { tabId: "tab-9" } }),
       answer("Done."),
     ]);
-    const { controller, requests, desk } = deskHarness(model);
+    const { controller, requests, desk, browser } = deskHarness(model);
     await controller.deskConversation({ type: "enter", groupId: "g1" });
+    const runId = () => controller.snapshot()!.runId;
+    let shownBeforeShow: DeskRequest[] = [];
+    browser.inspectPage.mockImplementation(async (tabId: string) => {
+      if (tabId === "tab-9") shownBeforeShow = [...requests];
+      return { title: tabId, url: "", text: "Departs 09:40", controls: [] };
+    });
     await controller.message("What is on this desk?", [], { page: false });
 
     const results = toolResults(model.doGenerateCalls.at(-1)!.prompt);
-    const listed = JSON.stringify(results.find((result) => result.toolName === "tabs_list")?.output);
-    expect(listed).toContain("tab-1");
-    expect(listed).not.toContain("Inbox");
-    expect(JSON.stringify(results.find((result) => result.toolName === "page_inspect")?.output)).toContain("not on this desk");
-    expect(desk.browser.openTabInGroup).toHaveBeenCalledWith("g1", "https://air.example/");
+    const lists = results.filter((result) => result.toolName === "tabs_list").map((result) => JSON.stringify(result.output));
+    expect(lists[0]).toContain("tab-1");
+    expect(lists[0]).not.toContain("Inbox");
+    // (The refused read's result is elided from the prompt by the later one; the run keeps why.)
+    expect(controller.snapshot()!.toolCalls.find((tool) => tool.name === "page.inspect" && tool.tabId === "mail")).toMatchObject({ status: "failed", detail: expect.stringContaining("not on this desk") });
+    // The tab it opened is hidden, the conversation's own, in the group's Space: listed as hidden, worked in, nowhere on the desk.
+    expect(browser.openHiddenTab).toHaveBeenCalledWith(runId(), "https://air.example/", { spaceId: "work" });
+    expect(browser.createTab).not.toHaveBeenCalled();
+    expect(lists[1]).toMatch(/"id":"tab-9"[^}]*"hidden":true/);
+    expect(shownBeforeShow.some((request) => request.type === "bringOut")).toBe(false);
+    // Shown, it joins the group and comes out.
+    expect(desk.browser.showHiddenTabInGroup).toHaveBeenCalledWith("g1", "tab-9");
     expect(requests).toContainEqual({ type: "bringOut", groupId: "g1", tabId: "tab-9" });
   });
 

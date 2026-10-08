@@ -21,7 +21,6 @@ import { GlanceOverlay } from "../GlanceOverlay";
 import { DeskBar } from "./DeskBar";
 import { CHROME_INSETS, DeskEngine, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
-import { DeskDropRail } from "./DeskDropRail";
 import { DeskDropZone } from "./DeskDropZone";
 import { DeskSideCard } from "./DeskSideCard";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
@@ -43,12 +42,6 @@ function tabsOf(snapshot: ShellSnapshot | null, tabIds: readonly string[]): read
   if (snapshot === null || tabIds.length === 0) return EMPTY_TABS;
   const byId = new Map(snapshot.tabs.map((tab) => [tab.id, tab]));
   return tabIds.map((tabId) => byId.get(tabId)).filter((tab): tab is BrowserTabInfo => tab !== undefined);
-}
-
-/** The stage's corner in the window (where the drop rail, over the sidebar, is placed from). */
-function stageCorner(stage: HTMLElement | null): { left: number; top: number } {
-  const box = stage?.getBoundingClientRect();
-  return { left: box?.left ?? 0, top: box?.top ?? 0 };
 }
 
 /**
@@ -127,6 +120,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   const overlayActive = useAppStore((state) => state.overlayActive);
   const paneStills = useAppStore((state) => state.paneStills);
   const glance = useAppStore((state) => state.glance);
+  const glanceStaged = useAppStore((state) => state.glanceStaged);
+  const glanceClosing = useAppStore((state) => state.glanceClosing);
   const setContentBounds = useAppStore((state) => state.setContentBounds);
   const run = useAppStore((state) => state.snapshot?.run ?? null);
   const threads = useAppStore((state) => state.snapshot?.threads ?? EMPTY_THREADS);
@@ -469,6 +464,21 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     for (const window of view?.windows ?? []) if (window.flight !== "away" && isTabWindow(window.tabId)) marks.set(window.tabId, window.focused ? "focused" : "out");
     useDeskChrome.getState().setMarks(marks);
   }, [view]);
+  // The windows behind one filling the desk are out of sight, as a tab left in the background is: a video playing in
+  // one floats (DeskPip, docs/desk.md "Now playing"), and comes back to its window when it is in sight again.
+  const behindKey = useMemo(() => {
+    const windows = view?.windows ?? [];
+    const filling = windows.filter((window) => window.maximized && window.flight === null && window.mini === null && !window.closing);
+    const top = filling.length === 0 ? -1 : Math.max(...filling.map((window) => window.z));
+    return windows
+      .filter((window) => window.z < top && window.mini === null && window.flight === null && isTabWindow(window.tabId))
+      .map((window) => window.tabId)
+      .join(" ");
+  }, [view]);
+  const behind = useMemo(() => new Set(behindKey === "" ? [] : behindKey.split(" ")), [behindKey]);
+  useEffect(() => {
+    useDeskChrome.getState().setBehind(behind);
+  }, [behind]);
   // A tab sent to the now playing (lib/desk/now-playing.ts) whose window is out again, or whose media has gone, is
   // sent no more; nor is any once the desk is left.
   const popped = useNowPlaying((state) => state.popped);
@@ -488,6 +498,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     () => () => {
       const chrome = useDeskChrome.getState();
       chrome.setMarks(new Map());
+      chrome.setBehind(new Set());
       chrome.closeCard();
       chrome.setHovered(null);
       chrome.setAgentTab(null);
@@ -670,7 +681,10 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     };
   }, [variants.grab]);
 
-  const stillByTab = useMemo(() => new Map(paneStills.map((still) => [still.tabId, still.dataUrl])), [paneStills]);
+  // Under a Glance its owner recedes, and main takes every live page down for it: the windows show what it captured as
+  // the Glance came up (as the panes do: ContentArea), not what they last had.
+  const coverStills = glance?.backgroundStills ?? paneStills;
+  const stillByTab = useMemo(() => new Map(coverStills.map((still) => [still.tabId, still.dataUrl])), [coverStills]);
   // The windows' tabs: the group's, and a moment after passing to another group, the old one's on their way home.
   const strayKey = view?.windows
     .map((window) => window.tabId)
@@ -749,7 +763,6 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
   };
   const attachGuides = useCallback((el: HTMLDivElement | null) => engine?.attachGuides(el), [engine]);
   /** A window in hand: the drop rail may stand over the sidebar. */
-  const carrying = view?.gesture === "move" || view?.gesture === "spawn";
 
   return (
     <section
@@ -764,6 +777,8 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         data-snapping={view?.snapping === true ? "" : undefined}
         data-group-color={group?.color}
         data-chrome={variants.chrome}
+        data-glance={glance !== null && glanceStaged ? "" : undefined}
+        data-glance-closing={glanceClosing ? "" : undefined}
         className="desk-stage no-drag tab-group-tone relative min-h-0 min-w-0 flex-1"
         // A press on the desk's own surface, between its windows (not on one, nor on anything drawn over it):
         // the window in use is left, as a click on the desktop leaves an app's window.
@@ -783,7 +798,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
               // what they were showing, a picture of the whole page — whether or not the engine had
               // one of its own (the window in use, live since it landed, often has none). Not for a
               // masked window: that still would be the whole page's, with nothing to say so.
-              const overlayStill = overlayActive && window.mask === null ? stillByTab.get(window.tabId) : undefined;
+              const overlayStill = (overlayActive || glance !== null) && window.mask === null ? stillByTab.get(window.tabId) : undefined;
               return (
                 <DeskWindow
                   key={window.tabId}
@@ -793,6 +808,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
                   grab={variants.grab}
                   still={overlayStill ?? window.still}
                   waking={wakingTabIds.includes(window.tabId)}
+                  behind={behind.has(window.tabId)}
                   engine={engine}
                   agent={agentTab === window.tabId ? activity : null}
                   note={notes.get(window.tabId) ?? null}
@@ -801,19 +817,9 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
                 />
               );
             })}
-        {/* (A page's own desk has no group: its More card and drop rail, but no Stack, file drops or Bar.) */}
+        {/* (A page's own desk has no group: its More card, but no Stack, file drops or Bar.) */}
         {engine === null || view === null || (deskGroup === null && pageTabId === null) ? null : (
           <DeskSideCard engine={engine} view={view} stageRef={stageRef} group={deskGroup} context={context} others={otherContexts} />
-        )}
-        {engine === null || view === null || (deskGroup === null && pageTabId === null) ? null : (
-          <DeskDropRail
-            engine={engine}
-            drops={view.drops}
-            stage={stageCorner(stageRef.current)}
-            shown={carrying && view.dropsShown}
-            drop={carrying ? view.dockDrop : null}
-            groupColor={deskGroup?.color ?? null}
-          />
         )}
         {engine === null || view === null || deskGroup === null ? null : (
           <DeskDropZone group={deskGroup} engine={engine} view={view} />

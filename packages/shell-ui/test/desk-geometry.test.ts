@@ -8,8 +8,6 @@ import {
   resizedKeepingAspect,
   DESK_GAP,
   denormalizeRect,
-  dockDropAt,
-  sidebarDrops,
   editedMaskRegion,
   edgeZone,
   fillsDesk,
@@ -73,6 +71,9 @@ describe("edge zones", () => {
   it("offers halves on the sides, the whole desk at the top, quarters at the corners", () => {
     expect(edgeZone({ x: desk.x + 4, y: 350 }, desk)).toBe("left");
     expect(edgeZone({ x: desk.x + desk.w - 2, y: 350 }, desk)).toBe("right");
+    // Past a side edge is at it, on the left (out over the sidebar) as on the right.
+    expect(edgeZone({ x: desk.x - 30, y: 350 }, desk)).toBe("left");
+    expect(edgeZone({ x: desk.x + desk.w + 30, y: 350 }, desk)).toBe("right");
     expect(edgeZone({ x: 700, y: 3 }, desk)).toBe("maximize");
     expect(edgeZone({ x: desk.x + 2, y: 20 }, desk)).toBe("top-left");
     expect(edgeZone({ x: desk.x + desk.w - 30, y: desk.h - 2 }, desk)).toBe("bottom-right");
@@ -541,46 +542,6 @@ describe("where a window brought out of the dock goes", () => {
     expect(isTile(zoneRect("top-left", desk), desk)).toBe(true);
     expect(isTile(tileRects(9, desk)[4]!, desk)).toBe(true);
     expect(isTile(centeredRect(desk), desk)).toBe(false);
-  });
-});
-
-describe("the drop rail over the sidebar", () => {
-  // The sidebar's column, left of the stage: a rail of 48px, from the window's top (the stage starts 8px down).
-  const side = { x: -48, y: -8, w: 48, h: 896 };
-  it("stands in the sidebar's column: back into the dock above, a smaller close below", () => {
-    const drops = sidebarDrops(side);
-    expect(drops.away.x).toBe(-42);
-    expect(drops.away.w).toBe(36);
-    expect(drops.away.y).toBe(-2);
-    expect(drops.close.y + drops.close.h).toBe(882);
-    expect(drops.close.h).toBeLessThan(drops.away.h);
-    expect(drops.close.y - (drops.away.y + drops.away.h)).toBe(DESK_GAP);
-    // A short column still has both.
-    const short = sidebarDrops({ ...side, h: 260 });
-    expect(short.close.h).toBeGreaterThan(40);
-    expect(short.away.h).toBeGreaterThan(40);
-    // The window's buttons over the column's top: the rail starts below them, and ends where it did.
-    const clear = sidebarDrops(side, 6, DESK_GAP, 34);
-    expect(clear.away.y).toBe(34);
-    expect(clear.close.y + clear.close.h).toBe(882);
-    expect(clear.close.y - (clear.away.y + clear.away.h)).toBe(DESK_GAP);
-  });
-
-  it("takes a pointer left of the desk, split where its segments meet; the desk's own edge band is the left half's", () => {
-    const drops = sidebarDrops(side);
-    const edge = 0;
-    expect(dockDropAt({ x: -24, y: 200 }, drops, edge)).toBe("away");
-    expect(dockDropAt({ x: -24, y: 800 }, drops, edge)).toBe("close");
-    // Further out, past the sidebar, is still the rail.
-    expect(dockDropAt({ x: -140, y: 300 }, drops, edge)).toBe("away");
-    expect(dockDropAt({ x: edge + 1, y: 300 }, drops, edge)).toBeNull();
-    // Nowhere to drop without a sidebar.
-    expect(dockDropAt({ x: -24, y: 300 }, { away: { x: 0, y: 0, w: 0, h: 0 }, close: { x: 0, y: 0, w: 0, h: 0 } }, edge)).toBeNull();
-    const bounds = { x: 8, y: 0, w: 1100, h: 880 };
-    expect(edgeZone({ x: edge + 1, y: 440 }, bounds, 18, 96, 30)).toBe("left");
-    expect(edgeZone({ x: bounds.x + 28, y: 440 }, bounds, 18, 96, 30)).toBe("left");
-    expect(edgeZone({ x: bounds.x + 28, y: 30 }, bounds, 18, 96, 30)).toBe("top-left");
-    expect(edgeZone({ x: bounds.x + 40, y: 440 }, bounds, 18, 96, 30)).toBeNull();
   });
 });
 

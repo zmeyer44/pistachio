@@ -100,6 +100,7 @@ import { smartFindPageFor } from "./smart-find";
 import { focusEmulationAttached, setFocusEmulation } from "./forced-focus";
 import { holdDebugger, releaseDebugger } from "./debugger-hold";
 import { APP_ICON_SCRIPT, APP_ICON_WORLD, pickAppIcon } from "./app-icon";
+import { PAGE_CORNERS_WORLD, pageCorners, pageCornersScript } from "./page-corners";
 import { ReaderStore, type ReaderActions } from "./reader-store";
 import { readerSpeechText, readerUrl, type ReaderArticle } from "@pistachio/shell-contracts/reader";
 import {
@@ -259,6 +260,8 @@ const READ_ALOUD_FAILURE_LINGER_MS = 6_000;
  */
 const EMPTY_COPY_WINDOW_MS = 1_000;
 const TAB_IDLE_SUSPEND_MS = 60 * 60 * 1_000;
+/** The most hidden tabs one conversation keeps (openHiddenTab): opening another closes its oldest. */
+const MAX_HIDDEN_TABS = 6;
 const TAB_LIFECYCLE_SWEEP_MS = 60 * 1_000;
 const RECENTLY_CLOSED_LIMIT = 25;
 /** How long a closing page gets to answer beforeunload before it is closed regardless. */
@@ -933,6 +936,10 @@ export class BrowserController {
   readonly #closedTabHistory = new WeakMap<RecentlyClosedTabInfo, TabHistory>();
   /** Closes under way, so a second ⌘W joins the first instead of asking the page twice. */
   readonly #closing = new Map<string, Promise<void>>();
+  /** Tabs the agent's own input is working, by the conversation a page they open belongs to (holdPopupsHidden). */
+  readonly #popupsHiddenFor = new Map<string, { owner: string; setAside: boolean }>();
+  /** Hidden tabs still being made (openHiddenTab), each marked if its conversation is set aside meanwhile (closeHiddenTabs). */
+  readonly #hiddenOpening = new Set<{ owner: string; setAside: boolean }>();
   readonly #onTabSwitcherInput: (
     event: Electron.Event,
     input: Electron.Input,
@@ -1384,7 +1391,8 @@ export class BrowserController {
   }
 
   watchtowerSources(): { id: string; spaceId: string; contents: WebContents; visible: boolean; agentDriven: boolean }[] {
-    return [...this.#tabs.values()].filter((tab) => tab.info.kind === "human" && !tab.view.webContents.isDestroyed()).map((tab) => ({
+    // A hidden tab is the agent's research, never the person's reading.
+    return [...this.#tabs.values()].filter((tab) => tab.info.kind === "human" && tab.info.hiddenFor === undefined && !tab.view.webContents.isDestroyed()).map((tab) => ({
       id: tab.info.id, spaceId: tab.info.spaceId, contents: tab.view.webContents,
       // Only the tab the agent is driving is not the person's reading; their
       // own tabs beside it still are.
@@ -1412,6 +1420,7 @@ export class BrowserController {
       wakingTabIds: [...this.#waking.keys()].filter(
         (tabId) => this.#tabInfo(tabId)?.spaceId === this.activeSpaceId(),
       ),
+      hiddenTabs: this.hiddenTabs(),
       secondaryTabId: this.#secondaryTabId,
       splitMode: this.#splitMode,
       splitGroups: [...this.#splitGroups.values()]
@@ -2098,6 +2107,8 @@ export class BrowserController {
       const { kind, lastActiveAt, spaceId, anchorId, forcedFocus } = tab.info;
       if (
         kind !== "human" ||
+        // An agent's hidden tab closes with its conversation instead: it is never activated, so it would look idle while in use.
+        tab.info.hiddenFor !== undefined ||
         // Kept running in the background on purpose.
         forcedFocus === true ||
         now - lastActiveAt < TAB_IDLE_SUSPEND_MS ||
@@ -2976,6 +2987,8 @@ export class BrowserController {
     if (
       tab === undefined ||
       tab.info.kind !== "human" ||
+      // A hidden tab is muted and has no card: nothing the person cannot see plays to them.
+      tab.info.hiddenFor !== undefined ||
       this.#tabs.get(tab.info.id) !== tab
     )
       return;
@@ -3092,6 +3105,17 @@ export class BrowserController {
         this.#emitMedia();
       }
       return;
+    }
+    // Turned up, a player muted page-wide (the card's mute) is heard again: the volume is what was asked for. Its
+    // page sets its element's own volume (and lifts that element's mute).
+    if (control.type === "setVolume" && control.volume > 0 && tab.view.webContents.isAudioMuted()) {
+      tab.view.webContents.setAudioMuted(false);
+      if (info !== undefined) {
+        const wasWatched = watchedVideo(info);
+        info.muted = info.elementMuted;
+        if (watchedVideo(info) && !wasWatched) this.#yieldBackgroundVideos(tabId);
+        this.#emitMedia();
+      }
     }
     if (control.type === "pictureInPicture") {
       await tab.view.webContents.executeJavaScript(
@@ -3696,6 +3720,101 @@ export class BrowserController {
   }
 
   /**
+   * Open a hidden tab for the agent, in the person's Space session — their
+   * sign-ins hold — but out of their sight: in no tab order, so in no list,
+   * count, Space or desk; never activated or shown; muted, its media never a
+   * card; asking no permission and opening no app; its pages not archived;
+   * never put to sleep. Its pages are what the agent searches and browses
+   * while the person goes on undisturbed. It belongs to `owner`, the
+   * conversation it was opened for, which closes it when set aside
+   * (closeHiddenTabs); past MAX_HIDDEN_TABS the owner's oldest closes. Only
+   * the person asking to see its page shows it (selectTab,
+   * showHiddenTabInGroup), and then it is an ordinary tab of theirs.
+   */
+  async openHiddenTab(owner: string, url = this.#homeUrl(), options: { spaceId?: string } = {}): Promise<string> {
+    const spaceId = options.spaceId ?? this.activeSpaceId();
+    if (this.#spaceStore.get(spaceId) === null) throw new Error("unknown Space");
+    const opening = { owner, setAside: false };
+    this.#hiddenOpening.add(opening);
+    let tabId: string;
+    try {
+      tabId = await this.#createManagedTab({ url, kind: "human", runId: null, activate: false, spaceId, unlisted: true, hiddenFor: owner });
+    } finally {
+      this.#hiddenOpening.delete(opening);
+    }
+    // Its conversation was set aside while it was being made — before it was there to close: it goes now.
+    if (opening.setAside) {
+      void this.closeTab(tabId, { force: true });
+      throw new Error("the conversation was set aside; its tab was closed");
+    }
+    const mine = this.hiddenTabs(owner).filter((tab) => tab.id !== tabId);
+    for (const tab of mine.slice(0, Math.max(0, mine.length + 1 - MAX_HIDDEN_TABS))) void this.closeTab(tab.id, { force: true });
+    this.#onChange();
+    return tabId;
+  }
+
+  /** The agent's hidden tabs — `owner`'s alone, when named — oldest first. */
+  hiddenTabs(owner?: string): BrowserTabInfo[] {
+    return [...this.#tabs.values()].flatMap((tab) =>
+      tab.info.hiddenFor !== undefined && (owner === undefined || tab.info.hiddenFor === owner) ? [{ ...tab.info }] : [],
+    );
+  }
+
+  /** Close a conversation's hidden tabs: it was set aside, and what it looked up goes with it. Never asks to leave a page. */
+  closeHiddenTabs(owner: string): void {
+    for (const opening of this.#hiddenOpening) if (opening.owner === owner) opening.setAside = true;
+    // A click of its agent's still settling opens nothing more: no tab is held hidden for a conversation that is gone.
+    for (const hold of this.#popupsHiddenFor.values()) if (hold.owner === owner) hold.setAside = true;
+    for (const tab of this.hiddenTabs(owner)) void this.closeTab(tab.id, { force: true });
+  }
+
+  /**
+   * The person asked to see a hidden tab's page (`tab_show` in a group, at a
+   * desk): it joins the group as one of their tabs, the group otherwise as it
+   * was. False when the tab is not hidden, or the group is gone or in
+   * another Space — a tab cannot change its Space's session.
+   */
+  showHiddenTabInGroup(groupId: string, tabId: string): boolean {
+    const tab = this.#tabs.get(tabId);
+    const group = this.#tabGroups.get(groupId);
+    if (tab === undefined || tab.info.hiddenFor === undefined || group === undefined || this.#tabGroupSpaceId(group) !== tab.info.spaceId) return false;
+    this.#showHidden(tab);
+    // The agent's addition leaves the group as it was: Tidy's own group stays Tidy's.
+    this.addToTabGroup(groupId, [tabId], { byPerson: false });
+    this.#reconcileTabGroups();
+    this.#onChange();
+    return true;
+  }
+
+  /**
+   * While the agent's own input works a tab — a click, a key, typing, and
+   * the moment it settles — a page it opens in a new tab opens hidden, as
+   * `owner`'s (#installWindowOpenHandler): the input is the agent's, so what
+   * it opens is the agent's to show or not, whoever's tab it was in.
+   */
+  holdPopupsHidden(tabId: string, owner: string): () => void {
+    const hold = { owner, setAside: false };
+    this.#popupsHiddenFor.set(tabId, hold);
+    return () => {
+      if (this.#popupsHiddenFor.get(tabId) === hold) this.#popupsHiddenFor.delete(tabId);
+    };
+  }
+
+  /** A hidden tab becomes one of the person's: at the end of the row, heard, its media a card, its pages archived from here on. */
+  #showHidden(tab: ManagedTab): void {
+    if (tab.info.hiddenFor === undefined) return;
+    delete tab.info.hiddenFor;
+    tab.info.unlisted = false;
+    tab.info.lastActiveAt = Date.now();
+    if (!this.#tabOrder.includes(tab.info.id)) this.#tabOrder.push(tab.info.id);
+    if (!tab.view.webContents.isDestroyed()) {
+      tab.view.webContents.setAudioMuted(false);
+      this.#hooks.onArchiveTab?.(tab.info.id, tab.view.webContents);
+    }
+    this.#onChange();
+  }
+
+  /**
    * Open a second human tab on the same page, placed beside the original in
    * the tab order, with a copy of the original's back/forward stack and the
    * page state Chromium last committed for it (scroll position, form
@@ -3789,6 +3908,8 @@ export class BrowserController {
     guard?: AgentNetworkGuard;
     restoredInfo?: BrowserTabInfo;
     unlisted?: boolean;
+    /** An agent's hidden tab, for this conversation (openHiddenTab). */
+    hiddenFor?: string;
     /**
      * The back/forward stack the page continues — a woken, restored,
      * duplicated, or reopened tab's — shown at its current entry instead of
@@ -3876,6 +3997,7 @@ export class BrowserController {
             lifecycle: "live",
             lastActiveAt: Date.now(),
             unlisted: options.unlisted ?? false,
+            ...(options.hiddenFor === undefined ? {} : { hiddenFor: options.hiddenFor }),
           }
         : {
             ...options.restoredInfo,
@@ -3902,9 +4024,14 @@ export class BrowserController {
     this.#dormantTabs.delete(id);
     this.#tabs.set(id, tab);
     if (options.restoredInfo !== undefined) this.#beginWake(id);
-    if (!this.#tabOrder.includes(id)) this.#tabOrder.push(id);
+    // A hidden tab is in no order and never shown: no list, count, Space or
+    // desk finds it, and nothing can fall back on it (#spaceTabIds) — not
+    // even an empty window. Nor is it heard.
+    const hidden = info.hiddenFor !== undefined;
+    if (hidden) view.webContents.setAudioMuted(true);
+    if (!hidden && !this.#tabOrder.includes(id)) this.#tabOrder.push(id);
     if (options.beside !== undefined) this.#setBeside(id, options.beside);
-    if (options.activate || this.#activeTabId === null) this.#activateTab(id);
+    if (!hidden && (options.activate || this.#activeTabId === null)) this.#activateTab(id);
     const refresh = this.#wireManagedTab(tab);
     // A tab waking from suspension takes its forced focus back up — and, out on the desk, its mask.
     if (info.forcedFocus === true) void this.#applyForcedFocus(tab).catch(() => undefined);
@@ -3986,7 +4113,8 @@ export class BrowserController {
    */
   #wireManagedTab(tab: ManagedTab): () => void {
     const { info, view } = tab;
-    if (info.kind === "human") this.#hooks.onArchiveTab?.(info.id, view.webContents);
+    // A hidden tab's pages are the agent's research: archived once the person is shown it (#showHidden).
+    if (info.kind === "human" && info.hiddenFor === undefined) this.#hooks.onArchiveTab?.(info.id, view.webContents);
     if (info.kind === "human") this.#hooks.shields?.attachContents(view.webContents);
     const publish = (): void => this.#publishManagedTab(tab);
     const refresh = (): void => {
@@ -4400,6 +4528,19 @@ export class BrowserController {
       if (!safeUrl) {
         // `window.open("zoommtg://…")`: no window, but maybe an app.
         this.#offerExternalApp(tab, details.url);
+        return { action: "deny" };
+      }
+      // A page out of the person's sight opens nothing in it: no sign-in
+      // window over theirs (they sign in when shown the page), and its new
+      // tab is hidden too, the same conversation's. So is one the agent's
+      // own input opened from any tab (holdPopupsHidden).
+      if (tab.info.hiddenFor !== undefined && preservePopup) return { action: "deny" };
+      // (Nor a page a set-aside conversation's click opens late, in the person's tab: it was no one's to show.)
+      const hold = this.#popupsHiddenFor.get(tab.info.id);
+      if (hold?.setAside === true) return { action: "deny" };
+      const hiddenFor = tab.info.hiddenFor ?? hold?.owner;
+      if (hiddenFor !== undefined && !preservePopup) {
+        void this.openHiddenTab(hiddenFor, details.url, { spaceId: tab.info.spaceId }).catch(() => undefined);
         return { action: "deny" };
       }
       if (preservePopup) {
@@ -4984,6 +5125,13 @@ export class BrowserController {
           callback(true);
           return;
         }
+        // A page out of the person's sight gets nothing that reaches them —
+        // a camera, a notification, the screen, another app — whatever its
+        // site may do in their own tabs. Nor is there anyone to ask.
+        if (tab?.info.hiddenFor !== undefined) {
+          callback(false);
+          return;
+        }
         // Element fullscreen (a video's ⛶ button) is not a privacy
         // permission: Chromium only asks so the embedder can veto it, and
         // Chrome grants it silently. Without this grant Electron drops the
@@ -5112,7 +5260,7 @@ export class BrowserController {
         normalizeElectronPermissions(rawPermission, [
           details.mediaType === "audio" ? "audio" : "video",
         ])[0] ?? null;
-      if (tab === undefined || permission === null) return false;
+      if (tab === undefined || permission === null || tab.info.hiddenFor !== undefined) return false;
       const clipboardAction =
         permission === "clipboard-read"
           ? "paste"
@@ -5413,7 +5561,8 @@ export class BrowserController {
       tab === undefined ||
       url === undefined ||
       scheme === null ||
-      tab.info.kind !== "human"
+      tab.info.kind !== "human" ||
+      tab.info.hiddenFor !== undefined
     ) {
       settle(false);
       return;
@@ -6189,7 +6338,8 @@ export class BrowserController {
     const survivingPaneIds =
       group?.tabIds.filter((candidate) => candidate !== tabId) ?? [];
     const closingActiveTab = this.#activeTabId === tabId;
-    if (info.kind === "human") this.#rememberClosedTab(info, history);
+    // A working tab — the read-aloud player, the agent's hidden tab — was never the person's to reopen.
+    if (info.kind === "human" && !info.unlisted) this.#rememberClosedTab(info, history);
     if (tab !== undefined) {
       // Out of the window and the map first: what follows may lay the
       // window out (the Glance it owned, its video in the media preview, the
@@ -6532,6 +6682,10 @@ export class BrowserController {
    * this one only leaves the woken view ready, out of sight.
    */
   async selectTab(tabId: string): Promise<void> {
+    // Selecting the agent's hidden tab is the person asking to see its page
+    // (the agent's tab_show, the chat's Show, a takeover's page): it becomes theirs.
+    const hidden = this.#tabs.get(tabId);
+    if (hidden?.info.hiddenFor !== undefined) this.#showHidden(hidden);
     const info = this.#tabInfo(tabId);
     if (info === null) return;
     if (info.spaceId !== this.activeSpaceId()) {
@@ -6920,17 +7074,10 @@ export class BrowserController {
     return group === undefined ? null : [...group.tabIds];
   }
 
-  /** Open a tab into a group, behind the person's tab. Null when the group is gone. */
-  async openTabInGroup(groupId: string, url?: string): Promise<string | null> {
+  /** The Space a group lives in (#tabGroupSpaceId), or null when it is gone. */
+  tabGroupSpaceId(groupId: string): string | null {
     const group = this.#tabGroups.get(groupId);
-    const spaceId = group === undefined ? null : this.#tabGroupSpaceId(group);
-    if (group === undefined || spaceId === null) return null;
-    const tabId = await this.createTab(url ?? this.#homeUrl(), { spaceId, activate: false });
-    // The agent's addition leaves the group as it was: Tidy's own group stays Tidy's.
-    this.addToTabGroup(groupId, [tabId], { byPerson: false });
-    this.#reconcileTabGroups();
-    this.#onChange();
-    return tabId;
+    return group === undefined ? null : this.#tabGroupSpaceId(group);
   }
 
   /** Take tabs out of a group, after the person agreed; each stays open beside it. */
@@ -7771,6 +7918,22 @@ export class BrowserController {
     return tab.view.webContents.getMediaSourceId(requester);
   }
 
+  /**
+   * The colours just inside a desk page's two top corners (DeskWindow paints
+   * them behind the page while a bar lies over its top). setBorderRadius
+   * cuts all four corners alike, so a page under a bar would show the shell
+   * through its top corners: painted the page's own colour there, the page
+   * meets the bar square and its foot stays round. Read from the page's
+   * styles, as far in as the round reaches (page-corners.ts).
+   */
+  async deskPageCorners(tabId: string): Promise<{ left: string; right: string } | null> {
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || tab.info.kind !== "human" || tab.view.webContents.isDestroyed() || this.#desk?.tabIds.includes(tabId) !== true) return null;
+    const inset = Math.max(1, Math.round(this.#settings().appearance.radius));
+    const read: unknown = await tab.view.webContents.executeJavaScriptInIsolatedWorld(PAGE_CORNERS_WORLD, [{ code: pageCornersScript(inset) }]).catch(() => null);
+    return pageCorners(read);
+  }
+
   /** The capture deskLiveSource handed out, asked for now: by the shell it went to, of the page alone (no camera, no microphone). */
   #takeDeskLiveGrant(contentsId: number, details: Electron.PermissionRequest | Electron.MediaAccessPermissionRequest | Electron.FilesystemPermissionRequest | Electron.OpenExternalPermissionRequest): boolean {
     const grant = this.#deskLiveGrants.get(contentsId);
@@ -8387,9 +8550,11 @@ export class BrowserController {
 
   /**
    * Force a cursor over a whole desk page, or give the page its own back.
-   * A user-origin !important rule outranks anything the page declares, and
-   * the hand shows the moment the key goes down rather than on the next
-   * move over an element that happens to be a link.
+   * An !important rule outranks what pages declare for the cursor, and the
+   * hand shows the moment the key goes down rather than on the next move
+   * over an element that happens to be a link. Author-origin, not user: on
+   * Electron 43 removeInsertedCSS leaves a user-origin sheet in place, so
+   * every grab key pressed over the desk left its pages the hand for good.
    */
   #setDeskCursor(tab: ManagedTab, cursor: "grab" | "grabbing" | null): void {
     const tabId = tab.info.id;
@@ -8406,7 +8571,7 @@ export class BrowserController {
     this.#deskCursors.set(tabId, {
       cursor,
       key: contents
-        .insertCSS(`*, *::before, *::after { cursor: ${cursor} !important; }`, { cssOrigin: "user" })
+        .insertCSS(`*, *::before, *::after { cursor: ${cursor} !important; }`)
         .catch(() => null),
     });
   }

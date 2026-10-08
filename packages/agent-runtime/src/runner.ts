@@ -413,7 +413,7 @@ export interface AiAgentRunResult {
 function toolLabel(request: BrowserAgentToolRequest): string {
   switch (request.name) {
     case "tabs.list": return "Review open tabs";
-    case "tab.open": return "Open tab in the background";
+    case "tab.open": return "Open tab";
     case "tab.show": return "Show tab";
     case "page.inspect": return "Read page";
     case "page.navigate": return "Navigate page";
@@ -620,13 +620,15 @@ const FORMAT_RULES = `- Write in Markdown, lightly: short paragraphs; a list onl
 
 /**
  * How the agent moves between tabs, which differs by who is watching. On
- * the desktop the person is in the same browser: their tab is theirs, the
- * agent works in tabs behind it, and only an explicit "take me to…" brings
- * one to the front. A cloud run is watched through a live view that shows
- * its front tab, so there the agent brings the tab it works in forward.
+ * the desktop the person is in the same browser and goes on using it: their
+ * tabs are theirs, the agent searches and browses in hidden tabs they never
+ * see, and only a request to open or see a page shows them one. A cloud run
+ * is watched through a live view that shows its front tab, so there the
+ * agent brings the tab it works in forward.
  */
-const DESKTOP_TAB_RULES = `- The active tab is the one the person is looking at. Leave it as it is unless the request is about that page or asks you to act in it: look things up and browse in other tabs, reusing a relevant one or opening one with tab_open. Tabs open in the background and every tool works on a tab off screen, so the person keeps their place while you work.
-- Use tab_show only when the person asks to be taken to or shown a page — "take me to…", "show me…", "pull up…" — once that page is ready. Never use it to read or operate a page, or before request_takeover: the person is offered the page from the takeover itself.`;
+const DESKTOP_TAB_RULES = `- The active tab is the one the person is looking at. Leave it as it is unless the request is about that page or asks you to act in it.
+- Do every search, lookup and bit of browsing in hidden tabs: tab_open opens one that the person never sees — it is not among their tabs — and every tool works in it, so they go on using their browser undisturbed. Reuse a hidden tab of yours (tabs_list marks them "hidden") rather than opening many, and never take one of the person's own tabs away from its page to look something up.
+- Show the person a page only when they ask to open, see or be taken to it — "open the top article on Hacker News", "take me to…", "show me…", "pull up…": get it ready in a hidden tab, then call tab_show, which adds it to their tabs and switches them to it. Never use tab_show to read or operate a page, to show your work, or before request_takeover: the person is offered the page from the takeover itself.`;
 const CLOUD_TAB_RULES = `- Reuse relevant tabs, bringing one to the front with tab_show before you work in it — the person watches the front tab — otherwise open a tab.`;
 
 function browseInstructions(input: InstructionInput, notes: string): string {
@@ -1513,21 +1515,21 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
       {
         tabs_list: tool({
           description: desktop
-            ? "List all browser tabs: their IDs, titles, URLs, loading state, and which one is active — the tab the person is looking at."
+            ? "List the person's browser tabs and your hidden ones: their IDs, titles, URLs, loading state, which one is active — the tab the person is looking at — and which are hidden, opened by you and out of the person's sight."
             : "List all browser tabs: their IDs, titles, URLs, and loading state.",
           inputSchema: z.object({}),
           execute: async () => execute({ name: "tabs.list" }),
         }),
         tab_open: tool({
           description: desktop
-            ? "Open a new tab, optionally at a URL, and return its tab ID. It opens in the background: the person stays on their tab while you work in this one."
+            ? "Open a hidden tab, optionally at a URL, and return its tab ID. The person never sees it — it is not among their tabs — so search and browse here while they go on using their browser. Hidden tabs close when the conversation is set aside."
             : "Open a new tab, optionally at a URL, and return its tab ID. It becomes the front tab.",
           inputSchema: z.object({ url: z.string().url().optional() }),
           execute: async ({ url }) => execute({ name: "tab.open", ...(url ? { url } : {}) }),
         }),
         tab_show: tool({
           description: desktop
-            ? "Bring a tab to the front so the person sees it, switching the tab they are looking at. Only when they ask to be taken to or shown a page (\"take me to…\", \"show me…\", \"pull up…\"), once it is ready. Never needed to read or operate a page."
+            ? "Show the person a tab: a hidden tab joins their tabs, and they are switched to it. Only when they ask to open, see or be taken to a page (\"open the top article on…\", \"take me to…\", \"show me…\", \"pull up…\"), once it is ready. Never needed to read or operate a page."
             : "Bring an existing tab to the front, where the person watching the run sees it.",
           inputSchema: z.object({ tabId: z.string().min(1) }),
           execute: async ({ tabId }) => execute({ name: "tab.show", tabId }),

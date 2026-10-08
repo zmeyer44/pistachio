@@ -359,6 +359,16 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     expect(resized.height).toBeLessThan(sized.height - 100);
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
 
+    // ── 6b. The grab key held, a live page shows the open hand; let go, the page has its own cursor back ─
+    const pageCursor = (): Promise<string> =>
+      app.evaluate(({ webContents }, url) => webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!.executeJavaScript("getComputedStyle(document.body).cursor") as Promise<string>, urls[0]!);
+    const ownCursor = await pageCursor();
+    expect(ownCursor).not.toBe("grab");
+    await pressShift(app, urls[0]!, "keyDown");
+    await expect.poll(pageCursor).toBe("grab");
+    await pressShift(app, urls[0]!, "keyUp");
+    await expect.poll(pageCursor).toBe(ownCursor);
+
     // ── 7. Grab a live page with Shift held: main hands the press to the desk ─
     // Shift is the snap key too: held, it lights a tile; let go once the
     // press is taken, the window is placed freely.
@@ -447,25 +457,27 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     await expect(shell.locator(".desk-stage[data-snapping]")).toHaveCount(0);
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
 
-    // ── 8. Put a window away: the drop rail over the sidebar, its Collapse pad takes it ─
+    // ── 8. The leading edge is the desk's like the others: carried out over the sidebar, a window lights the left
+    //      half and lands there, its tab kept — nothing over the sidebar takes it. Its frame's − puts it away ─
     const bar4 = await box(shell, `${windowSelector(ids[1]!)} .desk-window-bar`);
-    const rail = await box(shell, '[data-testid="desk-drop-away"]');
-    expect(rail.x + rail.width).toBeLessThanOrEqual(stage.x);
     await shell.mouse.move(bar4.x + 60, bar4.y + bar4.height / 2);
     await shell.mouse.down();
     await shell.mouse.move(bar4.x + 66, bar4.y + bar4.height / 2, { steps: 2 });
+    const overSidebar = { x: stage.x - 20, y: stage.y + stage.height * 0.5 };
     for (let step = 1; step <= 12; step += 1) {
-      await shell.mouse.move(bar4.x + 60 + (rail.x + rail.width / 2 - bar4.x - 60) * (step / 12), bar4.y + 20 + step * 10);
+      await shell.mouse.move(bar4.x + 60 + (overSidebar.x - bar4.x - 60) * (step / 12), bar4.y + bar4.height / 2 + (overSidebar.y - bar4.y - bar4.height / 2) * (step / 12));
       await shell.waitForTimeout(16);
     }
-    await expect(shell.locator(".desk-drops[data-shown]")).toHaveCount(1);
-    await expect(shell.locator('[data-testid="desk-drop-away"][data-armed]')).toHaveCount(1);
-    await expect(shell.locator('[data-testid="desk-drop-close"][data-armed]')).toHaveCount(0);
-    await capture(app, shell, "07-put-away-armed.png");
-    await shell.waitForTimeout(150);
+    await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(1);
+    await capture(app, shell, "07-left-edge-over-sidebar.png");
     await shell.mouse.up();
+    await settled(shell, app);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    const leftHalf = await box(shell, windowSelector(ids[1]!));
+    expect(Math.abs(leftHalf.x - usable.x)).toBeLessThan(2);
+    expect(Math.abs(leftHalf.width - halfWidth)).toBeLessThan(2);
+    await shell.locator(windowSelector(ids[1]!)).getByTestId("desk-collapse").click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
-    await expect(shell.locator(".desk-drops[data-shown]")).toHaveCount(0);
     await expect(shell.locator(markSelector(ids[1]!))).toHaveCount(0);
     await settled(shell, app);
 
@@ -680,7 +692,7 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     await app?.close();
   });
 
-  test("the sidebar is the desk's dock: a row's click opens where there is room, a row dragged out is its window in hand, a stranger's row dropped joins the group, ⌘S widens the rail, and its drop rail closes", async () => {
+  test("the sidebar is the desk's dock: a row's click opens where there is room, a row dragged out is its window in hand, a stranger's row dropped joins the group, ⌘S widens the rail, and its leading edge is the desk's", async () => {
     test.setTimeout(120_000);
     await openGroupDesk(shell, "desk-dock");
     await expect(shell.getByTestId("desk-surface")).toBeVisible();
@@ -797,41 +809,38 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     await expect.poll(async () => (await box(shell, ".desk-stage")).x).toBeLessThan(stage.x + 2);
     await settled(shell, app);
 
-    // ── 9. Carry a window to the desk's leading edge: the drop rail stands over the
-    //      sidebar; the lower pad closes the tab ─────────────────────────────────
-    const closePad = await box(shell, '[data-testid="desk-drop-close"]');
-    expect(closePad.x + closePad.width).toBeLessThanOrEqual(stage.x);
+    // ── 9. Carry a window to the desk's leading edge, and on out over the sidebar: the left half lights all the way,
+    //      as the right half does past the right edge, and the window lands there, its tab kept. Its × closes it ─
     // (The stranger's window, on top.)
     const bar = await box(shell, `${windowSelector(stranger)} .desk-window-bar`);
     const grip = { x: bar.x + 90, y: bar.y + bar.height / 2 };
     await shell.mouse.move(grip.x, grip.y);
     await shell.mouse.down();
     await shell.mouse.move(grip.x - 8, grip.y + 4, { steps: 2 });
-    await expect(shell.locator(".desk-drops[data-shown]")).toHaveCount(0);
-    // Near the edge the pads show; in the desk's edge band it is the left half that lights.
+    await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(0);
     const band = { x: usable.x + 12, y: usable.y + usable.height * 0.5 };
     for (let step = 1; step <= 10; step += 1) {
       await shell.mouse.move(grip.x + ((band.x - grip.x) * step) / 10, grip.y + ((band.y - grip.y) * step) / 10);
       await shell.waitForTimeout(16);
     }
-    await expect(shell.locator(".desk-drops[data-shown]")).toHaveCount(1);
     await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(1);
-    await expect(shell.locator(".desk-drop[data-armed]")).toHaveCount(0);
-    await capture(app, shell, "21-drop-rail-left-half.png");
-    // Past the desk's edge, over the sidebar, low down: Close.
-    const onClose = center(closePad);
+    await capture(app, shell, "21-left-edge.png");
+    const past = { x: stage.x - 24, y: band.y + 60 };
     for (let step = 1; step <= 8; step += 1) {
-      await shell.mouse.move(band.x + ((onClose.x - band.x) * step) / 8, band.y + ((onClose.y - band.y) * step) / 8);
+      await shell.mouse.move(band.x + ((past.x - band.x) * step) / 8, band.y + ((past.y - band.y) * step) / 8);
       await shell.waitForTimeout(16);
     }
-    await expect(shell.locator('[data-testid="desk-drop-close"][data-armed]')).toHaveCount(1);
-    await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(0);
-    await capture(app, shell, "22-drop-rail-close.png");
+    await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(1);
+    await capture(app, shell, "22-left-edge-over-sidebar.png");
     await shell.mouse.up();
+    await settled(shell, app);
+    expect((await snapshot(shell)).tabs.some((tab) => tab.id === stranger)).toBe(true);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(4);
+    expect(Math.abs((await box(shell, windowSelector(stranger))).x - usable.x)).toBeLessThan(2);
+    await shell.locator(windowSelector(stranger)).getByTestId("desk-close").click();
     await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.id === stranger)).toBe(false);
     await expect(shell.getByTestId("desk-window")).toHaveCount(3);
     await expect(shell.locator(rowSelector(stranger))).toHaveCount(0);
-    await expect(shell.locator(".desk-drops[data-shown]")).toHaveCount(0);
     await settled(shell, app);
     await capture(app, shell, "23-closed.png");
 

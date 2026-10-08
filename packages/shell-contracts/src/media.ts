@@ -15,6 +15,8 @@ export interface TabMediaReport {
   hasVideo: boolean;
   playing: boolean;
   elementMuted: boolean;
+  /** The selected element's own volume, 0 to 1, its mute aside: each player's own, whatever the system's or another page's. */
+  volume: number;
   position: number;
   duration: number | null;
   playbackRate: number;
@@ -100,6 +102,8 @@ export type MediaControl =
   | { type: "focus" }
   | { type: "seek"; position: number }
   | { type: "setRate"; rate: number }
+  /** The page's player alone, 0 to 1 (its element's volume): above 0, it is heard again if it was muted. */
+  | { type: "setVolume"; volume: number }
   /** A "Read aloud" card: light the spoken words on the page they came from, or stop. */
   | { type: "followText"; enabled: boolean };
 
@@ -162,6 +166,7 @@ export function normalizeTabMediaReport(value: unknown): TabMediaReport | null {
   const album = boundedText(report["album"], 200);
   const position = finiteNumber(report["position"], 0, 1_000_000_000);
   const playbackRate = finiteNumber(report["playbackRate"], 0.05, 16);
+  const volume = finiteNumber(report["volume"], 0, 1);
   const duration = report["duration"] === null
     ? null
     : finiteNumber(report["duration"], 0, 1_000_000_000);
@@ -171,6 +176,7 @@ export function normalizeTabMediaReport(value: unknown): TabMediaReport | null {
     album === null ||
     position === null ||
     playbackRate === null ||
+    volume === null ||
     duration === null && report["duration"] !== null ||
     !KINDS.has(report["kind"] as MediaPlaybackKind) ||
     typeof report["playing"] !== "boolean" ||
@@ -195,6 +201,7 @@ export function normalizeTabMediaReport(value: unknown): TabMediaReport | null {
     hasVideo: report["hasVideo"],
     playing: report["playing"],
     elementMuted: report["elementMuted"],
+    volume,
     position: duration === null ? position : Math.min(position, duration),
     duration,
     playbackRate,
@@ -218,6 +225,9 @@ export function isMediaControl(value: unknown): value is MediaControl {
       control["rate"] <= MAX_PLAYBACK_RATE;
   }
   if (control["type"] === "followText") return typeof control["enabled"] === "boolean";
+  if (control["type"] === "setVolume") {
+    return typeof control["volume"] === "number" && Number.isFinite(control["volume"]) && control["volume"] >= 0 && control["volume"] <= 1;
+  }
   if (control["type"] === "seek") {
     return typeof control["position"] === "number" &&
       Number.isFinite(control["position"]) &&

@@ -7,8 +7,8 @@
  * dock — the sidebar's column beside the desk: a tab chosen there comes out
  * where the layout has room, a row pulled out over the desk becomes the
  * tab's window, held by the title bar, and windows go back into their rows;
- * while a window is carried near the desk's edge, a drop rail stands over
- * the sidebar. And the desk passing to another group in place: the old
+ * its leading edge is the desk's like the others. And the desk passing to
+ * another group in place: the old
  * group's windows go home, the new group's come out where they were left,
  * and main never hears of more windows than it accepts; a loose tab's desk
  * comes up as its one window, and takes on a new group in place.
@@ -413,73 +413,24 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
-  it("shows the drop rail over the sidebar only near the desk's leading edge, and lights the segment a release would go to", () => {
-    const { desk, win, move, release } = open();
-    const start = rectOf(win);
-    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
-    move(start.x + 260, start.y + 60);
-    expect(desk.getView().dropsShown).toBe(false);
-    move(usable.x + 100, 300);
-    expect(desk.getView().dropsShown).toBe(true);
-    expect(desk.getView().dockDrop).toBeNull();
-    move(-24, 300);
-    expect(desk.getView().dockDrop).toBe("away");
-    move(-24, 940);
-    expect(desk.getView().dockDrop).toBe("close");
-    // The rail stands over the sidebar's column.
-    expect(desk.getView().drops.away.x).toBe(SIDEBAR.x + 6);
-    // Back across the desk's edge band: the left half again, not the rail.
-    move(usable.x + 10, 500);
-    expect(desk.getView().dockDrop).toBeNull();
-    release();
-    expectRect(rectOf(win), zoneRect("left", usable));
-    expect(desk.getView().dropsShown).toBe(false);
-    desk.destroy();
-  });
-
-  it("puts a window let go on the rail's upper segment back into the dock, its tab kept", () => {
+  it("treats the leading edge as the right one: carried to it, or on out over the sidebar, a window lands in the left half, its tab kept", () => {
     const close = vi.fn();
     const { desk, win, move, release } = open({ close });
-    const start = rectOf(win);
-    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
-    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 224) / 8), 300);
-    expect(desk.getView().dockDrop).toBe("away");
-    release();
-    expect(desk.windowTabIds()).toEqual([]);
+    for (const [x, zone] of [
+      [usable.x + 10, "left"],
+      [-24, "left"],
+      [usable.x + usable.w + 24, "right"],
+    ] as const) {
+      const start = rectOf(win);
+      desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
+      move(start.x + 260, start.y + 60);
+      move(x, 500);
+      release();
+      settle();
+      expectRect(rectOf(win), zoneRect(zone, usable));
+      expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    }
     expect(close).not.toHaveBeenCalled();
-    desk.destroy();
-  });
-
-  it("closes the tab of a window let go on the rail's lower segment, once it has gone into it", () => {
-    const close = vi.fn();
-    const { desk, win, move, release } = open({ close });
-    const start = rectOf(win);
-    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
-    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 224) / 8), 300 + step * 80);
-    expect(desk.getView().dockDrop).toBe("close");
-    release();
-    expect(desk.windowTabIds()).toEqual([]);
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(close).toHaveBeenCalledWith("tab-0");
-    desk.destroy();
-  });
-
-  it("closes a window let go on the rail's lower segment even when the agent, or Undo layout, asks for it on its way there", () => {
-    const close = vi.fn();
-    const { desk, win, move, letGo } = open({ close });
-    const before = desk.layoutSnapshot();
-    const start = rectOf(win);
-    desk.grab("tab-0", { x: start.x + 200, y: start.y + 17 });
-    for (let step = 1; step <= 8; step += 1) move(start.x + 200 - step * ((start.x + 224) / 8), 300 + step * 80);
-    expect(desk.getView().dockDrop).toBe("close");
-    letGo();
-    // Going into the rail's Close is the person's: a placement or an Undo does not bring it back.
-    desk.arrangeFor({ place: [{ tabId: "tab-0", zone: "left" }] });
-    desk.restoreLayout(before);
-    settle();
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(close).toHaveBeenCalledWith("tab-0");
-    expect(desk.windowTabIds()).toEqual([]);
     desk.destroy();
   });
 
@@ -694,15 +645,13 @@ describe("the sidebar, the desk's dock", () => {
     desk.destroy();
   });
 
-  it("puts a window flung past the desk's leading edge into the dock — and none, with no sidebar beside the desk", () => {
-    for (const sidebar of [SIDEBAR, null]) {
-      const { desk, move, release } = dock({ host: { sidebar: () => sidebar } });
-      desk.grab("tab-0", { x: 600, y: 300 });
-      for (let step = 1; step <= 6; step += 1) move(600 - step * 60, 300);
-      release();
-      expect(desk.windowTabIds()).toEqual(sidebar === null ? ["tab-0"] : []);
-      desk.destroy();
-    }
+  it("keeps a window flung at the sidebar on the desk, as one flung off its right side", () => {
+    const { desk, move, release } = dock();
+    desk.grab("tab-0", { x: 600, y: 300 });
+    for (let step = 1; step <= 6; step += 1) move(600 - step * 60, 300);
+    release();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    desk.destroy();
   });
 });
 

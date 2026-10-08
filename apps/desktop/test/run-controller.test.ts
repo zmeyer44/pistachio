@@ -214,10 +214,21 @@ const POINTER = "\n\n[The page the person has open: “Invoice” — https://fi
 
 function fakeBrowser() {
   const tabs = [tab("tab-1", "Invoice", "https://finance.example/invoices/1")];
+  /** The agent's hidden tabs, out of the tab order as main keeps them. */
+  const hidden: ReturnType<typeof tab>[] = [];
   const fake = {
     allTabs: vi.fn(() => tabs),
     activeTab: vi.fn(() => tabs[0] ?? null),
     createTab: vi.fn(async () => "tab-2"),
+    openHiddenTab: vi.fn(async (owner: string, url?: string) => {
+      hidden.push({ ...tab("tab-2", "Shop", url ?? ""), unlisted: true, hiddenFor: owner });
+      return "tab-2";
+    }),
+    hiddenTabs: vi.fn((owner?: string) => hidden.filter((item) => owner === undefined || item.hiddenFor === owner)),
+    closeHiddenTabs: vi.fn((owner: string) => {
+      for (let index = hidden.length - 1; index >= 0; index -= 1) if (hidden[index]!.hiddenFor === owner) hidden.splice(index, 1);
+    }),
+    holdPopupsHidden: vi.fn(() => () => undefined),
     selectTab: vi.fn(async () => undefined),
     navigate: vi.fn(async () => undefined),
     goBack: vi.fn(async () => undefined),
@@ -397,11 +408,11 @@ describe("a thread from the composer", () => {
     expect(controller.threads().map((item) => [item.runId, item.status, item.turns])).toEqual([[run!.runId, "completed", 1]]);
   });
 
-  it("opens a tab.open's tab in the background, and records it so the agent's marks follow it there", async () => {
+  it("opens a tab.open's tab hidden, as the conversation's, and records it so the agent's marks follow it there", async () => {
     // The call names no tab when it starts — the tab does not exist yet —
-    // and the tab opens behind the person's, who stays where they are.
-    // Until the model touches it, the marks would otherwise stay on the tab
-    // the run began in.
+    // and the tab opens out of the person's sight: they stay where they
+    // are, and nothing joins their tabs. Until the model touches it, the
+    // marks would otherwise stay on the tab the run began in.
     const { model, script } = scriptedModel([tabOpen]);
     const { controller, browser } = build({ model });
     let drivenWhileThinking: string | null = null;
@@ -411,7 +422,8 @@ describe("a thread from the composer", () => {
     });
     await controller.start("Open the shop");
 
-    expect(browser.createTab).toHaveBeenCalledWith("https://shop.example/", { activate: false });
+    expect(browser.openHiddenTab).toHaveBeenCalledWith(controller.snapshot()!.runId, "https://shop.example/");
+    expect(browser.createTab).not.toHaveBeenCalled();
     const opened = controller.snapshot()!.toolCalls.find((tool) => tool.name === "tab.open");
     expect(opened).toMatchObject({ status: "completed", tabId: "tab-2" });
     expect(drivenWhileThinking).toBe("tab-2");
@@ -610,6 +622,24 @@ describe("a turn that stops short", () => {
 });
 
 describe("the thread list", () => {
+  it("closes a conversation's hidden tabs when it is set aside, and keeps them while it is open", async () => {
+    const { model, script } = scriptedModel([tabOpen, answer("Opened the shop.")]);
+    const { controller, browser } = build({ model });
+    await controller.start("Look up the shop");
+    const first = controller.snapshot()!.runId;
+    expect(browser.hiddenTabs(first).map((item) => item.id)).toEqual(["tab-2"]);
+
+    // A follow-up in the same conversation still has them.
+    script.push(answer("Still here."));
+    await controller.message("And the hours?");
+    expect(browser.closeHiddenTabs).not.toHaveBeenCalled();
+    expect(browser.hiddenTabs(first)).toHaveLength(1);
+
+    await controller.newThread();
+    expect(browser.closeHiddenTabs).toHaveBeenCalledWith(first);
+    expect(browser.hiddenTabs(first)).toEqual([]);
+  });
+
   it("sets a finished thread aside, starts another, and reopens the first with its history and notes", async () => {
     const { model, script } = scriptedModel([calls({ name: "task_notes", input: { content: "Plan:\n- [x] read the total ($120)" } }), answer("Done: the total is $120.")]);
     const { controller } = build({ model });

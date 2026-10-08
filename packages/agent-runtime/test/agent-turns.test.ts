@@ -498,14 +498,18 @@ describe("tool history carries across turns", () => {
     expect(JSON.stringify(takeover)).not.toContain("use request_credentials for sensitive editable fields");
   });
 
-  it("keeps the person's tab theirs on the desktop, and brings the worked tab forward for a cloud run's live view", async () => {
+  it("browses in hidden tabs on the desktop, showing a page only when asked, and brings the worked tab forward for a cloud run's live view", async () => {
     const desktopModel = scriptedModel([answer("Done.")]);
     await turn({ model: desktopModel });
     const desktopSystem = systemText(desktopModel.doGenerateCalls[0]!.prompt);
-    const desktopShow = (desktopModel.doGenerateCalls[0]!.tools ?? []).find((item) => item.name === "tab_show");
+    const desktopTools = desktopModel.doGenerateCalls[0]!.tools ?? [];
+    const desktopOpen = desktopTools.find((item) => item.name === "tab_open");
+    const desktopShow = desktopTools.find((item) => item.name === "tab_show");
     expect(desktopSystem).toContain("The active tab is the one the person is looking at. Leave it as it is");
-    expect(desktopSystem).toContain("Use tab_show only when the person asks to be taken to or shown a page");
-    expect(JSON.stringify(desktopShow)).toContain("Only when they ask to be taken to or shown a page");
+    expect(desktopSystem).toContain("Do every search, lookup and bit of browsing in hidden tabs");
+    expect(desktopSystem).toContain("Show the person a page only when they ask to open, see or be taken to it");
+    expect(JSON.stringify(desktopOpen)).toContain("Open a hidden tab");
+    expect(JSON.stringify(desktopShow)).toContain("Only when they ask to open, see or be taken to a page");
 
     const cloudModel = scriptedModel([answer("Done.")]);
     await turn({ model: cloudModel, browser: { ...fakeBrowser().browser, kind: "cloud" } });

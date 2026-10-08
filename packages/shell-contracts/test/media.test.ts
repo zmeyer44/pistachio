@@ -10,6 +10,7 @@ const validReport = {
   hasVideo: false,
   playing: true,
   elementMuted: false,
+  volume: 1,
   position: 12.5,
   duration: 180,
   playbackRate: 1,
@@ -34,14 +35,17 @@ describe("media IPC data", () => {
       position: 400,
       duration: 100,
       playbackRate: 99,
+      volume: 4,
       artworkUrl: "javascript:alert(1)",
     });
     expect(normalized).toMatchObject({
       position: 100,
       duration: 100,
       playbackRate: 16,
+      volume: 1,
       artworkUrl: null,
     });
+    expect(normalizeTabMediaReport({ ...validReport, volume: -1 })?.volume).toBe(0);
     expect(normalized?.title.startsWith("title ")).toBe(true);
     expect(normalized?.title.length).toBeLessThanOrEqual(300);
   });
@@ -61,5 +65,12 @@ describe("media IPC data", () => {
     expect(isMediaControl({ type: "followText", enabled: "yes" })).toBe(false);
     expect(normalizeTabMediaReport({ ...validReport, canSetRate: "yes" })).toBeNull();
     expect(normalizeTabMediaReport({ ...validReport, stream: undefined })).toBeNull();
+    // Each player's own volume: 0 to 1, said, or the report is no report.
+    expect(normalizeTabMediaReport({ ...validReport, volume: undefined })).toBeNull();
+    expect(isMediaControl({ type: "setVolume", volume: 0.4 })).toBe(true);
+    expect(isMediaControl({ type: "setVolume", volume: 0 })).toBe(true);
+    expect(isMediaControl({ type: "setVolume", volume: 1.5 })).toBe(false);
+    expect(isMediaControl({ type: "setVolume", volume: Number.NaN })).toBe(false);
+    expect(isMediaControl({ type: "setVolume" })).toBe(false);
   });
 });

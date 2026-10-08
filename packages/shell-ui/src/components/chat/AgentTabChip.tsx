@@ -11,23 +11,29 @@ import type { ChatDensity } from "./parts";
 /**
  * Where the agent is working, when it is not the page the person is on.
  *
- * The agent browses in tabs behind the person's (it opens its own in the
- * background, and only `tab_show` — "take me to…" — switches tabs), so the
+ * The agent searches and browses in hidden tabs, out of the person's sight
+ * (only `tab_show` — "open…", "take me to…" — shows one, and switches to
+ * it), or in one of their own tabs behind the one they are on, so the
  * pane's ring never lights and nothing on screen moves. This line under the
  * live reply is what says a page is open and being worked: the tab's mark
- * with the agent's ring, whether it is one the run opened, its title, and a
- * button that takes the person there — the switch is theirs to make.
+ * with the agent's ring, whether it is hidden, its title, and a button that
+ * shows it to the person — a hidden tab joins their tabs then (main's
+ * selectTab); the switch is theirs to make.
  *
  * Gone as soon as that tab is on screen (the pane is ringed then) or the
  * agent stops driving.
  */
 export const AgentTabChip = memo(function AgentTabChip({ run, density }: { run: RunSummary; density: ChatDensity }) {
   const tabId = agentDrivenTabId(run);
-  const tab = useAppStore((state) => (tabId === null ? null : (state.snapshot?.tabs.find((candidate) => candidate.id === tabId) ?? null)));
+  const tab = useAppStore((state) =>
+    tabId === null
+      ? null
+      : (state.snapshot?.tabs.find((candidate) => candidate.id === tabId) ?? state.snapshot?.hiddenTabs?.find((candidate) => candidate.id === tabId) ?? null),
+  );
   const onScreen = useAppStore((state) => tabId !== null && (state.snapshot?.visibleTabIds.includes(tabId) ?? false));
   const selectTab = useAppStore((state) => state.selectTab);
   if (tab === null || onScreen) return null;
-  const opened = run.toolCalls.some((call) => call.name === "tab.open" && call.tabId === tab.id);
+  const hidden = tab.hiddenFor !== undefined;
   const title = tab.title || displayHost(tab.url) || "a page";
   return (
     <div
@@ -40,7 +46,7 @@ export const AgentTabChip = memo(function AgentTabChip({ run, density }: { run: 
     >
       <TabMark tab={tab} working />
       <span className="min-w-0 truncate text-gray-700">
-        {opened ? "Browsing in a new tab" : "Browsing in another tab"}
+        {hidden ? "Browsing in the background" : "Browsing in another tab"}
         <span aria-hidden="true"> · </span>
         <span className="text-gray-1000" data-testid="agent-tab-chip-title">
           {title}
@@ -52,7 +58,7 @@ export const AgentTabChip = memo(function AgentTabChip({ run, density }: { run: 
         shape="circle"
         className="shrink-0"
         aria-label={`Show ${title}`}
-        title="Go to this tab"
+        title={hidden ? "Open this page in a tab" : "Go to this tab"}
         data-testid="agent-tab-chip-show"
         onClick={() => void selectTab(tab.id)}
       >

@@ -27,9 +27,9 @@
  * - the desk's dock is the SIDEBAR's column beside it (docs/desk.md), not
  *   part of the desk: a tab's window comes out of its row there and goes
  *   back into it (the host finds the rows: DeskHost.homeOf), a row dragged
- *   out over the desk is its window in hand (pullFromSidebar), and while a
- *   window is carried near the desk's leading edge, a drop rail stands over
- *   the sidebar — back into the dock above, the tab closed below.
+ *   out over the desk is its window in hand (pullFromSidebar). Its leading
+ *   edge is the desk's like the others: a window carried there lights the
+ *   left half as the right edge lights the right.
  * - the desk can pass to ANOTHER GROUP in place (switchGroup): this group's
  *   windows go into its row in the sidebar — each once it has a still to
  *   fly as — while the other group's come out of that group's row, to
@@ -67,7 +67,7 @@
  * structural changes (a window added, raised, drawn or live) via subscribe.
  */
 
-import { TRAFFIC_LIGHTS_H, type DragCursor } from "@pistachio/shell-contracts/chrome";
+import type { DragCursor } from "@pistachio/shell-contracts/chrome";
 import {
   DESK_DRAWER_TRIGGER,
   DESK_MINI_ZOOM,
@@ -90,8 +90,6 @@ import {
   containsPoint,
   DESK_GAP,
   denormalizeRect,
-  dockDropAt,
-  sidebarDrops,
   edgeZone,
   freeSpot,
   magnetize,
@@ -120,8 +118,6 @@ import {
   roundedRectPath,
   windowSize,
   type CornerRadii,
-  type DockDrop,
-  type DockDrops,
   type Edges,
   type Guide,
   type MinSize,
@@ -275,8 +271,8 @@ const LEAVE_GROW_MS = DURATION_FAST_MS;
  * - one whose size changes (filled, tiled, arranged, let go of the desk,
  *   unmasked, expanded) is the card resize transition, its 300ms;
  * - one out of the dock, growing from its icon, is a dropdown opening from
- *   its trigger, `--duration-fast`; into the dock, the Close pad or another
- *   group's icon, a dropdown closing into it — quicker than it opened
+ *   its trigger, `--duration-fast`; into the dock or another group's icon,
+ *   a dropdown closing into it — quicker than it opened
  *   (`--duration-quick`), as every close is;
  * - the windows of an arrangement, or of a desk coming out, set off a
  *   stagger apart, the whole run under its total;
@@ -302,16 +298,8 @@ const SWITCH_STILL_WAIT_MS = 400;
  * this big — a window coming out grows from it.
  */
 const ROW_ICON = 16;
-/** The drop rail stands this far inside the sidebar's column, all round. */
-const RAIL_INSET = 6;
-/** Held over the drop rail, a drawn window shrinks toward this width as it fades into the segment under it. */
-const OVER_DOCK_WIDTH = 140;
 /** How long a sidebar row bounces on taking a window back. */
 const RECEIVE_MS = 560;
-/** The drop rail comes over the sidebar once a carried window's pointer comes this near the desk's leading edge. */
-const DROPS_NEAR = 180;
-/** The leading edge's band that offers the left half (and its quarters at the ends): past it are the drop rail's segments. */
-const LEFT_EDGE_BAND = 30;
 /** A window taken from the sidebar while out on the desk flies to the hand on this. */
 const CATCH_SPRING: SpringConfig = { response: 0.3, damping: 0.86 };
 
@@ -333,8 +321,6 @@ const STILL_RETRY_MS = 450;
 const COVERED_REFRESH_MS = 3_000;
 const THUMB_REFRESH_MS = 8_000;
 const THUMB_WIDTH = 360;
-/** A throw toward the inventory this fast, that would carry the window mostly off the desk, puts it away. */
-const PUT_AWAY_SPEED = 1_100;
 const LIVE_OVERSHOOT = 6;
 /** Snap mode: how far past a line between two cells the pointer must go before the other tile is aimed at. */
 const SNAP_HYSTERESIS = 16;
@@ -353,8 +339,6 @@ export interface DeskWindowView {
   lifted: boolean;
   /** In hand with a tile lit for it (an edge zone, or Shift's snap): let go, and it goes there. */
   aiming: boolean;
-  /** In hand over one of the dock's pads: drawn, it shrinks and fades into the pad, which stands for it. */
-  intoDock: boolean;
   /** On its way into the inventory ("away") or out of it ("in"). */
   flight: "in" | "away" | null;
   /** Closed from its frame: it fades where it stands rather than on its way somewhere. */
@@ -401,18 +385,10 @@ export function windowTipCover(tabId: string): string {
 
 export interface DeskView {
   windows: readonly DeskWindowView[];
-  /**
-   * While a window is carried near the desk's leading edge, a drop rail
-   * stands over the sidebar: back into the dock above, its tab closed
-   * below. The two segments (in the stage's coordinates: the sidebar is left
-   * of the stage, at negative x), whether they are showing, and the one a
-   * release now would go to.
-   */
-  drops: DockDrops;
-  dropsShown: boolean;
-  dockDrop: DockDrop | null;
   /** Covers (setCover) no live page paints over any more: what the shell draws there can be seen. */
   clearCovers: ReadonlySet<string>;
+  /** A stacked cover (stackCover) a window has come in front of, and its place among the windows (as a window's `z`). */
+  coverZ: ReadonlyMap<string, number>;
   /** A cover lies over the rail's floating player (setFloat): its picture is to come down while it does. */
   floatCovered: boolean;
   /**
@@ -489,7 +465,7 @@ export interface DeskHost {
   select(tabId: string): void;
   /** A window of the shell's own (a document) was chosen: its content takes the keyboard. */
   focusWindow?(id: string): void;
-  /** Close this tab (its window closed from its frame, or let go on the drop rail's Close). */
+  /** Close this tab (its window closed from its frame). */
   close(tabId: string): void;
   /** Edit this tab's address: the address palette, over the desk (a click on a window's title). */
   editAddress(tabId: string): void;
@@ -592,8 +568,8 @@ interface Win {
   revealed: boolean;
   /**
    * Flying into its own icon in the dock (#sendAway with nowhere else to
-   * go) — the one flight that can be turned back (#recall). Not into the
-   * Close pad, which closes its tab on arrival, nor into another group.
+   * go) — the one flight that can be turned back (#recall). Not into
+   * another group.
    */
   homeward: boolean;
   /** Closed from its frame (×): drawing in where it stands and fading, quicker than a flight's fade. */
@@ -639,8 +615,7 @@ interface Unmasking {
 interface Gesture {
   /**
    * "move" a window on the desk; "resize" one; "spawn" a window just come out
-   * of the sidebar in hand (pullFromSidebar: drawn throughout, and back into
-   * the dock if let go over the drop rail).
+   * of the sidebar in hand (pullFromSidebar: drawn throughout).
    */
   kind: "move" | "resize" | "spawn";
   /** The window's tab. */
@@ -666,9 +641,6 @@ interface Gesture {
   /** The zone is snap mode's (Shift held), and `cell` the cell of the desk in thirds it was read from. */
   snapping: boolean;
   cell: ThirdsCell | null;
-  overDock: boolean;
-  /** Over one of the drop rail's segments (dockDropAt): let go, and the window goes there. */
-  drop: DockDrop | null;
   /** A window flying to the hand (taken by its row in the sidebar): how far it still is from where the hand holds it. */
   lag: { x: number; y: number; vx: number; vy: number } | null;
   /** A window spanning the desk (letGoSize): the size it lets go to once the pointer travels. */
@@ -690,8 +662,6 @@ interface Joint {
 }
 
 const ZERO_RECT: Rect = { x: 0, y: 0, w: 0, h: 0 };
-/** No sidebar beside the desk: nowhere for the drop rail. */
-const NO_DROPS: DockDrops = { away: ZERO_RECT, close: ZERO_RECT };
 
 /** A pointer press, as the shell's handlers hand it on (Shift, when known, is the snap key). */
 interface PressEvent {
@@ -719,9 +689,10 @@ export class DeskEngine {
   /** The desk's corner radius, a window's (`.desk-stage`'s --desk-window-radius), read as it is measured. */
   #corner = 0;
   #zoneEl: HTMLElement | null = null;
-  #dropsEl: HTMLElement | null = null;
   /** What the shell draws over the desk (setCover): a card beside the sidebar, the Bar — in the stage's coordinates. */
   readonly #covers = new Map<string, Rect>();
+  /** Covers that are windows of the shell's (stackCover), each with the windows brought in front of it since it was last in front of them all. */
+  readonly #stacked = new Map<string, Set<string>>();
   #clearCovers: ReadonlySet<string> = new Set();
   /** The rail's floating player over the desk (setFloat), and whether its picture is live. */
   #float: { rect: Rect; live: boolean } | null = null;
@@ -752,10 +723,6 @@ export class DeskEngine {
   #lastClick: { tabId: string; at: number } | null = null;
   #leaveFrames = -1;
   #destroyed = false;
-  #armedDrop: DockDrop | null = null;
-  #dropsNear = false;
-  /** The drop rail's segments over the sidebar, in the stage (measure: the sidebar's column as the host says it stands). */
-  #drops: DockDrops = NO_DROPS;
   /** The sidebar's column, in the stage (left of it), or null where there is none. */
   #side: Rect | null = null;
   #dirtyView = false;
@@ -806,10 +773,8 @@ export class DeskEngine {
     this.#host = host;
     this.#view = {
       windows: [],
-      drops: this.#drops,
-      dropsShown: false,
-      dockDrop: null,
       clearCovers: this.#clearCovers,
+      coverZ: new Map(),
       floatCovered: this.#floatCovered,
       notchOver: this.#notchOver,
       shelf: this.#shelf,
@@ -927,11 +892,6 @@ export class DeskEngine {
     this.#render();
   }
 
-  /** The dock's pads: the pointer's height is written to it (`--pointer-y`), and the lit pad's mark follows it. */
-  attachDrops(el: HTMLElement | null): void {
-    this.#dropsEl = el;
-  }
-
   /**
    * Something the shell draws over the desk — a card beside the sidebar, the
    * Bar's answer — or null to take it away. A live page is a native view and would
@@ -949,6 +909,43 @@ export class DeskEngine {
     }
     this.#render();
     this.#kick();
+  }
+
+  /**
+   * A cover that is a window of the shell's — the Bar's answer, floating —
+   * or no longer one: the desk's windows stack with it. A window brought up
+   * (#raise) comes in front of it, its page live again where the cover would
+   * have made it a still; raiseCover puts it back in front of them all. No
+   * longer stacked, it is over every window again, as a cover is.
+   */
+  stackCover(key: string, on: boolean): void {
+    if (on === this.#stacked.has(key)) return;
+    if (on) this.#stacked.set(key, new Set());
+    else this.#stacked.delete(key);
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /** A stacked cover back in front of every window: the person reached for it. */
+  raiseCover(key: string): void {
+    const front = this.#stacked.get(key);
+    if (front === undefined || front.size === 0) return;
+    front.clear();
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /** The stack with the stacked covers among the windows, each under those brought in front of it (stackCover). */
+  #withStacked(order: readonly string[], covers: ReadonlyMap<string, Rect>): string[] {
+    let stack = [...order];
+    for (const [key, front] of this.#stacked) {
+      if (!covers.has(key)) continue;
+      const id = `\u0000cover:${key}`;
+      stack = [...stack.filter((other) => !front.has(other)), id, ...stack.filter((other) => front.has(other))];
+    }
+    return stack;
   }
 
   /**
@@ -1259,22 +1256,11 @@ export class DeskEngine {
     this.#render();
   }
 
-  /**
-   * The sidebar's column beside the desk, in the stage (left of it), and the
-   * drop rail's segments over it — below the window's own buttons, where the
-   * column runs up under them.
-   */
+  /** The sidebar's column beside the desk, in the stage (left of it). */
   #measureSide(): void {
     const client = this.#host.sidebar();
     const { left, top } = this.#stageBox;
-    const side = client === null || client.w < 1 ? null : { x: client.x - left, y: client.y - top, w: client.w, h: client.h };
-    this.#side = side;
-    const drops =
-      side === null ? NO_DROPS : sidebarDrops(side, RAIL_INSET, DESK_GAP, Math.max(side.y + RAIL_INSET, client!.y < TRAFFIC_LIGHTS_H ? TRAFFIC_LIGHTS_H - top : side.y));
-    if (!sameRect(drops.away, this.#drops.away, 0.5) || !sameRect(drops.close, this.#drops.close, 0.5)) {
-      this.#drops = drops;
-      this.#dirtyView = true;
-    }
+    this.#side = client === null || client.w < 1 ? null : { x: client.x - left, y: client.y - top, w: client.w, h: client.h };
   }
 
   /** Anything the host knows changed — a tab woke, the overlay rose, a variant was switched. */
@@ -2480,8 +2466,6 @@ export class DeskEngine {
       zone: null,
       snapping: false,
       cell: null,
-      overDock: false,
-      drop: null,
       lag: null,
       unfill: null,
       size: null,
@@ -2560,8 +2544,6 @@ export class DeskEngine {
       zone: null,
       snapping: false,
       cell: null,
-      overDock: false,
-      drop: null,
       lag: null,
       // Spanning the desk (both ways, or its whole height or width): once it
       // is really moving, it lets go of the span, so it can be carried about.
@@ -2608,8 +2590,6 @@ export class DeskEngine {
       zone: null,
       snapping: false,
       cell: null,
-      overDock: false,
-      drop: null,
       lag: null,
       unfill: null,
       size: null,
@@ -2648,7 +2628,6 @@ export class DeskEngine {
     const masked = this.#wins.get(gesture.tabId)?.mask != null;
     const pinTop = masked ? MASK_CARD_TOP / 2 : variants.chrome === "bar" ? CHROME_INSETS.bar.top / 2 : CHROME_CARD_TOP[variants.chrome] / 2;
     const holdX = (w: number): number => clamp(point.x - usable.x, 28, w / 2);
-    gesture.overDock = false;
     gesture.pinTop = pinTop;
     gesture.tracker.reset();
     gesture.tracker.push(point.x, point.y, performance.now());
@@ -2738,29 +2717,24 @@ export class DeskEngine {
   }
 
   /**
-   * The carried window under the pointer: the drop rail, the lit tile
-   * (Shift's snap, or an edge zone pushed into), magnets, the desk's edges.
-   *
-   * The leading edge is read in depth, so no two targets overlap: the
-   * desk's first LEFT_EDGE_BAND px offer the left half (its quarters at the
-   * ends), and past the desk's edge — over the sidebar, or further — is the
-   * drop rail, back into the dock above, the tab closed below.
+   * The carried window under the pointer: the lit tile (Shift's snap, or an
+   * edge zone pushed into), magnets, the desk's edges. The leading edge is
+   * the desk's like the others: pushed into, it lights the left half (its
+   * quarters at the ends), as the right edge does the right.
    */
   #placeCarried(win: Win, gesture: Gesture): void {
     const usable = this.#usable();
     const point = gesture.pointer;
-    gesture.drop = dockDropAt(point, this.#drops, 0);
-    gesture.overDock = gesture.drop !== null;
     // Snap mode: Shift held, the desk is in thirds and the tile under the pointer is lit.
     // (Not for a masked window: a tile would stretch the picture. A minimized one snaps as any
     // window does, and is a window at its own size once in the tile — but over the shelf's band
     // at the desk's foot, where it parks again when let go, no tile is lit for it.)
     const picture = win.mask !== null;
     const overShelf = this.#overShelf(win, point);
-    const snapping = this.#shift && !gesture.overDock && !picture && !overShelf;
+    const snapping = this.#shift && !picture && !overShelf;
     gesture.cell = snapping ? thirdsCell(point, usable, gesture.cell, SNAP_HYSTERESIS) : null;
     const zone =
-      gesture.cell !== null ? cellZone(gesture.cell) : gesture.overDock || picture || overShelf ? null : edgeZone(point, usable, 18, 96, LEFT_EDGE_BAND);
+      gesture.cell !== null ? cellZone(gesture.cell) : picture || overShelf ? null : edgeZone(point, usable);
     if ((zone === null) !== (gesture.zone === null) || snapping !== gesture.snapping) this.#dirtyView = true;
     gesture.zone = zone;
     gesture.snapping = snapping;
@@ -2769,14 +2743,14 @@ export class DeskEngine {
     const lag = gesture.lag ?? { x: 0, y: 0 };
     let rect: Rect = { x: point.x - hold.x + lag.x, y: point.y - hold.y + lag.y, w: win.rect.w, h: win.rect.h };
     let guides: Guide[] = [];
-    if (!gesture.overDock && zone === null && gesture.kind === "move" && gesture.lag === null) {
+    if (zone === null && gesture.kind === "move" && gesture.lag === null) {
       const stuck = magnetize(rect, this.#others(win.tabId), usable);
       rect = stuck.rect;
       guides = stuck.guides;
     }
     // A drawn window is the shell's picture and may travel anywhere (out over
-    // the sidebar, to the drop rail); a live page is a native view the shell
-    // cannot clip, so it stays on the desk.
+    // the sidebar); a live page is a native view the shell cannot clip, so it
+    // stays on the desk.
     if (!win.drawn) rect = rubberBandRect(rect, this.#reach(), LIVE_OVERSHOOT, this.#minSize(win));
     win.rect = rect;
     // It lifts and turns about the point it is held by, wherever that is as the window changes size.
@@ -2784,14 +2758,7 @@ export class DeskEngine {
     this.#showGuides(guides);
     this.#showZone(zone === null ? null : tileRect(zone, usable), snapping);
     if (this.#host.variants().motion === "lifted") {
-      win.lift = { ...win.lift, scale: gesture.overDock ? clamp(OVER_DOCK_WIDTH / Math.max(1, win.rect.w), 0.08, 0.5) : LIFT_SCALE };
-    }
-    const near = gesture.overDock || point.x < usable.x + DROPS_NEAR;
-    if (near) this.#dropsEl?.style.setProperty("--pointer-y", `${point.y.toFixed(1)}px`);
-    if (gesture.drop !== this.#armedDrop || near !== this.#dropsNear) {
-      this.#armedDrop = gesture.drop;
-      this.#dropsNear = near;
-      this.#dirtyView = true;
+      win.lift = { ...win.lift, scale: LIFT_SCALE };
     }
   }
 
@@ -2875,8 +2842,7 @@ export class DeskEngine {
   /**
    * The pointer let go. What the window does next is the variant's
    * character: coast on (glide), land in a tile (snap), or stay put (free)
-   * — after the things every variant honours: the inventory takes a window
-   * dropped on it or flung hard at it, and an armed edge zone takes one
+   * — after what every variant honours: an armed edge zone takes a window
    * dropped there.
    */
   #gestureEnd(): void {
@@ -2885,8 +2851,6 @@ export class DeskEngine {
     this.#gesture = null;
     this.#showGuides([]);
     this.#showZone(null, false);
-    this.#armedDrop = null;
-    this.#dropsNear = false;
     const win = this.#wins.get(gesture.tabId);
     if (win === undefined) {
       this.#emit();
@@ -2906,32 +2870,6 @@ export class DeskEngine {
     const velocity = gesture.tracker.velocity(performance.now());
     const usable = this.#usable();
     const variants = this.#host.variants();
-    // Flung at the dock: fast, mostly sideways, and headed past the desk's leading edge into the sidebar.
-    // (Not while Shift aims it at a tile: the tile it shows is where it goes; nor with no sidebar beside the desk.)
-    const flungHome =
-      this.#side !== null &&
-      !gesture.snapping &&
-      variants.physics !== "free" &&
-      velocity.x < -PUT_AWAY_SPEED &&
-      Math.abs(velocity.x) > Math.abs(velocity.y) &&
-      gesture.pointer.x + glideReach(velocity.x) * 1.2 < 0;
-    // Let go on the Close pad: into it, and the tab is closed once it is gone.
-    // (Where it was before it was taken up is the place it leaves; a window just out of the dock left none.)
-    const left = gesture.kind === "move" && this.#laidOutByDesk(win.tabId) ? { id: win.tabId, rect: { ...gesture.startRect } } : null;
-    if (gesture.drop === "close") {
-      this.#closeInto(win, this.#drops.close);
-      this.#emit();
-      this.#kick();
-      if (left !== null) this.#moment({ trigger: "closed", gone: [{ ...left, how: "closed" }] });
-      return;
-    }
-    if (gesture.overDock || flungHome) {
-      this.#sendAway(win, true);
-      this.#emit();
-      this.#kick();
-      if (left !== null) this.#moment({ trigger: "closed", gone: [{ ...left, how: "collapsed" }] });
-      return;
-    }
     // A window letting go of the whole desk lands at the size it was headed
     // for, around the point the pointer holds; the spring finishes the change.
     const size = gesture.size;
@@ -2994,8 +2932,6 @@ export class DeskEngine {
     gesture.end?.();
     this.#showGuides([]);
     this.#showZone(null, false);
-    this.#armedDrop = null;
-    this.#dropsNear = false;
     const win = this.#wins.get(gesture.tabId);
     if (win !== undefined) {
       win.lift = { scale: 1, tilt: 0 };
@@ -3300,10 +3236,11 @@ export class DeskEngine {
     } else if (fade !== null) covers.set("\u0000maskfade", fade.from);
     // Leaving, nothing of the desk stays over the window becoming the pane (the dock, the Bar, a card closing): it
     // waits on none of them, and goes live as it grows (leave).
+    // A stacked one stands among the windows, under those brought in front of it (stackCover).
     if (covers.size > 0 && this.#phase !== "leaving") {
-      order = [...order];
+      order = this.#withStacked(order, covers);
       for (const [key, rect] of covers) {
-        order.push(`\u0000cover:${key}`);
+        if (!this.#stacked.has(key)) order.push(`\u0000cover:${key}`);
         frames.set(`\u0000cover:${key}`, rect);
       }
     }
@@ -3632,7 +3569,9 @@ export class DeskEngine {
     let floatCovered = false;
     for (const [key, rect] of this.#covers) {
       let live = false;
-      for (const win of this.#wins.values()) if (!win.drawn && rectsOverlap(this.#shownRect(win), rect)) live = true;
+      // (A live page in front of a stacked cover paints over it, as it should.)
+      const front = this.#stacked.get(key);
+      for (const win of this.#wins.values()) if (!win.drawn && front?.has(win.tabId) !== true && rectsOverlap(this.#shownRect(win), rect)) live = true;
       // (The floating player's picture is live over the windows until it comes down for the cover.)
       if (this.#float !== null && rectsOverlap(this.#float.rect, rect)) {
         floatCovered = true;
@@ -4066,13 +4005,22 @@ export class DeskEngine {
     this.#dirtyView = false;
     const usable = this.#usable();
     const gesture = this.#gesture;
+    // A stacked cover a window has come in front of has its place among them (stackCover); those in front are a place higher.
+    const zs = new Map<string, number>();
+    const coverZ = new Map<string, number>();
+    const stacked = [...this.#stacked].some(([key, front]) => front.size > 0 && this.#covers.has(key));
+    if (stacked)
+      this.#withStacked(this.#order, this.#covers).forEach((id, index) => {
+        if (!id.startsWith("\u0000cover:")) zs.set(id, index);
+        else if (this.#stacked.get(id.slice("\u0000cover:".length))!.size > 0) coverZ.set(id.slice("\u0000cover:".length), index);
+      });
     this.#view = {
       windows: this.#order.map((tabId, index) => {
         const win = this.#wins.get(tabId)!;
         const carried = gesture?.tabId === tabId && gesture.kind !== "resize";
         return {
           tabId,
-          z: index,
+          z: zs.get(tabId) ?? index,
           focused: this.#attended(tabId),
           drawn: win.drawn,
           still: win.still?.src ?? this.#thumbs.get(tabId)?.src ?? null,
@@ -4080,7 +4028,6 @@ export class DeskEngine {
           carried,
           lifted: carried && this.#host.variants().motion === "lifted",
           aiming: carried && gesture.zone !== null,
-          intoDock: carried && gesture.overDock,
           flight: win.flight,
           closing: win.closing,
           framed: win.framed,
@@ -4106,10 +4053,8 @@ export class DeskEngine {
           tipShown: this.#clearCovers.has(windowTipCover(tabId)),
         };
       }),
-      drops: this.#drops,
-      dropsShown: this.#dropsNear,
-      dockDrop: this.#armedDrop,
       clearCovers: this.#clearCovers,
+      coverZ,
       floatCovered: this.#floatCovered,
       notchOver: this.#notchOver,
       shelf: this.#shelf,
@@ -4304,6 +4249,8 @@ export class DeskEngine {
       this.#stackShelf();
       this.#save();
     }
+    // In front of the shell's own windows too (stackCover).
+    for (const front of this.#stacked.values()) front.add(tabId);
     this.#dirtyView = true;
     this.#host.select(tabId);
   }
@@ -4363,7 +4310,7 @@ export class DeskEngine {
    * window coming out does. A desk already full sends its bottom window
    * home first, as for any window coming out (#makeRoom). The caller gives
    * it its place. False, and nothing changes, for any other flight: one
-   * into the Close pad or another group's icon was the person's doing.
+   * into another group's icon was the person's doing.
    */
   #recall(win: Win): boolean {
     if (win.flight !== "away" || !win.homeward) return false;
@@ -4391,22 +4338,6 @@ export class DeskEngine {
     window.setTimeout(() => {
       if (el.dataset["received"] !== undefined) delete el.dataset["received"];
     }, RECEIVE_MS);
-  }
-
-  /**
-   * Into the Close pad, as into the dock — shrinking onto the middle of the
-   * pad and fading — and once it is gone, its tab is closed. (A tab closed
-   * this way comes back as any other: Reopen closed tab.)
-   */
-  #closeInto(win: Win, pad: Rect): void {
-    const w = Math.min(pad.w, pad.h) * 0.7;
-    const h = w * (win.rect.h / Math.max(1, win.rect.w));
-    this.#sendAway(win, true, { x: pad.x + (pad.w - w) / 2, y: pad.y + (pad.h - h) / 2, w, h });
-    const arrive = win.onArrive;
-    win.onArrive = () => {
-      arrive?.();
-      this.#host.close(win.tabId);
-    };
   }
 
   /** The windows staying on the desk, bottom to top: all but those flying into the inventory. */

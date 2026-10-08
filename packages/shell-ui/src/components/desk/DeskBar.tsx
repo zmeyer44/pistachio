@@ -1,6 +1,6 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { MessageScroller } from "@shadcn/react/message-scroller";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronUp, FileText, History, Loader2, Mic, Paperclip, Square, SquarePen, TextQuote, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowDownToLine, ArrowUp, Check, ChevronDown, ChevronUp, FileText, History, Loader2, Mic, Paperclip, PictureInPicture2, Plus, Square, SquarePen, TextQuote, Undo2, X } from "lucide-react";
 import type { AgentAttachment, RunSummary, ThreadListItem } from "@pistachio/protocol";
 import { groupContextMediaTypeOf, type GroupContextFile, type GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
@@ -13,6 +13,8 @@ import { activeMention, insertMention, mentionCandidates, mentionQuery, mentions
 import { agentActivity } from "../../lib/desk/agent";
 import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictation";
 import { DESK_GAP, type Rect } from "../../lib/desk/geometry";
+import { readFloatSpot } from "../../lib/desk/answer-float";
+import { AnswerMotion, type AnswerEdge } from "./answer-motion";
 import { useDeskStore } from "../../lib/desk/store";
 import { agentIsActing, relativeTime, sortThreads } from "../../lib/run";
 import { useAppStore } from "../../store";
@@ -58,6 +60,9 @@ const TIP_DELAY_MS = 350;
 const TIP_LINGER_MS = 200;
 /** The pointer on the pill this long before it grows: one passing over it on its way elsewhere does not (transitions.dev's intent delay, `--duration-micro`). */
 const PILL_HOVER_MS = 80;
+/** The pointer on the Bar's tray this long before it opens (the same intent delay), and off it this long before it closes: a pass on the way to the field, or a slip off its end, moves nothing. */
+const TRAY_OPEN_MS = 80;
+const TRAY_CLOSE_MS = 160;
 const PLATFORM = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
 /** The band above the Bar where its tooltips appear, and how far past its ends they may reach. */
 const TIP_BAND_H = 44;
@@ -183,6 +188,8 @@ export const DeskBar = memo(function DeskBar({
   context: GroupContextView | null;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
+  const laneRef = useRef<HTMLDivElement>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
   const pillRef = useRef<HTMLSpanElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -214,16 +221,70 @@ export const DeskBar = memo(function DeskBar({
   const [pickerOpen, setPickerOpen] = useState(false);
   const leaving = view.phase === "leaving";
   const cardShown = answerOpen && run !== null && !leaving;
+  // The card taken off the Bar (answer-motion.ts): whether it floats now, and whether it is in hand.
+  const [floating, setFloating] = useState(() => readFloatSpot()?.floating === true);
+  const [cardHeld, setCardHeld] = useState(false);
+  const motionRef = useRef<AnswerMotion | null>(null);
+  useLayoutEffect(() => {
+    const card = cardRef.current;
+    const lane = laneRef.current;
+    const ghost = ghostRef.current;
+    if (!cardShown || card === null || lane === null || ghost === null) return;
+    // Covers are the stage's: the lane stands in it at its gutter.
+    const origin = stageBox(lane) ?? { x: DESK_GAP, y: 0, w: 0, h: 0 };
+    const atStage = (rect: Rect | null): Rect | null => (rect === null ? null : { x: rect.x + origin.x, y: rect.y + origin.y, w: rect.w, h: rect.h });
+    const motion = new AnswerMotion(
+      {
+        lane,
+        card,
+        ghost,
+        bar: () => barRef.current,
+        floating: setFloating,
+        held: setCardHeld,
+        cover: (rect, slot) => {
+          engine.setCover("answer", atStage(rect));
+          engine.setCover("answer-slot", atStage(slot));
+        },
+      },
+      readFloatSpot(),
+    );
+    motionRef.current = motion;
+    return () => {
+      motion.destroy();
+      motionRef.current = null;
+      setCardHeld(false);
+    };
+  }, [cardShown, engine]);
+  // Floating, it is a window among the desk's: one the person brings up comes in front of it, its page live again,
+  // and a press on the card (or its button on the Bar) brings it back in front of them all.
+  useLayoutEffect(() => {
+    engine.stackCover("answer", cardShown && floating);
+  }, [engine, cardShown, floating]);
+  useEffect(() => () => engine.stackCover("answer", false), [engine]);
+  const raiseAnswer = useCallback(() => engine.raiseCover("answer"), [engine]);
+  // (A window's z is 10 above its place in the stack: DeskWindow.)
+  const answerZ = floating ? view.coverZ.get("answer") : undefined;
+  // Shown once no live page is under it — and, moving, kept shown while the pages it comes over give way.
+  const answerClear = view.clearCovers.has("answer");
+  const [answerSeen, setAnswerSeen] = useState(false);
+  useEffect(() => {
+    if (!cardShown) setAnswerSeen(false);
+    else if (answerClear) setAnswerSeen(true);
+  }, [cardShown, answerClear]);
+  const answerShown = answerClear || (cardShown && answerSeen);
 
-  useCover(engine, "answer", cardRef, cardShown);
   useCover(engine, "conversations", pickerRef, pickerOpen && !leaving);
   useCover(engine, "mentions", mentionsRef, mentionMenu !== null && !leaving);
 
   // The card opens when a turn starts — the person's message, or the agent
-  // asking something — and stays until it is closed.
+  // asking something — and when the person picks another conversation, so
+  // they see they are in a different thread; it stays until it is closed.
   const userMessages = run?.messages.filter((message) => message.role === "user").length ?? 0;
   const asking = run?.pendingQuestion?.id ?? run?.pendingTakeover?.id ?? run?.pendingApproval?.id ?? null;
   const seen = useRef({ runId: run?.runId ?? null, userMessages, asking });
+  // The conversation just picked in the picker, until it is the one open: set on the click, so it is in place
+  // whichever comes first, the picker's answer from main or the run it publishes.
+  const chosen = useRef<string | null>(null);
   useEffect(() => {
     const before = seen.current;
     seen.current = { runId: run?.runId ?? null, userMessages, asking };
@@ -233,14 +294,23 @@ export const DeskBar = memo(function DeskBar({
     }
     if (before.runId !== run.runId) {
       setWhole(false);
+      if (chosen.current === run.runId) {
+        chosen.current = null;
+        setAnswerOpen(true);
+        raiseAnswer();
+      }
       return;
     }
-    if (userMessages > before.userMessages || (asking !== null && asking !== before.asking)) setAnswerOpen(true);
-  }, [run, userMessages, asking]);
+    if (userMessages > before.userMessages || (asking !== null && asking !== before.asking)) {
+      setAnswerOpen(true);
+      raiseAnswer();
+    }
+  }, [run, userMessages, asking, raiseAnswer]);
 
-  // Escape closes what is open over the desk, the picker first.
+  // Escape closes what is open over the desk, the picker first; a floating answer is a window, and stays.
+  const answerCloses = cardShown && !floating;
   useEffect(() => {
-    if (!cardShown && !pickerOpen) return;
+    if (!answerCloses && !pickerOpen) return;
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       // Escape in a document's window is the document's (its editor, its sheet).
@@ -250,7 +320,7 @@ export const DeskBar = memo(function DeskBar({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cardShown, pickerOpen]);
+  }, [answerCloses, pickerOpen]);
 
   // The conversations go on a press anywhere else — a live page's too, which
   // the shell never hears itself (main relays it) — or Escape in a page.
@@ -271,6 +341,38 @@ export const DeskBar = memo(function DeskBar({
       window.removeEventListener("pointerdown", onDown, true);
     };
   }, [pickerOpen]);
+
+  // The answer goes as the conversations do, on a press anywhere else — a live page's too, which main relays — but
+  // not on the Bar, where the person writes to it, nor in what the Bar opens over it (the conversations, the mentions).
+  // Floating, it is a window: it stays.
+  useEffect(() => {
+    if (!answerCloses) return;
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "press") setAnswerOpen(false);
+    });
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target !== null && (cardRef.current?.contains(target) === true || anchorRef.current?.contains(target) === true)) return;
+      setAnswerOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      offPage?.();
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [answerCloses]);
+
+  // A press on a window gives it the keyboard once its page is live (the engine's pendingFocus), so the Bar lets go of
+  // it at once: grown over the windows while it held it, it would keep that page a still for good.
+  useEffect(() => {
+    const onDown = (event: PointerEvent): void => {
+      const field = document.activeElement;
+      if (!(event.target instanceof Element) || event.target.closest(".desk-window") === null || event.target.closest("button") !== null) return;
+      if (field instanceof HTMLElement && barRef.current?.contains(field) === true) field.blur();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
+  }, []);
 
   useEffect(() => {
     if (focusSignal > 0) focusInput();
@@ -298,7 +400,8 @@ export const DeskBar = memo(function DeskBar({
     window.clearTimeout(hoverTimer.current);
     setHovered(false);
   }, []);
-  const wanted = !composerIdle || focusWithin || hovered || cardShown || pickerOpen || mentionMenu !== null || fileDrag || drop.dragging;
+  // (A floating answer is no reason to: only one docked on it, or one in hand on its way home.)
+  const wanted = !composerIdle || focusWithin || hovered || (cardShown && !floating) || cardHeld || pickerOpen || mentionMenu !== null || fileDrag || drop.dragging;
   // Grown, the Bar is a cover (its whole footprint, whatever its width as it grows or shrinks: what is under it is the
   // same throughout), from the pointer coming to it until it is back down.
   const [overdue, setOverdue] = useState(false);
@@ -425,10 +528,13 @@ export const DeskBar = memo(function DeskBar({
   return (
     // Centred on the desk, on its foot.
     <div
+      ref={laneRef}
       className="desk-bar-lane"
       data-testid="desk-bar-lane"
-      style={{ left: DESK_GAP, right: DESK_GAP, bottom: 0, visibility: capturing ? "hidden" : undefined }}
+      style={{ left: DESK_GAP, right: DESK_GAP, bottom: 0, visibility: capturing ? "hidden" : undefined, "--desk-answer-z": answerZ === undefined ? undefined : String(10 + answerZ) } as React.CSSProperties}
     >
+      {/* The docked answer's slot, while a floating one comes back to it (answer-motion.ts draws it). */}
+      <div ref={ghostRef} className="desk-answer-ghost" data-testid="desk-answer-ghost" aria-hidden="true" />
       {/* One column, the Bar's width: the answer rests on the Bar, however tall the Bar grows. */}
       <div className="desk-bar-column">
         {cardShown ? (
@@ -436,11 +542,14 @@ export const DeskBar = memo(function DeskBar({
             ref={cardRef}
             run={run}
             whole={whole}
-            shown={shownCover("answer")}
+            shown={answerShown}
             onWhole={() => setWhole((value) => !value)}
             undo={undo}
             onUndo={onUndo}
             onClose={() => setAnswerOpen(false)}
+            onPress={(event, edge) => motionRef.current?.press(event, edge)}
+            onDock={() => motionRef.current?.dock()}
+            onRaise={raiseAnswer}
           />
         ) : null}
         <div ref={anchorRef} className="desk-bar-anchor">
@@ -453,6 +562,7 @@ export const DeskBar = memo(function DeskBar({
               threads={threads}
               run={run}
               shown={shownCover("conversations")}
+              onChoose={(runId) => (chosen.current = runId)}
               onClose={() => setPickerOpen(false)}
             />
           ) : null}
@@ -498,11 +608,19 @@ export const DeskBar = memo(function DeskBar({
                   onMentionMenu={setMentionMenu}
                   drop={drop}
                   answerOpen={cardShown}
+                  floating={cardShown && floating}
                   pickerOpen={pickerOpen}
                   tip={barTip}
                   onTipsGone={closeTips}
                   onSent={() => setAnswerOpen(true)}
-                  onToggleAnswer={() => setAnswerOpen((value) => !value)}
+                  // Floating, the answer is a window of its own: the button calls out where it is.
+                  onToggleAnswer={() => {
+                    if (!cardShown || !floating) setAnswerOpen((value) => !value);
+                    else {
+                      raiseAnswer();
+                      motionRef.current?.flash();
+                    }
+                  }}
                   onTogglePicker={() => setPickerOpen((value) => !value)}
                   onIdle={setComposerIdle}
                 />
@@ -527,6 +645,7 @@ function BarComposer({
   onMentionMenu,
   drop,
   answerOpen,
+  floating,
   pickerOpen,
   tip,
   onTipsGone,
@@ -546,6 +665,8 @@ function BarComposer({
   onMentionMenu: (menu: MentionMenuState | null) => void;
   drop: ReturnType<typeof useAttachmentDrop>;
   answerOpen: boolean;
+  /** The answer floats, a window of its own: the button says so, and calls it out. */
+  floating: boolean;
   pickerOpen: boolean;
   tip: (label: string) => BarTip;
   /** The row's buttons changed under the pointer: whatever tooltip was open has gone with its button. */
@@ -764,6 +885,15 @@ function BarComposer({
     }
   };
   const noteCaret = (event: React.SyntheticEvent<HTMLTextAreaElement>): void => setCaret(event.currentTarget.selectionStart);
+  /** The tray's New conversation: as the conversations' own, an empty one for the group, which the next message starts. */
+  const startNewConversation = (): void => {
+    if (pickerOpen) onTogglePicker();
+    nativeApi()
+      ?.deskConversation({ type: "new", groupId: group.id })
+      .catch((failure: unknown) => {
+        useAppStore.getState().showNotice(failure instanceof Error ? failure.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : "A new conversation could not be started", { tone: "warning" });
+      });
+  };
 
   const placeholder = fileDrag
     ? "Drop here to attach to your message"
@@ -831,6 +961,25 @@ function BarComposer({
             <DictationWave dictation={voice.dictation} phase={voice.phase} />
           </>
         ) : null}
+        {listening ? null : (
+          <BarTray held={pickerOpen}>
+            <BarButton label="Attach files" testId="desk-bar-attach" tip={tip("Attach files")} onClick={() => fileRef.current?.click()}>
+              <Paperclip aria-hidden="true" />
+            </BarButton>
+            <BarButton label="Conversations" testId="desk-bar-conversations" pressed={pickerOpen} tip={tip("Conversations")} onClick={onTogglePicker}>
+              <History aria-hidden="true" />
+            </BarButton>
+            <BarButton
+              label="New conversation"
+              testId="desk-bar-new-conversation"
+              unavailable={acting || run === null}
+              tip={tip(acting ? "Stop the agent first" : "New conversation")}
+              onClick={startNewConversation}
+            >
+              <SquarePen aria-hidden="true" />
+            </BarButton>
+          </BarTray>
+        )}
         <div className="desk-bar-field" hidden={listening}>
           {/* The mentions, lit behind the field's own text (which stays the field's, caret and all). */}
           <div ref={mirrorRef} aria-hidden="true" className="desk-bar-mirror text-copy-14 px-1 py-[7px] text-[14px] leading-[22px]">
@@ -863,25 +1012,16 @@ function BarComposer({
             rows={1}
           />
         </div>
-        {listening ? null : (
-          <BarButton label="Attach files" testId="desk-bar-attach" tip={tip("Attach files")} onClick={() => fileRef.current?.click()}>
-            <Paperclip aria-hidden="true" />
-          </BarButton>
-        )}
-        {listening ? null : (
-          <BarButton label="Conversations" testId="desk-bar-conversations" pressed={pickerOpen} tip={tip("Conversations")} onClick={onTogglePicker}>
-            <History aria-hidden="true" />
-          </BarButton>
-        )}
         {run === null || listening ? null : (
           <BarButton
-            label={answerOpen ? "Hide the answer" : "Show the answer"}
+            label={floating ? "Show where the answer is" : answerOpen ? "Hide the answer" : "Show the answer"}
             testId="desk-bar-answer"
-            pressed={answerOpen}
-            tip={tip(answerOpen ? "Hide the answer" : "Show the answer")}
+            pressed={answerOpen && !floating}
+            floating={floating}
+            tip={tip(floating ? "The answer is floating" : answerOpen ? "Hide the answer" : "Show the answer")}
             onClick={onToggleAnswer}
           >
-            {answerOpen ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />}
+            {floating ? <PictureInPicture2 aria-hidden="true" /> : answerOpen ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />}
           </BarButton>
         )}
         {canDictate && !listening ? (
@@ -965,11 +1105,70 @@ function MentionMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; men
 }
 
 /** One of the Bar's buttons, its label in a tooltip above it. */
+/**
+ * The tray at the field's leading end: a plus that, under the pointer or the
+ * keyboard, lets out the Bar's other tools — attach files, the
+ * conversations, a new one — sliding the field aside (shell.css, "The
+ * Bar's tray"). It stays out while what it opened is up (`held`: the
+ * conversations). A click on the plus opens or shuts it, for a pointer that
+ * cannot hover or one that wants it shut; shut while the pointer is on it,
+ * it waits for the pointer to leave and come back.
+ */
+function BarTray({ held, children }: { held: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const later = (next: boolean, ms: number): void => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setOpen(next), ms);
+  };
+  const shown = open || held;
+  const itemsId = useId();
+  return (
+    <div
+      className="desk-bar-tray"
+      data-testid="desk-bar-tray"
+      data-open={shown ? "" : undefined}
+      onPointerEnter={() => later(true, TRAY_OPEN_MS)}
+      onPointerLeave={() => later(false, TRAY_CLOSE_MS)}
+      onFocus={() => {
+        window.clearTimeout(timer.current);
+        setOpen(true);
+      }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        type="button"
+        className="desk-bar-button desk-bar-tray-plus"
+        data-testid="desk-bar-more"
+        aria-label="More"
+        aria-expanded={shown}
+        aria-controls={itemsId}
+        // A press leaves the keyboard where it was.
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          window.clearTimeout(timer.current);
+          setOpen((value) => !value);
+        }}
+      >
+        <Plus aria-hidden="true" />
+      </button>
+      {/* Shut, its tools are out of reach as well as out of sight. */}
+      <div id={itemsId} className="desk-bar-tray-items" inert={!shown}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function BarButton({
   buttonRef,
   label,
   testId,
   pressed,
+  floating = false,
   kind = "tool",
   unavailable = false,
   tip,
@@ -980,6 +1179,8 @@ function BarButton({
   label: string;
   testId: string;
   pressed?: boolean;
+  /** Marked with a dot: what it stands for floats elsewhere on the desk. */
+  floating?: boolean;
   /** Send and Stop are the Bar's filled round button; the rest its quiet ones. */
   kind?: "tool" | "send";
   /** Nothing to do yet (Send with nothing typed): it says so, but still shows its tooltip. */
@@ -997,6 +1198,7 @@ function BarButton({
         aria-pressed={pressed}
         aria-disabled={unavailable ? true : undefined}
         data-testid={testId}
+        data-floating={floating ? "" : undefined}
         className={kind === "send" ? "desk-bar-send" : "desk-bar-button"}
         // A press leaves the keyboard where it was.
         onMouseDown={(event) => event.preventDefault()}
@@ -1005,6 +1207,7 @@ function BarButton({
         }}
       >
         {children}
+        {floating ? <span className="desk-bar-floating-dot" aria-hidden="true" /> : null}
       </TooltipTrigger>
       <TooltipContent
         side="top"
@@ -1025,6 +1228,9 @@ function BarButton({
  * agent's steps as it takes them, its reply as it streams, and anything it
  * asks. "Whole conversation" shows every turn, scrolled to the end.
  */
+/** The resize ring's edges and corners, as a floating window's. */
+const ANSWER_EDGES: readonly AnswerEdge[] = ["n", "s", "e", "w", "nw", "ne", "sw", "se"];
+
 function AnswerCard({
   ref,
   run,
@@ -1034,6 +1240,9 @@ function AnswerCard({
   undo,
   onUndo,
   onClose,
+  onPress,
+  onDock,
+  onRaise,
 }: {
   ref: React.Ref<HTMLDivElement>;
   run: RunSummary;
@@ -1043,6 +1252,12 @@ function AnswerCard({
   undo: boolean;
   onUndo: () => void;
   onClose: () => void;
+  /** A press on its header (to lift it off the Bar, or move it) or on an edge of it floating (to resize it): answer-motion.ts's. */
+  onPress: (event: PointerEvent, edge?: AnswerEdge) => void;
+  /** Its dock button, floating: back onto the Bar. */
+  onDock: () => void;
+  /** A press anywhere on it: floating behind a window, it comes back in front (DeskEngine.raiseCover). */
+  onRaise: () => void;
 }) {
   const layout = useThreadLayout(run);
   const { tracesAt, outputsAt, pendingOutputs, sourcesAt, pendingSources } = layout;
@@ -1050,6 +1265,8 @@ function AnswerCard({
   while (lastAsked > 0 && run.messages[lastAsked]?.role !== "user") lastAsked -= 1;
   const from = whole ? 0 : Math.max(0, lastAsked);
   const earlier = from > 0;
+  // Its layers (shell.css, "The answer, detached"): where it is drawn and its mode are answer-motion.ts's to write,
+  // never React's — nothing here sets a style, or data-mode, on them.
   return (
     <div
       ref={ref}
@@ -1058,99 +1275,122 @@ function AnswerCard({
       data-testid="desk-answer"
       data-shown={shown ? "" : undefined}
       className="desk-answer"
+      onPointerDownCapture={onRaise}
     >
-      <header className="flex h-10 shrink-0 items-center gap-2 pr-2 pl-4">
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-gray-900" data-testid="desk-answer-title">
-          {run.title}
-        </span>
-        {undo ? (
-          <button type="button" data-testid="desk-undo-layout" className="desk-answer-action" onMouseDown={(event) => event.preventDefault()} onClick={onUndo}>
-            <Undo2 aria-hidden="true" />
-            Undo layout
-          </button>
-        ) : null}
-        {earlier || whole ? (
-          <button type="button" data-testid="desk-answer-whole" className="desk-answer-action" aria-pressed={whole} onMouseDown={(event) => event.preventDefault()} onClick={onWhole}>
-            {whole ? "Latest" : "Whole conversation"}
-          </button>
-        ) : null}
-        <button type="button" aria-label="Hide the answer" title="Hide (Esc)" data-testid="desk-answer-close" className="desk-bar-button" onMouseDown={(event) => event.preventDefault()} onClick={onClose}>
-          <ChevronDown aria-hidden="true" />
-        </button>
-      </header>
-      <MessageScroller.Provider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={48}>
-        <MessageScroller.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <MessageScroller.Viewport className="scroll-thin flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" aria-label="Conversation">
-            <MessageScroller.Content className="flex shrink-0 flex-col px-4 pt-1 pb-4" aria-busy={run.status === "running"}>
-              <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-                {run.result === null ? "" : "Answer complete"}
-              </span>
-              {run.messages.map((message, index) =>
-                index < from ? null : (
-                  <MessageScroller.Item key={message.id} messageId={message.id} scrollAnchor={message.role === "user"} className="mb-4 min-w-0">
-                    <MessageRow
-                      message={message}
-                      outputs={outputsAt.get(index)}
-                      sources={sourcesAt.get(index)}
-                      links="glance"
-                      canRetry={
-                        message.role === "assistant" &&
-                        index === run.messages.length - 1 &&
-                        !agentIsActing(run) &&
-                        run.status !== "waiting_for_judgment" &&
-                        run.status !== "waiting_for_approval" &&
-                        run.status !== "human_control" &&
-                        run.executor?.kind !== "cloud"
-                      }
-                    />
-                    {(tracesAt.get(index) ?? []).map((turn) => (
-                      <Fragment key={turn.turn}>
-                        <WorkTrace turn={turn} latest={turn.toolCalls.at(-1) === run.toolCalls.at(-1)} awaitingApproval={run.status === "waiting_for_approval"} />
-                        {pendingOutputs.has(turn.turn) ? (
-                          <div className="mt-3">
-                            <OutputCards outputs={pendingOutputs.get(turn.turn)!} />
-                          </div>
-                        ) : null}
-                      </Fragment>
-                    ))}
-                  </MessageScroller.Item>
-                ),
-              )}
-              {run.pendingQuestion === null ? null : (
-                <MessageScroller.Item messageId={run.pendingQuestion.id} className="mb-4 min-w-0">
-                  <ClarificationCard run={run} />
-                </MessageScroller.Item>
-              )}
-              {run.pendingTakeover === null ? null : (
-                <MessageScroller.Item messageId={run.pendingTakeover.id} className="mb-4 min-w-0">
-                  <TakeoverCard run={run} />
-                </MessageScroller.Item>
-              )}
-              {run.pendingApproval === null ? null : (
-                <MessageScroller.Item messageId={run.pendingApproval.id} className="mb-4 min-w-0">
-                  <ApprovalCard run={run} />
-                </MessageScroller.Item>
-              )}
-              {run.result === null ? null : (
-                <MessageScroller.Item messageId={`result-${run.runId}`} className="mb-1 min-w-0">
-                  <CompletionMeta run={run} />
-                </MessageScroller.Item>
-              )}
-              {run.status === "running" ? (
-                <MessageScroller.Item messageId={`working-${run.runId}`} className="mb-4 min-w-0">
-                  <LiveReply run={run} sources={pendingSources} links="glance" tabChip={false} />
-                </MessageScroller.Item>
+      <div className="desk-answer-vis">
+        <div className="desk-answer-frame" aria-hidden="true">
+          <div className="desk-answer-lift" />
+          <div className="desk-answer-sheen" />
+          <div className="desk-answer-flash" />
+        </div>
+        <div className="desk-answer-content">
+          <header className="desk-answer-head flex h-10 shrink-0 items-center gap-2 pr-2 pl-4" data-testid="desk-answer-head" onPointerDown={(event) => onPress(event.nativeEvent)}>
+            <span className="desk-answer-grab" aria-hidden="true" />
+            <span className="desk-answer-title min-w-0 flex-1 truncate text-[12.5px] font-medium text-gray-900" data-testid="desk-answer-title">
+              {run.title}
+            </span>
+            <div className="desk-answer-actions flex shrink-0 items-center gap-2">
+              {undo ? (
+                <button type="button" data-testid="desk-undo-layout" className="desk-answer-action" onMouseDown={(event) => event.preventDefault()} onClick={onUndo}>
+                  <Undo2 aria-hidden="true" />
+                  Undo layout
+                </button>
               ) : null}
-            </MessageScroller.Content>
-          </MessageScroller.Viewport>
-          <MessageScroller.Button
-            direction="end"
-            className="absolute bottom-2 left-1/2 z-10 flex h-6 -translate-x-1/2 cursor-pointer items-center gap-1 rounded-full bg-gray-1000 px-2.5 text-[11px] font-medium whitespace-nowrap text-background-100 shadow-menu transition-[opacity,translate] inert:pointer-events-none inert:translate-y-2 inert:opacity-0"
-          >
-            <ArrowDown className="size-3" aria-hidden="true" /> Latest
-          </MessageScroller.Button>
-        </MessageScroller.Root>
-      </MessageScroller.Provider>
+              {earlier || whole ? (
+                <button type="button" data-testid="desk-answer-whole" className="desk-answer-action" aria-pressed={whole} onMouseDown={(event) => event.preventDefault()} onClick={onWhole}>
+                  {whole ? "Latest" : "Whole conversation"}
+                </button>
+              ) : null}
+              <button type="button" aria-label="Hide the answer" title="Hide (Esc)" data-testid="desk-answer-close" className="desk-bar-button desk-answer-docked-only" onMouseDown={(event) => event.preventDefault()} onClick={onClose}>
+                <ChevronDown aria-hidden="true" />
+              </button>
+              <button type="button" aria-label="Put it back on the Bar" title="Put it back on the Bar" data-testid="desk-answer-dock" className="desk-bar-button desk-answer-floating-only" onMouseDown={(event) => event.preventDefault()} onClick={onDock}>
+                <ArrowDownToLine aria-hidden="true" />
+              </button>
+            </div>
+          </header>
+          <MessageScroller.Provider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={48}>
+            <MessageScroller.Root className="desk-answer-body relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <MessageScroller.Viewport className="desk-answer-viewport scroll-thin flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" aria-label="Conversation">
+                <MessageScroller.Content className="flex shrink-0 flex-col px-4 pt-1 pb-4" aria-busy={run.status === "running"}>
+                  <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+                    {run.result === null ? "" : "Answer complete"}
+                  </span>
+                  {run.messages.map((message, index) =>
+                    index < from ? null : (
+                      <MessageScroller.Item key={message.id} messageId={message.id} scrollAnchor={message.role === "user"} className="mb-4 min-w-0">
+                        <MessageRow
+                          message={message}
+                          outputs={outputsAt.get(index)}
+                          sources={sourcesAt.get(index)}
+                          links="glance"
+                          canRetry={
+                            message.role === "assistant" &&
+                            index === run.messages.length - 1 &&
+                            !agentIsActing(run) &&
+                            run.status !== "waiting_for_judgment" &&
+                            run.status !== "waiting_for_approval" &&
+                            run.status !== "human_control" &&
+                            run.executor?.kind !== "cloud"
+                          }
+                        />
+                        {(tracesAt.get(index) ?? []).map((turn) => (
+                          <Fragment key={turn.turn}>
+                            <WorkTrace turn={turn} latest={turn.toolCalls.at(-1) === run.toolCalls.at(-1)} awaitingApproval={run.status === "waiting_for_approval"} />
+                            {pendingOutputs.has(turn.turn) ? (
+                              <div className="mt-3">
+                                <OutputCards outputs={pendingOutputs.get(turn.turn)!} />
+                              </div>
+                            ) : null}
+                          </Fragment>
+                        ))}
+                      </MessageScroller.Item>
+                    ),
+                  )}
+                  {run.pendingQuestion === null ? null : (
+                    <MessageScroller.Item messageId={run.pendingQuestion.id} className="mb-4 min-w-0">
+                      <ClarificationCard run={run} />
+                    </MessageScroller.Item>
+                  )}
+                  {run.pendingTakeover === null ? null : (
+                    <MessageScroller.Item messageId={run.pendingTakeover.id} className="mb-4 min-w-0">
+                      <TakeoverCard run={run} />
+                    </MessageScroller.Item>
+                  )}
+                  {run.pendingApproval === null ? null : (
+                    <MessageScroller.Item messageId={run.pendingApproval.id} className="mb-4 min-w-0">
+                      <ApprovalCard run={run} />
+                    </MessageScroller.Item>
+                  )}
+                  {run.result === null ? null : (
+                    <MessageScroller.Item messageId={`result-${run.runId}`} className="mb-1 min-w-0">
+                      <CompletionMeta run={run} />
+                    </MessageScroller.Item>
+                  )}
+                  {run.status === "running" ? (
+                    <MessageScroller.Item messageId={`working-${run.runId}`} className="mb-4 min-w-0">
+                      <LiveReply run={run} sources={pendingSources} links="glance" tabChip={false} />
+                    </MessageScroller.Item>
+                  ) : null}
+                </MessageScroller.Content>
+              </MessageScroller.Viewport>
+              <MessageScroller.Button
+                direction="end"
+                className="absolute bottom-2 left-1/2 z-10 flex h-6 -translate-x-1/2 cursor-pointer items-center gap-1 rounded-full bg-gray-1000 px-2.5 text-[11px] font-medium whitespace-nowrap text-background-100 shadow-menu transition-[opacity,translate] inert:pointer-events-none inert:translate-y-2 inert:opacity-0"
+              >
+                <ArrowDown className="size-3" aria-hidden="true" /> Latest
+              </MessageScroller.Button>
+            </MessageScroller.Root>
+          </MessageScroller.Provider>
+        </div>
+        {/* The morph's still copy of how it was lies here (answer-motion.ts): React keeps it empty. */}
+        <div className="desk-answer-snap" aria-hidden="true" />
+      </div>
+      <div className="desk-answer-edges" aria-hidden="true">
+        {ANSWER_EDGES.map((edge) => (
+          <div key={edge} className="desk-answer-edge" data-edge={edge} onPointerDown={(event) => onPress(event.nativeEvent, edge)} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1166,8 +1406,10 @@ function startedIn(thread: ThreadListItem, groupId: string, groups: readonly Tab
 /**
  * Every conversation, newest first, each marked with the group it started
  * in. Choosing one continues it at this desk — the group's conversation
- * from then on; New conversation starts an empty one for the group. While
- * the agent is acting the console is its, and nothing here can be chosen.
+ * from then on — and the Bar opens its card on it (`onChoose`, null again
+ * when it could not be opened); New conversation starts an empty one for
+ * the group. While the agent is acting the console is its, and nothing here
+ * can be chosen.
  */
 function ConversationPicker({
   ref,
@@ -1176,6 +1418,7 @@ function ConversationPicker({
   threads,
   run,
   shown,
+  onChoose,
   onClose,
 }: {
   ref: React.Ref<HTMLDivElement>;
@@ -1184,6 +1427,7 @@ function ConversationPicker({
   threads: readonly ThreadListItem[];
   run: RunSummary | null;
   shown: boolean;
+  onChoose: (runId: string | null) => void;
   onClose: () => void;
 }) {
   const acting = agentIsActing(run);
@@ -1191,9 +1435,13 @@ function ConversationPicker({
   const act = (command: Parameters<NonNullable<ReturnType<typeof nativeApi>>["deskConversation"]>[0]): void => {
     const api = nativeApi();
     if (api === null) return;
+    if (command.type === "choose") onChoose(command.runId);
     api.deskConversation(command).then(
       () => onClose(),
-      (failure: unknown) => setError(failure instanceof Error ? failure.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : "That conversation could not be opened"),
+      (failure: unknown) => {
+        if (command.type === "choose") onChoose(null);
+        setError(failure instanceof Error ? failure.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : "That conversation could not be opened");
+      },
     );
   };
   const sorted = sortThreads([...threads]);

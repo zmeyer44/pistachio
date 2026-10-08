@@ -43,19 +43,31 @@ export interface AgentTabInfo {
    * and which tab a person has in front is its session host's to know).
    */
   active?: boolean;
+  /**
+   * True on a tab the agent opened for itself on the desktop: a hidden tab,
+   * out of the person's sight — not among their tabs, not on a desk —
+   * until `focusTab` shows it to them. Absent on the person's own tabs and
+   * on the cloud browser, whose tabs are all the run's.
+   */
+  hidden?: boolean;
 }
 
 export interface BrowserBackend {
   readonly kind: "desktop" | "cloud";
   listTabs(): AgentTabInfo[];
   /**
-   * Open a tab for the agent to work in. The desktop opens it in the
-   * background — the person stays on the tab they are looking at, and every
-   * other operation here works on a tab off screen. The cloud browser makes
-   * it the run's front tab, which is what its live view follows.
+   * Open a tab for the agent to work in. The desktop opens a hidden tab —
+   * the person never sees it, and every other operation here works on it
+   * off screen — so searching and browsing leave the person's browser as
+   * it was. The cloud browser makes it the run's front tab, which is what
+   * its live view follows.
    */
   openTab(url?: string): Promise<string>;
-  /** Bring a tab to the front: on the desktop, switch the person to it (`tab_show`). */
+  /**
+   * Bring a tab to the front (`tab_show`). On the desktop that is showing
+   * the person a page: a hidden tab joins their tabs, and they are switched
+   * to it — or, at a desk, it comes out onto the desk.
+   */
   focusTab(tabId: string): Promise<void>;
   navigate(tabId: string, url: string): Promise<void>;
   back(tabId: string): Promise<void>;
@@ -81,11 +93,14 @@ export async function executeBrowserTool(backend: BrowserBackend, request: Brows
     }
     case "tab.open": {
       const tabId = await backend.openTab(request.url);
-      return { summary: backend.kind === "desktop" ? "Opened a new tab in the background" : "Opened a new tab", data: { tabId } };
+      return { summary: backend.kind === "desktop" ? "Opened a hidden tab, out of the person's sight" : "Opened a new tab", data: { tabId } };
     }
     case "tab.show":
       await backend.focusTab(request.tabId);
-      return { summary: "Brought the tab to the front; the person is looking at it now", data: { tabId: request.tabId } };
+      return {
+        summary: backend.kind === "desktop" ? "Showed the tab to the person; it is one of their tabs now" : "Brought the tab to the front; the person is looking at it now",
+        data: { tabId: request.tabId },
+      };
     case "page.inspect": {
       const page = await backend.inspect(request.tabId);
       return { summary: `Inspected ${page.title}`, data: page };

@@ -1,7 +1,7 @@
 /**
  * `executeBrowserTool`'s own words to the model about tabs: that a tab it
- * opens is in the background on the desktop, that `tab.show` is what puts a
- * tab in front of the person, and that a click which opened a tab names it.
+ * opens on the desktop is hidden from the person, that `tab.show` is what
+ * puts a tab in front of them, and that a click which opened a tab names it.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -31,9 +31,9 @@ function stubBackend(kind: BrowserBackend["kind"], tabs: AgentTabInfo[]): Browse
 }
 
 describe("tab dispatch", () => {
-  it("tells the model a desktop tab opened in the background, and a cloud one just opened", async () => {
+  it("tells the model a desktop tab opened hidden from the person, and a cloud one just opened", async () => {
     const desktop = await executeBrowserTool(stubBackend("desktop", []), { name: "tab.open", url: "https://example.test/" });
-    expect(desktop).toEqual({ summary: "Opened a new tab in the background", data: { tabId: "tab-new" } });
+    expect(desktop).toEqual({ summary: "Opened a hidden tab, out of the person's sight", data: { tabId: "tab-new" } });
     const cloud = await executeBrowserTool(stubBackend("cloud", []), { name: "tab.open" });
     expect(cloud.summary).toBe("Opened a new tab");
   });
@@ -43,7 +43,7 @@ describe("tab dispatch", () => {
     const result = await executeBrowserTool(backend, { name: "tab.show", tabId: "tab-1" });
     expect(backend.focusTab).toHaveBeenCalledWith("tab-1");
     expect(result.data).toEqual({ tabId: "tab-1" });
-    expect(result.summary).toContain("the person is looking at it now");
+    expect(result.summary).toBe("Showed the tab to the person; it is one of their tabs now");
   });
 
   it("names the tab a click opened", async () => {

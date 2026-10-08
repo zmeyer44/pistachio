@@ -47,6 +47,7 @@ function media(overrides: Partial<BrowserMediaInfo> = {}): BrowserMediaInfo {
     hasVideo: false,
     playing: true,
     elementMuted: false,
+    volume: 1,
     muted: false,
     audible: true,
     position: 10,

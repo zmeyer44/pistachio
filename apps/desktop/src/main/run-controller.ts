@@ -523,7 +523,8 @@ export class RunController {
     this.#integrations = options.integrations ?? null;
     this.#onRunEnded = options.onRunEnded ?? null;
     this.#browser = options.browser;
-    this.#tools = new DesktopBrowserBackend(options.browser);
+    // The agent's hidden tabs belong to the conversation open when it opened them.
+    this.#tools = new DesktopBrowserBackend(options.browser, () => this.#run?.runId ?? null);
     this.#notifications = options.notifications;
     this.#onChange = options.onChange;
   }
@@ -918,6 +919,8 @@ export class RunController {
     }
     this.#persistNow();
     this.#settleWaiter(run, "Set aside before it finished");
+    // What the agent looked up out of sight goes with the conversation it was for.
+    this.#browser.closeHiddenTabs(run.runId);
   }
 
   /** A reminder's task ended without completing: resolve the scheduler's wait and free the console. */
@@ -1725,9 +1728,9 @@ export class RunController {
         },
       };
 
-      // A tab the agent brings onto the desk comes out beside the window in
-      // use, never taking the keyboard; a desk that cannot is no failure of
-      // the tool that opened it.
+      // A tab the agent shows on the desk (tab_show) comes out beside the
+      // window in use, never taking the keyboard; a desk that cannot is no
+      // failure of the tool that showed it.
       const browser = desk === null
         ? this.#tools
         : new DeskScope(this.#tools, desk.host.browser, desk.groupId, (tabId) => {

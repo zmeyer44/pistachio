@@ -134,6 +134,15 @@ export interface BrowserTabInfo {
    */
   unlisted: boolean;
   /**
+   * An agent's hidden tab: the run it searches and browses for, out of the
+   * person's sight. Main keeps it out of the tab order — so out of
+   * `ShellSnapshot.tabs`, every list and count, every Space and desk — and
+   * never shows it, until the person asks to see the page (the agent's
+   * `tab_show`, or the chat's Show): then it joins their tabs and loses
+   * this. Absent on every other tab. Always `unlisted` while set.
+   */
+  hiddenFor?: string;
+  /**
    * The sidebar shelf entry this tab is the live page of — a pin's or a
    * favorite's id, or `preset:<url>` for an organization link — or null for
    * an ordinary day tab (@pistachio/shell-contracts/sidebar). Closing an anchored tab keeps
@@ -210,6 +219,13 @@ export interface ShellSnapshot {
    * blank shows while the page arrives.
    */
   wakingTabIds: string[];
+  /**
+   * The agent's hidden tabs (BrowserTabInfo.hiddenFor), in every Space:
+   * never among `tabs`. Only the chat reads them, to say which page the
+   * agent is working in and offer to show it. Absent where tabs cannot be
+   * hidden.
+   */
+  hiddenTabs?: BrowserTabInfo[];
   /** The first other visible split member, retained for API compatibility. */
   secondaryTabId: string | null;
   splitMode: SplitMode;
@@ -1164,6 +1180,13 @@ export interface NativeSurfaceApi {
    * the desk or has no page.
    */
   deskLiveSource(tabId: string): Promise<string | null>;
+  /**
+   * The colours just inside a desk page's two top corners, as CSS colours,
+   * for the shell to paint behind them while a bar lies over the page's top
+   * (main cuts a page round at all four corners alike); null when the tab
+   * is not a page on the desk, or nothing could be read.
+   */
+  deskPageCorners(tabId: string): Promise<{ left: string; right: string } | null>;
   /** Make this tab the active one and give its page the keyboard, if its view is on screen. */
   focusTab(tabId: string): void;
   /** The grab key was held as a desk page was pressed: the move is the shell's from here. */
@@ -1372,6 +1395,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   setDesk: "Arms main's hook on the desk windows' native page views for the grab key.",
   captureTabStills: "Captures native tab views, shown or hidden, for the desk's drawn windows.",
   deskLiveSource: "Hands the shell a capture of a native tab view, granted by main for that view's session.",
+  deskPageCorners: "Reads two pixels of a native tab view, which only main can capture.",
   focusTab: "Hands the keyboard to one native tab view among the desk's several.",
   onDeskGrab: "Fires from main's mouse hook on a native page view.",
   onDeskShift: "Fires from main's relay of every view's keys, native page views included.",
@@ -1538,6 +1562,7 @@ export const IPC = {
   deskSet: "pistachio:desk-set",
   deskStillsCapture: "pistachio:desk-stills-capture",
   deskLiveSource: "pistachio:desk-live-source",
+  deskPageCorners: "pistachio:desk-page-corners",
   deskFocus: "pistachio:desk-focus",
   deskGrab: "pistachio:desk-grab",
   deskShift: "pistachio:desk-shift",

@@ -857,6 +857,7 @@ export class DemoShellHost {
       hasVideo: media.hasVideo,
       playing: true,
       elementMuted: false,
+      volume: 1,
       muted: false,
       audible: true,
       position: media.position ?? 0,
@@ -901,6 +902,9 @@ export class DemoShellHost {
         return;
       case "setRate":
         this.#updateMedia(tabId, () => ({ playbackRate: control.rate }));
+        return;
+      case "setVolume":
+        this.#updateMedia(tabId, () => ({ volume: control.volume, muted: control.volume === 0, elementMuted: control.volume === 0 }));
         return;
       case "mute":
         this.#updateMedia(tabId, (item) => ({ muted: !item.muted, elementMuted: !item.muted, audible: item.playing && item.muted }));

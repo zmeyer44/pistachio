@@ -657,6 +657,7 @@ function startPagePreload(): void {
       hasVideo: video,
       playing: !media.paused && !media.ended,
       elementMuted: media.muted || media.volume === 0,
+      volume: Number.isFinite(media.volume) ? Math.min(1, Math.max(0, media.volume)) : 1,
       position: Number.isFinite(media.currentTime) ? Math.max(0, media.currentTime) : 0,
       duration,
       playbackRate: Number.isFinite(media.playbackRate) && media.playbackRate > 0 ? media.playbackRate : 1,
@@ -816,6 +817,11 @@ function startPagePreload(): void {
       // Both, so a site that resets to the default on the next track keeps the choice.
       media.defaultPlaybackRate = rate;
       media.playbackRate = rate;
+    } else if (control.type === "setVolume" && Number.isFinite(control.volume)) {
+      // Its own volume, whatever the system's or another page's; turned up, it is heard again if it was muted.
+      const volume = Math.min(1, Math.max(0, control.volume));
+      media.volume = volume;
+      if (volume > 0 && media.muted) media.muted = false;
     } else if (control.type === "mute") {
       media.muted = !media.muted;
     } else if (control.type === "dismiss") {

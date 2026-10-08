@@ -23,6 +23,7 @@ import { createPortal } from "react-dom";
 import type { DeskPipMedia } from "@pistachio/shell-contracts/desk";
 import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 import { nativeApi } from "../../api";
+import { useDeskChrome } from "../../lib/desk/chrome";
 import { showOnDesk, useDeskEngine, useDeskWindowKey } from "../../lib/desk/open";
 import { useNowPlaying, type PipSpot } from "../../lib/desk/now-playing";
 import { PIP_EDGE_CURSORS, PIP_W, clampPipBox, pipHeight, pipWidth, resizedPipBox, type PipBox } from "../../lib/desk/pip-box";
@@ -83,6 +84,7 @@ function pipMedia(media: BrowserMediaInfo): DeskPipMedia {
     title: media.title || media.tabTitle || "Video",
     playing: media.playing,
     muted: media.muted,
+    volume: media.volume,
     position: media.position,
     duration: media.duration,
     updatedAt: media.updatedAt,
@@ -127,8 +129,12 @@ function DeskPip({ media }: { media: BrowserMediaInfo }) {
   // Anything the shell raises over the window (a menu, the address palette, settings, the tab switcher, the
   // screenshot selector) may lie over it.
   const raised = useAppStore((state) => state.overlay !== "none" || state.onboardingOpen || state.screenshotSelecting);
-  // Its window still on its way into its row: the page is the desk's until it has gone.
-  const leaving = useDeskWindowKey().split(" ").includes(media.tabId);
+  // Its window still on its way into its row: the page is the desk's until it has gone. Behind a window filling the
+  // desk, its window stays out, and the page is let go once it is drawn there (a still: no view of the desk's).
+  const behind = useDeskChrome((state) => state.behind.has(media.tabId));
+  const out = useDeskWindowKey().split(" ").includes(media.tabId);
+  const drawnBehind = behind && view?.windows.find((window) => window.tabId === media.tabId)?.drawn === true;
+  const leaving = out && !drawnBehind;
   const covered = raised || leaving || view?.floatCovered === true;
   const [held, setHeld] = useState<PipBox | null>(null);
   const box = held ?? placedBox(spot, size);

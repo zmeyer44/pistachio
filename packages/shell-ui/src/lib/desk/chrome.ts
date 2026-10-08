@@ -41,12 +41,15 @@ export interface DeskCard {
 interface DeskChromeState {
   /** The tabs whose windows are out on the desk, and which is in use. */
   marks: ReadonlyMap<string, DeskMark>;
+  /** Of those, the ones behind a window filling the desk: out of sight, as a tab left in the background is. */
+  behind: ReadonlySet<string>;
   card: DeskCard | null;
   hovered: string | null;
   agentTab: string | null;
   /** On the rail, the place under the row of the favorite whose desk is up (its anchor's id), for its desk's tabs and Stack. */
   favoriteEntry: { anchorId: string; el: HTMLElement } | null;
   setMarks(marks: ReadonlyMap<string, DeskMark>): void;
+  setBehind(behind: ReadonlySet<string>): void;
   openCard(card: DeskCard): void;
   closeCard(kind?: DeskCard["kind"]): void;
   setHovered(tabId: string | null): void;
@@ -55,9 +58,11 @@ interface DeskChromeState {
 }
 
 const NO_MARKS: ReadonlyMap<string, DeskMark> = new Map();
+const NONE_BEHIND: ReadonlySet<string> = new Set();
 
 export const useDeskChrome = create<DeskChromeState>((set, get) => ({
   marks: NO_MARKS,
+  behind: NONE_BEHIND,
   card: null,
   hovered: null,
   agentTab: null,
@@ -66,6 +71,11 @@ export const useDeskChrome = create<DeskChromeState>((set, get) => ({
     const before = get().marks;
     if (before.size === marks.size && [...marks].every(([id, mark]) => before.get(id) === mark)) return;
     set({ marks: marks.size === 0 ? NO_MARKS : marks });
+  },
+  setBehind: (behind) => {
+    const before = get().behind;
+    if (before.size === behind.size && [...behind].every((id) => before.has(id))) return;
+    set({ behind: behind.size === 0 ? NONE_BEHIND : behind });
   },
   openCard: (card) => set({ card }),
   closeCard: (kind) => {

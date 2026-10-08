@@ -172,12 +172,12 @@ export type SnapZone = "left" | "right" | "top-left" | "top-right" | "bottom-lef
  * The zone a pointer arms by pushing into an edge of the desk while it
  * carries a window, the way a window pushed into a screen edge offers to
  * tile: a side edge is that half, the top edge is the whole desk, and the
- * ends of an edge are the quarters in that corner. The leading edge's band
- * may be deeper (`leftEdge`): past it lie the dock's pads (dockDropAt), and
- * a push meant for the left half must not have to stop on a line.
+ * ends of an edge are the quarters in that corner. Past an edge counts as
+ * at it: a pointer carried out over the sidebar lights the left half, as one
+ * carried off the window's right side lights the right.
  */
-export function edgeZone(point: Point, bounds: Rect, edge = 18, corner = 96, leftEdge = edge): SnapZone | null {
-  const nearLeft = point.x <= bounds.x + leftEdge;
+export function edgeZone(point: Point, bounds: Rect, edge = 18, corner = 96): SnapZone | null {
+  const nearLeft = point.x <= bounds.x + edge;
   const nearRight = point.x >= rightOf(bounds) - edge;
   const nearTop = point.y <= bounds.y + edge;
   const nearBottom = point.y >= bottomOf(bounds) - edge;
@@ -937,46 +937,6 @@ export function placeNewWindow(existing: readonly Rect[], bounds: Rect, inUse: n
     }
   }
   return { rect: freeSpot(existing, windowSize(bounds), bounds), split: null, kind: "free" };
-}
-
-/* ------------------------- the dock's pads ------------------------- */
-
-/** What a window let go at the desk's leading edge does, once the dock has slid away: back into the dock, or its tab closed. */
-export type DockDrop = "away" | "close";
-
-export interface DockDrops {
-  away: Rect;
-  close: Rect;
-}
-
-/**
- * The drop rail's two segments over the sidebar's column while a window is
- * carried near the desk's leading edge (`side`, the column in the stage:
- * left of it, at negative x): back into the dock above, and its tab closed
- * below — where the Dock keeps its Trash — the smaller of the two, since
- * closing is the one to mean. From `top` down: above it, the window's own
- * buttons may sit over the column.
- */
-export function sidebarDrops(side: Rect, inset = 6, gap = DESK_GAP, top = side.y + inset): DockDrops {
-  const inner = Math.max(0, side.y + side.h - inset - top);
-  const closeH = Math.min(Math.round(inner * 0.4), Math.max(120, Math.min(220, Math.round(inner * 0.28))));
-  const x = side.x + inset;
-  const w = Math.max(1, side.w - inset * 2);
-  const close = { x, y: top + inner - closeH, w, h: closeH };
-  return { away: { x, y: top, w, h: Math.max(0, close.y - gap - top) }, close };
-}
-
-/**
- * The segment a carried window is over: anything left of `edge` (the desk's
- * leading edge: the sidebar, or further out), level with the rail, split
- * where the two segments meet. Right of `edge` is the desk, where the
- * leading edge's band offers the left half and its quarters (edgeZone):
- * the two never overlap, so a lit target is the only one.
- */
-export function dockDropAt(point: Point, drops: DockDrops, edge: number, slack = 24): DockDrop | null {
-  if (drops.away.w <= 0 || point.x >= edge || point.y < drops.away.y - slack || point.y > bottomOf(drops.close) + slack) return null;
-  const split = (bottomOf(drops.away) + drops.close.y) / 2;
-  return point.y >= split ? "close" : "away";
 }
 
 /**

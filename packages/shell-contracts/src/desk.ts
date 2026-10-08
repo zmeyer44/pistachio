@@ -457,6 +457,8 @@ export interface DeskPipMedia {
   title: string;
   playing: boolean;
   muted: boolean;
+  /** Its player's own volume, 0 to 1, its mute aside (BrowserMediaInfo.volume). */
+  volume: number;
   position: number;
   duration: number | null;
   /** Wall-clock time of `position`, for the playhead to move between reports. */
@@ -522,6 +524,9 @@ export function isDeskPipFrame(value: unknown): value is DeskPipFrame {
     media.title.length <= 2000 &&
     typeof media.playing === "boolean" &&
     typeof media.muted === "boolean" &&
+    finite(media.volume) &&
+    media.volume >= 0 &&
+    media.volume <= 1 &&
     finite(media.position) &&
     (media.duration === null || finite(media.duration)) &&
     finite(media.updatedAt) &&

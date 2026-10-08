@@ -785,6 +785,7 @@ export function useBackgroundMedia(): {
   );
   const onDesk = useDeskStore((state) => state.groupId !== null);
   const deskMarks = useDeskChrome((state) => state.marks);
+  const deskBehind = useDeskChrome((state) => state.behind);
   const popped = useNowPlaying((state) => state.popped);
   const closing = useNowPlaying((state) => state.closing);
   const visible = new Set(visibleTabIds);
@@ -800,8 +801,11 @@ export function useBackgroundMedia(): {
     // Nor is a tab whose window the desk closed, its page still unloading.
     if (closing.includes(item.tabId)) return false;
     const sent = onDesk && popped.includes(item.tabId);
-    // (On a desk, main's visible tabs are no guide: with no window out, it counts the tab in use as one.)
-    const foreground = onDesk ? deskMarks.has(item.tabId) || (item.tabId === activeTabId && !sent) : item.tabId === activeTabId || visible.has(item.tabId);
+    // (On a desk, main's visible tabs are no guide: with no window out, it counts the tab in use as one. A window behind
+    // one filling the desk is out, but out of sight.)
+    const foreground = onDesk
+      ? (deskMarks.has(item.tabId) && !deskBehind.has(item.tabId)) || (item.tabId === activeTabId && !sent)
+      : item.tabId === activeTabId || visible.has(item.tabId);
     if (item.presenting || foreground) {
       if (item.hasVideo) continuedVideoTabIds.delete(item.tabId);
       return false;

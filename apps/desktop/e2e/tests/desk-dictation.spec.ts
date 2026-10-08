@@ -93,6 +93,7 @@ test("dictation in the desk's Bar: it listens, and what was said lands at the ca
     await dictate.click();
     await expect(wave).toHaveAttribute("data-phase", "recording");
     await expect(input).toBeHidden();
+    await expect(shell.getByTestId("desk-bar-more")).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar-attach")).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar-conversations")).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar-send")).toHaveCount(0);
@@ -116,7 +117,7 @@ test("dictation in the desk's Bar: it listens, and what was said lands at the ca
     expect(first?.mediaType).toMatch(/^audio\//);
     expect(first?.bytes).toBeGreaterThan(1_000);
     await expect(shell.getByTestId("desk-bar-send")).toBeVisible();
-    await expect(shell.getByTestId("desk-bar-attach")).toBeVisible();
+    await expect(shell.getByTestId("desk-bar-more")).toBeVisible();
     await capture(app, shell, "03-transcribed.png");
 
     expect(pageErrors).toEqual([]);

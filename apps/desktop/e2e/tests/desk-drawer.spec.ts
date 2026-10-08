@@ -100,6 +100,22 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
     await expect.poll(async () => (await liveViews(app)).find((view) => view.url === url)?.bounds.y).toBe(Math.round(cascaded.y));
     // The other, not in use and not under the pointer: in.
     await expect(shell.locator(windowSelector(other))).not.toHaveAttribute("data-drawer-out", "");
+    // Under its drawer the page meets it square, its foot round: the page's box behind its live view (which main cuts
+    // round at every corner) squares off and is painted at its top in the page's own colours, what its corners show.
+    const pageBox = `${windowSelector(tabId)} [data-testid="desk-window-page"]`;
+    const corners = (selector: string): Promise<string[]> =>
+      shell.locator(selector).evaluate((el) => {
+        const style = getComputedStyle(el);
+        return [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomLeftRadius, style.borderBottomRightRadius];
+      });
+    await expect.poll(() => corners(pageBox)).toEqual(["0px", "0px", expect.not.stringMatching(/^0px$/), expect.not.stringMatching(/^0px$/)]);
+    await expect.poll(() => shell.locator(pageBox).evaluate((el) => [getComputedStyle(el).getPropertyValue("--page-corner-l").trim(), getComputedStyle(el).getPropertyValue("--page-corner-r").trim()])).toEqual([
+      expect.stringMatching(/^(?:rgba?|oklch|color)\(/),
+      expect.stringMatching(/^(?:rgba?|oklch|color)\(/),
+    ]);
+    // The other window, its drawer in: round all round.
+    const otherCorners = await corners(`${windowSelector(other)} [data-testid="desk-window-page"]`);
+    expect(otherCorners.every((radius) => radius !== "0px")).toBe(true);
     await capture(app, shell, "01-drawer-out-in-use.png");
 
     // ── 2. Filled from its drawer: no room above, so in — until the pointer is at its page's top ─

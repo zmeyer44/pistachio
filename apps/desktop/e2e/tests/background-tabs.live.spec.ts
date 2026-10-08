@@ -60,7 +60,7 @@ async function launch(general: Record<string, unknown> = {}): Promise<{ app: Ele
   return { app, shell };
 }
 
-test("a question that needs the web is browsed behind the person's tab, and 'show me' takes them there", { tag: ["@agent", "@tabs", "@live"] }, async () => {
+test("a question that needs the web is browsed in a hidden tab, and 'show me' makes it the person's and takes them there", { tag: ["@agent", "@tabs", "@live"] }, async () => {
   const { app, shell } = await launch();
   try {
     const first = await snapshot(shell);
@@ -107,7 +107,9 @@ test("a question that needs the web is browsed behind the person's tab, and 'sho
     expect(run?.toolCalls.some((call) => call.name === "tab.open" && call.status === "completed")).toBe(true);
     expect(run?.toolCalls.some((call) => call.name === "tab.show")).toBe(false);
     expect(run?.toolCalls.filter((call) => call.name === "page.inspect").every((call) => call.status === "completed")).toBe(true);
-    expect(done.tabs.length).toBeGreaterThan(1);
+    // Browsed out of sight: nothing joined the person's tabs.
+    expect(done.tabs.map((tab) => tab.id)).toEqual(first.tabs.map((tab) => tab.id));
+    expect(done.hiddenTabs?.length ?? 0).toBeGreaterThan(0);
     expect(chipSeen).toBe(true);
     expect(ringSeen).toBe(true);
     await expect(shell.getByTestId("home-page")).toHaveAttribute("data-mode", "chat");
@@ -122,6 +124,7 @@ test("a question that needs the web is browsed behind the person's tab, and 'sho
     const shown = await snapshot(shell);
     console.log("shown:", JSON.stringify(shown.tabs.find((tab) => tab.id === shown.activeTabId)?.url));
     expect(shown.tabs.find((tab) => tab.id === shown.activeTabId)?.url).toMatch(/coinbase\.com/u);
+    expect(shown.hiddenTabs?.some((tab) => tab.id === shown.activeTabId) ?? false).toBe(false);
     await capture(shell, "03-shown.png");
 
     // It was read before it was ever drawn (the home page has no native

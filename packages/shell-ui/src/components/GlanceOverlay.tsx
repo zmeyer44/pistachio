@@ -88,7 +88,7 @@ export function GlanceOverlay({
   }, [glance.source, surfaceRef]);
 
   // Staging. Main keeps the owner's live view up until the still that stands
-  // in for it (BrowserSurface's pane stills) is decoded and painted beneath;
+  // in for it (BrowserSurface's pane stills, or a desk window's) is decoded and painted beneath;
   // only then is the owner told to recede, and a frame later the motion —
   // the card's flight and the owner dimming — begins on the still. Hiding the
   // owner any earlier showed a blank pane while a multi-megabyte still decoded.
@@ -98,7 +98,7 @@ export function GlanceOverlay({
       const surface = surfaceRef.current;
       const stills = surface === null
         ? []
-        : [...surface.querySelectorAll<HTMLImageElement>("img.pane-still")];
+        : [...surface.querySelectorAll<HTMLImageElement>("img.pane-still, .desk-window-page img")];
       await Promise.all(stills.map((still) => still.decode().catch(() => undefined)));
       if (cancelled) return;
       await afterPaint();

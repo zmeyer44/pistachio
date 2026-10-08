@@ -288,6 +288,12 @@ const api: PistachioApi = {
     const id: unknown = await ipcRenderer.invoke(IPC.deskLiveSource, tabId);
     return typeof id === "string" ? id : null;
   },
+  deskPageCorners: async (tabId: string) => {
+    const corners: unknown = await ipcRenderer.invoke(IPC.deskPageCorners, tabId);
+    if (typeof corners !== "object" || corners === null) return null;
+    const { left, right } = corners as Record<string, unknown>;
+    return typeof left === "string" && typeof right === "string" ? { left, right } : null;
+  },
   focusTab: (tabId: string) => ipcRenderer.send(IPC.deskFocus, tabId),
   judgeDeskLayout: (request) => ipcRenderer.invoke(IPC.deskLayoutJudge, request) as Promise<DeskLayoutEvaluation | null>,
   onDeskGrab(listener) {

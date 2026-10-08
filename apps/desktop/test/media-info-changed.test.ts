@@ -24,6 +24,7 @@ const base: BrowserMediaInfo = {
   hasVideo: false,
   playing: true,
   elementMuted: false,
+  volume: 1,
   position: 10,
   duration: 300,
   playbackRate: 1,

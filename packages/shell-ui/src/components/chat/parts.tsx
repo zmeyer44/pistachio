@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   FileClock,
   FileText,
@@ -427,8 +428,10 @@ export const WorkTrace = memo(function WorkTrace({
           testId="trace-label"
           className="chat-think-fit"
         />
-        <span className="ml-auto shrink-0 text-gray-700 tabular-nums">{steps.length}</span>
-        <ChevronDown className="agent-steps-chevron size-3.5 shrink-0 text-gray-700" aria-hidden="true" />
+        <span className="-ml-1 shrink-0 font-normal text-gray-700 tabular-nums" data-testid="trace-count">
+          · {steps.length} {steps.length === 1 ? "step" : "steps"}
+        </span>
+        <ChevronRight className="agent-steps-chevron size-3.5 shrink-0 text-gray-700" aria-hidden="true" />
       </summary>
       <ol className="agent-steps-list">
         {steps.map((step) => (
