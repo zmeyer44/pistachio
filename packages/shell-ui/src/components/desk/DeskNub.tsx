@@ -1,14 +1,15 @@
 import { useId, useLayoutEffect, useRef, type RefObject } from "react";
-import { History, Keyboard, Mic, Sparkles, X } from "lucide-react";
-import { NUB_DROP_R, nubDrops, NUB_SWELL, type NotchShape } from "../../lib/desk/geometry";
+import { History, Keyboard, Mic, X } from "lucide-react";
+import { NUB_CLOSE_R, NUB_DROP_R, nubClose, nubDrops, type NotchShape } from "../../lib/desk/geometry";
+import { PistachioGlyph } from "../PistachioMark";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { NubMotion, type PillParts } from "./nub-motion";
 
-/** The nub's box (`.desk-nub`): the desk's trailing foot corner is its own bottom-right, the droplets' column above the nub. */
-export const NUB_BOX = { w: 72, h: 216 } as const;
+/** The nub's box (`.desk-nub`): the desk's trailing foot corner is its own bottom-right, the droplets' fan in it. */
+export const NUB_BOX = { w: 132, h: 132 } as const;
 
 /**
- * The nub's mark: the agent's sparkle in the group's colour — the menu's
+ * The nub's mark: Pistachio's nut in the group's colour — the menu's
  * close while its droplets are out — the arc that runs round it while the
  * agent works, and a dot while the answer floats on the desk. The shell's
  * own nub's, and the notch view's over a live page (NotchApp), so the two
@@ -18,7 +19,7 @@ export function DeskNubMark({ ref, acting, floating }: { ref?: React.Ref<HTMLSpa
   return (
     <span ref={ref} className="desk-nub-mark" data-acting={acting ? "" : undefined}>
       <span className="desk-nub-ring" />
-      <Sparkles className="desk-nub-spark" aria-hidden="true" />
+      <PistachioGlyph className="desk-nub-logo" />
       <X className="desk-nub-close" aria-hidden="true" />
       {floating ? <span className="desk-nub-dot" data-testid="desk-nub-floating" /> : null}
     </span>
@@ -32,22 +33,56 @@ export interface NubTip {
   onOpenChange: (open: boolean) => void;
 }
 
-/** What each droplet is: the prompt nearest the nub, the microphone, past chats on top. */
+/**
+ * The pill's close, above the nub while the pill is out: it puts the pill
+ * away whatever is in it (what was typed is kept for when it comes out
+ * again), which a press elsewhere does not while it holds anything. It comes
+ * up out of the nub as the pill comes out, and goes back into it.
+ */
+export function NubPillClose({ ref, shown, tip, onClose }: { ref: React.Ref<HTMLButtonElement>; shown: boolean; tip: NubTip; onClose: () => void }) {
+  const at = nubClose();
+  return (
+    <Tooltip open={tip.open} onOpenChange={tip.onOpenChange}>
+      <TooltipTrigger
+        ref={ref}
+        type="button"
+        className="desk-nub-pill-close"
+        data-testid="desk-bar-close"
+        data-shown={shown ? "" : undefined}
+        aria-label="Put the field away"
+        inert={!shown}
+        style={{ left: NUB_BOX.w + at.x - NUB_CLOSE_R, top: NUB_BOX.h + at.y - NUB_CLOSE_R, width: NUB_CLOSE_R * 2, height: NUB_CLOSE_R * 2 }}
+        // A press leaves the keyboard where it was: the close takes it from the field itself.
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onClose}
+      >
+        <X aria-hidden="true" />
+      </TooltipTrigger>
+      <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={tip.shown ? "" : undefined} className={tip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
+        Close
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** What each droplet is, round the fan from the foot up: the prompt, the microphone, past chats — each saying so away from the nub. */
 const ITEMS = [
-  { testId: "desk-nub-prompt", label: "Write to Pistachio", icon: Keyboard },
-  { testId: "desk-nub-mic", label: "Dictate", icon: Mic },
-  { testId: "desk-nub-chats", label: "Past chats", icon: History },
+  { testId: "desk-nub-prompt", label: "Write to Pistachio", icon: Keyboard, side: "left" },
+  { testId: "desk-nub-mic", label: "Dictate", icon: Mic, side: "left" },
+  { testId: "desk-nub-chats", label: "Past chats", icon: History, side: "top" },
 ] as const;
 
 /**
  * The Bar's nub (docs/desk-agent.md §1): a droplet of the shell's ground in
  * the desk's trailing foot corner — a hole the engine cuts, not painted —
- * with its mark; a click lets its menu out, three droplets that pinch off
- * up the trailing edge (the prompt, the microphone, past chats), and merges
- * them back. What is painted of it is the goo (NubPaint): the nub's own
- * outline, filled with the card's fill while the droplets are out, and the
- * droplets themselves, blurred and thresholded so they melt together where
- * they meet. nub-motion.ts moves all of it; this draws its parts once.
+ * with its mark; a click lets its menu out: the nub lets go of the desk's
+ * edges, a button of its own (the menu's close), and three droplets as round
+ * as it fan out of it (the prompt, the microphone, past chats); a click
+ * again merges them back and it settles into the corner. What is painted of
+ * it is the goo (NubPaint): the nub's own outline, filled with the card's
+ * fill while the droplets are out, its circle and the droplets, blurred and
+ * thresholded so they melt together where they meet. nub-motion.ts moves all
+ * of it; this draws its parts once.
  */
 export function DeskNub({
   nubRef,
@@ -76,7 +111,7 @@ export function DeskNub({
   faceRef: RefObject<HTMLButtonElement | null>;
   motionRef: RefObject<NubMotion | null>;
   pill: () => PillParts | null;
-  onShape: (shape: NotchShape) => void;
+  onShape: (shape: NotchShape | null) => void;
   corner: () => number;
   /** What the nub is for ("Ask about Research"), and its key, for its tooltip and its name. */
   label: { text: string; shortcut: string | null };
@@ -100,6 +135,8 @@ export function DeskNub({
 }) {
   const paintRef = useRef<SVGSVGElement>(null);
   const baseRef = useRef<SVGPathElement>(null);
+  const anchorRef = useRef<SVGCircleElement>(null);
+  const tetherRef = useRef<SVGLineElement>(null);
   const blobRef = useRef<SVGCircleElement>(null);
   const dropRefs = useRef<Array<SVGEllipseElement | null>>([]);
   const neckRefs = useRef<Array<SVGLineElement | null>>([]);
@@ -117,6 +154,8 @@ export function DeskNub({
     const root = nubRef.current;
     const paint = paintRef.current;
     const base = baseRef.current;
+    const anchor = anchorRef.current;
+    const tether = tetherRef.current;
     const blob = blobRef.current;
     const bridge = bridgeRef.current;
     const bridgeEnd = bridgeEndRef.current;
@@ -125,9 +164,9 @@ export function DeskNub({
     const drops = dropRefs.current.filter((el): el is SVGEllipseElement => el !== null);
     const necks = neckRefs.current.filter((el): el is SVGLineElement => el !== null);
     const items = itemRefs.current.filter((el): el is HTMLButtonElement => el !== null);
-    if (root === null || paint === null || base === null || blob === null || bridge === null || bridgeEnd === null || face === null || mark === null) return;
+    if (root === null || paint === null || base === null || anchor === null || tether === null || blob === null || bridge === null || bridgeEnd === null || face === null || mark === null) return;
     const motion = new NubMotion({
-      parts: { root, paint, base, blob, drops, necks, bridge, bridgeEnd, face, mark, items },
+      parts: { root, paint, base, anchor, tether, blob, drops, necks, bridge, bridgeEnd, face, mark, items },
       pill: () => host.current.pill(),
       corner: () => host.current.corner(),
       shape: (shape) => host.current.onShape(shape),
@@ -144,7 +183,9 @@ export function DeskNub({
     };
   }, [nubRef, faceRef, motionRef]);
 
-  const rests = nubDrops(NUB_SWELL);
+  const rests = nubDrops();
+  /** A droplet run back into the nub while the conversations stand where past chats' was (nub-motion's take). */
+  const away = (i: number): boolean => chatsOpen && i !== 2;
   const { w, h } = NUB_BOX;
   return (
     <div ref={nubRef} className="desk-nub" data-testid="desk-nub-box" data-open={menuOpen ? "" : undefined} style={{ width: w, height: h }}>
@@ -159,6 +200,8 @@ export function DeskNub({
           </defs>
           <path ref={baseRef} />
           <g filter={`url(#${gooId})`}>
+            <circle ref={anchorRef} r="0" />
+            <line ref={tetherRef} strokeWidth="0" />
             <circle ref={blobRef} r="0" />
             {rests.map((_, i) => (
               <line
@@ -220,13 +263,25 @@ export function DeskNub({
         data-open={menuOpen ? "" : undefined}
         inert={!menuOpen}
         onKeyDown={(event) => {
-          // Up the column and down it; the prompt is at its foot.
-          const at = itemRefs.current.findIndex((el) => el === document.activeElement);
+          // Round the fan and back: up (or right) toward past chats, at its top by the trailing edge; down (or left)
+          // toward the prompt, out along the foot.
+          // (Only the droplets that are out: with the conversations up, the others have run back into the nub.)
+          const reachable = ITEMS.map((_, i) => i).filter((i) => !away(i));
+          const at = reachable.findIndex((i) => itemRefs.current[i] === document.activeElement);
           if (at < 0) return;
-          const next = event.key === "ArrowUp" ? at + 1 : event.key === "ArrowDown" ? at - 1 : event.key === "Home" ? 0 : event.key === "End" ? ITEMS.length - 1 : null;
+          const next =
+            event.key === "ArrowUp" || event.key === "ArrowRight"
+              ? at + 1
+              : event.key === "ArrowDown" || event.key === "ArrowLeft"
+                ? at - 1
+                : event.key === "Home"
+                  ? 0
+                  : event.key === "End"
+                    ? reachable.length - 1
+                    : null;
           if (next === null) return;
           event.preventDefault();
-          itemRefs.current[(next + ITEMS.length) % ITEMS.length]?.focus({ preventScroll: true });
+          itemRefs.current[reachable[(next + reachable.length) % reachable.length]!]?.focus({ preventScroll: true });
         }}
       >
         {ITEMS.map((item, i) => {
@@ -245,6 +300,8 @@ export function DeskNub({
                 className="desk-nub-item"
                 data-testid={item.testId}
                 aria-label={item.label}
+                // Run back into the nub out of the conversations' way, it is out of the keys' and the pointer's reach.
+                inert={away(i)}
                 aria-expanded={i === 2 ? chatsOpen : undefined}
                 style={{ left: w + rest.x, top: h + rest.y, width: NUB_DROP_R * 2, height: NUB_DROP_R * 2 }}
                 onMouseDown={(event) => event.preventDefault()}
@@ -252,7 +309,7 @@ export function DeskNub({
               >
                 <Icon aria-hidden="true" />
               </TooltipTrigger>
-              <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={itemTip.shown ? "" : undefined} className={itemTip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
+              <TooltipContent side={item.side} sideOffset={10} data-testid="desk-bar-tip" data-shown={itemTip.shown ? "" : undefined} className={itemTip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
                 {item.label}
                 {/* (The prompt's is the key's too: ⌘I opens it straight.) */}
                 {i === 0 && label.shortcut !== null ? <span className="ml-1 text-background-100/60">{label.shortcut}</span> : null}

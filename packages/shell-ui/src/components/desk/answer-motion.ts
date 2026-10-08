@@ -61,7 +61,7 @@ const EDGE_CURSORS: Record<AnswerEdge, DragCursor> = {
 };
 
 /** The pill at one line (DeskBar's BAR_H): the slot is measured from its top. */
-const BAR_H = 38;
+const BAR_H = 40;
 /** A pressed card grows this much, and a docked one rises this far off the Bar, as it is taken. */
 const LIFT_SCALE = 0.01;
 const LIFT_RISE = 3;

@@ -1,5 +1,9 @@
 import type { DesktopIconStyle } from "@pistachio/shell-contracts/appearance";
 
+/** The hex nut, in its own 120-unit box. */
+const NUT =
+  "M115.10 51.50A13.5 13.5 0 0 1 115.10 65.00L93.40 102.60A13.5 13.5 0 0 1 81.71 109.35L38.29 109.35A13.5 13.5 0 0 1 26.60 102.60L4.90 65.00A13.5 13.5 0 0 1 4.90 51.50L27.47 12.40A3.5 3.5 0 0 1 33.53 12.40L56.54 52.25A4 4 0 0 0 63.46 52.25L86.47 12.40A3.5 3.5 0 0 1 92.53 12.40Z";
+
 /**
  * The brand mark: the hex nut on its rounded green square, the same drawing as
  * the welcome pages' favicon (main/welcome-pages.ts). `tone="muted"` draws
@@ -12,10 +16,19 @@ export function PistachioMark({ size, tone = "brand", variant = "green", desktop
     <svg viewBox="0 0 48 48" width={size} height={size} fill="none" aria-hidden="true" className="block shrink-0">
       <rect width="48" height="48" rx="14" fill={muted ? "currentColor" : variant === "white" ? "#fff" : "#52a862"} />
       <path
-        d="M115.10 51.50A13.5 13.5 0 0 1 115.10 65.00L93.40 102.60A13.5 13.5 0 0 1 81.71 109.35L38.29 109.35A13.5 13.5 0 0 1 26.60 102.60L4.90 65.00A13.5 13.5 0 0 1 4.90 51.50L27.47 12.40A3.5 3.5 0 0 1 33.53 12.40L56.54 52.25A4 4 0 0 0 63.46 52.25L86.47 12.40A3.5 3.5 0 0 1 92.53 12.40Z"
+        d={NUT}
         transform={desktopIcon ? "translate(6 6) scale(0.3)" : "translate(9.6 9.6) scale(0.24)"}
         fill={muted ? "var(--color-background-200)" : variant === "white" ? "#52a862" : "#fff"}
       />
+    </svg>
+  );
+}
+
+/** The mark's nut alone, in the text's colour: the brand where a whole mark would be too heavy (the desk's Bar nub). */
+export function PistachioGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 120 120" fill="none" aria-hidden="true" className={className}>
+      <path d={NUT} fill="currentColor" />
     </svg>
   );
 }

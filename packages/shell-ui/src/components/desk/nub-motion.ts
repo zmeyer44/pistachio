@@ -1,9 +1,11 @@
 /**
  * The Bar's nub in motion (docs/desk-agent.md §1, "The Bar"): its swell
- * under the pointer; the droplets of its menu pinching off up the desk's
- * trailing edge, each pulling a neck of goo that stretches and snaps, and
- * running back down into it; and the pill a droplet becomes, tied to the
- * nub by a thin bridge until it lets go. The goo is the public technique —
+ * under the pointer; for its menu, the nub letting go of the desk's edges —
+ * what is of it in the corner draining away as it lifts out, a button of its
+ * own — and its droplets fanning out of it over the desk's quarter, each
+ * pulling a neck of goo that stretches and snaps, and running back into it
+ * as it settles into the corner again; and the pill a droplet becomes, tied
+ * to the nub by a thin bridge until it lets go. The goo is the public technique —
  * shapes blurred and their alpha thresholded (DeskNub's filter) — so what
  * is drawn here is only circles, ellipses and lines; where they come close
  * they melt together.
@@ -20,7 +22,7 @@
  * bottom-right corner there, and its goo's viewBox is drawn from it.
  */
 
-import { NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubBetween, nubDrops, nubFace, nubOutline, type NotchShape, type Point, type Rect } from "../../lib/desk/geometry";
+import { NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubBetween, nubDrops, nubFace, nubLetGo, nubOutline, type NotchShape, type Point, type Rect } from "../../lib/desk/geometry";
 import { EASE_MORPH_OPEN, EASE_SMOOTH_OUT, clamp, springAt, springDone, type SpringConfig } from "../../lib/desk/motion";
 
 /** Swelling under the pointer and settling back: transitions.dev's plus → menu morph's open and its quicker, calm close. */
@@ -28,26 +30,34 @@ export const SWELL_IN_MS = 350;
 export const SWELL_OUT_MS = 250;
 
 /**
- * The droplets pinching off — a small overshoot, the farthest first, each
- * a stagger before the one under it, so the column runs out of the nub and
- * beads — and merging back, calm, the top one first, so each runs down into
- * the ones below it.
+ * The nub letting go of the corner, a little past where it stands free and
+ * back, once its fill is in over the hole (FREE_DELAY_MS); and settling into
+ * the corner again, calm, as its droplets run back into it.
+ */
+const FREE_OPEN: SpringConfig = { response: 0.4, damping: 0.7 };
+const FREE_CLOSE: SpringConfig = { response: 0.3, damping: 0.95 };
+const FREE_DELAY_MS = 40;
+/**
+ * The droplets pinching off — a small overshoot, swept round the fan from
+ * the foot up, each a stagger after the one before, out of the nub as it
+ * lifts — and merging back, calm, the last out first back.
  */
 const DROP_OPEN: SpringConfig = { response: 0.44, damping: 0.6 };
 const DROP_CLOSE: SpringConfig = { response: 0.32, damping: 0.95 };
-const DROP_OPEN_STAGGER_MS = [36, 18, 0];
-const DROP_CLOSE_STAGGER_MS = [40, 20, 0];
+const DROP_OPEN_STAGGER_MS = [FREE_DELAY_MS, FREE_DELAY_MS + 28, FREE_DELAY_MS + 56];
+const DROP_CLOSE_STAGGER_MS = [44, 22, 0];
 /** The pill out of its droplet, a little past its size and back; into the nub, calm. */
 const PILL_OPEN: SpringConfig = { response: 0.42, damping: 0.78 };
 const PILL_CLOSE: SpringConfig = { response: 0.28, damping: 1 };
 /**
- * The goo's own: the neck a droplet pulls from the one before it, as thick
- * as NECK_W while they touch and gone once they are NECK_SNAP apart (the
- * blur loses it well before: it snaps); the bridge that ties the pill to the
- * nub, gone BRIDGE_SNAP of the way into its morph.
+ * The goo's own: the neck a droplet pulls from the nub, as thick as NECK_W
+ * while they touch and gone once they are NECK_SNAP apart (the blur loses it
+ * well before: it snaps) — and the one the nub pulls from the corner as it
+ * lifts out; the bridge that ties the pill to the nub, gone BRIDGE_SNAP of
+ * the way into its morph.
  */
-const NECK_W = 12;
-const NECK_SNAP = 9;
+const NECK_W = 14;
+const NECK_SNAP = 12;
 const BRIDGE_W = 13;
 const BRIDGE_SNAP = 0.55;
 /** The nub's fill (the card's, at the answer's 94%) comes in as the droplets leave, and goes once they are back. */
@@ -137,9 +147,14 @@ function tweenAt(tween: Tween, now: number): number {
 export interface NubParts {
   /** The nub's box: its bottom-right corner is the desk's. */
   root: HTMLElement;
-  /** The goo: the nub's own outline (filled while the droplets are out), the nub's circle, the droplets, their necks, the pill's bridge. */
+  /**
+   * The goo: the nub's own outline (filled while the droplets are out), what is left of it in the corner as it lets
+   * go and the neck it pulls from there, the nub's circle, the droplets, their necks, the pill's bridge.
+   */
   paint: SVGSVGElement;
   base: SVGPathElement;
+  anchor: SVGCircleElement;
+  tether: SVGLineElement;
   blob: SVGCircleElement;
   drops: readonly SVGEllipseElement[];
   necks: readonly SVGLineElement[];
@@ -164,8 +179,8 @@ export interface NubMotionHost {
   pill(): PillParts | null;
   /** The desk's corner radius, which the nub's outline rounds into. */
   corner(): number;
-  /** The nub as drawn now: DeskBar has the engine cut it through the well and the windows. */
-  shape(shape: NotchShape): void;
+  /** What of the nub is in the corner now, or none (it has let go for its menu): DeskBar has the engine cut it through the well and the windows. */
+  shape(shape: NotchShape | null): void;
 }
 
 /** What the pill comes out of: the prompt's droplet, the microphone's, or the nub itself (⌘I, the field taking the keyboard). */
@@ -187,8 +202,10 @@ interface PillMorph {
 
 export class NubMotion {
   readonly #host: NubMotionHost;
-  readonly #rests = nubDrops(NUB_SWELL);
+  readonly #rests = nubDrops();
   #swelling: Swelling = { from: 0, to: 0, at: 0, ms: 0 };
+  /** The nub's way out of the corner for its menu: 0 in it, 1 free. */
+  #free: Track = { from: 0, to: 0, at: 0, delay: 0, spring: FREE_CLOSE, scale: 1 };
   #drops: Track[] = this.#rests.map(() => ({ from: 0, to: 0, at: 0, delay: 0, spring: DROP_CLOSE, scale: 1 }));
   /** Each droplet's way last frame, for how fast it is going (it stretches with its speed). */
   #was: number[] = this.#rests.map(() => 0);
@@ -225,13 +242,14 @@ export class NubMotion {
     return this.#swelling;
   }
 
-  /** The droplets out of the nub. */
+  /** The nub out of the corner, a button of its own, and its droplets out of it. */
   openMenu(): void {
     if (this.#menuOpen) return;
     this.#menuOpen = true;
     const now = performance.now();
     const scale = nubTimeScale();
     const calm = reduced();
+    this.#free = { from: calm ? 1 : trackAt(this.#free, now), to: 1, at: now, delay: FREE_DELAY_MS, spring: FREE_OPEN, scale };
     this.#drops = this.#drops.map((track, i) => {
       this.#hidden[i] = this.#taken[i] === true;
       const from = calm ? 1 : trackAt(track, now);
@@ -240,7 +258,7 @@ export class NubMotion {
     this.#kick();
   }
 
-  /** The droplets back into it. */
+  /** The droplets back into it, and it back into the corner. */
   closeMenu(): void {
     if (!this.#menuOpen) return;
     this.#menuOpen = false;
@@ -248,15 +266,31 @@ export class NubMotion {
     const scale = nubTimeScale();
     // (Reduced motion: they stay where they are while the fill fades, then are gone.)
     if (reduced()) return this.#kick();
+    this.#free = { from: trackAt(this.#free, now), to: 0, at: now, delay: 0, spring: FREE_CLOSE, scale };
     this.#drops = this.#drops.map((track, i) => ({ from: trackAt(track, now), to: 0, at: now, delay: DROP_CLOSE_STAGGER_MS[i] ?? 0, spring: DROP_CLOSE, scale }));
     this.#kick();
   }
 
-  /** A droplet the conversations have grown out of (they stand where it was), or given back. */
+  /**
+   * A droplet the conversations have grown out of (they stand where it was),
+   * or given back. While they are out the other droplets run back into the
+   * nub, out of their way; given back with the menu still out, they fan out
+   * again.
+   */
   take(index: number, taken: boolean): void {
     if (this.#taken[index] === taken) return;
     this.#taken[index] = taken;
     if (taken || this.#menuOpen) this.#hidden[index] = taken;
+    if (this.#menuOpen && reduced()) {
+      // (Reduced motion: no running back — they are gone while the conversations stand there, and back after.)
+      this.#hidden = this.#hidden.map((hidden, i) => (i === index ? hidden : taken));
+    } else if (this.#menuOpen) {
+      const now = performance.now();
+      const scale = nubTimeScale();
+      this.#drops = this.#drops.map((track, i) =>
+        i === index ? track : { from: trackAt(track, now), to: taken ? 0 : 1, at: now, delay: 0, spring: taken ? DROP_CLOSE : DROP_OPEN, scale },
+      );
+    }
     this.#kick();
   }
 
@@ -324,26 +358,43 @@ export class NubMotion {
     this.#wasT = now;
     let moving = false;
 
-    // The swell: the nub's outline (the engine's hole, and the fill over it), its circle in the goo, its face.
+    // The swell, and the nub letting go of the corner for its menu: what is of it in the corner (the engine's hole, and
+    // the fill over it, and its circle in the goo), the neck it pulls from there, its own circle in the goo, its face.
     const s = swellAt(this.#swelling, wall);
     if (!swellDone(this.#swelling, wall)) moving = true;
-    const shape = nubBetween(NUB_IDLE, NUB_SWELL, s);
-    const key = `${shape.radius.toFixed(2)}|${shape.sink.toFixed(2)}|${this.#host.corner().toFixed(1)}`;
+    const swelled = nubBetween(NUB_IDLE, NUB_SWELL, s);
+    const freed = trackAt(this.#free, now);
+    if (!trackDone(this.#free, now)) moving = true;
+    const { corner, button: shape } = nubLetGo(swelled, freed);
+    const key = `${corner === null ? "-" : `${corner.radius.toFixed(2)}|${corner.sink.toFixed(2)}|${corner.fillet.toFixed(2)}`}|${shape.radius.toFixed(2)}|${shape.sink.toFixed(2)}|${this.#host.corner().toFixed(1)}`;
     if (key !== this.#shapeKey) {
       this.#shapeKey = key;
-      this.#host.shape(shape);
-      parts.base.setAttribute("d", nubOutline(shape, 0, 0, this.#host.corner(), 0, 0));
+      this.#host.shape(corner);
+      parts.base.setAttribute("d", corner === null ? "" : nubOutline(corner, 0, 0, this.#host.corner(), 0, 0));
+      parts.anchor.setAttribute("cx", corner === null ? "0" : (-corner.sink).toFixed(2));
+      parts.anchor.setAttribute("cy", corner === null ? "0" : (-corner.sink).toFixed(2));
+      parts.anchor.setAttribute("r", corner === null || freed <= 0.001 ? "0" : corner.radius.toFixed(2));
       parts.blob.setAttribute("cx", (-shape.sink).toFixed(2));
       parts.blob.setAttribute("cy", (-shape.sink).toFixed(2));
       parts.blob.setAttribute("r", shape.radius.toFixed(2));
       const k = shape.radius / NUB_IDLE.radius;
       const shift = -(shape.sink - NUB_IDLE.sink);
-      parts.face.style.transform = s === 0 ? "" : `translate(${shift.toFixed(2)}px, ${shift.toFixed(2)}px) scale(${k.toFixed(4)})`;
-      parts.mark.style.transform = s === 0 ? "" : `scale(${((1 + 0.08 * s) / k).toFixed(4)})`;
+      parts.face.style.transform = s === 0 && freed === 0 ? "" : `translate(${shift.toFixed(2)}px, ${shift.toFixed(2)}px) scale(${k.toFixed(4)})`;
+      // (Free, its mark is centred on it: in the corner, it sits where the circle shows, a little up and in.)
+      const centred = 2 * clamp(freed, 0, 1);
+      parts.mark.style.transform = s === 0 && freed === 0 ? "" : `translate(${centred.toFixed(2)}px, ${centred.toFixed(2)}px) scale(${((1 + 0.08 * s) / k).toFixed(4)})`;
     }
     const centre: Point = { x: -shape.sink, y: -shape.sink };
+    // The neck the nub pulls from the corner as it lifts out, until it snaps.
+    const tethered = corner !== null && freed > 0.001 && !reduced();
+    const tetherGap = corner === null ? Infinity : Math.hypot(centre.x + corner.sink, centre.y + corner.sink) - shape.radius - corner.radius;
+    parts.tether.setAttribute("x1", corner === null ? "0" : (-corner.sink).toFixed(2));
+    parts.tether.setAttribute("y1", corner === null ? "0" : (-corner.sink).toFixed(2));
+    parts.tether.setAttribute("x2", centre.x.toFixed(2));
+    parts.tether.setAttribute("y2", centre.y.toFixed(2));
+    parts.tether.setAttribute("stroke-width", tethered ? (NECK_W * (1 - clamp(tetherGap / NECK_SNAP, 0, 1))).toFixed(2) : "0");
 
-    // The droplets, and the necks between each and the one before it (the first's, the nub).
+    // The droplets, and the neck each pulls from the nub.
     const calm = reduced();
     const ways = this.#drops.map((track) => trackAt(track, now));
     if (this.#drops.some((track) => !trackDone(track, now))) moving = true;
@@ -379,7 +430,7 @@ export class NubMotion {
     at.forEach((drop, i) => {
       const neck = parts.necks[i];
       if (neck === undefined) return;
-      const before = i === 0 ? { p: centre, r: shape.radius, shown: true } : at[i - 1]!;
+      const before = { p: centre, r: shape.radius, shown: true };
       const gap = Math.hypot(drop.p.x - before.p.x, drop.p.y - before.p.y) - drop.r - before.r;
       const width = drop.shown && before.shown && !calm ? NECK_W * (1 - clamp(gap / NECK_SNAP, 0, 1)) : 0;
       neck.setAttribute("x1", before.p.x.toFixed(2));
@@ -406,7 +457,7 @@ export class NubMotion {
       const row = morph.open ? smooth(0.4, 0.9, m) : 1 - smooth(0, 0.35, m);
       pill.body.style.opacity = row.toFixed(3);
       pill.body.style.filter = row > 0.99 ? "" : `blur(${(2 * (1 - row)).toFixed(2)}px)`;
-      pill.body.style.clipPath = `inset(${inset} round 19px)`;
+      pill.body.style.clipPath = `inset(${inset} round 20px)`;
       if (morph.open && morph.bridged && m < BRIDGE_SNAP) {
         bridged = true;
         const end = { x: box.x + box.w - box.h / 2, y: box.y + box.h / 2 };
@@ -430,8 +481,9 @@ export class NubMotion {
       parts.bridgeEnd.setAttribute("r", "0");
     }
 
-    // The nub's fill: while the droplets are out (or on their way back), and while the bridge holds.
-    const want = this.#menuOpen || bridged || (!calm && at.some((drop, i) => drop.shown && (ways[i] ?? 0) > 0.04)) ? 1 : 0;
+    // The nub's fill: while the droplets are out (or on their way back), until it is back in the corner, and while the
+    // bridge holds.
+    const want = this.#menuOpen || bridged || (!calm && (freed > 0.02 || at.some((drop, i) => drop.shown && (ways[i] ?? 0) > 0.04))) ? 1 : 0;
     if (want !== this.#paint.to) {
       const from = tweenAt(this.#paint, now);
       this.#paint = { from, to: want, at: now, ms: (calm ? CALM_FADE_MS : want === 1 ? PAINT_IN_MS : PAINT_OUT_MS) * nubTimeScale() };
@@ -440,8 +492,10 @@ export class NubMotion {
     if (now - this.#paint.at < this.#paint.ms) moving = true;
     parts.paint.style.opacity = paint < 0.001 ? "" : (paint * PAINT_ALPHA).toFixed(3);
     // (Reduced motion: once the fill is gone, so are the droplets.)
-    if (calm && !this.#menuOpen && paint === 0 && this.#drops.some((track) => track.to !== 0)) {
+    if (calm && !this.#menuOpen && paint === 0 && (this.#free.to !== 0 || this.#drops.some((track) => track.to !== 0))) {
+      this.#free = { ...this.#free, from: 0, to: 0 };
       this.#drops = this.#drops.map((track) => ({ ...track, from: 0, to: 0 }));
+      this.#shapeKey = "";
       moving = true;
     }
     // (Reduced motion: the droplets' buttons come and go with the fill.)

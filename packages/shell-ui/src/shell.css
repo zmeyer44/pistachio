@@ -4866,10 +4866,10 @@ body:not([data-chrome-view])::after {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 38px;
+  min-height: 40px;
   flex: none;
   align-items: center;
-  border-radius: 19px;
+  border-radius: 20px;
   pointer-events: auto;
 }
 .desk-bar-frame {
@@ -4888,7 +4888,7 @@ body:not([data-chrome-view])::after {
 }
 /* Taller than a line (a message of several, files staged), it is a rounded card rather than a capsule. */
 .desk-bar:not([data-compact]) .desk-bar-frame {
-  border-radius: 19px;
+  border-radius: 20px;
 }
 .desk-bar[data-compact] {
   pointer-events: none;
@@ -4901,8 +4901,8 @@ body:not([data-chrome-view])::after {
   --desk-bar-fill: color-mix(in oklch, var(--color-background-100) 94%, transparent);
 }
 
-/* The nub's box: the desk's trailing foot corner is its own (it stands past the lane's gutter to reach it), the
-   column of droplets above the nub. Nothing of the box itself takes the pointer: its face, the droplets and the
+/* The nub's box: the desk's trailing foot corner is its own (it stands past the lane's gutter to reach it), the fan
+   of droplets in it. Nothing of the box itself takes the pointer: its face, the droplets and the
    conversations do. It has no stack of its own, so its layers stand among the Bar's: the goo under the pill (the
    bridge it pulls to the nub goes in under the pill's glass), the droplets and the face over the docked answer, the
    conversations over everything. */
@@ -4910,8 +4910,8 @@ body:not([data-chrome-view])::after {
   position: absolute;
   right: -8px;
   bottom: 0;
-  width: 72px;
-  height: 216px;
+  width: 132px;
+  height: 132px;
   pointer-events: none;
   animation: desk-bar-in 300ms cubic-bezier(0.22, 1, 0.36, 1) 120ms backwards;
   transition: opacity 200ms ease;
@@ -4972,7 +4972,7 @@ body:not([data-chrome-view])::after {
 .desk-nub-face:focus-visible .desk-nub-mark {
   box-shadow: 0 0 0 2px var(--color-ring);
 }
-/* The mark: the agent's sparkle at rest, the menu's close while the droplets are out. (Its own box, a little up and
+/* The mark: Pistachio's nut at rest (the brand mark's, PistachioGlyph), the menu's close while the droplets are out. (Its own box, a little up and
    in from the button's centre: where the circle shows.) */
 .desk-nub-mark {
   position: relative;
@@ -4993,8 +4993,13 @@ body:not([data-chrome-view])::after {
     scale calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
     filter calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1);
 }
-.desk-nub-spark {
+.desk-nub-logo {
   color: var(--tg-solid);
+}
+/* (The nut is wider than tall: a little larger than the close, so the two read alike.) */
+.desk-nub-mark > .desk-nub-logo {
+  width: 17px;
+  height: 17px;
 }
 .desk-nub-close {
   opacity: 0;
@@ -5002,7 +5007,7 @@ body:not([data-chrome-view])::after {
   scale: 0.6;
   filter: blur(2px);
 }
-.desk-nub-face[aria-expanded="true"] .desk-nub-spark {
+.desk-nub-face[aria-expanded="true"] .desk-nub-logo {
   opacity: 0;
   rotate: 90deg;
   scale: 0.6;
@@ -5054,7 +5059,7 @@ body:not([data-chrome-view])::after {
   animation: desk-bar-dot-in 250ms cubic-bezier(0.34, 1.36, 0.64, 1) 80ms backwards;
 }
 /* The droplets' buttons, over the goo where each rests (nub-motion.ts moves them with it as they come and go): the
-   prompt, the microphone and past chats, up the trailing edge. */
+   prompt, the microphone and past chats, fanned out from the nub, each as round as it stands free (NUB_DROP_R). */
 .desk-nub-menu {
   position: absolute;
   inset: 0;
@@ -5064,9 +5069,9 @@ body:not([data-chrome-view])::after {
 .desk-nub-item {
   position: absolute;
   display: grid;
-  width: 32px;
-  height: 32px;
-  margin: -16px 0 0 -16px;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
   place-items: center;
   padding: 0;
   border: 0;
@@ -5092,8 +5097,81 @@ body:not([data-chrome-view])::after {
   box-shadow: 0 0 0 2px var(--color-ring);
 }
 .desk-nub-item svg {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
+}
+/* The pill's close, above the nub while the pill is out (DeskNub's NubPillClose): a small round button as the menu's
+   droplets were when they stood in a column — the card's fill and a droplet's shadow — come up out of the nub as the
+   pill comes out (the plus → menu morph's open), and back into it, quicker and calm. */
+.desk-nub-pill-close {
+  position: absolute;
+  z-index: 56;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-background-100);
+  box-shadow:
+    0 6px 12px oklch(0 0 0 / 0.14),
+    0 1px 2px oklch(0 0 0 / 0.1);
+  color: var(--color-gray-900);
+  cursor: pointer;
+  opacity: 0;
+  outline: none;
+  pointer-events: none;
+  translate: 0 34px;
+  scale: 0.5;
+  filter: blur(2px);
+  transition:
+    opacity calc(150ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    translate calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    scale calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    filter calc(150ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 150ms ease,
+    color 150ms ease;
+}
+:root[data-color-scheme="dark"] .desk-nub-pill-close {
+  box-shadow:
+    0 6px 14px oklch(0 0 0 / 0.5),
+    0 0 0 0.5px oklch(1 0 0 / 0.16);
+}
+.desk-nub-pill-close[data-shown] {
+  opacity: 1;
+  pointer-events: auto;
+  translate: 0 0;
+  scale: 1;
+  filter: none;
+  transition:
+    opacity calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    translate calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
+    scale calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
+    filter calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 150ms ease,
+    color 150ms ease;
+}
+.desk-nub-pill-close:hover {
+  background: color-mix(in oklch, var(--color-background-100), var(--color-gray-1000) 6%);
+  color: var(--color-gray-1000);
+}
+.desk-nub-pill-close:active {
+  scale: 0.94;
+}
+.desk-nub-pill-close:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-nub-pill-close svg {
+  width: 15px;
+  height: 15px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-nub-pill-close,
+  .desk-nub-pill-close[data-shown] {
+    translate: none;
+    scale: none;
+    filter: none;
+    transition: opacity 150ms ease;
+  }
 }
 .desk-stage[data-phase="leaving"] .desk-nub {
   opacity: 0;
@@ -5243,7 +5321,8 @@ body[data-chrome-view="shelf"] {
   transform: translateY(calc(100% + 16px));
   opacity: 0;
 }
-/* The row in a thin pill (38px at one line): the tray's plus at one end, Send at the other, each as far from its
+/* The row in a pill as tall as the nub's button free (40px at one line): the tray's plus at one end, Send at the
+   other, each as far from its
    end; the buttons sit on the field's last line as it grows. */
 .desk-bar-row {
   display: flex;
@@ -5255,8 +5334,8 @@ body[data-chrome-view="shelf"] {
 }
 .desk-bar-button {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
   margin-bottom: 2px;
   place-items: center;
@@ -5287,8 +5366,8 @@ body[data-chrome-view="shelf"] {
 }
 .desk-bar-send {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
   margin: 0 0 2px 2px;
   place-items: center;
@@ -5430,8 +5509,8 @@ body[data-chrome-view="shelf"] {
 }
 .desk-conversations-frame {
   position: absolute;
-  inset: calc(100% - 32px) 0 0 calc(100% - 32px);
-  border-radius: 16px;
+  inset: calc(100% - 40px) 0 0 calc(100% - 40px);
+  border-radius: 20px;
   background: var(--desk-bar-fill);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
   backdrop-filter: blur(24px) saturate(1.5);
@@ -5461,8 +5540,8 @@ body[data-chrome-view="shelf"] {
   right: 0;
   bottom: 0;
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   place-items: center;
   color: var(--color-gray-900);
   transition:
@@ -5472,8 +5551,8 @@ body[data-chrome-view="shelf"] {
     filter calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1);
 }
 .desk-conversations-mark svg {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
 }
 .desk-conversations[data-open] .desk-conversations-mark {
   opacity: 0;
@@ -5486,7 +5565,7 @@ body[data-chrome-view="shelf"] {
   display: flex;
   min-height: 0;
   flex-direction: column;
-  clip-path: inset(calc(100% - 32px) 0 0 calc(100% - 32px) round 16px);
+  clip-path: inset(calc(100% - 40px) 0 0 calc(100% - 40px) round 20px);
   opacity: 0;
   translate: 14px 14px;
   scale: 0.97;
@@ -5524,7 +5603,7 @@ body[data-chrome-view="shelf"] {
 }
 /* ── The answer, docked and detached (DeskBar's AnswerCard, answer-motion.ts) ──
 
-   Docked, in the column on the pill: right-aligned on it and a little narrower (440), at most a share of the desk's
+   Docked, in the column on the pill: as wide as the pill (2026-10-08, the user's call), at most a share of the desk's
    height, giving way to a tall pill; it opens out of the pill's trailing end (the plus → menu morph's open: its clip
    grows from a circle there, up and left), and goes at once.
    Detached, a window placed in the lane (left/top 0, moved by its transform; its size answer-motion.ts's). Its
@@ -5537,7 +5616,7 @@ body[data-chrome-view="shelf"] {
   position: relative;
   z-index: var(--desk-answer-z, 55);
   display: flex;
-  width: min(440px, 100%);
+  width: 100%;
   min-height: 0;
   max-height: 62cqh;
   flex: 0 1 auto;
@@ -5562,28 +5641,15 @@ body[data-chrome-view="shelf"] {
   flex: 1;
   flex-direction: column;
   opacity: 0;
-  clip-path: inset(calc(100% - 38px) 0 0 calc(100% - 38px) round 19px);
-  transform: translateY(10px);
   transform-origin: 100% 100%;
-  transition:
-    opacity calc(150ms * var(--desk-nub-time-scale, 1)) ease,
-    clip-path calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
-    transform calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity calc(150ms * var(--desk-nub-time-scale, 1)) ease;
 }
+/* Shown, it fades in; docked, it also opens out of the pill's trailing end — AnswerCard plays that once, as it comes,
+   so no clip is left on it at rest: a clip would make it a backdrop root, and its glass would blur nothing behind it.
+   (Opening where it floats, it only fades in: there is no pill under it to come out of.) */
 .desk-answer[data-shown] .desk-answer-vis {
   opacity: 1;
-  /* (Past the card all round: its shadow, and a held card's deeper one, are never cut.) */
-  clip-path: inset(-160px round 18px);
-  transform: none;
-  transition:
-    opacity calc(120ms * var(--desk-nub-time-scale, 1)) ease,
-    clip-path calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
-    transform calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1);
-}
-/* Opening where it floats, it only fades in: there is no pill under it to come out of. */
-.desk-answer[data-mode="detached"] .desk-answer-vis {
-  clip-path: none;
-  transform: none;
+  transition: opacity calc(120ms * var(--desk-nub-time-scale, 1)) ease;
 }
 /* (As specific as the open state's own transition, which the desk's reduced-motion rule below would lose to.) */
 @media (prefers-reduced-motion: reduce) {
@@ -6944,7 +7010,7 @@ body[data-chrome-view="shelf"] {
 .desk-bar-dictation {
   display: flex;
   min-width: 0;
-  height: 32px;
+  height: 34px;
   flex: 1;
   align-items: center;
   gap: 12px;

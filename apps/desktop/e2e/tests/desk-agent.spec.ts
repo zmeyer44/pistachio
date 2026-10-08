@@ -10,7 +10,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { api, box, createGroup, INVOICES, launchDesk, openChats, openGroupDesk, openTabs, openTray, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
+import { api, box, createGroup, INVOICES, launchDesk, openChats, openGroupDesk, openTabs, openTray, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
 
 const capture = screenshots("desk-agent");
 
@@ -95,22 +95,50 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     const entryPage = await box(shell, `${windowSelector(invoice)} [data-testid="desk-window-page"]`);
     if (entryPage.x + entryPage.width > idle.x - 20 && entryPage.y + entryPage.height > idle.y - 20) near(entryPage.y + entryPage.height, stage.y + stage.height - 5, 1);
     await capture(app, shell, "01a-desk-nub.png");
-    // The pointer resting on it swells it, and its tooltip names the group and the key.
+    // The pointer resting on it swells it, and its tooltip names the group and the key. It is the circle that grows, drawn
+    // out of the corner as if pulled from it, clear of both edges — its joins to them tightening, reaching no further
+    // along them (the hole's outline leaves the foot no further from the corner than it did).
+    const footReach = () =>
+      shell.locator(".desk-stage").evaluate((el) => {
+        const found = /Z M (-?[\d.]+) /.exec((el as HTMLElement).style.getPropertyValue("--desk-notch-clip"));
+        return found === null ? null : el.getBoundingClientRect().width - Number(found[1]);
+      });
+    const idleReach = (await footReach())!;
     await nub.hover();
     await expect(nub).toHaveAttribute("data-hovered", "");
+    await expect.poll(async () => (await box(shell, '[data-testid="desk-nub"]')).width).toBeGreaterThan(idle.width + 6);
+    await shell.waitForTimeout(400);
+    const swelled = await box(shell, '[data-testid="desk-nub"]');
+    expect(stage.x + stage.width - (swelled.x + swelled.width)).toBeGreaterThan(stage.x + stage.width - (idle.x + idle.width) + 2);
+    expect(stage.y + stage.height - (swelled.y + swelled.height)).toBeGreaterThan(stage.y + stage.height - (idle.y + idle.height) + 2);
+    expect(await footReach()).toBeLessThanOrEqual(idleReach + 0.5);
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText(/^Ask about Northstar/);
-    // A click lets out its menu: three droplets up the trailing edge, the prompt nearest the nub, then the microphone,
-    // then past chats, each saying what it is.
+    // A click lets out its menu: the nub lets go of the desk's edges — a button of its own, its close, clear of the foot
+    // and the trailing edge, nothing of it cut into the corner any more — and three droplets as round as it fan out of
+    // it over the desk's quarter: the prompt along the foot, the microphone between, past chats up the trailing edge.
     await nub.click();
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
     await expect(nub).toHaveAttribute("aria-expanded", "true");
     const droplet = (id: string) => shell.getByTestId(id);
     await expect.poll(() => droplet("desk-nub-chats").evaluate((el) => (el as HTMLElement).style.transform)).toBe("");
-    const [prompt, mic, chats] = await Promise.all(["desk-nub-prompt", "desk-nub-mic", "desk-nub-chats"].map((id) => box(shell, `[data-testid="${id}"]`)));
-    expect(prompt!.y).toBeGreaterThan(mic!.y);
-    expect(mic!.y).toBeGreaterThan(chats!.y);
-    expect(prompt!.y + prompt!.height).toBeLessThan(idle.y);
-    near(prompt!.x + prompt!.width, stage.x + stage.width - 6, 1);
+    // (Once it has come to rest: it goes a little past where it stands free, and back.)
+    await expect.poll(async () => Math.abs((await box(shell, '[data-testid="desk-nub"]')).x + 40 - (stage.x + stage.width - 8)) < 1).toBe(true);
+    const free = await box(shell, '[data-testid="desk-nub"]');
+    near(free.width, 40, 1);
+    near(free.x + free.width, stage.x + stage.width - 8, 1);
+    near(free.y + free.height, stage.y + stage.height - 8, 1);
+    expect(await shell.locator(".desk-stage").evaluate((el) => (el as HTMLElement).style.getPropertyValue("--desk-notch-clip"))).toBe("");
+    const centreOf = (b: { x: number; y: number; width: number; height: number }) => ({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+    const hub = centreOf(free);
+    const [prompt, mic, chats] = (await Promise.all(["desk-nub-prompt", "desk-nub-mic", "desk-nub-chats"].map((id) => box(shell, `[data-testid="${id}"]`)))) as [Box, Box, Box];
+    for (const drop of [prompt, mic, chats]) {
+      near(drop.width, free.width, 1);
+      near(Math.hypot(centreOf(drop).x - hub.x, centreOf(drop).y - hub.y), 70, 1.5);
+    }
+    near(centreOf(prompt).y, hub.y, 1);
+    near(centreOf(chats).x, hub.x, 1);
+    expect(centreOf(mic).x).toBeLessThan(hub.x);
+    expect(centreOf(mic).y).toBeLessThan(hub.y);
     await droplet("desk-nub-mic").hover();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Dictate");
     await capture(app, shell, "01b-desk-nub-menu.png");
@@ -147,6 +175,12 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await droplet("desk-nub-chats").click();
     await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(1);
     await expect(elsewhere).toBeFocused();
+    // (The other droplets, run back into the nub out of the conversations' way, are out of the keys' reach too.)
+    for (const id of ["desk-nub-prompt", "desk-nub-mic"]) {
+      await droplet(id).focus();
+      await expect(droplet(id)).not.toBeFocused();
+    }
+    await elsewhere.focus();
     await shell.keyboard.press("Escape");
     await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(0);
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
@@ -163,13 +197,50 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
     await shell.keyboard.press("Escape");
     await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
-    // The prompt's droplet: the pill, out of it at the desk's foot beside the nub, thin, the keyboard in its field.
+    // With reduced motion the other droplets do not run back into the nub out of the conversations' way: they are gone
+    // while the conversations are up (out of reach, so not to be seen either), and back once they are put away.
+    await shell.emulateMedia({ reducedMotion: "reduce" });
+    const opacityOf = (id: string) => droplet(id).evaluate((el) => getComputedStyle(el).opacity);
+    await nub.click();
+    await droplet("desk-nub-chats").click();
+    await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(1);
+    for (const id of ["desk-nub-prompt", "desk-nub-mic"]) await expect.poll(() => opacityOf(id)).toBe("0");
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(0);
+    for (const id of ["desk-nub-prompt", "desk-nub-mic"]) await expect.poll(() => opacityOf(id)).toBe("1");
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await shell.emulateMedia({ reducedMotion: null });
+    // The prompt's droplet: the pill, out of it at the desk's foot beside the nub, as tall as the nub's button stands
+    // free, the keyboard in its field, its words a little larger than the page's chrome.
     await reachBar(shell);
     await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
     const pill = await box(shell, '[data-testid="desk-bar"]');
-    near(pill.height, 38, 1);
+    near(pill.height, 40, 1);
+    expect(await shell.getByTestId("desk-bar-input").evaluate((el) => getComputedStyle(el).fontSize)).toBe("14.5px");
     near(pill.y + pill.height, stage.y + stage.height - 8, 1);
     near(pill.x + pill.width, stage.x + stage.width - 54, 1);
+    // Its close stands above the nub while it is out, small, where the menu's droplets once stood in a column. A pill
+    // holding something stays out when the keyboard leaves it; its close puts it away all the same — and what was typed
+    // is there when it comes out again.
+    const close = shell.getByTestId("desk-bar-close");
+    await expect(close).toHaveAttribute("data-shown", "");
+    await expect.poll(async () => Math.round((await box(shell, '[data-testid="desk-bar-close"]')).width)).toBe(32);
+    const closeBox = await box(shell, '[data-testid="desk-bar-close"]');
+    near(closeBox.x + closeBox.width / 2, stage.x + stage.width - 22, 1);
+    expect(closeBox.y + closeBox.height).toBeLessThan(idle.y);
+    await shell.getByTestId("desk-bar-input").fill("A draft to keep");
+    await shell.getByTestId("desk-bar-input").blur();
+    await shell.waitForTimeout(400);
+    await expect(shell.getByTestId("desk-bar")).not.toHaveAttribute("data-compact", "");
+    await close.click();
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    await expect(close).not.toHaveAttribute("data-shown", "");
+    await reachBar(shell);
+    await expect(shell.getByTestId("desk-bar-input")).toHaveValue("A draft to keep");
+    await expect(close).toHaveAttribute("data-shown", "");
+    await shell.getByTestId("desk-bar-input").fill("");
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
     // The tray at the field's leading end: its plus, under the pointer, lets out attach and a new conversation,
     // turning into its close and sliding the field aside; its tools out of reach while it is shut.
     const tray = shell.getByTestId("desk-bar-tray");
@@ -270,13 +341,13 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     expect(revealMs).toBe(0);
     await shell.emulateMedia({ reducedMotion: null });
 
-    // The answer rests on the pill, at its trailing end and a little narrower, however tall the pill grows; it
-    // collapses with a chevron.
+    // The answer rests on the pill, as wide as it, however tall the pill grows; it collapses with a chevron.
     const card = await box(shell, '[data-testid="desk-answer"]');
     const barNow = await box(shell, '[data-testid="desk-bar"]');
-    near(card.width, 440, 1);
-    expect(card.width).toBeLessThan(barNow.width);
-    expect(Math.abs(card.x + card.width - (barNow.x + barNow.width))).toBeLessThan(1);
+    near(card.width, barNow.width, 1);
+    near(card.x, barNow.x, 1);
+    // Out of the pill, nothing is left clipping it: a clip would make it a backdrop root, its glass blurring nothing.
+    await expect.poll(() => shell.locator('[data-testid="desk-answer"] .desk-answer-vis').evaluate((el) => getComputedStyle(el).clipPath)).toBe("none");
     expect(Math.abs(card.y + card.height + 8 - barNow.y)).toBeLessThan(1.5);
     await shell.getByTestId("desk-bar-input").fill("one\ntwo\nthree\nfour");
     await expect.poll(async () => (await box(shell, '[data-testid="desk-bar"]')).height).toBeGreaterThan(barNow.height + 30);
@@ -372,7 +443,8 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(answerButton).toHaveAttribute("data-floating", "");
     await settled(shell, app);
     let floating = await box(shell, '[data-testid="desk-answer"]');
-    near(floating.width, 440, 4);
+    // (The width it was docked at, the pill's: it keeps it torn off.)
+    near(floating.width, 480, 4);
     // The nub says it is out on the desk.
     await expect(shell.getByTestId("desk-nub")).toHaveAttribute("data-floating", "");
     await expect(shell.getByTestId("desk-answer-dock")).toBeVisible();

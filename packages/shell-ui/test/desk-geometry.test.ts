@@ -18,14 +18,17 @@ import {
   magnetize,
   magnetizeEdges,
   normalizeRect,
-  NUB_DROP_GAP,
-  NUB_DROP_INSET,
   NUB_DROP_R,
+  NUB_FAN_R,
+  NUB_FREE,
+  NUB_FREE_GAP,
   NUB_IDLE,
   NUB_SWELL,
   nubBetween,
   nubDrops,
+  nubExtent,
   nubFace,
+  nubLetGo,
   nubOutline,
   nubReach,
   placeNewWindow,
@@ -649,9 +652,15 @@ describe("the Bar's nub in the desk's trailing foot corner", () => {
   it("reaches along each edge as far as its fillets leave them", () => {
     // A circle 18 round, 20 in from both edges, joined to them by fillets 11 round: 20 + √(29² − 9²).
     expect(nubReach(NUB_IDLE)).toBeCloseTo(20 + Math.sqrt(29 ** 2 - 9 ** 2), 6);
-    // Swelled, it reaches further, and lifts further out of the corner.
-    expect(nubReach(NUB_SWELL)).toBeGreaterThan(nubReach(NUB_IDLE));
-    expect(nubBetween(NUB_IDLE, NUB_SWELL, 0.5)).toEqual({ radius: 19.5, sink: 21.5, fillet: 11 });
+    // Swelled, the circle grows and is drawn further out of the corner, as if pulled from it — further than it grows,
+    // so it stands clear of the edges, its fillets tightening — while where it meets them reaches no further.
+    expect(NUB_SWELL.radius).toBeGreaterThan(NUB_IDLE.radius);
+    expect(NUB_SWELL.sink - NUB_SWELL.radius).toBeGreaterThan(NUB_IDLE.sink - NUB_IDLE.radius);
+    expect(NUB_SWELL.fillet).toBeLessThan(NUB_IDLE.fillet);
+    expect(nubReach(NUB_SWELL)).toBeLessThanOrEqual(nubReach(NUB_IDLE));
+    for (const t of [0.25, 0.5, 0.75]) expect(nubReach(nubBetween(NUB_IDLE, NUB_SWELL, t))).toBeLessThanOrEqual(nubReach(NUB_IDLE) + 0.5);
+    // What it fills, swelled: its circle reaches further out across the desk than its fillets along the edges.
+    expect(nubExtent(NUB_SWELL)).toBe(NUB_SWELL.sink + NUB_SWELL.radius);
   });
 
   it("is a droplet out of the corner: off the foot at one fillet, round the circle, into the trailing edge, and round the desk's own corner", () => {
@@ -678,14 +687,35 @@ describe("the Bar's nub in the desk's trailing foot corner", () => {
     expect(numbers(nubOutline(NUB_IDLE, corner.x, corner.y, 12, -400, -300)).slice(0, 2)).toEqual([Number((corner.x - reach - 400).toFixed(2)), corner.y - 300]);
   });
 
-  it("puts its droplets up the trailing edge, a gap apart, the first a gap above the nub swelled", () => {
-    const drops = nubDrops(NUB_SWELL);
+  it("lets go of the desk's edges for its menu: a button as round as its droplets, clear of both edges, nothing left in the corner", () => {
+    expect(NUB_FREE.radius).toBe(NUB_DROP_R);
+    expect(NUB_FREE.fillet).toBe(0);
+    expect(NUB_FREE.sink - NUB_FREE.radius).toBe(NUB_FREE_GAP);
+    // On its way the corner drains as the button lifts; gone well before the button is free.
+    const half = nubLetGo(NUB_SWELL, 0.3);
+    expect(half.corner!.radius).toBeLessThan(NUB_SWELL.radius);
+    expect(half.corner!.fillet).toBeLessThan(NUB_SWELL.fillet);
+    expect(half.button.sink).toBeGreaterThan(NUB_SWELL.sink);
+    expect(nubLetGo(NUB_SWELL, 0.6).corner).toBeNull();
+    expect(nubLetGo(NUB_SWELL, 1)).toEqual({ corner: null, button: NUB_FREE });
+    // Home again, it is the nub it was.
+    expect(nubLetGo(NUB_SWELL, 0)).toEqual({ corner: NUB_SWELL, button: NUB_SWELL });
+  });
+
+  it("fans its droplets out from the free button over the desk's quarter: the prompt along the foot, past chats up the trailing edge", () => {
+    const drops = nubDrops();
     expect(drops).toHaveLength(3);
-    for (const drop of drops) expect(drop.x).toBe(-(NUB_DROP_INSET + NUB_DROP_R));
-    expect(drops[1]!.y - drops[0]!.y).toBe(-(NUB_DROP_R * 2 + NUB_DROP_GAP));
-    expect(drops[2]!.y - drops[1]!.y).toBe(-(NUB_DROP_R * 2 + NUB_DROP_GAP));
-    const nub = { x: -NUB_SWELL.sink, y: -NUB_SWELL.sink };
-    expect(Math.hypot(drops[0]!.x - nub.x, drops[0]!.y - nub.y) - NUB_SWELL.radius - NUB_DROP_R).toBeGreaterThanOrEqual(NUB_DROP_GAP);
+    const centre = { x: -NUB_FREE.sink, y: -NUB_FREE.sink };
+    for (const drop of drops) expect(Math.hypot(drop.x - centre.x, drop.y - centre.y)).toBeCloseTo(NUB_FAN_R, 6);
+    const [prompt, mic, chats] = drops as [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }];
+    // Level with the button along the foot, and straight above it up the trailing edge: as clear of each edge as it.
+    expect(prompt.y).toBeCloseTo(centre.y, 6);
+    expect(chats.x).toBeCloseTo(centre.x, 6);
+    expect(mic.x).toBeCloseTo(mic.y, 6);
+    // Clear of the button and of one another.
+    for (const drop of drops) expect(Math.hypot(drop.x - centre.x, drop.y - centre.y) - NUB_FREE.radius - NUB_DROP_R).toBeGreaterThanOrEqual(10);
+    expect(Math.hypot(prompt.x - mic.x, prompt.y - mic.y) - NUB_DROP_R * 2).toBeGreaterThanOrEqual(10);
+    expect(Math.hypot(mic.x - chats.x, mic.y - chats.y) - NUB_DROP_R * 2).toBeGreaterThanOrEqual(10);
     // Its face sits up and in from the circle's centre, where the circle shows.
     expect(nubFace(NUB_IDLE).x).toBeLessThan(-NUB_IDLE.sink);
   });

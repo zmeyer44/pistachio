@@ -952,9 +952,14 @@ export interface NotchShape {
   fillet: number;
 }
 
-/** The nub at rest, and swelled under the pointer: larger, and lifted a little further out of the corner. */
+/**
+ * The nub at rest, and swelled under the pointer: the circle larger and
+ * drawn further out of the corner, as if pulled from it — its fillets
+ * tightening as it goes, so where it meets the edges reaches no further
+ * along them (2026-10-08, the user's call: the circle grows, not the joins).
+ */
 export const NUB_IDLE: NotchShape = { radius: 18, sink: 20, fillet: 11 };
-export const NUB_SWELL: NotchShape = { radius: 21, sink: 23, fillet: 11 };
+export const NUB_SWELL: NotchShape = { radius: 22, sink: 27, fillet: 6 };
 
 /** A nub `t` of the way from one shape to another (past 1 as a spring overshoots). */
 export function nubBetween(from: NotchShape, to: NotchShape, t: number): NotchShape {
@@ -969,6 +974,11 @@ export function nubBetween(from: NotchShape, to: NotchShape, t: number): NotchSh
 export function nubReach(shape: NotchShape): number {
   const { radius: r, sink: a, fillet: f } = shape;
   return a + Math.sqrt(Math.max(0, (r + f) ** 2 - (a - f) ** 2));
+}
+
+/** How far from the corner anything of the nub reaches, along each edge or out across the desk: the box it fills. */
+export function nubExtent(shape: NotchShape): number {
+  return Math.max(nubReach(shape), shape.sink + shape.radius);
 }
 
 /** Where the nub's face sits, from the corner: the middle of what shows of the circle, a hair up and in from its centre. */
@@ -1015,19 +1025,56 @@ export function nubOutline(shape: NotchShape, x: number, y: number, corner: numb
 }
 
 /**
- * The nub's menu (DeskBar): three droplets up the trailing edge from the
- * nub swelled — the prompt nearest it, then the microphone, then past chats
- * — each NUB_DROP_R round, resting NUB_DROP_INSET in from the edge and
- * NUB_DROP_GAP apart. Their centres, from the corner.
+ * The nub's menu (DeskBar). Out, the nub lets go of the desk's edges: it is
+ * a button of its own, a circle NUB_DROP_R round standing NUB_FREE_GAP clear
+ * of the foot and the trailing edge (NUB_FREE: no fillets, and nothing of it
+ * in the corner), its mark the menu's close. Its three droplets, as round as
+ * it, fan out from it over the quarter the desk lies in — the prompt along
+ * the foot, the microphone between, past chats up the trailing edge — each
+ * NUB_FAN_R from its centre.
  */
-export const NUB_DROP_R = 16;
-export const NUB_DROP_INSET = 6;
-export const NUB_DROP_GAP = 11;
+export const NUB_DROP_R = 20;
+export const NUB_FREE_GAP = 8;
+export const NUB_FREE: NotchShape = { radius: NUB_DROP_R, sink: NUB_DROP_R + NUB_FREE_GAP, fillet: 0 };
+export const NUB_FAN_R = 70;
+/** The droplets' bearings from the nub's centre, in degrees (anticlockwise from the foot's way left: 180° is left, 90° up). */
+const NUB_FAN_DEG = [180, 135, 90] as const;
 
-export function nubDrops(shape: NotchShape = NUB_SWELL): Point[] {
-  const x = -(NUB_DROP_INSET + NUB_DROP_R);
-  const first = -(shape.sink + shape.radius + NUB_DROP_GAP + 1 + NUB_DROP_R);
-  return [0, 1, 2].map((i) => ({ x, y: first - i * (NUB_DROP_R * 2 + NUB_DROP_GAP) }));
+/** The droplets' centres where they rest, from the corner. */
+export function nubDrops(): Point[] {
+  const c = -NUB_FREE.sink;
+  return NUB_FAN_DEG.map((deg) => {
+    const a = (deg * Math.PI) / 180;
+    return { x: c + Math.cos(a) * NUB_FAN_R, y: c - Math.sin(a) * NUB_FAN_R };
+  });
+}
+
+/**
+ * The pill's close (DeskBar): while the pill is out, a small round button
+ * stands above the nub, up the trailing edge where the menu's droplets once
+ * stood in a column — NUB_CLOSE_R round, NUB_CLOSE_INSET in from the edge
+ * and NUB_CLOSE_GAP above all the nub may fill swelled. Its centre, from the
+ * corner.
+ */
+export const NUB_CLOSE_R = 16;
+const NUB_CLOSE_INSET = 6;
+const NUB_CLOSE_GAP = 8;
+
+export function nubClose(): Point {
+  return { x: -(NUB_CLOSE_INSET + NUB_CLOSE_R), y: -(nubExtent(NUB_SWELL) + NUB_CLOSE_GAP + NUB_CLOSE_R) };
+}
+
+/**
+ * The nub as it lets go of the desk's edges for its menu, `t` of the way
+ * (0 in the corner, 1 free): what is left of it in the corner — its hole,
+ * and what is painted over the hole — drains into the corner and is gone
+ * by 0.6 (null once it is), while the circle itself (`button`) lifts out
+ * to where it stands free, past it a moment as a spring overshoots.
+ */
+export function nubLetGo(shape: NotchShape, t: number): { corner: NotchShape | null; button: NotchShape } {
+  const left = 1 - Math.min(1, Math.max(0, t) / 0.6) ** 1.5;
+  const corner = left < 0.01 ? null : { radius: shape.radius * left, sink: shape.sink * left, fillet: shape.fillet * left };
+  return { corner, button: nubBetween(shape, NUB_FREE, t) };
 }
 
 /** A box's corner radii, from its top-left round (0: square). */

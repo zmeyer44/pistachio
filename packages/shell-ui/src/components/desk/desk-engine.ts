@@ -115,7 +115,7 @@ import {
   uncoveredWindows,
   letGoSize,
   nubOutline,
-  nubReach,
+  nubExtent,
   roundedRectPath,
   windowSize,
   type CornerRadii,
@@ -2275,7 +2275,7 @@ export class DeskEngine {
     if (gesture !== null && gesture.tabId === win.tabId && gesture.kind !== "resize") return null;
     const { x, w } = win.rect;
     const { width: stageW, height: stageH } = this.#stageBox;
-    const span = nubReach(shape);
+    const span = nubExtent(shape);
     const hole = { x: stageW - span, y: stageH - span, w: span, h: span };
     if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: foot + CLIP_MARGIN }, hole)) return null;
     return `path(evenodd, "${roundedRectPath(-reach.left, -reach.top, w + reach.right, foot, radii)} ${nubOutline(shape, stageW, stageH, this.#corner, -x, -y)}")`;

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DOCK_GAP,
-  DOCK_W,
   FLOAT_EDGE,
   FLOAT_MIN,
   anchors,
@@ -24,8 +23,8 @@ import {
 const AREA: FloatArea = { w: 1200, h: 800, barX: 260, barW: 680, barTop: 748 };
 
 describe("where the answer may float", () => {
-  it("docks into a slot at the pill's trailing end, DOCK_W wide, its foot just above it", () => {
-    expect(dockSlot(AREA, 300)).toEqual({ x: 260 + 680 - DOCK_W, y: 748 - DOCK_GAP - 300, w: DOCK_W, h: 300 });
+  it("docks into a slot as wide as the pill, on it, its foot just above it", () => {
+    expect(dockSlot(AREA, 300)).toEqual({ x: 260, y: 748 - DOCK_GAP - 300, w: 680, h: 300 });
     // Never wider than the pill, nor taller than the lane holds above it.
     expect(dockSlot({ ...AREA, barW: 300 }, 300)).toMatchObject({ x: 260, w: 300 });
     expect(dockSlot(AREA, 5000).y).toBe(FLOAT_EDGE);

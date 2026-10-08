@@ -142,6 +142,8 @@ test("the Bar's nub, state by state", { tag: ["@desk"] }, async () => {
     await expect(shell.locator('[data-testid="desk-mentions"][data-shown]')).toHaveCount(1);
     await shots(app, shell, "07b-input-mention-menu.png", 400, corner);
     await input.press("Enter");
+    // (The mention puts the caret after itself on the next frame: typed on at once, the words would land before it.)
+    await shell.waitForTimeout(100);
     await input.pressSequentially("— is anything due this week?");
     await expect(shell.locator(".desk-bar-mention")).toHaveText("@boarding-pass.txt");
     await shots(app, shell, "07-input-typed.png", 400, corner);
