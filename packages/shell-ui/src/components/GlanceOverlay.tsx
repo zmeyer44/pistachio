@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Columns2, Maximize2, X } from "lucide-react";
+import { Columns2, LayoutGrid, Maximize2, X } from "lucide-react";
 import type { ContentBounds, GlanceState } from "@pistachio/shell-contracts/ipc";
 import { glanceFrame, type GlanceFrame } from "../lib/glance";
 import { useAppStore } from "../store";
@@ -28,17 +28,30 @@ interface GlanceExit {
   image: HTMLImageElement | null;
 }
 
-interface GlancePromotionTarget {
+/** Where the promoted page lands: in the surface (the card's box) and in the window (the native view's). */
+export interface GlancePromotionTarget {
   local: ContentBounds;
   window: ContentBounds;
+}
+
+/**
+ * A Glance over a desk (DeskSurface): taken in, it becomes one of the desk's
+ * windows, filling the desk or as a tile among the others, rather than the
+ * tab over the panes.
+ */
+export interface GlanceDesk {
+  /** Make the desk ready for its window and say where that window's page will be, for the flight to land on; null if it cannot. */
+  land(how: "fill" | "tile"): GlancePromotionTarget | null;
 }
 
 export function GlanceOverlay({
   glance,
   surfaceRef,
+  desk,
 }: {
   glance: GlanceState;
   surfaceRef: React.RefObject<HTMLDivElement | null>;
+  desk?: GlanceDesk;
 }) {
   const [frame, setFrame] = useState<GlanceFrame | null>(null);
   const [landed, setLanded] = useState(false);
@@ -227,10 +240,10 @@ export function GlanceOverlay({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [dismiss]);
 
-  const promote = async () => {
+  const promote = async (how: "fill" | "tile" = "fill") => {
     if (leaving || actionPending || !landed || frame === null) return;
     const surface = surfaceRef.current;
-    const target = surface === null ? null : glancePromotionTarget(surface);
+    const target = desk !== undefined ? desk.land(how) : surface === null ? null : glancePromotionTarget(surface);
     if (target === null) {
       setActionPending(true);
       void promoteGlance();
@@ -245,6 +258,8 @@ export function GlanceOverlay({
     await nativeApi()?.stageGlancePromotion(frame.window);
     if (!alive.current) return;
     setPromotionTarget(target);
+    // On a desk the windows come back as the page flies to its place among them (to a tile, theirs are on the way).
+    if (desk !== undefined) setGlanceClosing(true);
     await nextFrame();
     if (!alive.current) return;
     await followFlightFrame(frameElement.current);
@@ -322,20 +337,31 @@ export function GlanceOverlay({
           </GlanceAction>
           <GlanceAction
             testId="glance-promote"
-            label="Open as tab"
+            label={desk === undefined ? "Open as tab" : "Fill the desk"}
             disabled={leaving || actionPending || !landed}
-            onClick={() => void promote()}
+            onClick={() => void promote("fill")}
           >
             <Maximize2 />
           </GlanceAction>
-          <GlanceAction
-            testId="glance-split"
-            label="Open in split view"
-            disabled={leaving || actionPending}
-            onClick={split}
-          >
-            <Columns2 />
-          </GlanceAction>
+          {desk === undefined ? (
+            <GlanceAction
+              testId="glance-split"
+              label="Open in split view"
+              disabled={leaving || actionPending}
+              onClick={split}
+            >
+              <Columns2 />
+            </GlanceAction>
+          ) : (
+            <GlanceAction
+              testId="glance-tile"
+              label="Add as a tile"
+              disabled={leaving || actionPending || !landed}
+              onClick={() => void promote("tile")}
+            >
+              <LayoutGrid />
+            </GlanceAction>
+          )}
         </div>
       ) : null}
       <span className="sr-only" role="status" aria-live="polite">

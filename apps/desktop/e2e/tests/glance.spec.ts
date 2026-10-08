@@ -7,7 +7,7 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage, shellReady } from "./windows";
 import { captureEnabled, launchApp } from "./app";
 import { openAlone, pageAt, pick } from "./pages-harness";
-import { api, createGroup, launchDesk, liveViews, openGroupDesk, openTabs, selectTab, settled, windowSelector } from "./desk-harness";
+import { api, createGroup, launchDesk, liveViews, openGroupDesk, openTabs, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
 
 const screenshotDirectory = join(process.cwd(), "e2e/screenshots/glance");
 const OWNER_URL = "pistachio://demo/invoices";
@@ -502,3 +502,102 @@ for (const chrome of ["bar", "drawer"] as const) {
     }
   });
 }
+
+/** Watch, from main, whether the preview's view is up — every few milliseconds, until stopWatchingPreview. */
+function watchPreview(app: ElectronApplication): Promise<void> {
+  return app.evaluate(({ BrowserWindow }, url) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (window === undefined) throw new Error("Pistachio window is unavailable");
+    const seen: boolean[] = [];
+    const timer = setInterval(() => {
+      const view = window.contentView.children.find((child) => "webContents" in child && (child as WebContentsView).webContents.getURL() === url);
+      seen.push(view !== undefined && view.getVisible());
+    }, 4);
+    (globalThis as { __previewWatch?: { seen: boolean[]; timer: NodeJS.Timeout } }).__previewWatch = { seen, timer };
+  }, PREVIEW_URL);
+}
+
+function stopWatchingPreview(app: ElectronApplication): Promise<boolean[]> {
+  return app.evaluate(() => {
+    const watch = (globalThis as { __previewWatch?: { seen: boolean[]; timer: NodeJS.Timeout } }).__previewWatch;
+    if (watch === undefined) return [];
+    clearInterval(watch.timer);
+    return watch.seen;
+  });
+}
+
+// Taken in on a desk, a Glance is one of the desk's windows: Fill the desk makes it a window filling the desk, Add as a
+// tile a tile beside the window it was opened from (half of it, on a tiled desk). Its page is live throughout — never
+// down while its tab joins the group and the desk makes its window where the page landed.
+test("a Glance taken in on a desk fills the desk, or takes a tile beside its window, its page up throughout", { tag: ["@glance", "@desk"] }, async () => {
+  test.setTimeout(90_000);
+  const { app, shell } = await launchDesk({ name: "glance-taken-in", chrome: "drawer" });
+  try {
+    const [invoice] = (await openTabs(shell, [OWNER_URL])) as [string];
+    await createGroup(shell, "glance", [invoice], "Glance", "blue");
+    await selectTab(shell, invoice);
+    await openGroupDesk(shell, "glance");
+    await settled(shell, app);
+    const stage = (await shell.locator(".desk-stage").boundingBox())!;
+    const owner = shell.locator(windowSelector(invoice));
+    const near = (actual: number, expected: number): void => expect(Math.abs(actual - expected), `${actual} vs ${expected}`).toBeLessThanOrEqual(2);
+    // A group of one: its window is the desk.
+    await expect.poll(async () => Math.round((await owner.boundingBox())!.width)).toBe(Math.round(stage.width));
+
+    const takeIn = async (action: "glance-promote" | "glance-tile", label: string): Promise<string> => {
+      const page = await pageAt(app, OWNER_URL);
+      await page.locator("#vendor-record-link").click({ modifiers: ["Alt"] });
+      await expect(shell.getByTestId(action)).toBeEnabled();
+      await expect(shell.getByTestId("glance-split")).toHaveCount(0);
+      await captureWindow(app, `desk-taken-in-${label}-glance.png`);
+      await watchPreview(app);
+      await shell.getByTestId(action).click();
+      await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
+      // Its tab joins the desk's group, in use, and its window is out.
+      await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => tab.url === PREVIEW_URL)?.id ?? null).not.toBeNull();
+      const tabId = (await snapshot(shell)).tabs.find((tab) => tab.url === PREVIEW_URL)!.id;
+      await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === "glance")?.tabIds.includes(tabId)).toBe(true);
+      await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(tabId);
+      await expect(shell.locator(windowSelector(tabId))).toHaveCount(1);
+      await settled(shell, app);
+      const seen = await stopWatchingPreview(app);
+      expect(seen.length, "samples of the preview's view").toBeGreaterThan(10);
+      expect(seen.indexOf(false), "the preview's page went down on the way").toBe(-1);
+      await captureWindow(app, `desk-taken-in-${label}.png`);
+      return tabId;
+    };
+
+    // Filling the desk: the window is the desk, its page the desk's whole box, over the window it came from.
+    const filled = await takeIn("glance-promote", "filled");
+    const whole = (await shell.locator(windowSelector(filled)).boundingBox())!;
+    near(whole.x, stage.x);
+    near(whole.y, stage.y);
+    near(whole.width, stage.width);
+    near(whole.height, stage.height);
+    const top = (await liveViews(app)).at(-1)!;
+    expect(top.url).toBe(PREVIEW_URL);
+    near(top.bounds.x, stage.x);
+    near(top.bounds.width, stage.width);
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), filled);
+    await expect(shell.locator(windowSelector(filled))).toHaveCount(0);
+    await settled(shell, app);
+
+    // As a tile, on a desk its window fills: the two halves, the new one beside it.
+    const tiled = await takeIn("glance-tile", "tiled");
+    const left = (await owner.boundingBox())!;
+    const right = (await shell.locator(windowSelector(tiled)).boundingBox())!;
+    near(left.x, stage.x);
+    near(left.height, stage.height);
+    near(right.x + right.width, stage.x + stage.width);
+    near(right.height, stage.height);
+    near(left.width, right.width);
+    expect(right.x).toBeGreaterThan(left.x + left.width);
+    const views = await liveViews(app);
+    const preview = views.find((view) => view.url === PREVIEW_URL)!;
+    near(preview.bounds.x, right.x);
+    near(preview.bounds.width, right.width);
+    expect(views.some((view) => view.url === OWNER_URL)).toBe(true);
+  } finally {
+    await app.close();
+  }
+});

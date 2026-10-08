@@ -15,14 +15,18 @@
  * notch's outline.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DeskNotchFrame } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "./api";
 import { DeskNotchFace } from "./components/desk/DeskNotchFace";
 import { notchOutline } from "./lib/desk/geometry";
 
+/** The pointer moving on the view says it is there at most this often. */
+const ENTER_REPEAT_MS = 100;
+
 export function NotchApp() {
   const [frame, setFrame] = useState<DeskNotchFrame | null>(null);
+  const saidEnter = useRef(Number.NEGATIVE_INFINITY);
 
   useEffect(() => {
     const api = nativeApi();
@@ -45,6 +49,15 @@ export function NotchApp() {
 
   if (frame === null) return null;
   const send = (input: "enter" | "leave" | "press"): void => nativeApi()?.sendDeskNotchInput(input);
+  // Hidden under the pointer (as the Bar grows), the view never hears it go, and shown again its page has the pointer
+  // there still: the coming it then reports may be no one's (the shell checks the OS's pointer), and a real one, onto
+  // a button its page thinks is under the pointer already, would go unsaid. So a move on it says so too.
+  const enter = (): void => {
+    const now = performance.now();
+    if (now - saidEnter.current < ENTER_REPEAT_MS) return;
+    saidEnter.current = now;
+    send("enter");
+  };
   const { bounds, ground, flare } = frame;
   const outline = notchOutline({ x: flare, y: 0, w: bounds.width - flare * 2, h: bounds.height, radius: frame.radius, flare }, bounds.height, 0, 0);
   const px = (value: number): string => `${value.toFixed(1)}px`;
@@ -70,8 +83,12 @@ export function NotchApp() {
         className="desk-notch-view-face"
         data-testid="desk-notch-view"
         aria-label={frame.label}
-        onPointerEnter={() => send("enter")}
-        onPointerLeave={() => send("leave")}
+        onPointerEnter={enter}
+        onPointerMove={enter}
+        onPointerLeave={() => {
+          saidEnter.current = Number.NEGATIVE_INFINITY;
+          send("leave");
+        }}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => send("press")}
       >

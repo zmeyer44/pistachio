@@ -7883,15 +7883,17 @@ export class BrowserController {
               ? await this.#captureAtViewSize(tab)
               : await tab.view.webContents.capturePage();
         if (taken === null || taken.isEmpty()) return null;
-        const image = zoomed === undefined || zoomed.applied === null ? taken : zoomedStill(taken, zoomed);
+        // A capture is in the display's pixels (two to a CSS px on a Retina display), the boxes here in CSS px.
+        const scale = this.#captureScale();
+        const image = zoomed === undefined || zoomed.applied === null ? taken : zoomedStill(taken, zoomed, scale);
         const masked = this.#deskMasks.get(tabId);
         // (Its size as the page box it pictures: a view resized while down is drawn at the size it had until it is shown.)
         const pictured = image.getSize();
         const still: PaneStill = {
           tabId,
           dataUrl: `data:image/jpeg;base64,${fitStillToView(image, limit).toJPEG(84).toString("base64")}`,
-          width: pictured.width,
-          height: pictured.height,
+          width: Math.round(pictured.width / scale),
+          height: Math.round(pictured.height / scale),
         };
         return masked?.applied != null ? { ...still, mask: masked.applied.key } : still;
       } catch {
@@ -7952,11 +7954,24 @@ export class BrowserController {
       const image = await tab.view.webContents.capturePage();
       if (image.isEmpty()) return null;
       const size = image.getSize();
+      const scale = this.#captureScale();
       const { width, height } = tab.view.getBounds();
-      if (Math.abs(size.width - width) <= 2 && Math.abs(size.height - height) <= 2) return image;
+      if (Math.abs(size.width / scale - width) <= 2 && Math.abs(size.height / scale - height) <= 2) return image;
       if (attempt >= DESK_STILL_SIZE_TRIES) return null;
       await new Promise((resolve) => setTimeout(resolve, 16));
     }
+  }
+
+  /**
+   * The display's pixels to a CSS px in a capture of one of the window's
+   * pages: capturePage's picture is in device pixels (two to a CSS px on a
+   * Retina display, its NativeImage at scale factor 1), never in the CSS px
+   * the views are laid out in.
+   */
+  #captureScale(): number {
+    if (this.#window.isDestroyed()) return 1;
+    const scale = screen.getDisplayMatching(this.#window.getBounds()).scaleFactor;
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
   }
 
   /** Select a desk window's tab and hand its page the keyboard once it is on screen. */
@@ -9854,10 +9869,12 @@ export function mediaInfoChanged(
  * it) has the page in its top-left and nothing past it; one cut short (a
  * window peeking from the desk's foot) has the top of it.
  */
-function zoomedStill(image: NativeImage, zoom: { width: number; height: number }): NativeImage {
+function zoomedStill(image: NativeImage, zoom: { width: number; height: number }, scale: number): NativeImage {
+  // (The box in the picture's own pixels: in CSS px it was the top-left quarter of a Retina capture, drawn over the whole window.)
+  const box = { width: Math.round(zoom.width * scale), height: Math.round(zoom.height * scale) };
   const { width, height } = image.getSize();
-  if (width <= zoom.width + 1 && height <= zoom.height + 1) return image;
-  return image.crop({ x: 0, y: 0, width: Math.min(width, zoom.width), height: Math.min(height, zoom.height) });
+  if (width <= box.width + scale && height <= box.height + scale) return image;
+  return image.crop({ x: 0, y: 0, width: Math.min(width, box.width), height: Math.min(height, box.height) });
 }
 
 function fitStillToView(image: NativeImage, cssWidth: number): NativeImage {

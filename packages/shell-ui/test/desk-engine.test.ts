@@ -655,6 +655,102 @@ describe("the sidebar, the desk's dock", () => {
   });
 });
 
+describe("a Glance taken in", () => {
+  let restoreNow: () => void = () => undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+  });
+  afterEach(() => restoreNow());
+
+  /** Tab 0 out as a live window, the Glance's owner; the rest of the group's tabs in the dock. */
+  function desk(count = 2) {
+    const { layouts } = native();
+    const created = engine({ hasLivePage: () => true });
+    created.start([], "tab-0", tabIds(count));
+    const attach = (tabId: string): ReturnType<typeof element> => {
+      const win = element();
+      created.attachWindow(tabId, win as unknown as HTMLElement);
+      return win;
+    };
+    const owner = attach("tab-0");
+    settle();
+    /** Where main was last told a tab's page is. */
+    const shown = (tabId: string) => layouts.at(-1)?.views.find((view) => view.tabId === tabId)?.bounds;
+    return { desk: created, attach, owner, shown };
+  }
+
+  const pageOf = (rect: Rect): Rect => {
+    const insets = CHROME_INSETS.bar;
+    return { x: rect.x + insets.left, y: rect.y + insets.top, w: rect.w - insets.left - insets.right, h: rect.h - insets.top - insets.bottom };
+  };
+
+  it("filling the desk, its window is made where the page landed, live there at once — not flown out of its row", () => {
+    const { desk: created, attach, owner, shown } = desk();
+    const before = rectOf(owner);
+    const landing = created.receiveGlance("tab-1", "fill", "tab-0");
+    expect(landing).not.toBeNull();
+    expectRect(landing!.stage, pageOf(usable));
+    // Its tab joins the group, and the desk brings it out.
+    created.add("tab-1", { focus: true });
+    const added = attach("tab-1");
+    run(1);
+    expectRect(rectOf(added), usable);
+    expect(created.getView().windows.find((window) => window.tabId === "tab-1")?.flight).toBeNull();
+    const { x, y, w, h } = landing!.window;
+    expect(shown("tab-1")).toEqual({ x, y, width: w, height: h });
+    expect(created.windowTabIds()).toEqual(["tab-0", "tab-1"]);
+    expect(created.focusedTabId()).toBe("tab-1");
+    // The window it was opened from stays where it was, under it.
+    settle();
+    expectRect(rectOf(owner), before);
+    created.destroy();
+  });
+
+  it("as a tile on a tiled desk, takes half of the window it was opened from", () => {
+    const { desk: created, attach, owner } = desk();
+    created.toggleMaximize("tab-0");
+    settle();
+    const landing = created.receiveGlance("tab-1", "tile", "tab-0");
+    expectRect(landing!.stage, pageOf(zoneRect("right", usable)));
+    created.add("tab-1", { focus: true });
+    const added = attach("tab-1");
+    settle();
+    expectRect(rectOf(owner), zoneRect("left", usable));
+    expectRect(rectOf(added), zoneRect("right", usable));
+    created.destroy();
+  });
+
+  it("as a tile among windows set down freely, tiles them all, beside the window it was opened from", () => {
+    const { desk: created, attach, owner } = desk(3);
+    created.add("tab-1", { focus: true });
+    const other = attach("tab-1");
+    settle();
+    const landing = created.receiveGlance("tab-2", "tile", "tab-0");
+    expectRect(landing!.stage, pageOf(zoneRect("top-right", usable)));
+    // The others are on their way to their tiles already, as the page flies to its own.
+    settle();
+    expectRect(rectOf(owner), zoneRect("left", usable));
+    expectRect(rectOf(other), zoneRect("bottom-right", usable));
+    created.add("tab-2", { focus: true });
+    const added = attach("tab-2");
+    run(1);
+    expectRect(rectOf(added), zoneRect("top-right", usable));
+    created.destroy();
+  });
+
+  it("comes out of its row as any tab does once the landing has gone stale", () => {
+    const { desk: created, attach } = desk();
+    created.receiveGlance("tab-1", "fill", "tab-0");
+    clock += 5_000;
+    created.add("tab-1", { focus: true });
+    attach("tab-1");
+    run(1);
+    expect(created.getView().windows.find((window) => window.tabId === "tab-1")?.flight).toBe("in");
+    created.destroy();
+  });
+});
+
 describe("a masked window", () => {
   let restoreNow: () => void = () => undefined;
   let listeners: Map<string, Set<(event: unknown) => void>>;

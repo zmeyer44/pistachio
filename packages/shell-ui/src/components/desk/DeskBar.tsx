@@ -60,6 +60,8 @@ const TIP_DELAY_MS = 350;
 const TIP_LINGER_MS = 200;
 /** The pointer on the pill this long before it grows: one passing over it on its way elsewhere does not (transitions.dev's intent delay, `--duration-micro`). */
 const PILL_HOVER_MS = 80;
+/** While the pointer is on the Bar, the OS's pointer is read this often, for a leave the shell never hears. */
+const BAR_POINTER_CHECK_MS = 150;
 /** The pointer on the Bar's tray this long before it opens (the same intent delay), and off it this long before it closes: a pass on the way to the field, or a slip off its end, moves nothing. */
 const TRAY_OPEN_MS = 80;
 const TRAY_CLOSE_MS = 160;
@@ -387,19 +389,60 @@ export const DeskBar = memo(function DeskBar({
   const [hovered, setHovered] = useState(false);
   /** The pointer is on the idle notch: the pages under the grown Bar are asked to give way at once, before it grows. */
   const [arming, setArming] = useState(false);
+  const armed = useRef(false);
   const hoverTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
   /** The pointer came onto the Bar (or the notch view over a page): the pages under it are asked to give way, and it grows once the pointer has rested. */
   const enterBar = useCallback(() => {
+    armed.current = true;
     setArming(true);
     window.clearTimeout(hoverTimer.current);
     hoverTimer.current = window.setTimeout(() => setHovered(true), PILL_HOVER_MS);
   }, []);
   const leaveBar = useCallback(() => {
+    armed.current = false;
     setArming(false);
     window.clearTimeout(hoverTimer.current);
     setHovered(false);
   }, []);
+  /** The notch view's box in the window while it is up over a page (setDeskNotch, below). */
+  const notchBox = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  /**
+   * Whether the OS's pointer (main's word) is on the Bar: its own box and
+   * all in it, or the notch view over a page — null where it cannot be read
+   * (Playwright), and the pointer events have the last word.
+   */
+  const pointerOnBar = useCallback(async (): Promise<boolean | null> => {
+    let point: { x: number; y: number } | null = null;
+    try {
+      point = (await nativeApi()?.getCursorPoint()) ?? null;
+    } catch {
+      point = null;
+    }
+    if (point === null) return null;
+    const box = notchBox.current;
+    if (box !== null && point.x >= box.x - 2 && point.x <= box.x + box.width + 2 && point.y >= box.y - 2 && point.y <= box.y + box.height + 2) return true;
+    const under = document.elementFromPoint(point.x, point.y);
+    return under !== null && barRef.current?.contains(under) === true;
+  }, []);
+  // A leave the shell never hears would leave the Bar grown, and every window under it its picture (dead to the
+  // pointer), for good: the notch view goes from under the pointer as the Bar grows, so it never hears the pointer go,
+  // and the shell hears the pointer on the Bar only once it moves there. While the pointer is on the Bar, then, the
+  // OS's pointer is read now and then: off the Bar, it has gone.
+  const pointerHeld = arming || hovered;
+  useEffect(() => {
+    if (!pointerHeld) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void pointerOnBar().then((on) => {
+        if (!stopped && on === false) leaveBar();
+      });
+    }, BAR_POINTER_CHECK_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [pointerHeld, pointerOnBar, leaveBar]);
   // (A floating answer is no reason to: only one docked on it, or one in hand on its way home.)
   const wanted = !composerIdle || focusWithin || hovered || (cardShown && !floating) || cardHeld || pickerOpen || mentionMenu !== null || fileDrag || drop.dragging;
   // Grown, the Bar is a cover (its whole footprint, whatever its width as it grows or shrinks: what is under it is the
@@ -441,14 +484,17 @@ export const DeskBar = memo(function DeskBar({
     const el = barRef.current;
     if (api === null) return;
     if (!overPage || el === null) {
+      notchBox.current = null;
       api.setDeskNotch(null);
       return;
     }
     const send = (): void => {
       const box = el.getBoundingClientRect();
       const ground = el.closest(".chrome-container")?.getBoundingClientRect() ?? { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+      const bounds = { x: box.left - NOTCH_FLARE, y: box.top, width: box.width + NOTCH_FLARE * 2, height: box.height };
+      notchBox.current = bounds;
       api.setDeskNotch({
-        bounds: { x: box.left - NOTCH_FLARE, y: box.top, width: box.width + NOTCH_FLARE * 2, height: box.height },
+        bounds,
         label: `Ask about ${group.title}`,
         shortcut: askKey,
         color: group.color,
@@ -469,15 +515,22 @@ export const DeskBar = memo(function DeskBar({
     };
   }, [overPage, group.title, group.color, askKey]);
   useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
-  // The pointer on the notch view, and a press there: the Bar's, as if they were on it.
+  // The pointer on the notch view, and a press there: the Bar's, as if they were on it. The view's word that the
+  // pointer came is checked against the OS's pointer: hidden under the pointer (as it is once the Bar grows), it never
+  // hears the pointer go, and shown again — a window brought down under the notch — it still has it there, and says
+  // so wherever the pointer is. (It says it again as the pointer moves on it: once the Bar is on its way up, nothing new.)
   useEffect(
     () =>
       nativeApi()?.onDeskNotchInput((input) => {
-        if (input === "enter") enterBar();
-        else if (input === "leave") leaveBar();
+        if (input === "enter") {
+          if (armed.current) return;
+          void pointerOnBar().then((on) => {
+            if (on !== false && !armed.current) enterBar();
+          });
+        } else if (input === "leave") leaveBar();
         else focusInput();
       }),
-    [enterBar, leaveBar, focusInput],
+    [enterBar, leaveBar, focusInput, pointerOnBar],
   );
   // The notch as it is drawn now, as it grows and shrinks: the engine cuts it through the well and the windows under it.
   useLayoutEffect(() => {

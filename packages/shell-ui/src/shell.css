@@ -3017,15 +3017,17 @@ body:not([data-chrome-view])::after {
 
 /* Drawer: the page alone. Its title and controls are on a strip behind the
    window's top edge, slid up out of it as far as the engine says
-   (--drawer-t, 0 in to 1 out); the card lies over the strip's foot, so it
-   comes from behind the window. With no room above, the engine pushes the
-   window down for it instead. */
+   (--drawer-t, 0 in to 1 out): it is cut off at that edge, so it comes from
+   behind the window. It lies over the card, whose shadow never falls on it:
+   out, it and the page meet with no shadow between (2026-10-08). With no room
+   above, the engine pushes the window down for it instead. */
 .desk-window-drawer-clip {
   position: absolute;
   top: calc(-1 * var(--desk-drawer-h));
   right: 0;
   left: 0;
-  height: calc(var(--desk-drawer-h) + 12px);
+  z-index: 1;
+  height: var(--desk-drawer-h);
   overflow: hidden;
   border-radius: var(--desk-window-radius) var(--desk-window-radius) 0 0;
   pointer-events: none;
@@ -3036,24 +3038,13 @@ body:not([data-chrome-view])::after {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 5px 12px 11px;
+  padding: 0 5px 0 11px;
   border-radius: inherit;
   background: var(--color-background-200);
   font-size: 12px;
   color: var(--color-gray-900);
   transform: translateY(calc((1 - var(--drawer-t, 0)) * var(--desk-drawer-h)));
   pointer-events: auto;
-}
-/* The window's shadow on the strip, where it goes in under the window. */
-.desk-window-drawer::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 12px;
-  left: 0;
-  height: 8px;
-  background: linear-gradient(to top, oklch(0 0 0 / 0.06), transparent);
-  pointer-events: none;
 }
 .desk-window:not([data-drawer-out]) .desk-window-drawer {
   visibility: hidden;

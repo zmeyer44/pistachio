@@ -292,6 +292,9 @@ const EASED_SPRING: SpringConfig = { response: 0.25, damping: 1 };
 /** Passing to another group: a live window waits at most this long for the still it flies home as. */
 const SWITCH_STILL_WAIT_MS = 400;
 
+/** A Glance taken in (receiveGlance): where it landed waits this long for its tab to join the group. */
+const GLANCE_LANDING_MS = 3_000;
+
 /**
  * The desk's dock is the sidebar's column beside it (docs/desk.md): a tab's
  * window comes out of its row there, and goes back into it. A row's icon is
@@ -720,6 +723,12 @@ export class DeskEngine {
   #coveredTimer = 0;
   #retryTimer = 0;
   #pendingFocus: string | null = null;
+  /**
+   * A Glance over the desk taken in as a window (receiveGlance): its tab, the
+   * box its window is to be, and when. The window is made there, its page
+   * live where the preview landed, once the tab joins the group (add).
+   */
+  #incoming: { tabId: string; rect: Rect; at: number } | null = null;
   #lastClick: { tabId: string; at: number } | null = null;
   #leaveFrames = -1;
   #destroyed = false;
@@ -1703,6 +1712,22 @@ export class DeskEngine {
       return;
     }
     this.#makeRoom();
+    // A Glance taken in (receiveGlance): its window is where the preview landed, its page live there already — no
+    // flight out of its row, and no layout moment (the person chose where it goes).
+    const incoming = this.#incoming?.tabId === tabId ? this.#incoming : null;
+    if (incoming !== null) this.#incoming = null;
+    if (incoming !== null && options.rect === undefined && performance.now() - incoming.at < GLANCE_LANDING_MS) {
+      this.#wins.set(tabId, this.#newWin(tabId, incoming.rect));
+      this.#order.push(tabId);
+      this.#focused = tabId;
+      if (options.focus !== false) this.#pendingFocus = tabId;
+      this.#host.select(tabId);
+      this.#save();
+      this.#emit();
+      this.#render();
+      this.#kick();
+      return;
+    }
     const before = this.layoutView().windows;
     const usable = this.#usable();
     // (The shelf's windows are at the desk's foot, below where windows go.)
@@ -2089,11 +2114,7 @@ export class DeskEngine {
   arrange(kind: "tile" | "cascade", groupTabIds: readonly string[] = this.#groupTabIds): void {
     if (this.#phase !== "open") return;
     this.#cancelGesture();
-    // Masked windows are pictures: tiling would stretch them, so they stay where they are; minimized ones stay minimized.
-    const arranged = (id: string): boolean =>
-      this.#wins.has(id) && this.#wins.get(id)!.flight !== "away" && this.#wins.get(id)!.mask === null && this.#wins.get(id)!.mini === null;
-    // The tabs in the dock's order, then the documents out, bottom to top.
-    const ids = [...groupTabIds.filter(arranged), ...this.#order.filter((id) => !isTabWindow(id) && arranged(id))];
+    const ids = this.#arrangeable(groupTabIds);
     const usable = this.#usable();
     const rects = kind === "tile" ? tileRects(ids.length, usable) : cascadeRects(ids.length, usable);
     ids.forEach((tabId, index) => {
@@ -2107,6 +2128,86 @@ export class DeskEngine {
     if (kind === "cascade") this.#order = [...this.#order.filter((tabId) => !ids.includes(tabId)), ...ids];
     this.#emit();
     this.#kick();
+  }
+
+  /** The windows an arrangement lays out: the tabs in the dock's order, then the documents out, bottom to top. */
+  #arrangeable(groupTabIds: readonly string[]): string[] {
+    // Masked windows are pictures: tiling would stretch them, so they stay where they are; minimized ones stay minimized.
+    const arranged = (id: string): boolean =>
+      this.#wins.has(id) && this.#wins.get(id)!.flight !== "away" && this.#wins.get(id)!.mask === null && this.#wins.get(id)!.mini === null;
+    return [...groupTabIds.filter(arranged), ...this.#order.filter((id) => !isTabWindow(id) && arranged(id))];
+  }
+
+  /**
+   * A Glance over the desk taken in as a window (GlanceOverlay's actions):
+   * filling the desk, or as a tile — the hole a tiled desk has left, or
+   * half of the window it was opened from, so the desk stays tiled; over
+   * windows set down freely, every window tiled, it beside that one. The
+   * others set off for their tiles now, as the preview flies to its own.
+   * Returns where its page will be, in the stage and in the window (as main
+   * will be told: #report), for the flight to land on. The window is made
+   * there once its tab joins the group (add); null when there is no taking
+   * it in.
+   */
+  receiveGlance(tabId: string, how: "fill" | "tile", ownerId: string): { stage: Rect; window: Rect } | null {
+    if (this.#phase !== "open" || this.#wins.has(tabId)) return null;
+    this.#cancelGesture();
+    const usable = this.#usable();
+    const rect = how === "fill" ? { ...usable } : this.#tileForGlance(tabId, ownerId, usable);
+    this.#incoming = { tabId, rect, at: performance.now() };
+    if (how === "tile") {
+      this.#emit();
+      this.#kick();
+    }
+    const insets = CHROME_INSETS[this.#host.variants().chrome];
+    const page = { x: rect.x + insets.left, y: rect.y + insets.top, w: rect.w - insets.left - insets.right, h: rect.h - insets.top - insets.bottom };
+    const { left, top, height } = this.#stageBox;
+    const y = Math.round(top + page.y);
+    return {
+      stage: page,
+      window: {
+        x: Math.round(left + page.x),
+        y,
+        w: Math.max(1, Math.round(page.w)),
+        h: Math.max(1, Math.min(Math.round(page.h), Math.round(top + height) - y)),
+      },
+    };
+  }
+
+  /** The tile a Glance's window takes (receiveGlance), the windows giving it room set off for theirs. */
+  #tileForGlance(tabId: string, ownerId: string, usable: Rect): Rect {
+    // (The shelf's windows are at the desk's foot, below where windows go.)
+    const staying = this.#staying().filter((id) => this.#wins.get(id)!.mini?.parked !== true);
+    const rects = staying.map((id) => this.#wins.get(id)!.target ?? this.#wins.get(id)!.rect);
+    if (rects.length === 0) return { ...usable };
+    // A masked window is a picture, and a minimized one small: neither is cut in two for it.
+    const owner = this.#wins.get(ownerId);
+    const from = owner === undefined || owner.mask !== null || owner.mini !== null ? -1 : staying.indexOf(ownerId);
+    const placed = placeNewWindow(rects, usable, from < 0 ? null : from);
+    if (placed.kind === "hole" || placed.kind === "split") {
+      if (placed.split !== null) {
+        const giving = this.#wins.get(staying[placed.split.index]!)!;
+        giving.target = placed.split.rect;
+        giving.restore = null;
+        giving.coasting = false;
+        giving.delay = 0;
+      }
+      return placed.rect;
+    }
+    const ids = this.#arrangeable(this.#groupTabIds);
+    const at = ids.indexOf(ownerId);
+    const mine = at < 0 ? ids.length : at + 1;
+    ids.splice(mine, 0, tabId);
+    const tiles = tileRects(ids.length, usable);
+    ids.forEach((id, index) => {
+      const win = this.#wins.get(id);
+      if (win === undefined) return;
+      win.target = tiles[index]!;
+      win.restore = null;
+      win.coasting = false;
+      win.delay = 0;
+    });
+    return tiles[mine]!;
   }
 
   // ── The agent's hand (docs/desk-agent.md §2) ──────────────────────────

@@ -176,3 +176,99 @@ test.describe.serial("a desk window growing, and shrinking", { tag: ["@desk"] },
     await capture(app, shell, "03-live-at-its-size.png");
   });
 });
+
+/**
+ * How wide the page's corner square (`markCorner`) is drawn in the window's still, in CSS px: the run of its blue
+ * along a row near its top, at the scale the still is drawn at. Null while the window shows no still.
+ */
+function cornerInStill(shell: Page, tabId: string): Promise<number | null> {
+  return shell.evaluate(async (tabId) => {
+    const img = document.querySelector<HTMLImageElement>(`[data-testid="desk-window"][data-tab-id="${tabId}"] [data-testid="desk-window-page"] img.desk-still`);
+    if (img === null) return null;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const context = canvas.getContext("2d")!;
+    context.drawImage(img, 0, 0);
+    const row = context.getImageData(0, 4, img.naturalWidth, 1).data;
+    let run = 0;
+    for (let x = 2; x < img.naturalWidth; x += 1) {
+      const [r, g, b] = [row[x * 4]!, row[x * 4 + 1]!, row[x * 4 + 2]!];
+      if (b < 180 || r > 80 || g > 80) break;
+      run += 1;
+    }
+    const scale = Math.max(img.clientWidth / img.naturalWidth, img.clientHeight / img.naturalHeight);
+    return (run + 2) * scale;
+  }, tabId);
+}
+
+/** A square 100 CSS px a side, solid blue, fixed in the page's top-left corner. */
+function markCorner(app: ElectronApplication, url: string): Promise<void> {
+  return app.evaluate(async ({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url);
+    if (contents === undefined) throw new Error(`no page at ${url}`);
+    await contents.executeJavaScript(
+      `document.body.insertAdjacentHTML("beforeend", '<div style="position:fixed;left:0;top:0;width:100px;height:100px;background:#0000ff;z-index:9"></div>')`,
+    );
+  }, url);
+}
+
+// On a Retina display a page's picture is in the display's pixels, two to a CSS px. A window grown under a cover is
+// its still, its page held at the box it grew to, and that still was cut to the box's size in CSS px — the top-left
+// quarter of the picture — and drawn over the whole window: the page zoomed into its corner, dead to the pointer
+// until the cover went (2026-10-08). Every other spec runs at 1×, where a pixel is a CSS px.
+test("at 2×, a window grown under the More card is its page at its own scale, not zoomed into its corner", { tag: ["@desk"] }, async () => {
+  test.setTimeout(90_000);
+  const server = await serve();
+  const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  const urls = [`${origin}/a`, `${origin}/b`] as const;
+  const { app, shell } = await launchDesk({
+    name: "grow-2x",
+    homeUrl: urls[0],
+    args: ["--force-device-scale-factor=2"],
+    env: { PISTACHIO_LAYOUT_SCRIPT: JSON.stringify({ opened: { move: "keep" }, closed: { move: "fill" }, asked: { move: "keep" } }) },
+  });
+  try {
+    await createTab(shell, urls[1]);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => (urls as readonly string[]).includes(tab.url)).length).toBe(2);
+    const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
+    const tabs = [byUrl.get(urls[0])!, byUrl.get(urls[1])!] as const;
+    await createGroup(shell, "grow", tabs, "Growing", "green");
+    await selectTab(shell, tabs[0]);
+    await openGroupDesk(shell, "grow");
+    await settled(shell, app);
+    const stage = await box(shell, ".desk-stage");
+    const away = () => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
+    await markCorner(app, urls[0]);
+    await shell.locator(rowSelector(tabs[1])).click();
+    await expect(shell.locator(windowSelector(tabs[1]))).toHaveCount(1);
+    await away();
+    await settled(shell, app);
+    await openMore(shell);
+    await shell.getByTestId("desk-tile").click();
+    await away();
+    await settled(shell, app);
+    // The More card up over it: the window is its still, the square its own size.
+    await openMore(shell);
+    await expect(shell.locator(windowSelector(tabs[0]))).toHaveAttribute("data-drawn", "");
+    await expect.poll(() => cornerInStill(shell, tabs[0])).toBeGreaterThan(90);
+    // Its neighbour closed under the card: it grows, still under it, its page held at the box it grew to.
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(tabId), tabs[1]);
+    await expect(shell.locator(windowSelector(tabs[1]))).toHaveCount(0);
+    await settled(shell);
+    const grown = await box(shell, `${windowSelector(tabs[0])} [data-testid="desk-window-page"]`);
+    expect(grown.width).toBeGreaterThan(stage.width * 0.9);
+    await expect(shell.locator(windowSelector(tabs[0]))).toHaveAttribute("data-drawn", "");
+    // Every still it shows meanwhile has the square at 100 CSS px, as the page has it (it was 200: the corner zoomed).
+    await shell.waitForTimeout(600);
+    const drawn = await cornerInStill(shell, tabs[0]);
+    expect(drawn).not.toBeNull();
+    expect(drawn!).toBeGreaterThan(90);
+    expect(drawn!).toBeLessThan(115);
+    await capture(app, shell, "04-grown-under-the-card-2x.png");
+  } finally {
+    await app.close();
+    server.close();
+  }
+});

@@ -17,7 +17,7 @@ import { deskFor, lendDeskArrange, lendDeskAsk, lendDeskEngine } from "../../lib
 import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
 import { deskGroups, groupPageOf, isDayTab, passedEntry, tabDeskOf, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
-import { GlanceOverlay } from "../GlanceOverlay";
+import { GlanceOverlay, type GlanceDesk } from "../GlanceOverlay";
 import { DeskBar } from "./DeskBar";
 import { CHROME_INSETS, DeskEngine, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
@@ -762,6 +762,24 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
     return subject;
   };
   const attachGuides = useCallback((el: HTMLDivElement | null) => engine?.attachGuides(el), [engine]);
+  // A Glance taken in is one of the desk's windows (receiveGlance): filling the desk, or a tile among the others. (Only
+  // a group's: on a page's own desk its tab would join no group, and the desk would pass to it instead.)
+  const grouped = deskGroup !== null;
+  const glanceDesk = useMemo<GlanceDesk | undefined>(
+    () =>
+      engine === null || !grouped
+        ? undefined
+        : {
+            land: (how) => {
+              const current = useAppStore.getState().glance;
+              const landing = current === null ? null : engine.receiveGlance(current.tab.id, how, current.ownerTabId);
+              if (landing === null) return null;
+              const bounds = ({ x, y, w, h }: { x: number; y: number; w: number; h: number }) => ({ x, y, width: w, height: h });
+              return { local: bounds(landing.stage), window: bounds(landing.window) };
+            },
+          },
+    [engine, grouped],
+  );
   /** A window in hand: the drop rail may stand over the sidebar. */
 
   return (
@@ -827,7 +845,7 @@ export default function DeskSurface({ groupId }: { groupId: string }) {
         {engine === null || view === null || deskGroup === null ? null : (
           <DeskBar group={deskGroup} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} context={context} />
         )}
-        {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} />}
+        {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} desk={glanceDesk} />}
       </div>
     </section>
   );

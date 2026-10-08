@@ -471,7 +471,8 @@ const DESKTOP_GLASS_MATERIAL = "under-window" as const;
 
 /** The compact column's CSS retreat; its native traffic lights leave after it lands. */
 const SIDEBAR_CLOSE_MS = 180;
-const cursorWatchDisabled = process.env["PISTACHIO_E2E"] === "1";
+/** Under Playwright the OS pointer is the real one, wherever it is: unread, unless a spec stubs `screen.getCursorScreenPoint` and says so. */
+const cursorWatchDisabled = process.env["PISTACHIO_E2E"] === "1" && process.env["PISTACHIO_E2E_CURSOR"] !== "1";
 
 /**
  * The compact sidebar's pointer watch (@pistachio/shell-contracts/chrome, "the compact
