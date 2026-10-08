@@ -1,25 +1,32 @@
 /**
- * The desk's idle Bar over a live page (docs/desk.md, "The foot"): a utility
- * chrome view of its own (main/chrome-view.ts, id "notch"), because a tab's
- * view paints over everything the shell draws, and the notch is to lie over
- * the windows' pages, not to cut them short. The shell says where it is and
- * what it says while a live page is under it (DeskBar → main); the view is
- * the notch, edge to edge: its shoulders, and the flares into the desk's
- * foot. The pointer on it and a press go back to the shell's Bar, which grows
- * from there as if the pointer were on it — and once it has, this view goes.
+ * The desk's idle nub over a live page (docs/desk.md, "The foot"): a
+ * utility chrome view of its own (main/chrome-view.ts, id "notch"), because
+ * a tab's view paints over everything the shell draws, and the nub is to lie
+ * over the windows' pages in the desk's trailing foot corner, not to cut
+ * them short. The shell says where it is and what it shows while a live page
+ * is under it (DeskBar → main); the view is the box the nub may fill, its
+ * bottom-right corner the desk's, cut to the nub's outline. The pointer on it
+ * and a press go back to the shell's Bar, which swells the nub and opens its
+ * menu as if the pointer were on it — and once what it opens has made the
+ * page under it a still, this view goes.
  *
- * Elsewhere the notch is a hole down to the shell's ground; here a page lies
+ * The swell is drawn here too, read off the same clock as the shell's own
+ * (DeskNotchFrame.swelling, nub-motion's swellAt): the view's box holds the
+ * nub swelled, so it only changes its outline as it swells, never its box.
+ *
+ * Elsewhere the nub is a hole down to the shell's ground; here a page lies
  * under it, so the view paints that ground itself (shell.css .desk-notch-view):
  * the theme's gradient laid over the shell's ground box (`frame.ground`) as
  * the shell lays it, its grain tiled from the same corner, and cut to the
- * notch's outline.
+ * nub's outline.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DeskNotchFrame } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "./api";
-import { DeskNotchFace } from "./components/desk/DeskNotchFace";
-import { notchOutline } from "./lib/desk/geometry";
+import { DeskNubMark } from "./components/desk/DeskNub";
+import { swellAt, swellDone } from "./components/desk/nub-motion";
+import { nubBetween, nubFace, nubOutline } from "./lib/desk/geometry";
 
 /** The pointer moving on the view says it is there at most this often. */
 const ENTER_REPEAT_MS = 100;
@@ -27,6 +34,9 @@ const ENTER_REPEAT_MS = 100;
 export function NotchApp() {
   const [frame, setFrame] = useState<DeskNotchFrame | null>(null);
   const saidEnter = useRef(Number.NEGATIVE_INFINITY);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const faceRef = useRef<HTMLSpanElement>(null);
+  const markRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
     const api = nativeApi();
@@ -47,42 +57,62 @@ export function NotchApp() {
     };
   }, []);
 
+  // The nub as it swells or settles: its outline and its face, every frame until it is still.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const face = faceRef.current;
+    const mark = markRef.current;
+    if (frame === null || root === null || face === null || mark === null) return;
+    const { bounds, swelling } = frame;
+    let raf = 0;
+    const draw = (): void => {
+      const s = swellAt(swelling);
+      const shape = nubBetween(frame.idle, frame.swell, s);
+      root.style.clipPath = `path("${nubOutline(shape, bounds.width, bounds.height, frame.corner, 0, 0)}")`;
+      const at = nubFace(shape);
+      face.style.left = `${(bounds.width + at.x).toFixed(2)}px`;
+      face.style.top = `${(bounds.height + at.y).toFixed(2)}px`;
+      mark.style.transform = `scale(${(1 + 0.08 * s).toFixed(4)})`;
+      if (!swellDone(swelling)) raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
+  }, [frame]);
+
   if (frame === null) return null;
   const send = (input: "enter" | "leave" | "press"): void => nativeApi()?.sendDeskNotchInput(input);
-  // Hidden under the pointer (as the Bar grows), the view never hears it go, and shown again its page has the pointer
-  // there still: the coming it then reports may be no one's (the shell checks the OS's pointer), and a real one, onto
-  // a button its page thinks is under the pointer already, would go unsaid. So a move on it says so too.
+  // Hidden under the pointer (once what the nub opens has made the page under it a still), the view never hears it
+  // go, and shown again its page has the pointer there still: the coming it then reports may be no one's (the shell
+  // checks the OS's pointer), and a real one, onto a button its page thinks is under the pointer already, would go
+  // unsaid. So a move on it says so too.
   const enter = (): void => {
     const now = performance.now();
     if (now - saidEnter.current < ENTER_REPEAT_MS) return;
     saidEnter.current = now;
     send("enter");
   };
-  const { bounds, ground, flare } = frame;
-  const outline = notchOutline({ x: flare, y: 0, w: bounds.width - flare * 2, h: bounds.height, radius: frame.radius, flare }, bounds.height, 0, 0);
+  const { bounds, ground } = frame;
   const px = (value: number): string => `${value.toFixed(1)}px`;
   return (
     <div
+      ref={rootRef}
       className="desk-notch-view tab-group-tone"
       data-group-color={frame.color}
       style={
         {
-          "--desk-notch-radius": `${String(frame.radius)}px`,
-          "--desk-notch-flare": `${String(flare)}px`,
           // The shell's ground box, where it lies from this view's corner.
           "--desk-notch-ground-x": px(ground.x - bounds.x),
           "--desk-notch-ground-y": px(ground.y - bounds.y),
           "--desk-notch-ground-w": px(ground.width),
           "--desk-notch-ground-h": px(ground.height),
-          clipPath: `path("${outline}")`,
         } as React.CSSProperties
       }
     >
       <button
         type="button"
-        className="desk-notch-view-face"
+        className="desk-notch-view-hit"
         data-testid="desk-notch-view"
-        aria-label={frame.label}
+        aria-label={frame.shortcut === null ? frame.label : `${frame.label} (${frame.shortcut})`}
         onPointerEnter={enter}
         onPointerMove={enter}
         onPointerLeave={() => {
@@ -92,7 +122,9 @@ export function NotchApp() {
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => send("press")}
       >
-        <DeskNotchFace label={frame.label} shortcut={frame.shortcut} />
+        <span ref={faceRef} className="desk-notch-view-face">
+          <DeskNubMark ref={markRef} acting={frame.acting} floating={frame.floating} />
+        </span>
       </button>
     </div>
   );

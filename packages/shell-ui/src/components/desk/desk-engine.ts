@@ -49,7 +49,7 @@
  *   foot, each peeking up a quarter of its height beside the one before, the next
  *   to the right overlapping it by half. They lie over the windows there,
  *   which keep their whole pages: over a live page the shelf is drawn by
- *   main's shelf view, above the page (shelfOver), as the Bar's notch is by
+ *   main's shelf view, above the page (shelfOver), as the Bar's nub is by
  *   its notch view (notchOver).
  *   The pointer on a parked window raises it into full view (hoverMini);
  *   dragged away it is a minimized window like any other, and let go at
@@ -114,7 +114,8 @@ import {
   tileRects,
   uncoveredWindows,
   letGoSize,
-  notchOutline,
+  nubOutline,
+  nubReach,
   roundedRectPath,
   windowSize,
   type CornerRadii,
@@ -227,7 +228,7 @@ const MINI_OVERLAP = 0.5;
  * cut off square there, never pokes out past the corner's curve.
  */
 export const SHELF_INSET = 18;
-/** How far a window's own clip reaches around it, so its shadow is kept (up to the desk's edges, and where the notch is a hole through it). */
+/** How far a window's own clip reaches around it, so its shadow is kept (up to the desk's edges, and where the Bar's nub is a hole through it). */
 const CLIP_MARGIN = 120;
 /** How far a window's clip reaches past its top, leading and trailing sides: its shadow, as far as the desk's edge. */
 interface ClipReach {
@@ -395,9 +396,9 @@ export interface DeskView {
   /** A cover lies over the rail's floating player (setFloat): its picture is to come down while it does. */
   floatCovered: boolean;
   /**
-   * A live page is under the Bar's idle notch: the notch is drawn over it by
-   * a view of main's (the "notch" chrome view), as nothing the shell draws
-   * can be (DeskBar says where).
+   * A live page is under the Bar's idle nub, in the desk's trailing foot
+   * corner: the nub is drawn over it by a view of main's (the "notch" chrome
+   * view), as nothing the shell draws can be (DeskBar says where).
    */
   notchOver: boolean;
   /**
@@ -755,9 +756,9 @@ export class DeskEngine {
   readonly #departing = new Map<string, { groupId: string; since: number }>();
   /** How many windows are still flying into each group's row: it bounces as the last lands. */
   readonly #folding = new Map<string, number>();
-  /** The Bar's notch at the desk's foot, idle (setNotch): its size, centred there. */
+  /** The Bar's nub, idle (setNotch): the box it may fill, in the desk's trailing foot corner. */
   #notch: { w: number; h: number } | null = null;
-  /** The Bar's notch as it is drawn now (setNotchShape): a hole through the well and the windows under it. */
+  /** The Bar's nub as it is drawn now (setNotchShape): a hole through the well and the windows under it. */
   #notchShape: NotchShape | null = null;
   #wellHoled = false;
   /**
@@ -2213,10 +2214,11 @@ export class DeskEngine {
   // ── The agent's hand (docs/desk-agent.md §2) ──────────────────────────
 
   /**
-   * The Bar's notch at the desk's foot, idle (DeskBar): its size, centred on
-   * the desk's foot, or null. The windows fill the desk under it, whole: with
-   * a live page under it (the view's `notchOver`), the notch is drawn over the
-   * page by main's notch view, which DeskBar places.
+   * The Bar's nub, idle (DeskBar): the box it may fill (swelled under the
+   * pointer), in the desk's trailing foot corner, or null. The windows fill
+   * the desk under it, whole: with a live page under it (the view's
+   * `notchOver`), the nub is drawn over the page by main's notch view, which
+   * DeskBar places.
    */
   setNotch(size: { w: number; h: number } | null): void {
     const next = size === null ? null : { w: Math.max(0, Math.round(size.w)), h: Math.max(0, Math.round(size.h)) };
@@ -2228,23 +2230,24 @@ export class DeskEngine {
   }
 
   /**
-   * The Bar's notch as it is drawn now, as it grows and shrinks (DeskBar),
-   * or null: it is a hole through the well and through every window under
-   * it, down to the shell's own ground (the surface's, the window's glass),
-   * which nothing drawn over them could match — so the notch is that ground,
-   * rising out of the edge, whatever the theme. (A live page under the idle
-   * notch has main's notch view over it instead; the grown Bar is a cover.)
+   * The Bar's nub as it is drawn now, as it swells and settles (DeskBar), or
+   * null: it is a hole through the well and through every window under it,
+   * in the desk's trailing foot corner, down to the shell's own ground (the
+   * surface's, the window's glass), which nothing drawn over them could
+   * match — so the nub is that ground, a droplet of it in the corner,
+   * whatever the theme. (A live page under the idle nub has main's notch
+   * view over it instead; what opens out of it is a cover.)
    */
   setNotchShape(shape: NotchShape | null): void {
     const before = this.#notchShape;
-    if (shape === null ? before === null : before !== null && (["x", "y", "w", "h", "radius", "flare"] as const).every((key) => Math.abs(before[key] - shape[key]) < 0.05))
+    if (shape === null ? before === null : before !== null && (["radius", "sink", "fillet"] as const).every((key) => Math.abs(before[key] - shape[key]) < 0.01))
       return;
     this.#notchShape = shape === null ? null : { ...shape };
     this.#writeWell();
     for (const win of this.#wins.values()) this.#write(win);
   }
 
-  /** The well (the stage's ::before) with the notch a hole in it. */
+  /** The well (the stage's ::before) with the nub a hole in it. */
   #writeWell(): void {
     const stage = this.#stage;
     if (stage === null) return;
@@ -2256,13 +2259,13 @@ export class DeskEngine {
     }
     this.#wellHoled = true;
     const { width, height } = this.#stageBox;
-    stage.style.setProperty("--desk-notch-clip", `path(evenodd, "M -2 -2 H ${(width + 2).toFixed(1)} V ${(height + 2).toFixed(1)} H -2 Z ${notchOutline(shape, height, 0, 0)}")`);
+    stage.style.setProperty("--desk-notch-clip", `path(evenodd, "M -2 -2 H ${(width + 2).toFixed(1)} V ${(height + 2).toFixed(1)} H -2 Z ${nubOutline(shape, width, height, this.#corner, 0, 0)}")`);
   }
 
   /**
-   * A window's clip with the notch a hole in it, when the notch is over it:
-   * not one carried or flying (it passes over the notch), and only what the
-   * window keeps of itself otherwise — its shadow as far as the desk's edges
+   * A window's clip with the nub a hole in it, when the nub is over it: not
+   * one carried or flying (it passes over the nub), and only what the window
+   * keeps of itself otherwise — its shadow as far as the desk's edges
    * (`reach`), cut off at the desk's foot (`foot`, in the window's own box).
    */
   #notchClip(win: Win, y: number, foot: number, reach: ClipReach, radii: CornerRadii): string | null {
@@ -2271,10 +2274,11 @@ export class DeskEngine {
     const gesture = this.#gesture;
     if (gesture !== null && gesture.tabId === win.tabId && gesture.kind !== "resize") return null;
     const { x, w } = win.rect;
-    const stageH = this.#stageBox.height;
-    const hole = { x: shape.x - shape.flare, y: shape.y, w: shape.w + shape.flare * 2, h: stageH - shape.y };
+    const { width: stageW, height: stageH } = this.#stageBox;
+    const span = nubReach(shape);
+    const hole = { x: stageW - span, y: stageH - span, w: span, h: span };
     if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: foot + CLIP_MARGIN }, hole)) return null;
-    return `path(evenodd, "${roundedRectPath(-reach.left, -reach.top, w + reach.right, foot, radii)} ${notchOutline(shape, stageH, -x, -y)}")`;
+    return `path(evenodd, "${roundedRectPath(-reach.left, -reach.top, w + reach.right, foot, radii)} ${nubOutline(shape, stageW, stageH, this.#corner, -x, -y)}")`;
   }
 
   /**
@@ -3603,7 +3607,7 @@ export class DeskEngine {
     return progress < 1 || lingering || now < drawer.holdUntil;
   }
 
-  /** Whether a live page is under the Bar's idle notch (the view's `notchOver`): main's notch view draws it over the page then. */
+  /** Whether a live page is under the Bar's idle nub (the view's `notchOver`): main's notch view draws it over the page then. */
   #checkNotch(): void {
     const notch = this.#notchRect();
     let over = false;
@@ -3876,8 +3880,8 @@ export class DeskEngine {
     const reveal = win.unmasking === null ? null : this.#revealBox(win, win.unmasking);
     const revealKey = reveal === null ? "" : `${reveal.x.toFixed(1)},${reveal.y.toFixed(1)},${reveal.w.toFixed(1)},${reveal.h.toFixed(1)}`;
     // Nothing of a window falls past the desk's foot: its shadow there would darken the surface's gutter, which the
-    // Bar's notch rises out of, and the notch would stand out from the edge it is cut from. A window peeking from the
-    // foot (parked) is cut off there too, its page's view with it (#report). Under the notch, the notch is a hole
+    // Bar's nub rises out of, and the nub would stand out from the edge it is cut from. A window peeking from the
+    // foot (parked) is cut off there too, its page's view with it (#report). Under the nub, the nub is a hole
     // through it (setNotchShape). Its shadow stops at the desk's other edges as well: the shell around the desk, the
     // sidebar and the gutter, lies above it. There only the shadow is cut, never the window, which a live page
     // would still paint past. (Lifted, flying or turned, it passes over the edges as it is.)
@@ -4606,12 +4610,12 @@ export class DeskEngine {
     return this.#usable();
   }
 
-  /** The Bar's notch in the stage (setNotch), or null. */
+  /** The Bar's nub in the stage (setNotch): its box in the trailing foot corner, or null. */
   #notchRect(): Rect | null {
     const notch = this.#notch;
     if (notch === null || notch.w < 1 || notch.h < 1) return null;
     const { width, height } = this.#stageBox;
-    return { x: (width - notch.w) / 2, y: height - notch.h, w: notch.w, h: notch.h };
+    return { x: width - notch.w, y: height - notch.h, w: notch.w, h: notch.h };
   }
 
   /** A window whose page is exactly the stage: the pane the surface shows without a desk. */

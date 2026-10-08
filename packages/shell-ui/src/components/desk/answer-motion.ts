@@ -60,8 +60,8 @@ const EDGE_CURSORS: Record<AnswerEdge, DragCursor> = {
   sw: "nesw-resize",
 };
 
-/** The Bar at one line (DeskBar's BAR_H): the slot is measured from its top. */
-const BAR_H = 52;
+/** The pill at one line (DeskBar's BAR_H): the slot is measured from its top. */
+const BAR_H = 38;
 /** A pressed card grows this much, and a docked one rises this far off the Bar, as it is taken. */
 const LIFT_SCALE = 0.01;
 const LIFT_RISE = 3;
@@ -885,9 +885,17 @@ export class AnswerMotion {
     const lane = this.#host.lane;
     const w = lane.clientWidth;
     const h = lane.clientHeight;
-    const barW = Math.max(1, Math.min(680, w - 24));
-    const barH = Math.max(BAR_H, this.#host.bar()?.offsetHeight ?? BAR_H);
-    this.#area = { w, h, barX: (w - barW) / 2, barW, barTop: h - barH };
+    // The pill where it rests, beside the nub at the desk's foot (its box is laid out there even while it is shut).
+    const bar = this.#host.bar();
+    const box = bar?.getBoundingClientRect() ?? null;
+    if (box === null || box.width < 1) {
+      const barW = Math.max(1, Math.min(480, w - 58));
+      this.#area = { w, h, barX: w - 46 - barW, barW, barTop: h - 8 - BAR_H };
+      return;
+    }
+    const at = lane.getBoundingClientRect();
+    const barH = Math.max(BAR_H, box.height);
+    this.#area = { w, h, barX: box.left - at.left, barW: box.width, barTop: box.bottom - at.top - barH };
   }
 
   #slot(): Rect {

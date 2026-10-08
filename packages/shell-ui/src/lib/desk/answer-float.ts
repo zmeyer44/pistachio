@@ -13,8 +13,9 @@ import type { Rect } from "./geometry";
 
 /** How far from the lane's edges a floating card rests, and the anchors stand. */
 export const FLOAT_EDGE = 12;
-/** The docked card's gap above the Bar. */
+/** The docked card's gap above the pill, and its width there (right-aligned on it, as the pill is beside the nub). */
 export const DOCK_GAP = 8;
+export const DOCK_W = 440;
 /** Pulled this far from where it was pressed, a docked card tears off. */
 export const TEAR_PX = 42;
 /** The card's foot within this of its docked slot's foot (over the Bar) is the zone that takes it back. */
@@ -57,16 +58,17 @@ export interface FloatArea {
   /** The lane's size. */
   w: number;
   h: number;
-  /** The Bar's span across the lane, and its top. */
+  /** The pill's span across the lane, and its top. */
   barX: number;
   barW: number;
   barTop: number;
 }
 
-/** The docked card's slot: as wide as the Bar, `height` tall, its foot DOCK_GAP above the Bar. */
+/** The docked card's slot: DOCK_W wide (no wider than the pill) at the pill's trailing end, `height` tall, its foot DOCK_GAP above the pill. */
 export function dockSlot(area: FloatArea, height: number): Rect {
   const h = Math.max(1, Math.min(height, area.barTop - DOCK_GAP - FLOAT_EDGE));
-  return { x: area.barX, y: area.barTop - DOCK_GAP - h, w: area.barW, h };
+  const w = Math.min(DOCK_W, area.barW);
+  return { x: area.barX + area.barW - w, y: area.barTop - DOCK_GAP - h, w, h };
 }
 
 /** Whether a box of this x and width lies over the Bar's span (a hair past its ends). */

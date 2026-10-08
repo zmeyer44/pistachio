@@ -91,12 +91,13 @@ function notchView(app: ElectronApplication): Promise<Box | null> {
 }
 
 /** A mouse event on the notch view, as the person's pointer would reach it. */
-function notchMouse(app: ElectronApplication, type: "mouseMove" | "mouseLeave", x: number, y: number): Promise<void> {
+function notchMouse(app: ElectronApplication, type: "mouseMove" | "mouseLeave" | "mouseDown" | "mouseUp", x: number, y: number): Promise<void> {
   return app.evaluate(
     async ({ webContents }, { type, x, y }) => {
       const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"));
       if (contents === undefined) throw new Error("no notch view");
-      contents.sendInputEvent({ type, x: Math.round(x), y: Math.round(y) });
+      const press = type === "mouseDown" || type === "mouseUp";
+      contents.sendInputEvent(press ? { type, button: "left", clickCount: 1, x: Math.round(x), y: Math.round(y) } : { type, x: Math.round(x), y: Math.round(y) });
       await new Promise((done) => setTimeout(done, 60));
     },
     { type, x, y },
@@ -238,7 +239,7 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
   let stage: Box;
   /** The tab the sidebar's New tab made: on the desk's first address too. */
   let added: string;
-  /** Off the sidebar, and off the Bar at the desk's foot (grown under the pointer, it puts the pages under it down). */
+  /** Off the sidebar, and off the Bar's nub in the desk's corner (swelled under the pointer, it puts the pages under what it opens down). */
   const awayFromDock = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.6);
 
   test.beforeAll(async () => {
@@ -309,31 +310,11 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     expect(Math.abs(half.width - (usableOf(stage).width - 8) / 2)).toBeLessThan(2);
     expect(Math.abs(half.height - usableOf(stage).height)).toBeLessThan(2);
     await expectLiveIn(app, shell, urls[1]!, ids[1]!);
-    // Down to the desk's foot, under the Bar's notch, its page whole: the notch is main's notch view, over the live page.
-    const notch = await box(shell, '[data-testid="desk-bar"][data-compact]');
-    expect(notch.y + notch.height).toBeCloseTo(stage.y + stage.height, 0);
+    // Down to the desk's foot, its page whole: what the shell draws at the foot lies over the windows (the Bar's nub in
+    // the trailing corner, the shelf), never cutting them.
     const halfPage = await box(shell, `${windowSelector(ids[1]!)} [data-testid="desk-window-page"]`);
     expect(Math.abs(halfPage.y + halfPage.height - (stage.y + stage.height - 5))).toBeLessThan(2);
-    await expect.poll(() => notchView(app)).not.toBeNull();
-    const overPage = (await notchView(app))!;
-    expect(Math.abs(overPage.x - (notch.x - 10))).toBeLessThanOrEqual(1);
-    expect(Math.abs(overPage.y - notch.y)).toBeLessThanOrEqual(1);
-    expect(Math.abs(overPage.width - (notch.width + 20))).toBeLessThanOrEqual(1);
     await capture(app, shell, "04-left-half.png");
-    // The pointer on the notch view is on the Bar: it grows (the page under it giving way), and the view goes.
-    await notchMouse(app, "mouseMove", overPage.width / 2, overPage.height / 2);
-    await expect(shell.locator('[data-testid="desk-bar"]:not([data-compact])')).toHaveCount(1);
-    await expect.poll(() => notchView(app)).toBeNull();
-    // (The pointer is over the shell's Bar now, where the view was; then it goes.)
-    await shell.mouse.move(overPage.x + overPage.width / 2, overPage.y + overPage.height / 2);
-    await shell.mouse.move(stage.x + stage.width * 0.75, stage.y + 60, { steps: 4 });
-    await expect(shell.locator('[data-testid="desk-bar"][data-compact]')).toHaveCount(1);
-    // Back to its idle size over the live page, the view is back over it.
-    await expect.poll(() => notchView(app), { timeout: 5_000 }).not.toBeNull();
-    // (The pointer that came onto the view leaves it, as a person's does: a view that never heard it go would
-    // still have it when it next shows, and grow the Bar.)
-    await notchMouse(app, "mouseLeave", -1, -1);
-    await expect(shell.locator('[data-testid="desk-bar"][data-compact]')).toHaveCount(1);
 
     // ── 5. Throw the other window: it coasts on to the far edge and lies there ─
     // (By the visible end of its bar — the half-width window covers the rest.)
@@ -533,7 +514,7 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     await settled(shell, app);
 
     // ── 1. Tiled: a half on the left, two quarters stacked on the right, a gutter between each ─
-    // (The Bar idle at the foot: grown, it would put the pages under it down.)
+    // (The Bar idle in its nub: out, it would put the pages under it down.)
     await expect(shell.locator('[data-testid="desk-bar"][data-compact]')).toHaveCount(1);
     const live: Record<string, string> = { [ids[0]!]: urls[0]!, [ids[1]!]: urls[1]!, [added]: INVOICES };
     const trio = Object.keys(live);
@@ -548,6 +529,39 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     expect(Math.abs(bottom.y - (top.y + top.height) - 8)).toBeLessThan(1);
     for (const tabId of order) await expectLiveIn(app, shell, live[tabId]!, tabId);
     await capture(app, shell, "70-seams-tiled.png");
+
+    // The quarter at the foot lies under the Bar's nub in the trailing corner, its page whole: the nub is main's notch
+    // view there, over the live page, the view's corner the desk's.
+    const nub = shell.getByTestId("desk-nub");
+    await expect.poll(() => notchView(app)).not.toBeNull();
+    const overPage = (await notchView(app))!;
+    expect(Math.abs(overPage.x + overPage.width - (stage.x + stage.width))).toBeLessThanOrEqual(1);
+    expect(Math.abs(overPage.y + overPage.height - (stage.y + stage.height))).toBeLessThanOrEqual(1);
+    // The pointer on the view is on the nub: it swells, the view drawing the swell over the page, which stays live.
+    const onNub = { x: overPage.width * 0.62, y: overPage.height * 0.62 };
+    await notchMouse(app, "mouseMove", onNub.x, onNub.y);
+    await expect(nub).toHaveAttribute("data-hovered", "");
+    expect(await notchView(app)).not.toBeNull();
+    await expectLiveIn(app, shell, live[bottomId]!, bottomId);
+    // A press there lets out the menu: the page under it gives way, and the view goes.
+    await notchMouse(app, "mouseDown", onNub.x, onNub.y);
+    await notchMouse(app, "mouseUp", onNub.x, onNub.y);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await expect.poll(() => notchView(app)).toBeNull();
+    // (The pointer is over the shell's nub now, where the view was; then it goes, and Escape puts the menu back.)
+    await shell.mouse.move(overPage.x + onNub.x, overPage.y + onNub.y);
+    await awayFromDock();
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await expect(nub).not.toHaveAttribute("data-hovered", "");
+    // Settled over the live page again, the view is back over it.
+    await expect.poll(() => notchView(app), { timeout: 5_000 }).not.toBeNull();
+    // (The pointer that came onto the view leaves it, as a person's does: a view that never heard it go would
+    // still have it when it next shows, and swell the nub.)
+    await notchMouse(app, "mouseLeave", -1, -1);
+    await expect(nub).not.toHaveAttribute("data-hovered", "");
+    await settled(shell, app);
+    for (const tabId of order) await expectLiveIn(app, shell, live[tabId]!, tabId);
 
     /** What is under a point of the shell: a window's resize edge's cursor, or nothing. */
     const cursorAt = (point: { x: number; y: number }): Promise<string | null> =>

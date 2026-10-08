@@ -940,26 +940,96 @@ export function placeNewWindow(existing: readonly Rect[], bounds: Rect, inUse: n
 }
 
 /**
- * The Bar's notch as it is drawn now (the engine's setNotchShape), in the
- * stage: the Bar's box, rising from the desk's foot; the radius of its
- * shoulders; and of the flares where its sides meet the edge.
+ * The Bar's nub as it is drawn now (the engine's setNotchShape): a droplet
+ * of the shell's ground in the desk's trailing foot corner — a circle
+ * `radius` round, its centre `sink` in from both edges, so it is partly sunk
+ * into the corner, joined to each edge by a fillet `fillet` round. Where it
+ * lies is the stage's own corner, wherever that is.
  */
 export interface NotchShape {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
   radius: number;
-  flare: number;
+  sink: number;
+  fillet: number;
+}
+
+/** The nub at rest, and swelled under the pointer: larger, and lifted a little further out of the corner. */
+export const NUB_IDLE: NotchShape = { radius: 18, sink: 20, fillet: 11 };
+export const NUB_SWELL: NotchShape = { radius: 21, sink: 23, fillet: 11 };
+
+/** A nub `t` of the way from one shape to another (past 1 as a spring overshoots). */
+export function nubBetween(from: NotchShape, to: NotchShape, t: number): NotchShape {
+  return {
+    radius: from.radius + (to.radius - from.radius) * t,
+    sink: from.sink + (to.sink - from.sink) * t,
+    fillet: from.fillet + (to.fillet - from.fillet) * t,
+  };
+}
+
+/** How far from the corner the nub reaches along each edge: where its fillets leave the foot and the trailing edge. */
+export function nubReach(shape: NotchShape): number {
+  const { radius: r, sink: a, fillet: f } = shape;
+  return a + Math.sqrt(Math.max(0, (r + f) ** 2 - (a - f) ** 2));
+}
+
+/** Where the nub's face sits, from the corner: the middle of what shows of the circle, a hair up and in from its centre. */
+export function nubFace(shape: NotchShape): Point {
+  const k = shape.sink + 1;
+  return { x: -k, y: -k };
 }
 
 /**
- * The notch's outline, offset by (dx, dy): out of the desk's foot at its
- * left flare, up its side to its shoulder, across, down and out at its right
- * flare, and back along the foot. (Nothing of a window is left past the foot
- * to cut a hole in: the engine's #write.) The notch view over a live page
- * (NotchApp) is cut to the same outline.
+ * The nub's outline, its corner at (x, y) — the stage's trailing foot —
+ * offset by (dx, dy): out of the foot at one fillet, round the far side of
+ * the circle, into the trailing edge at the other fillet, down that edge and
+ * round the stage's own corner (`corner`, its radius) back along the foot.
+ * So it holds the whole corner, and nothing past the stage's curve: a window
+ * filling the desk is rounded there as the desk is, and the hole matches it.
+ * The notch view over a live page (NotchApp) is cut to the same outline.
  */
+export function nubOutline(shape: NotchShape, x: number, y: number, corner: number, dx: number, dy: number): string {
+  const n = (value: number): string => value.toFixed(2);
+  const { radius: r, sink: a, fillet: f } = shape;
+  const ex = x + dx;
+  const ey = y + dy;
+  const cx = ex - a;
+  const cy = ey - a;
+  const d = Math.sqrt(Math.max(0, (r + f) ** 2 - (a - f) ** 2));
+  // The fillets' centres: one on the foot, one on the trailing edge, each just touching the circle.
+  const foot = { x: cx - d, y: ey - f };
+  const side = { x: ex - f, y: cy - d };
+  const k = r / (r + f);
+  const t1 = { x: cx + (foot.x - cx) * k, y: cy + (foot.y - cy) * k };
+  const t2 = { x: cx + (side.x - cx) * k, y: cy + (side.y - cy) * k };
+  // Round the circle's far side, clockwise on screen; the long way when the fillets meet it past its middle.
+  const span = (Math.atan2(t2.y - cy, t2.x - cx) - Math.atan2(t1.y - cy, t1.x - cx) + Math.PI * 4) % (Math.PI * 2);
+  const c = Math.max(0, Math.min(corner, a + d - f - 1));
+  return [
+    `M ${n(foot.x)} ${n(ey)}`,
+    `A ${n(f)} ${n(f)} 0 0 0 ${n(t1.x)} ${n(t1.y)}`,
+    `A ${n(r)} ${n(r)} 0 ${span > Math.PI ? 1 : 0} 1 ${n(t2.x)} ${n(t2.y)}`,
+    `A ${n(f)} ${n(f)} 0 0 0 ${n(ex)} ${n(side.y)}`,
+    `V ${n(ey - c)}`,
+    c > 0 ? `A ${n(c)} ${n(c)} 0 0 1 ${n(ex - c)} ${n(ey)}` : `V ${n(ey)}`,
+    "Z",
+  ].join(" ");
+}
+
+/**
+ * The nub's menu (DeskBar): three droplets up the trailing edge from the
+ * nub swelled — the prompt nearest it, then the microphone, then past chats
+ * — each NUB_DROP_R round, resting NUB_DROP_INSET in from the edge and
+ * NUB_DROP_GAP apart. Their centres, from the corner.
+ */
+export const NUB_DROP_R = 16;
+export const NUB_DROP_INSET = 6;
+export const NUB_DROP_GAP = 11;
+
+export function nubDrops(shape: NotchShape = NUB_SWELL): Point[] {
+  const x = -(NUB_DROP_INSET + NUB_DROP_R);
+  const first = -(shape.sink + shape.radius + NUB_DROP_GAP + 1 + NUB_DROP_R);
+  return [0, 1, 2].map((i) => ({ x, y: first - i * (NUB_DROP_R * 2 + NUB_DROP_GAP) }));
+}
+
 /** A box's corner radii, from its top-left round (0: square). */
 export interface CornerRadii {
   tl: number;
@@ -980,23 +1050,3 @@ export function roundedRectPath(x0: number, y0: number, x1: number, y1: number, 
   );
 }
 
-export function notchOutline(shape: NotchShape, foot: number, dx: number, dy: number): string {
-  const n = (value: number): string => value.toFixed(1);
-  const f = shape.flare;
-  const x0 = shape.x + dx;
-  const x1 = shape.x + shape.w + dx;
-  const top = shape.y + dy;
-  const bottom = foot + dy;
-  const r = Math.max(0, Math.min(shape.radius, shape.w / 2, bottom - f - top));
-  return [
-    `M ${n(x0 - f)} ${n(bottom)}`,
-    `A ${n(f)} ${n(f)} 0 0 0 ${n(x0)} ${n(bottom - f)}`,
-    `V ${n(top + r)}`,
-    `A ${n(r)} ${n(r)} 0 0 1 ${n(x0 + r)} ${n(top)}`,
-    `H ${n(x1 - r)}`,
-    `A ${n(r)} ${n(r)} 0 0 1 ${n(x1)} ${n(top + r)}`,
-    `V ${n(bottom - f)}`,
-    `A ${n(f)} ${n(f)} 0 0 0 ${n(x1 + f)} ${n(bottom)}`,
-    `H ${n(x0 - f)} Z`,
-  ].join(" ");
-}

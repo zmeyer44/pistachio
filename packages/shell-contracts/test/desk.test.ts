@@ -4,11 +4,27 @@ import { isDragCursor, isDragSample } from "../src/chrome.js";
 
 describe("the desk's contract", () => {
   it("takes the notch view's frame only with the box the shell's ground is painted over", () => {
-    const frame = { bounds: { x: 653, y: 860, width: 174, height: 32 }, label: "Ask about Research", shortcut: "⌘I", color: "blue", radius: 14, flare: 10, ground: { x: 0, y: 0, width: 1440, height: 900 } };
+    const frame = {
+      bounds: { x: 1385, y: 845, width: 47, height: 47 },
+      label: "Ask about Research",
+      shortcut: "⌘I",
+      color: "blue",
+      idle: { radius: 18, sink: 14, fillet: 9 },
+      swell: { radius: 21, sink: 17, fillet: 9 },
+      corner: 12,
+      swelling: { from: 0, to: 1, at: 1_760_000_000_000, ms: 350 },
+      acting: false,
+      floating: false,
+      ground: { x: 0, y: 0, width: 1440, height: 900 },
+    };
     expect(isDeskNotchFrame(frame)).toBe(true);
     expect(isDeskNotchFrame({ ...frame, ground: undefined })).toBe(false);
     expect(isDeskNotchFrame({ ...frame, ground: { x: 0, y: 0, width: 0, height: 900 } })).toBe(false);
     expect(isDeskNotchFrame({ ...frame, ground: { x: Number.NaN, y: 0, width: 1440, height: 900 } })).toBe(false);
+    // The nub's shapes and how swelled it is, whole.
+    expect(isDeskNotchFrame({ ...frame, swell: { radius: 21, sink: 17 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, swelling: { from: 0, to: 1, at: Number.NaN, ms: 350 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, acting: undefined })).toBe(false);
   });
 
   it("accepts a desk state and refuses anything else", () => {

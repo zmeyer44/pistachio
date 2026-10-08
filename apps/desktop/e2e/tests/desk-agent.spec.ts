@@ -1,6 +1,7 @@
 /**
- * The desk's agent end to end (docs/desk-agent.md): the Bar at the desk's
- * foot, the group's context as a Stack in the dock, and a turn through the
+ * The desk's agent end to end (docs/desk-agent.md): the Bar — a nub in the
+ * desk's trailing foot corner, its menu, the pill and the answer on it, the
+ * conversations — the group's context as a Stack in the dock, and a turn through the
  * real controller and runner on a scripted model (PISTACHIO_AGENT_SCRIPT) —
  * the agent arranging the windows, wearing its ring on the window it works
  * in, pinning a note, saving a fact to the Stack; Undo layout; the
@@ -9,7 +10,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { api, box, createGroup, INVOICES, launchDesk, openGroupDesk, openTabs, openTray, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
+import { api, box, createGroup, INVOICES, launchDesk, openChats, openGroupDesk, openTabs, openTray, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-agent");
 
@@ -77,29 +78,100 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     const away = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.4);
     await away();
 
-    // ── 1. The Bar, a notch at the desk's foot, over the windows there; the Stack in the dock, empty ─
+    // ── 1. The Bar, a nub in the desk's trailing foot corner, over the windows there; the Stack in the dock, empty ─
     const bar = shell.getByTestId("desk-bar");
-    await expect(bar).toBeVisible();
-    // Just the field and its buttons: it asks about the group by name.
+    const nub = shell.getByTestId("desk-nub");
+    await expect(nub).toBeVisible();
+    // The pill is the field and its buttons: it asks about the group by name.
     await expect(shell.getByTestId("desk-bar-input")).toHaveAttribute("placeholder", "Ask about Northstar…");
-    // Idle, it is a small notch that says what it is for (and the key that opens it), square at its foot; the pointer
-    // coming to it grows it into the Bar, a notch still.
+    // Idle, the pill is in the nub, which says what it is for (and the key that opens it) when the pointer rests on it.
     await expect(bar).toHaveAttribute("data-compact", "");
-    await expect(shell.getByTestId("desk-bar-pill")).toContainText("Ask about Northstar");
-    await expect.poll(() => bar.evaluate((el) => [getComputedStyle(el).borderTopLeftRadius, getComputedStyle(el).borderBottomLeftRadius])).toEqual(["14px", "0px"]);
-    const idle = await box(shell, '[data-testid="desk-bar"]');
-    near(idle.y + idle.height, stage.y + stage.height, 1);
-    near(idle.height, 32, 1);
-    // A window reaching the desk's foot under it keeps its whole page: the notch lies over it, not cutting it.
+    await expect(nub).toHaveAttribute("aria-label", "Ask about Northstar");
+    // (Its circle, the face's box, stands in the corner, a hair short of both edges; the hole is cut to the desk's curve.)
+    const idle = await box(shell, '[data-testid="desk-nub"]');
+    near(idle.x + idle.width, stage.x + stage.width - 2, 1);
+    near(idle.y + idle.height, stage.y + stage.height - 2, 1);
+    // A window reaching the desk's foot under it keeps its whole page: the nub lies over it, not cutting it.
     const entryPage = await box(shell, `${windowSelector(invoice)} [data-testid="desk-window-page"]`);
-    if (entryPage.x < idle.x + idle.width && idle.x < entryPage.x + entryPage.width && entryPage.y + entryPage.height > idle.y - 40)
-      near(entryPage.y + entryPage.height, stage.y + stage.height - 5, 1);
-    await capture(app, shell, "01a-desk-notch.png");
-    await shell.getByTestId("desk-bar-pill").hover();
-    await expect(bar).not.toHaveAttribute("data-compact", "");
-    await expect.poll(() => bar.evaluate((el) => [getComputedStyle(el).borderTopLeftRadius, getComputedStyle(el).borderBottomLeftRadius])).toEqual(["22px", "0px"]);
-    // The tray at the field's leading end: its plus, under the pointer, lets out attach, the conversations and a new
-    // one, turning into its close and sliding the field aside; its tools out of reach while it is shut.
+    if (entryPage.x + entryPage.width > idle.x - 20 && entryPage.y + entryPage.height > idle.y - 20) near(entryPage.y + entryPage.height, stage.y + stage.height - 5, 1);
+    await capture(app, shell, "01a-desk-nub.png");
+    // The pointer resting on it swells it, and its tooltip names the group and the key.
+    await nub.hover();
+    await expect(nub).toHaveAttribute("data-hovered", "");
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText(/^Ask about Northstar/);
+    // A click lets out its menu: three droplets up the trailing edge, the prompt nearest the nub, then the microphone,
+    // then past chats, each saying what it is.
+    await nub.click();
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await expect(nub).toHaveAttribute("aria-expanded", "true");
+    const droplet = (id: string) => shell.getByTestId(id);
+    await expect.poll(() => droplet("desk-nub-chats").evaluate((el) => (el as HTMLElement).style.transform)).toBe("");
+    const [prompt, mic, chats] = await Promise.all(["desk-nub-prompt", "desk-nub-mic", "desk-nub-chats"].map((id) => box(shell, `[data-testid="${id}"]`)));
+    expect(prompt!.y).toBeGreaterThan(mic!.y);
+    expect(mic!.y).toBeGreaterThan(chats!.y);
+    expect(prompt!.y + prompt!.height).toBeLessThan(idle.y);
+    near(prompt!.x + prompt!.width, stage.x + stage.width - 6, 1);
+    await droplet("desk-nub-mic").hover();
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Dictate");
+    await capture(app, shell, "01b-desk-nub-menu.png");
+    // Escape puts them back into the nub.
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await expect(nub).toHaveAttribute("aria-expanded", "false");
+    // From the keys: Enter on the nub lets the menu out with the keys on its first droplet, the arrows go up and down
+    // the column, and Escape puts it back with the keys on the nub.
+    await nub.focus();
+    await shell.keyboard.press("Enter");
+    await expect(droplet("desk-nub-prompt")).toBeFocused();
+    await shell.keyboard.press("ArrowUp");
+    await expect(droplet("desk-nub-mic")).toBeFocused();
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await expect(nub).toBeFocused();
+    await nub.blur();
+    // Escape is for what is in front: the address bar opened over the menu goes first, and the menu after it.
+    await nub.click();
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await shell.keyboard.press("Meta+L");
+    await expect(shell.getByTestId("address-input")).toBeFocused();
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("url-bar")).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    // The keyboard left on another of the shell's controls (the sidebar's menu button), the menu and the conversations
+    // let out with the pointer: an Escape nothing else takes still puts them back, the conversations first.
+    const elsewhere = shell.getByTestId("sidebar-menu-button");
+    await elsewhere.focus();
+    await nub.click();
+    await droplet("desk-nub-chats").click();
+    await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(1);
+    await expect(elsewhere).toBeFocused();
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await elsewhere.blur();
+    // ⌘I with the conversations out: the pill, the keyboard in its field — the conversations go in with the menu.
+    await nub.click();
+    await droplet("desk-nub-chats").click();
+    await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(1);
+    await shell.keyboard.press("Meta+i");
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
+    await expect(shell.locator('[data-testid="desk-conversations"]')).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    // The prompt's droplet: the pill, out of it at the desk's foot beside the nub, thin, the keyboard in its field.
+    await reachBar(shell);
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
+    const pill = await box(shell, '[data-testid="desk-bar"]');
+    near(pill.height, 38, 1);
+    near(pill.y + pill.height, stage.y + stage.height - 8, 1);
+    near(pill.x + pill.width, stage.x + stage.width - 54, 1);
+    // The tray at the field's leading end: its plus, under the pointer, lets out attach and a new conversation,
+    // turning into its close and sliding the field aside; its tools out of reach while it is shut.
     const tray = shell.getByTestId("desk-bar-tray");
     const more = shell.getByTestId("desk-bar-more");
     await expect(tray).not.toHaveAttribute("data-open", "");
@@ -109,13 +181,13 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await more.hover();
     await expect(tray).toHaveAttribute("data-open", "");
     await expect(more).toHaveAttribute("aria-expanded", "true");
-    await expect.poll(async () => (await box(shell, '[data-testid="desk-bar-input"]')).x).toBeGreaterThan(fieldShut.x + 90);
+    await expect.poll(async () => (await box(shell, '[data-testid="desk-bar-input"]')).x).toBeGreaterThan(fieldShut.x + 50);
     await expect.poll(() => more.locator("svg").evaluate((el) => getComputedStyle(el).rotate)).toBe("45deg");
-    await capture(app, shell, "01b-desk-bar-tray.png");
+    await capture(app, shell, "01c-desk-bar-tray.png");
     // Every button says what it does.
     await shell.getByTestId("desk-bar-attach").hover();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Attach files");
-    await capture(app, shell, "01c-desk-bar-tooltip.png");
+    await capture(app, shell, "01d-desk-bar-tooltip.png");
     await shell.getByTestId("desk-bar-new-conversation").hover();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]', { hasText: "New conversation" })).toBeVisible();
     await shell.getByTestId("desk-bar-send").hover();
@@ -125,11 +197,12 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect.poll(async () => (await box(shell, '[data-testid="desk-bar-input"]')).x).toBeLessThan(fieldShut.x + 2);
     await away();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveCount(0);
-    const barBox = await box(shell, '[data-testid="desk-bar"]');
-    // Out of the card's foot.
-    near(barBox.y + barBox.height, stage.y + stage.height, 1);
-    await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "0");
     await capture(app, shell, "01-desk-bar.png");
+    // Escape with nothing in it: the pill goes back into the nub.
+    await shell.getByTestId("desk-bar-input").focus();
+    await shell.keyboard.press("Escape");
+    await expect(bar).toHaveAttribute("data-compact", "");
+    await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "0");
 
     // ── 2. Files dropped on the Stack go into the group's context; a fact typed on its card too ─
     const transfer = await shell.evaluateHandle(() => {
@@ -189,12 +262,21 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     expect(run.groupId).toBe("desk-agent");
     expect(run.toolCalls.map((call) => call.name)).toEqual(["desk.arrange", "page.inspect", "desk.note", "context.save"]);
     await capture(app, shell, "04-desk-agent-answer.png");
+    // With reduced motion, the docked answer is there at once: no reveal out of the pill, overshoot and all.
+    await shell.emulateMedia({ reducedMotion: "reduce" });
+    const revealMs = await shell
+      .locator('[data-testid="desk-answer"][data-shown] .desk-answer-vis')
+      .evaluate((el) => Math.max(...getComputedStyle(el).transitionDuration.split(",").map((value) => Number.parseFloat(value) * 1000)));
+    expect(revealMs).toBe(0);
+    await shell.emulateMedia({ reducedMotion: null });
 
-    // The answer is as wide as the Bar and rests on it, however tall the Bar grows; it collapses with a chevron.
+    // The answer rests on the pill, at its trailing end and a little narrower, however tall the pill grows; it
+    // collapses with a chevron.
     const card = await box(shell, '[data-testid="desk-answer"]');
     const barNow = await box(shell, '[data-testid="desk-bar"]');
-    expect(Math.abs(card.width - barNow.width)).toBeLessThan(1);
-    expect(Math.abs(card.x - barNow.x)).toBeLessThan(1);
+    near(card.width, 440, 1);
+    expect(card.width).toBeLessThan(barNow.width);
+    expect(Math.abs(card.x + card.width - (barNow.x + barNow.width))).toBeLessThan(1);
     expect(Math.abs(card.y + card.height + 8 - barNow.y)).toBeLessThan(1.5);
     await shell.getByTestId("desk-bar-input").fill("one\ntwo\nthree\nfour");
     await expect.poll(async () => (await box(shell, '[data-testid="desk-bar"]')).height).toBeGreaterThan(barNow.height + 30);
@@ -249,8 +331,8 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await reachBar(shell);
     await shell.getByTestId("desk-bar-answer").click();
     await expect(answerShown).toHaveCount(1);
-    // Grown, the Bar wears the answer's fill.
-    const fills = await shell.evaluate(() => [getComputedStyle(document.querySelector('[data-testid="desk-answer"] .desk-answer-frame')!).backgroundColor, getComputedStyle(document.querySelector('[data-testid="desk-bar"]')!).backgroundColor]);
+    // The pill wears the answer's fill.
+    const fills = await shell.evaluate(() => [getComputedStyle(document.querySelector('[data-testid="desk-answer"] .desk-answer-frame')!).backgroundColor, getComputedStyle(document.querySelector('[data-testid="desk-bar"] .desk-bar-frame')!).backgroundColor]);
     expect(fills[1]).toBe(fills[0]);
     await capture(app, shell, "05b-desk-answer-on-its-bar.png");
     await shell.getByTestId("desk-surface").click({ position: { x: 4, y: 4 } });
@@ -291,7 +373,8 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await settled(shell, app);
     let floating = await box(shell, '[data-testid="desk-answer"]');
     near(floating.width, 440, 4);
-    expect(floating.width).toBeLessThan(docked.width);
+    // The nub says it is out on the desk.
+    await expect(shell.getByTestId("desk-nub")).toHaveAttribute("data-floating", "");
     await expect(shell.getByTestId("desk-answer-dock")).toBeVisible();
     await expect(shell.getByTestId("desk-answer-close")).toBeHidden();
     await capture(app, shell, "05c-desk-answer-floating.png");
@@ -432,10 +515,9 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     expect((await snapshot(shell)).activeTabId).toBe(inUseBefore);
     await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
 
-    // ── 9. The conversations: this desk's, marked; a new one starts empty ─
-    await openTray(shell);
-    await shell.getByTestId("desk-bar-conversations").click();
-    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
+    // ── 9. The conversations, grown out of the nub's past-chats droplet: this desk's, marked; a new one starts empty ─
+    await openChats(shell);
+    await expect(shell.getByTestId("desk-nub-chats")).toHaveAttribute("aria-expanded", "true");
     await expect(shell.getByTestId("desk-conversation")).toHaveCount(1);
     await expect(shell.getByTestId("desk-conversation").first()).toContainText("This desk");
     // Rows, as the mentions' are: New conversation first; no heading.
@@ -443,14 +525,13 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-conversation-new")).toHaveText("New conversation");
     await expect(shell.getByTestId("desk-conversation").first()).toHaveAttribute("aria-current", "true");
     await capture(app, shell, "06-desk-conversations.png");
-    // A press anywhere else puts them away: in the shell (the Bar's field)…
+    // A press anywhere else puts them away, and the menu with them: in the shell (the pill's field)…
     await shell.getByTestId("desk-bar-input").click();
     await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
     // …or in a live page, which main relays.
-    await openTray(shell);
-    await shell.getByTestId("desk-bar-conversations").click();
-    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
+    await openChats(shell);
     await app.evaluate(async ({ webContents }, url) => {
       const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
       contents.sendInputEvent({ type: "mouseMove", x: 420, y: 24 });
@@ -459,29 +540,32 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
       contents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, x: 420, y: 24 });
     }, ACCOUNTS);
     await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
-    // Its own button still toggles it.
-    await openTray(shell);
-    await shell.getByTestId("desk-bar-conversations").click();
-    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
-    await openTray(shell);
-    await shell.getByTestId("desk-bar-conversations").click();
+    // Escape unwinds one at a time: the conversations back into their droplet, then the droplets into the nub.
+    await openChats(shell);
+    await shell.keyboard.press("Escape");
     await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
-    await openTray(shell);
-    await shell.getByTestId("desk-bar-conversations").click();
-    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    // The nub itself puts both away.
+    await openChats(shell);
+    await shell.getByTestId("desk-nub").click();
+    await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await openChats(shell);
     const runId = run.runId;
     await shell.getByTestId("desk-conversation-new").click();
     await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
     await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
     // And the earlier one is still there to continue here.
-    await openTray(shell);
-    await shell.getByTestId("desk-bar-conversations").click();
+    await openChats(shell);
     await shell.locator(`[data-testid="desk-conversation"][data-run-id="${runId}"]`).click();
     await expect.poll(async () => (await snapshot(shell)).run?.runId).toBe(runId);
     // Chosen, it opens on its messages — the person sees they are in another thread — and the picker goes.
     await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
     await expect(shell.getByTestId("desk-answer")).toContainText("Opened the vendor record from the invoice");
     await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
     await capture(app, shell, "07-desk-conversation-chosen.png");
     // The tray's New conversation starts an empty one, as the conversations' does.
     await openTray(shell);

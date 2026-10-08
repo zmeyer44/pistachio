@@ -4800,23 +4800,27 @@ body:not([data-chrome-view])::after {
   }
 }
 
-/* ── The desk's agent (docs/desk-agent.md, components/desk/DeskBar.tsx, DeskStack.tsx) ──
+/* ── The desk's agent (docs/desk-agent.md, components/desk/DeskBar.tsx, DeskNub.tsx, nub-motion.ts, DeskStack.tsx) ──
 
-   The Bar is a notch at the desk's foot: the shell's own ground rising out
-   of the surface's edge into the desk, as a laptop's notch hangs from the
-   top of its screen, turned over — square where it leaves the edge, rounded
-   at its shoulders, and flared into the edge. It is not painted: it is a
-   hole through the well and the windows under it (the engine's
-   setNotchShape, following the Bar's box as it grows and shrinks), so it is
-   the ground itself — the surface's colour, the window's glass — whatever
-   the theme. Idle, it is small and says what it is for; it grows into the
-   Bar as a notch still. The windows fill the desk under it, each cut short
-   of it (the engine's #cutFor); grown, it is a cover. What it opens above
-   it — the answer, the conversations — is drawn once the pages there have
-   given way (the engine's covers), as the dock's cards are. The lane has
-   no stack of its own (no z-index): the Bar is over every window, and a
-   floating answer stands among them where the engine puts it
-   (--desk-answer-z; DeskEngine.stackCover). */
+   The Bar is a nub in the desk's trailing foot corner: a droplet of the
+   shell's own ground, a circle partly sunk into the corner and joined to
+   the foot and the trailing edge by fillets, so it reads as part of the
+   frame. It is not painted: it is a hole through the well and the windows
+   under it (the engine's setNotchShape, following the nub as it swells), so
+   it is the ground itself — the surface's colour, the window's glass —
+   whatever the theme. The windows fill the desk under it, whole. What comes
+   out of it is painted, and a cover (the engine's covers: drawn once the
+   pages under it have given way): its menu, three droplets that pinch off up
+   the trailing edge (a goo of the card's fill, the nub itself filled with it
+   while they are out); the pill the prompt droplet becomes, a floating glass
+   field at the foot beside the nub; the answer resting on the pill; the
+   conversations the past-chats droplet becomes. The lane has no stack of
+   its own (no z-index): the Bar is over every window, and a floating answer
+   stands among them where the engine puts it (--desk-answer-z;
+   DeskEngine.stackCover). Motion that only the clock can keep together (the
+   swell the notch view shares, the goo, the pill's morph out of a droplet)
+   is nub-motion.ts's; its durations, and these, are stretched by
+   --desk-nub-time-scale (1; a capture slows it to see the goo). */
 .desk-bar-lane {
   position: absolute;
   top: 0;
@@ -4824,29 +4828,30 @@ body:not([data-chrome-view])::after {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  align-items: center;
+  align-items: flex-end;
   pointer-events: none;
   /* The answer's height is a share of the desk's (cqh). */
   container-type: size;
 }
-/* The Bar's width, the answer resting on the Bar however tall the Bar grows. */
+/* The pill's width, the answer resting on the pill however tall it grows: at the foot, right-aligned beside the nub
+   (DeskBar's PILL_RIGHT from the desk's trailing edge, PILL_FOOT above its foot). */
 .desk-bar-column {
-  /* The Bar's full width, which its row keeps however narrow the glass is (the pill, growing). */
-  --desk-bar-w: min(680px, calc(100cqw - 24px));
+  --desk-bar-w: min(480px, calc(100cqw - 58px));
   /* (Not positioned: a floating answer is placed in the lane's coordinates, not the column's.) */
   display: flex;
   width: var(--desk-bar-w);
-  max-height: calc(100cqh - 8px);
+  max-height: calc(100cqh - 16px);
   flex-direction: column;
+  align-items: flex-end;
   gap: 8px;
+  margin: 0 46px 8px 0;
 }
-/* Centred on the column, so the Bar grows from its pill evenly both ways (an overshoot too). */
 .desk-bar-anchor {
   position: relative;
   z-index: 55;
   display: flex;
+  width: 100%;
   flex: none;
-  justify-content: center;
 }
 @keyframes desk-bar-in {
   from {
@@ -4854,98 +4859,251 @@ body:not([data-chrome-view])::after {
     filter: blur(2px);
   }
 }
-/* The notch: as wide as the Bar, or idle as what it says (.desk-bar-pill). Its shape is the engine's hole. */
-.desk-notch {
-  position: relative;
-  display: flex;
-  width: 100%;
-  flex: none;
-  justify-content: center;
-  animation: desk-bar-in 300ms cubic-bezier(0.22, 1, 0.36, 1) 120ms backwards;
-  /* Growing out of its idle size is the morph's open (transitions.dev's plus → menu: 350ms, a little overshoot);
-     going back to it, the morph's close, quicker and calm (.desk-notch[data-compact]). */
-  transition:
-    opacity 200ms ease,
-    width 350ms cubic-bezier(0.34, 1.25, 0.64, 1);
-}
-.desk-notch[data-compact] {
-  width: var(--desk-pill-w, 200px);
-  transition:
-    opacity 200ms ease,
-    width 250ms cubic-bezier(0.22, 1, 0.36, 1);
-}
+/* The pill: the prompt's field, a floating glass surface of the answer's fill. Its box is always laid out where it
+   rests (the answer docks above it, a floating one keeps clear of it); shut, nothing of it is drawn or reached, and
+   its glass (`-frame`) and row are what nub-motion.ts morphs out of a droplet and back into the nub. */
 .desk-bar {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 52px;
+  min-height: 38px;
   flex: none;
   align-items: center;
-  justify-content: center;
-  /* Growing from its idle size, the row is revealed as the notch widens around it. */
-  overflow: clip;
-  /* Its height goes between the idle notch's and the row's own (auto). */
-  interpolate-size: allow-keywords;
-  /* Square at its foot, where it leaves the edge; rounded at its shoulders. (Its ground is the hole the engine cuts to
-     this box, these shoulders and its flares: NOTCH_FLARE.) */
-  border-radius: 22px 22px 0 0;
-  /* Grown, it wears the answer's fill (.desk-notch's --desk-bar-fill); idle, it is the ground. */
-  background-color: var(--desk-bar-fill);
+  border-radius: 19px;
   pointer-events: auto;
-  transition:
-    height 350ms cubic-bezier(0.34, 1.25, 0.64, 1),
-    min-height 350ms cubic-bezier(0.34, 1.25, 0.64, 1),
-    border-radius 350ms cubic-bezier(0.34, 1.25, 0.64, 1),
-    background-color 200ms ease;
 }
-/* Idle: a small notch as wide as what it says. */
+.desk-bar-frame {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--desk-bar-fill);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 14px 32px -14px oklch(0 0 0 / 0.36),
+    0 2px 6px -2px oklch(0 0 0 / 0.08);
+  pointer-events: none;
+}
+/* Taller than a line (a message of several, files staged), it is a rounded card rather than a capsule. */
+.desk-bar:not([data-compact]) .desk-bar-frame {
+  border-radius: 19px;
+}
 .desk-bar[data-compact] {
-  height: 32px;
-  min-height: 32px;
-  border-radius: 14px 14px 0 0;
-  background-color: transparent;
-  cursor: pointer;
-  transition:
-    height 250ms cubic-bezier(0.22, 1, 0.36, 1),
-    min-height 250ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-radius 250ms cubic-bezier(0.22, 1, 0.36, 1),
-    background-color 200ms ease;
+  pointer-events: none;
 }
-/* Grown, the Bar is filled as the answer above it is (.desk-answer's ground, without its blur: the hole it fills shows
-   only the shell's own ground, so there is nothing behind to blur), over the notch's whole shape — its body and
-   shoulders, and the flares beside its foot (NOTCH_FLARE: each a square less the quarter circle the hole curves
-   round) — so the field reads as of a piece with the card. Idle, the notch is the ground itself. */
-.desk-notch {
+.desk-bar[data-compact] .desk-bar-frame {
+  opacity: 0;
+}
+/* What the Bar paints is the answer's fill, the same over the hole, the well and the pages' stills alike. */
+.desk-bar-lane {
   --desk-bar-fill: color-mix(in oklch, var(--color-background-100) 94%, transparent);
 }
-.desk-notch::before,
-.desk-notch::after {
-  content: "";
+
+/* The nub's box: the desk's trailing foot corner is its own (it stands past the lane's gutter to reach it), the
+   column of droplets above the nub. Nothing of the box itself takes the pointer: its face, the droplets and the
+   conversations do. It has no stack of its own, so its layers stand among the Bar's: the goo under the pill (the
+   bridge it pulls to the nub goes in under the pill's glass), the droplets and the face over the docked answer, the
+   conversations over everything. */
+.desk-nub {
   position: absolute;
+  right: -8px;
   bottom: 0;
-  width: 10px;
-  height: 10px;
+  width: 72px;
+  height: 216px;
+  pointer-events: none;
+  animation: desk-bar-in 300ms cubic-bezier(0.22, 1, 0.36, 1) 120ms backwards;
+  transition: opacity 200ms ease;
+}
+/* What is painted of it (DeskNub's NubPaint): the nub's own outline, filled while its droplets are out, and the goo
+   they pinch off from — clipped to the desk's corner, so neither the fill nor its shadow reaches the gutter. */
+.desk-nub-paint {
+  position: absolute;
+  inset: 0;
+  z-index: 54;
+  overflow: clip;
+  border-bottom-right-radius: var(--desk-window-radius);
+  pointer-events: none;
+}
+.desk-nub-paint > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  color: var(--color-background-100);
+  opacity: 0;
+  filter: drop-shadow(0 6px 12px oklch(0 0 0 / 0.14)) drop-shadow(0 1px 2px oklch(0 0 0 / 0.1));
+}
+.desk-nub-paint path,
+.desk-nub-paint circle,
+.desk-nub-paint ellipse {
+  fill: currentColor;
+}
+.desk-nub-paint line {
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+:root[data-color-scheme="dark"] .desk-nub-paint > svg {
+  filter: drop-shadow(0 6px 14px oklch(0 0 0 / 0.5)) drop-shadow(0 0 0.5px oklch(1 0 0 / 0.16));
+}
+/* The nub's face: its mark in the group's colour, centred on what shows of the circle (nub-motion.ts moves it with
+   the swell); its box the circle at rest, which is what takes the pointer. */
+.desk-nub-face {
+  position: absolute;
+  z-index: 56;
+  top: calc(100% - 38px);
+  left: calc(100% - 38px);
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-gray-900);
+  cursor: pointer;
+  outline: none;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+.desk-nub-face:focus-visible .desk-nub-mark {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+/* The mark: the agent's sparkle at rest, the menu's close while the droplets are out. (Its own box, a little up and
+   in from the button's centre: where the circle shows.) */
+.desk-nub-mark {
+  position: relative;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin: -2px 0 0 -2px;
+  place-items: center;
+  border-radius: 50%;
+}
+.desk-nub-mark > svg {
+  position: absolute;
+  width: 15px;
+  height: 15px;
+  transition:
+    opacity calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    rotate calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
+    scale calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
+    filter calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1);
+}
+.desk-nub-spark {
+  color: var(--tg-solid);
+}
+.desk-nub-close {
+  opacity: 0;
+  rotate: -90deg;
+  scale: 0.6;
+  filter: blur(2px);
+}
+.desk-nub-face[aria-expanded="true"] .desk-nub-spark {
+  opacity: 0;
+  rotate: 90deg;
+  scale: 0.6;
+  filter: blur(2px);
+}
+.desk-nub-face[aria-expanded="true"] .desk-nub-close {
+  opacity: 1;
+  rotate: 0deg;
+  scale: 1;
+  filter: none;
+}
+/* The agent at work: a thin arc of the group's colour runs round the mark. */
+.desk-nub-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 0 55%, var(--tg-solid) 100%);
+  -webkit-mask: radial-gradient(circle, transparent 10.5px, #000 11px);
+  mask: radial-gradient(circle, transparent 10.5px, #000 11px);
+  opacity: 0;
   pointer-events: none;
   transition: opacity 200ms ease;
 }
-.desk-notch::before {
-  right: 100%;
-  background: radial-gradient(circle at 0 0, transparent 9.5px, var(--desk-bar-fill) 10px);
+.desk-nub-mark[data-acting] > .desk-nub-ring {
+  opacity: 0.9;
+  animation: desk-nub-spin 1.1s linear infinite;
 }
-.desk-notch::after {
-  left: 100%;
-  background: radial-gradient(circle at 100% 0, transparent 9.5px, var(--desk-bar-fill) 10px);
+@keyframes desk-nub-spin {
+  to {
+    rotate: 1turn;
+  }
 }
-.desk-notch[data-compact]::before,
-.desk-notch[data-compact]::after {
+@media (prefers-reduced-motion: reduce) {
+  .desk-nub-mark[data-acting] > .desk-nub-ring {
+    animation: none;
+    background: var(--tg-solid);
+    opacity: 0.45;
+  }
+}
+/* The answer floats on the desk: a dot on the nub says it is out there. */
+.desk-nub-dot {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-green-700);
+  animation: desk-bar-dot-in 250ms cubic-bezier(0.34, 1.36, 0.64, 1) 80ms backwards;
+}
+/* The droplets' buttons, over the goo where each rests (nub-motion.ts moves them with it as they come and go): the
+   prompt, the microphone and past chats, up the trailing edge. */
+.desk-nub-menu {
+  position: absolute;
+  inset: 0;
+  z-index: 56;
+  pointer-events: none;
+}
+.desk-nub-item {
+  position: absolute;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-gray-900);
+  cursor: pointer;
+  opacity: 0;
+  outline: none;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+.desk-nub-menu[data-open] .desk-nub-item {
+  pointer-events: auto;
+}
+.desk-nub-item:hover,
+.desk-nub-item[aria-expanded="true"] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.desk-nub-item:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-nub-item svg {
+  width: 16px;
+  height: 16px;
+}
+.desk-stage[data-phase="leaving"] .desk-nub {
   opacity: 0;
 }
-/* The idle notch over a live page (NotchApp, main's "notch" view): the whole view is the notch — its face with
-   its shoulders, and the flares at its foot's ends, cut to the notch's outline (NotchApp's clip-path) — painted
-   in the shell's ground, since over a page there is no ground to cut down to. The ground as the shell paints it
-   around the desk's foot: the desk surface's background-200 (glass off), or the window's glass under the
-   chrome's tint and the theme's gradient (glass on); its grain over either. Gradient and grain are laid over the
-   shell's ground box (--desk-notch-ground-*, from this view's corner), so they run on from the gutter around it. */
+/* The idle nub over a live page (NotchApp, main's "notch" view): the whole view is the box the nub may fill in the
+   desk's corner, cut to the nub's outline as it swells (NotchApp's clip-path) — painted in the shell's ground, since
+   over a page there is no ground to cut down to. The ground as the shell paints it around the desk's foot: the desk
+   surface's background-200 (glass off), or the window's glass under the chrome's tint and the theme's gradient
+   (glass on); its grain over either. Gradient and grain are laid over the shell's ground box (--desk-notch-ground-*,
+   from this view's corner), so they run on from the gutter around it. */
 body[data-chrome-view="notch"] {
   background: transparent;
 }
@@ -4959,7 +5117,7 @@ body[data-chrome-view="notch"] {
      over it, as over the glass. The stand-in is AppKit's under-window material as measured behind the gutter (it
      follows what lies behind the window: in light, the gutter read 202 over black and 219 over white). A light
      desktop puts it at the white end, so the stand-in is a neutral grey there (oklch 0.862, at the dark end, read
-     14 levels darker than the gutter over a light wallpaper); with something dark behind the window the notch
+     14 levels darker than the gutter over a light wallpaper); with something dark behind the window the nub
      reads lighter than the gutter. In dark, the theme's own recessed ground already reads as it. */
   background-color: oklch(0.925 0 0);
   background-image:
@@ -4989,19 +5147,29 @@ body[data-chrome-view="notch"] {
 :root[data-texture="off"] .desk-notch-view::after {
   display: none;
 }
-.desk-notch-view-face {
+/* The whole view is the nub's (the clip takes the pointer only within its outline); its face sits where the shell's
+   does, moved with the swell. */
+.desk-notch-view-hit {
   position: absolute;
-  inset: 0 var(--desk-notch-flare);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  inset: 0;
   padding: 0;
   border: 0;
-  border-radius: var(--desk-notch-radius) var(--desk-notch-radius) 0 0;
   background: transparent;
-  color: inherit;
+  color: var(--color-gray-900);
   cursor: pointer;
   outline: none;
+}
+.desk-notch-view-face {
+  position: absolute;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  place-items: center;
+  pointer-events: none;
+}
+.desk-notch-view-face > .desk-nub-mark {
+  margin: 0;
 }
 /* The parked windows over a live page (ShelfApp, main's "shelf" view): each as the shell draws it at rest in the
    shelf — its card, its title bar dimmed as a window not in use's, the picture of its page — cut off by the view's
@@ -5054,90 +5222,43 @@ body[data-chrome-view="shelf"] {
   height: auto;
   user-select: none;
 }
-/* The row: at the Bar's full width always, faded, blurred and drawn in a little while the Bar is its pill. */
+/* The pill's row: unseen and out of reach while the pill is shut (its fade and clip as it morphs are nub-motion.ts's),
+   still holding the keyboard's place: ⌘I puts the keyboard in its field, which opens the pill. */
 .desk-bar-body {
+  position: relative;
   min-width: 0;
-  width: var(--desk-bar-w);
+  width: 100%;
   flex: none;
-  transition:
-    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 350ms cubic-bezier(0.22, 1, 0.36, 1),
-    filter 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .desk-bar[data-compact] .desk-bar-body {
   opacity: 0;
-  transform: scale(0.97);
-  filter: blur(2px);
   pointer-events: none;
 }
-/* The idle notch's face: the mark, what the Bar is for, and the key that opens it. It gives way as the Bar grows. */
-.desk-bar-pill {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.desk-stage[data-phase="leaving"] .desk-bar {
   opacity: 0;
-  transform: scale(0.97);
-  filter: blur(2px);
-  pointer-events: none;
-  transition:
-    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 350ms cubic-bezier(0.22, 1, 0.36, 1),
-    filter 200ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.desk-bar[data-compact] .desk-bar-pill {
-  opacity: 1;
-  transform: none;
-  filter: none;
-  pointer-events: auto;
-}
-.desk-bar-pill-content {
-  display: inline-flex;
-  max-width: 300px;
-  flex: none;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px 0 15px;
-  color: var(--color-gray-900);
-  font-size: 13px;
-  white-space: nowrap;
-}
-.desk-bar-pill-content > svg {
-  width: 15px;
-  height: 15px;
-  flex: none;
-  color: var(--tg-solid);
-}
-.desk-bar-pill-key {
-  margin-left: 2px;
-  background: transparent;
-}
-.desk-stage[data-phase="leaving"] .desk-notch {
-  opacity: 0;
+  transition: opacity 200ms ease;
 }
 .desk-stage[data-phase="leaving"] .desk-answer-vis,
 .desk-stage[data-phase="leaving"] .desk-conversations {
   transform: translateY(calc(100% + 16px));
   opacity: 0;
 }
-/* The field starts clear of the pill's round end. */
+/* The row in a thin pill (38px at one line): the tray's plus at one end, Send at the other, each as far from its
+   end; the buttons sit on the field's last line as it grows. */
 .desk-bar-row {
   display: flex;
   min-width: 0;
   flex: 1;
   align-items: flex-end;
-  gap: 4px;
-  /* The tray's plus at one end, Send at the other, each as far from its end. */
-  padding: 8px 10px;
+  gap: 2px;
+  padding: 3px 4px 3px 5px;
 }
 .desk-bar-button {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   place-items: center;
   border-radius: 999px;
   color: var(--color-gray-800);
@@ -5161,13 +5282,13 @@ body[data-chrome-view="shelf"] {
   box-shadow: 0 0 0 2px var(--color-ring);
 }
 .desk-bar-button svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 .desk-bar-send {
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
   margin: 0 0 2px 2px;
   place-items: center;
@@ -5188,12 +5309,12 @@ body[data-chrome-view="shelf"] {
   transform: scale(0.94);
 }
 .desk-bar-send svg {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 .desk-bar-send[data-testid="desk-bar-stop"] svg {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
 }
 /* The Bar's tray (DeskBar's BarTray): a plus at the field's leading end that lets out the Bar's other tools,
    sliding the field aside. transitions.dev's plus → menu morph sets the motion: out at its open (350ms, the plus
@@ -5294,43 +5415,118 @@ body[data-chrome-view="shelf"] {
   }
 }
 
-/* The answer, and the conversations: cards above the Bar, grown from it. */
+/* The conversations: the past-chats droplet itself grown into the list (transitions.dev's plus → menu morph: its box
+   grows up and left from where the droplet rests, its corners relaxing, the droplet's mark cross-fading out as the
+   rows slide in; back, quicker and calm). The box is laid out at its open size from the start — the cover is all of
+   it, so nothing waits as it grows — and the morph is its glass's inset and the rows' clip. */
 .desk-conversations {
+  position: absolute;
+  z-index: 57;
   display: flex;
+  width: min(320px, calc(100cqw - 24px));
+  max-height: calc(100cqh - 150px);
   flex-direction: column;
-  border-radius: 18px;
-  background: color-mix(in oklch, var(--color-background-100) 94%, transparent);
+  pointer-events: none;
+}
+.desk-conversations-frame {
+  position: absolute;
+  inset: calc(100% - 32px) 0 0 calc(100% - 32px);
+  border-radius: 16px;
+  background: var(--desk-bar-fill);
   -webkit-backdrop-filter: blur(24px) saturate(1.5);
   backdrop-filter: blur(24px) saturate(1.5);
   box-shadow:
     0 0 0 1px var(--color-alpha-300),
     inset 0 1px 0 var(--desk-glass-edge),
     0 22px 48px -18px oklch(0 0 0 / 0.42);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(10px) scale(0.98);
-  transform-origin: bottom center;
   transition:
-    opacity 150ms ease,
-    transform 240ms cubic-bezier(0.2, 0.9, 0.3, 1);
+    inset calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity calc(150ms * var(--desk-nub-time-scale, 1)) ease;
 }
-/* On the Bar's top edge by the conversations button (in the tray at the field's leading end), its left edge the Bar's, over the answer. */
-.desk-conversations {
+.desk-conversations[data-open] .desk-conversations-frame {
+  inset: 0;
+  border-radius: 14px;
+  transition:
+    inset calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
+    border-radius calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1);
+}
+/* Put away with the menu: it goes as it shrinks, rather than back into a droplet that is going too. */
+.desk-conversations[data-gone] {
+  opacity: 0;
+  transition: opacity calc(150ms * var(--desk-nub-time-scale, 1)) ease;
+}
+.desk-conversations-mark {
   position: absolute;
-  left: 0;
-  bottom: calc(100% + 8px);
-  z-index: 1;
-  width: min(440px, 100%);
+  right: 0;
+  bottom: 0;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: var(--color-gray-900);
+  transition:
+    opacity calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    translate calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    scale calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    filter calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1);
 }
-.desk-conversations[data-shown] {
+.desk-conversations-mark svg {
+  width: 16px;
+  height: 16px;
+}
+.desk-conversations[data-open] .desk-conversations-mark {
+  opacity: 0;
+  translate: -14px -14px;
+  scale: 0.97;
+  filter: blur(2px);
+}
+.desk-conversations-body {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  clip-path: inset(calc(100% - 32px) 0 0 calc(100% - 32px) round 16px);
+  opacity: 0;
+  translate: 14px 14px;
+  scale: 0.97;
+  filter: blur(2px);
+  transform-origin: 100% 100%;
+  transition:
+    clip-path calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity calc(150ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    translate calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    scale calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    filter calc(150ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1);
+}
+.desk-conversations[data-open] .desk-conversations-body {
+  clip-path: inset(0 round 14px);
   opacity: 1;
+  translate: 0 0;
+  scale: 1;
+  filter: none;
   pointer-events: auto;
-  transform: none;
+  transition:
+    clip-path calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
+    opacity calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1) calc(60ms * var(--desk-nub-time-scale, 1)),
+    translate calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    scale calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    filter calc(200ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1) calc(60ms * var(--desk-nub-time-scale, 1));
 }
-
+@media (prefers-reduced-motion: reduce) {
+  .desk-conversations .desk-conversations-frame,
+  .desk-conversations .desk-conversations-mark,
+  .desk-conversations .desk-conversations-body {
+    translate: none !important;
+    scale: none !important;
+    transition: opacity 150ms ease !important;
+  }
+}
 /* ── The answer, docked and detached (DeskBar's AnswerCard, answer-motion.ts) ──
 
-   Docked, in the column on the Bar: as wide as it, at most a share of the desk's height, giving way to a tall Bar.
+   Docked, in the column on the pill: right-aligned on it and a little narrower (440), at most a share of the desk's
+   height, giving way to a tall pill; it opens out of the pill's trailing end (the plus → menu morph's open: its clip
+   grows from a circle there, up and left), and goes at once.
    Detached, a window placed in the lane (left/top 0, moved by its transform; its size answer-motion.ts's). Its
    layers: the card itself, where it is drawn (answer-motion.ts's transform); `-vis`, its coming and going; the frame,
    its glass (scaled to the size of the moment while it morphs, its corners kept round), with the lift's deeper
@@ -5341,7 +5537,7 @@ body[data-chrome-view="shelf"] {
   position: relative;
   z-index: var(--desk-answer-z, 55);
   display: flex;
-  width: 100%;
+  width: min(440px, 100%);
   min-height: 0;
   max-height: 62cqh;
   flex: 0 1 auto;
@@ -5366,15 +5562,35 @@ body[data-chrome-view="shelf"] {
   flex: 1;
   flex-direction: column;
   opacity: 0;
-  transform: translateY(10px) scale(0.98);
-  transform-origin: bottom center;
+  clip-path: inset(calc(100% - 38px) 0 0 calc(100% - 38px) round 19px);
+  transform: translateY(10px);
+  transform-origin: 100% 100%;
   transition:
-    opacity 150ms ease,
-    transform 240ms cubic-bezier(0.2, 0.9, 0.3, 1);
+    opacity calc(150ms * var(--desk-nub-time-scale, 1)) ease,
+    clip-path calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1),
+    transform calc(250ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.22, 1, 0.36, 1);
 }
 .desk-answer[data-shown] .desk-answer-vis {
   opacity: 1;
+  /* (Past the card all round: its shadow, and a held card's deeper one, are never cut.) */
+  clip-path: inset(-160px round 18px);
   transform: none;
+  transition:
+    opacity calc(120ms * var(--desk-nub-time-scale, 1)) ease,
+    clip-path calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1),
+    transform calc(350ms * var(--desk-nub-time-scale, 1)) cubic-bezier(0.34, 1.25, 0.64, 1);
+}
+/* Opening where it floats, it only fades in: there is no pill under it to come out of. */
+.desk-answer[data-mode="detached"] .desk-answer-vis {
+  clip-path: none;
+  transform: none;
+}
+/* (As specific as the open state's own transition, which the desk's reduced-motion rule below would lose to.) */
+@media (prefers-reduced-motion: reduce) {
+  .desk-answer .desk-answer-vis,
+  .desk-answer[data-shown] .desk-answer-vis {
+    transition: none;
+  }
 }
 .desk-answer-frame {
   position: absolute;
@@ -5651,16 +5867,16 @@ body[data-chrome-view="shelf"] {
   width: 13px;
   height: 13px;
 }
-/* Its rows: New conversation first, then every conversation. */
+/* Its rows, thin: New conversation first, then every conversation. */
 .desk-conversation {
   display: flex;
   width: 100%;
-  height: 34px;
+  height: 30px;
   flex-shrink: 0;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
-  border-radius: 10px;
+  padding: 0 9px;
+  border-radius: 9px;
   text-align: left;
   cursor: pointer;
   outline: none;
@@ -5686,14 +5902,15 @@ body[data-chrome-view="shelf"] {
   cursor: default;
 }
 .desk-conversation-group {
-  max-width: 128px;
+  max-width: 112px;
   flex-shrink: 0;
   overflow: hidden;
-  padding: 1px 7px;
+  padding: 0 6px;
   border-radius: 999px;
   background: var(--color-alpha-200);
   color: var(--color-gray-900);
-  font-size: 10.5px;
+  font-size: 10px;
+  line-height: 16px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5895,10 +6112,10 @@ body[data-chrome-view="shelf"] {
   .desk-window,
   .desk-zone,
   .desk-variant-value,
-  .desk-notch,
+  .desk-nub,
+  .desk-nub-mark > svg,
   .desk-bar,
   .desk-bar-body,
-  .desk-bar-pill,
   .desk-answer-vis,
   .desk-answer-grab,
   .desk-answer-ghost,
@@ -6722,12 +6939,12 @@ body[data-chrome-view="shelf"] {
 }
 /* Discard leads the row then, as far from the pill's end as Done is from the other. */
 .desk-bar-row[data-listening] {
-  padding-left: 10px;
+  padding-left: 4px;
 }
 .desk-bar-dictation {
   display: flex;
   min-width: 0;
-  height: 36px;
+  height: 32px;
   flex: 1;
   align-items: center;
   gap: 12px;
@@ -6736,7 +6953,7 @@ body[data-chrome-view="shelf"] {
 .desk-bar-wave {
   display: flex;
   min-width: 0;
-  height: 26px;
+  height: 22px;
   flex: 1;
   align-items: center;
   justify-content: flex-end;

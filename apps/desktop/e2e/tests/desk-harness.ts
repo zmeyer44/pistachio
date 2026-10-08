@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { expect, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES, type ChromeViewId } from "@pistachio/shell-contracts/chrome";
@@ -154,14 +154,34 @@ export async function leaveDesk(shell: Page): Promise<void> {
   await shell.getByTestId("desk-leave").click();
 }
 
-/** The Bar grown from its idle pill, as the pointer coming to it grows it, so its field and buttons can be used. */
+/** The nub's menu let out, as a click on the nub lets it out: its droplets (the prompt, the microphone, past chats), drawn once the pages under them have given way. */
+export async function openNubMenu(shell: Page): Promise<void> {
+  const nub = shell.getByTestId("desk-nub");
+  if ((await nub.getAttribute("aria-expanded")) !== "true") {
+    await nub.hover();
+    await nub.click();
+  }
+  await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+}
+
+/** The Bar's pill out of the nub's prompt droplet, as a person opens it, so its field and buttons can be used. */
 export async function reachBar(shell: Page): Promise<void> {
   const bar = shell.getByTestId("desk-bar");
-  if ((await bar.getAttribute("data-compact")) !== null) await shell.getByTestId("desk-bar-pill").hover();
+  if ((await bar.getAttribute("data-compact")) !== null) {
+    await openNubMenu(shell);
+    await shell.getByTestId("desk-nub-prompt").click();
+  }
   await expect(bar).not.toHaveAttribute("data-compact", "");
 }
 
-/** The Bar's tray let out, as the pointer on its plus lets it out: attach, the conversations, a new one. */
+/** The conversations, grown out of the nub's past-chats droplet. */
+export async function openChats(shell: Page): Promise<void> {
+  await openNubMenu(shell);
+  await shell.getByTestId("desk-nub-chats").click();
+  await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
+}
+
+/** The pill's tray let out, as the pointer on its plus lets it out: attach, a new conversation. */
 export async function openTray(shell: Page): Promise<void> {
   await reachBar(shell);
   await shell.getByTestId("desk-bar-more").hover();
@@ -251,19 +271,20 @@ export async function clearOfCursor(app: ElectronApplication): Promise<void> {
   });
 }
 
-export type Capture = (app: ElectronApplication, shell: Page, filename: string, settleMs?: number) => Promise<void>;
+export type Capture = (app: ElectronApplication, shell: Page, filename: string, settleMs?: number, crop?: Box) => Promise<void>;
 
 /**
- * A spec's screenshots, in e2e/screenshots/<folder>/: the window as a person
- * sees it — the shell with every live page (and any chrome view named in
- * `also`) composited over it at its box, in stacking order; Playwright's
- * own screenshot is the shell's document alone. Nothing asserts on them,
- * so they are taken only when captureEnabled (PISTACHIO_E2E_CAPTURE=1), the
- * wait for the last paint with them.
+ * A spec's screenshots, in e2e/screenshots/<folder>/ (or `folder` itself,
+ * when it is absolute): the window as a person sees it — the shell with
+ * every live page (and any chrome view named in `also`) composited over it
+ * at its box, in stacking order; Playwright's own screenshot is the shell's
+ * document alone — or `crop` of it (the window's own coordinates). Nothing
+ * asserts on them, so they are taken only when captureEnabled
+ * (PISTACHIO_E2E_CAPTURE=1), the wait for the last paint with them.
  */
 export function screenshots(folder: string, also: readonly ChromeViewId[] = []): Capture {
-  const directory = join(process.cwd(), "e2e/screenshots", folder);
-  return async (app, shell, filename, settleMs = 400) => {
+  const directory = isAbsolute(folder) ? folder : join(process.cwd(), "e2e/screenshots", folder);
+  return async (app, shell, filename, settleMs = 400, crop) => {
     if (!captureEnabled) return;
     await mkdir(directory, { recursive: true });
     // capturePage can hand back a frame from before the latest paint.
@@ -285,7 +306,7 @@ export function screenshots(folder: string, also: readonly ChromeViewId[] = []):
       },
       { hashes: Object.values(CHROME_VIEW_HASHES), shown: also.map((view) => CHROME_VIEW_HASHES[view]) },
     );
-    const png = await shell.evaluate(async ({ base, views }) => {
+    const png = await shell.evaluate(async ({ base, views, crop }) => {
       const load = (src: string): Promise<HTMLImageElement> =>
         new Promise((done, fail) => {
           const image = new Image();
@@ -294,12 +315,13 @@ export function screenshots(folder: string, also: readonly ChromeViewId[] = []):
           image.src = src;
         });
       const ground = await load(base);
-      const canvas = document.createElement("canvas");
-      canvas.width = ground.naturalWidth;
-      canvas.height = ground.naturalHeight;
-      const context = canvas.getContext("2d")!;
-      context.drawImage(ground, 0, 0);
       const scale = ground.naturalWidth / window.innerWidth;
+      const canvas = document.createElement("canvas");
+      canvas.width = crop === null ? ground.naturalWidth : Math.round(crop.width * scale);
+      canvas.height = crop === null ? ground.naturalHeight : Math.round(crop.height * scale);
+      const context = canvas.getContext("2d")!;
+      if (crop !== null) context.translate(-crop.x * scale, -crop.y * scale);
+      context.drawImage(ground, 0, 0);
       for (const view of views) {
         const image = await load(view.dataUrl);
         const { x, y, width, height } = view.bounds;
@@ -311,7 +333,7 @@ export function screenshots(folder: string, also: readonly ChromeViewId[] = []):
         context.restore();
       }
       return canvas.toDataURL("image/png").slice("data:image/png;base64,".length);
-    }, layers);
+    }, { ...layers, crop: crop ?? null });
     await writeFile(join(directory, filename), Buffer.from(png, "base64"));
   };
 }

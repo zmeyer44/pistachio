@@ -13,7 +13,7 @@
 
 import { expect, test, type ElectronApplication } from "@playwright/test";
 import { IPC } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, INVOICES, launchDesk, openGroupDesk, openTabs, reachBar, screenshots, settled, VENDOR } from "./desk-harness";
+import { box, createGroup, INVOICES, launchDesk, openGroupDesk, openNubMenu, openTabs, reachBar, screenshots, settled, VENDOR } from "./desk-harness";
 
 const capture = screenshots("desk-dictation");
 
@@ -78,9 +78,9 @@ test("dictation in the desk's Bar: it listens, and what was said lands at the ca
     const wave = shell.getByTestId("desk-bar-dictation");
     const done = shell.getByTestId("desk-bar-dictation-done");
 
-    // ── 1. The microphone is one of the Bar's buttons, beside Send ─
-    await expect(dictate).toBeVisible();
+    // ── 1. The microphone is one of the pill's buttons, beside Send ─
     await reachBar(shell);
+    await expect(dictate).toBeVisible();
     await dictate.hover();
     await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Dictate");
     await away();
@@ -95,7 +95,6 @@ test("dictation in the desk's Bar: it listens, and what was said lands at the ca
     await expect(input).toBeHidden();
     await expect(shell.getByTestId("desk-bar-more")).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar-attach")).toHaveCount(0);
-    await expect(shell.getByTestId("desk-bar-conversations")).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar-send")).toHaveCount(0);
     await expect(done).toBeFocused();
     // The synthetic tone reaches the waveform, and the clock runs.
@@ -119,6 +118,39 @@ test("dictation in the desk's Bar: it listens, and what was said lands at the ca
     await expect(shell.getByTestId("desk-bar-send")).toBeVisible();
     await expect(shell.getByTestId("desk-bar-more")).toBeVisible();
     await capture(app, shell, "03-transcribed.png");
+
+    // ── 4. The nub's microphone droplet: the pill out of it already listening; × drops it, the pill stays to type in ─
+    await input.fill("");
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    await openNubMenu(shell);
+    await shell.getByTestId("desk-nub-mic").click();
+    await expect(shell.getByTestId("desk-bar")).not.toHaveAttribute("data-compact", "");
+    await expect(wave).toHaveAttribute("data-phase", "recording");
+    await expect(done).toBeFocused();
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await capture(app, shell, "04-from-the-nub.png");
+    await shell.getByTestId("desk-bar-dictation-discard").click();
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue("");
+    expect(await speech.heard()).toHaveLength(1);
+
+    // ── 5. The keyboard on the nub, its microphone droplet clicked: the keyboard goes to Done, so Escape drops the
+    // recording (and Enter would finish it) rather than the nub hearing them ─
+    await input.blur();
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    const nub = shell.getByTestId("desk-nub");
+    await nub.focus();
+    await nub.click();
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await shell.getByTestId("desk-nub-mic").click();
+    await expect(wave).toHaveAttribute("data-phase", "recording");
+    await expect(done).toBeFocused();
+    await shell.keyboard.press("Escape");
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue("");
+    expect(await speech.heard()).toHaveLength(1);
 
     expect(pageErrors).toEqual([]);
   } finally {

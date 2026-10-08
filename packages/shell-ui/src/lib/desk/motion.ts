@@ -202,3 +202,27 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t:
 
 /** `--ease-smooth-out`, cubic-bezier(0.22, 1, 0.36, 1): fast away, a long soft settle, never past the end. */
 export const EASE_SMOOTH_OUT = cubicBezier(0.22, 1, 0.36, 1);
+
+/** transitions.dev's plus → menu morph's open, cubic-bezier(0.34, 1.25, 0.64, 1): out with a little overshoot. */
+export const EASE_MORPH_OPEN = cubicBezier(0.34, 1.25, 0.64, 1);
+
+/**
+ * A spring let go from rest at 0 toward 1, `t` seconds on: where it is, the
+ * spring stepSpring steps (a hair off it), in closed form — so a motion read off the clock
+ * is the same wherever it is read (the Bar's nub in the shell and in main's
+ * notch view), and a slowed clock slows it whole.
+ */
+export function springAt(t: number, spring: SpringConfig): number {
+  if (t <= 0) return 0;
+  const omega = (2 * Math.PI) / spring.response;
+  const zeta = spring.damping;
+  if (zeta >= 1) return 1 - Math.exp(-omega * t) * (1 + omega * t);
+  const wd = omega * Math.sqrt(1 - zeta * zeta);
+  return 1 - Math.exp(-zeta * omega * t) * (Math.cos(wd * t) + ((zeta * omega) / wd) * Math.sin(wd * t));
+}
+
+/** Whether a spring let go `t` seconds ago has come to rest (its swing under a thousandth). */
+export function springDone(t: number, spring: SpringConfig): boolean {
+  const omega = (2 * Math.PI) / spring.response;
+  return t > 0 && Math.exp(-Math.min(1, spring.damping) * omega * t) * (1 + omega * t) < 0.001;
+}

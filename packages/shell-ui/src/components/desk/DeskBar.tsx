@@ -12,7 +12,7 @@ import { addContextFiles } from "../../lib/desk/group-context";
 import { activeMention, insertMention, mentionCandidates, mentionQuery, mentionsIn } from "../../lib/desk/mentions";
 import { agentActivity } from "../../lib/desk/agent";
 import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictation";
-import { DESK_GAP, type Rect } from "../../lib/desk/geometry";
+import { DESK_GAP, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubDrops, nubReach, type NotchShape, type Rect } from "../../lib/desk/geometry";
 import { readFloatSpot } from "../../lib/desk/answer-float";
 import { AnswerMotion, type AnswerEdge } from "./answer-motion";
 import { useDeskStore } from "../../lib/desk/store";
@@ -27,9 +27,10 @@ import { TakeoverCard } from "../TakeoverCard";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import type { DeskEngine, DeskView } from "./desk-engine";
-import { DeskNotchFace } from "./DeskNotchFace";
+import { DeskNub, type NubTip } from "./DeskNub";
 import { DictationWave } from "./DictationWave";
 import { FileGlyph, fileKindLabel } from "./files/FileGlyph";
+import { nubTimeScale, type NubMotion, type PillParts, type PillSource, type Swelling } from "./nub-motion";
 
 /** A file of the group's context the Bar can mention: its bytes are on this Mac. */
 type MentionFile = GroupContextFile & { here: boolean };
@@ -45,37 +46,37 @@ interface MentionMenuState {
 /** At most this many files a message carries as files (pictures, PDFs) through its mentions and what was attached. */
 const MAX_MESSAGE_FILES = 6;
 
-/** The Bar's height at one line: as tall as the notch grows (it grows taller with more lines). */
-export const BAR_H = 52;
-/** The idle notch's height above the desk's foot (`.desk-bar[data-compact]`), and the radius of its flares beside it (the engine's hole). */
-export const NOTCH_H = 32;
-export const NOTCH_FLARE = 10;
-/** The grown Bar stays a cover this long after it starts back to its idle notch: it is over the pages until it is down. */
+/** The pill at one line (it grows taller with more lines): answer-motion.ts measures the docked slot from its top. */
+export const BAR_H = 38;
+/** What the Bar opens out of the nub stays a cover this long after it starts back: it is over the pages until it is in. */
 const NOTCH_CLOSE_MS = 280;
-/** Growing waits for the pages under the grown Bar to give way, but never longer than this. */
+/** Opening waits for the pages under it to give way, but never longer than this. */
 const NOTCH_WAIT_MS = 300;
+/** The conversations go back into their droplet over this long (shell.css, the morph's close). */
+const PICKER_CLOSE_MS = 260;
 /** A tooltip over the Bar's buttons opens after this long, as the dock's do. */
 const TIP_DELAY_MS = 350;
-/** The band above the Bar stays a cover this long after a tooltip closes: moving from one button to the next, the next's does not wait. */
+/** The band a tooltip appears in stays a cover this long after it closes: moving from one button to the next, the next's does not wait. */
 const TIP_LINGER_MS = 200;
-/** The pointer on the pill this long before it grows: one passing over it on its way elsewhere does not (transitions.dev's intent delay, `--duration-micro`). */
-const PILL_HOVER_MS = 80;
-/** While the pointer is on the Bar, the OS's pointer is read this often, for a leave the shell never hears. */
+/** The pointer on the nub this long before it swells (and what it opens is made room for): one passing over it on its way elsewhere moves nothing (transitions.dev's intent delay, `--duration-micro`). */
+const NUB_HOVER_MS = 80;
+/** While the pointer is on the nub, the OS's pointer is read this often, for a leave the shell never hears. */
 const BAR_POINTER_CHECK_MS = 150;
-/** The pointer on the Bar's tray this long before it opens (the same intent delay), and off it this long before it closes: a pass on the way to the field, or a slip off its end, moves nothing. */
+/** The pointer on the pill's tray this long before it opens (the same intent delay), and off it this long before it closes: a pass on the way to the field, or a slip off its end, moves nothing. */
 const TRAY_OPEN_MS = 80;
 const TRAY_CLOSE_MS = 160;
 const PLATFORM = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
-/** The band above the Bar where its tooltips appear, and how far past its ends they may reach. */
+/** The band above the pill where its tooltips appear, and how far past its ends they may reach; beside the nub, where its droplets' do (to their left). */
 const TIP_BAND_H = 44;
 const TIP_BAND_REACH = 56;
+const TIP_SIDE_W = 200;
+/** The pill's shadow, which the pages under it give way for too. */
+const PILL_SHADOW = 16;
+/** The view over a live page holds the nub swelled, its corner the desk's (NotchApp). */
+const NUB_VIEW = Math.ceil(nubReach(NUB_SWELL)) + 1;
 
 /** A tooltip over one of the Bar's buttons (as the dock's DockTip): open as Base UI says, seen once no live page is under it. */
-interface BarTip {
-  open: boolean;
-  shown: boolean;
-  onOpenChange: (open: boolean) => void;
-}
+type BarTip = NubTip;
 
 /** An element's laid-out box in the stage (its transforms — the Bar rising in — never move it). */
 function stageBox(el: HTMLElement): Rect | null {
@@ -90,11 +91,18 @@ function stageBox(el: HTMLElement): Rect | null {
   return node === null ? null : { x, y, w: el.offsetWidth, h: el.offsetHeight };
 }
 
+/** The desk's corner radius (the stage's, a window's), which the nub's outline rounds into. */
+function cornerOf(el: Element | null): number {
+  const stage = el?.closest(".desk-stage");
+  if (stage === null || stage === undefined) return 0;
+  return Number.parseFloat(getComputedStyle(stage).borderBottomRightRadius) || 0;
+}
+
 /**
  * What the Bar draws over the desk is a cover (DeskEngine.setCover): a live
  * page is a native view and would paint over it, so the windows under it
  * give way to their stills while it is up. `shape` makes the cover of the
- * element's box (the grown notch's, from its box at any size).
+ * element's box (the pill's, with its shadow).
  */
 function useCover(engine: DeskEngine, key: string, ref: RefObject<HTMLElement | null>, active: boolean, shape?: (box: Rect) => Rect): void {
   useLayoutEffect(() => {
@@ -122,44 +130,58 @@ function useCover(engine: DeskEngine, key: string, ref: RefObject<HTMLElement | 
   }, [engine, key, ref, active, shape]);
 }
 
-/** The grown notch's footprint, from the anchor's box at any size: the Bar's whole width at one line at least, and its flares. */
-function grownNotch(box: Rect): Rect {
-  const h = Math.max(box.h, BAR_H);
-  return { x: box.x - NOTCH_FLARE, y: box.y + box.h - h, w: box.w + NOTCH_FLARE * 2, h };
+/** The pill's footprint as a cover: its box and its shadow. */
+function pillFootprint(box: Rect): Rect {
+  return { x: box.x - PILL_SHADOW, y: box.y - PILL_SHADOW, w: box.w + PILL_SHADOW * 2, h: box.h + PILL_SHADOW * 2 };
 }
 
-/** True while `on`, and for `ms` after it goes. */
-function useLinger(on: boolean, ms: number): boolean {
+/** True while `on`, and for `ms` after it goes — stretched, with `slowed`, as the nub's motion is (nub-motion's nubTimeScale). */
+function useLinger(on: boolean, ms: number, slowed = false): boolean {
   const [lingering, setLingering] = useState(on);
   useLayoutEffect(() => {
     if (on) {
       setLingering(true);
       return;
     }
-    const timer = window.setTimeout(() => setLingering(false), ms);
+    const timer = window.setTimeout(() => setLingering(false), slowed ? ms * nubTimeScale() : ms);
     return () => window.clearTimeout(timer);
-  }, [on, ms]);
+  }, [on, ms, slowed]);
   return on || lingering;
 }
 
+/** True once `on` has held for `ms` (what waits on the pages giving way waits no longer than that). */
+function useOverdue(on: boolean, ms: number): boolean {
+  const [overdue, setOverdue] = useState(false);
+  useEffect(() => {
+    setOverdue(false);
+    if (!on) return;
+    const timer = window.setTimeout(() => setOverdue(true), ms);
+    return () => window.clearTimeout(timer);
+  }, [on, ms]);
+  return overdue;
+}
+
 /**
- * The desk's agent, in a notch at the desk's foot (docs/desk-agent.md
- * §1): the message field, attach, the conversations, the answer and send —
- * stop while the agent works. Above it, the answer card shows the latest
- * exchange as it happens; it opens when a turn starts and stays until
- * closed. The card sits on the Bar, however tall the Bar grows, and is as
- * wide. The conversations it lists are every thread, each marked with the
- * group it started in: choosing one continues it at this desk.
+ * The desk's agent, as a nub in the desk's trailing foot corner (docs/desk-agent.md
+ * §1): a droplet of the shell's own ground there, partly sunk into the corner
+ * and joined to both edges by fillets — a hole the engine cuts through the
+ * well and the windows under it (DeskEngine.setNotchShape), so it is the
+ * ground whatever the theme; over a live page, main's notch view draws it
+ * (NotchApp). The pointer resting on it swells it; a click lets out its
+ * menu, three droplets that pinch off up the trailing edge (DeskNub,
+ * nub-motion.ts): the prompt, the microphone, past chats.
  *
- * The notch is the shell's own ground rising out of the surface's edge
- * into the desk. Idle — nothing typed or staged, nothing open above it, the
- * agent not at work, no file on its way, the keyboard and the pointer
- * elsewhere — it is small and says what it is for, and the windows under it
- * are cut short of it (DeskEngine.setNotch); the pointer coming to it, a
- * click, ⌘I or a drag of files grows it into the Bar (a morph,
- * transitions.dev's plus → menu: the row keeps its full width and is
- * revealed as the notch widens around it) — a cover, once the pages under
- * it have given way (the pointer on it asks them to at once).
+ * The prompt's droplet becomes the pill — the message field, attach, a new
+ * conversation, the answer and send (stop while the agent works) — a
+ * floating glass field at the desk's foot beside the nub; the microphone's
+ * becomes the same pill already listening; past chats' grows into the
+ * conversations. Above the pill, the answer card shows the latest exchange
+ * as it happens; it opens when a turn starts and stays until closed, and
+ * can be taken off into a window of its own (answer-motion.ts). The
+ * conversations it lists are every thread, each marked with the group it
+ * started in: choosing one continues it at this desk. Everything out of
+ * the nub is a cover, drawn once the pages under it have given way (asked
+ * as the menu is: the droplet's pill and its pages then open at once).
  *
  * `undo` is offered on the card after a turn that moved the windows.
  */
@@ -190,16 +212,22 @@ export const DeskBar = memo(function DeskBar({
   context: GroupContextView | null;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const laneRef = useRef<HTMLDivElement>(null);
   const ghostRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
-  const pillRef = useRef<HTMLSpanElement>(null);
+  const nubRef = useRef<HTMLDivElement>(null);
+  const faceRef = useRef<HTMLButtonElement>(null);
+  const nubMotion = useRef<NubMotion | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const mentionsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** The composer's own: puts text at the caret (a mention of a file just taken into the context). */
   const insertRef = useRef<((text: string) => void) | null>(null);
+  /** The composer's own: starts dictation (the microphone's droplet). */
+  const dictateRef = useRef<(() => void) | null>(null);
   const focusInput = useCallback(() => inputRef.current?.focus({ preventScroll: true }), []);
   // A Word or Excel file dropped on the Bar goes into the group's context, and the message mentions it.
   const groupRef = useRef(group);
@@ -220,7 +248,13 @@ export const DeskBar = memo(function DeskBar({
   const [mentionMenu, setMentionMenu] = useState<MentionMenuState | null>(null);
   const [answerOpen, setAnswerOpen] = useState(false);
   const [whole, setWhole] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The desk passed to another group: what was out of the nub for this one goes back in.
+  useEffect(() => {
+    setMenuOpen(false);
+    setPickerOpen(false);
+  }, [group.id]);
   const leaving = view.phase === "leaving";
   const cardShown = answerOpen && run !== null && !leaving;
   // The card taken off the Bar (answer-motion.ts): whether it floats now, and whether it is in hand.
@@ -258,7 +292,7 @@ export const DeskBar = memo(function DeskBar({
     };
   }, [cardShown, engine]);
   // Floating, it is a window among the desk's: one the person brings up comes in front of it, its page live again,
-  // and a press on the card (or its button on the Bar) brings it back in front of them all.
+  // and a press on the card (or its button on the pill) brings it back in front of them all.
   useLayoutEffect(() => {
     engine.stackCover("answer", cardShown && floating);
   }, [engine, cardShown, floating]);
@@ -275,7 +309,9 @@ export const DeskBar = memo(function DeskBar({
   }, [cardShown, answerClear]);
   const answerShown = answerClear || (cardShown && answerSeen);
 
-  useCover(engine, "conversations", pickerRef, pickerOpen && !leaving);
+  // The conversations stay a moment once put away, going back into their droplet.
+  const pickerUp = useLinger(pickerOpen, PICKER_CLOSE_MS, true) && !leaving;
+  useCover(engine, "conversations", pickerRef, pickerUp);
   useCover(engine, "mentions", mentionsRef, mentionMenu !== null && !leaving);
 
   // The card opens when a turn starts — the person's message, or the agent
@@ -309,110 +345,57 @@ export const DeskBar = memo(function DeskBar({
     }
   }, [run, userMessages, asking, raiseAnswer]);
 
-  // Escape closes what is open over the desk, the picker first; a floating answer is a window, and stays.
-  const answerCloses = cardShown && !floating;
-  useEffect(() => {
-    if (!answerCloses && !pickerOpen) return;
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      // Escape in a document's window is the document's (its editor, its sheet).
-      if (event.target instanceof Element && event.target.closest(".desk-window") !== null) return;
-      if (pickerOpen) setPickerOpen(false);
-      else setAnswerOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [answerCloses, pickerOpen]);
-
-  // The conversations go on a press anywhere else — a live page's too, which
-  // the shell never hears itself (main relays it) — or Escape in a page.
-  // Their button toggles them itself.
-  useEffect(() => {
-    if (!pickerOpen) return;
-    const offPage = nativeApi()?.onDeskPageInput((input) => {
-      if (input === "press" || input === "escape") setPickerOpen(false);
-    });
-    const onDown = (event: PointerEvent): void => {
-      const target = event.target instanceof Element ? event.target : null;
-      if (target !== null && (pickerRef.current?.contains(target) === true || target.closest("[data-testid='desk-bar-conversations']") !== null)) return;
-      setPickerOpen(false);
-    };
-    window.addEventListener("pointerdown", onDown, true);
-    return () => {
-      offPage?.();
-      window.removeEventListener("pointerdown", onDown, true);
-    };
-  }, [pickerOpen]);
-
-  // The answer goes as the conversations do, on a press anywhere else — a live page's too, which main relays — but
-  // not on the Bar, where the person writes to it, nor in what the Bar opens over it (the conversations, the mentions).
-  // Floating, it is a window: it stays.
-  useEffect(() => {
-    if (!answerCloses) return;
-    const offPage = nativeApi()?.onDeskPageInput((input) => {
-      if (input === "press") setAnswerOpen(false);
-    });
-    const onDown = (event: PointerEvent): void => {
-      const target = event.target instanceof Element ? event.target : null;
-      if (target !== null && (cardRef.current?.contains(target) === true || anchorRef.current?.contains(target) === true)) return;
-      setAnswerOpen(false);
-    };
-    window.addEventListener("pointerdown", onDown, true);
-    return () => {
-      offPage?.();
-      window.removeEventListener("pointerdown", onDown, true);
-    };
-  }, [answerCloses]);
-
-  // A press on a window gives it the keyboard once its page is live (the engine's pendingFocus), so the Bar lets go of
-  // it at once: grown over the windows while it held it, it would keep that page a still for good.
-  useEffect(() => {
-    const onDown = (event: PointerEvent): void => {
-      const field = document.activeElement;
-      if (!(event.target instanceof Element) || event.target.closest(".desk-window") === null || event.target.closest("button") !== null) return;
-      if (field instanceof HTMLElement && barRef.current?.contains(field) === true) field.blur();
-    };
-    window.addEventListener("pointerdown", onDown, true);
-    return () => window.removeEventListener("pointerdown", onDown, true);
-  }, []);
-
-  useEffect(() => {
-    if (focusSignal > 0) focusInput();
-  }, [focusSignal, focusInput]);
-
   const activity = agentActivity(run);
   const shownCover = (key: string): boolean => view.clearCovers.has(key);
 
-  // Idle, the Bar is a small notch. The composer says whether it holds anything; the rest is what is open around it.
+  // The pill. The composer says whether it holds anything; the rest is what holds it out: the keyboard in it, the
+  // answer docked on it (or in hand on its way home), the @ list, files on their way — and a droplet just pressed
+  // (`asked`), until the keyboard or the microphone has it.
   const [composerIdle, setComposerIdle] = useState(true);
   const [focusWithin, setFocusWithin] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  /** The pointer is on the idle notch: the pages under the grown Bar are asked to give way at once, before it grows. */
+  const [asked, setAsked] = useState(false);
+  useEffect(() => {
+    if (focusWithin || !composerIdle) setAsked(false);
+  }, [focusWithin, composerIdle]);
+  /** What the pill comes out of next: the droplet pressed, or the nub itself. */
+  const pillSource = useRef<PillSource>("nub");
+  // (A floating answer is no reason to: only one docked on it, or one in hand on its way home.)
+  const pillWanted = !leaving && (asked || !composerIdle || focusWithin || (cardShown && !floating) || cardHeld || mentionMenu !== null || fileDrag || drop.dragging);
+  // Out, it is a cover (its whole footprint), from the pointer coming to the nub until it is back in.
+  const pillOverdue = useOverdue(pillWanted, NOTCH_WAIT_MS);
+  const pillOpen = pillWanted && (shownCover("pill") || pillOverdue);
+  const compact = !pillOpen;
+
+  // The nub: the pointer resting on it swells it.
   const [arming, setArming] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  /** The pointer on the notch view over a page (not the shell's nub, whose tooltip Base UI opens itself). */
+  const [viewHover, setViewHover] = useState(false);
   const armed = useRef(false);
   const hoverTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
-  /** The pointer came onto the Bar (or the notch view over a page): the pages under it are asked to give way, and it grows once the pointer has rested. */
-  const enterBar = useCallback(() => {
+  /** The pointer came onto the nub (or the notch view over a page): it swells once the pointer has rested. */
+  const enterNub = useCallback(() => {
     armed.current = true;
     setArming(true);
     window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = window.setTimeout(() => setHovered(true), PILL_HOVER_MS);
+    hoverTimer.current = window.setTimeout(() => setHovered(true), NUB_HOVER_MS);
   }, []);
-  const leaveBar = useCallback(() => {
+  const leaveNub = useCallback(() => {
     armed.current = false;
     setArming(false);
     window.clearTimeout(hoverTimer.current);
     setHovered(false);
+    setViewHover(false);
   }, []);
   /** The notch view's box in the window while it is up over a page (setDeskNotch, below). */
   const notchBox = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   /**
-   * Whether the OS's pointer (main's word) is on the Bar: its own box and
-   * all in it, or the notch view over a page — null where it cannot be read
-   * (Playwright), and the pointer events have the last word.
+   * Whether the OS's pointer (main's word) is on the nub: its face, or the
+   * notch view over a page — null where it cannot be read (Playwright), and
+   * the pointer events have the last word.
    */
-  const pointerOnBar = useCallback(async (): Promise<boolean | null> => {
+  const pointerOnNub = useCallback(async (): Promise<boolean | null> => {
     let point: { x: number; y: number } | null = null;
     try {
       point = (await nativeApi()?.getCursorPoint()) ?? null;
@@ -423,65 +406,287 @@ export const DeskBar = memo(function DeskBar({
     const box = notchBox.current;
     if (box !== null && point.x >= box.x - 2 && point.x <= box.x + box.width + 2 && point.y >= box.y - 2 && point.y <= box.y + box.height + 2) return true;
     const under = document.elementFromPoint(point.x, point.y);
-    return under !== null && barRef.current?.contains(under) === true;
+    return under !== null && faceRef.current?.contains(under) === true;
   }, []);
-  // A leave the shell never hears would leave the Bar grown, and every window under it its picture (dead to the
-  // pointer), for good: the notch view goes from under the pointer as the Bar grows, so it never hears the pointer go,
-  // and the shell hears the pointer on the Bar only once it moves there. While the pointer is on the Bar, then, the
-  // OS's pointer is read now and then: off the Bar, it has gone.
+  // A leave the shell never hears would leave the nub swelled for good: the notch view goes from under the pointer
+  // once what the nub opens has made the page under it a still, so it never hears the pointer go, and the shell hears
+  // the pointer on the nub only once it moves there. While the pointer is on the nub, then, the OS's pointer is read
+  // now and then: off the nub, it has gone.
   const pointerHeld = arming || hovered;
   useEffect(() => {
     if (!pointerHeld) return;
     let stopped = false;
     const timer = window.setInterval(() => {
-      void pointerOnBar().then((on) => {
-        if (!stopped && on === false) leaveBar();
+      void pointerOnNub().then((on) => {
+        if (!stopped && on === false) leaveNub();
       });
     }, BAR_POINTER_CHECK_MS);
     return () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [pointerHeld, pointerOnBar, leaveBar]);
-  // (A floating answer is no reason to: only one docked on it, or one in hand on its way home.)
-  const wanted = !composerIdle || focusWithin || hovered || (cardShown && !floating) || cardHeld || pickerOpen || mentionMenu !== null || fileDrag || drop.dragging;
-  // Grown, the Bar is a cover (its whole footprint, whatever its width as it grows or shrinks: what is under it is the
-  // same throughout), from the pointer coming to it until it is back down.
-  const [overdue, setOverdue] = useState(false);
-  useEffect(() => {
-    setOverdue(false);
-    if (!wanted) return;
-    const timer = window.setTimeout(() => setOverdue(true), NOTCH_WAIT_MS);
-    return () => window.clearTimeout(timer);
-  }, [wanted]);
-  const compact = !wanted || !(shownCover("bar") || overdue);
-  const covering = useLinger(!compact, NOTCH_CLOSE_MS) || wanted || arming;
-  useCover(engine, "bar", anchorRef, covering && !leaving, grownNotch);
-  const askKey = useAppStore((state) => shortcutLabel(state.settings.shortcuts.toggleConsole, PLATFORM));
-  // The idle notch is as wide as what it says (a long group name is cut short).
-  const [pillWidth, setPillWidth] = useState<number | null>(null);
-  useLayoutEffect(() => {
-    const el = pillRef.current;
-    if (el === null) return;
-    const measure = (): void => setPillWidth(el.offsetWidth);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
+  }, [pointerHeld, pointerOnNub, leaveNub]);
+
+  // The menu, drawn once the pages under it have given way (or after NOTCH_WAIT_MS).
+  const menuWanted = menuOpen && !leaving;
+  const menuOverdue = useOverdue(menuWanted, NOTCH_WAIT_MS);
+  const menuShown = menuWanted && (shownCover("bar") || menuOverdue);
+  // The nub's box — the droplets' column — and the pill's footprint are covers from the menu being asked for (the pill's
+  // too, so a droplet's pill opens at once) until they are back in. Not the pointer resting on the nub: the swell is the
+  // nub's own (over a live page, the notch view draws it), and a pointer passing the corner freezes no page.
+  const nubCovering = useLinger(menuShown || pickerOpen, NOTCH_CLOSE_MS, true) || menuWanted;
+  useCover(engine, "bar", nubRef, nubCovering && !leaving);
+  const pillCovering = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted || menuWanted;
+  useCover(engine, "pill", barRef, pillCovering && !leaving, pillFootprint);
+
+  const pillParts = useCallback((): PillParts | null => {
+    const bar = barRef.current;
+    const frame = frameRef.current;
+    const body = bodyRef.current;
+    return bar === null || frame === null || body === null ? null : { bar, frame, body };
   }, []);
-  // The idle notch at the desk's foot: the engine knows where it lies over the windows (whether a live page is under it).
-  useLayoutEffect(() => {
-    engine.setNotch(leaving || pillWidth === null ? null : { w: pillWidth + NOTCH_FLARE * 2, h: NOTCH_H });
-  }, [engine, leaving, pillWidth]);
-  useEffect(() => () => engine.setNotch(null), [engine]);
-  // Over a live page, idle, the notch is main's notch view (NotchApp), drawn over the page as nothing of the
-  // shell's can be: it is told where (the notch and its flares, in the window) and what it says.
+  // The nub as it is drawn now, swelling and settling: the engine cuts it through the well and the windows under it.
   // A screenshot of the desk is the windows without the Bar: neither it nor its hole is drawn while one is taken.
   const capturing = useDeskStore((state) => state.capturing);
-  const overPage = compact && view.notchOver && !leaving && !capturing;
+  const holeOff = leaving || capturing;
+  const hole = useRef<{ shape: NotchShape; off: boolean }>({ shape: NUB_IDLE, off: holeOff });
+  hole.current.off = holeOff;
+  const cutNub = useCallback(
+    (shape: NotchShape) => {
+      hole.current.shape = shape;
+      if (!hole.current.off) engine.setNotchShape(shape);
+    },
+    [engine],
+  );
+  useLayoutEffect(() => {
+    engine.setNotchShape(holeOff ? null : hole.current.shape);
+  }, [engine, holeOff]);
+  useEffect(() => () => engine.setNotchShape(null), [engine]);
+  const deskCorner = useCallback(() => cornerOf(nubRef.current), []);
+  // The idle nub's box, in the desk's trailing foot corner: the engine knows where it lies over the windows (whether a
+  // live page is under it).
+  useLayoutEffect(() => {
+    engine.setNotch(leaving ? null : { w: NUB_VIEW, h: NUB_VIEW });
+  }, [engine, leaving]);
+  useEffect(() => () => engine.setNotch(null), [engine]);
+
+  // Swelled while the pointer rests on it and while its droplets are out; the pill out of its droplet (or the nub),
+  // and back into the nub; the conversations standing where past chats' droplet was.
+  const [swelling, setSwelling] = useState<Swelling>({ from: 0, to: 0, at: 0, ms: 0 });
+  const swellTo = !leaving && (hovered || menuShown) ? 1 : 0;
+  useLayoutEffect(() => {
+    const motion = nubMotion.current;
+    if (motion !== null) setSwelling(motion.swell(swellTo));
+  }, [swellTo]);
+  const pillWas = useRef(false);
+  useLayoutEffect(() => {
+    const motion = nubMotion.current;
+    if (motion === null || pillOpen === pillWas.current) return;
+    pillWas.current = pillOpen;
+    if (pillOpen) motion.openPill(pillSource.current);
+    else motion.closePill();
+    pillSource.current = "nub";
+  }, [pillOpen]);
+  /** The menu opened from the keys: its first droplet has them once it is out. */
+  const keysToMenu = useRef(false);
+  useLayoutEffect(() => {
+    const motion = nubMotion.current;
+    if (motion === null) return;
+    if (menuShown) motion.openMenu();
+    else motion.closeMenu();
+    if (menuShown && keysToMenu.current) document.querySelector<HTMLElement>("[data-testid='desk-nub-prompt']")?.focus({ preventScroll: true });
+    keysToMenu.current = false;
+  }, [menuShown]);
+  useLayoutEffect(() => {
+    nubMotion.current?.take(2, pickerUp);
+  }, [pickerUp]);
+
+  // Escape unwinds what is out, one at a time: the conversations, the menu, the answer docked (a floating one is a
+  // window, and stays), the pill if nothing is in it.
+  const answerCloses = cardShown && !floating;
+  const unwind = useRef({ pickerOpen, menuOpen, answerCloses, pillOpen, composerIdle });
+  unwind.current = { pickerOpen, menuOpen, answerCloses, pillOpen, composerIdle };
+  useEffect(() => {
+    // Escape in a document's window is the document's (its editor, its sheet).
+    const theirs = (event: KeyboardEvent): boolean => event.key !== "Escape" || (event.target instanceof Element && event.target.closest(".desk-window") !== null);
+    // What is out of the nub hears it first: a tooltip open over a droplet (Base UI's) would take it otherwise. Only
+    // where the keys are the nub's — on it or its droplets, in the pill, or nowhere — though: an overlay in front of
+    // the desk with the keyboard in it (the address bar, a dialog) has its own Escape first.
+    const onNubKey = (event: KeyboardEvent): void => {
+      if (theirs(event) || event.defaultPrevented) return;
+      const target = event.target instanceof Element && event.target !== document.body ? event.target : null;
+      if (target !== null && nubRef.current?.contains(target) !== true && barRef.current?.contains(target) !== true) return;
+      const now = unwind.current;
+      const inMenu = target !== null && nubRef.current?.contains(target) === true;
+      if (now.pickerOpen) {
+        setPickerOpen(false);
+        if (inMenu) document.querySelector<HTMLElement>("[data-testid='desk-nub-chats']")?.focus({ preventScroll: true });
+      } else if (now.menuOpen) {
+        setMenuOpen(false);
+        if (inMenu) faceRef.current?.focus({ preventScroll: true });
+      } else return;
+      event.stopPropagation();
+    };
+    // Back at the window, an Escape nothing in front took (the keyboard on another of the shell's controls): what is
+    // out of the nub goes first here too.
+    const onKey = (event: KeyboardEvent): void => {
+      if (theirs(event) || event.defaultPrevented) return;
+      const now = unwind.current;
+      if (now.pickerOpen) setPickerOpen(false);
+      else if (now.menuOpen) setMenuOpen(false);
+      else if (now.answerCloses) setAnswerOpen(false);
+      else if (now.pillOpen && now.composerIdle) {
+        setAsked(false);
+        const field = document.activeElement;
+        if (field instanceof HTMLElement && barRef.current?.contains(field) === true) field.blur();
+      }
+    };
+    window.addEventListener("keydown", onNubKey, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onNubKey, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  // The menu and the conversations go on a press anywhere else — a live page's too, which the shell never hears
+  // itself (main relays it) — or Escape in a page. The nub's own click toggles them itself.
+  const nubOut = menuOpen || pickerOpen;
+  useEffect(() => {
+    if (!nubOut) return;
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "press" || input === "escape") {
+        setPickerOpen(false);
+        setMenuOpen(false);
+      }
+    });
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target !== null && nubRef.current?.contains(target) === true) return;
+      setPickerOpen(false);
+      setMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      offPage?.();
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [nubOut]);
+
+  // A droplet pressed holds the pill out until the keyboard has it; a press elsewhere lets it go.
+  useEffect(() => {
+    if (!asked) return;
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "press") setAsked(false);
+    });
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target !== null && (anchorRef.current?.contains(target) === true || nubRef.current?.contains(target) === true)) return;
+      setAsked(false);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      offPage?.();
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [asked]);
+
+  // The answer goes as the conversations do, on a press anywhere else — a live page's too, which main relays — but
+  // not on the pill, where the person writes to it, nor in what opens over it (the nub's menu, the conversations,
+  // the mentions). Floating, it is a window: it stays.
+  useEffect(() => {
+    if (!answerCloses) return;
+    const offPage = nativeApi()?.onDeskPageInput((input) => {
+      if (input === "press") setAnswerOpen(false);
+    });
+    const onDown = (event: PointerEvent): void => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target !== null && (cardRef.current?.contains(target) === true || anchorRef.current?.contains(target) === true || nubRef.current?.contains(target) === true)) return;
+      setAnswerOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      offPage?.();
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [answerCloses]);
+
+  // A press on a window gives it the keyboard once its page is live (the engine's pendingFocus), so the pill lets go
+  // of it at once: out over the windows while it held it, it would keep that page a still for good.
+  useEffect(() => {
+    const onDown = (event: PointerEvent): void => {
+      const field = document.activeElement;
+      if (!(event.target instanceof Element) || event.target.closest(".desk-window") === null || event.target.closest("button") !== null) return;
+      if (field instanceof HTMLElement && barRef.current?.contains(field) === true) field.blur();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
+  }, []);
+
+  // ⌘I: the keyboard in the field, the pill out of the nub — and what was out of the nub back in, as the prompt's
+  // droplet puts it.
+  useEffect(() => {
+    if (focusSignal === 0) return;
+    setMenuOpen(false);
+    setPickerOpen(false);
+    focusInput();
+  }, [focusSignal, focusInput]);
+
+  /** The nub pressed (or the notch view over a page): its menu out, or back in — opened from the keys, the keys go to its first droplet. */
+  const menuNow = useRef(menuOpen);
+  menuNow.current = menuOpen;
+  const toggleMenu = useCallback((keyboard: boolean) => {
+    keysToMenu.current = keyboard && !menuNow.current;
+    setPickerOpen(false);
+    setMenuOpen(!menuNow.current);
+  }, []);
+  const choosePrompt = (): void => {
+    if (!pillOpen) pillSource.current = "prompt";
+    setAsked(true);
+    setMenuOpen(false);
+    setPickerOpen(false);
+    focusInput();
+  };
+  const chooseMic = (): void => {
+    if (!pillOpen) pillSource.current = "mic";
+    setAsked(true);
+    setMenuOpen(false);
+    setPickerOpen(false);
+    dictateRef.current?.();
+  };
+
+  // The pointer on the notch view, and a press there: the nub's, as if they were on it. The view's word that the
+  // pointer came is checked against the OS's pointer: hidden under the pointer (as it is once what the nub opens has
+  // made the page under it a still), it never hears the pointer go, and shown again — a window brought down under
+  // the nub — it still has it there, and says so wherever the pointer is. (It says it again as the pointer moves on
+  // it: once the nub has swelled, nothing new.)
+  useEffect(
+    () =>
+      nativeApi()?.onDeskNotchInput((input) => {
+        if (input === "enter") {
+          if (armed.current) return;
+          void pointerOnNub().then((on) => {
+            if (on !== false && !armed.current) {
+              enterNub();
+              setViewHover(true);
+            }
+          });
+        } else if (input === "leave") leaveNub();
+        else toggleMenu(false);
+      }),
+    [enterNub, leaveNub, toggleMenu, pointerOnNub],
+  );
+
+  const askKey = useAppStore((state) => shortcutLabel(state.settings.shortcuts.toggleConsole, PLATFORM));
+  const acting = activity !== null;
+  const floatingOut = cardShown && floating;
+  // Over a live page, the idle nub is main's notch view (NotchApp), drawn over the page as nothing of the shell's can
+  // be: it is told where (the box the nub may fill, its corner the desk's), how swelled it is, and what it shows.
+  // Once what the nub opens has made the page under it a still, there is no live page under it, and the view goes.
+  const overPage = view.notchOver && !leaving && !capturing;
   useLayoutEffect(() => {
     const api = nativeApi();
-    const el = barRef.current;
+    const el = nubRef.current;
     if (api === null) return;
     if (!overPage || el === null) {
       notchBox.current = null;
@@ -489,23 +694,29 @@ export const DeskBar = memo(function DeskBar({
       return;
     }
     const send = (): void => {
-      const box = el.getBoundingClientRect();
+      const stage = el.closest(".desk-stage")?.getBoundingClientRect();
+      if (stage === undefined) return;
       const ground = el.closest(".chrome-container")?.getBoundingClientRect() ?? { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
-      const bounds = { x: box.left - NOTCH_FLARE, y: box.top, width: box.width + NOTCH_FLARE * 2, height: box.height };
+      const right = Math.round(stage.right);
+      const bottom = Math.round(stage.bottom);
+      const bounds = { x: right - NUB_VIEW, y: bottom - NUB_VIEW, width: NUB_VIEW, height: NUB_VIEW };
       notchBox.current = bounds;
       api.setDeskNotch({
         bounds,
         label: `Ask about ${group.title}`,
         shortcut: askKey,
         color: group.color,
-        radius: Number.parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0,
-        flare: NOTCH_FLARE,
+        idle: NUB_IDLE,
+        swell: NUB_SWELL,
+        corner: cornerOf(el),
+        swelling,
+        acting,
+        floating: floatingOut,
         ground: { x: ground.x, y: ground.y, width: ground.width, height: ground.height },
       });
     };
     send();
     const observer = new ResizeObserver(send);
-    observer.observe(el);
     const stage = el.closest(".desk-stage");
     if (stage !== null) observer.observe(stage);
     window.addEventListener("resize", send);
@@ -513,73 +724,58 @@ export const DeskBar = memo(function DeskBar({
       observer.disconnect();
       window.removeEventListener("resize", send);
     };
-  }, [overPage, group.title, group.color, askKey]);
+  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut]);
   useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
-  // The pointer on the notch view, and a press there: the Bar's, as if they were on it. The view's word that the
-  // pointer came is checked against the OS's pointer: hidden under the pointer (as it is once the Bar grows), it never
-  // hears the pointer go, and shown again — a window brought down under the notch — it still has it there, and says
-  // so wherever the pointer is. (It says it again as the pointer moves on it: once the Bar is on its way up, nothing new.)
-  useEffect(
-    () =>
-      nativeApi()?.onDeskNotchInput((input) => {
-        if (input === "enter") {
-          if (armed.current) return;
-          void pointerOnBar().then((on) => {
-            if (on !== false && !armed.current) enterBar();
-          });
-        } else if (input === "leave") leaveBar();
-        else focusInput();
-      }),
-    [enterBar, leaveBar, focusInput, pointerOnBar],
-  );
-  // The notch as it is drawn now, as it grows and shrinks: the engine cuts it through the well and the windows under it.
-  useLayoutEffect(() => {
-    const el = barRef.current;
-    if (el === null || leaving || capturing) {
-      engine.setNotchShape(null);
-      return;
-    }
-    const measure = (): void => {
-      const box = stageBox(el);
-      if (box !== null) engine.setNotchShape({ ...box, radius: Number.parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0, flare: NOTCH_FLARE });
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    const stage = el.closest(".desk-stage");
-    if (stage !== null) observer.observe(stage);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-      engine.setNotchShape(null);
-    };
-  }, [engine, leaving, capturing]);
 
-  // A button's tooltip is open: the band above the Bar, where it appears, is
-  // a cover, and stays one a moment after it closes (the dock's rule).
-  const [tip, setTip] = useState<string | null>(null);
+  // A button's tooltip is open: the band it appears in — above the pill, or beside the nub — is a cover, and stays
+  // one a moment after it closes (the dock's rule).
+  const [tip, setTip] = useState<{ label: string; where: "pill" | "nub" } | null>(null);
   const openTip = leaving ? null : tip;
   useLayoutEffect(() => {
-    const bar = barRef.current;
-    if (openTip === null || bar === null) {
+    const el = openTip === null ? null : openTip.where === "pill" ? barRef.current : nubRef.current;
+    if (openTip === null || el === null) {
       const timer = window.setTimeout(() => engine.setCover("bar-tip", null), TIP_LINGER_MS);
       return () => window.clearTimeout(timer);
     }
-    const box = stageBox(bar);
-    if (box !== null) engine.setCover("bar-tip", { x: box.x - TIP_BAND_REACH, y: box.y - TIP_BAND_H, w: box.w + TIP_BAND_REACH * 2, h: TIP_BAND_H });
+    const box = stageBox(el);
+    if (box === null) return;
+    engine.setCover(
+      "bar-tip",
+      openTip.where === "pill"
+        ? { x: box.x - TIP_BAND_REACH, y: box.y - TIP_BAND_H, w: box.w + TIP_BAND_REACH * 2, h: TIP_BAND_H }
+        : { x: box.x - TIP_SIDE_W, y: box.y, w: TIP_SIDE_W + box.w, h: box.h },
+    );
   }, [engine, openTip]);
   useEffect(() => () => engine.setCover("bar-tip", null), [engine]);
   // A button that goes while its tooltip is open (the row changing for dictation) never says it closed.
   const closeTips = useCallback(() => setTip(null), []);
-  const barTip = (label: string): BarTip => ({
-    open: openTip === label,
+  // (By where it is as well as what it says: the pill's Dictate is not the nub's.)
+  const someTip = (label: string, where: "pill" | "nub"): BarTip => ({
+    open: openTip?.label === label && openTip.where === where,
     shown: shownCover("bar-tip"),
-    onOpenChange: (open) => setTip((current) => (open ? label : current === label ? null : current)),
+    onOpenChange: (open) => setTip((current) => (open ? { label, where } : current?.label === label && current.where === where ? null : current)),
   });
+  const barTip = (label: string): BarTip => someTip(label, "pill");
+  const nubTip = (label: string): BarTip => someTip(label, "nub");
+  const faceLabel = `Ask about ${group.title}`;
+  // (Not while the nub's menu is out: its droplets say what they are.)
+  const faceTip = nubTip(faceLabel);
+  if (menuOpen) faceTip.open = false;
+  // Over a live page the pointer rests on the notch view, which Base UI never hears: the nub's tooltip opens for the
+  // view's hover as for its own — its mark alone does not say what it is for. Its band given way (a cover), the page
+  // under it is a still and the view goes, the shell's nub under the pointer; the pointer gone, so is the tooltip.
+  useEffect(() => {
+    if (!viewHover || menuOpen) return;
+    const timer = window.setTimeout(() => setTip({ label: faceLabel, where: "nub" }), TIP_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+      setTip((current) => (current?.label === faceLabel && current.where === "nub" ? null : current));
+    };
+  }, [viewHover, menuOpen, faceLabel]);
 
+  // The conversations stand where past chats' droplet rests, growing up and left from it.
+  const chats = nubDrops(NUB_SWELL)[2]!;
   return (
-    // Centred on the desk, on its foot.
     <div
       ref={laneRef}
       className="desk-bar-lane"
@@ -588,7 +784,7 @@ export const DeskBar = memo(function DeskBar({
     >
       {/* The docked answer's slot, while a floating one comes back to it (answer-motion.ts draws it). */}
       <div ref={ghostRef} className="desk-answer-ghost" data-testid="desk-answer-ghost" aria-hidden="true" />
-      {/* One column, the Bar's width: the answer rests on the Bar, however tall the Bar grows. */}
+      {/* One column, the pill's width: the answer rests on the pill, however tall the pill grows. */}
       <div className="desk-bar-column">
         {cardShown ? (
           <AnswerCard
@@ -606,8 +802,81 @@ export const DeskBar = memo(function DeskBar({
           />
         ) : null}
         <div ref={anchorRef} className="desk-bar-anchor">
-          {/* Over the answer, on the Bar's top edge: it is what the conversations button opened last. */}
-          {pickerOpen && !leaving ? (
+          {mentionMenu !== null && !leaving ? <MentionMenu ref={mentionsRef} menu={mentionMenu} shown={shownCover("mentions")} /> : null}
+          {/* The pill: its box always where it rests; its glass and row what the nub's motion morphs. */}
+          <div
+            ref={barRef}
+            {...drop.handlers}
+            role="region"
+            aria-label="Ask Pistachio about this desk"
+            data-testid="desk-bar"
+            data-acting={acting ? "" : undefined}
+            data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
+            data-compact={compact ? "" : undefined}
+            className="desk-bar"
+            onFocus={() => setFocusWithin(true)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
+            }}
+          >
+            <div ref={frameRef} className="desk-bar-frame" aria-hidden="true" />
+            {drop.dragging ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-[16px]" /> : null}
+            <TooltipProvider delay={TIP_DELAY_MS}>
+              <BarComposer
+                bodyRef={bodyRef}
+                group={group}
+                context={context}
+                run={run}
+                activity={activity}
+                inputRef={inputRef}
+                insertRef={insertRef}
+                dictateRef={dictateRef}
+                fileDrag={fileDrag}
+                onMentionMenu={setMentionMenu}
+                drop={drop}
+                answerOpen={cardShown}
+                floating={floatingOut}
+                tip={barTip}
+                onTipsGone={closeTips}
+                onSent={() => setAnswerOpen(true)}
+                // Floating, the answer is a window of its own: the button calls out where it is.
+                onToggleAnswer={() => {
+                  if (!cardShown || !floating) setAnswerOpen((value) => !value);
+                  else {
+                    raiseAnswer();
+                    motionRef.current?.flash();
+                  }
+                }}
+                onIdle={setComposerIdle}
+              />
+            </TooltipProvider>
+          </div>
+        </div>
+      </div>
+      <TooltipProvider delay={TIP_DELAY_MS}>
+        <DeskNub
+          nubRef={nubRef}
+          faceRef={faceRef}
+          motionRef={nubMotion}
+          pill={pillParts}
+          onShape={cutNub}
+          corner={deskCorner}
+          label={{ text: faceLabel, shortcut: askKey }}
+          acting={acting}
+          floating={floatingOut}
+          menuOpen={menuShown}
+          chatsOpen={pickerOpen}
+          hovered={hovered}
+          faceTip={faceTip}
+          tip={nubTip}
+          onFaceEnter={enterNub}
+          onFaceLeave={leaveNub}
+          onFace={toggleMenu}
+          onPrompt={choosePrompt}
+          onMic={chooseMic}
+          onChats={() => setPickerOpen((open) => !open)}
+        >
+          {pickerUp ? (
             <ConversationPicker
               ref={pickerRef}
               groupId={group.id}
@@ -615,104 +884,54 @@ export const DeskBar = memo(function DeskBar({
               threads={threads}
               run={run}
               shown={shownCover("conversations")}
+              open={pickerOpen && shownCover("conversations")}
+              gone={!menuShown}
+              place={{ right: -(chats.x + NUB_DROP_R), bottom: -(chats.y + NUB_DROP_R) }}
               onChoose={(runId) => (chosen.current = runId)}
-              onClose={() => setPickerOpen(false)}
+              // (A conversation chosen, or a new one, is what the menu was opened for: it goes in too.)
+              onClose={() => {
+                setPickerOpen(false);
+                setMenuOpen(false);
+              }}
             />
           ) : null}
-          {mentionMenu !== null && !leaving ? <MentionMenu ref={mentionsRef} menu={mentionMenu} shown={shownCover("mentions")} /> : null}
-          {/* The notch: the Bar, its flares beside its foot. */}
-          <div
-            className="desk-notch"
-            data-compact={compact ? "" : undefined}
-            style={pillWidth === null ? undefined : ({ "--desk-pill-w": `${String(pillWidth)}px` } as React.CSSProperties)}
-          >
-            <div
-              ref={barRef}
-              {...drop.handlers}
-              role="region"
-              aria-label="Ask Pistachio about this desk"
-              data-testid="desk-bar"
-              data-acting={activity !== null ? "" : undefined}
-              data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
-              data-compact={compact ? "" : undefined}
-              className="desk-bar"
-              onFocus={() => setFocusWithin(true)}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
-              }}
-              onPointerEnter={enterBar}
-              // A close is never delayed: the pointer gone, the Bar goes back to its idle notch at once.
-              onPointerLeave={leaveBar}
-            >
-              {/* What the Bar is while idle: a click grows it and puts the keyboard in its field. */}
-              <span className="desk-bar-pill" aria-hidden="true" data-testid="desk-bar-pill" onMouseDown={(event) => event.preventDefault()} onClick={focusInput}>
-                <DeskNotchFace ref={pillRef} label={`Ask about ${group.title}`} shortcut={askKey} />
-              </span>
-              {drop.dragging ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-t-[19px] rounded-b-md" /> : null}
-              <TooltipProvider delay={TIP_DELAY_MS}>
-                <BarComposer
-                  group={group}
-                  context={context}
-                  run={run}
-                  activity={activity}
-                  inputRef={inputRef}
-                  insertRef={insertRef}
-                  fileDrag={fileDrag}
-                  onMentionMenu={setMentionMenu}
-                  drop={drop}
-                  answerOpen={cardShown}
-                  floating={cardShown && floating}
-                  pickerOpen={pickerOpen}
-                  tip={barTip}
-                  onTipsGone={closeTips}
-                  onSent={() => setAnswerOpen(true)}
-                  // Floating, the answer is a window of its own: the button calls out where it is.
-                  onToggleAnswer={() => {
-                    if (!cardShown || !floating) setAnswerOpen((value) => !value);
-                    else {
-                      raiseAnswer();
-                      motionRef.current?.flash();
-                    }
-                  }}
-                  onTogglePicker={() => setPickerOpen((value) => !value)}
-                  onIdle={setComposerIdle}
-                />
-              </TooltipProvider>
-            </div>
-          </div>
-        </div>
-      </div>
+        </DeskNub>
+      </TooltipProvider>
     </div>
   );
 });
 
-/** The Bar's own row: the field and its buttons; files staged for the message above them. */
+/** The pill's own row: the field and its buttons; files staged for the message above them. */
 function BarComposer({
+  bodyRef,
   group,
   context,
   run,
   activity,
   inputRef,
   insertRef,
+  dictateRef,
   fileDrag,
   onMentionMenu,
   drop,
   answerOpen,
   floating,
-  pickerOpen,
   tip,
   onTipsGone,
   onSent,
   onToggleAnswer,
-  onTogglePicker,
   onIdle,
 }: {
+  /** Its row: what the nub's motion fades and clips as the pill morphs. */
+  bodyRef: RefObject<HTMLDivElement | null>;
   group: TabGroupInfo;
   context: GroupContextView | null;
   run: RunSummary | null;
   activity: string | null;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   insertRef: RefObject<((text: string) => void) | null>;
+  /** Starts dictation (the nub's microphone droplet). */
+  dictateRef: RefObject<(() => void) | null>;
   /** Files are being dragged over the desk: the Bar says it takes them. */
   fileDrag: boolean;
   onMentionMenu: (menu: MentionMenuState | null) => void;
@@ -720,14 +939,12 @@ function BarComposer({
   answerOpen: boolean;
   /** The answer floats, a window of its own: the button says so, and calls it out. */
   floating: boolean;
-  pickerOpen: boolean;
   tip: (label: string) => BarTip;
   /** The row's buttons changed under the pointer: whatever tooltip was open has gone with its button. */
   onTipsGone: () => void;
   onSent: () => void;
   onToggleAnswer: () => void;
-  onTogglePicker: () => void;
-  /** Whether it holds nothing and nothing is going on in it: the Bar may then be its pill. */
+  /** Whether it holds nothing and nothing is going on in it: the pill may then go back into the nub. */
   onIdle: (idle: boolean) => void;
 }) {
   const sendMessage = useAppStore((state) => state.sendAgentMessage);
@@ -781,16 +998,23 @@ function BarComposer({
     drop.dismissRejection();
     voice.start();
   };
+  useEffect(() => {
+    dictateRef.current = startDictation;
+    return () => {
+      dictateRef.current = null;
+    };
+  });
   const discardDictation = (): void => {
     voice.cancel();
     refocus();
   };
   useEffect(() => {
     onTipsGone();
-    // Listening, the keyboard is on Done: Enter or Space finishes, Escape discards.
+    // Listening, the keyboard is on Done: Enter or Space finishes, Escape discards. (From the nub's too — its
+    // microphone droplet clicked with the keyboard on the nub, which would otherwise hear Enter and Escape itself.)
     if (listening) {
       const active = document.activeElement;
-      if (active === null || active === document.body || active.closest(".desk-bar") !== null) doneRef.current?.focus({ preventScroll: true });
+      if (active === null || active === document.body || active.closest(".desk-bar, .desk-nub") !== null) doneRef.current?.focus({ preventScroll: true });
     }
   }, [listening, onTipsGone]);
   useEffect(() => {
@@ -940,7 +1164,6 @@ function BarComposer({
   const noteCaret = (event: React.SyntheticEvent<HTMLTextAreaElement>): void => setCaret(event.currentTarget.selectionStart);
   /** The tray's New conversation: as the conversations' own, an empty one for the group, which the next message starts. */
   const startNewConversation = (): void => {
-    if (pickerOpen) onTogglePicker();
     nativeApi()
       ?.deskConversation({ type: "new", groupId: group.id })
       .catch((failure: unknown) => {
@@ -958,9 +1181,9 @@ function BarComposer({
           : `Ask about ${group.title}…`
         : "Ask a follow-up…";
   return (
-    <div className="desk-bar-body flex flex-col">
+    <div ref={bodyRef} className="desk-bar-body flex flex-col">
       {drop.rejection === null ? null : (
-        <div role="status" className="mx-3 mt-2 flex items-start gap-1.5 rounded-md bg-amber-100 px-2 py-1 text-[11px] leading-4 text-amber-900">
+        <div role="status" className="mx-2.5 mt-2 flex items-start gap-1.5 rounded-md bg-amber-100 px-2 py-1 text-[11px] leading-4 text-amber-900">
           <span className="min-w-0 flex-1">{drop.rejection}</span>
           <button type="button" aria-label="Dismiss" onClick={drop.dismissRejection} className="shrink-0 cursor-pointer rounded-xs p-0.5 hover:bg-amber-400">
             <X className="size-3" aria-hidden="true" />
@@ -968,7 +1191,7 @@ function BarComposer({
         </div>
       )}
       {staged.length === 0 ? null : (
-        <div className="mx-3 mt-2 flex flex-wrap items-end gap-1.5" data-testid="desk-bar-staged">
+        <div className="mx-2.5 mt-2 flex flex-wrap items-end gap-1.5" data-testid="desk-bar-staged">
           {staged.map((file) => (
             <span key={file.id} className="group/chip relative">
               {file.kind === "image" ? (
@@ -1015,12 +1238,9 @@ function BarComposer({
           </>
         ) : null}
         {listening ? null : (
-          <BarTray held={pickerOpen}>
+          <BarTray>
             <BarButton label="Attach files" testId="desk-bar-attach" tip={tip("Attach files")} onClick={() => fileRef.current?.click()}>
               <Paperclip aria-hidden="true" />
-            </BarButton>
-            <BarButton label="Conversations" testId="desk-bar-conversations" pressed={pickerOpen} tip={tip("Conversations")} onClick={onTogglePicker}>
-              <History aria-hidden="true" />
             </BarButton>
             <BarButton
               label="New conversation"
@@ -1035,7 +1255,7 @@ function BarComposer({
         )}
         <div className="desk-bar-field" hidden={listening}>
           {/* The mentions, lit behind the field's own text (which stays the field's, caret and all). */}
-          <div ref={mirrorRef} aria-hidden="true" className="desk-bar-mirror text-copy-14 px-1 py-[7px] text-[14px] leading-[22px]">
+          <div ref={mirrorRef} aria-hidden="true" className="desk-bar-mirror text-copy-14 px-1 py-[6px] text-[13.5px] leading-[20px]">
             {spans.length === 0 ? null : mirrorSegments(value, spans)}
           </div>
           <Textarea
@@ -1060,7 +1280,7 @@ function BarComposer({
               if (mirrorRef.current !== null) mirrorRef.current.scrollTop = event.currentTarget.scrollTop;
             }}
             onKeyDown={onFieldKeyDown}
-            className="scroll-thin relative max-h-32 min-h-9 flex-1 overflow-y-auto px-1 py-[7px] text-[14px] leading-[22px]"
+            className="scroll-thin relative max-h-32 min-h-8 flex-1 overflow-y-auto px-1 py-[6px] text-[13.5px] leading-[20px]"
             variant="bare"
             rows={1}
           />
@@ -1157,17 +1377,16 @@ function MentionMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; men
   );
 }
 
-/** One of the Bar's buttons, its label in a tooltip above it. */
 /**
  * The tray at the field's leading end: a plus that, under the pointer or the
- * keyboard, lets out the Bar's other tools — attach files, the
- * conversations, a new one — sliding the field aside (shell.css, "The
- * Bar's tray"). It stays out while what it opened is up (`held`: the
- * conversations). A click on the plus opens or shuts it, for a pointer that
- * cannot hover or one that wants it shut; shut while the pointer is on it,
- * it waits for the pointer to leave and come back.
+ * keyboard, lets out the pill's other tools — attach files, a new
+ * conversation — sliding the field aside (shell.css, "The Bar's tray"). (The
+ * conversations are the nub's past-chats droplet.) A click on the plus opens
+ * or shuts it, for a pointer that cannot hover or one that wants it shut;
+ * shut while the pointer is on it, it waits for the pointer to leave and
+ * come back.
  */
-function BarTray({ held, children }: { held: boolean; children: React.ReactNode }) {
+function BarTray({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const timer = useRef(0);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -1175,7 +1394,7 @@ function BarTray({ held, children }: { held: boolean; children: React.ReactNode 
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setOpen(next), ms);
   };
-  const shown = open || held;
+  const shown = open;
   const itemsId = useId();
   return (
     <div
@@ -1216,6 +1435,7 @@ function BarTray({ held, children }: { held: boolean; children: React.ReactNode 
   );
 }
 
+/** One of the pill's buttons, its label in a tooltip above it. */
 function BarButton({
   buttonRef,
   label,
@@ -1337,12 +1557,12 @@ function AnswerCard({
           <div className="desk-answer-flash" />
         </div>
         <div className="desk-answer-content">
-          <header className="desk-answer-head flex h-10 shrink-0 items-center gap-2 pr-2 pl-4" data-testid="desk-answer-head" onPointerDown={(event) => onPress(event.nativeEvent)}>
+          <header className="desk-answer-head flex h-8 shrink-0 items-center gap-1.5 pr-1 pl-3.5" data-testid="desk-answer-head" onPointerDown={(event) => onPress(event.nativeEvent)}>
             <span className="desk-answer-grab" aria-hidden="true" />
-            <span className="desk-answer-title min-w-0 flex-1 truncate text-[12.5px] font-medium text-gray-900" data-testid="desk-answer-title">
+            <span className="desk-answer-title min-w-0 flex-1 truncate text-[12px] font-medium text-gray-900" data-testid="desk-answer-title">
               {run.title}
             </span>
-            <div className="desk-answer-actions flex shrink-0 items-center gap-2">
+            <div className="desk-answer-actions flex shrink-0 items-center gap-1">
               {undo ? (
                 <button type="button" data-testid="desk-undo-layout" className="desk-answer-action" onMouseDown={(event) => event.preventDefault()} onClick={onUndo}>
                   <Undo2 aria-hidden="true" />
@@ -1357,7 +1577,7 @@ function AnswerCard({
               <button type="button" aria-label="Hide the answer" title="Hide (Esc)" data-testid="desk-answer-close" className="desk-bar-button desk-answer-docked-only" onMouseDown={(event) => event.preventDefault()} onClick={onClose}>
                 <ChevronDown aria-hidden="true" />
               </button>
-              <button type="button" aria-label="Put it back on the Bar" title="Put it back on the Bar" data-testid="desk-answer-dock" className="desk-bar-button desk-answer-floating-only" onMouseDown={(event) => event.preventDefault()} onClick={onDock}>
+              <button type="button" aria-label="Put it back on the pill" title="Put it back on the pill" data-testid="desk-answer-dock" className="desk-bar-button desk-answer-floating-only" onMouseDown={(event) => event.preventDefault()} onClick={onDock}>
                 <ArrowDownToLine aria-hidden="true" />
               </button>
             </div>
@@ -1365,7 +1585,7 @@ function AnswerCard({
           <MessageScroller.Provider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={48}>
             <MessageScroller.Root className="desk-answer-body relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <MessageScroller.Viewport className="desk-answer-viewport scroll-thin flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" aria-label="Conversation">
-                <MessageScroller.Content className="flex shrink-0 flex-col px-4 pt-1 pb-4" aria-busy={run.status === "running"}>
+                <MessageScroller.Content className="flex shrink-0 flex-col px-3.5 pt-1 pb-3.5" aria-busy={run.status === "running"}>
                   <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
                     {run.result === null ? "" : "Answer complete"}
                   </span>
@@ -1463,6 +1683,12 @@ function startedIn(thread: ThreadListItem, groupId: string, groups: readonly Tab
  * when it could not be opened); New conversation starts an empty one for
  * the group. While the agent is acting the console is its, and nothing here
  * can be chosen.
+ *
+ * It is the nub's past-chats droplet grown into a list (shell.css, "The
+ * conversations"): laid out at its open size where the droplet rests
+ * (`place`, from the nub's corner), its glass grown from the droplet's box
+ * and its rows clipped to it while `open` comes and goes; `gone`, it fades
+ * as it shrinks, the droplet it would go back into going too.
  */
 function ConversationPicker({
   ref,
@@ -1471,6 +1697,9 @@ function ConversationPicker({
   threads,
   run,
   shown,
+  open,
+  gone,
+  place,
   onChoose,
   onClose,
 }: {
@@ -1480,6 +1709,9 @@ function ConversationPicker({
   threads: readonly ThreadListItem[];
   run: RunSummary | null;
   shown: boolean;
+  open: boolean;
+  gone: boolean;
+  place: { right: number; bottom: number };
   onChoose: (runId: string | null) => void;
   onClose: () => void;
 }) {
@@ -1498,56 +1730,78 @@ function ConversationPicker({
     );
   };
   const sorted = sortThreads([...threads]);
+  // Opened from the keys, on the droplet it grew out of: the keys go into the list.
+  const firstRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (open && (document.activeElement?.closest("[data-testid='desk-nub-chats']") ?? null) !== null) firstRef.current?.focus({ preventScroll: true });
+  }, [open]);
   return (
-    <div ref={ref} role="dialog" aria-label="Conversations" data-testid="desk-conversations" data-shown={shown ? "" : undefined} className="desk-conversations">
-      <div className="p-1.5 pb-0">
-        <button
-          type="button"
-          data-testid="desk-conversation-new"
-          disabled={acting}
-          title={acting ? "Stop the agent first" : "Start a new conversation for this desk"}
-          className="desk-conversation"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => act({ type: "new", groupId })}
-        >
-          <SquarePen className="size-3.5 shrink-0 text-gray-800" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate text-[13px] text-gray-1000">New conversation</span>
-        </button>
-      </div>
-      <div className="desk-conversations-rule" />
-      {error === null ? null : (
-        <div role="status" className="mx-2 mb-1.5 rounded-md bg-amber-100 px-2 py-1 text-[11px] leading-4 text-amber-900">
-          {error}
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="Conversations"
+      data-testid="desk-conversations"
+      data-shown={shown && open ? "" : undefined}
+      data-open={open ? "" : undefined}
+      data-gone={gone && !open ? "" : undefined}
+      className="desk-conversations"
+      style={{ right: place.right, bottom: place.bottom }}
+    >
+      <div className="desk-conversations-frame" aria-hidden="true" />
+      <span className="desk-conversations-mark" aria-hidden="true">
+        <History />
+      </span>
+      <div className="desk-conversations-body" inert={!open}>
+        <div className="p-1 pb-0">
+          <button
+            ref={firstRef}
+            type="button"
+            data-testid="desk-conversation-new"
+            disabled={acting}
+            title={acting ? "Stop the agent first" : "Start a new conversation for this desk"}
+            className="desk-conversation"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => act({ type: "new", groupId })}
+          >
+            <SquarePen className="size-3.5 shrink-0 text-gray-800" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-[12.5px] text-gray-1000">New conversation</span>
+          </button>
         </div>
-      )}
-      <div className="scroll-thin flex max-h-72 flex-col gap-px overflow-y-auto px-1.5 pb-1.5" role="list" aria-label="Earlier conversations">
-        {sorted.length === 0 ? <div className="px-2.5 py-2.5 text-[12.5px] text-gray-700">No conversations yet</div> : null}
-        {sorted.map((thread) => {
-          const open = run?.runId === thread.runId;
-          const where = startedIn(thread, groupId, groups);
-          return (
-            <button
-              key={thread.runId}
-              type="button"
-              role="listitem"
-              data-testid="desk-conversation"
-              data-run-id={thread.runId}
-              data-open={open ? "" : undefined}
-              aria-current={open ? "true" : undefined}
-              disabled={acting && !open}
-              title={acting && !open ? "Stop the agent first" : open ? "Open at this desk" : "Continue here"}
-              className="desk-conversation"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => (open ? onClose() : act({ type: "choose", groupId, runId: thread.runId }))}
-            >
-              <span className={`min-w-0 flex-1 truncate text-[13px] text-gray-1000${open ? " font-medium" : ""}`}>{thread.title.trim() === "" ? "Untitled conversation" : thread.title}</span>
-              <span className="desk-conversation-group tab-group-tone" data-group-color={where.color ?? undefined} data-toned={where.color === null ? undefined : ""}>
-                {where.label}
-              </span>
-              <span className="w-14 shrink-0 text-right text-[11px] text-gray-700 tabular-nums">{relativeTime(thread.updatedAt)}</span>
-            </button>
-          );
-        })}
+        <div className="desk-conversations-rule" />
+        {error === null ? null : (
+          <div role="status" className="mx-2 mb-1.5 rounded-md bg-amber-100 px-2 py-1 text-[11px] leading-4 text-amber-900">
+            {error}
+          </div>
+        )}
+        <div className="scroll-thin flex min-h-0 flex-col gap-px overflow-y-auto px-1 pb-1" role="list" aria-label="Earlier conversations">
+          {sorted.length === 0 ? <div className="px-2.5 py-2 text-[12px] text-gray-700">No conversations yet</div> : null}
+          {sorted.map((thread) => {
+            const current = run?.runId === thread.runId;
+            const where = startedIn(thread, groupId, groups);
+            return (
+              <button
+                key={thread.runId}
+                type="button"
+                role="listitem"
+                data-testid="desk-conversation"
+                data-run-id={thread.runId}
+                data-open={current ? "" : undefined}
+                aria-current={current ? "true" : undefined}
+                disabled={acting && !current}
+                title={acting && !current ? "Stop the agent first" : current ? "Open at this desk" : "Continue here"}
+                className="desk-conversation"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => (current ? onClose() : act({ type: "choose", groupId, runId: thread.runId }))}
+              >
+                <span className={`min-w-0 flex-1 truncate text-[12.5px] text-gray-1000${current ? " font-medium" : ""}`}>{thread.title.trim() === "" ? "Untitled conversation" : thread.title}</span>
+                <span className="desk-conversation-group tab-group-tone" data-group-color={where.color ?? undefined} data-toned={where.color === null ? undefined : ""}>
+                  {where.label}
+                </span>
+                <span className="w-12 shrink-0 text-right text-[10.5px] text-gray-700 tabular-nums">{relativeTime(thread.updatedAt)}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

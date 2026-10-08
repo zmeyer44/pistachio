@@ -408,10 +408,13 @@ function applyDeskPip(): void {
 function applyDeskNotch(): void {
   const layer = notchLayer;
   if (layer === null) return;
+  // Raised as it comes up (the tab views raise it again as they change), not on every word from the shell: the nub
+  // swells under the pointer, and a view re-added there would lose the pointer it has and say it had gone.
+  const rising = deskNotch !== null && !layer.onScreen;
   layer.setSlot(deskNotch?.bounds ?? null);
   layer.setVeiled(shellState.veiled);
   layer.setShown(deskNotch !== null);
-  if (deskNotch !== null) raiseDeskLayer(layer);
+  if (rising) raiseDeskLayer(layer);
   if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskNotchChanged, deskNotch);
 }
 let bookmarkToastHeight = 104;

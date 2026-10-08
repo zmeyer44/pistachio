@@ -290,27 +290,45 @@ export function isDeskPageInput(value: unknown): value is DeskPageInput {
  * The desk's Bar, idle, drawn over the live pages under it (docs/desk.md,
  * "The foot"): the "notch" chrome view, a utility view stacked above the tab
  * views (main/chrome-view.ts), since a live page paints over everything the
- * shell draws. The shell says where (the window's own coordinates: the notch
- * and its flares) and what it says, while a live page is under it; null
- * otherwise, when the notch is a hole in what the shell draws instead.
+ * shell draws. The shell says where (the window's own coordinates: the box
+ * in the desk's trailing foot corner the nub may fill, swelled) and what it
+ * shows, while a live page is under it; null otherwise, when the nub is a
+ * hole in what the shell draws instead.
  */
 export interface DeskNotchFrame {
+  /** The view's box: the desk's trailing foot corner is its own bottom-right corner. */
   bounds: { x: number; y: number; width: number; height: number };
-  /** The idle Bar's words ("Ask about Research") and the key that opens it. */
+  /** What the nub is for ("Ask about Research") and the key that opens it. */
   label: string;
   shortcut: string | null;
   /** The group's colour (TabGroupColor), for the mark's tone. */
   color: string;
-  /** The notch's shoulders' radius and its flares' (px). */
-  radius: number;
-  flare: number;
+  /** The nub at rest and swelled under the pointer (lib/desk/geometry's NotchShape), and the desk's corner radius. */
+  idle: DeskNubShape;
+  swell: DeskNubShape;
+  corner: number;
+  /**
+   * How swelled it is (0 at rest, 1 swelled): on its way from `from` to
+   * `to` since `at` (wall-clock ms) over `ms` — read off the clock on both
+   * sides, so the view and the shell's own nub swell as one.
+   */
+  swelling: { from: number; to: number; at: number; ms: number };
+  /** The agent is at work, and the answer floats on the desk: the nub says so. */
+  acting: boolean;
+  floating: boolean;
   /**
    * The box the shell's ground is painted over (its `.chrome-container`, in
    * the window's coordinates): the view lays the same ground under itself,
    * the theme's gradient sized to this box and its grain tiled from its
-   * corner, so the notch reads as the ground it rises out of.
+   * corner, so the nub reads as the ground it rises out of.
    */
   ground: { x: number; y: number; width: number; height: number };
+}
+
+export interface DeskNubShape {
+  radius: number;
+  sink: number;
+  fillet: number;
 }
 
 export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
@@ -318,7 +336,13 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
   const frame = value as Partial<DeskNotchFrame>;
   const bounds = frame.bounds;
   const ground = frame.ground;
+  const swelling = frame.swelling;
   const finite = (n: unknown): boolean => typeof n === "number" && Number.isFinite(n);
+  const shape = (nub: unknown): boolean => {
+    if (typeof nub !== "object" || nub === null) return false;
+    const { radius, sink, fillet } = nub as Partial<DeskNubShape>;
+    return [radius, sink, fillet].every((n) => finite(n) && (n as number) >= 0 && (n as number) <= 256);
+  };
   return (
     typeof ground === "object" &&
     ground !== null &&
@@ -338,15 +362,25 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
     finite(bounds.height) &&
     bounds.width > 0 &&
     bounds.height > 0 &&
-    bounds.width <= 4096 &&
+    bounds.width <= 512 &&
     bounds.height <= 512 &&
     typeof frame.label === "string" &&
     frame.label.length <= 400 &&
     (frame.shortcut === null || (typeof frame.shortcut === "string" && frame.shortcut.length <= 40)) &&
     typeof frame.color === "string" &&
     frame.color.length <= 40 &&
-    finite(frame.radius) &&
-    finite(frame.flare)
+    shape(frame.idle) &&
+    shape(frame.swell) &&
+    finite(frame.corner) &&
+    typeof swelling === "object" &&
+    swelling !== null &&
+    finite(swelling.from) &&
+    finite(swelling.to) &&
+    finite(swelling.at) &&
+    finite(swelling.ms) &&
+    swelling.ms >= 0 &&
+    typeof frame.acting === "boolean" &&
+    typeof frame.floating === "boolean"
   );
 }
 

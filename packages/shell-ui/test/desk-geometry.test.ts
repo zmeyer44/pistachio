@@ -18,6 +18,16 @@ import {
   magnetize,
   magnetizeEdges,
   normalizeRect,
+  NUB_DROP_GAP,
+  NUB_DROP_INSET,
+  NUB_DROP_R,
+  NUB_IDLE,
+  NUB_SWELL,
+  nubBetween,
+  nubDrops,
+  nubFace,
+  nubOutline,
+  nubReach,
   placeNewWindow,
   rectsOverlap,
   alongSeam,
@@ -39,7 +49,7 @@ import {
   zoneRect,
   type Rect,
 } from "../src/lib/desk/geometry";
-import { cubicBezier, EASE_SMOOTH_OUT, GLIDE_DECELERATION, GLIDE_TAU_S, glideDecay, glideTauFor, SPRING_PRESETS, springAtRest, stepSpring, VelocityTracker } from "../src/lib/desk/motion";
+import { cubicBezier, EASE_SMOOTH_OUT, GLIDE_DECELERATION, GLIDE_TAU_S, glideDecay, glideTauFor, SPRING_PRESETS, springAt, springAtRest, springDone, stepSpring, VelocityTracker } from "../src/lib/desk/motion";
 import { readPersistedDesk, sanitizeVariants, DEFAULT_DESK_VARIANTS } from "../src/lib/desk/store";
 
 const desk: Rect = { x: 184, y: 0, w: 1000, h: 700 };
@@ -629,5 +639,70 @@ describe("timed motion's easing", () => {
       last = value;
     }
     expect(EASE_SMOOTH_OUT(0.25)).toBeGreaterThan(0.6);
+  });
+});
+
+describe("the Bar's nub in the desk's trailing foot corner", () => {
+  /** The numbers of a path. */
+  const numbers = (path: string): number[] => (path.match(/-?\d+(\.\d+)?/g) ?? []).map(Number);
+
+  it("reaches along each edge as far as its fillets leave them", () => {
+    // A circle 18 round, 20 in from both edges, joined to them by fillets 11 round: 20 + √(29² − 9²).
+    expect(nubReach(NUB_IDLE)).toBeCloseTo(20 + Math.sqrt(29 ** 2 - 9 ** 2), 6);
+    // Swelled, it reaches further, and lifts further out of the corner.
+    expect(nubReach(NUB_SWELL)).toBeGreaterThan(nubReach(NUB_IDLE));
+    expect(nubBetween(NUB_IDLE, NUB_SWELL, 0.5)).toEqual({ radius: 19.5, sink: 21.5, fillet: 11 });
+  });
+
+  it("is a droplet out of the corner: off the foot at one fillet, round the circle, into the trailing edge, and round the desk's own corner", () => {
+    const corner = { x: 1000, y: 700 };
+    const path = nubOutline(NUB_IDLE, corner.x, corner.y, 12, 0, 0);
+    const reach = nubReach(NUB_IDLE);
+    expect(path.startsWith(`M ${(corner.x - reach).toFixed(2)} ${corner.y.toFixed(2)} A 11.00 11.00 0 0 0 `)).toBe(true);
+    // Its arcs: the foot's fillet, the circle (the short way round its far side), the trailing edge's fillet, the desk's corner.
+    expect([...path.matchAll(/A (\S+) (\S+) 0 (\d) (\d)/g)].map((arc) => [Number(arc[1]), arc[3], arc[4]])).toEqual([
+      [11, "0", "0"],
+      [18, "0", "1"],
+      [11, "0", "0"],
+      [12, "0", "1"],
+    ]);
+    // Where it meets the circle, it is on the circle; and it never leaves the desk.
+    const values = numbers(path);
+    const circle = { x: corner.x - NUB_IDLE.sink, y: corner.y - NUB_IDLE.sink };
+    const meets = [values.slice(7, 9), values.slice(14, 16)] as Array<[number, number]>;
+    for (const [x, y] of meets) expect(Math.hypot(x - circle.x, y - circle.y)).toBeCloseTo(NUB_IDLE.radius, 1);
+    for (const [x, y] of meets) expect(x <= corner.x && y <= corner.y).toBe(true);
+    // Into the trailing edge at the same reach, down it, and round the corner onto the foot.
+    expect(path).toContain(`${corner.x.toFixed(2)} ${(corner.y - reach).toFixed(2)} V ${(corner.y - 12).toFixed(2)} A 12.00 12.00 0 0 1 ${(corner.x - 12).toFixed(2)} ${corner.y.toFixed(2)} Z`);
+    // Offset, it is the same outline moved (a window's own coordinates).
+    expect(numbers(nubOutline(NUB_IDLE, corner.x, corner.y, 12, -400, -300)).slice(0, 2)).toEqual([Number((corner.x - reach - 400).toFixed(2)), corner.y - 300]);
+  });
+
+  it("puts its droplets up the trailing edge, a gap apart, the first a gap above the nub swelled", () => {
+    const drops = nubDrops(NUB_SWELL);
+    expect(drops).toHaveLength(3);
+    for (const drop of drops) expect(drop.x).toBe(-(NUB_DROP_INSET + NUB_DROP_R));
+    expect(drops[1]!.y - drops[0]!.y).toBe(-(NUB_DROP_R * 2 + NUB_DROP_GAP));
+    expect(drops[2]!.y - drops[1]!.y).toBe(-(NUB_DROP_R * 2 + NUB_DROP_GAP));
+    const nub = { x: -NUB_SWELL.sink, y: -NUB_SWELL.sink };
+    expect(Math.hypot(drops[0]!.x - nub.x, drops[0]!.y - nub.y) - NUB_SWELL.radius - NUB_DROP_R).toBeGreaterThanOrEqual(NUB_DROP_GAP);
+    // Its face sits up and in from the circle's centre, where the circle shows.
+    expect(nubFace(NUB_IDLE).x).toBeLessThan(-NUB_IDLE.sink);
+  });
+
+  it("reads a spring off the clock as stepSpring steps it", () => {
+    const spring = { response: 0.38, damping: 0.62 };
+    expect(springAt(0, spring)).toBe(0);
+    let state = { x: 0, v: 0 };
+    for (let step = 1; step <= 50; step += 1) {
+      state = stepSpring(state.x, state.v, 1, spring, 0.01);
+      // (stepSpring steps it in substeps, a hair off its closed form.)
+      if (step % 10 === 0) expect(springAt(step / 100, spring)).toBeCloseTo(state.x, 1);
+    }
+    // Under damping 1 it overshoots, and comes to rest.
+    expect(Math.max(...Array.from({ length: 60 }, (_, i) => springAt(i / 60, spring)))).toBeGreaterThan(1);
+    expect(springDone(2, spring)).toBe(true);
+    expect(springDone(0.1, spring)).toBe(false);
+    expect(springAt(1, { response: 0.3, damping: 1 })).toBeLessThanOrEqual(1);
   });
 });

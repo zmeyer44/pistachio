@@ -437,16 +437,16 @@ test.describe.serial("window screenshots", { tag: ["@screenshot", "@desk"] }, ()
     await openGroupDesk(shell, "shot-desk");
     await settled(shell, app);
     const stage: Box = await box(shell, ".desk-stage");
-    const bar = await box(shell, "[data-testid='desk-bar']");
-    // One window opens filling the desk: its page lies under the Bar's notch.
+    const nub = await box(shell, "[data-testid='desk-nub']");
+    // One window opens filling the desk: its page lies under the Bar's nub in the trailing corner.
     const view = (await liveViews(app)).find((candidate) => candidate.url === INVOICES)!.bounds;
-    const under = { x: bar.x + bar.width / 2, y: bar.y + bar.height / 2 };
+    const under = { x: nub.x + nub.width * 0.4, y: nub.y + nub.height * 0.4 };
     expect(under.y).toBeLessThan(view.y + view.height - 4);
     await shell.keyboard.press("Meta+Shift+Digit1");
     const shot = await readPng(app, await nextShot(), [{ x: (under.x - stage.x) * scale, y: (under.y - stage.y) * scale }]);
     expect(Math.abs(shot.width - stage.width * scale)).toBeLessThanOrEqual(2);
     expect(Math.abs(shot.height - stage.height * scale)).toBeLessThanOrEqual(2);
-    // Where the Bar was is the page under it.
+    // Where the nub was is the page under it.
     expect(near(shot.colors[0]!, await pageColor(app, INVOICES, { x: under.x - view.x, y: under.y - view.y }))).toBe(true);
     // And the Bar is back.
     await expect(shell.getByTestId("desk-bar-lane")).toBeVisible();
