@@ -189,6 +189,6 @@ export function credentialIsLive(expiresAt: string, nowMs: number): boolean {
 }
 
 export const RESTART_REQUIRED_EXPLANATION =
-  "Saved. This Space starts using your identity IP the next time you open Pistachio — " +
+  "Saved. This Profile starts using your identity IP the next time you open Pistachio — " +
   "it is not routed now because QUIC cannot be disabled mid-session, and proxying with it on " +
   "would leak your real IP over UDP.";

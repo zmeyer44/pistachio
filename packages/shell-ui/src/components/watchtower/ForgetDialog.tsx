@@ -40,35 +40,35 @@ function wording(scope: ForgetScope): { title: string; confirm: string; does: st
       return {
         title: "Forget this page?",
         confirm: "Forget page",
-        does: [`Removes every saved visit and version of “${scope.title}” in this Space.`, "Removes its text from search, and from the index what only this page named."],
+        does: [`Removes every saved visit and version of “${scope.title}” in this Profile.`, "Removes its text from search, and from the index what only this page named."],
         doesNot: ["Other pages on the same site are kept.", COPIES],
       };
     case "site":
       return {
         title: `Forget ${scope.host}?`,
         confirm: "Forget site",
-        does: [`Removes every saved visit to ${scope.host} and its subdomains in this Space.`, "Forgets what Watchtower learned about that site’s layout.", "Removes from the index what only that site named."],
+        does: [`Removes every saved visit to ${scope.host} and its subdomains in this Profile.`, "Forgets what Watchtower learned about that site’s layout.", "Removes from the index what only that site named."],
         doesNot: ["The site is not excluded: a new visit is saved again. Exclude it in Settings to stop that.", COPIES],
       };
     case "since":
       return {
         title: `Forget ${scope.label}?`,
         confirm: "Forget visits",
-        does: [`Removes visits from ${scope.label} in this Space.`, "Text that only those visits used is deleted, with what the index learned from it."],
+        does: [`Removes visits from ${scope.label} in this Profile.`, "Text that only those visits used is deleted, with what the index learned from it."],
         doesNot: ["The same content seen at another time stays with that other visit.", COPIES],
       };
     case "space":
       return {
         title: `Forget everything in ${scope.space}?`,
-        confirm: "Forget this Space",
+        confirm: "Forget this Profile",
         does: [`Removes every saved visit in ${scope.space}.`, "Empties its index."],
-        doesNot: ["Other Spaces keep their archives.", "Capture stays as it is: new visits are saved again.", COPIES],
+        doesNot: ["Other Profiles keep their archives.", "Capture stays as it is: new visits are saved again.", COPIES],
       };
     case "everything":
       return {
         title: "Forget the whole archive?",
         confirm: "Forget everything",
-        does: ["Removes every saved visit, in every Space.", "Forgets every site layout Watchtower learned, and empties every index."],
+        does: ["Removes every saved visit, in every Profile.", "Forgets every site layout Watchtower learned, and empties every index."],
         doesNot: ["Capture stays as it is: new visits are saved again. Turn Watchtower off to stop.", COPIES],
       };
   }

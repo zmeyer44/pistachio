@@ -124,8 +124,8 @@ async function open(options: { stills?: boolean; chrome?: () => DeskChrome } = {
     save: () => undefined,
     moveTabToGroup: () => undefined,
     sidebar: () => ({ x: -48, y: 0, w: 48, h: STAGE.h }),
+    sidebarAway: () => false,
     homeOf: () => null,
-    leaveDone: () => undefined,
   });
   desk.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: STAGE.w, height: STAGE.h }) } as unknown as HTMLElement);
   desk.start([], "tab-0", ["tab-0", "tab-1"]);

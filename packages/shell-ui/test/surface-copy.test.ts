@@ -74,10 +74,10 @@ describe("what the Mac app says", () => {
     );
     expect(native.privacy.betweenDevicesTitle).toBe("Between your machines");
     expect(native.privacy.betweenDevices).toBe(
-      "What a Space carries to your other devices, and what never leaves this one.",
+      "What a Profile carries to your other devices, and what never leaves this one.",
     );
     expect(native.privacy.sessions).toBe(
-      "With an account, a Space's sign-ins converge across your enrolled devices, sealed under a key derived for that Space alone — the hub stores ciphertext. Without an account, nothing leaves this Mac. Settings → Sync says which sites take part.",
+      "With an account, a Profile's sign-ins converge across your enrolled devices, sealed under a key derived for that Profile alone — the hub stores ciphertext. Without an account, nothing leaves this Mac. Settings → Sync says which sites take part.",
     );
     expect(native.privacy.preferencesLabel).toBe("Preferences stay on this Mac");
     expect(native.privacy.preferences).toBe(
@@ -87,7 +87,7 @@ describe("what the Mac app says", () => {
       "How a task run here, on this Mac, relates to the sites you are signed in to. Settings → Agent lists what it can do in them.",
     );
     expect(native.privacy.cloudEgress).toBe(
-      "Each run goes out through the egress gateway on a credential minted for that run and revoked when it ends — however it ends. Site state that changed during the run reaches this Mac only through the Space's sync, under your own keys.",
+      "Each run goes out through the egress gateway on a credential minted for that run and revoked when it ends — however it ends. Site state that changed during the run reaches this Mac only through the Profile's sync, under your own keys.",
     );
     // Memory.
     expect(native.memory.followSystemZone("Europe/Berlin")).toBe("Follow this Mac — Europe/Berlin");

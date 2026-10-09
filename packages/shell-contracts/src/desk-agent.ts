@@ -165,7 +165,7 @@ export function isDeskReply(value: unknown): value is DeskReply {
  */
 export function deskStateLines(state: DeskAgentState): string[] {
   const box = (b: DeskPercentBox): string => `${String(Math.round(b.x))} ${String(Math.round(b.y))} ${String(Math.round(b.w))} ${String(Math.round(b.h))}`;
-  const lines = [`Desk: the tab group “${state.title}” (${String(state.windows.length + state.docked.length)} tabs).`];
+  const lines = [`Desk: the space “${state.title}” (${String(state.windows.length + state.docked.length)} tabs).`];
   if (state.windows.length === 0) lines.push("No windows are out on the desk.");
   else {
     lines.push("Windows, bottom to top (x y w h as % of the desk):");
@@ -176,7 +176,7 @@ export function deskStateLines(state: DeskAgentState): string[] {
     }
   }
   if (state.docked.length > 0) {
-    lines.push("In the dock (the group's tabs not out on the desk):");
+    lines.push("In the dock (the space's tabs not out on the desk):");
     for (const tab of state.docked) lines.push(`- tab ${tab.tabId} “${tab.title}” ${tab.url}`);
   }
   return lines;
@@ -185,13 +185,18 @@ export function deskStateLines(state: DeskAgentState): string[] {
 /* ---------------------------- the conversation ---------------------------- */
 
 /**
- * The desk's conversation: the shell says when a desk is up and for which
- * group (`enter`, again for each group it passes to), when it is left, and
- * what the person chose — an existing conversation to continue in this
- * group, or a new one.
+ * The desk's conversation: what the person chose — an existing conversation
+ * to continue in this space (tab group), or a new one. Until 2026-10-09 the
+ * shell also said when a desk was up and for which group (`enter`, again
+ * for each group it passed to) and when it was left (`leave`); with the desk
+ * always up, main's session follows the space main itself makes current
+ * (RunController.followGroup), and those two are kept only so an older
+ * shell's command is not refused.
  */
 export type DeskConversationCommand =
+  /** @deprecated Main follows its own current space (runs.followGroup); nothing need say a desk came up. */
   | { type: "enter"; groupId: string }
+  /** @deprecated There is no leaving the desk since 2026-10-09; main follows its own current space. */
   | { type: "leave" }
   | { type: "choose"; groupId: string; runId: string }
   | { type: "new"; groupId: string };
@@ -499,8 +504,8 @@ export function sanitizeGroupContext(value: unknown): GroupContext | null {
 
 /** The context's items as the model reads them in the desk block: id, kind, and what each is. */
 export function groupContextLines(items: readonly GroupContextItem[]): string[] {
-  if (items.length === 0) return ["The group's context is empty (the person can drop files and facts on the dock's Stack; save useful facts with context_save)."];
-  const lines = ["The group's context (files and facts kept for this task; read one with context_read; a file opens on the desk as the document file:<its id>):"];
+  if (items.length === 0) return ["The space's context is empty (the person can drop files and facts on its Stack; save useful facts with context_save)."];
+  const lines = ["The space's context (files and facts kept for this task; read one with context_read; a file opens on the desk as the document file:<its id>):"];
   for (const item of items) {
     if (item.kind === "file") lines.push(`- ${item.id} file “${item.name}” (${item.mediaType}, ${String(Math.max(1, Math.round(item.byteLength / 1024)))} KB)`);
     else {

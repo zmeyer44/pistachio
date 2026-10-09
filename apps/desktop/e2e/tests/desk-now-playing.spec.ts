@@ -18,7 +18,7 @@ import { deskPipSlot } from "@pistachio/shell-contracts/desk";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 import { demoPortalHtml, demoToneWav } from "../../src/main/demo-page";
-import { box, createGroup, createTab, launchDesk, openGroupDesk, openTabs, screenshots, selectTab, settled, snapshot, type Box } from "./desk-harness";
+import { box, createGroup, createTab, launchDesk, openMore, openTabs, screenshots, selectSpace, selectTab, settled, snapshot, type Box } from "./desk-harness";
 
 let server: Server;
 let ORIGIN: string;
@@ -175,7 +175,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(async () => (await mediaOf(shell, audio))?.playing ?? false).toBe(true);
 
     // The group's desk, both windows out.
-    await openGroupDesk(shell, "media");
+    await selectSpace(shell, "media");
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
     await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
     const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
@@ -465,7 +465,7 @@ test("a window playing a video with another window over it shows its page live, 
     await videoPage.locator("#start-video").click();
     await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
 
-    await openGroupDesk(shell, "watch");
+    await selectSpace(shell, "watch");
     await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
     const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
     const rowOf = (tabId: string) => shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`);
@@ -474,6 +474,12 @@ test("a window playing a video with another window over it shows its page live, 
     if ((await windowOf(video).count()) === 0) await rowOf(video).click();
     if ((await windowOf(other).count()) === 0) await rowOf(other).click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell, app);
+    // Cascaded, so one lies over the other (a row's click puts a window out beside a filling one, not over it).
+    await openMore(shell);
+    await shell.getByTestId("desk-cascade").click();
+    const stage = await box(shell, ".desk-stage");
+    await shell.mouse.move(stage.x + stage.width * 0.9, stage.y + stage.height * 0.95);
     await settled(shell, app);
     const videoView = (): Promise<boolean> =>
       app.evaluate(({ BrowserWindow }, url) => {
@@ -534,7 +540,7 @@ test("a window playing a video behind a window filling the desk: its video float
     await videoPage.locator("#start-video").click();
     await expect.poll(async () => (await mediaOf(shell, video))?.playing ?? false).toBe(true);
 
-    await openGroupDesk(shell, "watch");
+    await selectSpace(shell, "watch");
     await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
     const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
     const rowOf = (tabId: string) => shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`);
@@ -597,7 +603,7 @@ test("a window closed while another's video floats leaves the floating player it
     const closingPage = await pageAt(app, CLOSING_URL);
     await installVideoPlayer(closingPage);
 
-    await openGroupDesk(shell, "watch");
+    await selectSpace(shell, "watch");
     await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
     const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
     const rowOf = (tabId: string) => shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`);

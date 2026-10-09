@@ -1,9 +1,10 @@
 /**
- * The desk's own controls in the sidebar, which is the desk's dock while a
- * desk is up (docs/desk.md): the switch between the whole sidebar and its
- * rail, the button for the desk's card (the arrangements, Feel, the way
- * out), and the group's context — its Stack — as a row under its tabs.
- * Each draws nothing without a desk.
+ * The desk's own controls in the sidebar, which is the desk's dock
+ * (docs/desk.md): the sidebar's button to its next mode, the
+ * button for the desk's card (the arrangements, Feel), and the space's
+ * context — its Stack — as a row under its tabs. Each draws nothing off the
+ * desktop (the web's stream surface); on it, the desk is always up since
+ * 2026-10-09 (docs/spaces.md).
  *
  * The cards they open are drawn by the desk, beside the button or row, over
  * its windows (DeskSurface's DeskSideCard): they meet through useDeskChrome.
@@ -11,15 +12,17 @@
 
 import { useEffect, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { AppWindow, ArrowUpToLine, Ellipsis, Maximize2, Minus, PanelLeftClose, PanelLeftOpen, PictureInPicture2 } from "lucide-react";
+import type { SidebarMode } from "@pistachio/shell-contracts/settings";
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { cn } from "../../lib/cn";
 import { anchorOf, useDeskChrome, useDeskMark } from "../../lib/desk/chrome";
 import { useDeskFileDrag } from "../../lib/desk/file-drag";
 import { useGroupContexts } from "../../lib/desk/group-context";
-import { deskEngine } from "../../lib/desk/open";
-import { useDeskStore } from "../../lib/desk/store";
+import { deskAvailable, deskEngine } from "../../lib/desk/open";
+import { useSidebarMode } from "../../lib/sidebar-mode";
 import { useAppStore } from "../../store";
+import { runShellCommand } from "../../chrome/shell-host";
 import type { MenuEntry } from "../ContextMenu";
 import { useSidebarRail } from "../sidebar-rail";
 import { carriesSomething, rejectionLine, takeDrop } from "./DeskStack";
@@ -48,37 +51,46 @@ export function holdDeskMore(): void {
   window.clearTimeout(moreTimer);
 }
 
+/** The desk is the browser here (the desktop): the surface's, never a moment's. */
 function useDeskUp(): boolean {
-  return useDeskStore((state) => state.groupId !== null && !state.leaving);
+  return deskAvailable();
 }
 
-/** The whole sidebar, or its rail (⌘S on a desk). */
+/**
+ * The sidebar's button to its next place (docs/spaces.md §3; ⌘S is the
+ * cycle, and its tooltip says so): at the rail's head, the whole sidebar
+ * back; in the whole sidebar's toolbar, down to the rail; in the hidden
+ * sidebar's, brought out over the desk, kept open (whole). Each is a setting
+ * (`setSidebarMode`).
+ */
 export function DeskRailToggle({ className }: { className?: string }) {
-  const up = useDeskStore((state) => state.groupId !== null || state.opening !== null);
-  const rail = useDeskStore((state) => state.rail);
+  const up = useDeskUp();
+  const mode = useSidebarMode();
   const hint = useAppStore((state) => shortcutLabel(state.settings.shortcuts.toggleSidebarPinned, PLATFORM));
   if (!up) return null;
-  const label = rail ? "Show the whole sidebar" : "Collapse the sidebar to a rail";
+  const to: SidebarMode = mode === "whole" ? "rail" : "whole";
+  const label = mode === "rail" ? "Show the whole sidebar" : mode === "whole" ? "Collapse sidebar to a rail" : "Keep the sidebar open";
   return (
     <button
       type="button"
       aria-label={label}
-      title={hint === null ? label : `${label} (${hint})`}
-      data-testid="desk-rail-toggle"
-      aria-pressed={!rail}
+      title={hint === null ? label : `${label} (${hint} cycles the sidebar)`}
+      // (The rail and the whole sidebar's switch keeps its old id; the hidden sidebar's is its own.)
+      data-testid={mode === "hidden" ? "sidebar-keep-open" : "desk-rail-toggle"}
+      data-to={to}
       onMouseDown={(event) => event.preventDefault()}
-      onClick={() => useDeskStore.getState().setRail(!rail)}
+      onClick={() => runShellCommand({ type: "setSidebarMode", mode: to })}
       className={cn("desk-side-button no-drag", className)}
     >
-      {rail ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
+      {to === "rail" ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />}
     </button>
   );
 }
 
 /**
- * The desk's card: the arrangements, the variants (Feel), and Leave the
- * desk. The pointer on it brings the card up beside it; a click pins it up
- * until a press anywhere else or Escape.
+ * The desk's card: the arrangements and the variants (Feel). The pointer on
+ * it brings the card up beside it; a click pins it up until a press
+ * anywhere else or Escape.
  */
 export function DeskMoreButton({ className }: { className?: string }) {
   const up = useDeskUp();
@@ -97,8 +109,8 @@ export function DeskMoreButton({ className }: { className?: string }) {
     <button
       ref={ref}
       type="button"
-      aria-label="Desk: arrange, feel, leave"
-      title="Desk: arrange, feel, leave"
+      aria-label="Windows: arrange, feel"
+      title="Windows: arrange, feel"
       aria-expanded={open}
       aria-pressed={open}
       data-testid="desk-more"
@@ -223,11 +235,11 @@ export function DeskRowMark({ tabId }: { tabId: string }) {
   return <span aria-hidden="true" data-testid="desk-row-mark" data-mark={mark} className="desk-row-mark" />;
 }
 
-/** The pointer came to a tab's row, or left it: while a desk is up, ⇧⌫ closes the tab whose row it is on. */
+/** The pointer came to a tab's row, or left it: on the desk, ⇧⌫ closes the tab whose row it is on. */
 export function hoverDeskRow(tabId: string, inside: boolean): void {
   const chrome = useDeskChrome.getState();
   if (inside) {
-    if (useDeskStore.getState().groupId !== null) chrome.setHovered(tabId);
+    if (deskAvailable()) chrome.setHovered(tabId);
   } else if (chrome.hovered === tabId) chrome.setHovered(null);
 }
 

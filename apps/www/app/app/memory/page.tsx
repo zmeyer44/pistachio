@@ -35,13 +35,14 @@ export default function MemoryPage(): ReactNode {
 
       {workspace.memory.length === 0 ? (
         <Empty title={hubState === "connected" ? "It has not learned anything yet" : "Waiting for your devices"}>
-          <p>Facts appear as you work with the agent, or when you fill in your profile on a Mac.</p>
+          <p>Facts appear as you work with the agent, or when you tell Pistachio about yourself on a Mac.</p>
         </Empty>
       ) : (
         grouped.map(([bucket, entries]) => (
-          <Section key={bucket} heading={bucket.charAt(0).toUpperCase() + bucket.slice(1)}>
+          // The "profile" bucket is about the person; "Profile" is a browsing context's word (docs/spaces.md).
+          <Section key={bucket} heading={bucket === "profile" ? "About you" : bucket.charAt(0).toUpperCase() + bucket.slice(1)}>
             <Table
-              caption={`${String(entries.length)} fact${entries.length === 1 ? "" : "s"} the agent holds under ${bucket}.`}
+              caption={`${String(entries.length)} fact${entries.length === 1 ? "" : "s"} the agent holds ${bucket === "profile" ? "about you" : `under ${bucket}`}.`}
               head={
                 <>
                   <th scope="col">Fact</th>

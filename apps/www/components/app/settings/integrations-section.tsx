@@ -144,10 +144,10 @@ export function IntegrationsSection(): ReactNode {
 
   return (
     <>
-      <Section note="One account per app per Space. The grant is encrypted with the Space key on the Mac that connected it; Pistachio's servers keep only the ciphertext, and the agent sees only the account's name and what it may do.">
+      <Section note="One account per app per Profile. The grant is encrypted with the Profile key on the Mac that connected it; Pistachio's servers keep only the ciphertext, and the agent sees only the account's name and what it may do.">
         {spaces.length > 1 ? (
           <div className="pa-field">
-            <label htmlFor="integrations-space">Space</label>
+            <label htmlFor="integrations-space">Profile</label>
             <select id="integrations-space" className="pa-input" value={activeSpaceId ?? ""} onChange={(event) => setSpaceId(event.target.value)}>
               {spaces.map((space) => (
                 <option key={space.id} value={space.id}>{space.name}</option>
@@ -161,7 +161,7 @@ export function IntegrationsSection(): ReactNode {
         ) : connections === null ? (
           <p className="pa-caption">Reading your connections…</p>
         ) : connections.length === 0 ? (
-          <Empty title="Nothing connected in this Space">
+          <Empty title="Nothing connected in this Profile">
             {offered.length === 0
               ? "This Pistachio service has no integrations configured."
               : `Connect ${offered.map((entry) => entry.name).join(", ")} from Settings → Integrations in Pistachio on your Mac.`}

@@ -8,8 +8,9 @@
  */
 
 import { useEffect, useState } from "react";
-import { SIDEBAR_EDGE_W } from "@pistachio/shell-contracts/chrome";
+import { SIDEBAR_EDGE_W, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
 import { useAppStore } from "../store";
+import { useSidebarMode } from "./sidebar-mode";
 
 /** The least content width a settings section lays out well in. */
 export const SETTINGS_MIN_CONTENT_W = 620;
@@ -28,12 +29,11 @@ export function useSettingsCoversConsole(): boolean {
   const settingsOpen = useAppStore((state) => state.overlay === "settings");
   const consoleOpen = useAppStore((state) => state.consoleOpen);
   const consoleWidth = useAppStore((state) => state.consoleWidth);
-  const pinned = useAppStore(
-    (state) => state.settings.layout.sidebar === "pinned",
-  );
+  const mode = useSidebarMode();
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
   const windowWidth = useWindowWidth();
   if (!settingsOpen || !consoleOpen) return false;
-  const chrome = pinned ? sidebarWidth : SIDEBAR_EDGE_W;
+  // (Hidden, the sidebar is its edge's strip: brought out over the desk, or on the web for a moment, it is not the page's room.)
+  const chrome = mode === "whole" ? sidebarWidth : mode === "rail" ? SIDEBAR_RAIL_W : SIDEBAR_EDGE_W;
   return windowWidth - chrome - consoleWidth < SETTINGS_MIN_CONTENT_W;
 }

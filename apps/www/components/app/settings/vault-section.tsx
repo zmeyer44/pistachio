@@ -44,7 +44,7 @@ function messageOf(error: unknown): string {
     if (error.status === 400) return "The entry could not be saved as entered.";
   }
   if (error instanceof DOMException && error.name === "OperationError") {
-    return "This browser's key does not open that entry. It may have been sealed under a Space key this browser has not unlocked.";
+    return "This browser's key does not open that entry. It may have been sealed under a Profile key this browser has not unlocked.";
   }
   return error instanceof Error ? error.message : "The vault could not be updated.";
 }
@@ -474,10 +474,10 @@ export function VaultSection(): ReactNode {
 
   return (
     <>
-      <Section note="When a cloud run needs a password or another sensitive field for a site listed here, the agent types the saved value into the page without seeing it. Values are encrypted with your Space key before they leave this browser; Pistachio's servers store only the ciphertext.">
+      <Section note="When a cloud run needs a password or another sensitive field for a site listed here, the agent types the saved value into the page without seeing it. Values are encrypted with your Profile key before they leave this browser; Pistachio's servers store only the ciphertext.">
         {spaces.length > 1 ? (
           <div className="pa-field">
-            <label htmlFor="vault-space">Space</label>
+            <label htmlFor="vault-space">Profile</label>
             <select
               id="vault-space"
               className="pa-input"
@@ -494,7 +494,7 @@ export function VaultSection(): ReactNode {
         {keys === null ? (
           <Note>Unlock with your password to read or change the vault. Entries stay sealed until then.</Note>
         ) : activeSpaceId !== null && spaceKeys === null ? (
-          <Note tone="alert">This browser has not unlocked the key for this Space, so its entries cannot be opened here.</Note>
+          <Note tone="alert">This browser has not unlocked the key for this Profile, so its entries cannot be opened here.</Note>
         ) : null}
         {entries === null && error === null ? (
           <p className="pa-caption">Reading the vault…</p>
@@ -543,7 +543,7 @@ export function VaultSection(): ReactNode {
       ) : null}
       <Section heading="How it stays private">
         <div className="pa-section pa-body">
-          <p>The agent never reads a value. The cloud browser opens the entry with the Space key, types it straight into the page, and records only that it did.</p>
+          <p>The agent never reads a value. The cloud browser opens the entry with the Profile key, types it straight into the page, and records only that it did.</p>
           <p>A saved value that a site rejects is not retried in the same run: the agent asks you for a fresh one, and your answer replaces what was kept.</p>
           <p>One-time codes are never kept. Removing an entry here means the agent asks you next time.</p>
         </div>

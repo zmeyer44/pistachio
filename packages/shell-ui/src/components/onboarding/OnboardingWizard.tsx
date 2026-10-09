@@ -79,7 +79,7 @@ const COPY: Record<OnboardingStep, Copy> = {
       </>
     ),
     blurb:
-      "Bring your signed-in sessions and bookmarks over from the browser you use today, so your first Space already knows where you go and who you are there.",
+      "Bring your signed-in sessions and bookmarks over from the browser you use today, so your first Profile already knows where you go and who you are there.",
     skip: "Start fresh instead",
     aside:
       "Read from this Mac and written to this Mac. With an account, what lands here converges with your other devices end-to-end encrypted; without one it stays here.",
@@ -379,7 +379,7 @@ export function OnboardingWizard() {
           : {
               label:
                 phase === "finishing"
-                  ? "Setting up your Space…"
+                  ? "Setting up your Profile…"
                   : "Open Pistachio",
               disabled: busy,
               loading: phase === "finishing",
@@ -649,7 +649,7 @@ export function OnboardingWizard() {
   );
 }
 
-/** "Import from Chrome", "Import 3 profiles from Chrome", "Import from Chrome and Firefox". */
+/** "Import from Chrome", "Import 3 Chrome profiles", "Import from Chrome and Firefox". */
 function importLabel(profiles: readonly ProfilePick[]): string {
   const kinds = [...new Set(profiles.map((pick) => pick.browser))];
   if (kinds.length === 0) return "Import";
@@ -657,7 +657,7 @@ function importLabel(profiles: readonly ProfilePick[]): string {
     const name = browserName(kinds[0]!);
     return profiles.length === 1
       ? `Import from ${name}`
-      : `Import ${String(profiles.length)} profiles from ${name}`;
+      : `Import ${String(profiles.length)} ${name} profiles`;
   }
   const names = kinds.map(browserName);
   return `Import from ${names.slice(0, -1).join(", ")} and ${names.at(-1) ?? ""}`;

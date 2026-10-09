@@ -66,7 +66,7 @@ function Available() {
     );
 
   const spaceId = space?.id ?? "";
-  const spaceName = space?.name ?? "this Space";
+  const spaceName = space?.name ?? "this Profile";
   const spaceExcluded = settings.excludedSpaces.includes(spaceId);
   return (
     <Page title="Watchtower" description={DESCRIPTION}>
@@ -92,7 +92,7 @@ function Available() {
         <Row label="Pause" note="A temporary stop, also on the Watchtower page. The toolbar button shows when saving is paused.">
           <Switch checked={settings.paused} disabled={status.busy || !settings.enabled} onChange={(paused) => void status.configure({ paused })} label="Pause Watchtower" />
         </Row>
-        <Row label={`Save in ${spaceName}`} note="Each Space has its own archive. Off leaves this Space out entirely.">
+        <Row label={`Save in ${spaceName}`} note="Each Profile has its own archive. Off leaves this Profile out entirely.">
           <Switch
             checked={!spaceExcluded}
             disabled={status.busy || spaceId === ""}
@@ -121,7 +121,7 @@ function Available() {
         >
           <Switch checked={settings.smartIndex} disabled={status.busy} onChange={(smartIndex) => void status.configure({ smartIndex })} label="Index people, companies and ideas with Jev" />
         </Row>
-        <Row label="Let the agent search what you saved" note="Only when you ask it to, and only in the Space the run belongs to. Text it retrieves is sent to your agent’s model and stays in that conversation.">
+        <Row label="Let the agent search what you saved" note="Only when you ask it to, and only in the Profile the run belongs to. Text it retrieves is sent to your agent’s model and stays in that conversation.">
           <Switch checked={settings.agentAccess} disabled={status.busy} onChange={(agentAccess) => void status.configure({ agentAccess })} label="Let the agent search saved pages" />
         </Row>
         <Row label="Offer Improve matches" note="Adds a button beside a search. Pressing it sends your words and up to 20 saved titles and excerpts to the Jev decision model to reorder the results.">
@@ -134,18 +134,18 @@ function Available() {
       <Group
         title="Storage"
         note="Saving pauses at the limit; nothing already saved is removed to make room."
-        footer={`${formatBytes(stats.databaseBytes)} of ${formatBytes(stats.budgetBytes)} used ${WATCHTOWER_COPY.storage}, across all Spaces.`}
+        footer={`${formatBytes(stats.databaseBytes)} of ${formatBytes(stats.budgetBytes)} used ${WATCHTOWER_COPY.storage}, across all Profiles.`}
         type={stats.nearFull ? "warning" : undefined}
       >
         <StorageLimit megabytes={settings.maxSizeMb} busy={status.busy} onSave={(maxSizeMb) => status.configure({ maxSizeMb })} />
         <Row label="Keep saved text for" note="After this, a visit keeps its title, address and date, and its saved text is removed. Text a newer visit still uses is kept.">
           <Select aria-label="Retention" value={settings.retentionDays} items={RETENTION} onValueChange={(retentionDays) => void status.configure({ retentionDays })} disabled={status.busy} className="w-44" />
         </Row>
-        <Fixed label="Encryption" note="The archive is an ordinary file in your profile. It is protected by your computer’s account and disk encryption, not by the app." badge="Not encrypted" tone="gray" />
+        <Fixed label="Encryption" note="The archive is an ordinary file in your data folder. It is protected by your computer’s account and disk encryption, not by the app." badge="Not encrypted" tone="gray" />
       </Group>
 
       <Group title="Export" note="A folder of Markdown: one file per saved version, an index, links between saved pages, and every visit’s date.">
-        <Row label="Export this Space as Markdown" note={exported === null ? "Exports are separate copies: forgetting later does not reach them." : `Exported to ${exported}`}>
+        <Row label="Export this Profile as Markdown" note={exported === null ? "Exports are separate copies: forgetting later does not reach them." : `Exported to ${exported}`}>
           <Button
             variant="secondary"
             size="sm"
@@ -174,7 +174,7 @@ function Available() {
             Forget…
           </Button>
         </Row>
-        <Row label="The whole archive" note="Every Space.">
+        <Row label="The whole archive" note="Every Profile.">
           <Button variant="error" size="sm" onClick={() => setForgetting({ kind: "everything" })} data-testid="watchtower-forget-everything">
             Forget everything…
           </Button>

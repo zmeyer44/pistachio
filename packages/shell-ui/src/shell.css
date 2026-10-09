@@ -96,26 +96,29 @@
   backdrop-filter: blur(20px) saturate(1.15);
 }
 
-/* The compact sidebar stays mounted while this slot clips and moves it. The
-   slot's width reflows the native WebContentsView beside it; the transform
-   makes the chrome itself one compositor movement rather than a remount.
-   The surface adds no gutter on this side (ContentArea's BrowserSurface), so
-   the hidden slot IS the page's 10px inset. The wider interaction target is
-   independent of it. */
-/* Pinned, the slot runs on this clock only while it goes away for a desk or
-   comes back (SidebarLayout's useAwaySlide): its width otherwise follows a
-   resize drag frame by frame. */
-.sidebar-motion-slot:is([data-compact], [data-desk-slide]) {
+/* The hidden sidebar stays mounted while this slot clips and moves it
+   (layouts/SidebarLayout.tsx). On the web the slot's width reflows the page
+   beside it; the transform makes the chrome itself one compositor movement
+   rather than a remount. The surface adds no gutter on this side
+   (ContentArea's BrowserSurface), so the hidden slot IS the page's — or the
+   desk's — 10px inset. The wider interaction target is independent of it. */
+/* Whole or a rail, the slot runs on this clock only while the mode changes
+   (SidebarLayout's useDeskSlide): its width otherwise follows a resize drag
+   frame by frame. */
+.sidebar-motion-slot:is([data-mode="hidden"], [data-desk-slide]) {
   transition: width 250ms cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 .sidebar-motion-slot[data-hidden] {
   transition-duration: 180ms;
 }
-/* A menu from a desk's rail (its footer's), or the favorites' sheet, hangs
-   out past the column, over the desk, which is drawn after it: while one is
-   open the column is drawn above the desk. (Not always: a window flying home
-   into a row passes over the column.) */
-.sidebar-motion-slot[data-rail]:is(:has([role="menu"]), :has(.rail-favorites-sheet[data-open])) {
+/* A menu from the rail (its footer's), or the favorites' sheet, hangs out
+   past the column, over the desk, which is drawn after it: while one is open
+   the column is drawn above the desk. (Not always: a window flying home into
+   a row passes over the column.) So is the hidden sidebar brought out over
+   the desk (data-overlay), from its cover going up until its retreat has
+   ended. */
+.sidebar-motion-slot[data-rail]:is(:has([role="menu"]), :has(.rail-favorites-sheet[data-open])),
+.sidebar-motion-slot[data-overlay] {
   z-index: 3;
 }
 .sidebar-motion-pane {
@@ -124,8 +127,13 @@
     transform 250ms cubic-bezier(0.2, 0.8, 0.3, 1),
     visibility 0s linear;
 }
-.sidebar-motion-slot[data-compact] .sidebar-motion-pane {
+.sidebar-motion-slot[data-mode="hidden"] .sidebar-motion-pane {
   will-change: transform;
+}
+/* Over the desk the column is wider than its slot, whose wrapper lets the
+   pointer through: the column takes it only once it is out. */
+.sidebar-motion-pane[data-overlay]:not([data-hidden]) {
+  pointer-events: auto;
 }
 .sidebar-motion-pane[data-hidden] {
   visibility: hidden;
@@ -2230,6 +2238,28 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+/* The hidden sidebar brought out over the desk (docs/spaces.md §3) lies over
+   the desk's windows, not the window's glass: it paints a ground of its own,
+   the favorites sheet's — its surface and the theme's gradient, frosted over
+   what it covers — and a shadow off its trailing edge (the cover over the
+   desk reaches that far: SidebarLayout's OVERLAY_SHADOW). */
+.sidebar-motion-pane[data-overlay] .chrome-sidebar {
+  background:
+    var(--theme-window-gradient),
+    color-mix(in srgb, var(--color-background-200) 94%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  backdrop-filter: blur(24px) saturate(1.3);
+  box-shadow:
+    1px 0 0 var(--color-alpha-300),
+    18px 0 36px -22px oklch(0 0 0 / 0.35);
+}
+:root[data-desktop-glass="on"] .sidebar-motion-pane[data-overlay] .chrome-sidebar {
+  background:
+    var(--theme-glass-gradient),
+    color-mix(in srgb, var(--color-background-200) max(var(--theme-glass-tint-opacity-percent), 72%), transparent);
+  -webkit-backdrop-filter: blur(30px) saturate(1.5);
+  backdrop-filter: blur(30px) saturate(1.5);
+}
 :root[data-desktop-glass="on"] .browser-surface,
 :root[data-desktop-glass="on"] .chrome-panel-surface {
   background-color: transparent;
@@ -3748,6 +3778,22 @@ body:not([data-chrome-view])::after {
   box-shadow: 0 0 0 1.5px var(--color-background-200);
 }
 
+/* An empty space's mark (FaviconCluster with no tabs; docs/spaces.md §1): a ring of its colour where its icons would
+   be, and no count. Holding something in its Stack, the Stack's own pile (DeskContextRow's) lies over the ring. */
+.tab-group-ring {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1.5px var(--tg-solid);
+}
+.tab-group-ring-stack {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  scale: 0.75;
+  transform-origin: bottom right;
+}
+
 /* ── The rail: the same column 48px wide, every row its icon alone ───────
    What a row says beside its icon (its title, counts, controls) is in its
    tooltip; a section's header is a hairline (three dots while folded). */
@@ -3810,6 +3856,17 @@ body:not([data-chrome-view])::after {
   top: -4px;
   right: -5px;
   display: block;
+}
+/* An empty space's capsule on the rail: the ring in the tile, its Stack's pile at the corner, no count (it has none). */
+.chrome-sidebar[data-rail] .tab-group-ring {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+.chrome-sidebar[data-rail] .tab-group-ring-stack {
+  right: -2px;
+  bottom: -2px;
+  scale: 0.9;
 }
 /* The rail's list scrolls without a scrollbar: in a 48px column one would be clutter. */
 .chrome-sidebar[data-rail] [data-testid="sidebar-tab-list"] {
@@ -4866,10 +4923,10 @@ body:not([data-chrome-view])::after {
   position: relative;
   display: flex;
   width: 100%;
-  min-height: 40px;
+  min-height: 52px;
   flex: none;
   align-items: center;
-  border-radius: 20px;
+  border-radius: 26px;
   pointer-events: auto;
 }
 .desk-bar-frame {
@@ -4888,7 +4945,7 @@ body:not([data-chrome-view])::after {
 }
 /* Taller than a line (a message of several, files staged), it is a rounded card rather than a capsule. */
 .desk-bar:not([data-compact]) .desk-bar-frame {
-  border-radius: 20px;
+  border-radius: 26px;
 }
 .desk-bar[data-compact] {
   pointer-events: none;
@@ -4903,9 +4960,10 @@ body:not([data-chrome-view])::after {
 
 /* The nub's box: the desk's trailing foot corner is its own (it stands past the lane's gutter to reach it), the fan
    of droplets in it. Nothing of the box itself takes the pointer: its face, the droplets and the
-   conversations do. It has no stack of its own, so its layers stand among the Bar's: the goo under the pill (the
-   bridge it pulls to the nub goes in under the pill's glass), the droplets and the face over the docked answer, the
-   conversations over everything. */
+   conversations do. It has no stack of its own, so its layers stand among the Bar's: the goo and the droplets under the
+   pill and the docked answer (the bridge the goo pulls to the nub goes in under the pill's glass; the menu let out with
+   the pill out, its droplets fanned across the pill's end go under it, not through it), the face and the pill's close
+   over them, the conversations over everything. */
 .desk-nub {
   position: absolute;
   right: -8px;
@@ -5063,7 +5121,7 @@ body:not([data-chrome-view])::after {
 .desk-nub-menu {
   position: absolute;
   inset: 0;
-  z-index: 56;
+  z-index: 54;
   pointer-events: none;
 }
 .desk-nub-item {
@@ -5321,23 +5379,23 @@ body[data-chrome-view="shelf"] {
   transform: translateY(calc(100% + 16px));
   opacity: 0;
 }
-/* The row in a pill as tall as the nub's button free (40px at one line): the tray's plus at one end, Send at the
-   other, each as far from its
+/* The row in the pill (52px at one line, the Bar's own before the nub — 2026-10-08, the user's call, after a day at
+   40px): the tray's plus at one end, Send at the other, each as far from its
    end; the buttons sit on the field's last line as it grows. */
 .desk-bar-row {
   display: flex;
   min-width: 0;
   flex: 1;
   align-items: flex-end;
-  gap: 2px;
-  padding: 3px 4px 3px 5px;
+  gap: 4px;
+  padding: 8px 10px;
 }
 .desk-bar-button {
   display: grid;
   width: 30px;
   height: 30px;
   flex-shrink: 0;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
   place-items: center;
   border-radius: 999px;
   color: var(--color-gray-800);
@@ -5361,13 +5419,13 @@ body[data-chrome-view="shelf"] {
   box-shadow: 0 0 0 2px var(--color-ring);
 }
 .desk-bar-button svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 .desk-bar-send {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
   margin: 0 0 2px 2px;
   place-items: center;
@@ -5388,8 +5446,8 @@ body[data-chrome-view="shelf"] {
   transform: scale(0.94);
 }
 .desk-bar-send svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 .desk-bar-send[data-testid="desk-bar-stop"] svg {
   width: 10px;
@@ -7005,12 +7063,12 @@ body[data-chrome-view="shelf"] {
 }
 /* Discard leads the row then, as far from the pill's end as Done is from the other. */
 .desk-bar-row[data-listening] {
-  padding-left: 4px;
+  padding-left: 10px;
 }
 .desk-bar-dictation {
   display: flex;
   min-width: 0;
-  height: 34px;
+  height: 36px;
   flex: 1;
   align-items: center;
   gap: 12px;

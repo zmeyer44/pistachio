@@ -37,6 +37,7 @@ import {
   LibraryBig,
   Link,
   PanelLeftClose,
+  PanelLeftDashed,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
@@ -54,19 +55,22 @@ import type { ShellCommand, ShellState } from "@pistachio/shell-contracts/chrome
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { hasCopyableSelection } from "@pistachio/shell-contracts/page-link";
 import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
-import type { DesktopSettings } from "@pistachio/shell-contracts/settings";
+import { nextSidebarMode, type DesktopSettings, type SidebarMode } from "@pistachio/shell-contracts/settings";
 import {
   RUN_SHORTCUT_EVENT,
+  SHORTCUT_DEFINITIONS,
   shortcutActionForEvent,
   shortcutLabel,
+  shortcutOffered,
   type ShortcutActionId,
   type ShortcutPlatform,
 } from "@pistachio/shell-contracts/shortcuts";
 import { nativeApi } from "../api";
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
-import { arrangeDesk, toggleDeskOfActiveTab } from "../lib/desk/open";
+import { arrangeDesk, shortcutSurface, splitAvailable } from "../lib/desk/open";
 import { screenshotArea, screenshotView } from "../lib/screenshot";
+import { railOffered, sidebarModeOf } from "../lib/sidebar-mode";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
 import { useSurface } from "../surface";
 import { useShell, type ShellHost } from "./shell-host";
@@ -161,6 +165,13 @@ export interface ChromeAction {
    */
   shortcut?(ctx: ActionContext): void;
 }
+
+/** What a step of ⌘S says, by the mode it goes to. */
+const SIDEBAR_STEP: Record<SidebarMode, { label: string; icon: React.ReactNode }> = {
+  rail: { label: "Collapse sidebar to a rail", icon: <PanelLeftClose aria-hidden="true" /> },
+  hidden: { label: "Hide sidebar", icon: <PanelLeftDashed aria-hidden="true" /> },
+  whole: { label: "Show the whole sidebar", icon: <PanelLeftOpen aria-hidden="true" /> },
+};
 
 /** The active tab is a pin (not a favorite or a preset — those are the grid's). */
 function pinnedTab(ctx: ActionContext): boolean {
@@ -266,6 +277,9 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
       ),
     shortcutId: "toggleSplit",
     active: ({ snapshot }) => (snapshot?.splitMode ?? "single") !== "single",
+    // The web's alone since 2026-10-09 (a desk tiles windows instead): off the palette on the desktop, and ⌘\ left
+    // for whatever else may want it there (runChromeShortcut answers false).
+    enabled: () => splitAvailable(),
     // One cycle everywhere — single → vertical → horizontal → grid → single — and
     // straight to main: the split mode is the window's, not the shell page's.
     run: ({ snapshot, store }) => void store.setSplit(nextSplitMode(snapshot?.splitMode ?? "single")),
@@ -399,7 +413,7 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
     id: "forkSpace",
     label: ({ snapshot }) => {
       const space = snapshot?.spaces.find((candidate) => candidate.id === snapshot.activeSpaceId);
-      return space === undefined ? "Fork Space" : `Fork ${space.name}`;
+      return space === undefined ? "Fork Profile" : `Fork ${space.name}`;
     },
     icon: () => <GitFork aria-hidden="true" />,
     shortcutId: "forkSpace",
@@ -408,11 +422,10 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
   },
   toggleSidebarPinned: {
     id: "toggleSidebarPinned",
-    label: ({ settings }) => (settings.layout.sidebar === "pinned" ? "Compact sidebar" : "Pin sidebar"),
-    icon: ({ settings }) =>
-      settings.layout.sidebar === "pinned" ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />,
+    // ⌘S, named for where it goes (lib/sidebar-mode.ts): whole → rail → hidden → whole, or whole ⇄ hidden on the web.
+    label: ({ settings }) => SIDEBAR_STEP[nextSidebarMode(sidebarModeOf(settings), railOffered())].label,
+    icon: ({ settings }) => SIDEBAR_STEP[nextSidebarMode(sidebarModeOf(settings), railOffered())].icon,
     shortcutId: "toggleSidebarPinned",
-    // (On a desk it switches the desk's sidebar between whole and rail: shell-host.)
     run: ({ run }) => run({ type: "toggleSidebarPinned" }),
   },
   togglePin: {
@@ -507,12 +520,22 @@ function isChromeActionId(id: ShortcutActionId): id is ChromeActionId & Shortcut
   return Object.hasOwn(CHROME_ACTIONS, id);
 }
 
+/**
+ * Whether this surface offers the shortcut (ShortcutDefinition.surfaces): the desk's arrangements are the desktop's,
+ * the split the web's, and a retired one — Toggle desk — nobody's. One not offered leaves its key alone.
+ */
+export function shortcutOfferedHere(id: ShortcutActionId): boolean {
+  const definition = SHORTCUT_DEFINITIONS.find((candidate) => candidate.id === id);
+  return definition !== undefined && shortcutOffered(definition, shortcutSurface());
+}
+
 /** Run every editable binding, including actions that have no chrome button. */
 export function runConfiguredShortcut(
   id: ShortcutActionId,
   host: Pick<ShellHost, "state" | "run">,
   tabId?: string,
 ): boolean {
+  if (!shortcutOfferedHere(id)) return false;
   if (isChromeActionId(id)) return runChromeShortcut(id, host, tabId);
   const store = useAppStore.getState();
   const tab = tabId === undefined ? selectActiveTab(store) : (store.snapshot?.tabs.find((candidate) => candidate.id === tabId) ?? null);
@@ -548,15 +571,16 @@ export function runConfiguredShortcut(
       if (tab === null) return false;
       void store.browserControl({ type: "zoomReset" });
       return true;
-    // A desk's (lib/desk/open.ts); with none up, the key is no one's.
+    // The desk's (lib/desk/open.ts); before its engine is up, the key is no one's.
     case "tileDesk":
       return arrangeDesk("tile");
     case "cascadeDesk":
       return arrangeDesk("cascade");
     case "arrangeDesk":
       return arrangeDesk("smart");
+    // Retired (2026-10-09): the desk is always up, and there is none to leave. Its id stays a key in saved shortcuts.
     case "toggleDesk":
-      return toggleDeskOfActiveTab();
+      return false;
   }
 }
 
@@ -575,7 +599,9 @@ export function ChromeShortcuts() {
     const platform: ShortcutPlatform = /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      const action = shortcutActionForEvent(useAppStore.getState().settings.shortcuts, event, platform);
+      // Only what this surface offers holds a key here: a key the other surface's action alone holds goes on (⌘\, the
+      // web's split, on the desktop), and one held by an action of each is this one's (shortcutsMeet; 2026-10-09).
+      const action = shortcutActionForEvent(useAppStore.getState().settings.shortcuts, event, platform, shortcutSurface());
       if (action !== null && runConfiguredShortcut(action, hostRef.current)) event.preventDefault();
     };
     const onRelayedShortcut = (event: Event) => {

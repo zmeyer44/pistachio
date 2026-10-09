@@ -1,13 +1,30 @@
 /**
- * Tab groups: a titled, coloured run of the day's tabs that the sidebar draws
- * as ONE row and opens on hover (docs/tab-tidy.md §3.3). Shared between main,
- * which owns the groups beside the split groups and applies every change, and
- * the renderers, which read them off the snapshot and ask for changes with a
- * TabGroupCommand.
+ * Tab groups — what a person calls SPACES (docs/spaces.md): where browsing
+ * happens, the unit tabs, files and an AI conversation belong to. The
+ * sidebar draws one as ONE row that opens on hover (docs/tab-tidy.md §3.3);
+ * on the desktop it is shown as its desk (docs/desk.md). Shared between
+ * main, which owns the groups beside the split groups and applies every
+ * change, and the renderers, which read them off the snapshot and ask for
+ * changes with a TabGroupCommand.
+ *
+ * Vocabulary, because the names here predate the word: a space is a tab
+ * group (TabGroupInfo); what the code calls a Space (`spaceId`,
+ * MAX_TAB_GROUPS_PER_SPACE) is a person's PROFILE — the partition with its
+ * own cookie jar. The identifiers keep their names (they are on the wire and
+ * in files); a comment that could be read either way says "space (tab
+ * group)" or "Profile (Space)".
+ *
+ * A space may be EMPTY (since 2026-10-09): one made with no tabs (New
+ * space), or one that is the person's (isPersonsGroup) outliving its last
+ * tab. Until then an emptied group dissolved at every layer — withoutTabs,
+ * sanitizeTabGroups, the `create` check. This file only lets an empty space
+ * be; main's reconcile decides whether one stays, since only it can ask the
+ * Stack and the conversations.
  *
  * A group is not a split group: a split is 2–4 tabs SHOWN together, a tab
  * group is any number of tabs KEPT together. A tab may be in both — "open
- * group as split view" makes exactly that.
+ * group as split view" makes exactly that (the web's alone since
+ * 2026-10-09: the desktop's desk tiles windows instead).
  *
  * `origin` is who the group belongs to. Tidy makes `auto` groups and may
  * archive one once every tab in it has gone idle; the moment a person
@@ -30,7 +47,13 @@ export interface TabGroupInfo {
   id: string;
   title: string;
   color: TabGroupColor;
-  /** The members, in the order the group lists them — the order they hold in the tab row too. */
+  /**
+   * The members, in the order the group lists them — the order they hold in
+   * the tab row too. May be EMPTY for a drawn space (since 2026-10-09: one
+   * made with none, or the person's after its last tab went — it then stands
+   * at `beforeUnit`); never for a loose tab's or a page's, which are their
+   * one tab's.
+   */
   tabIds: string[];
   origin: TabGroupOrigin;
   /** Held open by a click on its header; otherwise it opens on hover only. */
@@ -50,7 +73,11 @@ export interface TabGroupInfo {
    * group: the snapshot lists it apart (ShellSnapshot.looseGroups), and Tidy
    * treats its tab as loose. Given a second tab, it is a group like any
    * other (named, coloured, drawn); its tab put in another group, it is
-   * gone, as any group emptied is.
+   * gone, as any group emptied is — unless it is the person's
+   * (isPersonsGroup: a Stack, a conversation), when it stays as a drawn
+   * empty space (withoutTabs). An `auto` group left with one tab becomes
+   * that tab's loose one in place, keeping its id (since 2026-10-09; until
+   * then it dissolved, and a loose group was made afresh with a new id).
    */
   loose?: boolean;
   /**
@@ -67,8 +94,21 @@ export interface TabGroupInfo {
    * group like any other (or, of one tab, a loose tab's).
    */
   anchorId?: string;
+  /**
+   * Where an EMPTY space stands among the day's row units (dayRowUnits):
+   * the unit it is drawn before — a tab's id, `split:<id>` or `group:<id>`,
+   * as tabGroupUnitId and dayRowUnits name them. Absent, or naming a unit
+   * that is not there, it stands after every unit, empty spaces by
+   * `createdAt`. Main sets it as the space empties — where its last tab was,
+   * so it does not jump to the end — and clears it once the space holds a
+   * tab again, which goes into the tab order there. Meaningless on a space
+   * with tabs, which stands where its first tab does (groupedTabOrder);
+   * sanitizeTabGroups drops it there.
+   */
+  beforeUnit?: string;
 }
 
+/** The drawn spaces (tab groups) a Profile (Space) may hold, empty ones among them. */
 export const MAX_TAB_GROUPS_PER_SPACE = 50;
 /**
  * Loose tabs' groups (TabGroupInfo.loose) are kept apart from that bound,
@@ -78,7 +118,10 @@ export const MAX_TAB_GROUPS_PER_SPACE = 50;
  */
 export const MAX_LOOSE_TAB_GROUPS_PER_SPACE = 2_000;
 export const MAX_TAB_GROUP_TITLE = 40;
-export const DEFAULT_TAB_GROUP_TITLE = "New group";
+/** What a space nobody named is called ("New group" until 2026-10-09, read as this from files: storedTabGroupTitle). */
+export const DEFAULT_TAB_GROUP_TITLE = "New space";
+/** The default title before 2026-10-09, when a space was still a group. */
+const LEGACY_DEFAULT_TAB_GROUP_TITLE = "New group";
 
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,127}$/i;
 
@@ -86,11 +129,29 @@ export function isTabGroupId(value: unknown): value is string {
   return typeof value === "string" && SAFE_ID.test(value);
 }
 
+/** A row unit's id as TabGroupInfo.beforeUnit names one: a tab's (≤192), or `split:`/`group:` and an id. */
+function isUnitId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 200;
+}
+
 /** A title as the row draws it: one line, trimmed, bounded; never empty. */
 export function tabGroupTitle(value: unknown): string {
   if (typeof value !== "string") return DEFAULT_TAB_GROUP_TITLE;
   const title = value.replace(/\s+/gu, " ").trim().slice(0, MAX_TAB_GROUP_TITLE).trim();
   return title === "" ? DEFAULT_TAB_GROUP_TITLE : title;
+}
+
+/**
+ * A title read back from a file — a session's space, an archived one's — as
+ * tabGroupTitle draws it, with the default from before 2026-10-09 ("New
+ * group", exactly) read as today's: a space nobody named still IS the
+ * default (DEFAULT_TAB_GROUP_TITLE, which the sidebar compares against to
+ * open a new space's name field). Not for a name a person types now — that
+ * is theirs, whatever it says.
+ */
+export function storedTabGroupTitle(value: unknown): string {
+  const title = tabGroupTitle(value);
+  return title === LEGACY_DEFAULT_TAB_GROUP_TITLE ? DEFAULT_TAB_GROUP_TITLE : title;
 }
 
 /**
@@ -107,10 +168,17 @@ export function nextTabGroupColor(groups: readonly Pick<TabGroupInfo, "color">[]
 /**
  * Groups read back from a file, or handed over by another device. A member
  * that is not one of the Space's groupable tabs is dropped — except a page's
- * group's own page (`anchoredTabs`: each anchored tab's anchor) — a tab
- * belongs to the first group that names it, and a group left with no
- * members is gone. A page's group whose page is gone is a group like any
- * other, or of one tab a loose tab's.
+ * group's own page (`anchoredTabs`: each anchored tab's anchor) — and a tab
+ * belongs to the first group that names it. A page's group whose page is
+ * gone is a group like any other, or of one tab a loose tab's.
+ *
+ * A group left with no members is an EMPTY SPACE and kept (since
+ * 2026-10-09; until then it was gone), with its `beforeUnit`, within the
+ * drawn spaces' bound — but only a drawn one: a loose tab's or a page's
+ * group is its tab's, and with none it is nothing. Whether an empty space
+ * is the person's, and so stays, is not this read's to say: main's
+ * reconcile asks (isPersonsGroup). The default title from before
+ * 2026-10-09 reads as today's (storedTabGroupTitle).
  */
 export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<string>, anchoredTabs: ReadonlyMap<string, string> = new Map()): TabGroupInfo[] {
   if (!Array.isArray(value)) return [];
@@ -135,7 +203,9 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
       claimed.add(tabId);
       tabIds.push(tabId);
     }
-    if (tabIds.length === 0) continue;
+    // An empty space is a drawn one: a loose tab's or a page's group without its tab is nothing.
+    const empty = tabIds.length === 0;
+    if (empty && (raw["loose"] === true || anchor !== undefined)) continue;
     // A page's group with its page; without it, its tabs are a group like any other — a loose tab's, of one.
     const anchorId = led ? anchor : undefined;
     // Each kind within its own bound: a loose tab's group is of its one tab, and neither it nor a page's is drawn.
@@ -148,9 +218,10 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
     else drawn += 1;
     seen.add(id);
     const createdAt = raw["createdAt"];
+    const beforeUnit = raw["beforeUnit"];
     groups.push({
       id,
-      title: tabGroupTitle(raw["title"]),
+      title: storedTabGroupTitle(raw["title"]),
       color: isTabGroupColor(raw["color"]) ? raw["color"] : "gray",
       tabIds,
       origin: raw["origin"] === "auto" ? "auto" : "manual",
@@ -159,6 +230,8 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
       // (A loose tab's group holds its one tab: with more, it is a group like any other.)
       ...(isLoose ? { loose: true } : {}),
       ...(anchorId !== undefined ? { anchorId } : {}),
+      // (Only an empty space stands by its unit: one with tabs stands where its first tab does.)
+      ...(empty && isUnitId(beforeUnit) ? { beforeUnit } : {}),
     });
   }
   return groups;
@@ -175,12 +248,32 @@ export function tabGroupOf(groups: readonly TabGroupInfo[], tabId: string): TabG
 }
 
 /**
- * Groups after some tabs went away (closed, pinned, moved to another Space):
- * the tabs leave their groups, and a group left empty — or an `auto` group
- * left with one tab, which is no longer a group of anything — dissolves.
- * Returns the same array when nothing changed, so callers can tell.
+ * Groups after some tabs went away (closed, pinned, moved to another Profile
+ * (Space), put in another group): the tabs leave their groups, and a group
+ * that lost some is —
+ *
+ * - left EMPTY: gone, unless `keep` says it is the person's (isPersonsGroup),
+ *   when it stays an empty space, `tabIds: []`. A loose tab's kept so is
+ *   drawn from then on (it has no tab to be drawn as); a page's keeps its
+ *   `anchorId` for the caller to let go of, as one left without its page
+ *   but with other tabs does (main's reconcile, which titles it after its
+ *   entry).
+ * - an `auto` group left with ONE tab, not kept: that tab's loose space IN
+ *   PLACE (`loose`, grey), keeping its id — what the desk and the agent
+ *   track it by. Kept, it stays drawn; so does a `manual` group of one tab,
+ *   as it always did.
+ *
+ * (Until 2026-10-09 an emptied group dissolved whatever it held, and so did
+ * an auto group of one, its tab left in no group for main to make a loose
+ * one afresh, with a new id.) `keep` is asked only of a group that lost
+ * tabs, as it was before it lost them; absent, nothing is kept. Returns the
+ * same array when nothing changed, so callers can tell.
  */
-export function withoutTabs(groups: readonly TabGroupInfo[], gone: ReadonlySet<string>): readonly TabGroupInfo[] {
+export function withoutTabs(
+  groups: readonly TabGroupInfo[],
+  gone: ReadonlySet<string>,
+  keep?: (group: TabGroupInfo) => boolean,
+): readonly TabGroupInfo[] {
   if (gone.size === 0 || !groups.some((group) => group.tabIds.some((id) => gone.has(id)))) return groups;
   const next: TabGroupInfo[] = [];
   for (const group of groups) {
@@ -189,10 +282,42 @@ export function withoutTabs(groups: readonly TabGroupInfo[], gone: ReadonlySet<s
       next.push(group);
       continue;
     }
-    if (tabIds.length === 0 || (group.origin === "auto" && tabIds.length < 2)) continue;
+    const kept = keep?.(group) === true;
+    if (tabIds.length === 0) {
+      if (!kept) continue;
+      const { loose: _loose, ...drawn } = group;
+      next.push({ ...drawn, tabIds });
+      continue;
+    }
+    if (group.origin === "auto" && group.anchorId === undefined && tabIds.length === 1 && !kept) {
+      next.push({ ...group, tabIds, loose: true, color: "gray" });
+      continue;
+    }
     next.push({ ...group, tabIds });
   }
   return next;
+}
+
+/**
+ * Whether a space (tab group) is the PERSON'S (docs/spaces.md §1, "An empty
+ * space"): it outlives its last tab, Tidy neither archives it nor undoes it
+ * from under them, and Ungroup leaves it standing. It is theirs when they
+ * made or touched it by hand — a drawn `manual` group — or when it holds
+ * what is theirs: a Stack with something in it (`context`), a conversation
+ * bound to it whose thread still exists (`conversation`), or a desk turn
+ * running in it (`held`, main's holdGroup). Main asks the stores and passes
+ * what they said; this is the rule, pure so vitest pins it.
+ *
+ * `origin: "manual"` alone is not enough: every shell `create` passes
+ * manual — a loose tab's and a page's included — and so does main's own
+ * page's group, so a loose or a page's space is the person's only through
+ * what it holds.
+ */
+export function isPersonsGroup(
+  group: Pick<TabGroupInfo, "origin" | "loose" | "anchorId">,
+  has: { context: boolean; conversation: boolean; held: boolean },
+): boolean {
+  return (group.origin === "manual" && group.loose !== true && group.anchorId === undefined) || has.context || has.conversation || has.held;
 }
 
 /**
@@ -200,7 +325,9 @@ export function withoutTabs(groups: readonly TabGroupInfo[], gone: ReadonlySet<s
  * sits where its FIRST member (in row order) sits, and its other members
  * follow it in the group's own order. Tabs in no group keep their relative
  * order. The browser holds ONE order for all tabs, so this is what keeps a
- * group one row: call it after anything that forms or changes a group.
+ * group one row: call it after anything that forms or changes a group. An
+ * empty space has no tab to place: it stands by its `beforeUnit` among the
+ * row units (dayRowUnits), never in this order.
  */
 export function groupedTabOrder(order: readonly string[], groups: readonly TabGroupInfo[]): string[] {
   const groupOfTab = new Map<string, TabGroupInfo>();
@@ -233,11 +360,24 @@ export interface DayRowUnit {
   /** The tab's id, `split:<id>`, or `group:<id>`. */
   id: string;
   kind: "tab" | "split" | "group";
+  /** Its tabs here, in row order; none for an empty space's (TabGroupInfo.beforeUnit). */
   tabIds: string[];
 }
 
 export const tabGroupUnitId = (groupId: string): string => `group:${groupId}`;
 
+/**
+ * The day's row units: each tab where it is in `dayTabIds`, a split one
+ * unit, a group one unit at its first member — and, since 2026-10-09, each
+ * EMPTY drawn space (a group of `tabGroups` with no tabs, neither loose nor
+ * a page's) as a unit of its own with `tabIds: []`, before the unit its
+ * `beforeUnit` names when that unit is here (another empty space's
+ * included), else after everything, empty spaces by `createdAt`. Every
+ * counter of drops counts the same units, empty ones included, so a caller
+ * that turns an index into a tab (`tabIds[0]`: main's #placeAtDayUnit, the
+ * shelf drag's reorderDayTabs) finds none at an empty space's unit and must
+ * take the first unit after it that has one.
+ */
 export function dayRowUnits(
   dayTabIds: readonly string[],
   splitGroups: readonly { id: string; tabIds: readonly string[] }[],
@@ -264,7 +404,46 @@ export function dayRowUnits(
     else if (split !== undefined) units.push({ id, kind: "split", tabIds: [...split.tabIds] });
     else units.push({ id, kind: "tab", tabIds: [tabId] });
   }
-  return units;
+  return withEmptySpaces(units, tabGroups);
+}
+
+/**
+ * `units` with the empty drawn spaces of `tabGroups` set in (dayRowUnits).
+ * They go in `createdAt` order (the list's own on a tie), each before its
+ * `beforeUnit` once that unit is in — so two before one unit stand oldest
+ * first, and one before another empty space waits for it. When none left
+ * can go in, the oldest whose unit will never come (gone, unnamed, itself;
+ * on a ring of empty spaces naming each other, simply the oldest) goes at
+ * the end, and the rest try again.
+ */
+function withEmptySpaces(units: DayRowUnit[], tabGroups: readonly TabGroupInfo[]): DayRowUnit[] {
+  let pending = tabGroups
+    .map((group, order) => ({ group, order }))
+    .filter(({ group }) => group.tabIds.length === 0 && group.loose !== true && group.anchorId === undefined)
+    .sort((a, b) => a.group.createdAt - b.group.createdAt || a.order - b.order)
+    .map(({ group }) => group);
+  if (pending.length === 0) return units;
+  const placed = [...units];
+  const unitOf = (group: TabGroupInfo): DayRowUnit => ({ id: tabGroupUnitId(group.id), kind: "group", tabIds: [] });
+  while (pending.length > 0) {
+    const waiting: TabGroupInfo[] = [];
+    for (const group of pending) {
+      const at = group.beforeUnit === undefined ? -1 : placed.findIndex((unit) => unit.id === group.beforeUnit);
+      if (at >= 0) placed.splice(at, 0, unitOf(group));
+      else waiting.push(group);
+    }
+    if (waiting.length < pending.length) {
+      pending = waiting;
+      continue;
+    }
+    const waitingFor = new Set(waiting.map((group) => tabGroupUnitId(group.id)));
+    const blocked = (group: TabGroupInfo): boolean =>
+      group.beforeUnit !== undefined && group.beforeUnit !== tabGroupUnitId(group.id) && waitingFor.has(group.beforeUnit);
+    const last = waiting.find((group) => !blocked(group)) ?? waiting[0]!;
+    placed.push(unitOf(last));
+    pending = waiting.filter((group) => group !== last);
+  }
+  return placed;
 }
 
 /* ------------------------------ commands -------------------------------- */
@@ -284,9 +463,17 @@ export type TabGroupCommand =
   /**
    * Make a group from day tabs (they leave any group they were in). The renderer names the id so it can start renaming at
    * once. `loose`: a loose tab's group (TabGroupInfo.loose), of one tab. `anchored`: a page's group (TabGroupInfo.anchorId),
-   * of one tab, a sidebar entry's page — or, that entry having one already, nothing.
+   * of one tab, a sidebar entry's page — or, that entry having one already, nothing. With no tabs, neither loose nor
+   * anchored (since 2026-10-09): an empty space in the active Profile (Space) — "New space". `select`: make it the current
+   * space at once, as `select` does.
    */
-  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean; anchored?: boolean }
+  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean; anchored?: boolean; select?: boolean }
+  /**
+   * Make the space current (docs/spaces.md §2; main owns which one is, ShellSnapshot.currentGroupId): main activates
+   * `tabId` if it is the space's, else the space's tab used last, else nothing — an empty space, `activeTabId` null. The
+   * shell passes the window that was on top when the space was left, since the arrangement is the shell's.
+   */
+  | { type: "select"; groupId: string; tabId?: string }
   | { type: "rename"; groupId: string; title: string }
   | { type: "recolor"; groupId: string; color: TabGroupColor }
   /** Hold the group open, or let it close when the pointer leaves. */
@@ -301,13 +488,14 @@ export type TabGroupCommand =
   | { type: "ungroup"; groupId: string }
   /** Close every tab in the group and file it in the archive as one entry (docs/tab-tidy.md §3.5). */
   | { type: "close"; groupId: string }
-  /** Show the group's tabs side by side — up to four of them (§3.4). */
+  /** Show the group's tabs side by side — up to four of them (§3.4). The web host's: the desktop's desk tiles windows instead. */
   | { type: "openAsSplit"; groupId: string }
   /** Move the whole group to `index` among the day's ROW UNITS (lone tabs, splits, groups), counted without it. */
   | { type: "move"; groupId: string; index: number };
 
 const COMMAND_TYPES: ReadonlySet<string> = new Set([
   "create",
+  "select",
   "rename",
   "recolor",
   "setOpen",
@@ -336,17 +524,20 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
   if (typeof type !== "string" || !COMMAND_TYPES.has(type)) return false;
   switch (type) {
     case "create":
+      // (No tabs is an empty space: the loose and anchored checks below want their one tab, so neither is one.)
       return (
         isTabGroupId(raw["id"]) &&
         Array.isArray(raw["tabIds"]) &&
-        raw["tabIds"].length > 0 &&
         raw["tabIds"].length <= 200 &&
         raw["tabIds"].every(isTabId) &&
         (raw["title"] === undefined || typeof raw["title"] === "string") &&
         (raw["color"] === undefined || isTabGroupColor(raw["color"])) &&
         (raw["loose"] === undefined || (typeof raw["loose"] === "boolean" && (raw["loose"] === false || raw["tabIds"].length === 1))) &&
-        (raw["anchored"] === undefined || (typeof raw["anchored"] === "boolean" && (raw["anchored"] === false || (raw["tabIds"].length === 1 && raw["loose"] !== true))))
+        (raw["anchored"] === undefined || (typeof raw["anchored"] === "boolean" && (raw["anchored"] === false || (raw["tabIds"].length === 1 && raw["loose"] !== true)))) &&
+        (raw["select"] === undefined || typeof raw["select"] === "boolean")
       );
+    case "select":
+      return isTabGroupId(raw["groupId"]) && (raw["tabId"] === undefined || isTabId(raw["tabId"]));
     case "rename":
       return isTabGroupId(raw["groupId"]) && typeof raw["title"] === "string";
     case "recolor":

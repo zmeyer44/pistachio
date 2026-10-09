@@ -15,12 +15,14 @@ import {
   type SplitLayoutNode,
 } from "../lib/split-layout";
 import { useSettingsCoversConsole } from "../lib/settings-fit";
+import { deskAvailable } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
 import { displayHost } from "../lib/url";
 import { useAppStore, type AppState } from "../store";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
+import DeskSurface from "./desk/DeskSurface";
 import { Favicon } from "./Favicon";
 import { GlanceOverlay } from "./GlanceOverlay";
 import { PanePlaceholder } from "./PanePlaceholder";
@@ -51,8 +53,8 @@ const LiveViewPage = lazy(() => import("./LiveViewPage").then((m) => ({ default:
 // the markdown parser — so that chunk arrives the first time a note is opened
 // and never when a web page is.
 const NotesPage = lazy(() => import("./notes/NotesPage").then((m) => ({ default: m.NotesPage })));
-// The desk is an experiment opened from a tab group, never on the first frame.
-const DeskSurface = lazy(() => import("./desk/DeskSurface"));
+// (The desk is imported eagerly since 2026-10-09: on the desktop it is the first frame — docs/spaces.md. Until then it
+// was an experiment opened from a tab group, a chunk of its own.)
 
 /**
  * The page area: the browser surface with the settings page over it. The
@@ -163,20 +165,28 @@ function SurfacePage({
  * once per event.
  */
 export function BrowserSurface() {
-  const deskGroupId = useDeskStore((state) => state.groupId);
-  const deskInstance = useDeskStore((state) => state.instance);
-  const native = useSurface().kind === "native";
-  // A tab group's desk takes the surface's place while it is up: same box,
-  // same gutter, its own windows over it (components/desk). Keyed by the
-  // desk, not the group: a desk opened afresh is a fresh surface, while one
-  // passed to another group (from its dock) stays, and runs the passing.
-  if (deskGroupId !== null && native)
-    return (
-      <Suspense fallback={null}>
-        <DeskSurface key={deskInstance} groupId={deskGroupId} />
-      </Suspense>
-    );
+  // On the desktop the desk IS the surface (docs/spaces.md, since 2026-10-09): mounted from the first frame and never
+  // swapped for panes, showing main's current space — DeskSurface follows it, passing from space to space in place.
+  // The pane grid below, its split layout, its toolbar and the tabless home page are the web's (a stream surface). One
+  // predicate says which: deskAvailable() (lib/desk/open.ts), as every desk helper asks.
+  if (deskAvailable()) return <DeskMount />;
   return <BrowserSurfaceImpl />;
+}
+
+/**
+ * The desk, keyed by its boot instance: one mount — one engine, started cold
+ * — for the shell's life in a Profile (Space). A Profile switch is a fresh
+ * mount (no window of another Profile's may be a stray flying home), as is a
+ * bump of the desk store's `instance`; a space switch never is. The Profile
+ * the shell boots in keeps the first key as main's first snapshot names it,
+ * so the desk is not mounted twice at boot.
+ */
+function DeskMount() {
+  const profileId = useAppStore((state) => state.snapshot?.activeSpaceId ?? null);
+  const instance = useDeskStore((state) => state.instance);
+  const boot = useRef<string | null>(null);
+  if (boot.current === null && profileId !== null) boot.current = profileId;
+  return <DeskSurface key={`${profileId === boot.current ? "boot" : (profileId ?? "boot")}:${String(instance)}`} />;
 }
 
 /** The snapshot fields the surface actually renders from. */

@@ -55,7 +55,7 @@ import {
   demoVendorHtml,
 } from "./demo-page";
 import { UpdateService } from "./update-service";
-import { ReadAloudService } from "./read-aloud";
+import { ReadAloudService, shellReadAloudSource } from "./read-aloud";
 import { WatchtowerService } from "./watchtower/service";
 import { frameOwnerUrl, ShieldsService } from "./shields/service";
 import { isShieldsRequest } from "@pistachio/shell-contracts/shields";
@@ -68,11 +68,13 @@ import { aiProviderStatus, configuredBriefModel, configuredIntentModel, configur
 import type { ReportRecord } from "@pistachio/reports/contract";
 import { BriefScheduler } from "./brief-scheduler";
 import { BriefService, scriptedBriefMaterials } from "./brief-service";
+import { restoreArchiveEntry } from "./archive-restore";
 import { TabArchiveStore } from "./tab-archive-store";
 import { scriptedGroupNamer, scriptedTidyJudge, TabTidy } from "./tab-tidy";
 import { judgeTidy, nameTabGroup } from "@pistachio/agent-runtime/tab-tidy";
 import { archiveEntryView, isTabArchiveRequest, type TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import { isTabGroupCommand, type TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
+import { spaceHolds } from "./spaces";
 import { isTidyRequest, type TidyResponse } from "@pistachio/shell-contracts/tidy";
 import { AddressIntentRanker, scriptedIntentModel } from "./address-intent";
 import { DeskLayoutJudge, scriptedLayoutModel } from "./desk-layout";
@@ -125,6 +127,7 @@ import {
   pointerHitsSidebarTrigger,
   pointerHoldsPaneToolbar,
   pointerHoldsSidebar,
+  SIDEBAR_DESK_TRIGGER_W,
 } from "@pistachio/shell-contracts/chrome";
 import { EMPTY_NOTICE_STACK, isNoticeEvent, isNoticeFrame } from "@pistachio/shell-contracts/notice";
 import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
@@ -162,6 +165,7 @@ import {
   MAX_FAVORITES,
   favoriteOf,
   isPresetAnchorId,
+  pinOf,
   presetAnchorId,
   type SidebarFavorite,
 } from "@pistachio/shell-contracts/sidebar";
@@ -237,9 +241,13 @@ import {
 } from "@pistachio/shell-contracts/tab-switcher";
 import type { DesktopSettings } from "@pistachio/shell-contracts/settings";
 import {
+  SHORTCUT_DEFINITIONS,
   shortcutAccelerator,
   shortcutActionForEvent,
+  shortcutOffered,
+  type ShortcutActionId,
   type ShortcutPlatform,
+  type ShortcutSettings,
 } from "@pistachio/shell-contracts/shortcuts";
 import {
   isMediaControl,
@@ -375,10 +383,18 @@ function raiseDeskLayer(layer: ChromeOverlayView): void {
 function applyDeskShelf(): void {
   const layer = shelfLayer;
   if (layer === null) return;
+  // Raised as it comes up (the tab views raise it again as they change), not on every word from the shell — a parked
+  // window's picture changes, the shelf is laid afresh — as the notch view is: re-added under the pointer, it would lose
+  // the pointer it has and say it had gone, and the window it had raised would drop, and rise again on the next move.
+  const was = layer.onScreen;
   layer.setSlot(deskShelf?.bounds ?? null);
   layer.setVeiled(shellState.veiled);
   layer.setShown(deskShelf !== null);
-  if (deskShelf !== null) raiseDeskLayer(layer);
+  const rising = !was && layer.onScreen;
+  if (rising) raiseDeskLayer(layer);
+  // Back on screen, it is told the pointer has gone: it went from under the pointer when last hidden (a window it raised
+  // covering the page under it), never heard it leave, and would hear no coming onto that same window again.
+  if (rising && !layer.webContents.isDestroyed()) layer.webContents.sendInputEvent({ type: "mouseLeave", x: -1, y: -1 });
   if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskShelfChanged, deskShelf);
 }
 
@@ -508,7 +524,12 @@ class SidebarWatch {
     this.#zone.setHold(box === null ? null : (point) => pointerHoldsSidebar(point, box));
   }
 
-  /** Watch the hidden sidebar's wider target without changing shell layout. */
+  /**
+   * Watch the hidden sidebar's reveal target without changing shell layout:
+   * on the desk the strip's first 5px (SIDEBAR_DESK_TRIGGER_W, since
+   * 2026-10-09 — the desk is the browser), so the west resize edge of a
+   * window flush with the desk's leading edge can still be reached.
+   */
   setEntryEnabled(enabled: boolean): void {
     if (enabled === this.#entryEnabled) return;
     this.#entryEnabled = enabled;
@@ -516,7 +537,7 @@ class SidebarWatch {
     if (enabled) this.#zone.setHold(null);
     this.#zone.setEntry(
       enabled
-        ? (point) => pointerHitsSidebarTrigger(point, this.#window.getContentBounds().height)
+        ? (point) => pointerHitsSidebarTrigger(point, this.#window.getContentBounds().height, SIDEBAR_DESK_TRIGGER_W)
         : null,
     );
   }
@@ -574,7 +595,11 @@ function cursorPoint(window: BrowserWindow): CursorPoint | null {
 }
 
 let sidebarWatch: SidebarWatch | null = null;
+/** The drag layer's cursor while it holds the pointer for a gesture, or null (setDragCapture). */
+let dragCaptureCursor: DragCursor | null = null;
 let paneToolbarWatch: PaneToolbarWatch | null = null;
+/** A malformed desk report was refused once already: said once, not at every frame. */
+let deskStateRefused = false;
 /**
  * The transparent, full-window view that holds the pointer for a pane-resize
  * drag (@pistachio/shell-contracts/chrome, "drag capture").
@@ -584,6 +609,8 @@ let dragLayer: ChromeOverlayView | null = null;
 let findLayer: ChromeOverlayView | null = null;
 /** The shell's last published state, used by native window/view coordination. */
 let shellState: ShellState = DEFAULT_SHELL_STATE;
+/** The shell has said its state at least once (shellState is DEFAULT_SHELL_STATE's guess until then). */
+let shellStateReported = false;
 let windowButtonHideTimer: NodeJS.Timeout | null = null;
 
 /**
@@ -782,36 +809,43 @@ function forgetKeyGestures(): void {
   if (wasOpen) publishTabSwitcherInput({ type: "cancel" });
 }
 
-/** The compact sidebar: the column hides itself, and the window buttons with it. */
+/** The hidden sidebar (SidebarMode "hidden"; "compact" until 2026-10-09): the column hides itself, and the window buttons with it. */
 function isCompactSidebar(current: DesktopSettings): boolean {
-  return current.layout.sidebar === "compact";
+  return current.layout.sidebar === "hidden";
 }
 
-/** Keep the native reveal target active only while compact mode is hidden (and not the desk's dock). */
+/**
+ * Keep the native reveal target armed only while the sidebar is hidden and
+ * away (docs/spaces.md §3, "What brings it out") — and not while a drag has
+ * the pointer (a window carried to the desk's leading edge passes over the
+ * strip without bringing the column out) nor under a shell overlay. Re-synced
+ * whenever any of those changes: the shell's state, the settings, the drag
+ * capture. (Until 2026-10-09 it was off on a desk, whose dock the column was.)
+ */
 function syncSidebarEntryWatch(): void {
   if (sidebarWatch === null || settings === null) return;
   sidebarWatch.setEntryEnabled(
     isCompactSidebar(settings.get()) &&
       !shellState.sidebarRevealed &&
-      !shellState.sidebarOnDesk,
+      dragCaptureCursor === null &&
+      !shellState.veiled,
   );
 }
 
 /**
- * The macOS traffic lights sit in the sidebar's toolbar. While the compact
- * sidebar is hidden nothing is under them, so they hide with it and come
- * back with the column — the shell says when it is up
- * (ShellState.sidebarRevealed), since the column is the shell's own layout.
- * On close they remain through the CSS retreat rather than popping away from
- * a toolbar that is still visible. A reversal cancels that pending hide.
- *
- * While a tab group's desk is up (ShellState.sidebarOnDesk) the column is
- * the desk's dock, up whole or as its rail whatever the setting says: whole,
- * the buttons stay in its toolbar; as the rail (ShellState.sidebarRail) they
- * are hidden, as with the compact sidebar hidden — the rail is too narrow
- * for them, and they would hang over the desk's corner. They go at once,
- * not after a retreat: the rail's head moves up into their place as it
- * comes.
+ * The macOS traffic lights sit in the sidebar's toolbar (docs/spaces.md §3).
+ * They show while the column is on screen — the shell says so
+ * (ShellState.sidebarRevealed: whole always; hidden only once brought out,
+ * its cover up and its slide begun, so they never show over a window's live
+ * page before the column is there) — and not on the rail
+ * (ShellState.sidebarRail), which is too narrow for them: they would hang
+ * over the desk's corner. Before the shell's first report the setting
+ * stands in (a whole sidebar shows them at once). On close they remain
+ * through the CSS retreat rather than popping away from a toolbar that is
+ * still visible; a reversal cancels that pending hide. On the rail they go
+ * at once: the rail's head moves up into their place as it comes. (Until
+ * 2026-10-09 they also stayed whenever a desk was up — a ShellState field
+ * since gone, the desk being the browser itself.)
  *
  * In native fullscreen they stay on: macOS then keeps them in the titlebar
  * that slides down with the menu bar when the pointer reaches the top edge,
@@ -829,9 +863,8 @@ function applyWindowButtons(immediate = false): void {
   const shouldShow = () =>
     window.isFullScreen() ||
     (!shellState.sidebarRail &&
-      (shellState.sidebarOnDesk ||
-        !isCompactSidebar(requireSettings().get()) ||
-        shellState.sidebarRevealed));
+      (shellState.sidebarRevealed ||
+        (!shellStateReported && requireSettings().get().layout.sidebar === "whole")));
   if (shouldShow()) {
     if (windowButtonHideTimer !== null) clearTimeout(windowButtonHideTimer);
     windowButtonHideTimer = null;
@@ -2308,6 +2341,18 @@ async function createWindow(): Promise<void> {
         shellWindow.webContents.send(IPC.tabSwitcherThumbnail, thumbnail);
       },
       onPointerInput: disarmTabSwitcher,
+      // What makes a space (tab group) the person's, beyond their own hand (docs/spaces.md §2): a Stack with
+      // something in it (an entry may stand empty, never deleted), and a conversation bound to it whose thread is
+      // still there (a binding outlives a thread the store pruned). Read from memory, on every reconcile.
+      groupHolds: (groupId) => spaceHolds({ contexts: groupContexts, conversations: deskConversations, threads })(groupId),
+      // The agent's session follows the space in front (RunController.followGroup); there is no desk to enter or leave.
+      onCurrentGroupChange: (_spaceId, groupId) => runs?.followGroup(groupId),
+      // A page's space whose page let go of its entry is titled after the entry.
+      entryTitle: (spaceId, anchorId) => {
+        if (isPresetAnchorId(anchorId)) return requireSettings().get().organization.presetLinks.find((link) => presetAnchorId(link.url) === anchorId)?.title ?? null;
+        const shelf = sidebar === null ? null : sidebar.get(spaceId);
+        return shelf === null ? null : (favoriteOf(shelf, anchorId)?.title ?? pinOf(shelf, anchorId)?.title ?? null);
+      },
       focusShell: () => {
         if (shellWindow === null || shellWindow.isDestroyed()) return;
         // A shown utility layer that is being typed into (the find bar, the
@@ -2374,8 +2419,10 @@ async function createWindow(): Promise<void> {
   // The person's notes: read, searched and written by the agent's tools, and
   // the page in view when a note tab is in front (docs/notes.md §6).
   runs.setNoteStore(notes);
-  // The conversation that was open when the app last quit comes back.
+  // The conversation that was open when the app last quit comes back — then
+  // the current space's, once launch settles one (onCurrentGroupChange).
   runs.restore();
+  runs.followGroup(browser.currentGroupId());
   const offMemory = requireMemory().onChange((next) => {
     if (!window.isDestroyed()) window.webContents.send(IPC.memoryChanged, next);
   });
@@ -2399,12 +2446,15 @@ async function createWindow(): Promise<void> {
   });
   const offGroupContexts = requireGroupContexts().onChange((next) => {
     if (!window.isDestroyed()) window.webContents.send(IPC.groupContextsChanged, next);
+    // A Stack filled keeps its space through its last tab; one emptied lets an empty space go (docs/spaces.md §2).
+    browser?.refreshSpaces();
   });
-  // A shell that reloads has no desk until it says so again, and nothing it
-  // was asked before the reload will be answered.
+  // Nothing the shell was asked before a reload will be answered. (Until
+  // 2026-10-09 the agent's session also left the desk here, to come back as
+  // the reloaded shell entered it again: it follows main's current space
+  // now, which a reload does not change.)
   window.webContents.on("did-start-loading", () => {
     deskBridge.cancelAll("the desk reloaded");
-    void runs?.deskConversation({ type: "leave" });
     screenshots.reset();
   });
   sidebarController = new SidebarController({
@@ -2608,10 +2658,12 @@ function nativeChromeShortcut(
     return;
   const platform: ShortcutPlatform =
     process.platform === "darwin" ? "darwin" : "other";
+  // (Only what the desktop offers: the web's own actions hold no key here.)
   const action = shortcutActionForEvent(
     requireSettings().get().shortcuts,
     input,
     platform,
+    "native",
   );
   if (action === null) return;
   event.preventDefault();
@@ -2632,6 +2684,8 @@ function nativeChromeShortcut(
  */
 function installMenu(): void {
   const shortcuts = requireSettings().get().shortcuts;
+  const item = (id: ShortcutActionId, options: { label: string; click: () => void }): Electron.MenuItemConstructorOptions[] =>
+    menuShortcutItem(shortcuts, id, options);
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       { role: "appMenu" },
@@ -2639,46 +2693,39 @@ function installMenu(): void {
       {
         label: "View",
         submenu: [
-          {
+          ...item("find", {
             label: "Find in Page",
-            accelerator: shortcutAccelerator(shortcuts.find),
             click: () => requireBrowser().openFind(),
-          },
-          {
+          }),
+          ...item("smartFind", {
             label: "Find by Meaning",
-            accelerator: shortcutAccelerator(shortcuts.smartFind),
             click: () => requireBrowser().openFind("smart"),
-          },
+          }),
           { type: "separator" },
-          {
+          ...item("zoomIn", {
             label: "Zoom In",
-            accelerator: shortcutAccelerator(shortcuts.zoomIn),
             click: () =>
               void requireBrowser().browserControl({ type: "zoomIn" }),
-          },
-          {
+          }),
+          ...item("zoomOut", {
             label: "Zoom Out",
-            accelerator: shortcutAccelerator(shortcuts.zoomOut),
             click: () =>
               void requireBrowser().browserControl({ type: "zoomOut" }),
-          },
-          {
+          }),
+          ...item("zoomReset", {
             label: "Actual Size",
-            accelerator: shortcutAccelerator(shortcuts.zoomReset),
             click: () =>
               void requireBrowser().browserControl({ type: "zoomReset" }),
-          },
+          }),
           { type: "separator" },
-          {
+          ...item("screenshotView", {
             label: "Screenshot Page",
-            accelerator: shortcutAccelerator(shortcuts.screenshotView),
             click: () => sendShellCommand({ type: "runShortcut", id: "screenshotView" }),
-          },
-          {
+          }),
+          ...item("screenshotArea", {
             label: "Screenshot Area…",
-            accelerator: shortcutAccelerator(shortcuts.screenshotArea),
             click: () => sendShellCommand({ type: "runShortcut", id: "screenshotArea" }),
-          },
+          }),
           { type: "separator" },
           {
             label: "Toggle Page Developer Tools",
@@ -2701,65 +2748,75 @@ function installMenu(): void {
       {
         label: "Page",
         submenu: [
-          {
+          ...item("copyUrl", {
             label: "Copy URL",
-            accelerator: shortcutAccelerator(shortcuts.copyUrl),
             click: () =>
               void requireBrowser().browserControl({
                 type: "copyUrl",
                 format: "plain",
               }),
-          },
-          {
+          }),
+          ...item("copyUrlMarkdown", {
             label: "Copy URL as Markdown",
-            accelerator: shortcutAccelerator(shortcuts.copyUrlMarkdown),
             click: () =>
               void requireBrowser().browserControl({
                 type: "copyUrl",
                 format: "markdown",
               }),
-          },
+          }),
           { type: "separator" },
-          {
+          ...item("print", {
             label: "Print…",
-            accelerator: shortcutAccelerator(shortcuts.print),
             click: () =>
               void requireBrowser().browserControl({ type: "print" }),
-          },
+          }),
           { type: "separator" },
-          {
+          ...item("openDownloads", {
             label: "Downloads",
-            accelerator: shortcutAccelerator(shortcuts.openDownloads),
             click: () => sendShellCommand({ type: "toggleDownloads" }),
-          },
+          }),
           { type: "separator" },
-          {
-            // Archive idle tabs and group related ones, now (docs/tab-tidy.md §3.2).
+          // Archive idle tabs and group related ones, now (docs/tab-tidy.md §3.2).
+          ...item("tidyTabs", {
             label: "Tidy Tabs",
-            accelerator: shortcutAccelerator(shortcuts.tidyTabs),
             click: () => sendShellCommand({ type: "tidyTabs" }),
-          },
+          }),
           {
             label: "Archived Tabs",
             click: () => sendShellCommand({ type: "openArchive" }),
           },
           { type: "separator" },
-          {
-            // A blank note in a tab; there is nothing to save (docs/notes.md N8).
+          // A blank note in a tab; there is nothing to save (docs/notes.md N8).
+          ...item("newNote", {
             label: "New Note",
-            accelerator: shortcutAccelerator(shortcuts.newNote),
             click: () => sendShellCommand({ type: "newNote" }),
-          },
-          {
+          }),
+          ...item("openNotes", {
             label: "Notes",
-            accelerator: shortcutAccelerator(shortcuts.openNotes),
             click: () => sendShellCommand({ type: "openNotes" }),
-          },
+          }),
         ],
       },
       { role: "windowMenu" },
     ]),
   );
+}
+
+/**
+ * A menu item that runs a shortcut's action, with the action's key as its
+ * accelerator — listed only where the desktop offers the action
+ * (shortcutOffered "native"), so an action of the web's alone neither shows
+ * here nor holds a key: two actions sharing a key across surfaces never
+ * share an accelerator (2026-10-09).
+ */
+function menuShortcutItem(
+  shortcuts: ShortcutSettings,
+  id: ShortcutActionId,
+  options: { label: string; click: () => void },
+): Electron.MenuItemConstructorOptions[] {
+  const definition = SHORTCUT_DEFINITIONS.find((candidate) => candidate.id === id);
+  if (definition === undefined || !shortcutOffered(definition, "native")) return [];
+  return [{ ...options, accelerator: shortcutAccelerator(shortcuts[id]) }];
 }
 
 /**
@@ -2932,8 +2989,10 @@ function installIpc(): void {
       sendShellCommand({ type: "openBookmarks" });
       return Promise.resolve();
     }
+    // The shell's new tabs (⌘T, New tab, the palette, the home page's links) open where the person is: the current
+    // space (docs/spaces.md §1), said here since createTab's default became loose (2026-10-09).
     return requireBrowser()
-      .createTab(typeof url === "string" ? url : newTabUrl())
+      .createTab(typeof url === "string" ? url : newTabUrl(), { group: "current" })
       .then(() => undefined);
   });
   ipcMain.handle(IPC.tabClose, (_event, tabId: unknown) =>
@@ -2980,10 +3039,13 @@ function installIpc(): void {
   ipcMain.handle(IPC.splitSet, (_event, mode: unknown) =>
     requireBrowser().setSplit(requireSplitMode(mode)),
   );
-  ipcMain.handle(IPC.tabReorder, (_event, tabId: unknown, index: unknown) => {
+  ipcMain.handle(IPC.tabReorder, (_event, tabId: unknown, index: unknown, among: unknown) => {
+    // (`among` absent — an older shell — is "tabs", the index's meaning before 2026-10-09.)
+    if (among !== undefined && among !== "tabs" && among !== "units") throw new Error("invalid reorder");
     requireBrowser().reorderTab(
       requireString(tabId, "tabId"),
       requireIndex(index),
+      among ?? "tabs",
     );
   });
   ipcMain.handle(IPC.tabSplitWith, (_event, tabId: unknown, side: unknown) =>
@@ -3053,12 +3115,12 @@ function installIpc(): void {
   ipcMain.handle(IPC.readAloudSpeak, async (event, text: unknown, title: unknown) => {
     if (!isShell(event.sender)) return;
     const browserNow = requireBrowser();
-    // The player opens as a tab, so it needs a Space: the tab in view's.
-    const tab = browserNow.activeTab();
-    if (tab === null) throw new Error("There is no tab to play this in.");
     // What the media card calls it: a note's name, or the app's.
     const named = typeof title === "string" ? title.trim().slice(0, 200) : "";
-    await browserNow.readAloud(requireString(text, "text"), { ...tab, title: named === "" ? "Pistachio" : named });
+    // The player opens as a tab in a Profile: the tab in view's — or, in an empty space with none in use (a reply read
+    // there, since 2026-10-09), the active Profile's alone (shellReadAloudSource).
+    const source = shellReadAloudSource(browserNow.activeTab(), browserNow.activeSpaceId(), named === "" ? "Pistachio" : named);
+    await browserNow.readAloud(requireString(text, "text"), source);
   });
   ipcMain.handle(
     IPC.mediaControl,
@@ -3141,11 +3203,15 @@ function installIpc(): void {
       await requireBrowser().tabGroupCommand(command);
       return { archivedEntryId: null };
     }
-    // Closing a group files it whole, so it is one Restore away (docs/tab-tidy.md §3.5).
+    // Closing a space files it whole, so it is one Restore away (docs/tab-tidy.md §3.5) — an empty one too, as the
+    // space alone (since 2026-10-09): the entry keeps its id, and restoring it brings its Stack and conversation back.
     const closed = await requireBrowser().closeTabGroup(command.groupId);
-    if (closed === null || closed.tabs.length === 0 || tabArchive === null) return { archivedEntryId: null };
-    const { title, color, origin } = closed.group;
-    const [entry] = tabArchive.add([{ kind: "group", spaceId: closed.spaceId, reason: "closed", runId: null, group: { title, color, origin }, tabs: closed.tabs }]);
+    if (closed === null || tabArchive === null) return { archivedEntryId: null };
+    // Nothing to bring back — no page, no Stack, no conversation (main's own fresh space, closed empty): no entry, which
+    // would only restore an empty "New space".
+    if (closed.tabs.length === 0 && !closed.persons) return { archivedEntryId: null };
+    const { id: groupId, title, color, origin } = closed.group;
+    const [entry] = tabArchive.add([{ kind: "group", spaceId: closed.spaceId, reason: "closed", runId: null, groupId, group: { title, color, origin }, tabs: closed.tabs }]);
     return { archivedEntryId: entry?.id ?? null };
   });
   ipcMain.handle(IPC.tabArchive, async (event, request: unknown): Promise<TabArchiveResponse> => {
@@ -3161,23 +3227,9 @@ function installIpc(): void {
         archive.clear(request.spaceId);
         return { type: "done", ok: true };
       case "restore": {
-        const controller = requireBrowser();
-        const entry = archive.get(request.entryId);
-        if (entry === null) return { type: "done", ok: false };
-        const spaceId = spaces?.get(entry.spaceId) === null ? controller.activeSpaceId() : entry.spaceId;
-        let tabIds: string[];
-        if (entry.kind === "group" && request.tabIndex !== undefined) {
-          const tab = archive.removeGroupTab(entry.id, request.tabIndex);
-          tabIds = tab === null ? [] : controller.restoreArchivedTabs(spaceId, [tab]);
-        } else {
-          archive.remove(entry.id);
-          tabIds = controller.restoreArchivedTabs(spaceId, entry.kind === "tab" ? [entry.tab] : entry.tabs);
-          if (entry.kind === "group") controller.createTabGroup({ ...entry.group, tabIds });
-        }
-        controller.commitTidy();
-        const [first] = tabIds;
-        if (first !== undefined && spaceId === controller.activeSpaceId()) await controller.selectTab(first);
-        return { type: "done", ok: first !== undefined };
+        // Spent only once what it held is back: a space the Profile has no room for keeps its entry (./archive-restore).
+        const restored = await restoreArchiveEntry(archive, requireBrowser(), request, (spaceId) => spaces?.get(spaceId) !== null);
+        return { type: "done", ...restored };
       }
     }
   });
@@ -3210,7 +3262,14 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.deskSet, (event, state: unknown) => {
     if (!isShell(event.sender)) return;
-    requireBrowser().setDesk(isDeskState(state) ? state : null);
+    // Null is the desk torn down (a reload, a Profile switch's remount). A malformed report is dropped, not read as
+    // no desk — that took every mask and zoom off the desk that is always up (until 2026-10-09 it did).
+    if (state !== null && !isDeskState(state)) {
+      if (!deskStateRefused) console.warn("[desk] a malformed desk report was ignored");
+      deskStateRefused = true;
+      return;
+    }
+    requireBrowser().setDesk(state);
   });
   ipcMain.handle(IPC.deskStillsCapture, (event, tabIds: unknown, width: unknown) => {
     if (!isShell(event.sender) || !Array.isArray(tabIds)) return [];
@@ -3329,6 +3388,9 @@ function installIpc(): void {
     if (!isShell(event.sender) || sidebarWatch === null) return;
     if (box !== null && !isBounds(box)) return;
     sidebarWatch.set(box as ContentBounds | null);
+    // The hold watch set turns the entry watch off; the hold let go (a reveal cancelled before its cover cleared, the
+    // column gone) arms it again by the rule, or the hidden column's edge would be the shell's alone from then on.
+    if (box === null) syncSidebarEntryWatch();
   });
   ipcMain.on(IPC.paneToolbarTriggerSet, (event, box: unknown) => {
     if (!isShell(event.sender) || paneToolbarWatch === null) return;
@@ -3353,6 +3415,7 @@ function installIpc(): void {
     if (!isShell(event.sender) || !isShellState(state)) return;
     const switcherEnded = shellState.tabSwitcherOpen && !state.tabSwitcherOpen;
     shellState = state;
+    shellStateReported = true;
     if (switcherEnded) {
       tabSwitcher.reset();
       clearTabSwitcherHold();
@@ -4041,7 +4104,7 @@ function installIpc(): void {
     if (!isShell(event.sender)) throw new Error("import is shell-only");
     const requests = sanitizeBrowserImportRequests(input);
     if (requests === null)
-      throw new Error("Choose at least one profile to bring over.");
+      throw new Error("Choose at least one browser profile to bring over.");
     const spaceId = requireBrowser().activeSpaceId();
     // With the Space's proxy rules already in place (§10.3).
     const partition = await requireBrowser().prepareSpaceSession(spaceId);
@@ -4268,6 +4331,9 @@ function setDragCapture(cursor: DragCursor | null): void {
   const layer = dragLayer;
   if (layer === null || shellWindow === null || shellWindow.isDestroyed())
     return;
+  dragCaptureCursor = cursor;
+  // A drag has the pointer: the hidden sidebar's edge brings nothing out meanwhile.
+  syncSidebarEntryWatch();
   layer.webContents.send(IPC.dragCaptureChanged, cursor);
   if (cursor !== null) {
     // Above the tab views and sidebar: nothing else may take the pointer for

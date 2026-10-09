@@ -113,7 +113,8 @@ test("desktop signup hands its active tab and signed-in session to a fresh web b
     await expect.poll(() => accountRequests.length).toBe(1);
     expect(accountRequests).toEqual([true]);
     console.info("[handoff] Desktop page signed in");
-    await expect(shell.getByTestId("primary-pane")).toBeVisible();
+    // (The desktop's page is a window on its desk, the one in use.)
+    await expect(shell.locator('[data-testid="desk-window"][data-focused]')).toBeVisible();
 
     const native = async <T,>(script: string, url = `${siteUrl}/account`): Promise<T> => desktop!.evaluate(async ({ webContents }, args) => {
       const contents = webContents.getAllWebContents().find(view => view.getURL() === args.url);

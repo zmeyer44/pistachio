@@ -234,7 +234,7 @@ function WorkspaceChip(): ReactNode {
           </button>
         )}
       >
-        <MenuLabel>Spaces</MenuLabel>
+        <MenuLabel>Profiles</MenuLabel>
         {workspace.spaces.length === 0 ? (
           <p className="px-2 py-1.5 text-label-13 text-gray-700">None yet. Your Mac creates them.</p>
         ) : (
@@ -249,11 +249,11 @@ function WorkspaceChip(): ReactNode {
         )}
         <MenuRule />
         <Link className={MENU_ROW} href="/app/spaces" role="menuitem">
-          Manage Spaces
+          Manage Profiles
         </Link>
         <p className="px-2 pt-1 pb-1.5 text-[11px] leading-4 text-gray-700">
           {cloud === 0
-            ? "No Space runs in the cloud yet."
+            ? "No Profile runs in the cloud yet."
             : `${String(cloud)} of ${String(workspace.spaces.length)} run in the cloud.`}
         </p>
       </Popover>
@@ -285,7 +285,7 @@ function ActionRequired(): ReactNode {
           }
         : cloud === 0 && spaces.length > 0
           ? {
-              body: "Open Agent and turn on the cloud browser for a Space, and runs can start from here or iMessage.",
+              body: "Open Agent and turn on the cloud browser for a Profile, and runs can start from here or iMessage.",
               title: "Nothing can run here yet",
             }
           : null;

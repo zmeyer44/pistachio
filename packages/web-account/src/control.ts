@@ -28,8 +28,8 @@ export const CONTROL_URL = (
  */
 const PLAIN_BY_CODE: Readonly<Record<string, string>> = {
   cloud_unavailable: "The hosted browser is temporarily unavailable. Try again in a moment.",
-  no_cloud_browser: "This Space has no cloud browser yet. Turn it on from the Agent page.",
-  space_not_cloud_enabled: "This Space has no cloud browser yet. Turn it on from the Agent page.",
+  no_cloud_browser: "This Profile has no cloud browser yet. Turn it on from the Agent page.",
+  space_not_cloud_enabled: "This Profile has no cloud browser yet. Turn it on from the Agent page.",
   egress_unavailable: "The private network gateway is temporarily unavailable. Try again in a moment.",
   imessage_unavailable: "iMessage delivery is temporarily unavailable. Try again in a moment.",
   upstream_unreachable: "A service Pistachio depends on could not be reached. Try again in a moment.",
@@ -57,7 +57,7 @@ const PLAIN_BY_CODE: Readonly<Record<string, string>> = {
   thread_too_large: "That conversation is too large to send.",
   stale_revision: "Someone else changed this first. Reload and try again.",
   stale_lease: "Another device took over that session. Reload and try again.",
-  spaces_changed: "Your Spaces changed on another device. Reload and try again.",
+  spaces_changed: "Your Profiles changed on another device. Reload and try again.",
   run_ended: "That run has already ended.",
   not_running: "That run is not running.",
   paused: "That run is paused and waiting for you.",

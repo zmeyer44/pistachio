@@ -256,8 +256,9 @@ test("Force focus in a tab's context menu makes a background page believe it is 
   await writeFile(join(userData, "settings.json"), JSON.stringify({ layout: { sidebar: "pinned" } }));
   const app = await launch(electronExecutable(), userData);
   try {
-    // The probe opens in the first tab, then a second tab takes the front:
-    // the probe is now a background tab, and it knows it.
+    // The probe opens in the first tab, then a second tab takes the front, in
+    // a space of its own (the desk passes to it, the probe's window going home
+    // with its space): the probe is now a background tab, and it knows it.
     // Navigating before the start page settles would abort its load.
     await expect.poll(async () => (await snapshot(app)).tabs[0]?.loading, { timeout: 20_000 }).toBe(false);
     const first = (await snapshot(app)).tabs[0];
@@ -266,7 +267,9 @@ test("Force focus in a tab's context menu makes a background page believe it is 
     const mark = `[data-testid="tab-forced-focus-mark-${first.id}"]`;
     await app.shell(`window.pistachio.navigate(${JSON.stringify(first.id)}, ${JSON.stringify(probeUrl)})`);
     await expect.poll(() => probe(app, probeUrl).then((state) => state.visibilityState).catch(() => "none")).toBe("visible");
-    await app.shell(`window.pistachio.createTab(${JSON.stringify(otherUrl)})`);
+    await app.shell(
+      `window.pistachio.tabGroupCommand({ type: "create", id: "elsewhere", tabIds: [], title: "Elsewhere", select: true }).then(() => window.pistachio.createTab(${JSON.stringify(otherUrl)}))`,
+    );
     await expect.poll(async () => (await snapshot(app)).tabs.length).toBe(2);
     await expect.poll(async () => (await probe(app, probeUrl)).visibilityState).toBe("hidden");
     const backgrounded = await probe(app, probeUrl);

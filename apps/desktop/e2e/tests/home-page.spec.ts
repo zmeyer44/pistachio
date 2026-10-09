@@ -110,7 +110,7 @@ test.describe.serial("the home page", { tag: ["@address", "@home", "@settings"] 
     await app?.close();
   });
 
-  test("a new window, a new tab and an emptied window all land on the home page, and its search drives the tab", { tag: ["@smoke"] }, async () => {
+  test("a new window and a new tab land on the home page, an emptied one on an empty space, and its search drives the tab", { tag: ["@smoke"] }, async () => {
     // A fresh window's first tab is the home page, drawn by the shell: the
     // tab's own view stays down under it.
     const home = shell.getByTestId("home-page");
@@ -152,12 +152,13 @@ test.describe.serial("the home page", { tag: ["@address", "@home", "@settings"] 
     // ...and what was visited is there to pick up again.
     await expect(shell.getByTestId("home-recent").first()).toContainText("Fixture One");
 
-    // ⌘T opens a new home tab whose search takes the keyboard; typing ranks
-    // the same inventory the address modal does.
+    // ⌘T opens a new home tab — out on the desk as the window in use — whose
+    // search takes the keyboard; typing ranks the same inventory the address
+    // modal does.
     await shell.keyboard.press("Meta+T");
     await expect.poll(async () => (await tabs(shell)).length).toBe(2);
+    await expect.poll(() => activeTabId(shell)).not.toBe(firstId);
     const secondId = await activeTabId(shell);
-    expect(secondId).not.toBe(firstId);
     await expect(shell.locator(`[data-testid="home-page"][data-tab-id="${secondId!}"]`)).toBeVisible();
     await expect(shell.locator(`[data-testid="home-page"][data-tab-id="${secondId!}"] [data-testid="home-search-input"]`)).toBeFocused();
     await shell.keyboard.type("Fixture");
@@ -223,13 +224,20 @@ test.describe.serial("the home page", { tag: ["@address", "@home", "@settings"] 
     await shell.keyboard.press("Escape");
     await expect(reminders).toHaveCount(0);
 
-    // Closing every tab brings the window back to a home page.
+    // Closing every tab leaves an empty space on the desk, not a home page:
+    // main makes no tab of its own (docs/spaces.md §1). The desk says whose
+    // it is and what can be done — its New tab is the home page again.
     for (const tab of await tabs(shell)) {
       await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), tab.id);
     }
+    await expect.poll(async () => (await tabs(shell)).length).toBe(0);
+    await expect.poll(() => activeTabId(shell)).toBeNull();
+    await expect(shell.getByTestId("desk-empty")).toBeVisible();
+    await expect(shell.getByTestId("home-page")).toHaveCount(0);
+    await captureShell(app, "05-after-closing-every-tab.png");
+    await shell.getByTestId("desk-empty-new-tab").click();
     await expect.poll(async () => (await tabs(shell)).map((tab) => tab.url)).toEqual([HOME_PAGE_URL]);
     await expect(home).toBeVisible();
-    await captureShell(app, "05-after-closing-every-tab.png");
   });
 
   test("the address field shows the active row's text, from the arrows and from the pointer", async () => {

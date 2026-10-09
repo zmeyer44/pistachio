@@ -10,6 +10,7 @@ import {
   joinSpeechAudio,
   parseByteRange,
   readAloudPageHtml,
+  shellReadAloudSource,
   splitForSpeech,
   splitForSpeechSpans,
   type ReadAloudClip,
@@ -582,5 +583,20 @@ describe("clip page", () => {
     expect(html).toContain('data-media-type="audio/aac"');
     expect(html).toContain("media-src 'self' pistachio: blob:");
     expect(html).toContain("MediaSource.isTypeSupported");
+  });
+});
+
+describe("shellReadAloudSource", () => {
+  it("speaks a reply in an empty space — no tab in use — from the active Profile alone, instead of refusing", async () => {
+    const source = shellReadAloudSource(null, "work", "Pistachio");
+    expect(source).toEqual({ id: null, spaceId: "work", title: "Pistachio", url: "", faviconUrl: null });
+    const service = new ReadAloudService({ model: () => synthesizer({ audio: new Uint8Array([1, 2, 3]), mediaType: "audio/mpeg" }), device: synthesizer(new Error("unused")) });
+    const { url } = await service.speak({ text: "The flight lands at 11:05.", sourceTitle: source.title, sourceUrl: source.url, faviconUrl: source.faviconUrl });
+    expect(url).toMatch(/^pistachio:\/\/read-aloud\//);
+  });
+
+  it("takes the tab in view when there is one: its Profile, its page, its card's way back — under the name asked for", () => {
+    const tab = { id: "tab-1", spaceId: "home", title: "Flight", url: "https://air.example/", faviconUrl: "https://air.example/icon.png" };
+    expect(shellReadAloudSource(tab, "work", "Lisbon notes")).toEqual({ ...tab, title: "Lisbon notes" });
   });
 });

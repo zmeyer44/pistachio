@@ -14,6 +14,7 @@ import { useShell } from "../chrome/shell-host";
 import { tabLabel } from "../chrome/tab-parts";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { toolbarClusters, type PaneSpan } from "../lib/pane-toolbar";
+import { useSidebarMode } from "../lib/sidebar-mode";
 import { useAppStore } from "../store";
 import { TabMark } from "./Favicon";
 import { SiteInfoButton } from "./SiteInfoPopover";
@@ -181,9 +182,9 @@ export function PaneToolbar({
   }, [busy, revealed]);
 
   // Back / forward / reload over each pane when the sidebar's own row is not
-  // there to do it (compact) or cannot say which pane it means (a split).
-  const sidebarCompact = useAppStore((state) => state.settings.layout.sidebar !== "pinned");
-  const showNav = sidebarCompact || paneTabIds.length > 1;
+  // there to do it (hidden) or cannot say which pane it means (a split).
+  const sidebarHidden = useSidebarMode() === "hidden";
+  const showNav = sidebarHidden || paneTabIds.length > 1;
 
   const tabs = useChromeTabs();
   const clusters = useMemo(() => {

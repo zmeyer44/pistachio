@@ -220,7 +220,7 @@ export async function changePasswordAndRewrap(
   newPassword: string,
 ): Promise<void> {
   if (keys.rootSecrets.size === 0) {
-    throw new Error("Unlock with your password again before changing it, so this browser can re-seal your Spaces.");
+    throw new Error("Unlock with your password again before changing it, so this browser can re-seal your Profiles.");
   }
   await changeAccountPassword(token, currentPassword, newPassword);
   const salt = crypto.getRandomValues(new Uint8Array(16));

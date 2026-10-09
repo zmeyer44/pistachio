@@ -7,7 +7,7 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage, shellReady } from "./windows";
 import { captureEnabled, launchApp } from "./app";
 import { openAlone, pageAt, pick } from "./pages-harness";
-import { api, createGroup, launchDesk, liveViews, openGroupDesk, openTabs, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
+import { api, createGroup, launchDesk, liveViews, openTabs, reachFrame, selectSpace, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
 
 const screenshotDirectory = join(process.cwd(), "e2e/screenshots/glance");
 const OWNER_URL = "pistachio://demo/invoices";
@@ -149,7 +149,7 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
     await app?.close();
   });
 
-  test("Glance previews a link, dismisses, promotes, and opens in a split", { tag: ["@smoke"] }, async () => {
+  test("Glance previews a link, dismisses, is taken in filling the desk, and as a tile beside its window", { tag: ["@smoke"] }, async () => {
     await ownerAlone();
     const owner = await pageAt(app, OWNER_URL);
     await expect(owner.locator("#vendor-record-link")).toBeVisible();
@@ -158,7 +158,9 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
     let preview = await openGlance(owner, shell, app);
     await expect(shell.getByTestId("glance-close")).toBeVisible();
     await expect(shell.getByTestId("glance-promote")).toBeVisible();
-    await expect(shell.getByTestId("glance-split")).toBeVisible();
+    // On the desk, a tile beside its window in place of the web's split.
+    await expect(shell.getByTestId("glance-tile")).toBeVisible();
+    await expect(shell.getByTestId("glance-split")).toHaveCount(0);
     expect((await shellSnapshot(shell)).tabs).toHaveLength(1);
     await captureWindow(app, "01-link-preview.png");
 
@@ -194,7 +196,7 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
     ]);
     await captureWindow(app, "03-dismissed-to-owner.png");
 
-    // Promotion must reuse the exact preview webContents, preserving in-page state without a reload.
+    // Taken in — filling the desk — it must reuse the exact preview webContents, preserving in-page state without a reload.
     preview = await openGlance(owner, shell, app);
     await preview.evaluate(() => sessionStorage.setItem("glance-preserved", "yes"));
     const previewView = (await tabViews(app)).find(({ url }) => url === PREVIEW_URL);
@@ -202,17 +204,10 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
     const glanceFrame = shell.locator(".glance-frame");
     const previewBox = await glanceFrame.boundingBox();
     if (previewBox === null) throw new Error("Glance frame is unavailable");
-    const fullTabBounds = await shell.locator(".browser-pane-grid").evaluate((grid) => {
-      const surface = grid.parentElement;
-      if (surface === null) throw new Error("Browser surface is unavailable");
-      const surfaceRect = surface.getBoundingClientRect();
-      const element = grid as HTMLElement;
-      return {
-        x: Math.round(surfaceRect.left + element.offsetLeft),
-        y: Math.round(surfaceRect.top + element.offsetTop),
-        width: Math.round(element.offsetWidth),
-        height: Math.round(element.offsetHeight),
-      };
+    // Where it lands: the whole desk (its window filling it, the Drawer in, the page the window's whole box).
+    const fullTabBounds = await shell.locator(".desk-stage").evaluate((stage) => {
+      const rect = stage.getBoundingClientRect();
+      return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
     });
     await shell.getByTestId("glance-promote").click();
     await expect(glanceFrame).toHaveAttribute("data-flight", "promote");
@@ -245,19 +240,25 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
       for (const animation of element.getAnimations()) animation.play();
     });
     await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
-    await expect.poll(async () => (await tabViews(app)).filter(({ visible }) => visible)).toEqual([
+    // On top, the desk's whole box: the window it was opened from under it.
+    await expect.poll(async () => (await tabViews(app)).filter(({ visible }) => visible).at(-1)).toEqual(
       expect.objectContaining({ id: previewView.id, url: PREVIEW_URL, visible: true }),
-    ]);
-    await expect.poll(async () =>
-      (await tabViews(app)).find(({ id }) => id === previewView.id)?.bounds,
-    ).toEqual(fullTabBounds);
+    );
+    await expect
+      .poll(async () => {
+        const bounds = (await tabViews(app)).find(({ id }) => id === previewView.id)?.bounds;
+        if (bounds === undefined) return "no view";
+        const off = Math.max(...(["x", "y", "width", "height"] as const).map((key) => Math.abs(bounds[key] - fullTabBounds[key])));
+        return off <= 2 ? "the desk's" : `off by ${String(off)}: ${JSON.stringify(bounds)}`;
+      })
+      .toBe("the desk's");
     expect(await preview.evaluate(() => sessionStorage.getItem("glance-preserved"))).toBe("yes");
     const promoted = await shellSnapshot(shell);
     expect(promoted.tabs).toHaveLength(2);
     expect(promoted.tabs.find(({ id }) => id === promoted.activeTabId)?.url).toBe(PREVIEW_URL);
     await captureWindow(app, "04-promoted-to-tab.png");
 
-    // Start once more from a single owner so the split action can prove both live pages survive side by side.
+    // Start once more from a single owner so the tile can prove both live pages survive side by side.
     const promotedId = promoted.activeTabId;
     if (promotedId === null) throw new Error("Promoted tab is unavailable");
     await shell.evaluate(async (tabId) => {
@@ -268,13 +269,15 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
     ]);
 
     await openGlance(owner, shell, app);
-    await shell.getByTestId("glance-split").click();
+    await shell.getByTestId("glance-tile").click();
     await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
     await expect.poll(async () => (await tabViews(app)).filter(({ visible }) => visible).length).toBe(2);
-    const split = await shellSnapshot(shell);
-    expect(split.splitMode).toBe("vertical");
-    expect(split.tabs.map(({ url }) => url)).toEqual([OWNER_URL, PREVIEW_URL]);
-    await captureWindow(app, "05-promoted-to-split.png");
+    const tiled = await shellSnapshot(shell);
+    // Two windows on the desk, not a split: there are none on the desktop.
+    expect(tiled.splitMode).toBe("single");
+    expect(tiled.tabs.map(({ url }) => url)).toEqual([OWNER_URL, PREVIEW_URL]);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await captureWindow(app, "05-taken-in-as-a-tile.png");
   });
 
   test("a new-tab link automatically Glances from a favorite tab only", async () => {
@@ -332,7 +335,7 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
     await expect(shell.getByTestId("glance-overlay")).toBeVisible();
     await expect(shell.getByTestId("glance-close")).toBeVisible();
     await expect(shell.getByTestId("glance-promote")).toBeVisible();
-    await expect(shell.getByTestId("glance-split")).toBeVisible();
+    await expect(shell.getByTestId("glance-tile")).toBeVisible();
     const glancedFavicon = favorite.getByTestId("favorite-glance-favicon");
     await expect(glancedFavicon).toBeVisible();
     await expect(glancedFavicon).toHaveAttribute("aria-label", /Glancing Atlas Medical Supply/);
@@ -453,8 +456,8 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
   });
 });
 
-// On a desk, the window the link was in recedes as the panes do: under main's picture of it, dimmed, and back — as it
-// first opens and filling the desk, in either frame.
+// On a desk, the window the link was in recedes: under main's picture of it, dimmed, and back — filling the desk, as
+// its space came up, and set down on it, in either frame.
 for (const chrome of ["bar", "drawer"] as const) {
   test(`a Glance from a desk window (${chrome} frame) recedes the desk on the pictures it was opened over`, { tag: ["@glance", "@desk"] }, async () => {
     test.setTimeout(90_000);
@@ -463,7 +466,7 @@ for (const chrome of ["bar", "drawer"] as const) {
       const [invoice, vendor] = (await openTabs(shell, [OWNER_URL, PREVIEW_URL])) as [string, string];
       await createGroup(shell, "glance", [invoice, vendor], "Glance", "blue");
       await selectTab(shell, invoice);
-      await openGroupDesk(shell, "glance");
+      await selectSpace(shell, "glance");
       await settled(shell, app);
       const stage = shell.locator(".desk-stage");
       const win = shell.locator(windowSelector(invoice));
@@ -488,15 +491,17 @@ for (const chrome of ["bar", "drawer"] as const) {
         await expect.poll(filter).toBe("none");
         await expect.poll(async () => (await liveViews(app)).some((view) => view.url === OWNER_URL)).toBe(true);
       };
-      await glanceOnce("opened");
-      // Filling the desk.
-      if (chrome === "drawer") await expect(win).toHaveAttribute("data-drawer-out", "");
-      await win.getByRole("button", { name: "Fill the desk" }).click();
-      await shell.mouse.move(10, 10);
-      await settled(shell, app);
+      // Filling the desk, as its space came up (its tab the one it was on).
       const whole = (await stage.boundingBox())!;
       await expect.poll(async () => Math.round((await win.boundingBox())!.width)).toBe(Math.round(whole.width));
       await glanceOnce("filled");
+      // A window set down on the desk (its frame within reach first: a Drawer comes out for the pointer).
+      await reachFrame(app, shell, invoice);
+      await win.getByRole("button", { name: "Restore" }).click();
+      await shell.mouse.move(10, 10);
+      await settled(shell, app);
+      await expect.poll(async () => Math.round((await win.boundingBox())!.width)).toBeLessThan(Math.round(whole.width) - 40);
+      await glanceOnce("opened");
     } finally {
       await app.close();
     }
@@ -536,7 +541,7 @@ test("a Glance taken in on a desk fills the desk, or takes a tile beside its win
     const [invoice] = (await openTabs(shell, [OWNER_URL])) as [string];
     await createGroup(shell, "glance", [invoice], "Glance", "blue");
     await selectTab(shell, invoice);
-    await openGroupDesk(shell, "glance");
+    await selectSpace(shell, "glance");
     await settled(shell, app);
     const stage = (await shell.locator(".desk-stage").boundingBox())!;
     const owner = shell.locator(windowSelector(invoice));

@@ -463,7 +463,7 @@ export class IntegrationService {
 
   async #spaceKeys(spaceId: string): Promise<SpaceKeys> {
     const secret = this.#deps.spaceSecret(spaceId);
-    if (secret === null) throw new Error("this Mac holds no key for that Space");
+    if (secret === null) throw new Error("this Mac holds no key for that Profile");
     return deriveSpaceKeys(spaceId, secret);
   }
 

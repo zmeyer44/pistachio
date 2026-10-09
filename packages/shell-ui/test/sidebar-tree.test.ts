@@ -167,6 +167,20 @@ describe("listDropAt over tab groups", () => {
     // Its edges, and the day's rows, are slots among the day's tabs as ever.
     expect(listDropAt(rows, "pin", before(5), 40)).toEqual({ zone: "today", index: 2 });
   });
+
+  it("an EMPTY space's header (docs/spaces.md: no member rows, open or not) takes a row in its middle, and is one unit to the rows around it", () => {
+    // [new tab] · t1 · E(empty) · t2
+    const empty = stack([divider(), tab("t1"), group("E"), tab("t2")]);
+    expect(listDropAt(empty, "tab", mid(2), 0)).toEqual({ zone: "group", groupId: "E", index: GROUP_END });
+    expect(listDropAt(empty, "pin", mid(2), 40)).toEqual({ zone: "group", groupId: "E", index: GROUP_END });
+    // Its edges are the slots around it; below it is no slot inside it (it has no tab to be after).
+    expect(listDropAt(empty, "tab", before(2), 0)).toEqual({ zone: "today", index: 1 });
+    expect(listDropAt(empty, "tab", after(2), 40)).toEqual({ zone: "today", index: 2 });
+    expect(listDropAt(empty, "tab", after(3), 0)).toEqual({ zone: "today", index: 3 });
+    // A space dragged among the rows passes it as one unit.
+    expect(listDropAt(empty, "group", before(2), 0)).toEqual({ zone: "today", index: 1 });
+    expect(listDropAt(empty, "group", after(2), 0)).toEqual({ zone: "today", index: 2 });
+  });
 });
 
 describe("favoriteDropAt", () => {

@@ -17,7 +17,7 @@
 
 import { expect, test, type ElectronApplication } from "@playwright/test";
 import type { WebContentsView } from "electron";
-import { createGroup, launchDesk, openGroupDesk, openTabs, settled, windowSelector } from "./desk-harness";
+import { createGroup, launchDesk, selectSpace, openTabs, settled, windowSelector } from "./desk-harness";
 
 const PAGE = "pistachio://demo/invoices";
 
@@ -86,7 +86,7 @@ test("the notch view's word that the pointer came is the OS pointer's to confirm
     const [tab] = (await openTabs(shell, [PAGE])) as [string];
     // A group of one: its window fills the desk, its page under the nub in the corner — main's notch view lies over it.
     await createGroup(shell, "bar", [tab], "Bar", "blue");
-    await openGroupDesk(shell, "bar");
+    await selectSpace(shell, "bar");
     await settled(shell, app);
     const stage = (await shell.locator(".desk-stage").boundingBox())!;
     const win = shell.locator(windowSelector(tab));

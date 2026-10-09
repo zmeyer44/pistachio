@@ -1,5 +1,7 @@
 # Console routing: a reply or a browser task
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Status: implemented on `main` (September 2026), desktop only. The cloud
 executor runs every turn on the browser path (§9).
 
@@ -239,7 +241,7 @@ line — three small controls, muted until hovered (`MessageActions` in
 `AgentConsole.tsx`):
 
 - **Read aloud** — `ShellApi.readAloudText(text)`: main synthesizes the
-  reply as a read-aloud job in the current tab's Space, the same player and
+  reply as a read-aloud job in the current tab's Profile, the same player and
   media-stack card a page selection gets; the button spins while the first
   piece is prepared, and playback is controlled from the card. Unsupported
   on the cloud browser (no speaker), with the same reason as `cancelReadAloud`.

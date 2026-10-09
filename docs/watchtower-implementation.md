@@ -1,5 +1,7 @@
 # Watchtower implementation
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Implemented on 2026-09-19. This records the desktop release of the [design](watchtower-design.md), including its deliberate limits. The original [draft](watchtower.md) remains a design reference.
 
 ## Use it

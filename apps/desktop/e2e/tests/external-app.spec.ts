@@ -158,7 +158,7 @@ test.describe.serial("app links", { tag: ["@glance", "@site"] }, () => {
     expect(await opened(app)).toHaveLength(4);
 
     // 7. Site controls names what was remembered, and "Reset" forgets it.
-    await (await openSiteInfo(shell)).getByTestId("site-info-site-controls").click();
+    await (await openSiteInfo(shell, app)).getByTestId("site-info-site-controls").click();
     const controls = shell.getByTestId("site-controls");
     await expect(controls.getByTestId("external-app-schemes")).toContainText("Always opens zoomtest links");
     await captureShell(app, "02-site-controls.png");
@@ -215,7 +215,7 @@ test.describe.serial("app links", { tag: ["@glance", "@site"] }, () => {
     // Closing the preview takes its unanswered request with it.
     await shell.getByTestId("glance-close").click();
     await expect(glance).toHaveCount(0);
-    await openSiteInfo(shell);
+    await openSiteInfo(shell, app);
     await expect(shell.getByTestId("site-info-pending")).toHaveCount(0);
   });
 });

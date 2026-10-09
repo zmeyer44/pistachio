@@ -110,7 +110,7 @@ describe("what the walkthrough promises about storage", () => {
       "A few sentences is plenty. Sent to your model provider once, for the words — nothing else leaves this Mac.",
     );
     expect(appearanceCopy("native").aside).toBe(
-      "Appearance is a per-machine preference: it stays on this Mac. Sessions and Spaces are what travel between your devices.",
+      "Appearance is a per-machine preference: it stays on this Mac. Sessions and Profiles are what travel between your devices.",
     );
   });
 

@@ -9,21 +9,24 @@ import type { Overlay } from "../store";
  * address bar, a page of settings, a site's request, a Glance, the first-run
  * wizard — and waits for the screen to be free instead, so a check that
  * lands mid-edit is offered the moment the edit is done.
+ *
+ * The desk is no reason to wait (since 2026-10-09, when it became the
+ * desktop's browser itself, docs/spaces.md §2): the dialog is a page over
+ * the surface, as Settings is, and the desk's windows give way to their
+ * stills under it. Until then it never showed on a desk.
  */
 export function updatePromptWaiting(screen: {
   update: UpdateState;
   overlay: Overlay;
   onboardingOpen: boolean;
   glanceOpen: boolean;
-  deskUp: boolean;
 }): boolean {
   return (
     screen.update.status === "available" &&
     screen.update.prompt.due &&
     screen.overlay === "none" &&
     !screen.onboardingOpen &&
-    !screen.glanceOpen &&
-    !screen.deskUp
+    !screen.glanceOpen
   );
 }
 

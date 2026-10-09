@@ -22,10 +22,14 @@ import {
 
 const WRITE_DELAY_MS = 150;
 
-/** What a caller files; the store names it and stamps it. */
+/**
+ * What a caller files; the store names it and stamps it. A space's (tab
+ * group's) entry carries its id when it was a live space (ArchivedGroupEntry
+ * .groupId, since 2026-10-09), and then may hold no tabs.
+ */
 export type ArchiveDraft =
   | { kind: "tab"; spaceId: string; reason: ArchiveReason; runId: string | null; tab: ArchivedTab }
-  | { kind: "group"; spaceId: string; reason: ArchiveReason; runId: string | null; group: ArchivedGroupEntry["group"]; tabs: ArchivedTab[] };
+  | { kind: "group"; spaceId: string; reason: ArchiveReason; runId: string | null; groupId?: string; group: ArchivedGroupEntry["group"]; tabs: ArchivedTab[] };
 
 export class TabArchiveStore {
   readonly #path: string;
@@ -74,7 +78,14 @@ export class TabArchiveStore {
     return entry;
   }
 
-  /** Take one tab out of a group entry; the entry goes with its last tab. */
+  /**
+   * Take one tab out of a group entry. The entry goes with its last tab —
+   * unless it is a space's own (`groupId`, since 2026-10-09): then it stays
+   * as the space alone, `tabs: []`, so Restore can still bring the space
+   * back by its id, with the Stack and conversation kept under it. It goes
+   * when the space is restored whole or the person removes it. (Until
+   * 2026-10-09 it went here, and with it the only way back to them.)
+   */
   removeGroupTab(entryId: string, tabIndex: number): ArchivedTab | null {
     const entry = this.get(entryId);
     if (entry === null || entry.kind !== "group") return null;
@@ -84,7 +95,7 @@ export class TabArchiveStore {
     this.#current = {
       ...this.#current,
       entries: this.#current.entries.flatMap((candidate) =>
-        candidate.id !== entryId ? [candidate] : tabs.length === 0 ? [] : [{ ...entry, tabs }],
+        candidate.id !== entryId ? [candidate] : tabs.length === 0 && entry.groupId === undefined ? [] : [{ ...entry, tabs }],
       ),
     };
     this.#schedule();

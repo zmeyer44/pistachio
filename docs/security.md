@@ -1,5 +1,7 @@
 # Security model
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 ## Properties
 
 - Forked authority: the human session remains available; the task receives a separate partition and capsule.

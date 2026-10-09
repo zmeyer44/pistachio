@@ -251,7 +251,7 @@ export const UNSUPPORTED = {
   watchtower: "Watchtower currently stores browsing memories on the desktop. Open Pistachio on your Mac to search its archive.",
   getArtifacts: "The artifact library opens in the desktop app for now. Open Pistachio on your Mac to browse the pages the agent built.",
   shields: "Ad and tracker blocking runs in the desktop app; the cloud browser loads pages as they are.",
-  tabGroupCommand: "Tab groups are kept by the desktop app for now. Open Pistachio on your Mac to group tabs.",
+  tabGroupCommand: "Spaces are made in the desktop app for now. Open Pistachio on your Mac to gather tabs into a space.",
   tabArchive: "The tab archive is kept by the desktop app. Open Pistachio on your Mac to see archived tabs.",
   tidy: "Tidy runs in the desktop app for now. Open Pistachio on your Mac to tidy tabs.",
   reports: "The daily brief is built by the desktop app for now. Open Pistachio on your Mac to read it.",
@@ -259,7 +259,7 @@ export const UNSUPPORTED = {
   openLiveView:
     "the pane you are looking at IS the live view: a run in this session acts in these very tabs, so there is no second window to open (W1, W10)",
   forkSpace:
-    "forking a Space clones a live browser profile, which only the desktop app can do; the fork appears here once it syncs",
+    "forking a Profile clones a live browser session, which only the desktop app can do; the fork appears here once it syncs",
   submitFeedback:
     "the feedback endpoint is reached with the desktop app's own API client; write to us from the web app instead",
   cancelReadAloud:
@@ -1143,7 +1143,7 @@ export class ShellHost implements ShellApi, StreamShellApi {
     if (spaceId === this.spaceId) return;
     throw new UnsupportedShellMethodError(
       "switchSpace",
-      "the shell opens the other Space's own session (§6.3)",
+      "the shell opens the other Profile's own session (§6.3)",
     );
   }
 
@@ -3381,7 +3381,7 @@ export class ShellHost implements ShellApi, StreamShellApi {
           cloudEnabled: current?.cloudEnabled ?? true,
         });
       } catch (error) {
-        this.#log.warn("the Space's new name could not be published", { error: errorMessage(error) });
+        this.#log.warn("the Profile's new name could not be published", { error: errorMessage(error) });
       }
     }
     this.setSpaceName(name);
@@ -3423,10 +3423,10 @@ export class ShellHost implements ShellApi, StreamShellApi {
     const tab = this.#tabs.get(tabId);
     if (tab === undefined) return;
     if (spaceId === this.spaceId) return;
-    if (workspace === null) throw new Error("this Space has no synced workspace to hand the tab to");
+    if (workspace === null) throw new Error("this Profile has no synced workspace to hand the tab to");
     const known =
       workspace.spaces().some((space) => space.id === spaceId) || workspace.browserSession(spaceId) !== null;
-    if (!known) throw new Error("that Space is not one of this account's");
+    if (!known) throw new Error("that Profile is not one of this account's");
     const current = workspace.browserSession(spaceId);
     const record = current ?? {
       version: BROWSER_SESSION_VERSION,
@@ -3653,7 +3653,7 @@ export class ShellHost implements ShellApi, StreamShellApi {
   #person(): WorkspacePersonHost {
     const workspace = this.#space.workspace;
     if (workspace === null) {
-      throw new Error("this Space has no synced workspace yet; enable the cloud for it and try again");
+      throw new Error("this Profile has no synced workspace yet; enable the cloud for it and try again");
     }
     return workspace.person({ enrich: (input) => this.#readPage(input.url) });
   }

@@ -51,8 +51,8 @@ import { useMediaPresence } from "./useMediaPresence";
 import { useAppStore } from "../store";
 import { useDeskChrome } from "../lib/desk/chrome";
 import { useNowPlaying } from "../lib/desk/now-playing";
-import { showOnDesk, useDeskWindowKey } from "../lib/desk/open";
-import { useDeskStore } from "../lib/desk/store";
+import { deskAvailable, showOnDesk, useDeskWindowKey } from "../lib/desk/open";
+import { useSidebarMode, useSidebarOnScreen } from "../lib/sidebar-mode";
 import { nativeApi } from "../api";
 import { useSurface } from "../surface";
 import { useSidebarRail } from "./sidebar-rail";
@@ -783,7 +783,8 @@ export function useBackgroundMedia(): {
   const visibleTabIds = useAppStore(
     (state) => state.snapshot?.visibleTabIds ?? EMPTY_TAB_IDS,
   );
-  const onDesk = useDeskStore((state) => state.groupId !== null);
+  // The desk is the desktop's surface (since 2026-10-09): main's visible tabs are the web's guide only.
+  const onDesk = deskAvailable();
   const deskMarks = useDeskChrome((state) => state.marks);
   const deskBehind = useDeskChrome((state) => state.behind);
   const popped = useNowPlaying((state) => state.popped);
@@ -857,15 +858,13 @@ export function MediaStack() {
   const { media, readAloud } = useBackgroundMedia();
   const entries = useMediaPresence(media);
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
-  const pinned = useAppStore(
-    (state) => state.settings.layout.sidebar === "pinned",
-  );
-  // On a desk the column is the desk's dock: up, whatever the layout says.
-  const onDesk = useDeskStore((state) => state.groupId !== null);
+  // The column is on screen — whole, or the hidden sidebar brought out (over the desk, once it is out): the stack's
+  // video, a native view, shows only then (lib/sidebar-mode.ts). (The rail draws no stack.)
+  const pinned = useSidebarMode() !== "hidden";
   // A page whose window is still on the desk (flying into its row, sent here) is the desk's until it has gone.
   const deskWindowKey = useDeskWindowKey();
   const deskWindows = deskWindowKey === "" ? [] : deskWindowKey.split(" ");
-  const sidebarRevealed = useAppStore((state) => state.sidebarRevealed) || onDesk;
+  const sidebarRevealed = useSidebarOnScreen();
   // The footer's menus open upward over this stack. The video is a native
   // view above the page, so a menu can only get in front of it by the view
   // coming down; the card keeps its slot and the view returns on close.

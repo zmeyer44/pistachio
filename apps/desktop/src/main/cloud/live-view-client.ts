@@ -308,7 +308,7 @@ export class LiveViewClient {
       proof = null;
     }
     if (proof === null) {
-      this.#fail("This Mac cannot open that run's Space, so it cannot watch it.");
+      this.#fail("This Mac cannot open that run's Profile, so it cannot watch it.");
       return;
     }
     const socket = this.#socket;

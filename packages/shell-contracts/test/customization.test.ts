@@ -9,12 +9,18 @@ import {
   DEFAULT_SHORTCUTS,
   reservedShortcutReason,
   sanitizeShortcuts,
+  SHORTCUT_ACTION_IDS,
+  SHORTCUT_DEFINITIONS,
+  shortcutOffered,
   shortcutActionForEvent,
   shortcutAccelerator,
   shortcutConflict,
   shortcutFromEvent,
   shortcutLabel,
+  shortcutsGivingUp,
+  shortcutsMeet,
 } from "../src/shortcuts.js";
+import { applySettingsPatch, DEFAULT_SETTINGS } from "../src/settings.js";
 
 describe("appearance customization", () => {
   it("accepts up to three colors and clamps material values", () => {
@@ -139,6 +145,78 @@ describe("editable shortcuts", () => {
     // closeTab, so the later duplicate cannot shadow it.
     expect(next.closeTab).toBeNull();
     expect(Object.values(next).filter((binding) => binding === "Mod+W")).toHaveLength(1);
+  });
+
+  it("keeps a retired action's id but never a key for it, so the key it held is free", () => {
+    const toggleDesk = SHORTCUT_DEFINITIONS.find((definition) => definition.id === "toggleDesk")!;
+    expect(SHORTCUT_ACTION_IDS).toContain("toggleDesk");
+    expect(DEFAULT_SHORTCUTS.toggleDesk).toBeNull();
+    // Every file written before 2026-10-09 saved ⌥⌘\ for it: the key is free for another action now.
+    expect(sanitizeShortcuts({ ...DEFAULT_SHORTCUTS, toggleDesk: "Mod+Alt+Backslash" }).toggleDesk).toBeNull();
+    expect(sanitizeShortcuts({ ...DEFAULT_SHORTCUTS, toggleDesk: "Mod+Alt+Backslash", openNotes: "Mod+Alt+Backslash" }).openNotes).toBe("Mod+Alt+Backslash");
+    expect(shortcutOffered(toggleDesk, "native")).toBe(false);
+    expect(shortcutOffered(toggleDesk, "stream")).toBe(false);
+  });
+
+  it("offers each action on its own surfaces: the desk's on the Mac, splits on the web, the rest on both", () => {
+    const offered = (id: string) => {
+      const definition = SHORTCUT_DEFINITIONS.find((candidate) => candidate.id === id)!;
+      return [shortcutOffered(definition, "native"), shortcutOffered(definition, "stream")];
+    };
+    expect(offered("tileDesk")).toEqual([true, false]);
+    expect(offered("cascadeDesk")).toEqual([true, false]);
+    expect(offered("arrangeDesk")).toEqual([true, false]);
+    expect(offered("toggleSplit")).toEqual([false, true]);
+    expect(offered("toggleSidebarPinned")).toEqual([true, true]);
+    expect(offered("newTab")).toEqual([true, true]);
+  });
+
+  // Each surface reads only the actions it offers (2026-10-09): ⌘\ is the web's split's, and no one's on the desktop.
+  it("matches a key only to an action the surface offers: the rest go on to the page", () => {
+    const backslash = { key: "\\", code: "Backslash", meta: true };
+    const tile = { key: "†", code: "KeyT", meta: true, alt: true };
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, backslash, "darwin", "native")).toBeNull();
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, backslash, "darwin", "stream")).toBe("toggleSplit");
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, tile, "darwin", "native")).toBe("tileDesk");
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, tile, "darwin", "stream")).toBeNull();
+    // Unsaid, every action is matched, as before.
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, backslash, "darwin")).toBe("toggleSplit");
+    // One key, an action of each surface: each surface's own.
+    const shared = sanitizeShortcuts({ ...DEFAULT_SHORTCUTS, tileDesk: "Mod+Backslash" });
+    expect(shortcutActionForEvent(shared, backslash, "darwin", "native")).toBe("tileDesk");
+    expect(shortcutActionForEvent(shared, backslash, "darwin", "stream")).toBe("toggleSplit");
+  });
+
+  it("lets two actions no surface offers both of share a key; one offered on both meets every other", () => {
+    expect(shortcutsMeet("toggleSplit", "tileDesk")).toBe(false);
+    expect(shortcutsMeet("toggleSplit", "reload")).toBe(true);
+    expect(shortcutsMeet("tileDesk", "reload")).toBe(true);
+    expect(shortcutsMeet("toggleDesk", "reload")).toBe(false);
+    expect(sanitizeShortcuts({ ...DEFAULT_SHORTCUTS, tileDesk: "Mod+Backslash" })).toMatchObject({ toggleSplit: "Mod+Backslash", tileDesk: "Mod+Backslash" });
+    // A pair that meets is a duplicate as ever: the later one is unassigned.
+    expect(sanitizeShortcuts({ ...DEFAULT_SHORTCUTS, reload: "Mod+Backslash" })).toMatchObject({ reload: "Mod+Backslash", toggleSplit: null });
+    // The settings writer agrees.
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { shortcuts: { tileDesk: "Mod+Backslash" } }).shortcuts).toMatchObject({ toggleSplit: "Mod+Backslash", tileDesk: "Mod+Backslash" });
+    expect(() => applySettingsPatch(DEFAULT_SETTINGS, { shortcuts: { reload: "Mod+Backslash" } })).toThrow(/cannot both use/);
+  });
+
+  it("finds no conflict on a surface with an action it does not list: that one gives the key up in the same write, if they meet", () => {
+    // Settings › Shortcuts on the desktop: the split holds ⌘\, and is not listed there.
+    expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+Backslash", "reload", "native")).toBeNull();
+    expect(shortcutsGivingUp(DEFAULT_SHORTCUTS, "Mod+Backslash", "reload", "native")).toEqual(["toggleSplit"]);
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { shortcuts: { toggleSplit: null, reload: "Mod+Backslash" } }).shortcuts).toMatchObject({ reload: "Mod+Backslash", toggleSplit: null });
+    // A desk key never meets the split: it is no one's conflict, and the split keeps its key.
+    expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+Backslash", "tileDesk", "native")).toBeNull();
+    expect(shortcutsGivingUp(DEFAULT_SHORTCUTS, "Mod+Backslash", "tileDesk", "native")).toEqual([]);
+    // Unsaid, the surfaces where they meet count.
+    expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+Backslash", "reload")?.id).toBe("toggleSplit");
+    expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+Backslash", "tileDesk")).toBeNull();
+    // On the web, the desk's keys alike.
+    expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+Alt+T", "reload", "stream")).toBeNull();
+    expect(shortcutsGivingUp(DEFAULT_SHORTCUTS, "Mod+Alt+T", "reload", "stream")).toEqual(["tileDesk"]);
+    // What the surface lists still conflicts.
+    expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+T", "editAddress", "native")?.id).toBe("newTab");
+    expect(shortcutConflict(DEFAULT_SHORTCUTS, "Mod+Alt+T", "reload", "native")?.id).toBe("tileDesk");
   });
 
   it("reports conflicts and protects editing/OS bindings", () => {

@@ -4,7 +4,7 @@ import type { SpaceInfo } from "@pistachio/shell-contracts/ipc";
 import { ActionMenuItem } from "../chrome/actions";
 import { useShell } from "../chrome/shell-host";
 import { cn } from "../lib/cn";
-import { useDeskStore } from "../lib/desk/store";
+import { useSidebarOnScreen } from "../lib/sidebar-mode";
 import { useSidebarRail } from "./sidebar-rail";
 import { useAppStore } from "../store";
 import type { PlaneRow } from "../lib/chrome-status";
@@ -41,7 +41,7 @@ export function SidebarMenu() {
         ref={menu.triggerRef}
         type="button"
         data-testid="sidebar-menu-button"
-        aria-label={active === null ? "Menu" : `Space: ${active.name}`}
+        aria-label={active === null ? "Menu" : `Profile: ${active.name}`}
         title={active?.name ?? "Menu"}
         {...menu.triggerProps}
         className={cn(
@@ -66,7 +66,7 @@ export function SidebarMenu() {
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12.5px] leading-4 font-medium">{active.name}</span>
                   <span className="block truncate text-[10.5px] leading-3.5 text-gray-700">
-                    {email ?? (parent === null ? "Current Space" : `Forked from ${parent.name}`)}
+                    {email ?? (parent === null ? "Current Profile" : `Forked from ${parent.name}`)}
                   </span>
                 </span>
               </div>
@@ -78,7 +78,7 @@ export function SidebarMenu() {
                       key={space.id}
                       icon={<SpaceAvatar space={space} size={16} />}
                       label={space.name}
-                      note={space.parentSpaceId === null ? undefined : "Forked Space"}
+                      note={space.parentSpaceId === null ? undefined : "Forked Profile"}
                       testId={`space-chip-${space.id}`}
                       onSelect={() => void switchSpace(space.id)}
                     />
@@ -176,11 +176,10 @@ export function useMenuOverPages(open: boolean): boolean {
   return !raise || ready;
 }
 
-/** The compact column has left the layout: a menu opened from it goes with it. (On a desk it is the desk's dock, and stays.) */
+/**
+ * The hidden sidebar's column has gone (or not yet come out over the desk): a
+ * menu opened from it goes with it. Whole or a rail, it is always there.
+ */
 export function useCompactSidebarHidden(): boolean {
-  const onDesk = useDeskStore((state) => state.groupId !== null || state.opening !== null);
-  const hidden = useAppStore(
-    (state) => state.settings.layout.sidebar === "compact" && !state.sidebarRevealed,
-  );
-  return hidden && !onDesk;
+  return !useSidebarOnScreen();
 }

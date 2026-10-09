@@ -154,16 +154,16 @@ const NATIVE: SurfaceCopy = {
     siteData: "What your browsing session keeps on this Mac, and how to clear it.",
     recents: "The chips in the address bar. Kept on this Mac only, in the chrome's own storage — never in a page's.",
     betweenDevicesTitle: "Between your machines",
-    betweenDevices: "What a Space carries to your other devices, and what never leaves this one.",
+    betweenDevices: "What a Profile carries to your other devices, and what never leaves this one.",
     sessions:
-      "With an account, a Space's sign-ins converge across your enrolled devices, sealed under a key derived for that Space alone — the hub stores ciphertext. Without an account, nothing leaves this Mac. Settings → Sync says which sites take part.",
+      "With an account, a Profile's sign-ins converge across your enrolled devices, sealed under a key derived for that Profile alone — the hub stores ciphertext. Without an account, nothing leaves this Mac. Settings → Sync says which sites take part.",
     preferencesLabel: "Preferences stay on this Mac",
     preferences:
       "Settings, shortcuts, and appearance are per-machine. Organization policies and preset links may be shared; your preferences are not.",
     liveTabs:
       "How a task run here, on this Mac, relates to the sites you are signed in to. Settings → Agent lists what it can do in them.",
     cloudEgress:
-      "Each run goes out through the egress gateway on a credential minted for that run and revoked when it ends — however it ends. Site state that changed during the run reaches this Mac only through the Space's sync, under your own keys.",
+      "Each run goes out through the egress gateway on a credential minted for that run and revoked when it ends — however it ends. Site state that changed during the run reaches this Mac only through the Profile's sync, under your own keys.",
   },
   memory: {
     followSystemZone: (zone) => `Follow this Mac — ${zone}`,
@@ -217,19 +217,19 @@ const STREAM: SurfaceCopy = {
       "Appearance is saved to this account's synced settings, so every device that reads them opens wearing it.",
   },
   privacy: {
-    siteData: "What this Space keeps in the browser running it, and how to clear it.",
+    siteData: "What this Profile keeps in the browser running it, and how to clear it.",
     recents: "The chips in the address bar. Kept by the chrome itself — never in a page's storage.",
     betweenDevicesTitle: "Between your devices",
-    betweenDevices: "What a Space carries to your other devices, and what stays in this session.",
+    betweenDevices: "What a Profile carries to your other devices, and what stays in this session.",
     sessions:
-      "A Space's sign-ins converge across your enrolled devices, sealed under a key derived for that Space alone — the hub stores ciphertext. This tab holds none of them: the browser running this Space signs in from those sealed copies and sends you pixels.",
+      "A Profile's sign-ins converge across your enrolled devices, sealed under a key derived for that Profile alone — the hub stores ciphertext. This tab holds none of them: the browser running this Profile signs in from those sealed copies and sends you pixels.",
     preferencesLabel: "Preferences travel with your account",
     preferences:
       "Settings, shortcuts, and appearance are kept in this account's synced settings, so a change here opens the same way on your other devices. Organization policies and preset links may be shared too.",
     liveTabs:
       "How a task run in this session relates to the sites you are signed in to. Settings → Agent lists what it can do in them.",
     cloudEgress:
-      "Each run goes out through the egress gateway on a credential minted for that run and revoked when it ends — however it ends. Site state that changed during the run reaches your other devices only through the Space's sync, under your own keys.",
+      "Each run goes out through the egress gateway on a credential minted for that run and revoked when it ends — however it ends. Site state that changed during the run reaches your other devices only through the Profile's sync, under your own keys.",
   },
   memory: {
     followSystemZone: (zone) => `Follow this browser — ${zone}`,

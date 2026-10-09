@@ -140,7 +140,7 @@ test.describe.serial("a finished conversation read back from disk", { tag: ["@ag
       // The finished conversations are read in the console, which opens closed.
       settings: { layout: { sidebar: "pinned" }, general: { consoleOpenOnLaunch: true } },
       files: {
-        // Newest first: the note's thread is the one open at launch.
+        // Newest first: the note's thread heads the list.
         "threads/threads.json": { version: 1, threads: [listItem(note), listItem(meta)] },
         [`threads/${note.runId}.json`]: threadFile(note),
         [`threads/${meta.runId}.json`]: threadFile(meta),
@@ -154,6 +154,10 @@ test.describe.serial("a finished conversation read back from disk", { tag: ["@ag
   });
 
   test("a note the agent wrote shows as a card under the reply and opens", async () => {
+    // A conversation bound to no space comes back in the list, not open (the desk's session follows the current
+    // space: docs/spaces.md §2): it is chosen there.
+    await shell.getByTestId("thread-list-button").click();
+    await shell.getByTestId("thread-item-output-card").click();
     const card = shell.getByTestId("output-card");
     await expect(card).toHaveCount(1);
     await expect(card).toContainText("Waymo transit rewards program");

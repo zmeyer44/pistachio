@@ -109,7 +109,7 @@ export default function DevicesPage(): ReactNode {
         <Checkbox
           checked={remembered || choosing !== null}
           label="Stay unlocked on this browser"
-          help={`Seals this account's keys into this browser's vault for ${String(REMEMBER_DAYS)} days under a ${String(PIN_LENGTH)}-digit PIN, so coming back is the PIN instead of your password. Anyone who can use this browser profile and knows the PIN can then read your records. Turning this off forgets them now.`}
+          help={`Seals this account's keys into this browser's vault for ${String(REMEMBER_DAYS)} days under a ${String(PIN_LENGTH)}-digit PIN, so coming back is the PIN instead of your password. Anyone who can use this browser and knows the PIN can then read your records. Turning this off forgets them now.`}
           onChange={(on) => {
             setError(null);
             setMismatch(0);

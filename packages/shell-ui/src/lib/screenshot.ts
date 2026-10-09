@@ -41,32 +41,30 @@ export function areaBox(drag: AreaDrag): ScreenshotBox {
 }
 
 /**
- * The pages: what is between the sidebar, the window's frame and the agent
- * panel — the panes of a split and the gutters between them — or, on a desk,
- * the whole desk, with its Bar out of the picture. False when there is
- * nothing to capture.
+ * The pages: the whole desk — what is between the sidebar, the window's
+ * frame and the agent panel — with its Bar out of the picture. (Until
+ * 2026-10-09 a window with no desk up had its panes captured instead: the
+ * desk is the desktop's surface now, docs/spaces.md.) False when there is
+ * nothing to capture; before the desk's stage is drawn, nothing is.
  */
 export function screenshotView(): boolean {
   const api = nativeApi();
   if (api === null || busy || held) return false;
   busy = true;
   void (async () => {
-    let desk = false;
+    let capturing = false;
     try {
       await overlaysDown();
       const stage = document.querySelector<HTMLElement>("[data-testid='desk-surface'] .desk-stage");
-      const target = stage ?? document.querySelector<HTMLElement>("[data-testid='browser-surface'] .browser-pane-grid");
-      if (target === null) return;
-      if (stage !== null) {
-        desk = true;
-        useDeskStore.getState().setCapturing(true);
-        await painted();
-      }
-      announce(await api.screenshot({ type: "page", box: boxOf(target), ground: windowGround() }));
+      if (stage === null) return;
+      capturing = true;
+      useDeskStore.getState().setCapturing(true);
+      await painted();
+      announce(await api.screenshot({ type: "page", box: boxOf(stage), ground: windowGround() }));
     } catch {
       announce(null);
     } finally {
-      if (desk) useDeskStore.getState().setCapturing(false);
+      if (capturing) useDeskStore.getState().setCapturing(false);
       busy = false;
     }
   })();

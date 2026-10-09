@@ -73,7 +73,7 @@ describe("Watchtower archive", () => {
       expect(archive.search("personal", '"lathe bronze"')).toHaveLength(2);
       expect(archive.search("personal", "ceramic")).toHaveLength(1);
       expect(archive.search("personal", "updated")[0]?.visitId).toBe("b");
-      expect(() => archive.read("work", "a")).toThrow(/another Space/u);
+      expect(() => archive.read("work", "a")).toThrow(/another Profile/u);
       expect(archive.search("work", "lathe")).toEqual([]);
       archive.forget("personal", { since: 2000 });
       expect(archive.read("personal", "a").blocks).toEqual([

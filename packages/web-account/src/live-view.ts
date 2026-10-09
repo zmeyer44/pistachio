@@ -132,7 +132,7 @@ export function useLiveView(options: {
     /** Answer the runner's challenge: the nonce sealed under the Space key. */
     const prove = async (ws: WebSocket, nonce: string): Promise<void> => {
       if (keys === null) {
-        setError("This browser holds no key for this run's Space, so it cannot watch it.");
+        setError("This browser holds no key for this run's Profile, so it cannot watch it.");
         setState("error");
         ws.close(1000, "no space key");
         return;

@@ -45,6 +45,35 @@ const WAIT_LIMIT_MS = 20_000;
 /** Spoken characters per second, for a piece whose audio cannot be measured. */
 const FALLBACK_CHARS_PER_SECOND = 15;
 
+/**
+ * Where a clip is read from (BrowserController.readAloud): the Profile
+ * (Space) its player tab opens in, what its media card shows, and the tab
+ * the card leads back to — none for a clip that came from no tab.
+ */
+export interface ReadAloudSource {
+  id: string | null;
+  spaceId: string;
+  title: string;
+  url: string;
+  faviconUrl: string | null;
+}
+
+/**
+ * The source of a Read aloud the shell asks for (a reply, a note), named
+ * `title` on the media card: the tab in view when there is one, else the
+ * active Profile alone, with no tab — a conversation in an empty space has
+ * none in use (docs/spaces.md §1). Until 2026-10-09 the shell's Read aloud
+ * needed a tab in view and refused without one.
+ */
+export function shellReadAloudSource(
+  activeTab: { id: string; spaceId: string; url: string; faviconUrl: string | null } | null,
+  activeSpaceId: string,
+  title: string,
+): ReadAloudSource {
+  if (activeTab === null) return { id: null, spaceId: activeSpaceId, title, url: "", faviconUrl: null };
+  return { id: activeTab.id, spaceId: activeTab.spaceId, title, url: activeTab.url, faviconUrl: activeTab.faviconUrl };
+}
+
 export interface ReadAloudRequest {
   text: string;
   /** Where the text came from, shown on the media card. */

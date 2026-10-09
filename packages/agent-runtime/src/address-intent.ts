@@ -162,7 +162,7 @@ function intentQuestion(): Experimental_EvaluationQuestion {
       open_page:
         "They want to arrive somewhere in particular. The words name a website, an app, or a page they already have open or have visited before — by its name, or by what it is to them.",
       browser_command:
-        "They want the browser itself to do or change something. The words are about tabs, windows, spaces, bookmarks, history, downloads, appearance, settings, privacy, or keyboard shortcuts.",
+        "They want the browser itself to do or change something. The words are about tabs, windows, spaces, profiles, bookmarks, history, downloads, appearance, settings, privacy, or keyboard shortcuts.",
     },
   };
 }

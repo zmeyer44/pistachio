@@ -58,8 +58,17 @@ export interface DurableSpaceSession {
   activeTabId: string | null;
   recentTabIds: string[];
   splitGroups: SplitGroupInfo[];
-  /** Absent in files written before tab groups (@pistachio/shell-contracts/tab-groups). */
+  /**
+   * Absent in files written before tab groups (@pistachio/shell-contracts/tab-groups). May hold empty spaces (since
+   * 2026-10-09, each with its `beforeUnit`): a Profile (Space) with spaces is kept even with no tabs.
+   */
   tabGroups?: TabGroupInfo[];
+  /**
+   * The Profile's current space (tab group) when it was saved (docs/spaces.md §2; ShellSnapshot.currentGroupId) — since
+   * 2026-10-09, absent before. Read back only if it names one of this Profile's spaces as sanitized, so a restore never
+   * lands on a space that is not there; absent, main takes the space of `activeTabId`.
+   */
+  currentGroupId?: string;
 }
 
 export interface DurableTabSession {
@@ -109,6 +118,13 @@ export function normalizeRestorableTabUrl(value: string): string {
   }
 }
 
+/**
+ * A session file read back. A Profile (Space) is kept while it has tabs or spaces (tab groups) — an empty space is
+ * something a person keeps (since 2026-10-09; until then a Profile with no tabs was dropped, its spaces with it).
+ * `TAB_SESSION_VERSION` was NOT bumped for that, nor for `currentGroupId`: any other version is read as no session at
+ * all, which would cost every person their tabs and every restore point synced from them. An older build reading this
+ * file drops the empty spaces and the field, and nothing else.
+ */
 export function sanitizeTabSession(value: unknown, validSpaceIds?: ReadonlySet<string>): DurableTabSession {
   if (typeof value !== "object" || value === null) return structuredClone(EMPTY_TAB_SESSION);
   const root = value as Record<string, unknown>;
@@ -119,7 +135,7 @@ export function sanitizeTabSession(value: unknown, validSpaceIds?: ReadonlySet<s
   for (const [spaceId, rawSpace] of Object.entries(rawSpaces as Record<string, unknown>)) {
     if (!SAFE_ID.test(spaceId) || (validSpaceIds !== undefined && !validSpaceIds.has(spaceId))) continue;
     const space = sanitizeSpaceSession(rawSpace, spaceId);
-    if (space.tabs.length > 0) spaces[spaceId] = space;
+    if (space.tabs.length > 0 || (space.tabGroups?.length ?? 0) > 0) spaces[spaceId] = space;
   }
   return { version: TAB_SESSION_VERSION, spaces };
 }
@@ -147,7 +163,16 @@ function sanitizeSpaceSession(value: unknown, spaceId: string): DurableSpaceSess
   const anchored = new Map(tabs.flatMap((tab) => (tab.anchorId === null ? [] : [[tab.id, tab.anchorId] as const])));
   const tabGroups = sanitizeTabGroups(raw["tabGroups"], new Set(tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id)), anchored);
   const updatedAt = raw["updatedAt"];
-  return { tabs, activeTabId, recentTabIds, splitGroups, ...(tabGroups.length > 0 ? { tabGroups } : {}), ...(typeof updatedAt === "number" && Number.isFinite(updatedAt) && updatedAt >= 0 ? { updatedAt } : {}) };
+  const currentGroupId = raw["currentGroupId"];
+  return {
+    tabs,
+    activeTabId,
+    recentTabIds,
+    splitGroups,
+    ...(tabGroups.length > 0 ? { tabGroups } : {}),
+    ...(typeof currentGroupId === "string" && tabGroups.some((group) => group.id === currentGroupId) ? { currentGroupId } : {}),
+    ...(typeof updatedAt === "number" && Number.isFinite(updatedAt) && updatedAt >= 0 ? { updatedAt } : {}),
+  };
 }
 
 function sanitizeTab(value: unknown, spaceId: string): DurableTab | null {

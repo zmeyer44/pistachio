@@ -12,7 +12,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test, type ElectronApplication } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, INVOICES, launchDesk, liveViews, openGroupDesk, openMore, openTabs, rowSelector, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
+import { box, createGroup, INVOICES, launchDesk, liveViews, selectSpace, openMore, openTabs, rowSelector, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-drawer");
 
@@ -64,7 +64,7 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
     const [invoice, vendor] = (await openTabs(shell, [INVOICES, VENDOR])) as [string, string];
     await createGroup(shell, "desk-drawer", [invoice, vendor], "Northstar", "blue");
     await selectTab(shell, invoice);
-    await openGroupDesk(shell, "desk-drawer");
+    await selectSpace(shell, "desk-drawer");
     await settled(shell, app);
     await shell.locator(rowSelector(vendor)).click();
     await settled(shell, app);

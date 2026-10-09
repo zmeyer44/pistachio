@@ -210,7 +210,7 @@ test("managed site controls and passkeys are enforced across Chromium views, and
     await expect(footerMenu).toHaveCount(0);
 
     // The page card's site-info popover opens the full Site controls page.
-    await (await openSiteInfo(shell)).getByTestId("site-info-site-controls").click();
+    await (await openSiteInfo(shell, app)).getByTestId("site-info-site-controls").click();
 
     const controls = shell.getByTestId("site-controls");
     await expect(controls).toBeVisible();

@@ -21,7 +21,9 @@ test("a finished conversation stays in the list, reopens, and can be deleted", {
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");
-    await expect(shell.getByTestId("agent-panel")).toBeVisible();
+    // The console; the desk's Bar beside it shows the same conversation (its answer card), so what is read is read here.
+    const panel = shell.getByTestId("agent-panel");
+    await expect(panel).toBeVisible();
 
     // Nothing yet: no thread, no list.
     expect((await snapshot(shell)).threads).toEqual([]);
@@ -33,11 +35,11 @@ test("a finished conversation stays in the list, reopens, and can be deleted", {
     // thread without the demo invoice page the approval would submit to.
     await shell.getByTestId("delegation-intent").fill("Reconcile the invoice and route it for payment");
     await shell.getByTestId("delegate-button").click();
-    await expect(shell.getByTestId("run-status")).toContainText("Running");
-    await expect(shell.getByTestId("approval-card")).toBeVisible();
-    await shell.getByTestId("reject-button").click();
-    await expect(shell.getByTestId("run-status")).toContainText("Rejected");
-    await expect(shell.getByText("I left the draft in place", { exact: false })).toBeVisible();
+    await expect(panel.getByTestId("run-status")).toContainText("Running");
+    await expect(panel.getByTestId("approval-card")).toBeVisible();
+    await panel.getByTestId("reject-button").click();
+    await expect(panel.getByTestId("run-status")).toContainText("Rejected");
+    await expect(panel.getByText("I left the draft in place", { exact: false })).toBeVisible();
 
     const first = await snapshot(shell);
     if (first.run === null) throw new Error("the run is missing after completion");
@@ -54,15 +56,15 @@ test("a finished conversation stays in the list, reopens, and can be deleted", {
 
     // A new conversation clears the console; the old thread waits in the list.
     await shell.getByTestId("new-conversation").click();
-    await expect(shell.getByText("I left the draft in place", { exact: false })).toHaveCount(0);
+    await expect(panel.getByText("I left the draft in place", { exact: false })).toHaveCount(0);
     await expect(shell.getByTestId("recent-threads")).toBeVisible();
     expect((await snapshot(shell)).run).toBeNull();
     expect((await snapshot(shell)).threads.map((thread) => thread.runId)).toEqual([runId]);
 
     // Reopening brings the result back, whole.
     await shell.getByTestId(`recent-thread-${runId}`).click();
-    await expect(shell.getByText("I left the draft in place", { exact: false })).toBeVisible();
-    await expect(shell.getByTestId("run-status")).toContainText("Rejected");
+    await expect(panel.getByText("I left the draft in place", { exact: false })).toBeVisible();
+    await expect(panel.getByTestId("run-status")).toContainText("Rejected");
     const reopened = await snapshot(shell);
     expect(reopened.run?.runId).toBe(runId);
     expect(reopened.run?.messages.length ?? 0).toBeGreaterThan(1);
@@ -73,7 +75,7 @@ test("a finished conversation stays in the list, reopens, and can be deleted", {
     await shell.getByTestId(`thread-delete-${runId}`).click(); // arms, then confirms
     await expect(shell.getByTestId("thread-list-empty")).toBeVisible();
     await shell.keyboard.press("Escape");
-    await expect(shell.getByText("I left the draft in place", { exact: false })).toHaveCount(0);
+    await expect(panel.getByText("I left the draft in place", { exact: false })).toHaveCount(0);
     expect((await snapshot(shell)).run).toBeNull();
     expect((await snapshot(shell)).threads).toEqual([]);
   } finally {

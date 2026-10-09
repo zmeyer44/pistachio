@@ -4,7 +4,6 @@ import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { useDeskChrome } from "../../lib/desk/chrome";
 import { arrangeDesk } from "../../lib/desk/open";
-import { useDeskStore } from "../../lib/desk/store";
 import { holdDeskMore, lingerDeskMore } from "./DeskSidebarControls";
 import type { DeskEngine, DeskView } from "./desk-engine";
 import { DeskMoreCard } from "./DeskMoreCard";
@@ -35,7 +34,7 @@ export function DeskSideCard({
   engine: DeskEngine;
   view: DeskView;
   stageRef: RefObject<HTMLDivElement | null>;
-  /** The desk's group; null on a loose tab's desk, which has no Stack. */
+  /** The desk's space; null for the moment main names a space the snapshot does not list yet: no Stack then. */
   group: TabGroupInfo | null;
   context: GroupContextView | null;
   others: readonly GroupContextView[];
@@ -149,7 +148,6 @@ export function DeskSideCard({
       onTile={fromAction(() => engine.arrange("tile"))}
       onCascade={fromAction(() => engine.arrange("cascade"))}
       onArrange={fromAction(() => void arrangeDesk("smart"))}
-      onLeave={fromAction(() => useDeskStore.getState().leave())}
     />
   );
 }

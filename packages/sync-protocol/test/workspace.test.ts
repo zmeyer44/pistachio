@@ -173,3 +173,40 @@ it("drops portable page details before tab identities when bounding a restore po
   expect(new TextEncoder().encode(JSON.stringify(bounded)).byteLength).toBeLessThan(100_000);
   expect(large.spaces.work?.tabs[0]?.resume).toBeDefined();
 });
+
+it("keeps a space with fewer tabs, or none, when bounding a restore point — and a Profile holding only spaces", () => {
+  const large = structuredClone(session);
+  const work = large.spaces.work!;
+  const tab = work.tabs[0]!;
+  // Two hundred tabs, the oldest first to go; the newest is the one in use.
+  work.tabs = Array.from({ length: 200 }, (_, i) => ({ ...tab, id: `tab-${i}`, lastActiveAt: i, title: "x".repeat(400) }));
+  work.activeTabId = "tab-199";
+  work.tabGroups = [
+    { id: "old", title: "Old", color: "blue", tabIds: ["tab-0", "tab-1"], origin: "manual", open: false, createdAt: 1 },
+    { id: "kept", title: "Kept", color: "green", tabIds: ["tab-0", "tab-199"], origin: "manual", open: false, createdAt: 2 },
+    { id: "lone", title: "New space", color: "gray", tabIds: ["tab-1"], origin: "manual", open: false, createdAt: 3, loose: true },
+    { id: "empty", title: "Trip", color: "amber", tabIds: [], origin: "manual", open: false, createdAt: 4, beforeUnit: "tab-199" },
+  ];
+  work.currentGroupId = "old";
+  large.spaces.quiet = {
+    tabs: [],
+    activeTabId: null,
+    recentTabIds: [],
+    splitGroups: [],
+    tabGroups: [{ id: "only", title: "Only", color: "blue", tabIds: [], origin: "manual", open: false, createdAt: 5 }],
+    currentGroupId: "only",
+  };
+  const bounded = boundRestorePoint(large, 40_000);
+  expect(bounded.spaces.work?.tabs.length).toBeLessThan(200);
+  expect(bounded.spaces.work?.tabs.map((kept) => kept.id)).toContain("tab-199");
+  // The emptied drawn space stays a space; a loose tab's goes with its tab.
+  expect(bounded.spaces.work?.tabGroups?.map((group) => [group.id, group.tabIds])).toEqual([
+    ["old", []],
+    ["kept", ["tab-199"]],
+    ["empty", []],
+  ]);
+  expect(bounded.spaces.work?.tabGroups?.[2]?.beforeUnit).toBe("tab-199");
+  expect(bounded.spaces.work?.currentGroupId).toBe("old");
+  expect(bounded.spaces.quiet?.tabGroups?.map((group) => group.id)).toEqual(["only"]);
+  expect(bounded.spaces.quiet?.currentGroupId).toBe("only");
+});

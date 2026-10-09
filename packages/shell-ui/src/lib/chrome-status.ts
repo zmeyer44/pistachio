@@ -272,8 +272,8 @@ function cloudRow({ cloud, activeSpaceId, threads }: PlanesInput): PlaneRow {
     return {
       id: "cloud",
       label: "Cloud browser",
-      value: "No Spaces",
-      note: "Available, but no Space has handed it a key. It can open nothing of yours.",
+      value: "No Profiles",
+      note: "Available, but no Profile has handed it a key. It can open nothing of yours.",
       tone: "gray",
       section: "cloud",
       href: null,
@@ -283,10 +283,10 @@ function cloudRow({ cloud, activeSpaceId, threads }: PlanesInput): PlaneRow {
   return {
     id: "cloud",
     label: "Cloud browser",
-    value: here ? "This Space" : `${String(enabled.length)} Spaces`,
+    value: here ? "This Profile" : `${String(enabled.length)} Profiles`,
     note: here
-      ? "This Space's key is with the cloud browser: a run here can be handed over."
-      : `${String(enabled.length)} Spaces are enabled, but not this one.`,
+      ? "This Profile's key is with the cloud browser: a run here can be handed over."
+      : `${String(enabled.length)} Profiles are enabled, but not this one.`,
     tone: "green",
     section: "cloud",
     href: null,
@@ -303,8 +303,8 @@ function egressRow({ egress, activeSpaceId }: PlanesInput): PlaneRow {
       value: "Direct",
       note:
         egress.enabled && health.tone === "red"
-          ? "This Space goes out directly. Another Space uses the gateway, which is down."
-          : "This Space's requests go out from this Mac's own address.",
+          ? "This Profile goes out directly. Another Profile uses the gateway, which is down."
+          : "This Profile's requests go out from this Mac's own address.",
       tone: "gray",
       section: "egress",
       href: null,

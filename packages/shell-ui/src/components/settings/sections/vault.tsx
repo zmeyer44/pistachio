@@ -97,10 +97,10 @@ export function VaultPage() {
   const unavailable = useUnavailable("vaultList");
   const failed = useLoadFailure("vaultList");
   if (unavailable !== null) {
-    return <Unavailable title="Passwords" description="Sign-ins this account keeps, sealed under each Space's key." reason={unavailable} section="vault" />;
+    return <Unavailable title="Passwords" description="Sign-ins this account keeps, sealed under each Profile's key." reason={unavailable} section="vault" />;
   }
   if (failed !== null) {
-    return <LoadFailed title="Passwords" description="Sign-ins this account keeps, sealed under each Space's key." reason={failed} />;
+    return <LoadFailed title="Passwords" description="Sign-ins this account keeps, sealed under each Profile's key." reason={failed} />;
   }
   return <VaultPageBody />;
 }
@@ -148,7 +148,7 @@ function VaultPageBody() {
   return (
     <Page
       title="Vault"
-      description="Sign-in details and other sensitive values the agent may type for you on a site, without ever seeing them. Encrypted with the Space key before they leave this Mac; the servers keep only the ciphertext."
+      description="Sign-in details and other sensitive values the agent may type for you on a site, without ever seeing them. Encrypted with the Profile key before they leave this Mac; the servers keep only the ciphertext."
     >
       <Group
         title="Kept for the agent"
@@ -156,7 +156,7 @@ function VaultPageBody() {
         footerAction={
           spaces.length > 1 ? (
             <Select
-              aria-label="Space"
+              aria-label="Profile"
               value={selected ?? ""}
               items={spaces.map((space) => ({ value: space.id, label: space.name }))}
               onValueChange={(value) => setSpaceId(value)}
@@ -229,7 +229,7 @@ function VaultPageBody() {
       <Group title="How it stays private">
         <Row
           label="The agent never reads a value"
-          note="The cloud browser opens the entry with the Space key, types it into the page, and the model learns only that the fields were filled."
+          note="The cloud browser opens the entry with the Profile key, types it into the page, and the model learns only that the fields were filled."
         >
           <Badge variant="green-subtle" size="sm">
             <ShieldCheck aria-hidden="true" /> Always

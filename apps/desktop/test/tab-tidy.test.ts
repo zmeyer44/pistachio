@@ -79,10 +79,11 @@ class FakeHost implements TidyHost<{ tabId: string; url: string }> {
     });
   }
 
-  createTabGroup(options: { title?: string; color?: TabGroupInfo["color"]; tabIds: readonly string[]; origin: TabGroupInfo["origin"] }): TabGroupInfo | null {
+  createTabGroup(options: { id?: string; title?: string; color?: TabGroupInfo["color"]; tabIds: readonly string[]; origin: TabGroupInfo["origin"] }): TabGroupInfo | null {
     const tabIds = options.tabIds.filter((id) => this.row.some((tab) => tab.id === id));
-    if (tabIds.length === 0) return null;
-    const group: TabGroupInfo = { id: `group-${(this.#made += 1)}`, title: options.title ?? "New group", color: options.color ?? "blue", tabIds, origin: options.origin, open: false, createdAt: 0 };
+    // (An id taken refuses, as the controller's does: Undo asks again without one.)
+    if (tabIds.length === 0 || (options.id !== undefined && this.groups.some((group) => group.id === options.id))) return null;
+    const group: TabGroupInfo = { id: options.id ?? `group-${(this.#made += 1)}`, title: options.title ?? "New group", color: options.color ?? "blue", tabIds, origin: options.origin, open: false, createdAt: 0 };
     this.groups.push(group);
     this.#gather();
     return group;
@@ -360,6 +361,27 @@ describe("TabTidy", () => {
     expect(host.groups.map((group) => group.title).sort()).toEqual(["Mine", "Trip"]);
   });
 
+  it("files an archived space by its id, and Undo makes it again with that id — its Stack and conversation are kept by it", async () => {
+    const host = new FakeHost([tab("Trip A", 20), tab("Trip B", 30)]);
+    host.groups.push({ id: "trip", title: "Trip", color: "green", tabIds: ["trip-a", "trip-b"], origin: "auto", open: false, createdAt: 0 });
+    const { tidy, archive } = tidyOver(host);
+    await tidy.run("work", "manual");
+    expect(archive.list("work")[0]).toMatchObject({ kind: "group", groupId: "trip" });
+    tidy.undo();
+    expect(host.groups.map((group) => group.id)).toEqual(["trip"]);
+  });
+
+  it("makes a space again with a new id when its own was taken since", async () => {
+    const host = new FakeHost([tab("Trip A", 20), tab("Trip B", 30), tab("Other", 1)]);
+    host.groups.push({ id: "trip", title: "Trip", color: "green", tabIds: ["trip-a", "trip-b"], origin: "auto", open: false, createdAt: 0 });
+    const { tidy } = tidyOver(host);
+    await tidy.run("work", "manual");
+    host.groups.push({ id: "trip", title: "Someone else", color: "blue", tabIds: ["other"], origin: "manual", open: false, createdAt: 0 });
+    tidy.undo();
+    expect(host.groups.map((group) => group.title).sort()).toEqual(["Someone else", "Trip"]);
+    expect(host.groups.find((group) => group.title === "Trip")?.id).not.toBe("trip");
+  });
+
   it("the sweep runs a due Space once, says so, and then keeps its distance", async () => {
     const clock = { now: NOW };
     const host = new FakeHost([tab("Fresh", 1), tab("Stale", 20)]);
@@ -423,9 +445,12 @@ describe("a favorite's group, at the favorites reset", () => {
     expect(host.titles()).toEqual(["Day"]);
     const [entry] = archive.list("work");
     expect(entry?.kind === "group" ? [entry.group.title, entry.tabs.map((archived) => archived.title)] : null).toEqual(["X", ["X page", "X one", "X two"]]);
+    // The space's own id, so a Restore from the archive brings it back as itself.
+    expect(entry?.kind === "group" ? entry.groupId : null).toBe("x-group");
     expect(tidy.undo()).toBe(true);
     expect(host.titles()).toEqual(["Day", "X page", "X one", "X two"]);
     const back = host.groups.find((group) => group.anchorId === "fav-x");
+    expect(back?.id).toBe("x-group");
     expect(back?.tabIds.map((id) => host.row.find((candidate) => candidate.id === id)?.title)).toEqual(["X page", "X one", "X two"]);
     expect(host.row.find((candidate) => candidate.title === "X page")?.anchorId).toBe("fav-x");
   });

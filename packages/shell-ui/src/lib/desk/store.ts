@@ -1,9 +1,15 @@
 /**
- * The desk's own state (components/desk): which tab group has its desk up,
- * how each group's windows were last arranged, and the variants the person
- * is trying. None of it is the browser's — main never hears of an
- * arrangement — so it lives here and in this device's storage, apart from
- * the shell's store and its snapshot.
+ * The desk's own state (components/desk): how each space's (tab group's)
+ * windows were last arranged, and the variants the person is trying. None
+ * of it is the browser's — main never hears of an arrangement — so it lives
+ * here and in this device's storage, apart from the shell's store and its
+ * snapshot.
+ *
+ * Which space the desk shows is NOT here (since 2026-10-09, docs/spaces.md
+ * §2): the desk is always up on the desktop, and main owns the current
+ * space (ShellSnapshot.currentGroupId), which the desk follows. Until then
+ * this store held the group whose desk was up, and the open/leave/switch
+ * handshake with the sidebar.
  */
 
 import { create } from "zustand";
@@ -145,28 +151,14 @@ export interface SavedDesk {
 }
 
 /**
- * A page's own desk (docs/desk.md, "A loose tab's desk"): a tab that no
- * group can hold and that is no sidebar entry's page chosen while a desk is
- * up comes up on a desk of its own, with only its window out and no group's
- * Bar or Stack. (A day tab in no group gets a group of its own instead, a
- * loose tab's: TabGroupInfo.loose; a favorite's or pin's page, a page's
- * group: TabGroupInfo.anchorId. This desk is theirs only should that fail.) The store's `groupId` then holds this
- * id, which no group's can be (theirs are UUIDs), so everything that asks
- * whether a desk is up still asks the one field. Its window is saved under
- * it as a group's are, so it comes back where it was left.
+ * A page's own desk's id in what was saved before 2026-10-09 (a tab no
+ * group could hold came up on a desk of its own, saved under `tab:<id>`).
+ * Every listed tab is in a space now (docs/spaces.md §1), so there is no
+ * such desk: its arrangements are dropped as they are read (sanitizeSaved).
  */
 const TAB_DESK = "tab:";
 
-export function tabDeskId(tabId: string): string {
-  return TAB_DESK + tabId;
-}
-
-/** The tab whose own desk this is, or null for a group's desk (or none). */
-export function tabDeskOf(deskId: string | null): string | null {
-  return deskId !== null && deskId.startsWith(TAB_DESK) ? deskId.slice(TAB_DESK.length) : null;
-}
-
-/** Every group of the Space in view a desk may be up for: the ones drawn, the loose tabs', and the pages' (a favorite's, a pin's). */
+/** Every space (tab group) of the Profile in view the desk may show: the ones drawn, the loose tabs', and the pages' (a favorite's, a pin's). */
 export function deskGroups(snapshot: ShellSnapshot | null): readonly TabGroupInfo[] {
   if (snapshot === null) return [];
   const loose = snapshot.looseGroups ?? [];
@@ -200,41 +192,18 @@ export function passedEntry(saved: readonly SavedDeskWindow[], tabs: ReadonlyArr
 }
 
 interface DeskStore {
-  /** The group whose desk is up — or a page's own desk (tabDeskId) — or null. */
-  groupId: string | null;
   /**
-   * Which desk this is: a desk opened afresh is a new one (the surface is
-   * mounted anew), while one passed to another group in place (switchTo)
-   * stays the same desk, which runs the passing itself.
+   * Which desk this is: the surface is mounted anew — and its engine starts
+   * cold — when this changes, or the Profile (Space) does (ContentArea). A
+   * space switch never changes it: the desk passes in place
+   * (DeskEngine.switchGroup).
    */
   instance: number;
-  /**
-   * The group whose desk is waiting for the sidebar (sidebarReady): while a
-   * desk is up the sidebar's column is its dock, full or as a rail of icons,
-   * and the desk opens only once the column has settled at that width, so the
-   * page it lifts off is already laid out where it will stand.
-   */
-  opening: string | null;
-  /** The desk is putting itself away; the surface finishes it (finishLeave). */
-  leaving: boolean;
   variants: DeskVariants;
   saved: Record<string, SavedDesk>;
-  /** While a desk is up, the sidebar is a rail of icons (or, false, the whole sidebar): ⌘S switches. Kept on this device. */
-  rail: boolean;
   /** A screenshot of the desk is being taken: the Bar steps out of the picture (lib/screenshot.ts). */
   capturing: boolean;
   setCapturing(capturing: boolean): void;
-  /** Open the group's desk — once the sidebar has settled at its desk width, with `afterSidebar`. */
-  open(groupId: string, options?: { afterSidebar?: boolean }): void;
-  /** The sidebar has settled at its desk width: the desk waiting for it opens. */
-  sidebarReady(): void;
-  setRail(rail: boolean): void;
-  /** The desk that is up passes to another group, in place: its surface runs the passing (DeskEngine.switchGroup). */
-  switchTo(groupId: string): void;
-  /** Put the desk away — with its closing motion unless `immediate`. */
-  leave(options?: { immediate?: boolean }): void;
-  /** The surface's closing motion is done. */
-  finishLeave(): void;
   setVariant<K extends keyof DeskVariants>(key: K, value: DeskVariants[K]): void;
   cycleVariant(key: DeskAxisKey): void;
   save(groupId: string, desk: SavedDesk): void;
@@ -250,21 +219,26 @@ const MAX_SAVED_DESKS = 40;
  */
 const PERSISTED_VERSION = 2;
 
+/**
+ * (Until 2026-10-09 this also kept `rail`, whether the desk's sidebar was its
+ * rail: the sidebar's mode is a setting now (layout.sidebar, docs/spaces.md
+ * §3). A stored one is ignored, not migrated — its `true` was the default,
+ * written by every save, not a choice — and no longer written.)
+ */
 interface Persisted {
   variants: DeskVariants;
   saved: Record<string, SavedDesk>;
-  rail: boolean;
 }
 
 export function readPersistedDesk(raw: string | null): Persisted {
-  const fallback: Persisted = { variants: DEFAULT_DESK_VARIANTS, saved: {}, rail: true };
+  const fallback: Persisted = { variants: DEFAULT_DESK_VARIANTS, saved: {} };
   if (raw === null) return fallback;
   try {
     const value = JSON.parse(raw) as Partial<Persisted> & { version?: unknown };
     const variants = sanitizeVariants(value.variants);
     const version = typeof value.version === "number" ? value.version : 1;
     if (version < 2 && variants.chrome === "bar") variants.chrome = "drawer";
-    return { variants, saved: sanitizeSaved(value.saved), rail: typeof value.rail === "boolean" ? value.rail : true };
+    return { variants, saved: sanitizeSaved(value.saved) };
   } catch {
     return fallback;
   }
@@ -304,6 +278,8 @@ export function sanitizeSaved(value: unknown): Record<string, SavedDesk> {
   if (typeof value !== "object" || value === null) return {};
   const saved: Record<string, SavedDesk> = {};
   for (const [groupId, desk] of Object.entries(value as Record<string, unknown>).slice(-MAX_SAVED_DESKS)) {
+    // A page's own desk (before 2026-10-09): there is none any more, and its tab's space has an arrangement of its own.
+    if (groupId.startsWith(TAB_DESK)) continue;
     const windows = (desk as { windows?: unknown } | null)?.windows;
     if (!Array.isArray(windows)) continue;
     saved[groupId] = {
@@ -331,46 +307,15 @@ function persist(state: Persisted): void {
 const initial = readPersisted();
 
 export const useDeskStore = create<DeskStore>((set, get) => ({
-  groupId: null,
   instance: 0,
-  opening: null,
-  leaving: false,
   variants: initial.variants,
   saved: initial.saved,
-  rail: initial.rail,
   capturing: false,
   setCapturing: (capturing) => set({ capturing }),
-  open: (groupId, options) =>
-    set(
-      options?.afterSidebar === true
-        ? { opening: groupId, groupId: null, leaving: false }
-        : { groupId, instance: get().instance + 1, opening: null, leaving: false },
-    ),
-  sidebarReady: () => {
-    const opening = get().opening;
-    if (opening !== null) set({ groupId: opening, instance: get().instance + 1, opening: null, leaving: false });
-  },
-  setRail: (rail) => {
-    if (rail === get().rail) return;
-    set({ rail });
-    persist({ variants: get().variants, saved: get().saved, rail });
-  },
-  switchTo: (groupId) => {
-    const state = get();
-    if (state.groupId === null || state.leaving || state.groupId === groupId) return;
-    set({ groupId });
-  },
-  leave: (options) => {
-    // Still waiting for the sidebar: it never opened.
-    if (get().opening !== null) set({ opening: null });
-    if (get().groupId === null) return;
-    set(options?.immediate === true ? { groupId: null, leaving: false } : { leaving: true });
-  },
-  finishLeave: () => set({ groupId: null, leaving: false }),
   setVariant: (key, value) => {
     const variants = { ...get().variants, [key]: value };
     set({ variants });
-    persist({ variants, saved: get().saved, rail: get().rail });
+    persist({ variants, saved: get().saved });
   },
   cycleVariant: (key) => {
     const axis = DESK_AXES.find((candidate) => candidate.key === key)!;
@@ -386,6 +331,6 @@ export const useDeskStore = create<DeskStore>((set, get) => ({
     const keys = Object.keys(saved);
     for (const key of keys.slice(0, Math.max(0, keys.length - MAX_SAVED_DESKS))) delete saved[key];
     set({ saved });
-    persist({ variants: get().variants, saved, rail: get().rail });
+    persist({ variants: get().variants, saved });
   },
 }));

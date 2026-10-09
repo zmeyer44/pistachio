@@ -4,6 +4,7 @@
  */
 
 import { useMemo, useRef } from "react";
+import { anchorGroupTabIds, dayRowUnits, tabGroupUnitId, type DayRowUnit, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { useAppStore } from "../store";
 import { chromeTabsSharing, EMPTY_TABS, type ChromeTab } from "../lib/chrome-tabs";
 
@@ -73,4 +74,72 @@ export function rowItems(order: ChromeTab[]): RowItem[] {
     });
   }
   return items;
+}
+
+/**
+ * One slot among the day's rows: a row (a lone tab or a split), or a tab
+ * group — a space — holding rows of its own. The ids are
+ * @pistachio/shell-contracts/tab-groups `dayRowUnits`' — the same units
+ * main and the drag's drop count in.
+ */
+export type DayUnit =
+  | { kind: "row"; id: string; row: RowItem }
+  | { kind: "group"; id: string; group: TabGroupInfo; tabs: ChromeTab[]; rows: RowItem[] };
+
+/**
+ * The day's units as the sidebar draws them: the day's tabs (not an entry's
+ * page, nor a tab of a page's group, which are drawn under their entries) in
+ * `dayRowUnits`' order. An EMPTY space is a unit too (since 2026-10-09:
+ * dayRowUnits sets it where it stands, its `beforeUnit`), drawn as its row
+ * alone; a row whose tabs are all gone is not.
+ */
+export function dayUnits(
+  tabs: readonly ChromeTab[],
+  tabGroups: readonly TabGroupInfo[],
+  splitGroups: readonly { id: string; tabIds: readonly string[] }[],
+  pageGroupTabIds: ReadonlySet<string>,
+): DayUnit[] {
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const groupByUnit = new Map(tabGroups.map((group) => [tabGroupUnitId(group.id), group]));
+  const day = tabs.filter((tab) => tab.anchorId === null && !pageGroupTabIds.has(tab.id)).map((tab) => tab.id);
+  return dayRowUnits(day, splitGroups, tabGroups).flatMap((unit): DayUnit[] => {
+    const members = unit.tabIds.flatMap((tabId) => byId.get(tabId) ?? []);
+    const group = groupByUnit.get(unit.id);
+    if (unit.kind === "group" && group !== undefined) return [{ kind: "group", id: unit.id, group, tabs: members, rows: rowItems(members) }];
+    if (members.length === 0) return [];
+    return [{ kind: "row", id: unit.id, row: { id: unit.id, tabs: members, active: members.some((tab) => tab.active) } }];
+  });
+}
+
+/**
+ * The day's row units as the list draws them while the tabs `moving` are in
+ * hand, which is what a drop among them counts (sidebar-tree's listDropAt):
+ * `dayRowUnits` over the day's tabs WITH those in hand — so an empty space
+ * standing before one of them (its `beforeUnit`) is where it is drawn,
+ * before the slot the row left — and then they are lifted out, a space the
+ * lift emptied staying where it stood (its header drawn without them).
+ */
+export function dayUnitsInHand(
+  snapshot: { tabs: readonly { id: string; anchorId: string | null }[]; tabGroups: readonly TabGroupInfo[]; splitGroups: readonly { id: string; tabIds: readonly string[] }[]; anchorGroups?: readonly TabGroupInfo[] } | null,
+  moving: ReadonlySet<string>,
+): DayRowUnit[] {
+  if (snapshot === null) return [];
+  const underEntries = anchorGroupTabIds(snapshot.anchorGroups ?? []);
+  const day = snapshot.tabs.filter((tab) => tab.anchorId === null && !underEntries.has(tab.id)).map((tab) => tab.id);
+  return dayRowUnits(day, snapshot.splitGroups, snapshot.tabGroups)
+    .map((unit) => ({ ...unit, tabIds: unit.tabIds.filter((tabId) => !moving.has(tabId)) }))
+    .filter((unit) => unit.kind === "group" || unit.tabIds.length > 0);
+}
+
+/**
+ * A drop at `index` among the units as drawn (`drawn`, dayUnitsInHand), as
+ * an index among the same units read again once the drop's own changes have
+ * landed (`now`: a tab taken out of its space, which may have gone with
+ * it): before the first unit at or after the drop that is still there,
+ * after every unit when none is.
+ */
+export function unitIndexAfter(drawn: readonly DayRowUnit[], index: number, now: readonly DayRowUnit[]): number {
+  const following = new Set(drawn.slice(Math.max(0, index)).map((unit) => unit.id));
+  const at = now.findIndex((unit) => following.has(unit.id));
+  return at < 0 ? now.length : at;
 }

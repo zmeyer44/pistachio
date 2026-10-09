@@ -4,6 +4,7 @@ import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
 import { DEFAULT_SIDEBAR_STATE, type SidebarFolder } from "@pistachio/shell-contracts/sidebar";
 import { tabGroupOf, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import type { MenuEntry } from "../components/ContextMenu";
+import { splitAvailable } from "../lib/desk/open";
 import { useAppStore } from "../store";
 import { useShell } from "./shell-host";
 import { moveToFolderEntries } from "./tab-menu-entries";
@@ -54,7 +55,7 @@ function groupEntries(
           },
         ]),
     {
-      label: "New group with this tab",
+      label: "New space with this tab",
       icon: <SquarePlus aria-hidden="true" />,
       onSelect: () => {
         const id = crypto.randomUUID();
@@ -77,10 +78,11 @@ export interface TabMenuOptions {
   /** A group made from the tab: the chrome names it, or starts its rename (useNewGroupNaming). */
   onNewGroup?: (groupId: string) => void;
   /**
-   * Opened while a desk is up, the sidebar being its dock: a split view
-   * means nothing there (its entry goes), a tab whose window is out is on
-   * screen and cannot be suspended, and a tab added to another group goes
-   * the way the desk sends it (its window flying into that group's row).
+   * Opened on the desk, the sidebar being its dock (always, on the desktop,
+   * since 2026-10-09): a tab whose window is out is on screen and cannot be
+   * suspended, and a tab added to another group goes the way the desk sends
+   * it (its window flying into that group's row). (A split view means
+   * nothing there either: splitAvailable, the surface's, not this.)
    */
   desk?: {
     onDesk(tabId: string): boolean;
@@ -150,8 +152,9 @@ export function useTabMenu(options: TabMenuOptions = {}): (tab: ChromeTab) => Me
       disabled: tab.kind !== "human" || !canReadUrl(tab.url),
       onSelect: () => void toggleReaderView(tab.id),
     },
-    // (A desk shows no split views: its windows are laid out by hand.)
-    ...(desk !== undefined
+    // (Splits are the web's alone since 2026-10-09: a desk lays its windows out by hand. Asked of the surface, not of
+    // `desk`, which a menu opened in a cold start's first frames may not have yet.)
+    ...(!splitAvailable()
       ? []
       : [
           {

@@ -491,8 +491,8 @@ function LockedNote(): ReactNode {
         <KeyRound className="size-3" aria-hidden="true" />
       </span>
       <p className="text-copy-13 text-gray-900">
-        This browser holds no key for this run&rsquo;s Space, so what it read and said stays sealed. What it did is
-        below. Unlock with the password that Space was created under to see the rest.
+        This browser holds no key for this run&rsquo;s Profile, so what it read and said stays sealed. What it did is
+        below. Unlock with the password that Profile was created under to see the rest.
       </p>
     </div>
   );

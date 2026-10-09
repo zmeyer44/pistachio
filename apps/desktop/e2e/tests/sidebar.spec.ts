@@ -5,6 +5,7 @@ import { shellReady } from "./windows";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { SidebarState } from "@pistachio/shell-contracts/sidebar";
 import { launchApp } from "./app";
+import { openTabs } from "./desk-harness";
 import { captureShell as captureWindowFrame, nextFrames, settled, snapshot } from "./chrome-harness";
 
 /**
@@ -72,7 +73,7 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
     await expect(preset).toHaveCount(1);
     await expect(preset).toHaveAttribute("aria-label", "Invoice portal");
     await expect(preset).not.toHaveAttribute("data-live");
-    await expect(sidebar.getByTestId("sidebar-menu-button")).toHaveAttribute("aria-label", "Space: Operations");
+    await expect(sidebar.getByTestId("sidebar-menu-button")).toHaveAttribute("aria-label", "Profile: Operations");
     await expect(sidebar.getByTestId("pinned-tab")).toHaveCount(0);
     await expect(sidebar.getByTestId("new-tab-button")).toBeVisible();
 
@@ -88,17 +89,21 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
     await expect(liveHeader).toHaveAttribute("aria-expanded", "true");
     await expect(liveBody).toHaveAttribute("aria-hidden", "false");
     await expect.poll(async () => (await liveBody.boundingBox())?.height ?? 0).toBeGreaterThan(20);
-    await expect(sidebar.getByTestId("human-tab")).toHaveCount(1);
+    // The day's tabs (a page's tab, its space current, is drawn under the grid: not among them).
+    const dayTabs = sidebar.getByRole("tablist", { name: "Open tabs" }).getByTestId("human-tab");
+    await expect(dayTabs).toHaveCount(1);
     await atRest(app, shell, "01-shelf.png");
 
-    // A preset opens as its own tab, bound to the tile: the tile lights up and
-    // the day's tabs gain one. Clicking it again shows that tab, not another.
+    // A preset opens as its own tab, bound to the tile: the tile lights up, and
+    // its page's space is the desk's, its tab under the grid, not among the
+    // day's. Clicking it again shows that tab, not another.
     await preset.click();
     await expect(preset).toHaveAttribute("data-live", "");
     await expect(preset).toHaveAttribute("aria-pressed", "true");
-    await expect(sidebar.getByTestId("human-tab")).toHaveCount(1);
+    await expect(dayTabs).toHaveCount(1);
+    await expect(sidebar.getByTestId("human-tab")).toHaveCount(2);
     await preset.click();
-    await expect(sidebar.getByTestId("human-tab")).toHaveCount(1);
+    await expect(sidebar.getByTestId("human-tab")).toHaveCount(2);
     // Closing the page keeps the tile. (⌘W is main's before-input-event,
     // which a synthetic key press never reaches; the menu is the same close.)
     await pick(shell, preset, "Close tab");
@@ -199,11 +204,12 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
       })
       .toEqual({ favorites: 1, folders: ["Finance"] });
 
-    // Removing the favorite frees its page back into the day's tabs — beside
-    // the tab main opened when the pin's page was closed as the last one.
+    // Removing the favorite frees its page back into the day's tabs — the
+    // only one there: closing the pin's page as the last tab left an empty
+    // space, main making no tab of its own (docs/spaces.md §1).
     await pick(shell, favorite, "Remove from favorites");
     await expect(sidebar.getByTestId("favorite-tile")).toHaveCount(0);
-    await expect(sidebar.getByTestId("sidebar-tab-list").getByTestId("human-tab")).toHaveCount(2);
+    await expect(sidebar.getByTestId("sidebar-tab-list").getByTestId("human-tab")).toHaveCount(1);
 
     // Pin one open page, put it in the folder, then delete both folder and
     // contents. The pin disappears while its page returns to Live tabs.
@@ -213,7 +219,7 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
     await pick(shell, folder, "Delete folder and pins");
     await expect(sidebar.getByTestId("pinned-folder")).toHaveCount(0);
     await expect(sidebar.getByTestId("pinned-tab")).toHaveCount(0);
-    await expect(sidebar.getByTestId("sidebar-tab-list").getByTestId("human-tab")).toHaveCount(2);
+    await expect(sidebar.getByTestId("sidebar-tab-list").getByTestId("human-tab")).toHaveCount(1);
   });
 
   test("a folder takes a colour and an emoji from its menu, and keeps them on disk", async () => {
@@ -425,7 +431,8 @@ test("a row dragged below the last tab lands last, past a group that ends the li
     const shell = await shellReady(app);
     const list = shell.getByTestId("sidebar-tab-list");
     const rows = list.locator("[data-tab-id]");
-    for (let i = 0; i < 3; i += 1) await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab("pistachio://home"));
+    // Three more day tabs, each a loose one (opened in the background: a new tab in front would join the current space).
+    await openTabs(shell, ["pistachio://demo/invoices?row=1", "pistachio://demo/invoices?row=2", "pistachio://demo/invoices?row=3"]);
     await expect(rows).toHaveCount(4);
     const order = (): Promise<string[]> => rows.evaluateAll((els) => els.map((el) => el.getAttribute("data-tab-id") ?? ""));
 

@@ -38,8 +38,8 @@ export default function SpacesPage(): ReactNode {
   return (
     <Page>
       <Intro
-        title="Spaces"
-        lede="Each Space is a separate browsing context with its own cookies. What syncs, what the cloud browser may drive, and how each one reaches the internet."
+        title="Profiles"
+        lede="Each Profile is a separate browsing context with its own cookies. What syncs, what the cloud browser may drive, and how each one reaches the internet."
       />
 
       {relockError === null ? null : <Note tone="alert">{relockError}</Note>}
@@ -47,7 +47,7 @@ export default function SpacesPage(): ReactNode {
       {unopened.length === 0 ? null : (
         <div className="pa-section">
           <Note tone="alert">
-            {unopened.length === 1 ? "One Space's key" : `${String(unopened.length)} Spaces' keys`} could not be opened
+            {unopened.length === 1 ? "One Profile's key" : `${String(unopened.length)} Profiles' keys`} could not be opened
             with this password. That happens after a password reset: sign in on the Mac that holds them and change your
             password there to re-wrap them.
             {remembered
@@ -65,16 +65,16 @@ export default function SpacesPage(): ReactNode {
       )}
 
       {visibleSpaces.length === 0 ? (
-        <Empty title={hubState === "connected" ? "No Spaces yet" : "Waiting for your devices"}>
-          <p>Create an account Space to separate a set of browsing sessions and agent tasks.</p>
+        <Empty title={hubState === "connected" ? "No Profiles yet" : "Waiting for your devices"}>
+          <p>Create an account Profile to separate a set of browsing sessions and agent tasks.</p>
         </Empty>
       ) : (
-        <Section heading="Your Spaces">
+        <Section heading="Your Profiles">
           <Table
-            caption={`${String(visibleSpaces.length)} Space${visibleSpaces.length === 1 ? "" : "s"} on this account.`}
+            caption={`${String(visibleSpaces.length)} Profile${visibleSpaces.length === 1 ? "" : "s"} on this account.`}
             head={
               <>
-                <th scope="col">Space</th>
+                <th scope="col">Profile</th>
                 <th scope="col">Cloud browser</th>
                 <th scope="col">Leaves your machine as</th>
                 <th scope="col">Keys here</th>
@@ -107,7 +107,7 @@ export default function SpacesPage(): ReactNode {
       )}
 
       <Note>
-        You can turn on the cloud browser from the Agent page. The Space key is wrapped in this browser before it is
+        You can turn on the cloud browser from the Agent page. The Profile key is wrapped in this browser before it is
         handed to the hosted agent; Pistachio&apos;s control service never sees the plaintext key.
       </Note>
     </Page>

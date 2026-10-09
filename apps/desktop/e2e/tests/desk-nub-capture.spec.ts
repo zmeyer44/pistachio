@@ -14,7 +14,7 @@ import { expect, test } from "@playwright/test";
 import { IPC } from "@pistachio/shell-contracts/ipc";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { captureEnabled } from "./app";
-import { box, createGroup, INVOICES, launchDesk, openGroupDesk, openMore, openNubMenu, openTabs, openTray, reachBar, rowSelector, screenshots, selectTab, settled, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { box, createGroup, INVOICES, launchDesk, selectSpace, openMore, openNubMenu, openTabs, openTray, reachBar, rowSelector, screenshots, selectTab, settled, VENDOR, windowSelector, type Box } from "./desk-harness";
 
 const shots = screenshots("desk-nub", ["notch"]);
 
@@ -54,7 +54,7 @@ test("the Bar's nub, state by state", { tag: ["@desk"] }, async () => {
     const [invoice, vendor, accounts] = (await openTabs(shell, [INVOICES, VENDOR, ACCOUNTS])) as [string, string, string];
     await createGroup(shell, "nub", [invoice, vendor, accounts], "Northstar", "green");
     await selectTab(shell, invoice);
-    await openGroupDesk(shell, "nub");
+    await selectSpace(shell, "nub");
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
     const away = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.4, stage.y + stage.height * 0.35);

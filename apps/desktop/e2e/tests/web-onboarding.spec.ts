@@ -220,7 +220,7 @@ test("a new web account walks the first run and lands in a furnished Space", { t
     await expect(grid.getByTestId("favorite-tile")).toHaveCount(3, { timeout: 60_000 });
     // The Space was renamed after the person: the host sealed the record and
     // this side told control's own row about it.
-    await expect(page.getByTestId("sidebar-menu-button")).toHaveAttribute("aria-label", "Space: Ada", {
+    await expect(page.getByTestId("sidebar-menu-button")).toHaveAttribute("aria-label", "Profile: Ada", {
       timeout: 60_000,
     });
     // The welcome tabs are open, at their own logical addresses: the host

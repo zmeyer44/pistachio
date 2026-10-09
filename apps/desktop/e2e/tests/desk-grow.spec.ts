@@ -20,7 +20,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, createTab, launchDesk, openGroupDesk, openMore, rowSelector, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
+import { box, createGroup, createTab, launchDesk, selectSpace, openMore, rowSelector, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-grow");
 
@@ -92,7 +92,7 @@ test.describe.serial("a desk window growing, and shrinking", { tag: ["@desk"] },
     tabs = [byUrl.get(urls[0])!, byUrl.get(urls[1])!];
     await createGroup(shell, "grow", tabs, "Growing", "green");
     await selectTab(shell, tabs[0]);
-    await openGroupDesk(shell, "grow");
+    await selectSpace(shell, "grow");
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
     away = () => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);
@@ -236,7 +236,7 @@ test("at 2×, a window grown under the More card is its page at its own scale, n
     const tabs = [byUrl.get(urls[0])!, byUrl.get(urls[1])!] as const;
     await createGroup(shell, "grow", tabs, "Growing", "green");
     await selectTab(shell, tabs[0]);
-    await openGroupDesk(shell, "grow");
+    await selectSpace(shell, "grow");
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
     const away = () => shell.mouse.move(stage.x + stage.width * 0.7, stage.y + stage.height * 0.95);

@@ -235,12 +235,14 @@ export interface AppState {
   chatInbox: ChatInbox;
   /** The agent console's width in px — clamped and persisted on every set. */
   consoleWidth: number;
-  /** The sidebar's width in px, pinned or compact — clamped and persisted on every set. */
+  /** The whole sidebar's width in px — clamped and persisted on every set (the rail and the hidden slot have their own). */
   sidebarWidth: number;
   /**
-   * The compact sidebar's column is in the layout: the pointer brought it
-   * out at the window's edge and has not left it (layouts/SidebarLayout.tsx).
-   * Meaningless while the sidebar is pinned.
+   * The hidden sidebar is asked out: the pointer came to the window's edge
+   * and has not left (layouts/SidebarLayout.tsx). The INTENT — on the desk
+   * the column shows only once its cover is up (lib/sidebar-mode.ts's
+   * `useSidebarColumn.out` says when it is on screen). Meaningless while the
+   * sidebar is whole or a rail.
    */
   sidebarRevealed: boolean;
   /**
@@ -596,7 +598,8 @@ export interface AppState {
   goForward(tabId: string): Promise<void>;
   reload(tabId: string): Promise<void>;
   setSplit(mode: SplitMode): Promise<void>;
-  reorderTab(tabId: string, index: number): Promise<void>;
+  /** ShellApi.reorderTab: `among` "units" counts the day's row units as drawn, empty spaces included (main's alone). */
+  reorderTab(tabId: string, index: number, among?: "tabs" | "units"): Promise<void>;
   splitWith(tabId: string, side: SplitSide): Promise<void>;
   /** Take a tab out of its split group without closing it. */
   removeFromSplit(tabId: string): Promise<void>;
@@ -1641,7 +1644,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   goForward: (tabId) => safeAction(() => shellApi().goForward(tabId), set),
   reload: (tabId) => safeAction(() => shellApi().reload(tabId), set),
   setSplit: (mode) => safeAction(() => shellApi().setSplit(mode), set),
-  reorderTab: (tabId, index) => safeAction(() => shellApi().reorderTab(tabId, index), set),
+  // (Only an index among units says so: the web's hosts take two arguments.)
+  reorderTab: (tabId, index, among) =>
+    safeAction(() => (among === undefined ? shellApi().reorderTab(tabId, index) : shellApi().reorderTab(tabId, index, among)), set),
   splitWith: (tabId, side) => safeAction(() => shellApi().splitWith(tabId, side), set),
   removeFromSplit: (tabId) => safeAction(() => shellApi().removeFromSplit(tabId), set),
   duplicateTab: (tabId) =>

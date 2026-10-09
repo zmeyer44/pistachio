@@ -423,7 +423,7 @@ export class WatchtowerService {
           error.code === "NOT_FOUND"
         )
           return new Response(
-            "This saved visit has been forgotten or belongs to another Space.",
+            "This saved visit has been forgotten or belongs to another Profile.",
             { status: 404, headers: { "cache-control": "no-store" } },
           );
         return new Response(
@@ -901,7 +901,7 @@ export class WatchtowerService {
         paused: false,
       })
     )
-      return { skipped: "This site or Space is excluded from Watchtower." };
+      return { skipped: "This site or Profile is excluded from Watchtower." };
     if (this.#full) return { skipped: "Watchtower's storage is full." };
     this.attach(tabId, source.contents);
     const state = this.#tabs.get(tabId)!;

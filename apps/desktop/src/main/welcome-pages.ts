@@ -75,6 +75,8 @@ function pageContext(context: WelcomeContext): WelcomePageContext {
     shortcuts: context.shortcuts,
     platform: context.platform,
     systemDark: context.systemDark,
+    // No split view on the desktop: a space's windows tile on its desk (docs/spaces.md).
+    splits: false,
   };
 }
 

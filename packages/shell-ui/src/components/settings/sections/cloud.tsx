@@ -65,7 +65,7 @@ function CloudPageBody() {
   return (
     <Page
       title="Cloud browser"
-      description="A browser Pistachio runs for you, in its own machine, holding the Spaces you hand it a key for. It signs in with the same sealed sessions this Mac has, so a run can continue while your laptop is shut."
+      description="A browser Pistachio runs for you, in its own machine, holding the Profiles you hand it a key for. It signs in with the same sealed sessions this Mac has, so a run can continue while your laptop is shut."
     >
       <DeviceGroup />
       <SpacesGroup />
@@ -89,7 +89,7 @@ function DeviceGroup() {
       note="The cloud browser is a device of this account like any other: it has its own key pair, it appears in Settings → Devices, and it can be revoked there."
       footer={
         cloud.available
-          ? "Its key was pinned the first time a Space enabled it. A different key stops everything until you confirm it."
+          ? "Its key was pinned the first time a Profile enabled it. A different key stops everything until you confirm it."
           : "Nothing is available until this Mac is enrolled and control names a cloud browser."
       }
     >
@@ -102,7 +102,7 @@ function DeviceGroup() {
         label="Pinned key"
         note={
           cloud.device === null ? (
-            "No Space has handed the cloud browser a key yet, so there is nothing to pin."
+            "No Profile has handed the cloud browser a key yet, so there is nothing to pin."
           ) : (
             <span className="flex flex-col gap-1">
               <Fingerprint value={cloud.device.fingerprint} />
@@ -145,9 +145,9 @@ function SpacesGroup() {
   return (
     <>
       <Group
-        title="Spaces the cloud browser may open"
-        note="Enabling a Space wraps its root secret to the cloud device's key. Nothing else of yours is reachable from there — a Space you leave off stays unreadable to it."
-        footer="Turning a Space off deletes its wrapper on the control plane; the cloud browser cannot open it again without a new one."
+        title="Profiles the cloud browser may open"
+        note="Enabling a Profile wraps its root secret to the cloud device's key. Nothing else of yours is reachable from there — a Profile you leave off stays unreadable to it."
+        footer="Turning a Profile off deletes its wrapper on the control plane; the cloud browser cannot open it again without a new one."
       >
         {spaces.map((space) => (
           <SpaceRow key={space.id} space={space} onEnable={() => setConfirming(space)} />
@@ -188,8 +188,8 @@ function SpaceRow({ space, onEnable }: { space: SpaceInfo; onEnable: () => void 
         <span className="flex flex-col gap-0.5">
           <span>
             {enabled
-              ? "The cloud browser holds this Space's key and can run in it."
-              : "The cloud browser cannot open this Space."}
+              ? "The cloud browser holds this Profile's key and can run in it."
+              : "The cloud browser cannot open this Profile."}
           </span>
           {error === null ? null : <span className="text-red-900">{error}</span>}
         </span>
@@ -228,18 +228,18 @@ function EnableDialog({
     <ConfirmDialog
       icon={<Cloud aria-hidden="true" />}
       title={`Let the cloud browser open ${space.name}?`}
-      subtitle="This hands one Space's key to a machine you do not sit at."
+      subtitle="This hands one Profile's key to a machine you do not sit at."
       does={[
-        `Wraps ${space.name}'s root secret to the cloud device's public key, so it can open that Space's sealed sessions.`,
+        `Wraps ${space.name}'s root secret to the cloud device's public key, so it can open that Profile's sealed sessions.`,
         "Lets a run you start be executed there, in its own copy of those sessions, while this Mac is closed.",
-        "Adds the cloud device to this Space's sync group: what it captures converges back to your devices.",
+        "Adds the cloud device to this Profile's sync group: what it captures converges back to your devices.",
       ]}
       doesNot={[
-        "Does not give it any other Space — each Space has its own key, and only this one is wrapped.",
+        "Does not give it any other Profile — each Profile has its own key, and only this one is wrapped.",
         "Does not start anything: a run in the cloud is something you ask for each time, or a channel does.",
         "Does not move your tabs. The cloud browser opens its own.",
       ]}
-      confirmLabel="Enable this Space"
+      confirmLabel="Enable this Profile"
       confirmVariant="default"
       busy={busy}
       error={error}
@@ -254,7 +254,7 @@ function EnableDialog({
         </p>
         {fingerprint === null ? (
           <p className="mt-1 text-label-12 text-gray-900">
-            The first Space to enable the cloud browser pins its key. Compare the fingerprint afterwards in Settings →
+            The first Profile to enable the cloud browser pins its key. Compare the fingerprint afterwards in Settings →
             Devices.
           </p>
         ) : (
@@ -279,7 +279,7 @@ function DefaultsGroup() {
     >
       <Row
         label="Run in cloud by default"
-        note="Applies only in Spaces the cloud browser can open; anywhere else the console runs the task here."
+        note="Applies only in Profiles the cloud browser can open; anywhere else the console runs the task here."
       >
         <Switch
           checked={runByDefault}
@@ -383,7 +383,7 @@ function ChannelsGroup() {
     <>
       <Group
         title="Channels"
-        note="An authenticated webhook bound to one Space. A signed message on it starts a run in the cloud browser, as you, in that Space."
+        note="An authenticated webhook bound to one Profile. A signed message on it starts a run in the cloud browser, as you, in that Profile."
         footer={
           available
             ? "Each channel signs with its own secret. Delete one and its calls stop being accepted at once."
@@ -433,7 +433,7 @@ function ChannelForm() {
     }
     if (chosen === "") {
       setField(null);
-      setError("Open a Space first — a channel is bound to one.");
+      setError("Open a Profile first — a channel is bound to one.");
       return;
     }
     setField(null);
@@ -454,7 +454,7 @@ function ChannelForm() {
 
   return (
     <>
-      <Block label="Create a channel" note="It starts runs in this Space, in the cloud browser, until you delete it.">
+      <Block label="Create a channel" note="It starts runs in this Profile, in the cloud browser, until you delete it.">
         <div className="flex flex-wrap items-start gap-2">
           <Input
             value={name}
@@ -469,7 +469,7 @@ function ChannelForm() {
             data-testid="channel-name"
           />
           <Select
-            aria-label="Space"
+            aria-label="Profile"
             value={chosen}
             items={spaces.map((space) => ({ value: space.id, label: space.name }))}
             disabled={busy || !available}
@@ -589,7 +589,7 @@ function DeleteChannelDialog({ channel, onClose }: { channel: ChannelInfo; onClo
       ]}
       doesNot={[
         "Does not stop or undo runs this channel already started — end those in the console.",
-        "Does not change the Space it was bound to, or what the cloud browser may open.",
+        "Does not change the Profile it was bound to, or what the cloud browser may open.",
       ]}
       confirmLabel="Delete channel"
       busy={busy}
@@ -607,8 +607,8 @@ function GuaranteesGroup() {
   return (
     <Group title="What the cloud browser cannot do" note="Each line is a property of how the keys are handed over, so there is nothing here to turn off.">
       <Fixed
-        label="It reads only the Spaces you enabled"
-        note="Every Space has its own root secret. Only the ones switched on above are wrapped to its key; the rest are ciphertext to it."
+        label="It reads only the Profiles you enabled"
+        note="Every Profile has its own root secret. Only the ones switched on above are wrapped to its key; the rest are ciphertext to it."
         badge="Enforced"
       />
       <Fixed

@@ -857,7 +857,7 @@ export class ShellSocketServer {
           this.#send(viewer, {
             t: "error",
             code: "space_key_required",
-            message: "this viewer did not prove it holds the Space key",
+            message: "this viewer did not prove it holds the Profile key",
           });
           this.#close(viewer, CLOSE_UNPROVEN, "space_key_required");
         }
@@ -906,7 +906,7 @@ export class ShellSocketServer {
       this.#send(viewer, {
         t: "error",
         code: "space_key_required",
-        message: "that did not prove possession of this Space's key",
+        message: "that did not prove possession of this Profile's key",
       });
       this.#close(viewer, CLOSE_UNPROVEN, "space_key_required");
       return;

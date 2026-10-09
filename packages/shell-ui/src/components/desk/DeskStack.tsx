@@ -160,7 +160,7 @@ export function StackCard({
       </div>
       {items.length === 0 ? (
         <p className="px-3 pb-2 text-[12px] leading-[17px] text-gray-800">
-          Drop files here — a booking, a PDF, a Word or Excel file — or add a fact. Each file opens on the desk; Pistachio reads them when you ask about this desk (@mention one in the Bar), and saves what it finds here too.
+          Drop files here — a booking, a PDF, a Word or Excel file — or add a fact. Each file opens on the desk; Pistachio reads them when you ask about this space (@mention one in the Bar), and saves what it finds here too.
         </p>
       ) : null}
       {rejection === null ? null : (
@@ -237,11 +237,11 @@ export function StackCard({
         )}
         {others.length === 0 ? null : (
           <div className="flex flex-col gap-1 border-t border-alpha-300 pt-2" data-testid="desk-stack-others">
-            <span className="px-1 text-[10.5px] font-semibold tracking-wide text-gray-700 uppercase">From another Mac or Space</span>
+            <span className="px-1 text-[10.5px] font-semibold tracking-wide text-gray-700 uppercase">From another Mac or Profile</span>
             {others.map((other) => (
               <div key={other.groupId} className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-alpha-100">
                 <span className="min-w-0 flex-1 truncate text-[12px] text-gray-1000">
-                  {other.title || "A group"} <span className="text-gray-700">· {other.items.length}</span>
+                  {other.title || "A space"} <span className="text-gray-700">· {other.items.length}</span>
                 </span>
                 <button
                   type="button"

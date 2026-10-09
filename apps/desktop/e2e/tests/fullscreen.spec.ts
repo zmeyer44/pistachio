@@ -3,6 +3,7 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage } from "./windows";
 import { launchApp } from "./app";
 import { pageAt } from "./chrome-harness";
+import { openTabs, selectTab, snapshot } from "./desk-harness";
 
 const VIDEO_URL = "pistachio://demo/invoices?fullscreen";
 
@@ -37,18 +38,16 @@ test("a page's fullscreen request takes the window and fills it, and leaves with
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");
-    const { originalTabId, videoTabId } = await shell.evaluate(async (url) => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      const snapshot = await api.getSnapshot();
-      await api.createTab(url);
-      const after = await api.getSnapshot();
-      const videoTab = after.tabs.find((tab) => tab.url === url);
-      if (snapshot.activeTabId === null || videoTab === undefined) throw new Error("Tabs missing");
-      return { originalTabId: snapshot.activeTabId, videoTabId: videoTab.id };
-    }, VIDEO_URL);
+    // The video page in a space of its own, chosen: the desk passes to it, and choosing the first tab again takes
+    // its window off the desk (a new tab the shell makes would join the current space, both windows out).
+    const originalTabId = (await snapshot(shell)).activeTabId;
+    if (originalTabId === null) throw new Error("Tabs missing");
+    const [videoTabId] = (await openTabs(shell, [VIDEO_URL])) as [string];
+    await selectTab(shell, videoTabId);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(videoTabId);
     const videoPage = await pageAt(app, VIDEO_URL);
 
-    // Before: the page sits in its pane, smaller than the window.
+    // Before: the page sits in its window on the desk, smaller than the window.
     const before = await viewGeometry(app, VIDEO_URL);
     expect(before.windowFullScreen).toBe(false);
     expect(before.view).not.toBeNull();
@@ -93,7 +92,7 @@ test("a page's fullscreen request takes the window and fills it, and leaves with
     await expect.poll(() => viewGeometry(app, VIDEO_URL).then((geometry) => geometry.windowFullScreen), { timeout: 15_000 }).toBe(false);
     await expect.poll(() => viewGeometry(app, VIDEO_URL).then((geometry) => geometry.viewVisible), { timeout: 15_000 }).toBe(false);
 
-    // Back on the page, it is laid out in its pane again, not stranded at
+    // Back on the page, it is laid out in its window again, not stranded at
     // the screen's size.
     await shell.evaluate(async (tabId) => {
       await (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId);

@@ -12,6 +12,8 @@ export class TabSessionStore {
   readonly #listeners = new Set<(session: DurableTabSession) => void>();
   #current: DurableTabSession;
   #timer: NodeJS.Timeout | null = null;
+  /** A session file was there to read at launch (existed). */
+  #existed = false;
 
   constructor(userDataDir: string, validSpaceIds: () => ReadonlySet<string>) {
     this.#path = join(userDataDir, "tab-session.json");
@@ -21,6 +23,16 @@ export class TabSessionStore {
 
   get(): DurableTabSession {
     return structuredClone(this.#current);
+  }
+
+  /**
+   * Whether this launch found a session to read — even one with nothing in
+   * it. Without one, this is a fresh install, the one launch that opens on
+   * a home tab (docs/spaces.md §1, BrowserController.initialize); a file
+   * that could not be read counts as none.
+   */
+  existed(): boolean {
+    return this.#existed;
   }
 
   /**
@@ -66,7 +78,9 @@ export class TabSessionStore {
 
   #read(): DurableTabSession {
     try {
-      return sanitizeTabSession(JSON.parse(readFileSync(this.#path, "utf8")), this.#validSpaceIds());
+      const session = sanitizeTabSession(JSON.parse(readFileSync(this.#path, "utf8")), this.#validSpaceIds());
+      this.#existed = true;
+      return session;
     } catch {
       return structuredClone(EMPTY_TAB_SESSION);
     }

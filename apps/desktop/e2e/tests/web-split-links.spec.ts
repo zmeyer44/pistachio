@@ -153,7 +153,7 @@ test("the browser's 'managed from the web app' links reach the dashboard, not th
     // And not one of the never-published defaults, on the card whose whole job
     // is to be trusted.
     const menuText = await menu.innerText();
-    for (const claim of ["Signed out", "Not enrolled", "Revoked", "No Spaces", "Direct"]) {
+    for (const claim of ["Signed out", "Not enrolled", "Revoked", "No Profiles", "Direct"]) {
       expect(menuText, `the status rows must not report "${claim}" from a status nobody sent`).not.toContain(claim);
     }
     expect(menuText).not.toContain("undefined");
@@ -237,8 +237,8 @@ test("the browser's 'managed from the web app' links reach the dashboard, not th
     await privacy.getByRole("button", { name: "Site data", exact: true }).click();
     await expect(privacy.getByRole("heading", { name: "Site data", exact: true })).toBeVisible({ timeout: 30_000 });
     await expectNoMacTalk(privacy, "Settings → Privacy & security → Site data");
-    await privacy.getByRole("button", { name: "Spaces", exact: true }).click();
-    await expect(privacy.getByRole("heading", { name: "Spaces", exact: true })).toBeVisible({ timeout: 30_000 });
+    await privacy.getByRole("button", { name: "Profiles", exact: true }).click();
+    await expect(privacy.getByRole("heading", { name: "Profiles", exact: true })).toBeVisible({ timeout: 30_000 });
     await expectNoMacTalk(privacy, "Settings → Privacy & security → Spaces");
     await privacy.getByRole("button", { name: "Agent isolation", exact: true }).click();
     await expect(privacy.getByRole("heading", { name: "Agent isolation", exact: true })).toBeVisible({ timeout: 30_000 });

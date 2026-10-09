@@ -23,6 +23,7 @@ import {
 import { isReaderUrl } from "@pistachio/shell-contracts/reader";
 import { screenShareObject } from "@pistachio/shell-contracts/screen-share";
 import { cn } from "../lib/cn";
+import { splitAvailable } from "../lib/desk/open";
 import { displayHost, prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useShell } from "./shell-host";
@@ -388,7 +389,8 @@ export function TabForcedFocusMark({ tab }: { tab: ChromeTab }) {
  * of a fused split tab carries no split toggle; the right one does).
  */
 export function TabTrailing({ tab, omit = [] }: { tab: ChromeTab; omit?: readonly TabActionId[] }) {
-  const actions = TAB_ACTIONS.filter((action) => !omit.includes(action.id)).map((action) => action.render(tab));
+  // (The split toggle is the web's alone since 2026-10-09: splitAvailable, lib/desk/open.ts.)
+  const actions = TAB_ACTIONS.filter((action) => !omit.includes(action.id) && (action.id !== "split" || splitAvailable())).map((action) => action.render(tab));
   return (
     <span className="-my-1 -mr-1 flex shrink-0 items-center">
       <TabScreenShareMark tab={tab} />

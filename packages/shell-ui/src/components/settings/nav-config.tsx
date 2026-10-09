@@ -110,7 +110,7 @@ export const SETTINGS_NAV: NavSection[] = [
         label: "Privacy & security",
         match: "privacy",
         section: "privacy/shields",
-        description: "Ads and trackers, site data, spaces, isolation",
+        description: "Ads and trackers, site data, profiles, isolation",
         items: [
           { key: "shields", icon: ShieldBan, section: "privacy/shields", note: "Blocking, tracking, fingerprinting" },
           { key: "site-data", icon: Database, section: "privacy", note: "Recents, cookies, cache" },
@@ -157,9 +157,9 @@ export const SETTINGS_NAV: NavSection[] = [
         items: [
           { key: "profile", icon: CircleUserRound, section: "account", note: copyFor("native").nav.account },
           { key: "devices", icon: Laptop, section: "devices", note: "Keys, last seen, revoking" },
-          { key: "sync", icon: RefreshCw, section: "sync", note: "Sessions, Spaces, restore points" },
+          { key: "sync", icon: RefreshCw, section: "sync", note: "Sessions, Profiles, restore points" },
           { key: "cloud", icon: Cloud, section: "cloud", note: "Runs elsewhere, channels" },
-          { key: "egress", icon: Globe, section: "egress", note: "Your own address per Space" },
+          { key: "egress", icon: Globe, section: "egress", note: "Your own address per Profile" },
           { key: "vault", icon: KeyRound, section: "vault", note: "Sign-ins the agent may type" },
         ],
       },

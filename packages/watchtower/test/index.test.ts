@@ -150,7 +150,7 @@ describe("Watchtower index", () => {
 
       expect(archive.index.list("personal", { query: "coll" }).entities.map((entity) => entity.name)).toEqual(expect.arrayContaining(["Patrick Collison", "John Collison"]));
       expect(archive.index.list("personal", { kind: "place" }).entities.map((entity) => entity.name).sort()).toEqual(["Dublin", "South San Francisco"]);
-      expect(() => archive.index.read("work", company.id)).toThrow(/another Space/u);
+      expect(() => archive.index.read("work", company.id)).toThrow(/another Profile/u);
       expect(archive.index.list("work", {}).entities).toEqual([]);
     } finally {
       archive.close();

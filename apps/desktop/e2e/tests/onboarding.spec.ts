@@ -55,7 +55,7 @@ interface StoredSpaces {
  * under PISTACHIO_E2E, so there is no keychain to offer sign-in with.
  * Finished, Settings → About replays it, and Escape leaves the replay.
  */
-test("first run walks the wizard and furnishes the first Space, and About replays it", { tag: ["@onboarding"] }, async () => {
+test("first run walks the wizard and furnishes the first Profile, and About replays it", { tag: ["@onboarding"] }, async () => {
   // PISTACHIO_ONBOARDING keeps the wizard that every other spec's launch turns off.
   const { app, userData } = await launchApp({ env: { PISTACHIO_ONBOARDING: "1" }, name: "onboarding" });
   try {
@@ -190,7 +190,7 @@ test("first run walks the wizard and furnishes the first Space, and About replay
     await expect(grid.getByTestId("favorite-tile")).toHaveCount(3);
     await expect(shell.getByTestId("sidebar-menu-button")).toHaveAttribute(
       "aria-label",
-      "Space: Ada",
+      "Profile: Ada",
     );
     const activeUrl = await app.evaluate(({ BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows()[0];

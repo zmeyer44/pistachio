@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Columns2, LayoutGrid, Maximize2, X } from "lucide-react";
 import type { ContentBounds, GlanceState } from "@pistachio/shell-contracts/ipc";
+import { splitAvailable } from "../lib/desk/open";
 import { glanceFrame, type GlanceFrame } from "../lib/glance";
 import { useAppStore } from "../store";
 import { nativeApi, shellApi } from "../api";
@@ -343,7 +344,9 @@ export function GlanceOverlay({
           >
             <Maximize2 />
           </GlanceAction>
+          {/* (Splits are the web's alone since 2026-10-09: on the desktop, before the desk's engine is up, neither.) */}
           {desk === undefined ? (
+            !splitAvailable() ? null : (
             <GlanceAction
               testId="glance-split"
               label="Open in split view"
@@ -352,6 +355,7 @@ export function GlanceOverlay({
             >
               <Columns2 />
             </GlanceAction>
+            )
           ) : (
             <GlanceAction
               testId="glance-tile"

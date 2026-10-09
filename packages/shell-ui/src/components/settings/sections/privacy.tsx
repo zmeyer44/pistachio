@@ -28,7 +28,7 @@ export function SiteDataPage() {
   const copy = copyFor(useSurface().kind).privacy;
 
   const clearSiteData = async () => {
-    if (!window.confirm("Sign out of every site and clear cookies, storage, and cache for the active Space?")) return;
+    if (!window.confirm("Sign out of every site and clear cookies, storage, and cache for the active Profile?")) return;
     setClearing("busy");
     try {
       await shellApi().clearBrowsingData();
@@ -69,12 +69,12 @@ export function SiteDataPage() {
       </Group>
 
       <Group
-        title="Sign-ins for the active Space"
-        note="Cookies, local storage, and cache for this Space. Other Spaces and agent partitions are not involved."
+        title="Sign-ins for the active Profile"
+        note="Cookies, local storage, and cache for this Profile. Other Profiles and agent partitions are not involved."
         footer={
           clearing === "done"
             ? "Cleared. Open tabs may need a reload to notice."
-            : "You will be signed out of every site in this Space. This cannot be undone."
+            : "You will be signed out of every site in this Profile. This cannot be undone."
         }
         footerHighlight={clearing === "done"}
         footerAction={
@@ -86,7 +86,7 @@ export function SiteDataPage() {
         {clearing === "done" ? (
           <Block>
             <Note type="success" size="sm">
-              Cookies, storage, and cache for this Space were cleared. Your Spaces, favorites, and settings were not
+              Cookies, storage, and cache for this Profile were cleared. Your Profiles, favorites, and settings were not
               touched.
             </Note>
           </Block>
@@ -106,10 +106,10 @@ export function SpacesPage() {
 
   return (
     <Page
-      title="Spaces"
-      description="Spaces are durable, isolated contexts inside your Organization. Fork one to branch a related task without changing its parent."
+      title="Profiles"
+      description="Profiles are durable, isolated contexts inside your Organization. Fork one to branch a related task without changing its parent."
     >
-      <Group title="Your Spaces" note="Each Space keeps its own cookie jar. Switching one never signs you out of another.">
+      <Group title="Your Profiles" note="Each Profile keeps its own cookie jar. Switching one never signs you out of another.">
         {spaces.map((space) => {
           const count = space.id === activeSpaceId ? tabs.filter((tab) => tab.kind === "human").length : null;
           const parent = space.parentSpaceId === null ? null : spaces.find((candidate) => candidate.id === space.parentSpaceId) ?? null;
@@ -117,7 +117,7 @@ export function SpacesPage() {
             <Row
               key={space.id}
               label={space.name}
-              note={`${parent === null ? "Root Space" : `Forked from ${parent.name}`}${space.purpose === "" ? "" : ` · ${space.purpose}`}${count === null ? "" : ` · ${count === 1 ? "1 tab" : `${String(count)} tabs`}`} `}
+              note={`${parent === null ? "Root Profile" : `Forked from ${parent.name}`}${space.purpose === "" ? "" : ` · ${space.purpose}`}${count === null ? "" : ` · ${count === 1 ? "1 tab" : `${String(count)} tabs`}`} `}
             >
               <span className="flex items-center gap-2 text-label-12 text-gray-900">
                 <span className="size-2.5 rounded-full" style={{ background: space.color }} aria-hidden="true" />
@@ -183,8 +183,8 @@ export function IsolationPage() {
         note="A run you hand to the cloud browser (Settings → Cloud browser) works on a machine of its own, and these apply there instead."
       >
         <Fixed
-          label="It holds only the Spaces you enable"
-          note="The cloud browser is a device of your account: it signs in from sealed copies of an enabled Space's sessions, unwrapped under a key issued to it alone. A Space you leave off stays unreadable to it, and the device can be revoked in Settings → Devices."
+          label="It holds only the Profiles you enable"
+          note="The cloud browser is a device of your account: it signs in from sealed copies of an enabled Profile's sessions, unwrapped under a key issued to it alone. A Profile you leave off stays unreadable to it, and the device can be revoked in Settings → Devices."
           badge="Cloud runs"
           tone="gray"
         />

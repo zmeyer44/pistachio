@@ -47,7 +47,7 @@ interface MentionMenuState {
 const MAX_MESSAGE_FILES = 6;
 
 /** The pill at one line (it grows taller with more lines): answer-motion.ts measures the docked slot from its top. */
-export const BAR_H = 40;
+export const BAR_H = 52;
 /** What the Bar opens out of the nub stays a cover this long after it starts back: it is over the pages until it is in. */
 const NOTCH_CLOSE_MS = 280;
 /** The nub's menu longer: its droplets run back into it and it settles into the corner again (nub-motion's FREE_CLOSE). */
@@ -264,8 +264,8 @@ export const DeskBar = memo(function DeskBar({
     setMenuOpen(false);
     setPickerOpen(false);
   }, [group.id]);
-  const leaving = view.phase === "leaving";
-  const cardShown = answerOpen && run !== null && !leaving;
+  // (Until 2026-10-09 everything below also stood down while the desk was leaving: it never is now.)
+  const cardShown = answerOpen && run !== null;
   // The card taken off the Bar (answer-motion.ts): whether it floats now, and whether it is in hand.
   const [floating, setFloating] = useState(() => readFloatSpot()?.floating === true);
   const [cardHeld, setCardHeld] = useState(false);
@@ -319,7 +319,7 @@ export const DeskBar = memo(function DeskBar({
   const answerShown = answerClear || (cardShown && answerSeen);
 
   // The conversations stay a moment once put away, going back into their droplet.
-  const pickerUp = useLinger(pickerOpen, PICKER_CLOSE_MS, true) && !leaving;
+  const pickerUp = useLinger(pickerOpen, PICKER_CLOSE_MS, true);
   useCover(engine, "conversations", pickerRef, pickerUp);
 
   // The card opens when a turn starts — the person's message, or the agent
@@ -370,17 +370,22 @@ export const DeskBar = memo(function DeskBar({
   }, [focusWithin, composerIdle]);
   const dockedAnswer = cardShown && !floating;
   useEffect(() => {
-    if (focusWithin || fileDrag || drop.dragging || dockedAnswer) setStowed(false);
+    if (!(focusWithin || fileDrag || drop.dragging || dockedAnswer)) return;
+    setStowed(false);
+    // (The pill and the menu are one or the other: the pill asked for, the menu goes in.)
+    setMenuOpen(false);
+    setPickerOpen(false);
   }, [focusWithin, fileDrag, drop.dragging, dockedAnswer]);
   /** What the pill comes out of next: the droplet pressed, or the nub itself. */
   const pillSource = useRef<PillSource>("nub");
-  // (A floating answer is no reason to: only one docked on it, or one in hand on its way home.)
-  const pillWanted = !leaving && !stowed && (asked || !composerIdle || focusWithin || dockedAnswer || cardHeld || mentionMenu !== null || fileDrag || drop.dragging);
+  // (A floating answer is no reason to: only one docked on it, or one in hand on its way home. Nor is anything while the
+  // menu is out: the two are one or the other.)
+  const pillWanted = !stowed && !menuOpen && (asked || !composerIdle || focusWithin || dockedAnswer || cardHeld || mentionMenu !== null || fileDrag || drop.dragging);
   // Out, it is a cover (its whole footprint), from the pointer coming to the nub until it is back in.
   const pillOverdue = useOverdue(pillWanted, NOTCH_WAIT_MS);
   const pillOpen = pillWanted && (shownCover("pill") || pillOverdue);
   // (The @ list is the field's, shown while the pill is out: put away with what was typed in it, the list goes too.)
-  const mentionsUp = mentionMenu !== null && !leaving && pillOpen;
+  const mentionsUp = mentionMenu !== null && pillOpen;
   useCover(engine, "mentions", mentionsRef, mentionsUp);
   const compact = !pillOpen;
 
@@ -446,20 +451,20 @@ export const DeskBar = memo(function DeskBar({
   }, [pointerHeld, pointerOnNub, leaveNub]);
 
   // The menu, drawn once the pages under it have given way (or after NOTCH_WAIT_MS).
-  const menuWanted = menuOpen && !leaving;
+  const menuWanted = menuOpen;
   const menuOverdue = useOverdue(menuWanted, NOTCH_WAIT_MS);
   const menuShown = menuWanted && (shownCover("bar") || menuOverdue);
   // The nub's box — the droplets' column — and the pill's footprint are covers from the menu being asked for (the pill's
   // too, so a droplet's pill opens at once) until they are back in. Not the pointer resting on the nub: the swell is the
   // nub's own (over a live page, the notch view draws it), and a pointer passing the corner freezes no page.
   const nubCovering = useLinger(menuShown || pickerOpen, NUB_CLOSE_MS, true) || menuWanted;
-  useCover(engine, "bar", nubRef, nubCovering && !leaving);
+  useCover(engine, "bar", nubRef, nubCovering);
   const pillCovering = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted || menuWanted;
-  useCover(engine, "pill", barRef, pillCovering && !leaving, pillFootprint);
+  useCover(engine, "pill", barRef, pillCovering, pillFootprint);
   // The pill's close above the nub, while the pill is out (not while the menu is: it would stand among its droplets).
   const closeUp = pillOpen && !menuWanted && !pickerOpen;
   const closeCovering = useLinger(closeUp, NOTCH_CLOSE_MS, true) || (pillWanted && !menuWanted && !pickerOpen);
-  useCover(engine, "pill-close", closeRef, closeCovering && !leaving, closeFootprint);
+  useCover(engine, "pill-close", closeRef, closeCovering, closeFootprint);
 
   const pillParts = useCallback((): PillParts | null => {
     const bar = barRef.current;
@@ -470,7 +475,7 @@ export const DeskBar = memo(function DeskBar({
   // The nub as it is drawn now, swelling and settling: the engine cuts it through the well and the windows under it.
   // A screenshot of the desk is the windows without the Bar: neither it nor its hole is drawn while one is taken.
   const capturing = useDeskStore((state) => state.capturing);
-  const holeOff = leaving || capturing;
+  const holeOff = capturing;
   const hole = useRef<{ shape: NotchShape | null; off: boolean }>({ shape: NUB_IDLE, off: holeOff });
   hole.current.off = holeOff;
   // (None while it stands free of the corner for its menu.)
@@ -489,14 +494,14 @@ export const DeskBar = memo(function DeskBar({
   // The idle nub's box, in the desk's trailing foot corner: the engine knows where it lies over the windows (whether a
   // live page is under it).
   useLayoutEffect(() => {
-    engine.setNotch(leaving ? null : { w: NUB_VIEW, h: NUB_VIEW });
-  }, [engine, leaving]);
+    engine.setNotch({ w: NUB_VIEW, h: NUB_VIEW });
+  }, [engine]);
   useEffect(() => () => engine.setNotch(null), [engine]);
 
   // Swelled while the pointer rests on it and while its droplets are out; the pill out of its droplet (or the nub),
   // and back into the nub; the conversations standing where past chats' droplet was.
   const [swelling, setSwelling] = useState<Swelling>({ from: 0, to: 0, at: 0, ms: 0 });
-  const swellTo = !leaving && (hovered || menuShown) ? 1 : 0;
+  const swellTo = hovered || menuShown ? 1 : 0;
   useLayoutEffect(() => {
     const motion = nubMotion.current;
     if (motion !== null) setSwelling(motion.swell(swellTo));
@@ -672,11 +677,18 @@ export const DeskBar = memo(function DeskBar({
   /** The nub pressed (or the notch view over a page): its menu out, or back in — opened from the keys, the keys go to its first droplet. */
   const menuNow = useRef(menuOpen);
   menuNow.current = menuOpen;
-  const toggleMenu = useCallback((keyboard: boolean) => {
-    keysToMenu.current = keyboard && !menuNow.current;
-    setPickerOpen(false);
-    setMenuOpen(!menuNow.current);
-  }, []);
+  const toggleMenu = useCallback(
+    (keyboard: boolean) => {
+      const opening = !menuNow.current;
+      keysToMenu.current = keyboard && opening;
+      setPickerOpen(false);
+      setMenuOpen(opening);
+      // The pill and the menu are one or the other, never both: let out, the menu puts the pill away first (what is in
+      // it kept, as its close keeps it), and the answer docked on it with it.
+      if (opening) stowPill();
+    },
+    [stowPill],
+  );
   const choosePrompt = (): void => {
     if (!pillOpen) pillSource.current = "prompt";
     setStowed(false);
@@ -722,7 +734,7 @@ export const DeskBar = memo(function DeskBar({
   // Over a live page, the idle nub is main's notch view (NotchApp), drawn over the page as nothing of the shell's can
   // be: it is told where (the box the nub may fill, its corner the desk's), how swelled it is, and what it shows.
   // Once what the nub opens has made the page under it a still, there is no live page under it, and the view goes.
-  const overPage = view.notchOver && !leaving && !capturing;
+  const overPage = view.notchOver && !capturing;
   useLayoutEffect(() => {
     const api = nativeApi();
     const el = nubRef.current;
@@ -769,7 +781,7 @@ export const DeskBar = memo(function DeskBar({
   // A button's tooltip is open: the band it appears in — above the pill, or beside the nub — is a cover, and stays
   // one a moment after it closes (the dock's rule).
   const [tip, setTip] = useState<{ label: string; where: "pill" | "nub" } | null>(null);
-  const openTip = leaving ? null : tip;
+  const openTip = tip;
   useLayoutEffect(() => {
     const el = openTip === null ? null : openTip.where === "pill" ? barRef.current : nubRef.current;
     if (openTip === null || el === null) {
@@ -847,7 +859,7 @@ export const DeskBar = memo(function DeskBar({
             ref={barRef}
             {...drop.handlers}
             role="region"
-            aria-label="Ask Pistachio about this desk"
+            aria-label="Ask Pistachio about this space"
             data-testid="desk-bar"
             data-acting={acting ? "" : undefined}
             data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
@@ -1174,7 +1186,7 @@ function BarComposer({
         const reading = api === null ? null : await api.groupFileForMessage(group.id, file.id).catch(() => null);
         if (reading?.kind === "text") mentionBlocks.push(formatAttachmentText(file.name, reading.text));
         else if (reading?.kind === "file" && attachments.length < MAX_MESSAGE_FILES) attachments.push({ id: crypto.randomUUID(), name: file.name, mediaType: reading.mediaType, url: reading.dataUrl } satisfies AgentAttachment);
-        else mentionBlocks.push(`“${file.name}” is in this desk's context as ${file.id}${reading?.kind === "reference" ? ` (${reading.reason})` : ""}: read it with context_read.`);
+        else mentionBlocks.push(`“${file.name}” is in this space's context as ${file.id}${reading?.kind === "reference" ? ` (${reading.reason})` : ""}: read it with context_read.`);
       }
       // The desk is the subject, not the page in view: the desk block tells the agent what is on it.
       await sendMessage([text, ...mentionBlocks, ...textBlocks].filter((block) => block !== "").join("\n\n"), attachments, { page: false });
@@ -1303,7 +1315,7 @@ function BarComposer({
         )}
         <div className="desk-bar-field" hidden={listening}>
           {/* The mentions, lit behind the field's own text (which stays the field's, caret and all). */}
-          <div ref={mirrorRef} aria-hidden="true" className="desk-bar-mirror text-copy-14 px-1 py-[6px] text-[14.5px] leading-[22px]">
+          <div ref={mirrorRef} aria-hidden="true" className="desk-bar-mirror text-copy-14 px-1 py-[7px] text-[15px] leading-[22px]">
             {spans.length === 0 ? null : mirrorSegments(value, spans)}
           </div>
           <Textarea
@@ -1328,7 +1340,7 @@ function BarComposer({
               if (mirrorRef.current !== null) mirrorRef.current.scrollTop = event.currentTarget.scrollTop;
             }}
             onKeyDown={onFieldKeyDown}
-            className="scroll-thin relative max-h-32 min-h-[34px] flex-1 overflow-y-auto px-1 py-[6px] text-[14.5px] leading-[22px]"
+            className="scroll-thin relative max-h-32 min-h-9 flex-1 overflow-y-auto px-1 py-[7px] text-[15px] leading-[22px]"
             variant="bare"
             rows={1}
           />
@@ -1593,7 +1605,7 @@ function AnswerCard({
     const reveal = vis.animate(
       [
         // (Past the card all round at the end: its shadow, and a held card's deeper one, are never cut.)
-        { clipPath: "inset(calc(100% - 40px) 0 0 calc(100% - 40px) round 20px)", transform: "translateY(10px)" },
+        { clipPath: "inset(calc(100% - 52px) 0 0 calc(100% - 52px) round 26px)", transform: "translateY(10px)" },
         { clipPath: "inset(-160px round 18px)", transform: "none" },
       ],
       { duration: 350 * nubTimeScale(), easing: "cubic-bezier(0.34, 1.25, 0.64, 1)" },
@@ -1737,9 +1749,9 @@ function AnswerCard({
 /** Where a conversation started: this group, another of the Space's, one no longer here, or elsewhere in the browser. */
 function startedIn(thread: ThreadListItem, groupId: string, groups: readonly TabGroupInfo[]): { label: string; color: TabGroupInfo["color"] | null } {
   if (thread.groupId === undefined) return { label: thread.origin?.kind === "reminder" ? "Reminder" : "Sidebar", color: null };
-  if (thread.groupId === groupId) return { label: "This desk", color: groups.find((group) => group.id === groupId)?.color ?? null };
+  if (thread.groupId === groupId) return { label: "This space", color: groups.find((group) => group.id === groupId)?.color ?? null };
   const group = groups.find((candidate) => candidate.id === thread.groupId);
-  return group === undefined ? { label: "Another group", color: null } : { label: group.title, color: group.color };
+  return group === undefined ? { label: "Another space", color: null } : { label: group.title, color: group.color };
 }
 
 /**
@@ -1824,7 +1836,7 @@ function ConversationPicker({
             type="button"
             data-testid="desk-conversation-new"
             disabled={acting}
-            title={acting ? "Stop the agent first" : "Start a new conversation for this desk"}
+            title={acting ? "Stop the agent first" : "Start a new conversation for this space"}
             className="desk-conversation"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => act({ type: "new", groupId })}
@@ -1854,7 +1866,7 @@ function ConversationPicker({
                 data-open={current ? "" : undefined}
                 aria-current={current ? "true" : undefined}
                 disabled={acting && !current}
-                title={acting && !current ? "Stop the agent first" : current ? "Open at this desk" : "Continue here"}
+                title={acting && !current ? "Stop the agent first" : current ? "Open in this space" : "Continue here"}
                 className="desk-conversation"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => (current ? onClose() : act({ type: "choose", groupId, runId: thread.runId }))}

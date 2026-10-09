@@ -38,13 +38,12 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
-import { anchorGroupTabIds, dayRowUnits } from "@pistachio/shell-contracts/tab-groups";
 import { favoriteDropAt, listDropAt, type ListDrop, type MeasuredRow, type MeasuredTile, type ShelfDragKind } from "../lib/sidebar-tree";
 import { useAppStore } from "../store";
 import { splitZoneAt, type PointerLike, type SplitZone } from "./drag-geometry";
-import type { ChromeTab } from "./tabs";
+import { dayUnitsInHand, unitIndexAfter, type ChromeTab } from "./tabs";
 import { nativeApi } from "../api";
-import { deskEngine, dropEntryOnDesk, dropTabOnDesk } from "../lib/desk/open";
+import { bringOutJoined, deskAvailable, deskEngine, dropEntryOnDesk, dropTabOnDesk, splitAvailable } from "../lib/desk/open";
 
 /** Anything on the shelf a drag can carry, with what the ghost draws. */
 export interface ShelfItem {
@@ -376,12 +375,13 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
     const grabX = startX - rect.left;
     const grabY = startY - rect.top;
     // On a desk the sidebar is its dock: a tab's row carried out over it is
-    // its window (`overDesk`), and nothing splits.
-    const onDesk = deskEngine() !== null;
+    // its window (`overDesk`), and nothing splits. (The surface's, not the
+    // engine's: the engine is null for the first frames of a cold start.)
+    const onDesk = deskAvailable();
     const deskTab = !onDesk ? undefined : (item.deskTab ?? (item.kind === "tab" && item.tabs.length === 1 ? item.tabs[0] : undefined));
     // A favorite or pin with no page open is let go over the desk too: a fresh page of it comes out there (dropEntryOnDesk).
     const toDesk = deskTab !== undefined || (onDesk && (item.kind === "favorite" || item.kind === "pin"));
-    const canSplit = !onDesk && item.kind !== "group" && item.tabs.length === 1 && (useAppStore.getState().snapshot?.visibleTabIds.length ?? 0) < 4;
+    const canSplit = splitAvailable() && item.kind !== "group" && item.tabs.length === 1 && (useAppStore.getState().snapshot?.visibleTabIds.length ?? 0) < 4;
     const origin = originDrop(item, listRef.current, gridRef.current);
     // A tile moves freely; a row stays in its slot horizontally unless it
     // is being lifted RIGHT toward the page (see `follow`). The ghost the
@@ -778,7 +778,11 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
       if (tab === undefined) return Promise.resolve();
       if (drop.zone === "pinned") return send({ type: "pinTab", tabId: tab.id, folderId: drop.folderId, index: drop.index });
       if (drop.zone === "today") return reorderDayTabs(item.tabs.map((t) => t.id), drop.index);
-      if (drop.zone === "group") return joinGroup(item.tabs.map((t) => t.id), drop.groupId, drop.index);
+      if (drop.zone === "group") {
+        // Onto an empty space's header: it joins, and — the current space — its window comes out on the desk.
+        const empty = store.snapshot?.tabGroups.find((group) => group.id === drop.groupId)?.tabIds.length === 0;
+        return joinGroup(item.tabs.map((t) => t.id), drop.groupId, drop.index).then(() => (empty ? bringOutJoined(tab.id, drop.groupId) : undefined));
+      }
       return send({ type: "addFavorite", source: { tabId: tab.id }, index: drop.index });
     }
     case "split":
@@ -792,7 +796,7 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
       if (drop.zone === "pinned") return send({ type: "movePin", pinId: item.entityId, folderId: drop.folderId, index: drop.index });
       // Down into the day's tabs or a group, its page (and its page's group) a day tab's from then on; the pin stays, closed.
       if (drop.zone === "today") return send({ type: "bringDown", anchorId: item.entityId, index: drop.index });
-      if (drop.zone === "group") return send({ type: "bringDown", anchorId: item.entityId, groupId: drop.groupId, index: groupTabIndex(item.tabs.map((t) => t.id), drop.groupId, drop.index) });
+      if (drop.zone === "group") return bringDownInto(item, drop.groupId, drop.index);
       return send({ type: "addFavorite", source: { pinId: item.entityId }, index: drop.index });
     case "folder":
       return drop.zone === "pinned" && drop.folderId === null
@@ -803,9 +807,26 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
       if (drop.zone === "favorites") return send({ type: "moveFavorite", favoriteId: item.entityId, index: drop.index });
       if (drop.zone === "pinned") return send({ type: "favoriteToPin", favoriteId: item.entityId, folderId: drop.folderId, index: drop.index });
       // Down into the day's tabs or a group, its page (and its page's group) a day tab's from then on; the favorite stays, closed.
-      if (drop.zone === "group") return send({ type: "bringDown", anchorId: item.entityId, groupId: drop.groupId, index: groupTabIndex(item.tabs.map((t) => t.id), drop.groupId, drop.index) });
+      if (drop.zone === "group") return bringDownInto(item, drop.groupId, drop.index);
       return send({ type: "bringDown", anchorId: item.entityId, index: drop.index });
   }
+}
+
+/**
+ * A favorite's or pin's page set down inside a space (bringDown: its page's
+ * group with it, the entry staying, closed). Let go on the header of a space
+ * with no tabs that is the current one, its window comes out on the desk
+ * too, in use, as a tab's row let go there does (docs/spaces.md §1) — once
+ * its tab has reached the space, which the drop knows only when a page of
+ * it was open (bringOutJoined; 2026-10-09).
+ */
+function bringDownInto(item: ShelfItem, groupId: string, index: number): Promise<void> {
+  const store = useAppStore.getState();
+  const tabIds = item.tabs.map((t) => t.id);
+  const empty = store.snapshot?.tabGroups.find((group) => group.id === groupId)?.tabIds.length === 0;
+  return store
+    .sidebarCommand({ type: "bringDown", anchorId: item.entityId, groupId, index: groupTabIndex(tabIds, groupId, index) })
+    .then(() => (empty ? bringOutJoined(tabIds[0] ?? null, groupId) : undefined));
 }
 
 /**
@@ -856,39 +877,53 @@ function groupTabIndex(tabIds: readonly string[], groupId: string, index: number
 
 /**
  * Put a run of live tabs at `index` among the day's ROW UNITS — lone tabs,
- * splits, and tab groups, each one slot, which is what the drop counted
- * (@pistachio/shell-contracts/tab-groups `dayRowUnits`; a group's hidden
- * tabs are not slots). The browser keeps ONE order with the anchored tabs in
- * it, so the unit is translated to its first tab's place in that order —
- * counted with the moved tab lifted out, reorderTab's convention — and a
- * split's second tab is then placed straight after the first, re-read from
- * the live order. Main takes a tab out of its
- * group when it is set down away from it.
+ * splits, tab groups and EMPTY spaces, each one slot, which is what the drop
+ * counted (@pistachio/shell-contracts/tab-groups `dayRowUnits`; a group's
+ * hidden tabs are not slots) — read off the units as the list drew them for
+ * the drop, before anything changes (dayUnitsInHand): the rows in hand
+ * lifted out, every empty space where it stands, a space the lift emptied
+ * still where it stood. Main takes a tab out of its group when it is set
+ * down away from it (said outright first, below), and the drop is then
+ * counted again among the units as they are (unitIndexAfter): the space it
+ * emptied may have gone with it.
+ *
+ * On the desktop main places the tab by that unit index itself
+ * (`reorderTab(…, "units")`, placeAmongUnits), so a row dropped beside an
+ * empty space lands on the side of it it was dropped on, and an empty space
+ * standing before the tab stays where it is drawn (2026-10-09; until then
+ * the shell turned the unit into its first tab's place in the one tab
+ * order, which no empty space is in: a row dropped just below one went
+ * above it, and one standing before the tab went wherever the tab did). The
+ * web's hosts count tabs: there the unit is still turned into its first
+ * tab's place — counted with the moved tab lifted out, reorderTab's
+ * convention. A split's second tab is then placed straight after the first,
+ * re-read from the live order.
  */
-async function reorderDayTabs(tabIds: string[], index: number): Promise<void> {
+export async function reorderDayTabs(tabIds: string[], index: number): Promise<void> {
   const [head, ...tail] = tabIds;
   if (head === undefined) return;
   const store = useAppStore.getState();
   const liveTabs = () => useAppStore.getState().snapshot?.tabs ?? [];
   const moving = new Set(tabIds);
+  const snapshot = store.snapshot;
+  const drawn = dayUnitsInHand(snapshot, moving);
   // In the list a group is ONE slot, so a member set down among the day's
   // rows has left it — said outright, because in the browser's flat order
   // "last in the group" and "just below the group" are the same place. (So has
   // a tab of a page's group, drawn under its favorite or pin.)
-  for (const group of [...(store.snapshot?.tabGroups ?? []), ...(store.snapshot?.anchorGroups ?? [])]) {
+  for (const group of [...(snapshot?.tabGroups ?? []), ...(snapshot?.anchorGroups ?? [])]) {
     for (const tabId of group.tabIds) if (moving.has(tabId)) await store.tabGroupCommand({ type: "removeTab", tabId });
   }
-  const snapshot = useAppStore.getState().snapshot;
-  const underEntries = anchorGroupTabIds(snapshot?.anchorGroups ?? []);
-  const day = liveTabs().filter((t) => t.anchorId === null && !moving.has(t.id) && !underEntries.has(t.id)).map((t) => t.id);
-  const splits = (snapshot?.splitGroups ?? []).filter((split) => !split.tabIds.some((id) => moving.has(id)));
-  const groups = (snapshot?.tabGroups ?? [])
-    .map((group) => ({ ...group, tabIds: group.tabIds.filter((id) => !moving.has(id)) }))
-    .filter((group) => group.tabIds.length > 0);
-  const target = dayRowUnits(day, splits, groups)[index]?.tabIds[0];
-  const withoutHead = liveTabs().filter((t) => t.id !== head);
-  const at = target === undefined ? withoutHead.length : withoutHead.findIndex((t) => t.id === target);
-  await store.reorderTab(head, at);
+  if (deskAvailable()) {
+    // (Main's snapshot precedes its reply: the units read now are the ones it counts.)
+    await store.reorderTab(head, unitIndexAfter(drawn, index, dayUnitsInHand(useAppStore.getState().snapshot, moving)), "units");
+  } else {
+    // An index at an empty space's unit names no tab: the first unit after it that has one does.
+    const target = drawn.slice(index).find((unit) => unit.tabIds.length > 0)?.tabIds[0];
+    const withoutHead = liveTabs().filter((t) => t.id !== head);
+    const at = target === undefined ? withoutHead.length : withoutHead.findIndex((t) => t.id === target);
+    await store.reorderTab(head, at);
+  }
   let prev = head;
   for (const id of tail) {
     const without = liveTabs().filter((t) => t.id !== id);

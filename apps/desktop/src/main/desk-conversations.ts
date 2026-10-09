@@ -44,6 +44,11 @@ export class DeskConversationStore {
     if (this.#bindings.delete(groupId)) this.#save();
   }
 
+  /** The groups that open `runId`, the most recently bound last. */
+  groupsOf(runId: string): string[] {
+    return [...this.#bindings].flatMap(([groupId, bound]) => (bound === runId ? [groupId] : []));
+  }
+
   /** A thread was deleted: no group opens it any more. */
   forgetRun(runId: string): void {
     let changed = false;

@@ -62,7 +62,7 @@ export async function answerDeskRequest(deps: DeskAnswerDeps, request: DeskReque
     if (turn !== null) deps.remember(turn, layout);
   };
   // Meant for a desk no longer in view (passed to another group mid-turn): refused before anything moves.
-  if (request.groupId !== deps.groupId()) return { ok: false, error: "the desk in view is another group's now; nothing was changed" };
+  if (request.groupId !== deps.groupId()) return { ok: false, error: "the desk in view is another space's now; nothing was changed" };
   switch (request.type) {
     case "state":
       return { ok: true, state: deskStateOf(deps) };

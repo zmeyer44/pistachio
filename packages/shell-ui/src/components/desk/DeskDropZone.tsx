@@ -160,7 +160,7 @@ export function DeskDropZone({ group, engine, view }: { group: TabGroupInfo; eng
           <Folder data-icon="folder" />
         </span>
         <span className="desk-drop-zone-title">Drop to open on the desk</span>
-        <span className="desk-drop-zone-hint">It joins this desk’s context — @mention it in the Bar</span>
+        <span className="desk-drop-zone-hint">It joins this space’s context — @mention it in the Bar</span>
       </div>
     </div>
   );

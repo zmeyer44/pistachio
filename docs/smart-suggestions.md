@@ -1,5 +1,7 @@
 # Smart suggestions: an intent model behind the address bar
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Status: implemented on branch `smart-suggestions` (September 2026).
 
 ## 1. What this is
@@ -96,8 +98,9 @@ a company or a cause read as searches or sat at 50/50 (§10).
 
 `target` — one option per candidate the shell sent, plus `none`. Candidates:
 
-- **command**: enabled chrome actions, Space switches, and the *settings
-  intents* (§5);
+- **command**: enabled chrome actions, Profile switches (their keywords say
+  "profile" since 2026-10-09; "space" finds the actions on spaces), and the
+  *settings intents* (§5);
 - **page**: a handful of open tabs, kept pages and recent sites (the fuzzy
   ranker's best plus the most recent), so "my email" can find Gmail.
 

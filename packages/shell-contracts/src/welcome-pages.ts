@@ -62,6 +62,12 @@ export interface WelcomePageContext {
   assetBase?: string | null;
   /** The `@font-face` source, or null for a system font stack and no `@font-face`. */
   fontSrc?: string | null;
+  /**
+   * Whether the surface splits a page into panes — the web's; on the desktop
+   * a space's tabs are windows on its desk, tiled rather than split
+   * (docs/spaces.md), and lesson 2 teaches spaces instead. True unless said.
+   */
+  splits?: boolean;
 }
 
 interface Resolved {
@@ -134,6 +140,9 @@ export const WELCOME_VIDEOS: Record<WelcomeTab["id"], WelcomeVideo> = {
   memory: { src: null, poster: null, caption: "Memory and reminders in practice" },
 };
 
+/** Lesson 2's slot where the surface has no split view: the split clip would teach what is not there. */
+const SPACES_VIDEO: WelcomeVideo = { src: null, poster: null, caption: "A task kept in a space" };
+
 /** An absolute source stays as it is; a bare file name resolves against `assetBase`. */
 function asset(value: string | null, assetBase: string | null): string | null {
   if (value === null) return null;
@@ -169,6 +178,7 @@ export interface WelcomeLesson {
 /** The three lessons, with this person's own shortcut bindings written in. */
 export function welcomeLessons(context: WelcomePageContext): WelcomeLesson[] {
   const k = (id: ShortcutActionId): string => key(context, id);
+  const splits = context.splits ?? true;
   const tabs = Object.fromEntries(WELCOME_TABS.map((tab) => [tab.id, tab])) as Record<WelcomeTab["id"], WelcomeTab>;
   return [
     {
@@ -202,7 +212,7 @@ export function welcomeLessons(context: WelcomePageContext): WelcomeLesson[] {
     {
       tab: tabs.spaces,
       eyebrow: "Lesson 2",
-      lede: "The sidebar is where your browsing lives: apps at the top, pages you keep in the middle, today's tabs below — and a Space for each side of your life.",
+      lede: "The sidebar is where your browsing lives: apps at the top, pages you keep in the middle, today's tabs below — and a Profile for each side of your life.",
       steps: [
         {
           title: "Favorites sit at the top",
@@ -212,20 +222,27 @@ export function welcomeLessons(context: WelcomePageContext): WelcomeLesson[] {
           title: `Pin a page with ${k("togglePin")}`,
           body: "A pin stays above the day's tabs even after you close its page; click it to come back. Folders group pins — right-click a pin to make one.",
         },
-        {
-          title: `Split the page with ${k("toggleSplit")}`,
-          body: "Or drag a tab onto the page's edge. Up to four panes, resizable, remembered together as a group.",
-        },
+        splits
+          ? {
+              title: `Split the page with ${k("toggleSplit")}`,
+              body: "Or drag a tab onto the page's edge. Up to four panes, resizable, remembered together as a group.",
+            }
+          : {
+              title: "Keep a task in a space",
+              body: "A space holds a task's tabs, the files you drop on its desk, and its conversation; its tabs lie on the desk as windows. Right-click a tab for New space with this tab, or start an empty one under today's tabs. Choosing a tab in another space brings that space's desk.",
+            },
         {
           title: "Glance before you commit",
           body: "Hold ⌘ and click a link: it opens as a preview floating above the page. Esc sends it back; the arrow makes it a tab.",
         },
         {
-          title: `Fork a Space with ${k("forkSpace")}`,
-          body: "Each Space is its own cookie jar and its own shelf — work and personal, a client and your own. A fork copies what you choose and then goes its own way. The Space menu is at the sidebar's bottom-right.",
+          title: `Fork a Profile with ${k("forkSpace")}`,
+          body: "Each Profile is its own cookie jar and its own shelf — work and personal, a client and your own. A fork copies what you choose and then goes its own way. The Profile menu is at the sidebar's bottom-right.",
         },
       ],
-      tryIt: `Press ${k("toggleSplit")} on this page, then drag one of your favorites into the second pane.`,
+      tryIt: splits
+        ? `Press ${k("toggleSplit")} on this page, then drag one of your favorites into the second pane.`
+        : `Right-click this tab and choose New space with this tab, then press ${k("newTab")}: the new tab opens in the same space.`,
     },
     {
       tab: tabs.memory,
@@ -249,7 +266,7 @@ export function welcomeLessons(context: WelcomePageContext): WelcomeLesson[] {
           body: "Memory is one local file. Nothing leaves the machine unless a model call needs it, and a switch in Settings turns memory off entirely.",
         },
       ],
-      tryIt: "Open the chat and say: “Remind me in 10 minutes to try split view.”",
+      tryIt: splits ? "Open the chat and say: “Remind me in 10 minutes to try split view.”" : "Open the chat and say: “Remind me in 10 minutes to tidy my tabs.”",
     },
   ];
 }
@@ -292,7 +309,7 @@ export function welcomeOverviewHtml(context: WelcomePageContext): string {
     ["openSettings", "Settings"],
   ];
   const rows = shortcuts
-    .filter(([id]) => key(context, id) !== "")
+    .filter(([id]) => key(context, id) !== "" && (id !== "toggleSplit" || (context.splits ?? true)))
     .map(([id, label]) => `<li><span>${escape(label)}</span>${key(context, id)}</li>`)
     .join("");
   return welcomePage(context, {
@@ -361,7 +378,7 @@ export function welcomeLessonHtml(tab: WelcomeTab, context: WelcomePageContext):
         <ol class="steps">${steps}</ol>
         <div class="try"><span class="try-label">Try it now</span><p>${lesson.tryIt}</p></div>
       </section>
-      <aside class="stage">${video(WELCOME_VIDEOS[tab.id], tab.title, resolved.assetBase)}</aside>
+      <aside class="stage">${video(tab.id === "spaces" && context.splits === false ? SPACES_VIDEO : WELCOME_VIDEOS[tab.id], tab.title, resolved.assetBase)}</aside>
     </main>
     <footer class="foot">
       <a href="${escape(welcomeLink(previous, resolved.linkBase))}">← ${escape(previous.title)}</a>

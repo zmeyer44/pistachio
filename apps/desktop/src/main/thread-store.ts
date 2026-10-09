@@ -218,6 +218,17 @@ export class ThreadStore {
     return [...this.#index];
   }
 
+  /**
+   * Whether the thread is still kept — in the index, or on its way to disk —
+   * without reading its file: a space's bound conversation keeps the space
+   * only while its thread is (docs/spaces.md §2; pruning past MAX_THREADS
+   * leaves bindings behind). Asked on every reconcile.
+   */
+  has(runId: string): boolean {
+    if (this.#pending?.record.run.runId === runId || this.#inFlight?.run.runId === runId) return true;
+    return this.#index.some((item) => item.runId === runId);
+  }
+
   get(runId: string): ThreadRecord | null {
     if (!ID.test(runId)) return null;
     if (this.#pending?.record.run.runId === runId) return structuredClone(this.#pending.record);

@@ -345,7 +345,7 @@ export class LiveViewServer {
             encodeServerFrame({
               t: "error",
               code: "space_key_required",
-              message: "this viewer did not prove it holds the Space key",
+              message: "this viewer did not prove it holds the Profile key",
             }),
           );
           this.#close(viewer, CLOSE_UNPROVEN, "space_key_required");
@@ -393,7 +393,7 @@ export class LiveViewServer {
         encodeServerFrame({
           t: "error",
           code: "space_key_required",
-          message: "that did not prove possession of this run's Space key",
+          message: "that did not prove possession of this run's Profile key",
         }),
       );
       this.#close(viewer, CLOSE_UNPROVEN, "space_key_required");

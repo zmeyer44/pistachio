@@ -343,7 +343,7 @@ export class WorkspaceSyncService {
             await this.#deps.applyRestorePoint(point.session, spaceId, action.mode);
             applied += 1;
           }
-          if (applied === 0) throw new Error("None of that restore point's Spaces exist on this Mac.");
+          if (applied === 0) throw new Error("None of that restore point's Profiles exist on this Mac.");
           break;
         }
         case "refresh":

@@ -1429,7 +1429,7 @@ function GitHubHome({ site }: { site: SiteInfo }): ReactNode {
         <aside className="hidden w-80 shrink-0 flex-col gap-3 p-4 text-[14px] lg:flex">
           <div className="rounded-md border border-[#d1d9e0] p-4">
             <div className="font-semibold">Latest changes</div>
-            {["Split panes remember their widths", "Home page: schedule and weather", "Tidy: archived groups restore whole"].map((line) => (
+            {["Split panes remember their widths", "Home page: schedule and weather", "Tidy: archived spaces restore whole"].map((line) => (
               <div key={line} className="mt-2 border-l-2 border-[#d1d9e0] pl-3 text-[13px] text-[#59636e]">{line}</div>
             ))}
           </div>

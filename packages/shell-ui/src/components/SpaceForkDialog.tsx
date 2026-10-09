@@ -15,7 +15,7 @@ export function SpaceForkDialog() {
     () => snapshot?.spaces.find((space) => space.id === snapshot.activeSpaceId) ?? null,
     [snapshot],
   );
-  const [name, setName] = useState(() => (parent === null ? "New Space" : `${parent.name} fork`));
+  const [name, setName] = useState(() => (parent === null ? "New Profile" : `${parent.name} fork`));
   const [purpose, setPurpose] = useState("");
   const [tabs, setTabs] = useState<ForkTabScope>("active");
   const [includeShelf, setIncludeShelf] = useState(true);
@@ -62,7 +62,7 @@ export function SpaceForkDialog() {
             <GitFork className="size-4.5" aria-hidden="true" />
           </span>
           <span className="min-w-0 flex-1">
-            <h1 id="fork-space-title" className="text-heading-16 text-gray-1000">Fork this Space</h1>
+            <h1 id="fork-space-title" className="text-heading-16 text-gray-1000">Fork this Profile</h1>
             <span className="mt-1 flex items-center gap-2 text-label-12 text-gray-900">
               <span className="size-2 rounded-full" style={{ background: parent.color }} aria-hidden="true" />
               <span className="truncate">{parent.name}</span>
@@ -78,7 +78,7 @@ export function SpaceForkDialog() {
         <div className="max-h-[min(620px,calc(100vh-150px))] space-y-5 overflow-y-auto px-5 py-5">
           <div className="grid gap-4 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
             <label className="space-y-1.5 text-label-12 text-gray-900">
-              <span className="block font-medium text-gray-1000">Space name</span>
+              <span className="block font-medium text-gray-1000">Profile name</span>
               <Input autoFocus value={name} maxLength={48} onChange={(event) => setName(event.target.value)} data-testid="fork-space-name" className="w-full" />
             </label>
             <label className="space-y-1.5 text-label-12 text-gray-900">
@@ -87,7 +87,7 @@ export function SpaceForkDialog() {
                 value={purpose}
                 maxLength={280}
                 rows={2}
-                placeholder="What related outcome is this Space for?"
+                placeholder="What related outcome is this Profile for?"
                 onChange={(event) => setPurpose(event.target.value)}
                 data-testid="fork-space-purpose"
                 className="min-h-16 w-full resize-none rounded-sm bg-background-100 px-2.5 py-2 text-label-13 text-gray-1000 shadow-border outline-none transition-shadow placeholder:text-gray-700 focus:shadow-[0_0_0_1px_var(--color-gray-1000),0_0_0_4px_var(--color-alpha-200)]"
@@ -106,7 +106,7 @@ export function SpaceForkDialog() {
           <section className="overflow-hidden rounded-md bg-background-100 shadow-border">
             <TransferRow
               icon={<Layers3 aria-hidden="true" />}
-              label="Space shelf"
+              label="Profile shelf"
               note="Favorites, pins, folders, and their live tab bindings."
               checked={includeShelf}
               onChange={setIncludeShelf}
@@ -130,7 +130,7 @@ export function SpaceForkDialog() {
           <span className="flex items-center gap-2">
             <Button variant="secondary" size="sm" disabled={busy} onClick={close}>Cancel</Button>
             <Button type="submit" size="sm" loading={busy} disabled={name.trim() === ""} prefix={<GitFork aria-hidden="true" />} data-testid="confirm-fork-space">
-              Fork Space
+              Fork Profile
             </Button>
           </span>
         </footer>

@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import { shellReady } from "./windows";
 import type { WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
@@ -89,6 +89,8 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
 
   let app: ElectronApplication;
   let shell: Page;
+  /** The console. The desk's Bar beside it shows the same conversation (its answer card): what is read is read here. */
+  const panel = (): Locator => shell.getByTestId("agent-panel");
 
   test.beforeAll(async () => {
     test.setTimeout(60_000);
@@ -112,7 +114,7 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
     // The starting state proves the browser and persistent agent chat arrive together.
     await expect(shell.getByTestId("agent-panel")).toBeVisible();
     await expect(shell.getByTestId("human-tab")).toBeVisible();
-    await expect(shell.getByTestId("delegate-button")).toBeVisible();
+    await expect(panel().getByTestId("delegate-button")).toBeVisible();
     await captureWindow(app, "01-browser-ready.png");
 
     // The agent should inherit the exact live browser session rather than
@@ -131,10 +133,9 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
       })()`);
     }, CHROME_VIEW_HASHES);
 
-    // A user-created split remains intact when the agent begins work.
-    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.setSplit("vertical"));
-    await expect(shell.getByTestId("secondary-pane")).toBeVisible();
-    await captureWindow(app, "02-human-split-view.png");
+    // The person's tab is the desk's one window, live: the agent works in it where it is, adding no view.
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await captureWindow(app, "02-human-desk-window.png");
 
     const viewCountBefore = await app.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows()[0]?.contentView.children.length ?? 0,
@@ -142,25 +143,25 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
 
     // The conversation acts in the selected tab and can be interrupted without a
     // handoff. Send is a message button: it stays disabled until one is written.
-    await shell.getByTestId("delegation-intent").fill("Reconcile the invoice and route it for payment");
-    await shell.getByTestId("delegate-button").click();
-    await expect(shell.getByTestId("run-status")).toContainText("Running");
+    await panel().getByTestId("delegation-intent").fill("Reconcile the invoice and route it for payment");
+    await panel().getByTestId("delegate-button").click();
+    await expect(panel().getByTestId("run-status")).toContainText("Running");
     // Interrupt once the draft is typed into the page, before the approval
     // the demo asks for next: the steered run resumes from that page state.
     await expect
       .poll(async () => (await snapshot(shell)).run?.toolCalls.some((call) => call.name === "page.type" && call.status === "completed") ?? false, { intervals: [50] })
       .toBe(true);
-    await shell.getByTestId("interrupt-button").click();
-    await expect(shell.getByTestId("run-status")).toContainText("Interrupted");
-    await expect(shell.getByTestId("approval-card")).toHaveCount(0);
-    await expect(shell.getByText("You interrupted the agent.", { exact: false })).toBeVisible();
+    await panel().getByTestId("interrupt-button").click();
+    await expect(panel().getByTestId("run-status")).toContainText("Interrupted");
+    await expect(panel().getByTestId("approval-card")).toHaveCount(0);
+    await expect(panel().getByText("You interrupted the agent.", { exact: false })).toBeVisible();
     await captureWindow(app, "03-agent-interrupted.png");
 
     // A message steers and resumes from the same live page state.
-    await shell.getByTestId("delegation-intent").fill("Keep the existing due date, then continue.");
-    await shell.getByTestId("delegate-button").click();
-    await expect(shell.getByTestId("approval-card")).toBeVisible();
-    await expect(shell.getByTestId("run-status")).toContainText("Waiting for approval");
+    await panel().getByTestId("delegation-intent").fill("Keep the existing due date, then continue.");
+    await panel().getByTestId("delegate-button").click();
+    await expect(panel().getByTestId("approval-card")).toBeVisible();
+    await expect(panel().getByTestId("run-status")).toContainText("Waiting for approval");
     await expect(shell.getByTestId("agent-tab")).toHaveCount(0);
 
     const boundary = await app.evaluate(async ({ BrowserWindow }, hashes) => {
@@ -197,12 +198,12 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
       password: "human-only-password",
       memo: "PO total matched. Documented the $20 freight variance from the vendor invoice.",
     });
-    await expect(shell.getByText("I’m resuming from the page exactly as you left it", { exact: false })).toBeVisible();
+    await expect(panel().getByText("I’m resuming from the page exactly as you left it", { exact: false })).toBeVisible();
     await captureWindow(app, "04-agent-steered.png");
 
-    await shell.getByTestId("approve-button").click();
-    await expect(shell.getByTestId("completion-meta")).toBeVisible();
-    await expect(shell.getByTestId("run-status")).toContainText("Completed");
+    await panel().getByTestId("approve-button").click();
+    await expect(panel().getByTestId("completion-meta")).toBeVisible();
+    await expect(panel().getByTestId("run-status")).toContainText("Completed");
 
     const evidence = await shell.evaluate(() =>
       (window as unknown as { pistachio: PistachioApi }).pistachio.getEvidence(),
@@ -219,7 +220,7 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
     await captureWindow(app, "05-work-completed-in-place.png");
 
     // The completed run must expose its full hash-chained evidence record.
-    await shell.getByRole("button", { name: /View \d+ activity records/ }).click();
+    await panel().getByRole("button", { name: /View \d+ activity records/ }).click();
     await expect(shell.getByTestId("evidence-replay")).toBeVisible();
     await captureWindow(app, "06-evidence-replay.png");
     await shell.getByRole("button", { name: "Close replay" }).click();
@@ -229,9 +230,9 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
   test("a structured question disappears and the run resumes after Continue", async () => {
     // Ambiguous prompts use the structured questionnaire primitive: the
     // finished demo thread starts over, paused on the question and its directions.
-    await shell.getByTestId("delegation-intent").fill("Help");
-    await shell.getByTestId("delegate-button").click();
-    const card = shell.getByTestId("questionnaire-card");
+    await panel().getByTestId("delegation-intent").fill("Help");
+    await panel().getByTestId("delegate-button").click();
+    const card = panel().getByTestId("questionnaire-card");
     await expect(card).toBeVisible();
     await expect(card.getByText("Inspect and report", { exact: true })).toBeVisible();
     await captureWindow(app, "07-questionnaire.png");
@@ -243,19 +244,19 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
     // Removing the card is the user-visible contract that the answer resumed this conversation.
     await card.getByRole("button", { name: "Continue" }).click();
     await expect(card).toHaveCount(0);
-    await expect(shell.getByTestId("run-status")).toContainText("Running");
+    await expect(panel().getByTestId("run-status")).toContainText("Running");
 
     // It runs on to its approval; declined, the thread is finished.
-    await expect(shell.getByTestId("approval-card")).toBeVisible();
-    await shell.getByTestId("reject-button").click();
-    await expect(shell.getByTestId("run-status")).toContainText("Rejected");
+    await expect(panel().getByTestId("approval-card")).toBeVisible();
+    await panel().getByTestId("reject-button").click();
+    await expect(panel().getByTestId("run-status")).toContainText("Rejected");
   });
 
   test("a person types a requested value and the agent resumes with it", async () => {
     // The agent can request a verbatim value without inventing choices.
-    await shell.getByTestId("delegation-intent").fill("I will provide my ZIP code");
-    await shell.getByTestId("delegate-button").click();
-    const card = shell.getByTestId("questionnaire-card");
+    await panel().getByTestId("delegation-intent").fill("I will provide my ZIP code");
+    await panel().getByTestId("delegate-button").click();
+    const card = panel().getByTestId("questionnaire-card");
     const input = card.getByTestId("question-text-input");
     await expect(card.getByText("What ZIP code should I use?", { exact: true })).toBeVisible();
     await expect(input).toHaveAttribute("placeholder", "ZIP code");
@@ -269,7 +270,7 @@ test.describe.serial("the console's agent works in the person's tab", { tag: ["@
     // Continue consumes the text and returns to the same conversation.
     await card.getByRole("button", { name: "Continue" }).click();
     await expect(card).toHaveCount(0);
-    await expect(shell.getByTestId("run-status")).toContainText("Running");
-    await expect(shell.getByText("10001", { exact: true })).toBeVisible();
+    await expect(panel().getByTestId("run-status")).toContainText("Running");
+    await expect(panel().getByText("10001", { exact: true })).toBeVisible();
   });
 });

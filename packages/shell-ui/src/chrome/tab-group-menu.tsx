@@ -1,16 +1,18 @@
 import { useEffect, useRef } from "react";
-import { AppWindow, Columns2, Pencil, Plus, Ungroup, X } from "lucide-react";
+import { Columns2, Pencil, Plus, Ungroup, X } from "lucide-react";
 import { DEFAULT_TAB_GROUP_TITLE, type TabGroupColor, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { shellApi } from "../api";
 import type { MenuEntry } from "../components/ContextMenu";
 import { useAppStore } from "../store";
-import { deskAvailable, toggleDesk } from "../lib/desk/open";
-import { useDeskStore } from "../lib/desk/store";
+import { splitAvailable } from "../lib/desk/open";
 
 /**
- * A tab group's menu and its close, declared once for the sidebar's group
- * row (components/TabGroupRow.tsx), the way chrome/tab-menu.tsx is for one
- * tab (docs/tab-tidy.md §3.3).
+ * A space's (tab group's) menu and its close, declared once for the
+ * sidebar's group row (components/TabGroupRow.tsx), the way
+ * chrome/tab-menu.tsx is for one tab (docs/tab-tidy.md §3.3). Since
+ * 2026-10-09 (docs/spaces.md) it says "space", it has no "Open as desk" or
+ * "Leave the desk" (the desk is always up; the row itself chooses the
+ * space), and "Open as split view" is the web's.
  */
 
 /** The colours in the order the menu lays them out, with the words a screen reader says. */
@@ -69,7 +71,6 @@ export function useTabGroupMenu(options: {
 } {
   const tabGroupCommand = useAppStore((s) => s.tabGroupCommand);
   const showNotice = useAppStore((s) => s.showNotice);
-  const deskGroupId = useDeskStore((s) => s.groupId);
   const { onRename } = options;
 
   const close = (group: TabGroupInfo): void => {
@@ -77,8 +78,9 @@ export function useTabGroupMenu(options: {
     void tabGroupCommand({ type: "close", groupId: group.id }).then((result) => {
       if (result === null) return;
       const entryId = result.archivedEntryId;
+      // (An empty space is filed too, with its Stack and conversation: no count to say then.)
       showNotice(
-        `Closed “${group.title}” · ${String(count)} ${count === 1 ? "tab" : "tabs"}`,
+        count === 0 ? `Closed “${group.title}”` : `Closed “${group.title}” · ${String(count)} ${count === 1 ? "tab" : "tabs"}`,
         entryId === null ? {} : { action: { label: "Undo", run: () => void shellApi().tabArchive({ type: "restore", entryId }) } },
       );
     });
@@ -97,26 +99,18 @@ export function useTabGroupMenu(options: {
     },
     { separator: true },
     {
-      label: "New tab in group",
+      // In another space than the current one, the new tab is in use there, and the desk passes to it (main's).
+      label: "New tab in space",
       icon: <Plus aria-hidden="true" />,
-      onSelect: () => {
-        // On a desk, the new tab is chosen in a group not the desk's: the desk passes to that group first, and it comes out there.
-        if (deskGroupId !== null && deskGroupId !== group.id) useDeskStore.getState().switchTo(group.id);
-        void tabGroupCommand({ type: "newTab", groupId: group.id });
-      },
+      onSelect: () => void tabGroupCommand({ type: "newTab", groupId: group.id }),
     },
-    {
-      label: group.tabIds.length > 4 ? "Open 4 most recent as split view" : "Open as split view",
-      icon: <Columns2 aria-hidden="true" />,
-      disabled: group.tabIds.length < 2,
-      onSelect: () => void tabGroupCommand({ type: "openAsSplit", groupId: group.id }),
-    },
-    ...(deskAvailable()
+    ...(splitAvailable()
       ? [
           {
-            label: deskGroupId === group.id ? "Leave the desk" : "Open as desk",
-            icon: <AppWindow aria-hidden="true" />,
-            onSelect: () => toggleDesk(group.id),
+            label: group.tabIds.length > 4 ? "Open 4 most recent as split view" : "Open as split view",
+            icon: <Columns2 aria-hidden="true" />,
+            disabled: group.tabIds.length < 2,
+            onSelect: () => void tabGroupCommand({ type: "openAsSplit", groupId: group.id }),
           },
         ]
       : []),
@@ -127,12 +121,14 @@ export function useTabGroupMenu(options: {
     },
     { separator: true },
     {
-      label: "Ungroup tabs",
+      // Each tab its own space again; the space itself stays, empty, if it holds a Stack or a conversation (main's).
+      label: "Release the tabs",
       icon: <Ungroup aria-hidden="true" />,
+      disabled: group.tabIds.length === 0,
       onSelect: () => void tabGroupCommand({ type: "ungroup", groupId: group.id }),
     },
     {
-      label: "Close group",
+      label: "Close space",
       icon: <X aria-hidden="true" />,
       danger: true,
       onSelect: () => close(group),

@@ -232,7 +232,7 @@ describe("connecting", () => {
     const stalled = service({ control: control.control, fetchImpl: provider.fetchImpl, openConsent: consentOpener("never").openConsent, consentTimeoutMs: 20 });
     await expect(stalled.connect("work", "gmail", "read")).rejects.toThrow("took too long");
     const keyless = service({ control: control.control, fetchImpl: provider.fetchImpl, openConsent: consentOpener().openConsent });
-    await expect(keyless.connect("personal", "gmail", "read")).rejects.toThrow("holds no key for that Space");
+    await expect(keyless.connect("personal", "gmail", "read")).rejects.toThrow("holds no key for that Profile");
   });
 
   it("connects Google Calendar beside Gmail in one Space: its own scopes, its own row, the account read off the primary calendar", async () => {

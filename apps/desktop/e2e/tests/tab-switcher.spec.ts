@@ -4,20 +4,23 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { pageFirst, shellReady } from "./windows";
 import { captureEnabled, launchApp } from "./app";
 import { nextFrames } from "./chrome-harness";
+import { openTabs as openInBackground, selectTab } from "./desk-harness";
 
-/** Open each address as a new, selected tab; the ids in visit order. */
+/**
+ * Open each address as a new tab and choose it, in a space of its own — the
+ * desk passing to it, as a new tab in front did before the desk was always up
+ * (a new tab the shell makes joins the current space instead, all of them one
+ * desk's windows); the ids in visit order.
+ */
 async function openTabs(shell: Page, urls: string[]): Promise<string[]> {
-  return shell.evaluate(async (targets) => {
-    const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-    const ids: string[] = [];
-    for (const url of targets) {
-      await api.createTab(url);
-      const active = (await api.getSnapshot()).activeTabId;
-      if (active === null) throw new Error("the new tab was not selected");
-      ids.push(active);
-    }
-    return ids;
-  }, urls);
+  const ids: string[] = [];
+  for (const url of urls) {
+    const [id] = (await openInBackground(shell, [url])) as [string];
+    await selectTab(shell, id);
+    await expect.poll(() => activeTabId(shell)).toBe(id);
+    ids.push(id);
+  }
+  return ids;
 }
 
 function activeTabId(shell: Page): Promise<string | null> {

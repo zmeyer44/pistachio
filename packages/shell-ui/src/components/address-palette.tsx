@@ -17,7 +17,7 @@ import { NOTE_UNTITLED, searchNotes, type NoteSummary } from "@pistachio/shell-c
 import { SETTINGS_SECTIONS, type SettingsSection } from "@pistachio/shell-contracts/settings";
 import { DEFAULT_SIDEBAR_STATE, presetAnchorId } from "@pistachio/shell-contracts/sidebar";
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
-import { actionSnapshotOf, CHROME_ACTIONS, type ActionContext, type ChromeActionId } from "../chrome/actions";
+import { actionSnapshotOf, CHROME_ACTIONS, shortcutOfferedHere, type ActionContext, type ChromeActionId } from "../chrome/actions";
 import { useShell } from "../chrome/shell-host";
 import { ACTION_INTENT_DETAILS } from "../lib/action-intents";
 import { cn } from "../lib/cn";
@@ -59,7 +59,7 @@ export type Entry =
       title: string;
       subtitle?: string;
       hint?: string;
-      category: "Action" | "Space" | "Settings" | "Closed" | "Saved";
+      category: "Action" | "Profile" | "Settings" | "Closed" | "Saved";
       icon: React.ReactNode;
       run(): void;
     };
@@ -84,14 +84,14 @@ const ACTION_KEYWORDS: Partial<Record<ChromeActionId, readonly string[]>> = {
   newNote: ["new note blank note write jot down start writing scratch"],
   openReminders: ["schedule alarm calendar scheduled tasks pistachio://reminders"],
   openWatchtower: ["browsing memory history archive saved pages recall wiki pistachio://watchtower"],
-  openArchive: ["archive archived tabs closed groups put away restore old tabs"],
+  openArchive: ["archive archived tabs closed spaces closed groups put away restore old tabs"],
   openLibrary: ["library everything kept my stuff artifacts pages built notes saved bookmarks watchtower history"],
-  undoTidy: ["undo tidy bring back archived tabs restore ungroup revert clean up"],
-  tidyTabs: ["tidy clean up declutter organize group tabs archive idle old tabs auto group"],
+  undoTidy: ["undo tidy bring back archived tabs restore ungroup spaces revert clean up"],
+  tidyTabs: ["tidy clean up declutter organize group tabs spaces archive idle old tabs auto group"],
   openBookmarks: ["saved items favorites reading list collection pistachio://bookmarks"],
   bookmarkPage: ["save this page keep add bookmark shift shift"],
-  forkSpace: ["branch workspace context"],
-  toggleSidebarPinned: ["compact sidebar"],
+  forkSpace: ["branch profile workspace context"],
+  toggleSidebarPinned: ["compact sidebar hide sidebar auto-hide collapse rail icons only whole sidebar show sidebar cycle sidebar"],
   togglePin: ["unpin keep page"],
   screenshotView: ["screenshot screen shot capture snapshot snap grab picture image page window desk copy save"],
   screenshotArea: ["screenshot screen shot capture snapshot snap grab picture image area region part selection select drag crop snip"],
@@ -356,6 +356,8 @@ export function useTypedEntries({
     const platform: ShortcutPlatform = /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
     for (const action of Object.values(CHROME_ACTIONS)) {
       if (action.enabled?.(actionContext) === false) continue;
+      // Not this surface's (ShortcutDefinition.surfaces): the desk's on the web, the split's on the desktop.
+      if (action.shortcutId !== undefined && !shortcutOfferedHere(action.shortcutId)) continue;
       const label = action.id === "delegate"
         ? "Ask Pistachio about this tab"
         : action.id === "toggleEvidence" && !shell.state.evidenceOpen && hasRun
@@ -430,7 +432,7 @@ export function useTypedEntries({
         kind: "action",
         id: "tabs:clear-unpinned",
         title: "Clear unpinned tabs",
-        subtitle: `${unpinnedCount} ${unpinnedCount === 1 ? "tab" : "tabs"} in this Space`,
+        subtitle: `${unpinnedCount} ${unpinnedCount === 1 ? "tab" : "tabs"} in this Profile`,
         category: "Action",
         icon: <ListX aria-hidden="true" />,
         run: () => void clearUnpinnedTabs(),
@@ -448,30 +450,30 @@ export function useTypedEntries({
         kind: "action",
         id: `space:switch:${space.id}`,
         title: `Switch to ${space.name}`,
-        subtitle: space.purpose || "Open Space",
-        category: "Space",
+        subtitle: space.purpose || "Open Profile",
+        category: "Profile",
         icon: <Boxes aria-hidden="true" />,
         run: () => void switchSpace(space.id),
       };
       offer(
         switchEntry,
-        { text: `Switch to ${space.name}`, keywords: [space.name, space.purpose, "space workspace open"], priority: 18 },
-        { kind: "command", label: `Switch to ${space.name}`, detail: `Move to the ${space.name} Space. ${space.purpose}` },
+        { text: `Switch to ${space.name}`, keywords: [space.name, space.purpose, "profile workspace open"], priority: 18 },
+        { kind: "command", label: `Switch to ${space.name}`, detail: `Move to the ${space.name} Profile. ${space.purpose}` },
       );
       if (commandTab?.kind === "human") {
         const moveEntry: Entry = {
           kind: "action",
           id: `space:move:${space.id}`,
           title: `Move current tab to ${space.name}`,
-          subtitle: commandTab.anchorId === null ? commandTab.title : "Its pinned page stays in this Space",
-          category: "Space",
+          subtitle: commandTab.anchorId === null ? commandTab.title : "Its pinned page stays in this Profile",
+          category: "Profile",
           icon: <MoveRight aria-hidden="true" />,
           run: () => void moveTabToSpace(commandTab.id, space.id),
         };
         offer(
           moveEntry,
-          { text: `Move current tab to ${space.name}`, keywords: [space.name, space.purpose, "space workspace transfer"], priority: 19 },
-          { kind: "command", label: `Move current tab to ${space.name}`, detail: `Put the tab you are on into the ${space.name} Space.` },
+          { text: `Move current tab to ${space.name}`, keywords: [space.name, space.purpose, "profile workspace transfer"], priority: 19 },
+          { kind: "command", label: `Move current tab to ${space.name}`, detail: `Put the tab you are on into the ${space.name} Profile.` },
         );
       }
     }

@@ -506,7 +506,7 @@ function PreviewFieldset({ entries, now, enabled }: { entries: MemoryEntry[]; no
   return (
     <Group
       title="What the agent sees"
-      note="The block added to the system prompt at the start of a run: your profile, lasting facts, current context. Facts recalled for a specific task are added on top."
+      note="The block added to the system prompt at the start of a run: what Pistachio remembers about you, lasting facts, current context. Facts recalled for a specific task are added on top."
       footer={enabled ? `Time zone in use: ${zone}.` : "Memory is off, so none of this is sent right now."}
       footerAction={
         <Button variant="secondary" size="sm" disabled={preview === ""} onClick={() => setShow(!show)}>
@@ -529,7 +529,7 @@ function PreviewFieldset({ entries, now, enabled }: { entries: MemoryEntry[]; no
         ) : (
           <Note type="secondary" size="sm">
             Sent as background about you, labelled as context rather than as instructions. Facts waiting for review are
-            left out of your profile, and marked unconfirmed if a task recalls them.
+            left out of your memory, and marked unconfirmed if a task recalls them.
           </Note>
         )}
       </Block>
@@ -570,7 +570,7 @@ export function MemoryPage() {
       >
         <Row
           label="Include memory in every run"
-          note="Your profile and the facts that bear on the task go into the agent's prompt, and it can remember and forget things as it works. Off leaves everything stored but unused."
+          note="What Pistachio remembers about you and the facts that bear on the task go into the agent's prompt, and it can remember and forget things as it works. Off leaves everything stored but unused."
         >
           <Switch
             checked={settings.enabled}

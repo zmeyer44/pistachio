@@ -229,7 +229,7 @@ export function demoAuthRelyingPartyHtml(): string {
     </style>
   </head>
   <body>
-    <header><div class="brand">Pistachio identity lab</div><div class="secure">● Same-Space session</div></header>
+    <header><div class="brand">Pistachio identity lab</div><div class="secure">● Same-Profile session</div></header>
     <main>
       <div class="eyebrow">Authentication handoff</div>
       <h1>Connected accounts</h1>
@@ -303,7 +303,7 @@ export function demoOAuthHtml(flow: string): string {
     <main>
       <div class="g">G</div>
       <h1>Choose an account</h1>
-      <p>Continue to ${safeFlow === "x" ? "X" : "YouTube"} in this Pistachio Space.</p>
+      <p>Continue to ${safeFlow === "x" ? "X" : "YouTube"} in this Pistachio Profile.</p>
       <div class="account"><span class="avatar">A</span><span><b>Avery Chen</b><small>avery@example.test</small></span></div>
       <div id="opener-status" class="opener"></div>
       <button id="continue" type="button">Continue as Avery</button>

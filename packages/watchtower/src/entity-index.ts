@@ -678,7 +678,7 @@ export class EntityIndex {
     );
     if (!row)
       throw Object.assign(
-        new Error("This entry was removed from the index or belongs to another Space."),
+        new Error("This entry was removed from the index or belongs to another Profile."),
         { code: "NOT_FOUND" },
       );
     const [entity] = this.complete([row]);
@@ -754,7 +754,7 @@ export class EntityIndex {
       const owned = (id: number): boolean =>
         this.archive.get("SELECT 1 FROM entity WHERE id=? AND space_id=?", id, spaceId) !== undefined;
       if (!owned(request.entityId))
-        throw Object.assign(new Error("This entry was removed from the index or belongs to another Space."), {
+        throw Object.assign(new Error("This entry was removed from the index or belongs to another Profile."), {
           code: "NOT_FOUND",
         });
       if (request.remove) {
@@ -768,7 +768,7 @@ export class EntityIndex {
       }
       if (request.merge !== undefined) {
         const into = request.merge;
-        if (into === request.entityId || !owned(into)) throw new Error("Choose another entry in this Space to merge with.");
+        if (into === request.entityId || !owned(into)) throw new Error("Choose another entry in this Profile to merge with.");
         this.run(
           "INSERT OR IGNORE INTO entity_alias(entity_id,key,name) SELECT ?,key,name FROM entity_alias WHERE entity_id=?",
           into,

@@ -162,7 +162,7 @@ export function sortRestorePoints(points: readonly RemoteRestorePoint[]): Remote
 /** "12 tabs · 2 Spaces · 5m ago" under a restore point's device name. */
 export function restorePointSummary(point: RemoteRestorePoint, now: number = Date.now()): string {
   const tabs = point.tabCount === 1 ? "1 tab" : `${String(point.tabCount)} tabs`;
-  const spaces = point.spaceIds.length === 1 ? "1 Space" : `${String(point.spaceIds.length)} Spaces`;
+  const spaces = point.spaceIds.length === 1 ? "1 Profile" : `${String(point.spaceIds.length)} Profiles`;
   const when = relativeMs(point.savedAtMs, now);
   return when === "" ? `${tabs} · ${spaces}` : `${tabs} · ${spaces} · saved ${when}`;
 }

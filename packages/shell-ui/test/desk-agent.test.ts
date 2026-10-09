@@ -57,8 +57,8 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     save: () => undefined,
     moveTabToGroup: () => undefined,
     sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    sidebarAway: () => false,
     homeOf: () => null,
-    leaveDone: () => undefined,
     ...host,
   });
   created.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 1000 }) } as unknown as HTMLElement);

@@ -227,7 +227,7 @@ function RevokeDialog({ device, onClose }: { device: DeviceInfo; onClose: () => 
       subtitle="Revocation is about keys, not about sessions that already exist elsewhere."
       does={[
         "Control stops accepting that device's token, and the hub closes its socket at once.",
-        "Its key wrappers are deleted, so it can no longer unwrap any Space secret.",
+        "Its key wrappers are deleted, so it can no longer unwrap any Profile secret.",
         "Its egress credentials are revoked; the gateway refuses them on the next connection.",
         cloud
           ? "The cloud browser stops driving this account, and this Mac drops the pinned key."
@@ -235,7 +235,7 @@ function RevokeDialog({ device, onClose }: { device: DeviceInfo; onClose: () => 
       ]}
       doesNot={[
         "Cannot log that device out of third-party sites: cookies already in its browser keep working until the site expires them.",
-        "Does not clear what is on that machine — its Spaces, tabs, and local cookie jars stay as they are.",
+        "Does not clear what is on that machine — its Profiles, tabs, and local cookie jars stay as they are.",
         "Does not remove what it already published; converged records stay in every device's jar.",
         "Does not delete the device from this list — it stays here, marked revoked.",
       ]}
@@ -276,7 +276,7 @@ function CloudKeyChanged() {
     <Group
       type="warning"
       title="The cloud browser is showing a different key"
-      note="Nothing was wrapped to it. Until someone confirms the new key here, the cloud browser cannot open any Space of this account."
+      note="Nothing was wrapped to it. Until someone confirms the new key here, the cloud browser cannot open any Profile of this account."
       footer="Confirm only if you expected the cloud browser to be re-provisioned."
       footerHighlight
       footerAction={

@@ -15,7 +15,7 @@ import { Switch } from "../../ui/switch";
 import { Fixed, Group, Page, Row, probeRefusal, useUnavailable } from "../parts";
 
 const DESCRIPTION =
-  "Tabs pile up. Tidy archives the ones you have not looked at in a while, gathers the ones that belong together into groups, and sends your favorites back to their home pages. Nothing is lost: archived tabs can be restored, and every tidy can be undone.";
+  "Tabs pile up. Tidy archives the ones you have not looked at in a while, gathers the ones that belong together into spaces, and sends your favorites back to their home pages. Nothing is lost: archived tabs can be restored, and every tidy can be undone.";
 
 const ARCHIVE_AFTER = [
   { value: 12, label: "12 hours" },
@@ -65,8 +65,8 @@ export function TabsSettingsPage() {
     <Page title="Tabs" description={DESCRIPTION}>
       <Group
         title="Tidy"
-        note="Runs on its own when tabs have gone idle, and whenever you ask. Tabs you can see, tabs playing sound, pinned tabs, favorites, split views, and groups you made yourself are never archived."
-        footer="Pin a tab, or put it in a group of your own, to keep it."
+        note="Runs on its own when tabs have gone idle, and whenever you ask. Tabs you can see, tabs playing sound, pinned tabs, favorites, split views, and spaces you made yourself are never archived."
+        footer="Pin a tab, or put it in a space of your own, to keep it."
         footerAction={
           <Button variant="secondary" size="sm" prefix={<Sparkles aria-hidden="true" />} disabled={tidyRunning} onClick={() => void tidyTabs()} data-testid="settings-tidy-now">
             {tidyRunning ? "Tidying…" : "Tidy now"}
@@ -83,10 +83,10 @@ export function TabsSettingsPage() {
           />
         </Row>
         <Row
-          label="Group related tabs"
-          note="Asks the model which tabs belong to the same task, and names the group — a group you make yourself is named from its tabs too, unless you type a name first. It is sent the tabs' titles and addresses — without query strings — and nothing else. Off, tabs are archived by the clock alone, a new group starts as “New group”, and nothing leaves this device."
+          label="Gather related tabs into spaces"
+          note="Asks the model which tabs belong to the same task, and names the space — a space you make yourself is named from its tabs too, unless you type a name first. It is sent the tabs' titles and addresses — without query strings — and nothing else. Off, tabs are archived by the clock alone, a new space starts as “New space”, and nothing leaves this device."
         >
-          <Switch checked={tabs.groupRelated} onChange={(groupRelated) => void updateSettings({ tabs: { groupRelated } })} label="Group related tabs with the model" />
+          <Switch checked={tabs.groupRelated} onChange={(groupRelated) => void updateSettings({ tabs: { groupRelated } })} label="Gather related tabs into spaces with the model" />
         </Row>
         <Row
           label="Return favorites to their home page"
@@ -113,7 +113,7 @@ export function TabsSettingsPage() {
           />
         </Row>
         <Fixed label="What an archived tab keeps" note="Its address, title and icon, its back and forward history, and where you had scrolled to — so restoring one puts you back where you were." />
-        <Fixed label="Closed groups" note="Closing a tab group files the whole group here, to be restored together or one tab at a time." />
+        <Fixed label="Closed spaces" note="Closing a space files the whole space here, to be restored together or one tab at a time." />
       </Group>
       <Group title="Tab switcher" note="Hold ⌥⌘ or ⌥⌃ on their own to see your tabs, the most recent first, and let go to go to the one selected. ⌃Tab, or Tab with ⌥⌘ or ⌥⌃ held, opens it at once, one tab along.">
         <Row

@@ -31,6 +31,7 @@ import {
   sanitizeShortcuts,
   SHORTCUT_ACTION_IDS,
   SHORTCUT_DEFINITIONS,
+  shortcutsMeet,
   type ShortcutActionId,
   type ShortcutSettings,
 } from "./shortcuts.js";
@@ -72,15 +73,58 @@ export type HomePageBehavior = "pistachio" | "url";
 
 /**
  * How the sidebar — the browser chrome's column at the window's left edge —
- * behaves. "pinned" keeps it in the window's layout at all times; "compact"
- * hides it (and the window controls with it) and reveals it over the page
- * when the pointer reaches the window's left edge.
+ * stands (docs/spaces.md §3). "whole" keeps the column in the window's
+ * layout; "rail" keeps only its icons there, a narrow column (desk only:
+ * its favorites sheet, head buttons and now-playing need a desk); "hidden"
+ * puts it away, and the window controls with it, at a strip on the
+ * window's left edge, bringing it out when the pointer reaches the edge.
+ * Brought out, a hidden column is drawn in the layout: the page beside it
+ * REFLOWS (it is never a card floating over the page) — except on the
+ * desk, where since 2026-10-09 it OVERLAYS the windows, so no page is laid
+ * out anew for a reveal.
+ *
+ * One setting since 2026-10-09; until then it was "pinned" | "compact",
+ * and the desk kept a rail of its own. A file or record that still says
+ * "pinned" reads as whole and "compact" as hidden (sidebarMode).
  */
-export type SidebarPresentation = "pinned" | "compact";
-export const SIDEBAR_PRESENTATIONS: readonly SidebarPresentation[] = [
-  "pinned",
-  "compact",
-];
+export type SidebarMode = "whole" | "rail" | "hidden";
+export const SIDEBAR_MODES: readonly SidebarMode[] = ["whole", "rail", "hidden"];
+
+export function isSidebarMode(value: unknown): value is SidebarMode {
+  return value === "whole" || value === "rail" || value === "hidden";
+}
+
+/**
+ * A stored sidebar mode, read: the values written before 2026-10-09 mapped
+ * to today's — by comparison, not by a lookup object, where "constructor"
+ * and the rest of Object.prototype would answer — anything else the
+ * fallback.
+ */
+function sidebarMode(value: unknown, fallback: SidebarMode): SidebarMode {
+  if (value === "pinned") return "whole";
+  if (value === "compact") return "hidden";
+  return isSidebarMode(value) ? value : fallback;
+}
+
+/**
+ * The mode ⌘S goes to next (toggleSidebarPinned, which keeps its id — it is
+ * a key in everyone's saved shortcuts): whole → rail → hidden → whole. Where
+ * the rail is not offered (the web), whole ⇄ hidden, and a stored rail —
+ * drawn as whole there (effectiveSidebarMode) — goes to hidden.
+ */
+export function nextSidebarMode(mode: SidebarMode, railOffered: boolean): SidebarMode {
+  if (mode === "whole") return railOffered ? "rail" : "hidden";
+  if (mode === "rail") return "hidden";
+  return "whole";
+}
+
+/**
+ * The mode as drawn: a stored rail is whole where the rail is not offered
+ * (the web) — drawn so, never rewritten, so the Mac that chose it keeps it.
+ */
+export function effectiveSidebarMode(mode: SidebarMode, railOffered: boolean): SidebarMode {
+  return mode === "rail" && !railOffered ? "whole" : mode;
+}
 
 /**
  * A page the organization keeps in everyone's sidebar: the first tiles of
@@ -118,7 +162,7 @@ export interface DesktopSettings {
     learnFromRuns: boolean;
   };
   layout: {
-    sidebar: SidebarPresentation;
+    sidebar: SidebarMode;
   };
   organization: {
     /** The organization's links, in the order the grid shows them. */
@@ -289,7 +333,7 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
     learnFromRuns: true,
   },
   layout: {
-    sidebar: "pinned",
+    sidebar: "whole",
   },
   organization: {
     presetLinks: [],
@@ -566,11 +610,7 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
       learnFromRuns: bool(memory["learnFromRuns"], d.memory.learnFromRuns),
     },
     layout: {
-      sidebar: oneOf(
-        layout["sidebar"],
-        SIDEBAR_PRESENTATIONS,
-        d.layout.sidebar,
-      ),
+      sidebar: sidebarMode(layout["sidebar"], d.layout.sidebar),
     },
     organization: {
       presetLinks: presetLinks(organization["presetLinks"]),
@@ -733,7 +773,9 @@ export function applySettingsPatch(
  * not merged: the sanitizer would keep the first of the two in definition
  * order and quietly unassign the other, and the page promised conflicts are
  * never overwritten. The check is against the patch's own result, so a
- * whole-table write (reset all) is judged as one.
+ * whole-table write (reset all) is judged as one. Two actions no surface
+ * offers both of may share a key (shortcutsMeet, since 2026-10-09: the
+ * web's split and a desk key on the Mac).
  */
 function refuseShortcutClash(
   current: ShortcutSettings,
@@ -749,7 +791,7 @@ function refuseShortcutClash(
     const binding = next[id];
     if (binding === null || binding === undefined) continue;
     const holder = SHORTCUT_ACTION_IDS.find(
-      (other) => other !== id && next[other] === binding,
+      (other) => other !== id && next[other] === binding && shortcutsMeet(id, other),
     );
     if (holder === undefined) continue;
     const label = (candidate: ShortcutActionId) =>
@@ -782,7 +824,7 @@ export const SETTINGS_SECTIONS = {
   evidence: "Evidence",
   privacy: "Site data",
   "privacy/shields": "Ads & trackers",
-  "privacy/spaces": "Spaces",
+  "privacy/spaces": "Profiles",
   "privacy/isolation": "Agent isolation",
   account: "Account",
   devices: "Devices",

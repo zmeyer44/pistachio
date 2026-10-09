@@ -247,7 +247,7 @@ export const useCases = [
   {
     n: "04",
     title: "Command bar",
-    body: "⌘L searches across open tabs, pins, recent sites, Spaces, settings, and browser actions from one field. Paste a URL and go.",
+    body: "⌘L searches across open tabs, pins, recent sites, Profiles, settings, and browser actions from one field. Paste a URL and go.",
     video: "/video/usecase-command.mp4",
     poster: "/img/usecase-command.jpg",
   },
@@ -289,7 +289,7 @@ export const shortcuts = [
   {
     keys: "⌘L",
     action: "Command bar",
-    detail: ["Tabs, pins, Spaces, settings"],
+    detail: ["Tabs, pins, Profiles, settings"],
   },
   { keys: "⌘\\", action: "Split view", detail: ["Up to four panes"] },
   { keys: "⌘D", action: "Pin this page", detail: ["Stays above today's tabs"] },
@@ -300,7 +300,7 @@ export const shortcuts = [
   },
   {
     keys: "⌘⇧F",
-    action: "Fork this Space",
+    action: "Fork this Profile",
     detail: ["Carry chosen tabs and logins"],
   },
   {

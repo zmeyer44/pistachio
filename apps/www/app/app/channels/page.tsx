@@ -96,7 +96,7 @@ export default function ChannelsPage(): ReactNode {
       )}
 
       {cloudSpaces.length === 0 ? (
-        <Empty title="No Space can run yet">
+        <Empty title="No Profile can run yet">
           <p>A channel starts a cloud run, so turn on the cloud browser from the Agent page first.</p>
         </Empty>
       ) : (
@@ -111,7 +111,7 @@ export default function ChannelsPage(): ReactNode {
             />
             {cloudSpaces.length === 1 ? null : (
               <div className="pa-field">
-                <label htmlFor="channel-space">Space it runs in</label>
+                <label htmlFor="channel-space">Profile it runs in</label>
                 <select
                   id="channel-space"
                   className="pa-input"
@@ -142,7 +142,7 @@ export default function ChannelsPage(): ReactNode {
             head={
               <>
                 <th scope="col">Name</th>
-                <th scope="col">Space</th>
+                <th scope="col">Profile</th>
                 <th scope="col" className="pa-n">Created</th>
                 <th scope="col" />
               </>

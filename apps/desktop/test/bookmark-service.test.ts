@@ -265,13 +265,13 @@ describe("a save is a Watchtower save", () => {
   });
 
   it("still saves when Watchtower will not keep the page, and says why", async () => {
-    const { fake } = archive({ skipped: "This site or Space is excluded from Watchtower." });
+    const { fake } = archive({ skipped: "This site or Profile is excluded from Watchtower." });
     const { store, service } = harness({ archive: fake, entities: PERSON_AND_COMPANY });
     const saved = service.captureTab();
     await settled(store, saved.id);
     await archived(service, "skipped");
     expect(store.get(saved.id)?.status).toBe("ready");
-    expect(service.toast()?.watchtower).toEqual({ state: "skipped", reason: "This site or Space is excluded from Watchtower.", entities: [] });
+    expect(service.toast()?.watchtower).toEqual({ state: "skipped", reason: "This site or Profile is excluded from Watchtower.", entities: [] });
   });
 
   it("saves a page saved before again: a new version kept, its entries brought up to date", async () => {

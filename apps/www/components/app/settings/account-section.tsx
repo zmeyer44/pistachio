@@ -105,14 +105,14 @@ export function AccountSection(): ReactNode {
         </div>
       </dl>
 
-      {done ? <Note>Your password was changed and every Space was re-sealed under it. Other devices will ask for the new one.</Note> : null}
+      {done ? <Note>Your password was changed and every Profile was re-sealed under it. Other devices will ask for the new one.</Note> : null}
       {error === null ? null : <Note tone="alert">{error}</Note>}
 
       {changing ? (
         <form className="pa-section max-w-md" onSubmit={(event) => void submit(event)} data-testid="password-form">
           {canRewrap ? null : (
             <Note tone="alert">
-              This browser is unlocked from remembered keys and holds no Space secrets to re-seal.{" "}
+              This browser is unlocked from remembered keys and holds no Profile secrets to re-seal.{" "}
               <button type="button" className="underline" onClick={() => void relock({ preserveRemembered: true })}>
                 Unlock with your password
               </button>{" "}
@@ -130,7 +130,7 @@ export function AccountSection(): ReactNode {
           />
           <Field
             label="New password"
-            help="At least 8 characters. It derives the key that seals every Space, so the recovery code is the only other way in."
+            help="At least 8 characters. It derives the key that seals every Profile, so the recovery code is the only other way in."
             type="password"
             autoComplete="new-password"
             value={next}
@@ -165,7 +165,7 @@ export function AccountSection(): ReactNode {
             type="button"
             variant="quiet"
             onClick={() => {
-              if (confirm("Sign out of this browser? Your Spaces and records stay on the account; this browser forgets its keys.")) void signOut();
+              if (confirm("Sign out of this browser? Your Profiles and records stay on the account; this browser forgets its keys.")) void signOut();
             }}
           >
             Sign out of this browser

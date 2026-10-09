@@ -46,7 +46,7 @@ export function UpdatesGroup() {
       case "downloading":
         return { label: `Downloading ${update.version}`, note: `${update.percent}% — you can keep browsing.` };
       case "ready":
-        return { label: `Version ${update.version} is ready`, note: "Restart to finish. Tabs and Spaces come back as they are." };
+        return { label: `Version ${update.version} is ready`, note: "Restart to finish. Tabs and Profiles come back as they are." };
       case "error":
         return { label: "Could not check", note: `Last successful check: ${when(update.checkedAt)}.` };
     }

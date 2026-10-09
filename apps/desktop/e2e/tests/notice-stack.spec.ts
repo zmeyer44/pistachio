@@ -68,7 +68,7 @@ function visibleTabLoadState(app: ElectronApplication): Promise<{ loading: boole
   }, CHROME_VIEW_HASHES);
 }
 
-// One window over a page served here, with the compact sidebar hidden: the
+// One window over a page served here, with the sidebar hidden: the
 // notices it says and where they stand, the Appearance pickers, and a shell
 // toast — reader view on a page with no article, which needs no network.
 test.describe.serial("notices", { tag: ["@settings", "@notices", "@pages"] }, () => {
@@ -93,7 +93,7 @@ test.describe.serial("notices", { tag: ["@settings", "@notices", "@pages"] }, ()
     if (address === null || typeof address === "string") throw new Error("The test server did not bind a TCP port");
     homeUrl = `http://127.0.0.1:${String(address.port)}/`;
     ({ app, userData } = await launchApp({
-      settings: { general: { homePage: "url", homeUrl, newTab: "address" }, layout: { sidebar: "compact" } },
+      settings: { general: { homePage: "url", homeUrl, newTab: "address" }, layout: { sidebar: "hidden" } },
       name: "notice",
     }));
     shell = await shellReady(app);
@@ -108,11 +108,11 @@ test.describe.serial("notices", { tag: ["@settings", "@notices", "@pages"] }, ()
 
   /**
    * The notice used to be a feature of the chrome — a pill in the top strip,
-   * a card at the foot of the sidebar — so with the compact sidebar hidden,
+   * a card at the foot of the sidebar — so with the sidebar hidden,
    * ⌘⇧C copied the address and said nothing anyone could see. It is now a
    * stack in a view of its own over the page, whatever the chrome is doing.
    */
-  test("⌘⇧C says so over the page with the compact sidebar hidden, and notices stack", async () => {
+  test("⌘⇧C says so over the page with the sidebar hidden, and notices stack", async () => {
     await expect.poll(() => activeUrl(shell)).toBe(homeUrl);
     await expect.poll(async () => (await noticeViewState(app)).pane).not.toBeNull();
     // Nothing said yet: the view is loaded and out of the way.

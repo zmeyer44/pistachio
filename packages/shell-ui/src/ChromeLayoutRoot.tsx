@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { UrlBar } from "./components/UrlBar";
 import { TabSwitcher } from "./components/TabSwitcher";
 import { SidebarLayout } from "./layouts/SidebarLayout";
+import { useSidebarMode } from "./lib/sidebar-mode";
 import { useAppStore } from "./store";
 
 /**
@@ -10,13 +11,13 @@ import { useAppStore } from "./store";
  * than inside it.
  */
 export function ChromeLayoutRoot() {
-  // A reveal only means something for the compact sidebar; pinning starts it
-  // over, so a switch back to compact begins hidden.
-  const compact = useAppStore((state) => state.settings.layout.sidebar === "compact");
+  // A reveal only means something for the hidden sidebar; any other mode
+  // starts it over, so a switch back to hidden begins away.
+  const hidden = useSidebarMode() === "hidden";
   const setSidebarRevealed = useAppStore((state) => state.setSidebarRevealed);
   useEffect(() => {
-    if (!compact) setSidebarRevealed(false);
-  }, [compact, setSidebarRevealed]);
+    if (!hidden) setSidebarRevealed(false);
+  }, [hidden, setSidebarRevealed]);
   return (
     <>
       <SidebarLayout />

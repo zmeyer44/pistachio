@@ -1,5 +1,7 @@
 # The web browser: Pistachio in a browser tab
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Revision 9 (2026-09-10). Normative for the `web-browser` branch.
 Revision 7 is §14 (the first run on the web); revision 8 is §15 (two web
 apps), and §13's last subsection records what building it changed. Revision 9

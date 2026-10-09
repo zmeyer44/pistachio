@@ -362,7 +362,7 @@ test.describe.serial("authentication popups", { tag: ["@site", "@popup"] }, () =
     await Promise.all(servers.map(closeServer));
   });
 
-  test("Google OAuth keeps popup semantics and refreshes same-Space relying-party tabs", async () => {
+  test("Google OAuth keeps popup semantics and refreshes same-Profile relying-party tabs", async () => {
     await shell.evaluate(
       (url) =>
         (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(

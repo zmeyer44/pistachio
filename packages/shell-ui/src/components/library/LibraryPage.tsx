@@ -65,7 +65,7 @@ export function LibraryPage() {
   const openWatchtower = useAppStore((state) => state.openWatchtower);
   const bookmarks = useAppStore((state) => state.bookmarks.bookmarks);
   const bookmarksLoaded = useAppStore((state) => state.bookmarksLoaded);
-  const spaceName = useAppStore((state) => state.snapshot?.spaces.find((space) => space.id === state.snapshot?.activeSpaceId)?.name ?? "This Space");
+  const spaceName = useAppStore((state) => state.snapshot?.spaces.find((space) => space.id === state.snapshot?.activeSpaceId)?.name ?? "This Profile");
   const native = useSurface().kind === "native";
   const notes = useNotes((state) => state.summaries);
   const notesUnsupported = useNotes((state) => state.unsupported);

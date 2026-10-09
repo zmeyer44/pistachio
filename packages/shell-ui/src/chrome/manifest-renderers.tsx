@@ -22,7 +22,7 @@ import { UpdatePill } from "../components/UpdatePill";
 import { Kbd } from "../components/ui/kbd";
 import { cn } from "../lib/cn";
 import { useSidebarRail } from "../components/sidebar-rail";
-import { useDeskStore } from "../lib/desk/store";
+import { deskAvailable } from "../lib/desk/open";
 import { selectActiveTab, useAppStore } from "../store";
 import { ActionButton, useAction } from "./actions";
 import { featuresIn, type ChromeFeatureId, type SidebarRegion } from "./manifest";
@@ -131,13 +131,15 @@ function ScreenShareFeature() {
 /* ------------------------------ sidebarPin ------------------------------ */
 
 /**
- * Last in the toolbar row, pushed to its far end. While a desk is up the
- * sidebar is its dock, pinned whatever it otherwise is: in its place, the
- * desk's card (arrange, feel, leave) and the switch to its rail (⌘S).
+ * Last in the toolbar row, pushed to its far end: the sidebar's button to
+ * its next place (docs/spaces.md §3). On the desktop, where the desk is the
+ * browser, beside the desk's card (arrange, feel): the whole sidebar's goes
+ * to the rail, the hidden sidebar's (brought out over the desk) keeps it
+ * open. On the web, the ⌘S action itself (whole ⇄ hidden). (The rail's head
+ * draws its own: SidebarChrome.)
  */
 function SidebarPinFeature() {
-  const desk = useDeskStore((state) => state.groupId !== null || state.opening !== null);
-  if (desk)
+  if (deskAvailable())
     return (
       <span className="ml-auto flex items-center gap-0.5">
         <DeskMoreButton />

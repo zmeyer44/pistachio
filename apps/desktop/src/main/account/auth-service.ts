@@ -74,7 +74,7 @@ export class CloudDeviceChanged extends Error {
 
   constructor() {
     super(
-      "The cloud browser's identity changed since this Mac pinned it. Confirm the new device under Settings → Devices before enabling the cloud for a Space.",
+      "The cloud browser's identity changed since this Mac pinned it. Confirm the new device under Settings → Devices before enabling the cloud for a Profile.",
     );
     this.name = "CloudDeviceChanged";
   }
@@ -1096,7 +1096,7 @@ function friendly(error: unknown): string {
     if (error.code === "email_taken") return "That email already has an account. Sign in to it instead.";
     if (error.status === 401) return "Control did not accept this Mac's credentials.";
     if (error.status === 503 && error.code === "cloud_unavailable") return "The cloud browser is not available right now.";
-    if (error.code === "space_not_cloud_enabled") return "Enable the cloud browser for this Space first.";
+    if (error.code === "space_not_cloud_enabled") return "Enable the cloud browser for this Profile first.";
     return error.message;
   }
   return error instanceof Error ? error.message : String(error);

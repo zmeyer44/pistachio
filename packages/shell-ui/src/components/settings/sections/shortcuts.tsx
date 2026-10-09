@@ -6,11 +6,14 @@ import {
   shortcutConflict,
   shortcutFromEvent,
   shortcutLabel,
+  shortcutOffered,
+  shortcutsGivingUp,
   SHORTCUT_DEFINITIONS,
   type ShortcutActionId,
   type ShortcutPlatform,
 } from "@pistachio/shell-contracts/shortcuts";
 import { cn } from "../../../lib/cn";
+import { shortcutSurface } from "../../../lib/desk/open";
 import { useAppStore } from "../../../store";
 import { Button } from "../../ui/button";
 import { Kbd } from "../../ui/kbd";
@@ -38,15 +41,31 @@ export function ShortcutsPage() {
   const updateSettings = useAppStore((state) => state.updateSettings);
   const [recording, setRecording] = useState<ShortcutActionId | null>(null);
   const [error, setError] = useState<{ id: ShortcutActionId; message: string } | null>(null);
+  // Only what this surface offers (ShortcutDefinition.surfaces): the desk's arrangements on the desktop, the split on
+  // the web, and a retired action nowhere.
+  const surface = useMemo(() => shortcutSurface(), []);
   const grouped = useMemo(
-    () => GROUPS.map((group) => ({ group, definitions: SHORTCUT_DEFINITIONS.filter((definition) => definition.group === group) })),
-    [],
+    () =>
+      GROUPS.map((group) => ({
+        group,
+        definitions: SHORTCUT_DEFINITIONS.filter((definition) => definition.group === group && shortcutOffered(definition, surface)),
+      })),
+    [surface],
   );
 
+  /**
+   * A key this page lists as free may be held by an action only the other
+   * surface offers (the web's split's ⌘\ on the desktop): no conflict here,
+   * so it goes to the action set here — taken from the other in the same
+   * write when the two meet there (shortcutsGivingUp), kept by both when
+   * they never meet (a desk key and the split). Until 2026-10-09 the page
+   * refused it, naming an action it does not list and so could not clear.
+   */
   const commit = (id: ShortcutActionId, binding: string | null) => {
     setError(null);
     setRecording(null);
-    void updateSettings({ shortcuts: { [id]: binding } });
+    const givenUp = binding === null ? [] : shortcutsGivingUp(shortcuts, binding, id, surface);
+    void updateSettings({ shortcuts: { ...Object.fromEntries(givenUp.map((other) => [other, null])), [id]: binding } });
   };
 
   /**
@@ -57,7 +76,7 @@ export function ShortcutsPage() {
    */
   const reset = (id: ShortcutActionId) => {
     const binding = DEFAULT_SHORTCUTS[id];
-    const conflict = binding === null ? null : shortcutConflict(shortcuts, binding, id);
+    const conflict = binding === null ? null : shortcutConflict(shortcuts, binding, id, surface);
     if (conflict !== null) {
       setRecording(null);
       setError({
@@ -92,7 +111,7 @@ export function ShortcutsPage() {
       setError({ id, message: reserved });
       return;
     }
-    const conflict = shortcutConflict(shortcuts, binding, id);
+    const conflict = shortcutConflict(shortcuts, binding, id, surface);
     if (conflict !== null) {
       setError({ id, message: `Already used by “${conflict.label}”. Clear that binding first.` });
       return;

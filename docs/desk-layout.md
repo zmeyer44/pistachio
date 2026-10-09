@@ -1,5 +1,7 @@
 # The desk's smart layout
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 The desk (`docs/desk.md`) lays a window out by rule. A new window goes into a tiled desk's hole, or takes half of the window in use, or sits in a free spot. A window that goes leaves a gap. The rules cannot tell what the windows are *for*. They don't know that the vendor record just opened belongs beside the invoice rather than the inbox it split. They don't know that the doc being written deserves most of the desk while its three sources get a strip each.
 
 The smart layout puts a small decision model behind those moments. That model is TypeSafe's **Jev**, the same System One evaluator behind the address bar (`docs/smart-suggestions.md`), the console router (`docs/console-routing.md`) and smart find. Jev writes nothing. It puts a probability on each option of a few questions, in one call of about 250 ms. The desk offers the moves its geometry allows. The model judges from the windows' titles and sites which one fits how they are used. The desk's own rules work out where every window goes.
@@ -21,14 +23,14 @@ The smart layout puts a small decision model behind those moments. That model is
 
 **⌘⌥L (Arrange desk windows), or *Arrange for me* on the More card**, asks outright. The desk always acts: it tiles the windows, or it gives the main window the main place. The main window is the doc being written, the code being edited, the spreadsheet being filled in. It takes the left 62% of the desk at full height, and the others are stacked down the right, top to bottom in the order they stood. If the layout is already that one, a notice says so. With no model to ask (signed out, or `PISTACHIO_INTENT_MODEL=off`), ⌘⌥L tiles.
 
-Whenever the desk moves windows on its own, a notice says what it did and offers **Undo**: "“Pull request #412 - GitHub” took the space", "Put “Atlas Medical Supply - Vendor r…” beside “Invoice #2048 - QuickBooks”", "Gave “Thesis draft” the main place", "Tiled the windows". Undo puts every window back where it was going before (`restoreLayout`).
+Whenever the desk moves windows on its own, a notice says what it did and offers **Undo**: "“Pull request #412 - GitHub” filled the gap", "Put “Atlas Medical Supply - Vendor r…” beside “Invoice #2048 - QuickBooks”", "Gave “Thesis draft” the main place", "Tiled the windows". Undo puts every window back where it was going before (`restoreLayout`).
 
 **Feel › Layout** on the More card turns this off: **Smart** (the default) or **By hand**. By hand, windows coming and going move nothing, as before; ⌘⌥L still arranges on request. The shortcut is set in Settings › Keyboard like Tile and Cascade.
 
 The desk never moves windows on its own:
 - while a window is in hand;
 - while the desk's agent is at work (it lays the desk out itself, `docs/desk-agent.md`);
-- for the agent's own windows, the desk coming up, a group passing, or a file dropped at a point (each of those was placed on purpose);
+- for the agent's own windows, a cold start, the desk passing to another space, or a file dropped at a point (each of those was placed on purpose);
 - when the person changed the desk while the model was thinking.
 
 Masked and minimized windows stay where they are, as Tile leaves them. The desk is not asked about more than 12 windows.

@@ -1,5 +1,5 @@
 import type { MouseEvent } from "react";
-import { sourceHost, type CitedSource } from "../../lib/chat-sources";
+import { sourceHost } from "../../lib/chat-sources";
 import { recentFaviconUrl } from "../../lib/recents";
 import { useAppStore } from "../../store";
 import { Favicon } from "../Favicon";

@@ -132,7 +132,7 @@ function describeShellSocketCode(code: ShellErrorCode | "unreachable"): string {
     case "ended":
       return "This browser session has ended.";
     case "space_key_required":
-      return "This browser holds no key for this Space, so it cannot open its tabs.";
+      return "This browser holds no key for this Profile, so it cannot open its tabs.";
     case "lease_lost":
       return "The worker holding this session let go of it. Reload to pick it up again.";
     default:

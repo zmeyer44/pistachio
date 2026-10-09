@@ -15,6 +15,7 @@ import { IPC, type PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { NOTES_PAGE_URL } from "@pistachio/shell-contracts/notes";
 import { shellReady } from "./windows";
 import { launchApp } from "./app";
+import { windowInUse } from "./desk-harness";
 import { captureShell as captureWindow, humanTabs as tabs, visibleTabViews } from "./pages-harness";
 
 /** A 2×2 red PNG — enough for the editor's decode-and-downscale pipeline to take it. */
@@ -53,7 +54,9 @@ async function standInForReadAloud(app: ElectronApplication): Promise<() => Prom
 /** The title's height, and the height its text needs at its width now (a copy of it measured). */
 function titleFit(shell: Page): Promise<{ height: number; needed: number }> {
   return shell.evaluate(() => {
-    const title = document.querySelector<HTMLTextAreaElement>('[data-testid="note-title"]')!;
+    // (The note in use: on the desk, the window in use's.)
+    const title = (document.querySelector<HTMLTextAreaElement>('[data-testid="desk-window"][data-focused] [data-testid="note-title"]') ??
+      document.querySelector<HTMLTextAreaElement>('[data-testid="note-title"]'))!;
     const copy = title.cloneNode() as HTMLTextAreaElement;
     copy.value = title.value;
     copy.style.cssText = `position: absolute; visibility: hidden; height: 0px; width: ${String(title.clientWidth)}px`;
@@ -167,8 +170,10 @@ test("notes: a new note by shortcut, written, pictured, kept, and listed", { tag
 
     // The home page's teaser knows it too.
     await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab("pistachio://home/"));
-    await expect(shell.getByTestId("home-page")).toBeVisible();
-    await expect(shell.getByTestId("home-note").first()).toContainText("Lisbon trip");
+    // (Out on the desk as the window in use: the first home window is under it.)
+    const home = windowInUse(shell).getByTestId("home-page");
+    await expect(home).toBeVisible();
+    await expect(home.getByTestId("home-note").first()).toContainText("Lisbon trip");
     await captureShell(app, "06-home-teaser.png");
 
     const open = await tabs(shell);
@@ -179,7 +184,7 @@ test("notes: a new note by shortcut, written, pictured, kept, and listed", { tag
     // narrow window until it wraps, then the window widened — one line again,
     // not the two it was measured at, so the body is not left far below it.
     await shell.keyboard.press("Meta+Alt+N");
-    await expect(shell.getByTestId("note-title")).toBeFocused();
+    await expect(windowInUse(shell).getByTestId("note-title")).toBeFocused();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(980, 800));
     await shell.keyboard.type("Weekend");
     const oneLine = (await titleFit(shell)).height;

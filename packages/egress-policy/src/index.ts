@@ -247,7 +247,7 @@ export function decideEgress(
     return {
       route: "direct",
       reason: "space_direct",
-      explanation: "This space browses direct.",
+      explanation: "This Profile browses direct.",
     };
   }
   if (space.siteBypass.some((s) => hostMatches(host, s))) {

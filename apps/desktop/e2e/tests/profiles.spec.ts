@@ -1,0 +1,123 @@
+import { createServer, type Server } from "node:http";
+import { expect, test, type ElectronApplication } from "@playwright/test";
+import type { WebContentsView } from "electron";
+import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import { sidebarMenuItem } from "./footer";
+import { shellPage } from "./windows";
+import { launchApp } from "./app";
+
+async function forkFixture(): Promise<{ server: Server; url: string }> {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+    });
+    response.end(`<!doctype html><html><head><title>Fork fixture</title></head><body>
+      <label>Memo <input name="memo" value="initial"></label>
+    </body></html>`);
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("fixture server did not bind");
+  return { server, url: `http://127.0.0.1:${String(address.port)}/case` };
+}
+
+async function activeSnapshot(app: ElectronApplication): Promise<ShellSnapshot> {
+  const shell = await shellPage(app);
+  return shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot());
+}
+
+async function visiblePageState(app: ElectronApplication): Promise<{ sessionCookie: string | null; draft: string | null; memo: string }> {
+  return app.evaluate(async ({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (window === undefined) throw new Error("window unavailable");
+    const view = window.contentView.children.find(
+      (child) => "webContents" in child && "getVisible" in child && child.getVisible() && (child as WebContentsView).webContents.getURL().startsWith("http://127.0.0.1:"),
+    ) as WebContentsView | undefined;
+    if (view === undefined) throw new Error("visible human tab unavailable");
+    const page = await view.webContents.executeJavaScript(`({
+      draft: localStorage.getItem("draft"),
+      memo: document.querySelector('[name="memo"]')?.value ?? "",
+    })`);
+    const cookie = (await view.webContents.session.cookies.get({ url: view.webContents.getURL() })).find((item) => item.name === "fork-session");
+    return { ...page, sessionCookie: cookie?.value ?? null };
+  });
+}
+
+test("a Profile fork carries selected sessions and context once, records lineage, and then diverges", { tag: ["@tabs", "@sidebar"] }, async () => {
+  const fixture = await forkFixture();
+  const { app } = await launchApp({ name: "profiles" });
+  try {
+    const shell = await shellPage(app);
+    await shell.waitForLoadState("domcontentloaded");
+    let snapshot = await activeSnapshot(app);
+    if (snapshot.activeTabId === null) throw new Error("active tab unavailable");
+    await shell.evaluate(
+      ({ tabId, url }) => (window as unknown as { pistachio: PistachioApi }).pistachio.navigate(tabId, url),
+      { tabId: snapshot.activeTabId, url: fixture.url },
+    );
+    await expect
+      .poll(async () => {
+        const current = await activeSnapshot(app);
+        return current.tabs.find((tab) => tab.id === current.activeTabId)?.url ?? "";
+      })
+      .toBe(fixture.url);
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      const view = window?.contentView.children.find(
+        (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().startsWith("http://127.0.0.1:"),
+      ) as WebContentsView | undefined;
+      if (view === undefined) throw new Error("human tab unavailable");
+      await view.webContents.session.cookies.set({
+        url: view.webContents.getURL(),
+        name: "fork-session",
+        value: "source-secret",
+        path: "/",
+        httpOnly: true,
+        sameSite: "lax",
+      });
+      await view.webContents.executeJavaScript(`(() => {
+        localStorage.setItem("draft", "carried once");
+        const memo = document.querySelector('[name="memo"]');
+        if (memo) memo.value = "ready to branch";
+      })()`);
+    });
+
+    // The sidebar has no fork button; the shortcut opens the fork dialog.
+    await shell.keyboard.press("Meta+Shift+F");
+    const dialog = shell.getByTestId("space-fork-dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId("fork-space-name").fill("Freight variance");
+    await dialog.getByTestId("fork-space-purpose").fill("Investigate the related carrier charge");
+    await dialog.getByTestId("confirm-fork-space").click();
+    await expect(dialog).toHaveCount(0);
+    await expect(shell.getByTestId("sidebar-chrome").getByRole("button", { name: "Profile: Freight variance" })).toBeVisible();
+
+    snapshot = await activeSnapshot(app);
+    const child = snapshot.spaces.find((space) => space.id === snapshot.activeSpaceId);
+    expect(child).toMatchObject({ name: "Freight variance", parentSpaceId: "work", purpose: "Investigate the related carrier charge" });
+    expect(snapshot.tabs).toHaveLength(1);
+    // (The Profile's desk comes up afresh on its tab: its page is live once its window is out.)
+    await expect.poll(() => visiblePageState(app).catch(() => null)).toEqual({ sessionCookie: "source-secret", draft: "carried once", memo: "ready to branch" });
+
+    // The same menu switches Profiles: the others are its "Switch to" rows.
+    await (await sidebarMenuItem(shell, "space-chip-work")).click();
+    await expect(shell.getByTestId("sidebar-chrome").getByRole("button", { name: "Profile: Operations" })).toBeVisible();
+    await expect(async () => {
+      await app.evaluate(async ({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        const view = window?.contentView.children.find(
+          (child) => "webContents" in child && "getVisible" in child && child.getVisible() && (child as WebContentsView).webContents.getURL().startsWith("http://127.0.0.1:"),
+        ) as WebContentsView | undefined;
+        if (view === undefined) throw new Error("parent tab unavailable");
+        await view.webContents.executeJavaScript(`localStorage.setItem("draft", "parent changed")`);
+      });
+    }).toPass();
+    if (child === undefined) throw new Error("child Profile unavailable");
+    await (await sidebarMenuItem(shell, `space-chip-${child.id}`)).click();
+    await expect(shell.getByTestId("sidebar-chrome").getByRole("button", { name: "Profile: Freight variance" })).toBeVisible();
+    await expect.poll(async () => (await visiblePageState(app).catch(() => null))?.draft ?? null).toBe("carried once");
+  } finally {
+    await app.close();
+    await new Promise<void>((resolveClose) => fixture.server.close(() => resolveClose()));
+  }
+});

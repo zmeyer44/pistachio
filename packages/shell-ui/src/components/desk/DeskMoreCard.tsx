@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode } from "react";
-import { ChevronsUpDown, Layers2, LayoutGrid, Sparkles, X } from "lucide-react";
+import { ChevronsUpDown, Layers2, LayoutGrid, Sparkles } from "lucide-react";
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import { cn } from "../../lib/cn";
 import { GLIDE_DECELERATION } from "../../lib/desk/motion";
@@ -12,9 +12,10 @@ const PLATFORM: ShortcutPlatform = typeof navigator !== "undefined" && /Mac|iPho
 
 /**
  * The desk's card, beside its button in the sidebar (DeskMoreButton): the
- * arrangements (each with its keyboard shortcut, from Settings), the
- * variants this experiment is for (Feel), and the way out. Drawn over the
- * desk, so it is a cover, seen once no live page is under it.
+ * arrangements (each with its keyboard shortcut, from Settings) and the
+ * variants this experiment is for (Feel). Drawn over the desk, so it is a
+ * cover, seen once no live page is under it. (Until 2026-10-09 it also had
+ * the way out, Leave the desk: the desk is the browser now, docs/spaces.md.)
  */
 export function DeskMoreCard({
   ref,
@@ -27,7 +28,6 @@ export function DeskMoreCard({
   onTile,
   onCascade,
   onArrange,
-  onLeave,
 }: {
   ref: React.Ref<HTMLDivElement>;
   shown: boolean;
@@ -41,12 +41,10 @@ export function DeskMoreCard({
   onCascade: () => void;
   /** The smart layout (docs/desk-layout.md): the windows laid out the way the layout model judges they are used. */
   onArrange: () => void;
-  onLeave: () => void;
 }) {
   const tile = useAppStore((state) => shortcutLabel(state.settings.shortcuts.tileDesk, PLATFORM));
   const cascade = useAppStore((state) => shortcutLabel(state.settings.shortcuts.cascadeDesk, PLATFORM));
   const arrange = useAppStore((state) => shortcutLabel(state.settings.shortcuts.arrangeDesk, PLATFORM));
-  const leave = useAppStore((state) => shortcutLabel(state.settings.shortcuts.toggleDesk, PLATFORM));
   return (
     <div
       ref={ref}
@@ -80,10 +78,6 @@ export function DeskMoreCard({
           </Fragment>
         ))}
       </div>
-      <span className="desk-more-divider" aria-hidden="true" />
-      <MoreItem label="Leave the desk" hint={leave} testId="desk-leave" onClick={onLeave}>
-        <X aria-hidden="true" />
-      </MoreItem>
     </div>
   );
 }

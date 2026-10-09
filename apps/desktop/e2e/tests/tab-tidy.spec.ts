@@ -1,8 +1,8 @@
 /**
  * Tidy end to end (docs/tab-tidy.md): idle tabs are archived, related tabs
- * become a group that opens on hover, a group opens as a split view and
- * closes into the archive, the archive restores, favorites go home, and one
- * Undo takes a whole run back.
+ * become a space that opens on hover, a space chosen is the desk's and closes
+ * into the archive, the archive restores, favorites go home, and one Undo
+ * takes a whole run back.
  *
  * Age is seeded, not waited for: the profile's tab-session.json carries tabs
  * whose `lastActiveAt` is a day old, which is exactly what a morning launch
@@ -100,7 +100,7 @@ const dayTitles = async (shell: Page): Promise<string[]> => {
   return state.tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.title);
 };
 
-test("tidy archives idle tabs, groups related ones, resets favorites, and can be undone", { tag: ["@tabs", "@sidebar", "@notices"] }, async () => {
+test("tidy archives idle tabs, puts related ones in a space, resets favorites, and can be undone", { tag: ["@tabs", "@sidebar", "@notices"] }, async () => {
   test.setTimeout(60_000);
   let app: ElectronApplication | null = null;
   try {
@@ -122,7 +122,7 @@ test("tidy archives idle tabs, groups related ones, resets favorites, and can be
     const notices = await noticePage(app);
     const card = notices.locator('[data-testid="notice-card"][data-depth="0"]');
     // Hotels stays (grouped with fresh tabs); desk A + B and the news story go: 3 archived, 1 group made.
-    await expect(card).toContainText("Archived 3 tabs · made 1 group");
+    await expect(card).toContainText("Archived 3 tabs · made 1 space");
     await expect(card.getByRole("button", { name: "Undo" })).toBeVisible();
     await expect(shell.getByTestId("section-busy-live")).toHaveCount(0);
     await expect(shell.locator("#sidebar-section-live")).toHaveAttribute("aria-busy", "false");
@@ -154,7 +154,9 @@ test("tidy archives idle tabs, groups related ones, resets favorites, and can be
     // ── 3. The group's menu: colour, rename ─────────────────────────────────
     await group.getByTestId("tab-group-header").click({ button: "right" });
     const menu = shell.getByTestId("context-menu");
-    await expect(menu.getByRole("menuitem", { name: "Open as split view" })).toBeVisible();
+    await expect(menu.getByRole("menuitem", { name: "Release the tabs" })).toBeVisible();
+    // No split view on the desktop: the desk lays a space's tabs out as windows.
+    await expect(menu.getByRole("menuitem", { name: /split/i })).toHaveCount(0);
     await capture(shell, "05-group-menu.png");
     await menu.getByTestId("group-color-amber").click();
     await expect(group).toHaveAttribute("data-group-color", "amber");
@@ -165,20 +167,19 @@ test("tidy archives idle tabs, groups related ones, resets favorites, and can be
     // Renaming made it the person's own.
     expect((await snapshot(shell)).tabGroups[0]).toMatchObject({ title: "Portugal", color: "amber", origin: "manual" });
 
-    // ── 4. Open the group as a split view ───────────────────────────────────
-    await group.getByTestId("tab-group-header").hover();
-    await group.getByTestId("tab-group-split").click();
-    await expect.poll(async () => (await snapshot(shell)).visibleTabIds.length).toBe(3);
-    const split = await snapshot(shell);
-    expect(split.splitMode).toBe("grid");
-    expect([...split.visibleTabIds].sort()).toEqual(["tab-flights", "tab-food", "tab-hotels"]);
-    // It holds tabs in view, so it stays open without the pointer.
+    // ── 4. One of its tabs chosen: the desk passes to the space ─────────────
+    const portugal = (await snapshot(shell)).tabGroups[0]!.id;
+    await api(shell, (pistachio) => pistachio.selectTab("tab-flights"));
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(portugal);
+    await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${portugal}"]`)).toHaveCount(1);
+    expect((await snapshot(shell)).splitMode).toBe("single");
+    // It holds the tab in use, so it stays open without the pointer.
     await shell.mouse.move(900, 500);
     await expect(group.getByTestId("tab-group-members")).toHaveCount(1);
-    await capture(shell, "06-group-as-split.png");
-    // Its chevron folds it away anyway — the tabs in view and the pointer on it notwithstanding — and opens it again.
+    await capture(shell, "06-space-on-the-desk.png");
+    // Its chevron folds it away anyway — the tab in use and the pointer on it notwithstanding — and opens it again.
     await group.getByTestId("tab-group-header").hover();
-    await expect(group.getByTestId("tab-group-toggle")).toHaveAttribute("aria-label", "Collapse group");
+    await expect(group.getByTestId("tab-group-toggle")).toHaveAttribute("aria-label", "Collapse space");
     await group.getByTestId("tab-group-toggle").click();
     await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
     await shell.mouse.move(900, 500);
@@ -251,7 +252,7 @@ test("tidy runs from the sidebar menu and from its keyboard shortcut", { tag: ["
     await item.click();
     const notices = await noticePage(app);
     const card = notices.locator('[data-testid="notice-card"][data-depth="0"]');
-    await expect(card).toContainText("Archived 3 tabs · made 1 group");
+    await expect(card).toContainText("Archived 3 tabs · made 1 space");
     await expect(list.getByTestId("tab-group")).toHaveCount(1);
 
     // Take it back, so the shortcut has the same work to do.
@@ -266,7 +267,7 @@ test("tidy runs from the sidebar menu and from its keyboard shortcut", { tag: ["
     await shell.keyboard.press("Meta+Shift+K");
     await expect(list.getByTestId("tab-group")).toHaveCount(2);
     // The earlier notice may still be on its way out: the live card is the one that speaks.
-    await expect(notices.locator('[data-testid="notice-card"][data-phase="live"]').filter({ hasText: "Made 2 groups" })).toBeVisible();
+    await expect(notices.locator('[data-testid="notice-card"][data-phase="live"]').filter({ hasText: "Made 2 spaces" })).toBeVisible();
     expect((await snapshot(shell)).tabGroups.map((candidate) => candidate.title).sort()).toEqual(["Desk research", "Lisbon trip"]);
     expect(await dayTitles(shell)).toHaveLength(8);
 
@@ -279,7 +280,7 @@ test("tidy runs from the sidebar menu and from its keyboard shortcut", { tag: ["
 });
 
 // (Undo's order and its never-twice rule are apps/desktop/test/tab-tidy.test.ts's.)
-test("a new tab makes a group yours; a tab moved to another Space leaves its group behind", { tag: ["@tabs"] }, async () => {
+test("a new tab makes a space yours; a tab moved to another Profile leaves its space behind", { tag: ["@tabs"] }, async () => {
   // Flights and Fresh reading sit far apart in the row, so grouping them MOVES one of them.
   const script = { groups: [{ title: "Mix", titles: ["Flights to Lisbon", "Fresh reading"] }] };
   let app: ElectronApplication | null = null;
@@ -320,16 +321,16 @@ test("a new tab makes a group yours; a tab moved to another Space leaves its gro
   }
 });
 
-test("a group made by hand is named from its tabs — unless the person names it first, or nobody can", { tag: ["@tabs", "@sidebar"] }, async () => {
+test("a space made by hand is named from its tabs — unless the person names it first, or nobody can", { tag: ["@tabs", "@sidebar"] }, async () => {
   test.setTimeout(60_000);
 
-  /** Select two day tabs and choose "Group selected tabs", as a person would. */
+  /** Select two day tabs and choose "New space with selected tabs", as a person would. */
   const groupTwo = async (shell: Page): Promise<void> => {
     const list = shell.getByTestId("sidebar-tab-list");
     await list.locator('[data-tab-id="tab-flights"]').click({ modifiers: ["Meta"] });
     await list.locator('[data-tab-id="tab-hotels"]').click({ modifiers: ["Meta"] });
     await list.locator('[data-tab-id="tab-hotels"]').click({ button: "right" });
-    await shell.getByTestId("context-menu").getByRole("menuitem", { name: "Group selected tabs" }).click();
+    await shell.getByTestId("context-menu").getByRole("menuitem", { name: "New space with selected tabs" }).click();
   };
   const launch = async (script: unknown): Promise<{ app: ElectronApplication; shell: Page }> => {
     const { app } = await launchSeeded(script);
@@ -370,7 +371,7 @@ test("a group made by hand is named from its tabs — unless the person names it
     await groupTwo(shell);
     const input = shell.getByTestId("tab-group-name-input");
     await expect(input).toBeVisible();
-    await expect(input).toHaveValue("New group");
+    await expect(input).toHaveValue("New space");
   } finally {
     await running.app.close();
   }
@@ -380,7 +381,7 @@ test("a group made by hand is named from its tabs — unless the person names it
   try {
     const { shell } = running;
     await groupTwo(shell);
-    await expect(shell.getByTestId("tab-group-name-input")).toHaveValue("New group");
+    await expect(shell.getByTestId("tab-group-name-input")).toHaveValue("New space");
     expect((await snapshot(shell)).tabGroups[0]?.naming).not.toBe(true);
     await shell.getByTestId("tab-group-name-input").fill("Typed by hand");
     await shell.getByTestId("tab-group-name-input").press("Enter");
@@ -423,7 +424,7 @@ async function dragTo(shell: Page, from: ReturnType<Page["locator"]>, to: { x: n
 test.describe("dragging rows", () => {
   test.describe.configure({ retries: 2 });
 
-  test("tabs drag into a tab group, to a place within it, and out of it again", { tag: ["@tabs", "@sidebar"] }, async () => {
+  test("tabs drag into a space, to a place within it, and out of it again", { tag: ["@tabs", "@sidebar"] }, async () => {
     let app: ElectronApplication | null = null;
     try {
       ({ app } = await launchSeeded());

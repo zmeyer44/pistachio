@@ -374,9 +374,9 @@ describe("settings", () => {
 
   it("a reset does not reopen the Mac's walkthrough over a live browser session", async () => {
     const harness = await makeHost();
-    await harness.host.updateSettings({ layout: { sidebar: "compact" } });
+    await harness.host.updateSettings({ layout: { sidebar: "hidden" } });
     const reset = await harness.host.resetSettings();
-    expect(reset.layout.sidebar).toBe("pinned");
+    expect(reset.layout.sidebar).toBe("whole");
     // `DEFAULT_SETTINGS.onboarding.completed` is false, and the shell turns
     // that into the first-run wizard — over a live session with the person's
     // own tabs behind it. Resetting the shell is not asking to be onboarded.

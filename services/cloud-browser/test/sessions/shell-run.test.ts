@@ -160,7 +160,7 @@ describe("starting a run from the shell (§8)", () => {
   it("refuses an empty intent, and refuses everything without a viewer that proved the key", async () => {
     await expect(session.host.startDelegation("   ")).rejects.toThrow(/say what the agent should do/u);
     await build({ viewerDeviceId: null });
-    await expect(session.host.startDelegation("Do it")).rejects.toThrow(/proved this Space's key/u);
+    await expect(session.host.startDelegation("Do it")).rejects.toThrow(/proved this Profile's key/u);
   });
 });
 

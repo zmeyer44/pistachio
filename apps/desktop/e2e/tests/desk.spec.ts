@@ -1,10 +1,12 @@
 /**
- * The desk end to end (docs/desk.md): a tab group opens as free windows over
- * the surface, and the sidebar beside it is its dock — its rail of icons, or
- * the whole sidebar (⌘S). A tab's row dragged out becomes a window; a window moves by its frame, sticks to
+ * The desk end to end (docs/desk.md, docs/spaces.md): the current space's
+ * tabs as free windows — the desktop's surface, always up — and the sidebar
+ * beside it its dock: its rail of icons, or the whole sidebar. A tab's row
+ * dragged out becomes a window; a window moves by its frame, sticks to
  * edges, tiles into an armed edge zone, coasts when thrown, resizes by its
  * corner, is put away into the sidebar, and — with the grab key held — is taken
- * from anywhere on its live page. Leaving gives the surface back as panes.
+ * from anywhere on its live page. Choosing another space passes the desk to
+ * it, and back.
  *
  * Native page views are checked where the shell cannot see them: main's
  * own view boxes must match the holes the desk windows leave for them.
@@ -25,14 +27,12 @@ import {
   box,
   center,
   createGroup,
-  createTab,
   fromFrameMenu,
   groupSelector,
   INVOICES,
   launchDesk,
-  leaveDesk,
   liveViews,
-  openGroupDesk,
+  selectSpace,
   openMore,
   openTabs,
   rowSelector,
@@ -231,7 +231,7 @@ function pressShift(app: ElectronApplication, url: string, type: "keyDown" | "ke
 
 const overlap = (a: Box, b: Box): boolean => a.x < b.x + b.width - 1 && b.x < a.x + a.width - 1 && a.y < b.y + b.height - 1 && b.y < a.y + a.height - 1;
 
-test.describe.serial("a tab group's desk, from its first window to leaving it", { tag: ["@desk", "@sidebar"] }, () => {
+test.describe.serial("a space's desk, from its first window on", { tag: ["@desk", "@sidebar"] }, () => {
   let app: ElectronApplication;
   let shell: Page;
   const urls = [INVOICES, VENDOR, "pistachio://demo/invoices?page=north", "pistachio://demo/invoices?page=south"];
@@ -254,11 +254,11 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     await app?.close();
   });
 
-  test("a tab group's desk: pull out, move, stick, tile, throw, resize, grab from the page, Shift's tile, put away, new tab", async () => {
+  test("a space's desk: pull out, move, stick, tile, throw, resize, grab from the page, Shift's tile, put away, new tab", async () => {
     test.setTimeout(120_000);
 
-    // ── 1. Open the desk: the page in view becomes the first window ───────────
-    await openGroupDesk(shell, "desk-group");
+    // ── 1. The space made current, never on a desk before: the page in view is its first window ─
+    await selectSpace(shell, "desk-group");
     await expect(shell.getByTestId("desk-surface")).toBeVisible();
     // The sidebar is its rail, the group's rows its icons; the window out is marked on its row.
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
@@ -607,7 +607,7 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     await capture(app, shell, "72-seams-gutter-moved.png");
   });
 
-  test("the More card holds the arrangements, with keyboard shortcuts struck in a page or the shell, Glide's deceleration, and the way out: the window in use is the pane again", async () => {
+  test("the More card holds the arrangements, with keyboard shortcuts struck in a page or the shell, and Glide's deceleration — and no way out", async () => {
     test.setTimeout(60_000);
     const trio = [ids[0]!, ids[1]!, added];
     const boxes = async (): Promise<Box[]> => Promise.all(trio.map((tabId) => box(shell, windowSelector(tabId))));
@@ -662,25 +662,10 @@ test.describe.serial("a tab group's desk, from its first window to leaving it", 
     await expect(shell.getByTestId("desk-variant-physics")).toHaveAttribute("data-value", "glide");
     await expect(deceleration.locator('input[type="range"]')).toBeEnabled();
 
-    // ── 5. The way out is on the card too: the window in use becomes the pane again ─
-    const inUse = (await snapshot(shell)).activeTabId!;
-    await shell.getByTestId("desk-leave").click();
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    await expect(shell.getByTestId("browser-surface")).toBeVisible();
-    await expect.poll(async () => (await liveViews(app)).length).toBe(1);
-    // (The sidebar slides back in beside the pane, which narrows with it.)
-    await expect
-      .poll(async () => {
-        const pane = await box(shell, "[data-pane-tab-id]");
-        const [view] = await liveViews(app);
-        return Math.abs(view!.bounds.width - pane.width) < 2;
-      })
-      .toBe(true);
-    expect((await snapshot(shell)).activeTabId).toBe(inUse);
-    await capture(app, shell, "10-left.png");
-    // With no desk up, the keys are no one's: nothing happens.
-    await strike(app, "shell", "t", true);
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
+    // ── 5. And no way out: the desk is the browser (docs/spaces.md) — the card has no Leave ─
+    await expect(shell.getByTestId("desk-leave")).toHaveCount(0);
+    await awayFromDock();
+    await expect(shell.getByTestId("desk-more-card")).toHaveCount(0);
   });
 });
 
@@ -706,9 +691,9 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     await app?.close();
   });
 
-  test("the sidebar is the desk's dock: a row's click opens where there is room, a row dragged out is its window in hand, a stranger's row dropped joins the group, ⌘S widens the rail, and its leading edge is the desk's", async () => {
+  test("the sidebar is the desk's dock: a row's click opens where there is room, a row dragged out is its window in hand, a stranger's row dropped joins the space, the rail's head widens it and ⌘S narrows it back, and its leading edge is the desk's", async () => {
     test.setTimeout(120_000);
-    await openGroupDesk(shell, "desk-dock");
+    await selectSpace(shell, "desk-dock");
     await expect(shell.getByTestId("desk-surface")).toBeVisible();
     await settled(shell, app);
 
@@ -723,8 +708,11 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     const stage = await box(shell, ".desk-stage");
     const usable = usableOf(stage);
     const half = (usable.width - 8) / 2;
-    await shell.locator(`${windowSelector(ids[0]!)} button[aria-label="Fill the desk"]`).click();
+    // The window filling the desk (the space's tab came up filling its own; filled here unless it still does).
+    const fill = shell.locator(`${windowSelector(ids[0]!)} button[aria-label="Fill the desk"]`);
+    if ((await fill.count()) > 0) await fill.click();
     await settled(shell, app);
+    expect(Math.round((await box(shell, windowSelector(ids[0]!))).width)).toBe(Math.round(usable.width));
 
     // ── 2. Click a row: the desk is filled by one window, so that one gives up half ─
     await shell.locator(rowSelector(ids[1]!)).click();
@@ -794,9 +782,10 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     await expectLiveIn(app, shell, urls[2]!, ids[2]!);
     await capture(app, shell, "20-row-dragged-out.png");
 
-    // ── 6. ⌘S: the whole sidebar, the desk narrowing beside it; the rows say their titles ─
-    await shell.keyboard.press("Meta+s");
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
+    // ── 6. The rail's head: the whole sidebar, the desk narrowing beside it; the rows say their titles ─
+    // (⌘S from the rail goes on to hidden: whole → rail → hidden, sidebar-modes.spec's.)
+    await shell.getByTestId("desk-rail-toggle").click();
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="whole"]')).toHaveCount(1);
     await expect.poll(async () => (await box(shell, ".desk-stage")).x).toBeGreaterThan(stage.x + 120);
     await settled(shell, app);
     await expect(shell.locator(`${rowSelector(ids[2]!)}`)).toContainText("Plain Site");
@@ -817,7 +806,7 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     await expect(shell.locator(markSelector(stranger, "focused"))).toHaveCount(1);
     await capture(app, shell, "20c-stranger-joined.png");
 
-    // ── 8. ⌘S again: the rail, and the desk wide again ──────────────────────────
+    // ── 8. ⌘S: the rail, and the desk wide again ─────────────────────────────
     await shell.keyboard.press("Meta+s");
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
     await expect.poll(async () => (await box(shell, ".desk-stage")).x).toBeLessThan(stage.x + 2);
@@ -908,29 +897,35 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
   });
 
-  test("a window on the desk is never asleep: a sleeping tab's window wakes as it comes out, and no desk window is put to sleep", async () => {
+  test("a window in view on the desk is never asleep: a sleeping tab's window wakes as it comes back uncovered, and no desk window is put to sleep", async () => {
     test.setTimeout(60_000);
     // The invoices' tab sleeps; the plain site's is the one in use.
     const [sleeper, inUse] = [ids[0]!, ids[2]!];
     const lifecycleOf = async (tabId: string): Promise<string | undefined> => (await snapshot(shell)).tabs.find((tab) => tab.id === tabId)?.lifecycle;
 
-    // ── 1. Both tabs out on the desk, then the desk left: its windows are saved ─
+    // ── 1. Both tabs out on the desk, side by side, then the desk passed to another space: its windows are kept ─
     await shell.locator(rowSelector(sleeper)).click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
     await settled(shell, app);
     await shell.locator(rowSelector(inUse)).click();
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(inUse);
     await settled(shell, app);
-    await leaveDesk(shell);
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
+    await openMore(shell);
+    await shell.getByTestId("desk-tile").click();
+    await shell.mouse.move(900, 700);
+    await settled(shell, app);
+    expect(overlap(await box(shell, windowSelector(sleeper)), await box(shell, windowSelector(inUse)))).toBe(false);
+    const [elsewhere] = (await openTabs(shell, [VENDOR])) as [string];
+    await selectTab(shell, elsewhere);
+    await expect(shell.locator('.desk-stage[data-phase="open"]:not([data-group-id="desk-dock"])')).toHaveCount(1);
+    await expect(shell.locator(windowSelector(sleeper))).toHaveCount(0);
 
-    // ── 2. The one tab goes to sleep while the desk is away ─────────────
+    // ── 2. The one tab goes to sleep while its space is away ─────────────
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.suspendTab(tabId), sleeper);
     await expect.poll(() => lifecycleOf(sleeper)).toBe("suspended");
 
-    // ── 3. Reopened, the desk brings its window back, and its tab wakes by itself: nothing asks for a click ─
-    await openGroupDesk(shell, "desk-dock");
-    await expect(shell.getByTestId("desk-surface")).toBeVisible();
+    // ── 3. Back, the desk brings its window back where it was, uncovered, and its tab wakes by itself: nothing asks for a click ─
+    await selectSpace(shell, "desk-dock", inUse);
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
     await expect.poll(() => lifecycleOf(sleeper), { timeout: 15_000 }).toBe("live");
     expect((await snapshot(shell)).activeTabId).toBe(inUse);
@@ -965,19 +960,15 @@ test("on the rail the favorites are one folder: its sheet slides out of the rail
     },
   });
   try {
-    await createTab(shell, "pistachio://demo/auth/relying-party");
-    await expect.poll(async () => (await snapshot(shell)).tabs.length).toBe(2);
-    const ids = (await snapshot(shell)).tabs.map((tab) => tab.id);
-    // A tab outside the group, its row on the rail too: it can be dropped onto the favorites.
-    await createTab(shell, "pistachio://demo/invoices?outside=1");
-    await expect.poll(async () => (await snapshot(shell)).tabs.length).toBe(3);
-    const outside = (await snapshot(shell)).tabs.find((tab) => !ids.includes(tab.id))!.id;
+    const ids = await openTabs(shell, [INVOICES, "pistachio://demo/auth/relying-party"]);
+    // A tab outside the space, its row on the rail too: it can be dropped onto the favorites.
+    const [outside] = (await openTabs(shell, ["pistachio://demo/invoices?outside=1"])) as [string];
     await createGroup(shell, "desk-favorites", ids, "Northstar", "blue");
     // One favorite's page open (Mail's, a local page), outside the group.
     await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.sidebarCommand({ type: "open", anchorId: "fav-2" }));
     await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.anchorId === "fav-2")).toBe(true);
     await selectTab(shell, ids[0]!);
-    await openGroupDesk(shell, "desk-favorites");
+    await selectSpace(shell, "desk-favorites");
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
@@ -1142,7 +1133,7 @@ test.describe.serial("the desk's keys: ⇧⌫ on a row, the window buttons, ⌘T
     const [invoices, atlas, plain, player] = ids as [string, string, string, string];
     // The desk opens on the app's page: its window is in use, and its page has the keyboard.
     await selectTab(shell, atlas);
-    await openGroupDesk(shell, "desk-close");
+    await selectSpace(shell, "desk-close");
     const groupRows = shell.locator('[data-testid="tab-group"] [role="tab"]');
     await expect(groupRows).toHaveCount(4);
     await settled(shell, app);
@@ -1228,28 +1219,26 @@ test.describe.serial("the desk's keys: ⇧⌫ on a row, the window buttons, ⌘T
 
   test("on a desk the window buttons hide with the rail and come back with the whole sidebar, ⌘T brings a new tab out as a window, and ⌘L or a click on a window's title edits its address", async () => {
     test.setTimeout(90_000);
-    // The group again two tabs — the app's, and the plain site's anew — and the desk opened afresh on the app's.
+    // The space again two tabs — the app's, and the plain site's anew (opened in the background, then put in it) — on the app's.
     const atlas = ids[1]!;
-    await leaveDesk(shell);
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    await createTab(shell, urls[2]!);
-    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === urls[2])).toBe(true);
-    const plain = (await snapshot(shell)).tabs.find((tab) => tab.url === urls[2])!.id;
+    const [plain] = (await openTabs(shell, [urls[2]!])) as [string];
     await tabGroupCommand(shell, { type: "addTab", groupId: "desk-close", tabId: plain });
     await selectTab(shell, atlas);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(atlas);
-    // Every time main shows or hides the window's buttons, from here on.
+    // Every time main shows or hides the window's buttons, from here on (and, before the first, as main has them now:
+    // Electron's own getter, the one its test suite reads).
     await app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]!;
       const record = globalThis as unknown as { buttons: boolean[] };
-      record.buttons = [];
+      const shown = (window as unknown as { _getWindowButtonVisibility?: () => boolean })._getWindowButtonVisibility?.call(window);
+      record.buttons = shown === undefined ? [] : [shown];
       const set = window.setWindowButtonVisibility.bind(window);
       window.setWindowButtonVisibility = (visible: boolean) => {
         record.buttons.push(visible);
         set(visible);
       };
     });
-    await openGroupDesk(shell, "desk-close");
+    await selectSpace(shell, "desk-close");
     const groupRows = shell.locator('[data-testid="tab-group"] [role="tab"]');
     await expect(groupRows).toHaveCount(2);
     await settled(shell, app);
@@ -1262,7 +1251,7 @@ test.describe.serial("the desk's keys: ⇧⌫ on a row, the window buttons, ⌘T
     expect(head.y).toBeLessThan(TRAFFIC_LIGHTS_H);
     await capture(app, shell, "46-desk-buttons.png");
     await shell.getByTestId("desk-rail-toggle").click();
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="whole"]')).toHaveCount(1);
     await expect.poll(buttonsNow).toBe(true);
     await settled(shell, app);
     await shell.getByTestId("desk-rail-toggle").click();
@@ -1355,7 +1344,7 @@ test.describe.serial("a mask: a region of a page as the whole window", { tag: ["
     ids = await openTabs(shell, urls);
     await createGroup(shell, "desk-mask", ids, "Mask", "green");
     await selectTab(shell, ids[0]!);
-    await openGroupDesk(shell, "desk-mask");
+    await selectSpace(shell, "desk-mask");
     await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
     await settled(shell, app);
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
@@ -1605,7 +1594,7 @@ test.describe.serial("a mask: a region of a page as the whole window", { tag: ["
     expect(await inPage<number>("innerWidth")).toBe(pageWidth);
     await capture(app, shell, "33-unmasked.png");
 
-    // ── 6. Masked again, and the desk left: the pane is the whole page, laid out at the pane's width ─
+    // ── 6. Masked again, and the desk passed to another space (a loose tab's): the masked window goes with its space ─
     const pageAgain = await box(shell, `${win()} [data-testid="desk-window-page"]`);
     await shell.mouse.move(pageAgain.x + pageAgain.width / 2, whole.y + 10);
     await fromFrameMenu(shell, win(), "desk-mask");
@@ -1617,32 +1606,21 @@ test.describe.serial("a mask: a region of a page as the whole window", { tag: ["
     await expect(shell.locator(`${win()}[data-masked]`)).toHaveCount(1);
     await settled(shell, app);
     const leftAt = await box(shell, win());
-    await shell.mouse.move(10, 10);
-    await leaveDesk(shell);
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    await expect
-      .poll(async () => {
-        const pane = await box(shell, "[data-pane-tab-id]");
-        const view = (await liveViews(app)).find((candidate) => candidate.url === urls[0]);
-        if (view === undefined) return "no live view";
-        const width = await inPage<number>("innerWidth");
-        return Math.abs(view.bounds.width - pane.width) < 2 && width === view.bounds.width ? "whole" : `view ${view.bounds.width}, pane ${pane.width}, page ${width}`;
-      })
-      .toBe("whole");
-    await capture(app, shell, "34-left-unmasked.png");
-
-    const leaveAndWait = async (): Promise<void> => {
+    const elsewhere = (await snapshot(shell)).tabs.find((tab) => tab.url === INVOICES)!.id;
+    const passAway = async (): Promise<void> => {
       await shell.mouse.move(10, 10);
-      await leaveDesk(shell);
-      await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-      await expect(shell.locator('[data-testid="sidebar-pane"]:not([data-hidden])')).toHaveCount(1);
+      await selectTab(shell, elsewhere);
+      await expect(shell.locator('.desk-stage[data-phase="open"]:not([data-group-id="desk-mask"])')).toHaveCount(1);
+      await expect(shell.locator(win())).toHaveCount(0);
+      await settled(shell, app);
     };
+    await passAway();
+    await capture(app, shell, "34-passed-away.png");
 
-    // ── 7. Reopened on the other tab: the masked window comes out of the dock masked, as it was left ─
+    // ── 7. Back on the other tab: the masked window comes out of its row masked, as it was left ─
     await selectTab(shell, ids[1]!);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(ids[1]);
-    await openGroupDesk(shell, "desk-mask");
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await selectSpace(shell, "desk-mask");
     await expect(shell.locator(`${win()}[data-masked]`)).toHaveCount(1);
     await settled(shell, app);
     const back = await box(shell, win());
@@ -1658,14 +1636,13 @@ test.describe.serial("a mask: a region of a page as the whole window", { tag: ["
     const togglesBefore = await inPage<number>("window.toggles");
     await clickPage({ x: Math.round(back.width / 2), y: Math.round((back.height - 18) / 2) });
     await expect.poll(() => inPage<number>("window.toggles")).toBe(togglesBefore + 1);
-    await capture(app, shell, "35-reopened-masked.png");
+    await capture(app, shell, "35-back-masked.png");
 
-    // ── 8. Reopened on the masked window itself: it lifts off whole, is masked again, and goes where it was left ─
-    await leaveAndWait();
+    // ── 8. Away and back on the masked window itself: it comes out masked, where it was left, its page as it was ─
+    await passAway();
     await selectTab(shell, ids[0]!);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(ids[0]);
-    await openGroupDesk(shell, "desk-mask");
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await selectSpace(shell, "desk-mask");
     await expect(shell.locator(`${win()}[data-masked]`)).toHaveCount(1, { timeout: 10_000 });
     await settled(shell, app);
     const again = await box(shell, win());
@@ -1674,11 +1651,11 @@ test.describe.serial("a mask: a region of a page as the whole window", { tag: ["
     expect(Math.abs(again.y - leftAt.y)).toBeLessThan(3);
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
     await expect.poll(() => inPage<number>("innerWidth")).toBe(pageWidth);
-    await capture(app, shell, "36-reopened-on-mask.png");
+    await capture(app, shell, "36-back-on-mask.png");
   });
 });
 
-test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk", "@sidebar", "@tabs", "@settings"] }, () => {
+test.describe.serial("passing the desk between a Profile's spaces", { tag: ["@desk", "@sidebar", "@tabs", "@settings"] }, () => {
   let app: ElectronApplication;
   let shell: Page;
   const urls = [
@@ -1695,15 +1672,21 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
   const stageColor = (): Promise<string | null> => shell.evaluate(() => document.querySelector(".desk-stage")?.getAttribute("data-group-color") ?? null);
   const rowsOf = (id: string) => shell.locator(`${groupSelector(id)} [role="tab"]`);
   /**
-   * Each test's own groups, never on a desk (a desk's windows are kept by its
-   * group): the desk left, every group there is ungrouped, and these made.
+   * Each test's own spaces, never on a desk (a desk's windows are kept by its
+   * space): the desk passed to a loose tab's space (the outside tab's, which
+   * no test groups), every drawn space released — one the person has given
+   * something to, left standing empty, closed — and these made.
    */
   const regroup = async (groups: Array<{ id: string; tabIds: string[]; title: string; color: TabGroupColor }>): Promise<void> => {
-    if ((await shell.getByTestId("desk-surface").count()) > 0) {
-      await leaveDesk(shell);
-      await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    }
+    await selectTab(shell, outside);
+    await expect
+      .poll(async () => {
+        const now = await snapshot(shell);
+        return now.looseGroups?.some((group) => group.id === now.currentGroupId) ?? false;
+      })
+      .toBe(true);
     for (const group of (await snapshot(shell)).tabGroups) await tabGroupCommand(shell, { type: "ungroup", groupId: group.id });
+    for (const group of (await snapshot(shell)).tabGroups) await tabGroupCommand(shell, { type: "close", groupId: group.id });
     for (const group of groups) await createGroup(shell, group.id, group.tabIds, group.title, group.color);
     await expect.poll(async () => (await snapshot(shell)).tabGroups.map((group) => group.id).sort()).toEqual(groups.map((group) => group.id).sort());
   };
@@ -1713,7 +1696,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     // (At rest first: the sidebar takes the width it was left with as the desk comes up.)
     await settled(shell, app);
     // (Its head's toggle, not ⌘S: a page has the keyboard, and Playwright's keys reach only the shell's.)
-    if ((await shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]').count()) > 0) await shell.getByTestId("desk-rail-toggle").click();
+    if ((await shell.locator('[data-testid="sidebar-motion-slot"][data-mode="whole"]').count()) > 0) await shell.getByTestId("desk-rail-toggle").click();
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
   };
 
@@ -1726,16 +1709,17 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await app?.close();
   });
 
-  test("a desk opened from a tab outside its group stays up on the group's tab, beneath Settings", async () => {
+  test("a tab chosen off the desk passes it to the tab's space, which stays up beneath Settings", async () => {
     await regroup([{ id: "desk-entry", tabIds: [a1, b0], title: "Entry", color: "green" }]);
-    await selectTab(shell, outside);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(outside);
 
-    // The tab in view is not the group's: the desk opens on the group's, and stays.
-    await openGroupDesk(shell, "desk-entry");
-    await expect.poll(async () => [a1, b0].includes((await snapshot(shell)).activeTabId ?? "")).toBe(true);
+    // The tab in use is not the space's; one of the space's chosen, the desk passes to the space, on that tab, and stays.
+    await selectTab(shell, b0);
+    await expect(shell.locator('.desk-stage[data-phase="open"][data-group-id="desk-entry"]')).toHaveCount(1);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(b0);
     await settled(shell, app);
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(b0))).toHaveCount(1);
+    await expect(shell.locator(windowSelector(outside))).toHaveCount(0);
 
     // Settings covers the whole surface, the desk's inventory included. The
     // desk's page has the keyboard, so ⌘, arrives as main relays it from there.
@@ -1754,7 +1738,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
   });
 
 
-  test("choosing a tab off the desk passes the desk to its own: another group's, or a loose tab's group made for it — drawn as the tab alone, with all a group's desk has — which a group taking the tab deletes, and ⌘T grows into a group", async () => {
+  test("choosing a tab off the desk passes the desk to its own space: another drawn one's, or a loose tab's own — drawn as the tab alone, with all a space's desk has — which, given a Stack, a space taking the tab leaves standing empty, and ⌘T grows into a drawn space", async () => {
     test.setTimeout(120_000);
     const command = (body: TabGroupCommand): Promise<unknown> => tabGroupCommand(shell, body);
     await regroup([
@@ -1763,7 +1747,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     ]);
     await selectTab(shell, a0);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
-    await openGroupDesk(shell, "desk-a");
+    await selectSpace(shell, "desk-a");
     await onRail();
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
@@ -1782,7 +1766,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expectLiveIn(app, shell, urls[3]!, b1);
     await capture(app, shell, "75-desk-passed-to-chosen-tab.png");
 
-    // ── 2. A loose tab's row clicked: a group is made for it, drawn as the tab alone, and its desk has all a group's has ─
+    // ── 2. A loose tab's row clicked: the desk passes to its own space (every listed tab is in one), drawn as the tab alone, and its desk has all a space's has ─
     await shell.locator(rowSelector(loose)).click();
     await awayFromDock();
     await expect.poll(async () => (await looseGroupOf(loose))?.id ?? null).not.toBe(null);
@@ -1810,11 +1794,13 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "1");
     await capture(app, shell, "76-loose-tab-desk.png");
 
-    // ── 3. The loose tab put in Research (its row dragged into the group): it is Research's, its group is gone, and the desk passes to Research on it ─
+    // ── 3. The loose tab put in Research (its row dragged into the space): it is Research's, and the desk passes to
+    //       Research on it. Its own space keeps standing, empty, drawn: it holds a Stack, so it is the person's ─
     await command({ type: "addTab", groupId: "desk-a", tabId: loose });
     await expect.poll(async () => (await looseGroupOf(loose))?.id ?? null).toBe(null);
     expect((await snapshot(shell)).tabGroups.find((group) => group.id === "desk-a")?.tabIds).toContain(loose);
-    expect((await snapshot(shell)).tabGroups.some((group) => group.id === made.id)).toBe(false);
+    expect((await snapshot(shell)).tabGroups.find((group) => group.id === made.id)).toMatchObject({ tabIds: [] });
+    expect((await snapshot(shell)).tabGroups.find((group) => group.id === made.id)?.loose).toBeUndefined();
     await expect.poll(stageColor).toBe("blue");
     await settled(shell, app);
     await expect(shell.locator(windowSelector(loose))).toHaveCount(1);
@@ -1866,7 +1852,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
   });
 
 
-  test("on a desk a tab's row has its menu with what the desk does with its window first, and another group's row its menu, renamed in the whole sidebar", async () => {
+  test("on a desk a tab's row has its menu with what the desk does with its window first, and another space's row its menu, renamed in the whole sidebar", async () => {
     test.setTimeout(120_000);
     // Research of three tabs, Regions of one.
     const a2 = b1;
@@ -1876,7 +1862,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     ]);
     await selectTab(shell, a0);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
-    await openGroupDesk(shell, "menu-a");
+    await selectSpace(shell, "menu-a");
     await onRail();
     await expect(rowsOf("menu-a")).toHaveCount(3);
     await settled(shell, app);
@@ -1902,7 +1888,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     // ── 1. A tab not out: out onto the desk, then the sidebar's own entries, with no split view ─
     await menuOn(rowSelector(a1));
     await expect(item("Open on the desk")).toBeVisible();
-    for (const name of ["Pin tab", "Add to favorites", "Remove from “Research”", "New group with this tab", "Add to “Regions”", "Duplicate tab", "Suspend tab", "Close tab"]) {
+    for (const name of ["Pin tab", "Add to favorites", "Remove from “Research”", "New space with this tab", "Add to “Regions”", "Duplicate tab", "Suspend tab", "Close tab"]) {
       await expect(item(name)).toBeVisible();
     }
     await expect(menu.getByRole("menuitem", { name: /split/i })).toHaveCount(0);
@@ -1938,7 +1924,8 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expect(rowsOf("menu-a")).toHaveCount(2);
     await expect(shell.getByTestId("desk-surface")).toBeVisible();
 
-    // ── 4. The tab in use taken out of the group: the desk stays, on another of its tabs ─
+    // ── 4. The tab in use taken out of the space: still in use, a loose tab of its own space, and the desk follows it
+    //       there (the tab in use is always the current space's); Research chosen again, the desk is back on a0 ─
     await menuOn(rowSelector(a1));
     await choose("Open on the desk");
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a1);
@@ -1947,8 +1934,15 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await menuOn(rowSelector(a1));
     await choose("Remove from “Research”");
     await expect.poll(() => members("menu-a")).toEqual([a0]);
+    await expect
+      .poll(async () => {
+        const now = await snapshot(shell);
+        return [now.activeTabId === a1, now.looseGroups?.find((group) => group.id === now.currentGroupId)?.tabIds ?? null];
+      })
+      .toEqual([true, [a1]]);
+    await expect(shell.locator('.desk-stage[data-phase="open"]:not([data-group-id="menu-a"])')).toHaveCount(1);
+    await selectSpace(shell, "menu-a");
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a0);
-    await expect(shell.getByTestId("desk-surface")).toBeVisible();
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
     await awayFromDock();
     await settled(shell, app);
@@ -1958,14 +1952,14 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expect(rowsOf("menu-a")).toHaveCount(0);
     await menuOn(groupHeader("menu-a"));
     await expect(item("Collapse into the sidebar")).toBeVisible();
-    await expect(item("Ungroup tabs")).toBeVisible();
+    await expect(item("Release the tabs")).toBeVisible();
     await shell.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
 
     // ── 5b. Duplicated, from its row in the whole sidebar: the copy joins the group beside it and comes out on the desk, in use ─
     // (The head's toggle, not ⌘S: a page has the keyboard, and Playwright's keys reach only the shell's.)
     await shell.getByTestId("desk-rail-toggle").click();
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="whole"]')).toHaveCount(1);
     await expect(rowsOf("menu-a")).toHaveCount(1);
     await menuOn(rowSelector(a0));
     await choose("Duplicate tab");
@@ -1983,9 +1977,11 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     // (A real press on the sidebar gives the shell the keyboard; Playwright's does not.)
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.focus());
     await menuOn(groupHeader("menu-b"));
-    for (const name of ["Rename", "New tab in group", "Open as split view", "Open as desk", "Ungroup tabs", "Close group"]) {
+    for (const name of ["Rename", "New tab in space", "Keep open", "Release the tabs", "Close space"]) {
       await expect(item(name)).toBeVisible();
     }
+    // (No split view on the desktop, and nothing to open it as: the desk is its space's own.)
+    await expect(menu.getByRole("menuitem", { name: /split|as desk/i })).toHaveCount(0);
     // Under the menu the pages are down; the window in use shows the picture main took of it, never a blank.
     await expect(shell.locator(`${windowSelector(copy)} [data-testid="desk-window-page"] img.desk-still`)).toHaveCount(1);
     await capture(app, shell, "59-row-group-menu.png");
@@ -2005,7 +2001,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
       }
     });
     await choose("Rename");
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="whole"]')).toHaveCount(1);
     const rename = groupIcon("menu-b").getByTestId("tab-group-name-input");
     await expect(rename).toBeFocused();
     expect(await app.evaluate(() => (globalThis as unknown as { pageFocuses: number }).pageFocuses)).toBe(0);
@@ -2028,15 +2024,14 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === "menu-b")?.color).toBe("green");
     await expect(groupIcon("menu-b")).toHaveAttribute("data-group-color", "green");
 
-    // ── 7. Open as desk: the desk passes to it in place ─────────────────────────
-    await menuOn(groupHeader("menu-b"));
-    await choose("Open as desk");
+    // ── 7. A click on its header: the desk passes to it ─────────────────────────
+    await shell.locator(groupHeader("menu-b")).click();
     await expect.poll(stageColor).toBe("green");
     await expect(shell.getByTestId("desk-surface")).toBeVisible();
     await expect(rowsOf("menu-b")).toHaveCount(2);
   });
 
-  test("the sidebar lists the Space's other groups; on the rail a click on one passes the desk to it (its desk button, in the whole sidebar), each group's windows going home and coming back where they were left", async () => {
+  test("the sidebar lists the Profile's other spaces; a click on one passes the desk to it, on the rail or in the whole sidebar, each space's windows going home and coming back where they were left", async () => {
     test.setTimeout(120_000);
     await regroup([
       { id: "pass-a", tabIds: [a0, a1], title: "Research", color: "blue" },
@@ -2047,7 +2042,7 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
       await selectTab(shell, tabId);
       await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(tabId);
     }
-    await openGroupDesk(shell, "pass-a");
+    await selectSpace(shell, "pass-a");
     await onRail();
     await expect(rowsOf("pass-a")).toHaveCount(2);
     await settled(shell, app);
@@ -2136,28 +2131,23 @@ test.describe.serial("passing the desk between a Space's groups", { tag: ["@desk
     }
     await expectLiveIn(app, shell, urls[2]!, b0);
 
-    // ── 4c. In the whole sidebar (⌘S) the group's desk button passes the desk, the
-    // group header's click folding it as it always does ──────────────────────
-    await shell.keyboard.press("Meta+s");
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
+    // ── 4c. In the whole sidebar (the rail's head) another space's header passes the desk too, the current
+    // one's folding it as a header's click always did ─────────────────────────
+    await shell.getByTestId("desk-rail-toggle").click();
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="whole"]')).toHaveCount(1);
     await settled(shell, app);
-    await groupIcon("pass-a").hover();
-    await shell.locator(groupSelector("pass-a")).getByTestId("tab-group-desk").click();
+    await groupIcon("pass-a").click();
     await expect.poll(stageColor).toBe("blue");
     await awayFromDock();
     await settled(shell, app);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(a1);
-    await groupIcon("pass-b").hover();
-    await shell.locator(groupSelector("pass-b")).getByTestId("tab-group-desk").click();
+    await expect(shell.locator(groupSelector("pass-a"))).toHaveAttribute("data-current", "");
+    await groupIcon("pass-b").click();
     await expect.poll(stageColor).toBe("orange");
     await awayFromDock();
     await settled(shell, app);
-
-    // ── 5. Leave: the window in use is the pane, and the desk is gone ──────────
-    await leaveDesk(shell);
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    await expect(shell.getByTestId("browser-surface")).toBeVisible();
     expect((await snapshot(shell)).activeTabId).toBe(b0);
+    await expect(shell.locator(groupSelector("pass-b"))).toHaveAttribute("data-current", "");
   });
 
 });

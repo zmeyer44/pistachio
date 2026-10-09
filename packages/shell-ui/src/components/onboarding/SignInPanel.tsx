@@ -67,7 +67,7 @@ export function SignInPanel({
           </span>
           <p className="text-label-14 font-medium text-gray-1000">Sign in to Pistachio</p>
           <p className="max-w-[38ch] text-label-12 text-gray-700">
-            Signing in unwraps this account&rsquo;s Space keys here and enrolls this Mac as one of its devices.
+            Signing in unwraps this account&rsquo;s Profile keys here and enrolls this Mac as one of its devices.
           </p>
         </div>
         <Input

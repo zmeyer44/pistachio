@@ -127,10 +127,10 @@ export const APP_NAV: NavSection[] = [
         key: "infrastructure",
         label: "Infrastructure",
         icon: Server,
-        description: "Spaces, devices, channels",
+        description: "Profiles, devices, channels",
         href: "/app/spaces",
         items: [
-          { key: "spaces", label: "Spaces", icon: Boxes, href: "/app/spaces" },
+          { key: "spaces", label: "Profiles", icon: Boxes, href: "/app/spaces" },
           { key: "devices", label: "Devices", icon: Laptop, href: "/app/devices" },
           { key: "channels", label: "Channels", icon: Radio, href: "/app/channels" },
         ],

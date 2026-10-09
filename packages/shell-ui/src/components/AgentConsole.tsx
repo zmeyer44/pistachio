@@ -1131,7 +1131,7 @@ function Composer({
                       ? "This conversation is already running in the cloud browser."
                       : "This conversation runs on this Mac. Start a new one to run in the cloud."
                     : (readiness.reason ??
-                      "New tasks run in the cloud browser, in its own copy of this Space's sessions.")
+                      "New tasks run in the cloud browser, in its own copy of this Profile's sessions.")
                 }
                 data-testid="run-in-cloud"
                 prefix={<Cloud aria-hidden="true" />}

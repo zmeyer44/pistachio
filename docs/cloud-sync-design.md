@@ -1,5 +1,7 @@
 # Cloud browser, session sync, and identity egress
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Revision 3, after the live Fly migration (text marked **(R3)**). This is the implementation spec for four features that land together:
 
 1. End-to-end-encrypted cross-device sync of cookies (sessions), Spaces, and tab state.

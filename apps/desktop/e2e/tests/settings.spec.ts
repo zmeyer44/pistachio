@@ -166,10 +166,10 @@ test.describe.serial("Settings", { tag: ["@settings"] }, () => {
     await captureShell(app, "05a-privacy-menu.png");
 
     // Sub-pages route within the group without leaving its menu.
-    await privacyMenu.getByRole("button", { name: "Spaces", exact: true }).click();
-    // The page's own title; the section below it heads "Your Spaces".
-    await expect(page.getByRole("heading", { name: "Spaces", exact: true })).toBeVisible();
-    await expect(privacyMenu.getByRole("button", { name: "Spaces", exact: true })).toHaveAttribute("aria-current", "page");
+    await privacyMenu.getByRole("button", { name: "Profiles", exact: true }).click();
+    // The page's own title; the section below it heads "Your Profiles".
+    await expect(page.getByRole("heading", { name: "Profiles", exact: true })).toBeVisible();
+    await expect(privacyMenu.getByRole("button", { name: "Profiles", exact: true })).toHaveAttribute("aria-current", "page");
     await captureShell(app, "05b-privacy-spaces.png");
     await privacyMenu.getByRole("button", { name: "Agent isolation", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Agent isolation" })).toBeVisible();
@@ -215,11 +215,12 @@ test.describe.serial("Settings", { tag: ["@settings"] }, () => {
       })
       .toBe(true);
 
-    // ⌘I opens that same console now, without waiting for a relaunch.
+    // ⌘I, settings closed: on the desk the agent is its Bar's, whose field takes the keyboard (the console is the
+    // setting's, at the next launch).
     await shell.keyboard.press("Escape");
     await expect(page).toBeHidden();
     await shell.keyboard.press("Meta+i");
-    await expect(shell.getByTestId("agent-panel")).toBeVisible();
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
   });
 
   test("a dev run without a feed says updates are for the installed app", async () => {

@@ -88,7 +88,7 @@ describe("cloudReadiness", () => {
   it("says what is missing, one reason at a time", () => {
     expect(cloudReadiness(DEFAULT_CLOUD_STATUS, "work").reason).toContain("enroll");
     expect(cloudReadiness(cloud({ available: true }), "work").reason).toContain("key");
-    expect(cloudReadiness(enabled, null).reason).toContain("Space");
+    expect(cloudReadiness(enabled, null).reason).toContain("Profile");
   });
 
   it("reads a Space's enablement from the status, falling back to the Space's own flag", () => {
@@ -247,10 +247,10 @@ describe("the browser-status rows", () => {
 
   it("says whether the cloud browser can open the Space in front of you", () => {
     expect(planes({})[1]?.value).toBe("Off");
-    expect(planes({ cloud: { available: true } })[1]?.value).toBe("No Spaces");
+    expect(planes({ cloud: { available: true } })[1]?.value).toBe("No Profiles");
     const enabled = { available: true, spaces: [{ spaceId: "work", enabled: true }] };
-    expect(planes({ cloud: enabled })[1]?.value).toBe("This Space");
-    expect(planes({ cloud: enabled, activeSpaceId: "personal" })[1]?.value).toBe("1 Spaces");
+    expect(planes({ cloud: enabled })[1]?.value).toBe("This Profile");
+    expect(planes({ cloud: enabled, activeSpaceId: "personal" })[1]?.value).toBe("1 Profiles");
     const executor = { kind: "cloud", deviceId: null, workerId: null } as const;
     expect(planes({ cloud: enabled, threads: [thread({ executor })] })[1]).toMatchObject({ value: "Running", tone: "blue" });
   });
@@ -264,7 +264,7 @@ describe("the browser-status rows", () => {
     };
     expect(planes({ egress: blocked })[2]).toMatchObject({ value: "Blocked", tone: "red", section: "egress" });
     // Another Space's trouble is still worth a word on a direct Space's row.
-    expect(planes({ egress: blocked, activeSpaceId: "personal" })[2]?.note).toContain("Another Space");
+    expect(planes({ egress: blocked, activeSpaceId: "personal" })[2]?.note).toContain("Another Profile");
   });
 });
 

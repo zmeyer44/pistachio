@@ -143,7 +143,7 @@ describe("the desk's browser", () => {
   it("opens no tab for a group that is gone", async () => {
     const { scope, inner, group } = scopedBrowser(["tab-1"]);
     group.tabGroupSpaceId.mockReturnValue(null);
-    await expect(scope.openTab("https://air.example")).rejects.toThrow(/group is gone/);
+    await expect(scope.openTab("https://air.example")).rejects.toThrow(/space is gone/);
     expect(inner.openTab).not.toHaveBeenCalled();
   });
 
@@ -271,6 +271,8 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
     docked: [{ tabId: "tab-2", title: "Hotel Avenida", url: "https://tab-2.example/" }],
   });
   let shown = "g1";
+  /** Main's current space (BrowserController.currentGroupId): what followGroup is told, and what choose/new are checked against. */
+  let current: string | null = "g1";
   const requests: DeskRequest[] = [];
   const bridge = {
     request: vi.fn(async (request: DeskRequest): Promise<DeskReply> => {
@@ -279,7 +281,7 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
     }),
     cancelAll: vi.fn(),
   };
-  const members: Record<string, string[]> = { g1: ["tab-1", "tab-2"], g2: [] };
+  const members: Record<string, string[]> = { g1: ["tab-1", "tab-2"], g2: [], g3: [] };
   const context = new GroupContextStore(dir);
   context.addText("g1", "Lisbon", { kind: "fact", text: "Hotel confirmation QX7F2L" }, "person");
   const bindings = new DeskConversationStore(dir);
@@ -304,6 +306,12 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
         events.push(`hold ${groupId}`);
         return () => events.push(`release ${groupId}`);
       }),
+      currentGroupId: () => current,
+      // Main makes the space current (BrowserController.selectGroup), and the session follows it (onCurrentGroupChange).
+      selectGroup: vi.fn(async (groupId: string) => {
+        follow(groupId);
+        await Promise.resolve();
+      }),
     },
     context,
   };
@@ -321,7 +329,13 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
     },
     desk,
   });
-  return { controller, bridge, requests, bindings, context, desk, browser, show: (groupId: string) => (shown = groupId) };
+  /** Main passes the desk to a space (or to none): the shell's desk shows it, and the session follows (onCurrentGroupChange). */
+  const follow = (groupId: string | null): void => {
+    current = groupId;
+    if (groupId !== null) shown = groupId;
+    controller.followGroup(groupId);
+  };
+  return { controller, bridge, requests, bindings, context, desk, browser, follow, show: (groupId: string) => (shown = groupId) };
 }
 
 describe("a turn at a desk", () => {
@@ -332,8 +346,8 @@ describe("a turn at a desk", () => {
       calls({ name: "context_save", input: { kind: "fact", text: "Flight lands 11:05", url: null, title: null } }),
       answer("Side by side now; the flight lands before check-in."),
     ]);
-    const { controller, requests, bindings, context } = deskHarness(model);
-    await controller.deskConversation({ type: "enter", groupId: "g1" });
+    const { controller, requests, bindings, context, follow } = deskHarness(model);
+    follow("g1");
     await controller.message("Put the flight beside the hotel", [], { page: false });
 
     const run = controller.snapshot()!;
@@ -341,7 +355,7 @@ describe("a turn at a desk", () => {
     expect(run.groupId).toBe("g1");
     expect(bindings.get("g1")).toBe(run.runId);
     const first = userTexts(model.doGenerateCalls[0]!.prompt).join("\n");
-    expect(first).toContain("Desk: the tab group “Lisbon”");
+    expect(first).toContain("Desk: the space “Lisbon”");
     expect(first).toContain("- tab tab-1 “Flight TP 1234” https://tab-1.example/ — 0 0 50 100 — in use");
     expect(first).toContain("fact “Hotel confirmation QX7F2L”");
     // No pointer at the page in view: the desk block takes its place.
@@ -371,8 +385,8 @@ describe("a turn at a desk", () => {
         return answer("Done.")(options);
       },
     ]);
-    const { controller } = deskHarness(model, events);
-    await controller.deskConversation({ type: "enter", groupId: "g1" });
+    const { controller, follow } = deskHarness(model, events);
+    follow("g1");
     await controller.message("What is on this desk?", [], { page: false });
     // A page its tabs open joins the group all the while (BrowserController's window-open handler).
     expect(events).toEqual(["hold g1", "model", "model", "release g1"]);
@@ -388,8 +402,8 @@ describe("a turn at a desk", () => {
       calls({ name: "tab_show", input: { tabId: "tab-9" } }),
       answer("Done."),
     ]);
-    const { controller, requests, desk, browser } = deskHarness(model);
-    await controller.deskConversation({ type: "enter", groupId: "g1" });
+    const { controller, requests, desk, browser, follow } = deskHarness(model);
+    follow("g1");
     const runId = () => controller.snapshot()!.runId;
     let shownBeforeShow: DeskRequest[] = [];
     browser.inspectPage.mockImplementation(async (tabId: string) => {
@@ -414,44 +428,246 @@ describe("a turn at a desk", () => {
     expect(requests).toContainEqual({ type: "bringOut", groupId: "g1", tabId: "tab-9" });
   });
 
-  it("goes back to the conversation that was open before the desk, and reopens the group's on the way back", async () => {
-    const model = scripted([answer("Elsewhere."), answer("At the desk.")]);
-    const { controller } = deskHarness(model);
-    await controller.message("A question from the sidebar", [], { page: false });
-    const before = controller.snapshot()!.runId;
+  it("follows the space in front: each space opens its own conversation, and the console has no off-the-desk to go back to", async () => {
+    const model = scripted([answer("For Lisbon."), answer("For the groceries.")]);
+    const { controller, follow, show } = deskHarness(model);
+    follow("g1");
+    await controller.message("Plan Lisbon", [], { page: false });
+    const lisbon = controller.snapshot()!.runId;
+    expect(controller.snapshot()?.groupId).toBe("g1");
 
-    await controller.deskConversation({ type: "enter", groupId: "g1" });
+    // Main passes the desk on: the space with no conversation opens an empty console.
+    follow("g2");
     expect(controller.snapshot()).toBeNull();
-    await controller.message("And one at the desk", [], { page: false });
-    const atDesk = controller.snapshot()!.runId;
-    expect(atDesk).not.toBe(before);
+    await controller.message("Groceries", [], { page: false });
+    const groceries = controller.snapshot()!.runId;
+    expect(controller.snapshot()?.groupId).toBe("g2");
 
-    await controller.deskConversation({ type: "leave" });
-    expect(controller.snapshot()?.runId).toBe(before);
+    // And back: the first space's conversation is there again.
+    show("g1");
+    follow("g1");
+    expect(controller.snapshot()?.runId).toBe(lisbon);
+    follow("g2");
+    expect(controller.snapshot()?.runId).toBe(groceries);
+    // The shell's enter and leave are an older shell's, and change nothing.
     await controller.deskConversation({ type: "enter", groupId: "g1" });
-    expect(controller.snapshot()?.runId).toBe(atDesk);
-    // A conversation from before any desk is no group's.
-    expect(controller.threads().find((item) => item.runId === before)?.groupId).toBeUndefined();
-    expect(controller.threads().find((item) => item.runId === atDesk)?.groupId).toBe("g1");
+    await controller.deskConversation({ type: "leave" });
+    expect(controller.snapshot()?.runId).toBe(groceries);
+    // No space named: nothing more is the desk's, and the open thread stays.
+    follow(null);
+    expect(controller.snapshot()?.runId).toBe(groceries);
+  });
+
+  it("keeps a turn's space while it runs, and follows the person to theirs once it ends", async () => {
+    let moveOn: (() => void) | null = null;
+    const events: string[] = [];
+    const model = scripted([
+      (options) => {
+        // The person passes to another space mid-turn.
+        moveOn?.();
+        return calls({ name: "tabs_list", input: {} })(options);
+      },
+      answer("Done in Lisbon."),
+    ]);
+    const { controller, follow, bindings } = deskHarness(model, events);
+    follow("g1");
+    moveOn = () => follow("g2");
+    await controller.message("What is on this desk?", [], { page: false });
+    const lisbon = bindings.get("g1");
+    expect(lisbon).not.toBeNull();
+    // The turn held its own space to the end, its conversation g1's ...
+    expect(events).toEqual(["hold g1", "release g1"]);
+    expect(controller.threads().find((item) => item.runId === lisbon)?.groupId).toBe("g1");
+    // ... and, ended, the console is the space in front's: g2 has none yet, so the Bar's next message starts its own.
+    expect(controller.snapshot()).toBeNull();
+  });
+
+  it("keeps a turn that ended asking the person, away from its space, until it is answered and ends idle", async () => {
+    let moveOn: (() => void) | null = null;
+    const model = scripted([
+      (options) => {
+        // The person passes to another space mid-turn, and the model asks.
+        moveOn?.();
+        return calls({ name: "ask_user", input: { prompt: "Which hotel?", description: "Two match the dates", choices: [{ label: "Avenida", value: "avenida", description: "By the station" }, { label: "Baixa", value: "baixa", description: "In the old town" }] } })(options);
+      },
+      answer("Avenida it is."),
+    ]);
+    const { controller, follow, bindings, browser } = deskHarness(model);
+    follow("g1");
+    moveOn = () => follow("g2");
+    await controller.message("Book the hotel", [], { page: false });
+    const lisbon = bindings.get("g1");
+    // The turn ended waiting on the person: its question stays pending in the console, nothing set aside.
+    const waiting = controller.snapshot()!;
+    expect(waiting.runId).toBe(lisbon);
+    expect(waiting.status).toBe("waiting_for_judgment");
+    expect(waiting.pendingQuestion?.prompt).toBe("Which hotel?");
+    expect(browser.closeHiddenTabs).not.toHaveBeenCalled();
+
+    // Answered, the turn it starts runs to its end; then the console follows the person to g2's (none yet).
+    await controller.answerQuestion(waiting.pendingQuestion!.id, "avenida");
+    expect(controller.threads().find((item) => item.runId === lisbon)?.status).toBe("completed");
+    expect(controller.snapshot()).toBeNull();
+    expect(browser.closeHiddenTabs).toHaveBeenCalledWith(lisbon);
+  });
+
+  it("puts a conversation waiting on the person away as it stands when they look at other spaces, and opens it again in its own", async () => {
+    const model = scripted([
+      calls({ name: "ask_user", input: { prompt: "Which hotel?", description: "Two match the dates", choices: [{ label: "Avenida", value: "avenida", description: "By the station" }, { label: "Baixa", value: "baixa", description: "In the old town" }] } }),
+      answer("Avenida it is."),
+    ]);
+    const { controller, follow, bindings, browser } = deskHarness(model);
+    follow("g1");
+    await controller.message("Book the hotel", [], { page: false });
+    const lisbon = bindings.get("g1")!;
+    const question = controller.snapshot()!.pendingQuestion!;
+    expect(question.prompt).toBe("Which hotel?");
+
+    // The person looks at another space, then a third: each opens its own conversation (none yet), and Lisbon's
+    // question waits where it was asked — not cancelled, its research tabs kept, still g1's.
+    follow("g2");
+    expect(controller.snapshot()).toBeNull();
+    follow("g3");
+    expect(controller.snapshot()).toBeNull();
+    expect(controller.threads().find((item) => item.runId === lisbon)?.status).toBe("waiting_for_judgment");
+    expect(browser.closeHiddenTabs).not.toHaveBeenCalled();
+    expect(bindings.get("g1")).toBe(lisbon);
+
+    // Back in Lisbon: its conversation, the question still pending, answered there and run to its end.
+    follow("g1");
+    const back = controller.snapshot()!;
+    expect(back.runId).toBe(lisbon);
+    expect(back.status).toBe("waiting_for_judgment");
+    expect(back.pendingQuestion?.id).toBe(question.id);
+    await controller.answerQuestion(question.id, "avenida");
+    expect(controller.snapshot()?.runId).toBe(lisbon);
+    expect(controller.snapshot()?.status).toBe("completed");
+  });
+
+  it("takes an iMessage answer to a conversation put away in its space: the space comes up and the answer runs there", async () => {
+    const model = scripted([
+      calls({ name: "ask_user", input: { prompt: "Which hotel?", description: "Two match the dates", choices: [{ label: "Avenida", value: "avenida", description: "By the station" }, { label: "Baixa", value: "baixa", description: "In the old town" }] } }),
+      answer("Avenida it is."),
+    ]);
+    const { controller, follow, bindings, browser, desk } = deskHarness(model);
+    follow("g1");
+    await controller.message("Book the hotel", [], { page: false });
+    const lisbon = bindings.get("g1")!;
+    const question = controller.snapshot()!.pendingQuestion!;
+    follow("g2");
+    expect(controller.snapshot()).toBeNull();
+
+    // The answer arrives from the phone (CloudRunService has already moved past it: it must not be dropped).
+    await controller.answerIMessageQuestion(lisbon, question.id, "avenida");
+    expect(desk.browser.selectGroup).toHaveBeenCalledWith("g1");
+    const run = controller.snapshot()!;
+    expect(run.runId).toBe(lisbon);
+    expect(run.pendingQuestion).toBeNull();
+    expect(run.status).toBe("completed");
+    expect(run.messages.some((message) => message.role === "user" && message.content === "Avenida")).toBe(true);
+    // Its turn ran at its own desk, scoped to its space.
+    expect(userTexts(model.doGenerateCalls.at(-1)!.prompt).join("\n")).toContain("Desk: the space “Lisbon”");
+    expect(browser.closeHiddenTabs).not.toHaveBeenCalled();
+  });
+
+  it("keeps an iMessage answer that comes while another conversation is acting, and takes it once that turn ends", async () => {
+    let answerFromAfar: (() => void) | null = null;
+    const model = scripted([
+      calls({ name: "ask_user", input: { prompt: "Which hotel?", description: "Two match the dates", choices: [{ label: "Avenida", value: "avenida", description: "By the station" }, { label: "Baixa", value: "baixa", description: "In the old town" }] } }),
+      (options) => {
+        // Mid-turn in g2, the phone answers Lisbon's question.
+        answerFromAfar?.();
+        return answer("For the groceries.")(options);
+      },
+      answer("Avenida it is."),
+    ]);
+    const { controller, follow, bindings } = deskHarness(model);
+    follow("g1");
+    await controller.message("Book the hotel", [], { page: false });
+    const lisbon = bindings.get("g1")!;
+    const question = controller.snapshot()!.pendingQuestion!;
+    follow("g2");
+    answerFromAfar = () => void controller.answerIMessageQuestion(lisbon, question.id, "avenida");
+    await controller.message("Groceries", [], { page: false });
+    const groceries = bindings.get("g2")!;
+    expect(controller.threads().find((item) => item.runId === groceries)?.status).toBe("completed");
+    // Taken once the groceries turn settled: Lisbon came up and its answer ran there.
+    await vi.waitFor(() => {
+      expect(controller.snapshot()?.runId).toBe(lisbon);
+      expect(controller.snapshot()?.status).toBe("completed");
+    });
+    expect(controller.snapshot()?.pendingQuestion).toBeNull();
+    expect(userTexts(model.doGenerateCalls.at(-1)!.prompt).join("\n")).toContain("Desk: the space “Lisbon”");
+  });
+
+  it("goes on to the next waiting iMessage answer when one can no longer be taken (its conversation deleted meanwhile)", async () => {
+    const ask = (prompt: string): Step =>
+      calls({ name: "ask_user", input: { prompt, description: "Pick one", choices: [{ label: "Yes", value: "yes", description: "Go ahead" }, { label: "No", value: "no", description: "Hold off" }] } });
+    let midTurn: (() => void) | null = null;
+    const model = scripted([
+      ask("Book Lisbon?"),
+      ask("Order the groceries?"),
+      (options) => {
+        midTurn?.();
+        return answer("Done in the third space.")(options);
+      },
+      answer("Groceries ordered."),
+    ]);
+    const { controller, follow, bindings } = deskHarness(model);
+    follow("g1");
+    await controller.message("Plan Lisbon", [], { page: false });
+    const lisbon = bindings.get("g1")!;
+    const lisbonQuestion = controller.snapshot()!.pendingQuestion!;
+    follow("g2");
+    await controller.message("Groceries", [], { page: false });
+    const groceries = bindings.get("g2")!;
+    const groceriesQuestion = controller.snapshot()!.pendingQuestion!;
+    follow("g3");
+    // While the third space's conversation acts, both answers come from the phone — and Lisbon's conversation is deleted.
+    midTurn = () => {
+      void controller.answerIMessageQuestion(lisbon, lisbonQuestion.id, "yes");
+      void controller.answerIMessageQuestion(groceries, groceriesQuestion.id, "yes");
+      controller.deleteThread(lisbon);
+    };
+    await controller.message("Something else", [], { page: false });
+    // Lisbon's answer has nothing left to answer; the groceries' is taken all the same.
+    await vi.waitFor(() => {
+      expect(controller.snapshot()?.runId).toBe(groceries);
+      expect(controller.snapshot()?.status).toBe("completed");
+    });
+    expect(controller.snapshot()?.pendingQuestion).toBeNull();
+  });
+
+  it("starts a conversation from an empty space's Bar, with no tab in use, bound to the space in front", async () => {
+    const model = scripted([answer("Nothing open here yet.")]);
+    const { controller, follow, browser, bindings } = deskHarness(model);
+    follow("g2");
+    browser.activeTab.mockReturnValue(null as unknown as BrowserTabInfo);
+    await controller.message("What can I do here?", [], { page: false });
+    const run = controller.snapshot()!;
+    expect(run.humanTabId).toBeNull();
+    expect(run.groupId).toBe("g2");
+    expect(bindings.get("g2")).toBe(run.runId);
   });
 
   it("continues a conversation another group started, and starts a new one on request", async () => {
     const model = scripted([answer("For Lisbon."), answer("Continued at the groceries.")]);
-    const { controller, bindings, show } = deskHarness(model);
-    await controller.deskConversation({ type: "enter", groupId: "g1" });
+    const { controller, bindings, follow } = deskHarness(model);
+    follow("g1");
     await controller.message("Plan Lisbon", [], { page: false });
     const lisbon = controller.snapshot()!.runId;
 
-    show("g2");
-    await controller.deskConversation({ type: "enter", groupId: "g2" });
+    follow("g2");
     expect(controller.snapshot()).toBeNull();
+    // Only the space in front may be chosen for.
+    await expect(controller.deskConversation({ type: "choose", groupId: "g1", runId: lisbon })).rejects.toThrow("that desk is not open");
     await controller.deskConversation({ type: "choose", groupId: "g2", runId: lisbon });
     expect(controller.snapshot()?.runId).toBe(lisbon);
     expect(bindings.get("g2")).toBe(lisbon);
     expect(bindings.get("g1")).toBe(lisbon);
     // Continued here, its turns are this desk's.
     await controller.message("And for the groceries?", [], { page: false });
-    expect(userTexts(model.doGenerateCalls.at(-1)!.prompt).join("\n")).toContain("Desk: the tab group “Groceries”");
+    expect(userTexts(model.doGenerateCalls.at(-1)!.prompt).join("\n")).toContain("Desk: the space “Groceries”");
 
     await controller.deskConversation({ type: "new", groupId: "g2" });
     expect(controller.snapshot()).toBeNull();
@@ -462,8 +678,8 @@ describe("a turn at a desk", () => {
 
   it("forgets a deleted conversation's groups", async () => {
     const model = scripted([answer("Planned.")]);
-    const { controller, bindings } = deskHarness(model);
-    await controller.deskConversation({ type: "enter", groupId: "g1" });
+    const { controller, bindings, follow } = deskHarness(model);
+    follow("g1");
     await controller.message("Plan Lisbon", [], { page: false });
     const runId = controller.snapshot()!.runId;
     controller.deleteThread(runId);

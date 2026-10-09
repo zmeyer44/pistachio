@@ -4,6 +4,7 @@ import { expect, test, type ElectronApplication, type Locator } from "@playwrigh
 import type { DesktopSettings } from "@pistachio/shell-contracts/settings";
 import { pageFirst, shellReady } from "./windows";
 import { captureEnabled, launchApp } from "./app";
+import { snapshot } from "./desk-harness";
 
 const screenshotDirectory = join(process.cwd(), "e2e/screenshots/customization");
 
@@ -101,7 +102,7 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
     await expect(shell.getByTestId("chrome-layout-ground")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("chrome-layout-ground")).not.toHaveCSS("background-image", "none");
     await expect(shell.getByTestId("chrome-content-row")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(shell.getByTestId("browser-surface")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(shell.getByTestId("desk-surface")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("sidebar-chrome")).toHaveCSS("backdrop-filter", "none");
     await expect(shell.getByTestId("sidebar-chrome")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("agent-panel-surface")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
@@ -117,7 +118,7 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
     await expect.poll(() => shell.evaluate(() => document.documentElement.dataset["desktopGlass"])).toBe("off");
     await expect(shell.getByTestId("chrome-layout-ground")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("chrome-content-row")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(shell.getByTestId("browser-surface")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(shell.getByTestId("desk-surface")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("sidebar-chrome")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("agent-panel-surface")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect.poll(() => nativeVibrancyChanges(app)).toEqual([null]);
@@ -179,9 +180,11 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
     await expect.poll(async () => (await storedSettings(userData))?.shortcuts.newTab ?? null).toBe("Mod+K");
     await captureWindow(app, "05-shortcut-rebound.png", settings);
 
-    // Focus a native webpage WebContents, not React chrome: the same binding must still route back to shell.
+    // Focus a native webpage WebContents, not React chrome: the same binding must still route back to shell —
+    // and do what ⌘T does on the desk: a new tab in the current space, out as the window in use.
     await shell.keyboard.press("Escape");
     await expect(settings).toBeHidden();
+    const tabsBefore = (await snapshot(shell)).tabs.map((tab) => tab.id);
     await app.evaluate(({ webContents }, modifier: "meta" | "control") => {
       const tab = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith("pistachio://demo/invoices"));
       if (tab === undefined) throw new Error("Demo tab is unavailable");
@@ -189,9 +192,15 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
       tab.sendInputEvent({ type: "keyDown", keyCode: "K", modifiers: [modifier] });
       tab.sendInputEvent({ type: "keyUp", keyCode: "K", modifiers: [modifier] });
     }, process.platform === "darwin" ? "meta" : "control");
-    const urlBar = shell.getByTestId("url-bar");
-    await expect(urlBar).toBeVisible();
-    await captureWindow(app, "06-native-page-shortcut.png", urlBar);
+    await expect
+      .poll(async () => {
+        const after = await snapshot(shell);
+        const made = after.tabs.filter((tab) => !tabsBefore.includes(tab.id)).map((tab) => tab.id);
+        return made.length === 1 && after.activeTabId === made[0];
+      })
+      .toBe(true);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await captureWindow(app, "06-native-page-shortcut.png", shell.getByTestId("desk-surface"));
   } finally {
     await app.close();
   }

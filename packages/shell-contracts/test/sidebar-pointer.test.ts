@@ -3,6 +3,8 @@ import {
   pointerHitsSidebarTrigger,
   pointerHoldsSidebar,
   SIDEBAR_POINTER_SLACK,
+  SIDEBAR_DESK_TRIGGER_W,
+  SIDEBAR_EDGE_W,
   SIDEBAR_POINTER_SLACK_X,
   SIDEBAR_TRIGGER_W,
 } from "../src/chrome.js";
@@ -15,6 +17,14 @@ describe("pointerHitsSidebarTrigger", () => {
     expect(pointerHitsSidebarTrigger({ x: SIDEBAR_TRIGGER_W - 1, y: 400 }, box.height)).toBe(true);
     expect(pointerHitsSidebarTrigger({ x: SIDEBAR_TRIGGER_W, y: 400 }, box.height)).toBe(false);
     expect(pointerHitsSidebarTrigger({ x: 5, y: box.height }, box.height)).toBe(false);
+  });
+
+  it("takes a narrower target where asked — on the desk, half the strip, clear of a window's resize edge", () => {
+    expect(SIDEBAR_DESK_TRIGGER_W).toBeLessThan(SIDEBAR_EDGE_W);
+    expect(pointerHitsSidebarTrigger({ x: SIDEBAR_DESK_TRIGGER_W - 1, y: 400 }, box.height, SIDEBAR_DESK_TRIGGER_W)).toBe(true);
+    expect(pointerHitsSidebarTrigger({ x: SIDEBAR_DESK_TRIGGER_W, y: 400 }, box.height, SIDEBAR_DESK_TRIGGER_W)).toBe(false);
+    expect(pointerHitsSidebarTrigger({ x: -1, y: 400 }, box.height, SIDEBAR_DESK_TRIGGER_W)).toBe(false);
+    expect(pointerHitsSidebarTrigger({ x: 0, y: box.height }, box.height, SIDEBAR_DESK_TRIGGER_W)).toBe(false);
   });
 });
 

@@ -3,11 +3,13 @@
 import { Globe } from "lucide-react";
 import { useState } from "react";
 import { AI_SEARCH_PROVIDERS, WEB_SEARCH_PROVIDERS, aiSearchLabel, webSearchLabel } from "@pistachio/shell-contracts/search";
-import type { SidebarPresentation } from "@pistachio/shell-contracts/settings";
+import { effectiveSidebarMode, type SidebarMode } from "@pistachio/shell-contracts/settings";
 import { isAllowedNavigation, withScheme as withSchemeForHost } from "@pistachio/shell-contracts/url";
+import { runShellCommand } from "../../../chrome/shell-host";
 import { briefTimeItems } from "../../../lib/reports";
 import { isProbablyUrl } from "../../../lib/url";
 import { useAppStore } from "../../../store";
+import { useSurface } from "../../../surface";
 import { SearchProviderLogo } from "../../SearchProviderLogo";
 import { IconSelect } from "../../ui/icon-select";
 import { Input } from "../../ui/input";
@@ -24,10 +26,13 @@ const NEW_TAB_ITEMS = [
 const WEB_SEARCH_ITEMS = WEB_SEARCH_PROVIDERS.map(({ id, label }) => ({ value: id, label, icon: <SearchProviderLogo provider={id} /> }));
 const AI_SEARCH_ITEMS = AI_SEARCH_PROVIDERS.map(({ id, label }) => ({ value: id, label, icon: <SearchProviderLogo provider={id} /> }));
 
-const SIDEBAR_ITEMS: ReadonlyArray<{ value: SidebarPresentation; label: string }> = [
-  { value: "pinned", label: "Always visible" },
-  { value: "compact", label: "Compact — reveal on hover" },
+/** The sidebar's modes (docs/spaces.md §3). The rail is the desktop's alone: its pieces need the desk. */
+const SIDEBAR_ITEMS: ReadonlyArray<{ value: SidebarMode; label: string }> = [
+  { value: "whole", label: "Whole" },
+  { value: "rail", label: "Rail — icons only" },
+  { value: "hidden", label: "Hidden — reveal at the left edge" },
 ];
+const WEB_SIDEBAR_ITEMS = SIDEBAR_ITEMS.filter((item) => item.value !== "rail");
 
 /**
  * An address a setting stores. Committed on Enter/blur rather than per
@@ -141,7 +146,7 @@ function HomePageRow() {
   return (
     <AddressRow
       label="Home page"
-      note="What a new window or Space opens with, and where an empty split pane starts. Empty is Pistachio's home page."
+      note="What a new window or Profile opens with, and where an empty split pane starts. Empty is Pistachio's home page."
       ariaLabel="Home page"
       placeholder="Pistachio home"
       configured={configured}
@@ -162,7 +167,10 @@ function HomePageRow() {
 }
 
 export function GeneralPage() {
-  const layout = useAppStore((s) => s.settings.layout);
+  const native = useSurface().kind === "native";
+  const stored = useAppStore((s) => s.settings.layout.sidebar);
+  // A rail stored where none is offered (the web) shows as what is drawn: the whole sidebar.
+  const sidebar = effectiveSidebarMode(stored, native);
   const general = useAppStore((s) => s.settings.general);
   const search = useAppStore((s) => s.settings.search);
   const updateSettings = useAppStore((s) => s.updateSettings);
@@ -175,30 +183,42 @@ export function GeneralPage() {
       <Group title="Sidebar" note="Your tabs and the browser's controls live in a column at the window's left edge.">
         <Row
           label="Sidebar visibility"
-          note="Compact hides the sidebar and the window controls. Move the pointer to the left edge to bring them back. ⌘S switches between the two."
+          note={
+            native
+              ? "Whole keeps the sidebar beside the desk; Rail keeps its icons alone. Hidden puts the sidebar and the window controls away: move the pointer to the left edge, and it comes out over the desk. ⌘S goes from one to the next."
+              : "Hidden puts the sidebar and the window controls away. Move the pointer to the left edge to bring them back. ⌘S switches between whole and hidden."
+          }
         >
           <Select
             aria-label="Sidebar visibility"
             data-testid="sidebar-presentation"
-            value={layout.sidebar}
-            items={SIDEBAR_ITEMS}
-            onValueChange={(sidebar) => void updateSettings({ layout: { sidebar } })}
+            value={sidebar}
+            items={native ? SIDEBAR_ITEMS : WEB_SIDEBAR_ITEMS}
+            onValueChange={(mode) => runShellCommand({ type: "setSidebarMode", mode })}
             className="w-55 @max-md:w-42"
           />
         </Row>
       </Group>
 
-      <Group title="New tabs" note="What ⌘T does, and what it costs to close a tab the agent is working in.">
-        <Row label="New tabs open" note="⌘T can open your home page, ask for an address every time, or go straight to a page you name below.">
-          <Select
-            aria-label="New tab behavior"
-            value={general.newTab}
-            items={NEW_TAB_ITEMS}
-            onValueChange={(newTab) => void updateSettings({ general: { newTab } })}
-            className="w-35"
-          />
-        </Row>
-        <NewTabPageRow />
+      <Group
+        title="New tabs"
+        note={native ? "What it costs to close a tab the agent is working in." : "What ⌘T does, and what it costs to close a tab the agent is working in."}
+      >
+        {/* (Not on the desktop: ⌘T there always opens a home window in the current space, docs/spaces.md §1.) */}
+        {native ? null : (
+          <>
+            <Row label="New tabs open" note="⌘T can open your home page, ask for an address every time, or go straight to a page you name below.">
+              <Select
+                aria-label="New tab behavior"
+                value={general.newTab}
+                items={NEW_TAB_ITEMS}
+                onValueChange={(newTab) => void updateSettings({ general: { newTab } })}
+                className="w-35"
+              />
+            </Row>
+            <NewTabPageRow />
+          </>
+        )}
         <Row
           label="Ask before closing a tab with a live run"
           note="Closing the tab the agent is using ends the browser task. A confirmation keeps ⌘W from stopping work by accident."

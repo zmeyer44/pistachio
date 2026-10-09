@@ -6,8 +6,8 @@
  * workbook, a CSV, a picture, a PDF — and an edit is saved back into the
  * file. A document put away goes into the Stack and comes out of it again;
  * one @mentioned in the Bar rides with the message; the agent arranges a
- * document window as it arranges a tab's; the desk keeps them when it is
- * left and opened again. A document tiled and cascaded with the tabs, and
+ * document window as it arranges a tab's; the desk keeps them when it
+ * passes to another space and back. A document tiled and cascaded with the tabs, and
  * minimized as a tab's window is, are desk-documents.test's and
  * desk-minimize.spec's.
  */
@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { expect, test, type JSHandle, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { docxFixture, xlsxFixture } from "../../../../packages/documents/test/fixtures";
-import { api, box, createGroup, INVOICES, launchDesk, leaveDesk, openGroupDesk, openTabs, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
+import { api, box, createGroup, INVOICES, launchDesk, selectSpace, openTabs, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-documents");
 
@@ -219,7 +219,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     const [invoice, vendor] = (await openTabs(shell, [INVOICES, VENDOR])) as [string, string];
     await createGroup(shell, "desk-docs", [invoice, vendor], "Northstar", "blue");
     await selectTab(shell, invoice);
-    await openGroupDesk(shell, "desk-docs");
+    await selectSpace(shell, "desk-docs");
     await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
@@ -449,11 +449,13 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     const tools = (await snapshot(shell)).run!.toolCalls.map((call) => call.name);
     expect(tools).toEqual(["desk.arrange"]);
 
-    // ── 13. Left and opened again, the desk keeps its documents where they were ─
+    // ── 13. Passed to another space and back, the desk keeps its documents where they were ─
     const before = await box(shell, notesWindow);
-    await leaveDesk(shell);
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    await openGroupDesk(shell, "desk-docs");
+    const [elsewhere] = (await openTabs(shell, ["pistachio://demo/auth/relying-party"])) as [string];
+    await selectTab(shell, elsewhere);
+    await expect(shell.locator('.desk-stage[data-phase="open"]:not([data-group-id="desk-docs"])')).toHaveCount(1);
+    await expect(shell.locator(notesWindow)).toHaveCount(0);
+    await selectSpace(shell, "desk-docs");
     await settled(shell, app);
     await expect(shell.locator(notesWindow)).toHaveCount(1);
     const after = await box(shell, notesWindow);

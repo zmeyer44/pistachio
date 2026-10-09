@@ -26,15 +26,18 @@ const M = "apps/desktop/src/main";
 /** @type {ReadonlyArray<{ tag: string; paths: readonly string[] }>} */
 export const AREAS = [
   {
+    // The desk: since 2026-10-09 the desktop's surface, always up (docs/spaces.md). Its mount and its store are hub
+    // paths below — every desktop spec stands on them; these are its own parts. The drag layer, the window's page
+    // placeholder and main's chrome views (notch, shelf, PiP, drag) were the split's; they are the desk's now.
     tag: "@desk",
     paths: [
       `${UI}/components/desk/**`,
       `${UI}/lib/desk/**`,
-      `${UI}/components/RailFavorites.tsx`,
-      `${UI}/{NotchApp,ShelfApp,PipApp}.tsx`,
-      `${UI}/lib/{dictation,recorder}.ts`,
+      `${UI}/components/{RailFavorites,PanePlaceholder}.tsx`,
+      `${UI}/{NotchApp,ShelfApp,PipApp,DragApp}.tsx`,
+      `${UI}/lib/{dictation,recorder,pane-drag}.ts`,
       `${C}/desk*.ts`,
-      `${M}/{desk-bridge,desk-conversations,desk-layout,desk-scope,group-context-store,document-convert}.ts`,
+      `${M}/{desk-bridge,desk-conversations,desk-layout,desk-scope,group-context-store,document-convert,chrome-view,spaces}.ts`,
       "packages/documents/**",
     ],
   },
@@ -45,7 +48,7 @@ export const AREAS = [
       `${UI}/chrome/**`,
       `${UI}/components/{SidebarChrome,SidebarEdge,SidebarMenu,TabList,TabGroupRow,FavoritesGrid,ContextMenu,BrandTile}.tsx`,
       `${UI}/components/sidebar-rail.ts`,
-      `${UI}/lib/{sidebar,sidebar-tree,tab-selection,chrome-tabs,chrome-status}.ts`,
+      `${UI}/lib/{sidebar,sidebar-mode,sidebar-tree,tab-selection,chrome-tabs,chrome-status}.ts`,
       `${C}/{sidebar,sidebar-controller,chrome,page-context-menu}.ts`,
       `${M}/{sidebar-store,pointer-zone-watch,page-context-menu}.ts`,
     ],
@@ -58,16 +61,6 @@ export const AREAS = [
       `${UI}/lib/tab-switcher-grid.ts`,
       `${C}/{tab-switcher,tab-groups,tab-archive,tidy,tab-session,spaces,page-resume}.ts`,
       `${M}/{tab-tidy,tab-archive-store,tab-session-store,space-store,forced-focus,debugger-hold}.ts`,
-    ],
-  },
-  {
-    tag: "@split",
-    paths: [
-      `${UI}/components/{PaneToolbar,ContentArea,ResizeHandle,PanePlaceholder,split-icons}.tsx`,
-      `${UI}/lib/{split-layout,pane-toolbar,pane-drag,viewport}.ts`,
-      `${UI}/DragApp.tsx`,
-      `${C}/split.ts`,
-      `${M}/chrome-view.ts`,
     ],
   },
   {
@@ -90,7 +83,7 @@ export const AREAS = [
   {
     tag: "@agent",
     paths: [
-      `${UI}/components/{AgentConsole,ThreadList,MessageText,OutputCard,FeedbackPopover,TakeoverCard,PanelShell,StatusDot}.tsx`,
+      `${UI}/components/{AgentConsole,ThreadList,MessageText,OutputCard,FeedbackPopover,TakeoverCard,PanelShell,StatusDot,ResizeHandle}.tsx`,
       `${UI}/components/{useAgentTab,chat-*}.ts`,
       `${UI}/components/chat/**`,
       `${UI}/lib/{chat-attachments,chat-sources,run,linkify,markdown,smooth-text,panel,share}.ts`,
@@ -174,14 +167,19 @@ export const AREAS = [
   },
   {
     // The web app, the site and the cloud: their specs boot the web stack
-    // (e2e/tests/web-harness.ts). Desktop-only changes never run them.
+    // (e2e/tests/web-harness.ts). Desktop-only changes never run them. Splits
+    // and the pane toolbar are the web's alone since 2026-10-09 (the desktop
+    // tiles windows on its desk instead).
     tag: "@web",
     paths: [
       "apps/{web,www}/**",
       "services/**",
       "packages/{browser-client,dom-mirror,live-view,web-account,sync-engine,sync-hub,sync-protocol,ui}/**",
       `${UI}/{surface.tsx,lib/surface-copy.ts,lib/live-view.ts,lib/cloud.ts,lib/sync.ts}`,
-      `${UI}/components/{LiveViewPage,SyncPill}.tsx`,
+      `${UI}/components/{LiveViewPage,SyncPill,PaneToolbar,split-icons}.tsx`,
+      `${UI}/lib/{split-layout,pane-toolbar,viewport}.ts`,
+      `${UI}/chrome/split-mode.ts`,
+      `${C}/split.ts`,
       `${M}/{sync,cloud}/**`,
       "apps/desktop/e2e/tests/web-harness.ts",
     ],
@@ -190,13 +188,18 @@ export const AREAS = [
 
 /**
  * Paths that touch every area. A change here runs the smoke tests (and the
- * areas of anything else that changed), not the whole suite.
+ * areas of anything else that changed), not the whole suite. The desk's mount
+ * (ContentArea, DeskSurface), its store and the sidebar's layout are among
+ * them since 2026-10-09: every desktop spec stands on the desk.
  */
 export const HUB_PATHS = [
   `${M}/{index,browser-controller}.ts`,
   "apps/desktop/src/preload/{index,tab}.ts",
   "apps/desktop/src/renderer/**",
   `${UI}/{App.tsx,ChromeLayoutRoot.tsx,store.ts,api.ts,index.ts,shell.css}`,
+  `${UI}/components/{ContentArea,desk/DeskSurface}.tsx`,
+  `${UI}/layouts/SidebarLayout.tsx`,
+  `${UI}/lib/desk/{store,open}.ts`,
   `${UI}/components/Favicon.tsx`,
   `${UI}/components/ui/**`,
   `${UI}/lib/cn.ts`,

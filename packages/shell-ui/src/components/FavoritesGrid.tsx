@@ -9,9 +9,8 @@ import { useShelfDrag, type ShelfItem } from "../chrome/shelf-drag";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { cn } from "../lib/cn";
 import { useDeskChrome } from "../lib/desk/chrome";
-import { showOnDesk } from "../lib/desk/open";
+import { showOnDesk, useCurrentSpace } from "../lib/desk/open";
 import { hoverDeskRow } from "./desk/DeskSidebarControls";
-import { useDeskStore } from "../lib/desk/store";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
@@ -81,7 +80,7 @@ export function FavoritesGrid() {
   // A favorite's page's group (TabGroupInfo.anchorId): how many tabs wait on its desk besides its page — and, its desk
   // up, the favorite whose rows the list draws (TabList's entryTabs).
   const pageGroups = useAppStore((s) => s.snapshot?.anchorGroups);
-  const deskGroupId = useDeskStore((s) => s.groupId);
+  const deskGroupId = useCurrentSpace();
   const deskFavorite = pageGroups?.find((group) => group.id === deskGroupId)?.anchorId ?? null;
   // On the rail, the place under that favorite's row where the list draws its desk's tabs and Stack (TabList's entryTabs).
   const entryEl = useRef<HTMLDivElement | null>(null);
@@ -98,7 +97,8 @@ export function FavoritesGrid() {
     },
     [deskFavorite],
   );
-  const tabCounts = useMemo(() => new Map((pageGroups ?? []).map((group) => [group.anchorId ?? "", group.tabIds.length - 1])), [pageGroups]);
+  // (Never below none: a page's group without its page is let go of by main, but a snapshot may say so first.)
+  const tabCounts = useMemo(() => new Map((pageGroups ?? []).map((group) => [group.anchorId ?? "", Math.max(0, group.tabIds.length - 1)])), [pageGroups]);
 
   const liveByAnchor = useMemo(() => {
     const map = new Map<string, ChromeTab>();
@@ -393,7 +393,7 @@ export function FavoritesGrid() {
           </span>
           {waiting > 0 ? <EntryTabCount count={waiting} testId="favorite-tab-count" className="absolute -right-0.5 -bottom-0.5 h-3.5 min-w-3.5 bg-background-100 text-[9px] shadow-border" /> : null}
         </button>,
-        ...(here ? [<div key={`entry:${tile.id}`} ref={entryRef} role="group" aria-label={`${label}, its desk`} data-testid="rail-favorite-entry" className="rail-favorite-entry" />] : []),
+        ...(here ? [<div key={`entry:${tile.id}`} ref={entryRef} role="group" aria-label={`${label}, its space`} data-testid="rail-favorite-entry" className="rail-favorite-entry" />] : []),
       ];
     });
     return (

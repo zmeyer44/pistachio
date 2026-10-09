@@ -108,8 +108,8 @@ function open(variants: DeskVariants = EASED, host: Partial<DeskHost> = {}) {
     save: () => undefined,
     moveTabToGroup: () => undefined,
     sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    sidebarAway: () => false,
     homeOf: () => null,
-    leaveDone: () => undefined,
     ...host,
   });
   desk.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: STAGE.w, height: STAGE.h }) } as unknown as HTMLElement);

@@ -1,5 +1,7 @@
 # Native desktop browsing and cloud continuity
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Desktop always opens sites in local Electron WebContentsViews. Page JavaScript,
 input, rendering, audio, and navigation run on the Mac, whether the account is
 signed in or not. Signing in never replaces the native shell with a DOM mirror

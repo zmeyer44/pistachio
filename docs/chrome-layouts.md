@@ -1,8 +1,12 @@
 # Chrome layout
 
-The desktop chrome — tabs, address, navigation, status, split, console, spaces, settings — lives in one **sidebar**: a vertical column at the window's left edge. Toolbar row (back, forward, reload, pin toggle), address pill, the favorites grid, the tab column — the active space's header, the pinned section (folders and pins), the "New tab" row, then the day's tabs — background media, and a footer holding the Space menu and the status pills. The page sits beside it. See [the shelf](#the-shelf-favorites-pins-folders) below.
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
+The desktop chrome — tabs, address, navigation, status, split, console, Profiles, settings — lives in one **sidebar**: a vertical column at the window's left edge. Toolbar row (back, forward, reload, pin toggle), address pill, the favorites grid, the tab column — the active Profile's header, the pinned section (folders and pins), the "New tab" row, then the day's tabs — background media, and a footer holding the Profile menu and the status pills. The page sits beside it. See [the shelf](#the-shelf-favorites-pins-folders) below.
 
 (There used to be a second arrangement, a 40px row of top tabs, chosen in Settings → General. It was removed on 2026-10-03; a settings file that chose it opens in the sidebar.)
+
+(Since 2026-10-09 the setting has three modes, `layout.sidebar: "whole" | "rail" | "hidden"` — a stored `pinned` reads as whole, `compact` as hidden — and ⌘S cycles them; on the desk, hidden is an overlay over the windows, not a reflow: `docs/spaces.md` §3. Pinned and compact below are whole and hidden as the web still draws them.)
 
 The sidebar has two presentations, chosen in Settings → General → Sidebar:
 
@@ -45,7 +49,7 @@ export const CHROME_FEATURES: readonly ChromeFeature[]; // the rows, derived fro
 
 Orders are spaced by 10 so a feature can be slotted between two others without renumbering.
 
-Controls with no button of their own in the column are rows in the footer's menu (`components/SidebarMenu.tsx`, the active Space's avatar): the agent panel, reminders, bookmarks, notes, the brief, settings, and the browser status rows (`components/BrowserStatus.tsx`). Site information rides with the page in the pane toolbar ([below](#how-the-pane-toolbar-works)). Split view and Watchtower are reached by their shortcuts and the command palette.
+Controls with no button of their own in the column are rows in the footer's menu (`components/SidebarMenu.tsx`, the active Profile's avatar): the agent panel, reminders, bookmarks, notes, the brief, settings, and the browser status rows (`components/BrowserStatus.tsx`). Site information rides with the page in the pane toolbar ([below](#how-the-pane-toolbar-works)). Split view and Watchtower are reached by their shortcuts and the command palette.
 
 Three guarantees hold the table:
 

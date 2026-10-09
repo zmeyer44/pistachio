@@ -249,7 +249,7 @@ export class SmartArranger {
     const title = (id: string | null): string => `“${short(id === null ? "" : (this.#host.describe(id)?.title ?? ""), 32) || "the window"}”`;
     switch (decision.move) {
       case "fill":
-        return fillers.length === 1 ? `${`“${short(fillers[0]!, 32)}”`} took the space` : "The windows beside it took the space";
+        return fillers.length === 1 ? `${`“${short(fillers[0]!, 32)}”`} filled the gap` : "The windows beside it filled the gap";
       case "pair":
         return `Put ${title(moment.trigger === "opened" ? moment.id : null)} beside ${title(decision.partner)}`;
       case "focus":

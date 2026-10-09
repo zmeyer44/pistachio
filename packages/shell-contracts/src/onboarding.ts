@@ -107,8 +107,8 @@ export const WELCOME_TABS: readonly WelcomeTab[] = [
   {
     id: "spaces",
     url: "pistachio://learn/spaces",
-    title: "Spaces, favorites & split view",
-    blurb: "One cookie jar per Space, apps at the top of the sidebar, and two pages side by side.",
+    title: "The sidebar, favorites & Profiles",
+    blurb: "Apps at the top of the sidebar, the pages you keep, and one cookie jar per Profile.",
   },
   {
     id: "memory",

@@ -3,7 +3,7 @@ import type { UpdateState } from "@pistachio/shell-contracts/updates";
 import { updatePromptShows, updatePromptWaiting } from "../src/lib/update-prompt";
 
 const due: UpdateState = { status: "available", version: "0.0.31", releaseDate: null, prompt: { due: true, snoozes: 0 } };
-const free = { update: due, overlay: "none" as const, onboardingOpen: false, glanceOpen: false, deskUp: false };
+const free = { update: due, overlay: "none" as const, onboardingOpen: false, glanceOpen: false };
 
 describe("update prompt", () => {
   it("goes up for a release that is due while the screen is free", () => {
@@ -21,7 +21,12 @@ describe("update prompt", () => {
     expect(updatePromptWaiting({ ...free, overlay: "permission" })).toBe(false);
     expect(updatePromptWaiting({ ...free, onboardingOpen: true })).toBe(false);
     expect(updatePromptWaiting({ ...free, glanceOpen: true })).toBe(false);
-    expect(updatePromptWaiting({ ...free, deskUp: true })).toBe(false);
+  });
+
+  it("goes up over the desk, the desktop's surface since 2026-10-09: it is a page over it, as Settings is", () => {
+    // (Nothing about the desk is asked: the gate that kept it down on a desk is gone.)
+    expect(updatePromptWaiting(free)).toBe(true);
+    expect(Object.keys(free)).not.toContain("deskUp");
   });
 
   it("follows the update it started, and steps aside when there is nothing to say", () => {

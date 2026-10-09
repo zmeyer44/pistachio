@@ -1,5 +1,9 @@
 # Pistachio
 
+## Vocabulary
+
+The UI says **space** for what the code calls a tab group, and **Profile** for what the code calls a Space; "desk" is only the surface a space's windows lie on — `docs/spaces.md`.
+
 ## Testing
 
 Don't run tests after every change or feature. Run them only when necessary — when asked, when writing or fixing a test, or when a risky change can't be checked any other way — and then the narrowest run that answers the question (one spec or one unit file before `test:changed`). Run the whole suite once before merging.
@@ -15,7 +19,7 @@ Don't run tests after every change or feature. Run them only when necessary — 
 
 Every desktop e2e test carries an area tag; `apps/desktop/e2e/areas.mjs` maps source paths to tags. When you add a test, tag it (`test("…", { tag: ["@sidebar"] }, …)`); when you add a source file an area should own, add its path there (unclaimed desktop files are only smoke-tested).
 
-Tags: `@desk @sidebar @tabs @split @address @home @glance @agent @settings @onboarding @site @popup @media @notices @pages @screenshot @startup @web`, plus `@smoke` (a quick pass over each part of the window, run for any desktop change) and `@live` (needs a signed-in account and network; never run by default).
+Tags: `@desk @sidebar @tabs @address @home @glance @agent @settings @onboarding @site @popup @media @notices @pages @screenshot @startup @web`, plus `@smoke` (a quick pass over each part of the window, run for any desktop change) and `@live` (needs a signed-in account and network; never run by default).
 
 ### Writing e2e tests
 

@@ -115,7 +115,7 @@ export class VaultService {
   #keysFor(spaceId: string): Promise<SpaceKeys> {
     const secret = this.#deps.spaceSecret(spaceId);
     if (secret === null) {
-      return Promise.reject(new Error("This Mac does not hold the key for that Space, so its vault cannot be opened here."));
+      return Promise.reject(new Error("This Mac does not hold the key for that Profile, so its vault cannot be opened here."));
     }
     return deriveSpaceKeys(spaceId, secret);
   }

@@ -106,7 +106,7 @@ test.describe.serial("starting up", { tag: ["@home", "@startup"] }, () => {
     expect(diagnostics).toEqual([]);
   });
 
-  test("a duplicate process cannot share a durable Space session", async () => {
+  test("a duplicate process cannot share a durable Profile session", async () => {
     const running = app!;
     await captureShell(running, FOLDER, "02-primary-instance.png");
 

@@ -59,7 +59,7 @@ function EgressPageBody() {
   return (
     <Page
       title="Identity egress"
-      description="A Space set to the gateway sends every request through an address that belongs to your account, so the sites you are signed into see one steady location instead of whichever café network you opened the laptop on."
+      description="A Profile set to the gateway sends every request through an address that belongs to your account, so the sites you are signed into see one steady location instead of whichever café network you opened the laptop on."
     >
       <RestartRequired />
       <GatewayGroup />
@@ -92,11 +92,11 @@ function GatewayGroup() {
   return (
     <Group
       title="Gateway"
-      note="One gateway per account, provisioned by the control plane. Every identity Space of every device of yours goes out through it."
+      note="One gateway per account, provisioned by the control plane. Every identity Profile of every device of yours goes out through it."
       footer={
         egress.enabled
           ? "The credential is short-lived and renewed on its own; the gateway refuses an expired one."
-          : "No Space uses the gateway yet, so none is provisioned."
+          : "No Profile uses the gateway yet, so none is provisioned."
       }
     >
       <Row label="Health" note={view.note}>
@@ -144,12 +144,12 @@ function RestartRequired() {
       type="warning"
       title="Relaunch Pistachio to finish switching"
       note="QUIC was still on when this session started."
-      footer={names.length === 0 ? "Every identity Space is affected until then." : `Affected: ${names.join(", ")}.`}
+      footer={names.length === 0 ? "Every identity Profile is affected until then." : `Affected: ${names.join(", ")}.`}
       footerHighlight
     >
       <Block>
         <Note type="warning" size="sm" data-testid="egress-restart-required">
-          {RESTART_REQUIRED_NOTE} Until you do, those Spaces browse direct — the gateway is not in the path and sites see
+          {RESTART_REQUIRED_NOTE} Until you do, those Profiles browse direct — the gateway is not in the path and sites see
           this Mac&rsquo;s own address.
         </Note>
       </Block>
@@ -167,9 +167,9 @@ function SpacesGroup() {
 
   return (
     <Group
-      title="Spaces"
-      note="Each Space chooses for itself. A Space set to Direct is ordinary browsing from this machine; one set to the gateway never falls back to it."
-      footer="Switching a Space to the gateway takes effect for new requests; pages already open keep their connections until they are reloaded."
+      title="Profiles"
+      note="Each Profile chooses for itself. A Profile set to Direct is ordinary browsing from this machine; one set to the gateway never falls back to it."
+      footer="Switching a Profile to the gateway takes effect for new requests; pages already open keep their connections until they are reloaded."
     >
       {spaces.map((space) => (
         <SpaceRow key={space.id} space={space} row={spaceEgressStatus(egress, space.id)} />
@@ -243,15 +243,15 @@ function BrowseDirectDialog({ space, onClose }: { space: SpaceInfo; onClose: () 
     <ConfirmDialog
       icon={<ShieldAlert aria-hidden="true" />}
       title={`Browse ${space.name} direct for now?`}
-      subtitle="The gateway is unreachable, so this Space is blocked. Going direct unblocks it by giving up what it was protecting."
+      subtitle="The gateway is unreachable, so this Profile is blocked. Going direct unblocks it by giving up what it was protecting."
       does={[
-        "Sends this Space's requests straight out of this Mac until the gateway answers again.",
-        "Reveals this machine's real IP address to every site this Space loads, including the ones you are signed into there.",
-        "Ends by itself: the Space goes back through the gateway as soon as the health probe answers.",
+        "Sends this Profile's requests straight out of this Mac until the gateway answers again.",
+        "Reveals this machine's real IP address to every site this Profile loads, including the ones you are signed into there.",
+        "Ends by itself: the Profile goes back through the gateway as soon as the health probe answers.",
       ]}
       doesNot={[
-        "Does not change the Space's setting — it stays an identity Space.",
-        "Does not affect your other Spaces, your other devices, or the cloud browser.",
+        "Does not change the Profile's setting — it stays an identity Profile.",
+        "Does not affect your other Profiles, your other devices, or the cloud browser.",
         "Does not un-see anything: a site that logs this session has your address for it.",
       ]}
       confirmLabel="Browse direct for now"
@@ -276,8 +276,8 @@ function GuaranteesGroup() {
   return (
     <Group title="What the gateway does" note="Each line is a property of how the proxy is configured, so there is nothing here to turn off.">
       <Fixed
-        label="An identity Space fails closed"
-        note="No gateway, no request. Falling back would leak the address the Space exists to hide, so nothing loads instead."
+        label="An identity Profile fails closed"
+        note="No gateway, no request. Falling back would leak the address the Profile exists to hide, so nothing loads instead."
         badge="Enforced"
       />
       <Fixed

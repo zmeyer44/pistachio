@@ -1,5 +1,7 @@
 # Smart find: find in page by meaning
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Status: implemented on branch `smart-find` (September 2026), desktop and
 cloud host. The web app's bar is mounted but has not been run against the
 live stack (§10).

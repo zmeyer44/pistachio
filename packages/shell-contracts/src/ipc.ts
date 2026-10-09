@@ -208,15 +208,30 @@ export interface ShellSnapshot {
   spaces: SpaceInfo[];
   activeSpaceId: string;
   tabs: BrowserTabInfo[];
-  /** The focused tab, regardless of which pane it occupies. */
+  /**
+   * The focused tab, regardless of which pane it occupies — the tab in use in the current space (`currentGroupId`).
+   * Null when the current space is EMPTY (docs/spaces.md §1): nothing is in use, and the keyboard is the shell's.
+   */
   activeTabId: string | null;
+  /**
+   * The active Profile's (Space's) current space (tab group): main's, one per Profile, the one the desk shows
+   * (docs/spaces.md §2). A tab in use is always in it; it is set alone only when nothing is in use, which is when it is
+   * empty. Rides the tabs channel (ShellTabsSnapshot). Absent where the host has no spaces (the cloud browser), and the
+   * shell then keeps its path without one; null only while main has none to name.
+   */
+  currentGroupId?: string | null;
   /** All visible panes in stable split-group order. */
   visibleTabIds: string[];
   /**
-   * Tabs woken from sleep whose page has not painted yet: main keeps each
-   * one's view hidden until it has, and the pane draws the tab's mark in its
-   * place (renderer ContentArea), so the switch lands at once and nothing
-   * blank shows while the page arrives.
+   * Tabs main is WAKING: woken from sleep with their page not yet painted —
+   * main keeps each one's view hidden until it has, and the pane draws the
+   * tab's mark in its place (renderer ContentArea), so the switch lands at
+   * once and nothing blank shows while the page arrives — and, on the
+   * desktop since 2026-10-09, desk windows the desk asked to wake
+   * (DeskState.live) still waiting their turn (main wakes them one at a
+   * time). A tab merely asleep — a desk window covered or minimized, not
+   * asked for — is in neither: its `lifecycle` is "suspended" and it is NOT
+   * here, so the desk draws it as a placeholder without "Waking…".
    */
   wakingTabIds: string[];
   /**
@@ -231,13 +246,18 @@ export interface ShellSnapshot {
   splitMode: SplitMode;
   /** Every saved split group, including groups that are not currently visible. */
   splitGroups: SplitGroupInfo[];
-  /** The active Space's tab groups, in no particular order: a group sits where its first tab does (@pistachio/shell-contracts/tab-groups). Loose tabs' groups are not among them (looseGroups). */
+  /**
+   * The active Profile's (Space's) drawn spaces (tab groups), in row order: a group sits where its first tab does
+   * (@pistachio/shell-contracts/tab-groups), an empty space at its `beforeUnit` (dayRowUnits) — since 2026-10-09 it may
+   * hold empty ones (`tabIds: []`). Loose tabs' groups are not among them (looseGroups), nor pages' (anchorGroups).
+   */
   tabGroups: TabGroupInfo[];
   /**
-   * The active Space's loose tabs' groups (TabGroupInfo.loose): each made
-   * for one day tab's desk and drawn as that tab alone, so listed apart from
-   * the groups the chrome draws. Only the desk reads them. Absent where no
-   * desk can be (the web shell).
+   * The active Space's loose tabs' groups (TabGroupInfo.loose): each a
+   * space of one day tab, drawn as that tab alone, so listed apart from
+   * the groups the chrome draws. Every listed tab outside a drawn space and
+   * a page's has one (docs/spaces.md §1, "Every listed tab is in a space").
+   * Absent where no desk can be (the web shell).
    */
   looseGroups?: TabGroupInfo[];
   /**
@@ -825,8 +845,19 @@ export interface ShellApi {
   goForward(tabId: string): Promise<void>;
   reload(tabId: string): Promise<void>;
   setSplit(mode: SplitMode): Promise<void>;
-  /** Move a tab to `index` among all tabs (position counted after it is lifted out). */
-  reorderTab(tabId: string, index: number): Promise<void>;
+  /**
+   * Move a tab to `index`, counted after it is lifted out. `among` says what
+   * the index counts: `"tabs"` (the default) — the Profile's tabs, as ever;
+   * `"units"` (since 2026-10-09) — the day's ROW UNITS as the sidebar draws
+   * them while the tab is in hand (`dayRowUnits` over every day tab, the
+   * moved one included, then the moved tab lifted out of its unit: a lone
+   * tab's goes, a space's stays; EMPTY spaces counted), so a tab let go
+   * beside an empty space lands on the side of it it was dropped on, and
+   * every empty space stays where it is drawn. The shell sends `"units"`
+   * only to the native host (the desktop, which keeps empty spaces); every
+   * other host receives `"tabs"`.
+   */
+  reorderTab(tabId: string, index: number, among?: "tabs" | "units"): Promise<void>;
   /** Put `tabId` at an edge of the active split group (up to four panes). */
   splitWith(tabId: string, side: SplitSide): Promise<void>;
   /** Take a tab out of its split group without closing it; the rest stay split. */

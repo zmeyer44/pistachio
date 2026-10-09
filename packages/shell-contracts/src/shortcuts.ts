@@ -43,11 +43,31 @@ export type ShortcutSettings = Record<ShortcutActionId, string | null>;
 export type ShortcutPlatform = "darwin" | "other";
 export const RUN_SHORTCUT_EVENT = "pistachio:run-shortcut";
 
+/** Where the shell runs: the Mac's own window ("native") or a browser tab over a cloud session ("stream"). */
+export type ShortcutSurface = "native" | "stream";
+
 export interface ShortcutDefinition {
   id: ShortcutActionId;
   group: "Tabs" | "Page" | "Window" | "Agent";
   label: string;
   note?: string;
+  /**
+   * The surfaces that offer the action — list it, bind it, run it; absent,
+   * both. Empty, it is RETIRED: offered nowhere and holding no key
+   * (sanitizeShortcuts), its id kept only because the ids are the keys of
+   * everyone's saved shortcuts and of the synced settings record.
+   */
+  surfaces?: readonly ShortcutSurface[];
+}
+
+/** Whether `surface` offers the action (ShortcutDefinition.surfaces). */
+export function shortcutOffered(definition: Pick<ShortcutDefinition, "surfaces">, surface: ShortcutSurface): boolean {
+  return definition.surfaces === undefined || definition.surfaces.includes(surface);
+}
+
+/** An action offered nowhere: its id stays (a key in saved shortcuts), its key never does. */
+function retired(definition: Pick<ShortcutDefinition, "surfaces">): boolean {
+  return definition.surfaces !== undefined && definition.surfaces.length === 0;
 }
 
 export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
@@ -66,8 +86,10 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "zoomIn", group: "Page", label: "Zoom in" },
   { id: "zoomOut", group: "Page", label: "Zoom out" },
   { id: "zoomReset", group: "Page", label: "Actual size" },
-  { id: "toggleSplit", group: "Window", label: "Toggle split view" },
-  { id: "toggleSidebarPinned", group: "Window", label: "Pin or hide sidebar", note: "Used in sidebar layout." },
+  // Splits are the web's alone since 2026-10-09: a desk tiles windows instead (docs/spaces.md §1).
+  { id: "toggleSplit", group: "Window", label: "Toggle split view", surfaces: ["stream"] },
+  // (The id predates the three modes: it is a key in everyone's saved shortcuts, so it stays.)
+  { id: "toggleSidebarPinned", group: "Window", label: "Cycle sidebar", note: "Whole, a rail of icons, or hidden until the pointer reaches the window's left edge." },
   { id: "toggleConsole", group: "Agent", label: "Toggle agent chat" },
   { id: "toggleEvidence", group: "Agent", label: "Toggle activity replay" },
   { id: "openSettings", group: "Window", label: "Settings" },
@@ -75,24 +97,43 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "openBookmarks", group: "Page", label: "Bookmarks", note: "Everything saved." },
   { id: "bookmarkPage", group: "Page", label: "Bookmark this page", note: "Tapping shift twice always works; add a key here too if you like." },
   { id: "delegate", group: "Agent", label: "Ask Pistachio about active tab" },
-  { id: "forkSpace", group: "Window", label: "Fork current Space" },
+  { id: "forkSpace", group: "Window", label: "Fork current Profile" },
   // Last on purpose: a binding someone gave another action before this one
   // existed keeps it (sanitizeShortcuts resolves duplicates in this order).
-  { id: "restoreClosedTab", group: "Tabs", label: "Reopen closed tab", note: "Brings back the last tab you closed, with its history, in the Space it was in." },
+  { id: "restoreClosedTab", group: "Tabs", label: "Reopen closed tab", note: "Brings back the last tab you closed, with its history, in the Profile it was in." },
   { id: "openDownloads", group: "Page", label: "Downloads", note: "This session's downloads, from every tab." },
-  { id: "tidyTabs", group: "Tabs", label: "Tidy tabs", note: "Archives idle tabs and groups related ones, now. One Undo takes it back." },
+  { id: "tidyTabs", group: "Tabs", label: "Tidy tabs", note: "Archives idle tabs and puts related ones in a space, now. One Undo takes it back." },
   { id: "smartFind", group: "Page", label: "Find by meaning", note: "Describe what you're looking for; the page's text is sent to the model." },
   { id: "newNote", group: "Page", label: "New note", note: "Opens a blank note in a tab; there is nothing to save." },
   { id: "openNotes", group: "Page", label: "Open notes", note: "Everything you have written." },
-  { id: "tileDesk", group: "Window", label: "Tile desk windows", note: "On a tab group's desk: every window out, side by side." },
-  { id: "cascadeDesk", group: "Window", label: "Cascade desk windows", note: "On a tab group's desk: every window out, fanned from the corner." },
-  { id: "arrangeDesk", group: "Window", label: "Arrange desk windows", note: "On a tab group's desk: the windows laid out the way the layout model judges they are used." },
-  { id: "toggleDesk", group: "Window", label: "Toggle desk", note: "Opens the desk of the tab group you are in, or leaves the desk that is up." },
-  { id: "screenshotView", group: "Window", label: "Screenshot the page", note: "The pages without the sidebar or the window around them; on a desk, the whole desk. Copied, and saved where your Mac saves screenshots." },
+  // The desk is the Mac's alone (docs/spaces.md): the web keeps the pane surface.
+  { id: "tileDesk", group: "Window", label: "Tile the windows", note: "Every window in the space, side by side.", surfaces: ["native"] },
+  { id: "cascadeDesk", group: "Window", label: "Cascade the windows", note: "Every window in the space, fanned from the corner.", surfaces: ["native"] },
+  { id: "arrangeDesk", group: "Window", label: "Arrange the windows", note: "Every window in the space, laid out the way the layout model judges they are used.", surfaces: ["native"] },
+  // Retired: there is no desk to toggle, and its ⌥⌘\ is free for another action.
+  { id: "toggleDesk", group: "Window", label: "Toggle desk (retired)", note: "The desk is always up since 2026-10-09.", surfaces: [] },
+  { id: "screenshotView", group: "Window", label: "Screenshot the page", note: "The desk, without the sidebar or the window around it. Copied, and saved where your Mac saves screenshots." },
   { id: "screenshotArea", group: "Window", label: "Screenshot an area", note: "Drag over the part of the window to keep; Escape cancels. Copied, and saved where your Mac saves screenshots." },
 ];
 
 export const SHORTCUT_ACTION_IDS = SHORTCUT_DEFINITIONS.map((definition) => definition.id) as readonly ShortcutActionId[];
+
+const SHORTCUT_SURFACES: readonly ShortcutSurface[] = ["native", "stream"];
+
+/**
+ * Whether two actions are ever offered on one surface — and so may not hold
+ * one key (since 2026-10-09). The shortcuts are one record that crosses
+ * between a Mac and a browser tab (sync's `settings:shell`), and each
+ * surface reads only what it offers (shortcutActionForEvent's `surface`):
+ * the web's split and a desk key only the Mac offers never meet, so either
+ * may take the other's key; an action offered on both meets every other
+ * that is offered anywhere. (Until then any two clashed: ⌘\, the split's,
+ * could be given to nothing on the desktop, which does not list the split,
+ * nor ⌥⌘T and the desk's other keys on the web.)
+ */
+export function shortcutsMeet(a: ShortcutActionId, b: ShortcutActionId): boolean {
+  return SHORTCUT_SURFACES.some((surface) => offeredOn(a, surface) && offeredOn(b, surface));
+}
 
 export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   newTab: "Mod+T",
@@ -129,8 +170,8 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   tileDesk: "Mod+Alt+T",
   cascadeDesk: "Mod+Alt+C",
   arrangeDesk: "Mod+Alt+L",
-  // Beside ⌘\ (split view); ⌥⌘D is the Mac's own Dock toggle.
-  toggleDesk: "Mod+Alt+Backslash",
+  // Retired (2026-10-09): no key — it was ⌥⌘\, beside ⌘\ (split view), which is free again.
+  toggleDesk: null,
   // Beside the Mac's own ⌘⇧3 and ⌘⇧4, which take the whole screen.
   screenshotView: "Mod+Shift+1",
   screenshotArea: "Mod+Shift+2",
@@ -230,23 +271,29 @@ export function isShortcutActionId(value: unknown): value is ShortcutActionId {
   return typeof value === "string" && (SHORTCUT_ACTION_IDS as readonly string[]).includes(value);
 }
 
-/** Bad or duplicate file entries become unassigned instead of shadowing another action. */
+/**
+ * Bad or duplicate file entries become unassigned instead of shadowing another action, and so does a retired action's
+ * (ShortcutDefinition.surfaces empty), whatever the file says: a key it held — ⌥⌘\ for Toggle desk, saved in every
+ * file written before 2026-10-09 — is free for another. A duplicate is a key held by two actions some surface offers
+ * both of (shortcutsMeet): the web's split may keep ⌘\ while a desk key on the Mac has it too.
+ */
 export function sanitizeShortcuts(value: unknown, fallback: ShortcutSettings = DEFAULT_SHORTCUTS): ShortcutSettings {
   const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const out = {} as ShortcutSettings;
-  const seen = new Set<string>();
-  for (const id of SHORTCUT_ACTION_IDS) {
-    const candidate = Object.hasOwn(raw, id) ? raw[id] : fallback[id];
+  const kept: Array<{ id: ShortcutActionId; binding: string }> = [];
+  for (const definition of SHORTCUT_DEFINITIONS) {
+    const id = definition.id;
+    const candidate = retired(definition) ? null : Object.hasOwn(raw, id) ? raw[id] : fallback[id];
     if (candidate === null) {
       out[id] = null;
       continue;
     }
     const normalized = normalizeShortcut(candidate);
-    if (normalized === null || seen.has(normalized)) {
+    if (normalized === null || kept.some((other) => other.binding === normalized && shortcutsMeet(other.id, id))) {
       out[id] = null;
       continue;
     }
-    seen.add(normalized);
+    kept.push({ id, binding: normalized });
     out[id] = normalized;
   }
   return out;
@@ -303,14 +350,29 @@ export function shortcutFromEvent(input: PortableShortcutEvent, platform: Shortc
   return serializeShortcut(parsed);
 }
 
+/**
+ * The action a key event runs. Given `surface`, an action that surface does
+ * not offer (shortcutOffered) holds no key there: its key reaches the page
+ * instead — ⌘\ (Toggle split view, the web's alone) on the desktop. Unsaid,
+ * every action is matched, as before 2026-10-09. (A key two actions hold is
+ * one surface's each — they never meet, shortcutsMeet — so given a surface,
+ * the one found is that surface's own.)
+ */
 export function shortcutActionForEvent(
   settings: ShortcutSettings,
   input: PortableShortcutEvent,
   platform: ShortcutPlatform,
+  surface?: ShortcutSurface,
 ): ShortcutActionId | null {
   const binding = shortcutFromEvent(input, platform);
   if (binding === null) return null;
-  return SHORTCUT_ACTION_IDS.find((id) => settings[id] === binding) ?? null;
+  return SHORTCUT_ACTION_IDS.find((id) => settings[id] === binding && (surface === undefined || offeredOn(id, surface))) ?? null;
+}
+
+/** Whether `surface` offers the action `id` (its definition's surfaces). */
+function offeredOn(id: ShortcutActionId, surface: ShortcutSurface): boolean {
+  const definition = SHORTCUT_DEFINITIONS.find((candidate) => candidate.id === id);
+  return definition === undefined || shortcutOffered(definition, surface);
 }
 
 /** Editing, app-lifecycle, and OS window bindings we refuse to steal. */
@@ -331,11 +393,38 @@ export function reservedShortcutReason(binding: string): string | null {
   return reserved.has(normalized) ? "That shortcut is reserved for editing or the operating system." : null;
 }
 
-export function shortcutConflict(settings: ShortcutSettings, binding: string, except: ShortcutActionId): ShortcutDefinition | null {
+/**
+ * The action already holding `binding` that keeps `except` from it: one it
+ * meets on some surface (shortcutsMeet). Given `surface` (Settings ›
+ * Shortcuts passes its own), only one that surface offers — the page lists
+ * nothing else, so a key held elsewhere alone is free here; a holder that
+ * meets `except` only elsewhere gives it up in the same write
+ * (shortcutsGivingUp).
+ */
+export function shortcutConflict(settings: ShortcutSettings, binding: string, except: ShortcutActionId, surface?: ShortcutSurface): ShortcutDefinition | null {
   const normalized = normalizeShortcut(binding);
   if (normalized === null) return null;
-  const id = SHORTCUT_ACTION_IDS.find((candidate) => candidate !== except && settings[candidate] === normalized);
+  const id = SHORTCUT_ACTION_IDS.find(
+    (candidate) => candidate !== except && settings[candidate] === normalized && shortcutsMeet(candidate, except) && (surface === undefined || offeredOn(candidate, surface)),
+  );
   return id === undefined ? null : (SHORTCUT_DEFINITIONS.find((definition) => definition.id === id) ?? null);
+}
+
+/**
+ * The actions `surface` does not offer that hold `binding` and meet
+ * `except` elsewhere. `except` given `binding` on that surface (Settings ›
+ * Shortcuts, which does not list them: no conflict there, shortcutConflict)
+ * takes the key from them in the same write — the record is one, and two
+ * actions that meet may not share a key (sanitizeShortcuts; the settings
+ * writer refuses the clash). The Mac's Reload given ⌘\ takes it from the
+ * web's split; a desk key given it leaves the split its key (2026-10-09).
+ */
+export function shortcutsGivingUp(settings: ShortcutSettings, binding: string, except: ShortcutActionId, surface: ShortcutSurface): ShortcutActionId[] {
+  const normalized = normalizeShortcut(binding);
+  if (normalized === null) return [];
+  return SHORTCUT_ACTION_IDS.filter(
+    (candidate) => candidate !== except && settings[candidate] === normalized && !offeredOn(candidate, surface) && shortcutsMeet(candidate, except),
+  );
 }
 
 const KEY_LABELS: Record<string, string> = {

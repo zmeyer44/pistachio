@@ -1,5 +1,7 @@
 # Reports and the daily brief
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 A **report** is a page Pistachio puts together for one person from their own material: a calendar, a mailbox, to-dos, what they were reading. The first kind is the **daily brief** at `pistachio://brief/`.
 
 Reports are not generated HTML. A report is a [json-render](https://json-render.dev) spec over a fixed catalog of components that ship with the app, so every report looks like Pistachio and nothing in one is drawn on the fly. Models choose; they do not write the page.
@@ -82,9 +84,9 @@ Sections, after Dia's: a masthead named for the day ("The Monday Brief") with th
 | Reminders | `ReminderStore.snapshot()` | Upcoming today go on the schedule; unacknowledged ones get their own block. |
 | To-dos, recents | the shell, in the `generate` request | They live in the shell's localStorage; main never had them. `reportLocalOf` fits them to the request's limits first (shown text clipped, an oversized URL or id left out) — the host validates the whole request, so one long page title would otherwise refuse the brief. |
 | Watchtower | `watchtower.request({type:"search"})` | Articles and videos of the last two days, when the archive is on. Falls back to recents. |
-| Threads | `ThreadStore` | The last two days, this Space only. |
+| Threads | `ThreadStore` | The last two days, this Profile only. |
 
-Opening today's brief makes it; if the host is already making one for the Space (another window, the morning schedule), the page *joins* it by asking too — the host runs one generation per Space and hands every asker the same result (`briefLoadAction`) — rather than waiting for news that would never reach its store. `briefReady` also re-reads the day into the window's store.
+Opening today's brief makes it; if the host is already making one for the Profile (another window, the morning schedule), the page *joins* it by asking too — the host runs one generation per Profile and hands every asker the same result (`briefLoadAction`) — rather than waiting for news that would never reach its store. `briefReady` also re-reads the day into the window's store.
 
 Each source fails alone (`within`, 12 s): a brief without a calendar is still a brief, and the footer and notices say what was used.
 
@@ -92,14 +94,14 @@ Each source fails alone (`within`, 12 s): a brief without a calendar is still a 
 
 - Making a brief sends event titles and times, and each inbox message's sender, subject and snippet, to the evaluation model and the headline model through control's proxy — the same path and the same material the agent uses with these connections. It is therefore **never made unasked by default**: opening the brief makes it, and the morning schedule below is off until the person turns it on.
 - What the person read reaches a model only when Watchtower's **agent access** is on (`pagesShareable`). With it off the pages still appear in the brief, and the models are told only how many there are.
-- Briefs are stored in plaintext under `<userData>/briefs/` (mode 0600), one per Space per local day, thirty days kept. Beside them sit `local.json` (the to-dos and recents a shell last sent, for a morning with no window) and `schedule.json` (the day the schedule last tried). None of it is synced.
+- Briefs are stored in plaintext under `<userData>/briefs/` (mode 0600), one per Profile per local day, thirty days kept. Beside them sit `local.json` (the to-dos and recents a shell last sent, for a morning with no window) and `schedule.json` (the day the schedule last tried). None of it is synced.
 - Message and event text is quoted to the models as evidence; both prompts say to treat it as content, never as instruction, and nothing a model returns can alter a block.
 
 ## The morning brief
 
 Settings → General → *Prepare my daily brief each morning* (`general.morningBrief`, off by default), *Ready by* (`morningBriefTime`, local `HH:MM`, default `07:00`) and *Notify me when it is ready* (`morningBriefNotify`, default on).
 
-`BriefScheduler` in main looks every 30 s, on `resume` and `unlock-screen`, and whenever settings change. The rule (`briefDue`) is not "it is exactly 7:00" but **the time has passed today, there is no brief for today, and today has not been tried** — so a Mac that was asleep or closed at the hour makes the brief as soon as it is back. One attempt a day, remembered in `schedule.json`, so a failure is not retried in a loop and a relaunch does not make a second brief. The Space is the one in front — read from the Space store when no window is open, since closing the last window on macOS leaves the app running without a browser controller.
+`BriefScheduler` in main looks every 30 s, on `resume` and `unlock-screen`, and whenever settings change. The rule (`briefDue`) is not "it is exactly 7:00" but **the time has passed today, there is no brief for today, and today has not been tried** — so a Mac that was asleep or closed at the hour makes the brief as soon as it is back. One attempt a day, remembered in `schedule.json`, so a failure is not retried in a loop and a relaunch does not make a second brief. The Profile is the one in front — read from the Profile store when no window is open, since closing the last window on macOS leaves the app running without a browser controller.
 
 - **Who makes it.** The home page's to-dos live in the shell, so a due brief is first asked of the shell: main sends `prepareBrief`, and the shell generates through the ordinary `reports({type:"generate"})` with fresh materials. If no generation has started within `BRIEF_SHELL_GRACE_MS` (20 s) — no window, a shell still loading — main calls `generateFromLastLocal`, using the materials a shell last sent; those to-dos may be a day old, which beats a brief with none, and the next refresh corrects it.
 - **Saying so.** Every filed brief reaches the scheduler through `onGenerated`; only one it asked for is announced. In front of the person that is a note in the window (`briefReady` → "The Monday Brief is ready · Read"). Behind other apps it is a system notification titled the same, whose body is the brief's headline and whose click raises the window and opens the brief. With notifications off, or when the system refuses one (turned off for Pistachio in System Settings; always, for an unsigned development build — `UNErrorDomain error 1`), the note waits for the window to come forward instead. Under `PISTACHIO_E2E=1` no system notification is ever posted.

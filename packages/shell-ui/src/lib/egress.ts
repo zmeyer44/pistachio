@@ -24,7 +24,7 @@ export function egressHealthView(status: EgressStatus): EgressView {
   if (!status.enabled) {
     return {
       label: "Off",
-      note: "No Space uses identity egress, or this Mac is not enrolled. Every request goes out directly.",
+      note: "No Profile uses identity egress, or this Mac is not enrolled. Every request goes out directly.",
       tone: "gray",
     };
   }
@@ -34,7 +34,7 @@ export function egressHealthView(status: EgressStatus): EgressView {
     case "down":
       return {
         label: "Down",
-        note: "The gateway did not answer. Identity Spaces are blocked until it does, or until you browse direct for now.",
+        note: "The gateway did not answer. Identity Profiles are blocked until it does, or until you browse direct for now.",
         tone: "red",
       };
     default:
@@ -111,7 +111,7 @@ export function spaceEgressView(row: SpaceEgressStatus | null, status: EgressSta
   if (row.failClosed) {
     return {
       label: "Blocked",
-      note: "The gateway is unreachable and this Space fails closed, so nothing loads rather than leaking your address.",
+      note: "The gateway is unreachable and this Profile fails closed, so nothing loads rather than leaking your address.",
       tone: "red",
     };
   }
@@ -127,7 +127,7 @@ export function spaceEgressView(row: SpaceEgressStatus | null, status: EgressSta
  * Space after startup would still have a UDP path around the proxy.
  */
 export const RESTART_REQUIRED_NOTE =
-  "QUIC was still on when Pistachio started, so this Space browses direct until you relaunch. Chromium only takes that switch at launch.";
+  "QUIC was still on when Pistachio started, so this Profile browses direct until you relaunch. Chromium only takes that switch at launch.";
 
 /** Whether any Space needs the relaunch the note describes. */
 export function restartRequired(status: EgressStatus): boolean {

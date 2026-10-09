@@ -1,30 +1,33 @@
-import { SIDEBAR_EDGE_W, SIDEBAR_TRIGGER_W } from "@pistachio/shell-contracts/chrome";
+import { SIDEBAR_DESK_TRIGGER_W, SIDEBAR_EDGE_W, SIDEBAR_TRIGGER_W } from "@pistachio/shell-contracts/chrome";
+import { veiledOf } from "../chrome/shell-host";
 import { cn } from "../lib/cn";
+import { deskAvailable, deskEngine } from "../lib/desk/open";
 import { useAppStore } from "../store";
 import { useScreenShares, useScreenShareStartNotice } from "./ScreenShareIndicator";
 
 /**
- * The compact sidebar's trigger: the column the shell keeps at the window's
+ * The hidden sidebar's trigger: the column the shell keeps at the window's
  * left edge while the sidebar is hidden. Pointer movement inside it brings
- * the sidebar's column back into the layout (layouts/SidebarLayout.tsx), in
- * this column's place; nothing paints here but a faint handle on hover, the
- * hint that the edge is live — or, while a tab shares the screen, a red one
- * that stays.
+ * the sidebar's column out (layouts/SidebarLayout.tsx) — on the desk over the
+ * desk's windows, on the web back into the layout in this column's place;
+ * nothing paints here but a faint handle on hover, the hint that the edge is
+ * live — or, while a tab shares the screen, a red one that stays.
  *
  * The arrival is a pointer MOVE inside the column, never `pointerenter`:
  * Chromium synthesizes an enter for whatever lands under a cursor that has
- * not moved — this column mounting at launch, or when compact is chosen —
+ * not moved — this column mounting at launch, or when hidden is chosen —
  * and a sidebar that opens by itself because the cursor happened to rest at
  * the window's edge is exactly the launch nobody can predict. A move is the
  * person's.
  *
- * It overlaps the page instead of widening the layout slot, so the page card
- * keeps its original clearance. Main mirrors the target with the OS pointer
- * because the native tab view sits above the shell over the target's last few
- * pixels.
+ * On the web it overlaps the page (SIDEBAR_TRIGGER_W) instead of widening the
+ * layout slot, so the page card keeps its original clearance; main mirrors
+ * the target with the OS pointer where a native view sits over its last
+ * pixels. On the desk it is half the slot's strip (SIDEBAR_DESK_TRIGGER_W,
+ * since 2026-10-09): the wider target lay wholly over the west resize edge of
+ * a window flush with the desk's leading edge.
  */
 export function SidebarEdge() {
-  const setSidebarRevealed = useAppStore((s) => s.setSidebarRevealed);
   // With the sidebar out of sight, so is a screen share's card: the handle
   // stays up in the share's red while one runs, and a share that begins
   // meanwhile says so as a notice.
@@ -36,8 +39,8 @@ export function SidebarEdge() {
       data-testid="sidebar-edge"
       data-screen-share={sharing ? "" : undefined}
       className="no-drag group absolute inset-y-0 left-0 z-10 shrink-0"
-      style={{ width: SIDEBAR_TRIGGER_W }}
-      onPointerMove={() => setSidebarRevealed(true)}
+      style={{ width: deskAvailable() ? SIDEBAR_DESK_TRIGGER_W : SIDEBAR_TRIGGER_W }}
+      onPointerMove={revealSidebar}
     >
       <span
         aria-hidden="true"
@@ -49,4 +52,20 @@ export function SidebarEdge() {
       />
     </div>
   );
+}
+
+/**
+ * The pointer came to the hidden sidebar's edge (this column, or main's
+ * watch of it): it is brought out — the reveal's intent, the store's
+ * `sidebarRevealed` — unless the column coming out would be in the way of
+ * what has the pointer: a window in hand on the desk (carried to the desk's
+ * leading edge, it passes over the strip), a row being dragged, a column
+ * being resized, or an overlay over the shell (the palette, a menu; main's
+ * watch is off under one too).
+ */
+export function revealSidebar(): void {
+  const state = useAppStore.getState();
+  if (state.sidebarRevealed || state.tabDragging || state.paneResizing || veiledOf(state)) return;
+  if ((deskEngine()?.getView().gesture ?? null) !== null) return;
+  state.setSidebarRevealed(true);
 }

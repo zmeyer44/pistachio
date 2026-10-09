@@ -75,11 +75,11 @@ export function cloudReadiness(cloud: CloudStatus, spaceId: string | null): Clou
     return { ready: false, reason: "Sign in and enroll this Mac to use the cloud browser." };
   }
   if (cloud.device === null) {
-    return { ready: false, reason: "No Space has handed the cloud browser a key yet — enable one in Settings → Cloud browser." };
+    return { ready: false, reason: "No Profile has handed the cloud browser a key yet — enable one in Settings → Cloud browser." };
   }
-  if (spaceId === null) return { ready: false, reason: "Open a Space first: a cloud run happens inside one Space." };
+  if (spaceId === null) return { ready: false, reason: "Open a Profile first: a cloud run happens inside one Profile." };
   if (!cloudSpaceEnabled(cloud, spaceId)) {
-    return { ready: false, reason: "This Space is not enabled for the cloud browser. Turn it on in Settings → Cloud browser." };
+    return { ready: false, reason: "This Profile is not enabled for the cloud browser. Turn it on in Settings → Cloud browser." };
   }
   return { ready: true, reason: null };
 }

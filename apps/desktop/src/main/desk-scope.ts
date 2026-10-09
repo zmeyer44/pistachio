@@ -49,14 +49,14 @@ export class DeskScope implements BrowserBackend {
   /** Hidden, in the group's Space — its session — whichever Space the person has gone on to since the turn began. */
   async openTab(url?: string): Promise<string> {
     const spaceId = this.#browser.tabGroupSpaceId(this.#groupId);
-    if (spaceId === null) throw new Error("this desk's tab group is gone; the tab was not opened");
+    if (spaceId === null) throw new Error("this space is gone; the tab was not opened");
     return this.#inner.openTab(url, spaceId);
   }
 
   /** `tab_show`: a hidden tab joins the group and comes out onto the desk; one of the group's is switched to, as before. */
   async focusTab(tabId: string): Promise<void> {
     if (this.#hidden(tabId)) {
-      if (!this.#browser.showHiddenTabInGroup(this.#groupId, tabId)) throw new Error("this desk's tab group is gone; the page was not shown");
+      if (!this.#browser.showHiddenTabInGroup(this.#groupId, tabId)) throw new Error("this space is gone; the page was not shown");
       this.#cameOut(tabId);
       return;
     }

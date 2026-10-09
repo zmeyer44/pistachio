@@ -7,7 +7,7 @@ import { armedStyle, useUpdatePrompt, type UpdatePromptPhase } from "./model";
 
 /** The pill's blue: the dialog's way forward reads as the same thing as the pill. */
 const BLUE = "bg-blue-700 text-white hover:bg-blue-900";
-const COMES_BACK = "Your tabs and Spaces come back just as they are.";
+const COMES_BACK = "Your tabs and Profiles come back just as they are.";
 
 /**
  * The update dialog over the page (`overlay: "update"`): a newer Pistachio,

@@ -43,9 +43,11 @@ export interface TidyHost<R> {
   tabGroups(spaceId: string): TabGroupInfo[];
   archiveTabs(tabIds: readonly string[]): Array<{ tabId: string; index: number; tab: ArchivedTab }>;
   restoreArchivedTabs(spaceId: string, tabs: readonly ArchivedTab[], indexes?: readonly number[]): string[];
-  createTabGroup(options: { title?: string; color?: TabGroupColor; tabIds: readonly string[]; origin: TabGroupInfo["origin"] }): TabGroupInfo | null;
+  /** `id`: a space (tab group) made again with the id it had — null when that id is taken, and Undo asks again without. */
+  createTabGroup(options: { id?: string; title?: string; color?: TabGroupColor; tabIds: readonly string[]; origin: TabGroupInfo["origin"] }): TabGroupInfo | null;
   addToTabGroup(groupId: string, tabIds: readonly string[], options: { byPerson: boolean }): string[];
   removeFromTabGroups(tabIds: readonly string[]): void;
+  /** Undo's: a space that is the person's by now (docs/spaces.md §1, "Tidy") is the host's to leave standing. */
   dissolveTabGroups(groupIds: readonly string[]): void;
   resetFavoriteTabs(
     spaceId: string,
@@ -106,8 +108,11 @@ interface UndoRecord<R> {
   order: string[];
   /** What the run closed, by the id each tab had. */
   archived: Array<{ tabId: string; tab: ArchivedTab; group: number | null }>;
-  /** Live groups the run archived whole, to be formed again — a favorite's led by its page again (`lead`). */
-  groups: Array<{ title: string; color: TabGroupColor; origin: TabGroupInfo["origin"]; lead?: { anchorId: string; pageTabId: string } }>;
+  /**
+   * Live groups the run archived whole, to be formed again — with the id each had (`id`, since 2026-10-09: a space's
+   * Stack and conversation are kept by it), a favorite's led by its page again (`lead`).
+   */
+  groups: Array<{ id?: string; title: string; color: TabGroupColor; origin: TabGroupInfo["origin"]; lead?: { anchorId: string; pageTabId: string } }>;
   createdGroupIds: string[];
   joinedTabIds: string[];
   favorites: R[];
@@ -207,20 +212,21 @@ export class TabTidy<R> {
         undo.archived.push({ tabId: closed.tabId, tab: closed.tab, group: null });
         drafts.push({ kind: "tab", spaceId, reason: "idle", runId, tab: closed.tab });
       }
-      const fileTogether = (title: string, color: TabGroupColor, origin: TabGroupInfo["origin"], tabIds: readonly string[], regroup: number | null): void => {
+      // (`groupId`: a live space's own, so the archive's entry is the space and its Restore brings it back by its id.)
+      const fileTogether = (title: string, color: TabGroupColor, origin: TabGroupInfo["origin"], tabIds: readonly string[], regroup: number | null, groupId?: string): void => {
         const closed = host.archiveTabs(tabIds);
         for (const tab of closed) undo.archived.push({ tabId: tab.tabId, tab: tab.tab, group: regroup });
         const tabs = closed.map((tab) => tab.tab);
         if (tabs.length === 1) drafts.push({ kind: "tab", spaceId, reason: "idle", runId, tab: tabs[0]! });
-        else if (tabs.length > 1) drafts.push({ kind: "group", spaceId, reason: "idle", runId, group: { title, color, origin }, tabs });
+        else if (tabs.length > 1) drafts.push({ kind: "group", spaceId, reason: "idle", runId, ...(groupId === undefined ? {} : { groupId }), group: { title, color, origin }, tabs });
       };
       for (const group of plan.archiveGroups) fileTogether(group.title, "gray", "auto", group.tabIds, null);
       const live = new Map(host.tabGroups(spaceId).map((group) => [group.id, group]));
       for (const groupId of found.idleAutoGroupIds) {
         const group = live.get(groupId);
         if (group === undefined) continue;
-        undo.groups.push({ title: group.title, color: group.color, origin: group.origin });
-        fileTogether(group.title, group.color, group.origin, group.tabIds, undo.groups.length - 1);
+        undo.groups.push({ id: group.id, title: group.title, color: group.color, origin: group.origin });
+        fileTogether(group.title, group.color, group.origin, group.tabIds, undo.groups.length - 1, group.id);
       }
       // A blank page nobody came back to is closed, not kept.
       host.archiveTabs(found.staleHomeTabIds);
@@ -243,9 +249,9 @@ export class TabTidy<R> {
           const filed = host.archivePageGroup(due.groupId);
           if (filed === null) continue;
           const title = this.#options.favoriteHome(spaceId, filed.anchorId)?.title || "Favorite";
-          undo.groups.push({ title, color: "gray", origin: "manual", lead: { anchorId: filed.anchorId, pageTabId: filed.pageTabId } });
+          undo.groups.push({ id: due.groupId, title, color: "gray", origin: "manual", lead: { anchorId: filed.anchorId, pageTabId: filed.pageTabId } });
           for (const tab of filed.tabs) undo.archived.push({ tabId: tab.tabId, tab: tab.tab, group: undo.groups.length - 1 });
-          drafts.push({ kind: "group", spaceId, reason: "idle", runId, group: { title, color: "gray", origin: "manual" }, tabs: filed.tabs.map((tab) => tab.tab) });
+          drafts.push({ kind: "group", spaceId, reason: "idle", runId, groupId: due.groupId, group: { title, color: "gray", origin: "manual" }, tabs: filed.tabs.map((tab) => tab.tab) });
         }
         undo.favorites = await host.resetFavoriteTabs(spaceId, (anchorId) => this.#options.favoriteHome(spaceId, anchorId), now, settle);
       }
@@ -291,7 +297,8 @@ export class TabTidy<R> {
       for (const tab of entry.kind === "tab" ? [entry.tab] : entry.tabs) remaining.set(archivedTabKey(tab), (remaining.get(archivedTabKey(tab)) ?? 0) + 1);
     }
 
-    // Groups first, so nothing gathers the row again while it is being put back.
+    // Groups first, so nothing gathers the row again while it is being put back. (One the person has made theirs
+    // since — renamed it, gave it a Stack or a conversation — the host leaves standing: docs/spaces.md §1.)
     host.dissolveTabGroups(undo.createdGroupIds);
     host.removeFromTabGroups(undo.joinedTabIds);
 
@@ -313,8 +320,9 @@ export class TabTidy<R> {
       const wanted = undo.groups[index];
       // A group of which one tab is left is not a group to make again.
       if (wanted === undefined || tabIds.length < 2) continue;
-      const { lead, ...group } = wanted;
-      const made = host.createTabGroup({ ...group, tabIds });
+      const { lead, id, ...group } = wanted;
+      // Made again as itself — its id, when nothing has taken it since — so its Stack and conversation are there.
+      const made = (id === undefined ? null : host.createTabGroup({ ...group, id, tabIds })) ?? host.createTabGroup({ ...group, tabIds });
       // A favorite's group is its page's again.
       const page = lead === undefined ? undefined : reopenedAs.get(lead.pageTabId);
       if (made !== null && lead !== undefined && page !== undefined) host.leadGroup(made.id, page, lead.anchorId);

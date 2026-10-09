@@ -10,12 +10,13 @@
  * BEHAVES is not here: that is Settings → Tabs, one click from the header.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, ArchiveRestore, ChevronRight, Search, Settings2, Trash2, X } from "lucide-react";
 import { archiveEntryTabCount, type ArchivedTabView, type ArchiveEntryView } from "@pistachio/shell-contracts/tab-archive";
-import { isShellUnsupported } from "@pistachio/shell-contracts/socket";
+import type { GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { shellApi } from "../../api";
 import { cn } from "../../lib/cn";
+import { useGroupContexts } from "../../lib/desk/group-context";
 import { prettyUrl } from "../../lib/url";
 import { useAppStore } from "../../store";
 import { Favicon } from "../Favicon";
@@ -25,8 +26,16 @@ import { Input } from "../ui/input";
 import { Kbd } from "../ui/kbd";
 import { Note } from "../ui/note";
 import { formatDay, formatTime, hostOfUrl } from "../watchtower/format";
+import { archiveActions, ARCHIVE_VIEW_START, type ArchiveView } from "./archive-actions";
 
 const count = (n: number, one: string, many = `${one}s`): string => `${String(n)} ${n === 1 ? one : many}`;
+
+/** An empty space is filed for what its Stack holds (docs/spaces.md §1): its line says so. */
+function stackLine(context: GroupContextView | undefined): string {
+  const items = context?.items ?? [];
+  const kinds = (["file", "fact", "snippet", "link"] as const).map((kind) => count(items.filter((item) => item.kind === kind).length, kind)).filter((part) => !part.startsWith("0 "));
+  return kinds.length === 0 ? "Empty space" : `Space · ${kinds.join(", ")}`;
+}
 
 function hoursLabel(hours: number): string {
   if (hours <= 0) return "";
@@ -73,35 +82,20 @@ export function ArchivePage() {
   const setOverlay = useAppStore((state) => state.setOverlay);
   const openSettings = useAppStore((state) => state.openSettings);
   const spaceId = useAppStore((state) => state.snapshot?.activeSpaceId ?? null);
-  const spaceName = useAppStore((state) => state.snapshot?.spaces.find((space) => space.id === state.snapshot?.activeSpaceId)?.name ?? "This Space");
+  const spaceName = useAppStore((state) => state.snapshot?.spaces.find((space) => space.id === state.snapshot?.activeSpaceId)?.name ?? "This Profile");
   const archiveAfterHours = useAppStore((state) => state.settings.tabs.archiveAfterHours);
 
-  const [entries, setEntries] = useState<ArchiveEntryView[] | null>(null);
-  const [retentionDays, setRetentionDays] = useState(30);
-  const [error, setError] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState<string | null>(null);
+  const [view, setView] = useState<ArchiveView>(ARCHIVE_VIEW_START);
+  const { entries, retentionDays, error, unavailable } = view;
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const searchRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async (): Promise<void> => {
-    if (spaceId === null) return;
-    try {
-      const response = await shellApi().tabArchive({ type: "list", spaceId });
-      if (response.type !== "list") return;
-      setEntries(response.entries);
-      setRetentionDays(response.retentionDays);
-      setError(null);
-    } catch (failure: unknown) {
-      const message = failure instanceof Error ? failure.message : String(failure);
-      if (isShellUnsupported(failure)) setUnavailable(message);
-      else setError(message);
-    }
-  }, [spaceId]);
+  const actions = useMemo(() => archiveActions(spaceId, { api: shellApi, update: setView, close: () => setOverlay("none") }), [spaceId, setOverlay]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void actions.load();
+  }, [actions]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => searchRef.current?.focus());
@@ -118,35 +112,13 @@ export function ArchivePage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [setOverlay]);
 
-  /** Restoring shows the tab, so the page gets out of its way. */
-  const restore = async (entryId: string, tabIndex?: number): Promise<void> => {
-    try {
-      const response = await shellApi().tabArchive({ type: "restore", entryId, ...(tabIndex === undefined ? {} : { tabIndex }) });
-      if (response.type === "done" && response.ok) setOverlay("none");
-      else await load();
-    } catch (failure: unknown) {
-      setError(failure instanceof Error ? failure.message : String(failure));
-    }
-  };
-  const remove = async (entryId: string): Promise<void> => {
-    setEntries((current) => current?.filter((entry) => entry.id !== entryId) ?? null);
-    try {
-      await shellApi().tabArchive({ type: "remove", entryId });
-    } catch (failure: unknown) {
-      setError(failure instanceof Error ? failure.message : String(failure));
-      await load();
-    }
-  };
+  /** Restoring shows the tab, so the page gets out of its way (archiveActions). */
+  const restore = (entryId: string, tabIndex?: number): Promise<void> => actions.restore(entryId, tabIndex);
+  const remove = (entryId: string): Promise<void> => actions.remove(entryId);
   const clear = async (): Promise<void> => {
-    if (spaceId === null || entries === null || entries.length === 0) return;
+    if (entries === null || entries.length === 0) return;
     const total = entries.reduce((sum, entry) => sum + archiveEntryTabCount(entry), 0);
-    if (!window.confirm(`Forget ${count(total, "archived tab")} in ${spaceName}? This cannot be undone.`)) return;
-    try {
-      await shellApi().tabArchive({ type: "clear", spaceId });
-      await load();
-    } catch (failure: unknown) {
-      setError(failure instanceof Error ? failure.message : String(failure));
-    }
+    await actions.clear(() => window.confirm(`Forget ${count(total, "archived tab")} in ${spaceName}? This cannot be undone.`));
   };
 
   const needle = query.trim().toLowerCase();
@@ -197,7 +169,7 @@ export function ArchivePage() {
               ref={searchRef}
               size="sm"
               aria-label="Filter archived tabs"
-              placeholder="Filter by title, site, or group"
+              placeholder="Filter by title, site, or space"
               prefix={<Search aria-hidden="true" />}
               affixStyling={false}
               value={query}
@@ -221,7 +193,7 @@ export function ArchivePage() {
             {entries === null ? null : entries.length === 0 ? (
               <Empty
                 title="Nothing archived yet"
-                body="When a tab has gone unlooked-at for a while, Tidy closes it and keeps it here, so your sidebar stays short and nothing is lost. Closed tab groups land here too."
+                body="When a tab has gone unlooked-at for a while, Tidy closes it and keeps it here, so your sidebar stays short and nothing is lost. Closed spaces land here too."
               />
             ) : shown.length === 0 ? (
               <Empty title="No archived tab matches" body="Try a word from the page's title, or the site it was on." />
@@ -286,6 +258,7 @@ function EntryRow({
   onRestore: (tabIndex?: number) => void;
   onRemove: () => void;
 }) {
+  const contexts = useGroupContexts();
   const when = `${entry.reason === "closed" ? "Closed" : "Archived"} ${formatTime(entry.archivedAt)}`;
   if (entry.kind === "tab") {
     return (
@@ -310,13 +283,15 @@ function EntryRow({
           <span className="min-w-0 flex-1">
             <span className="block truncate text-label-13 font-medium text-(--tg-text)">{entry.group.title}</span>
             <span className="block truncate text-label-12 text-gray-700">
-              {count(entry.tabs.length, "tab")} · {[...new Set(entry.tabs.map((tab) => hostOfUrl(tab.url)))].slice(0, 3).join(", ")}
+              {entry.tabs.length === 0
+                ? stackLine(contexts.find((context) => context.groupId === entry.groupId))
+                : `${count(entry.tabs.length, "tab")} · ${[...new Set(entry.tabs.map((tab) => hostOfUrl(tab.url)))].slice(0, 3).join(", ")}`}
             </span>
           </span>
           <ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-gray-700 transition-transform duration-150", open && "rotate-90")} />
         </button>
         <span className="shrink-0 text-label-12 text-gray-700 @max-md:hidden">{when}</span>
-        <RowActions onRestore={() => onRestore()} onRemove={onRemove} restoreLabel="Restore group" />
+        <RowActions onRestore={() => onRestore()} onRemove={onRemove} restoreLabel="Restore space" />
       </div>
       {open ? (
         <ul className="mt-0.5 ml-[15px] flex flex-col gap-0.5 border-l-2 border-(--tg-tint-strong) pl-2">

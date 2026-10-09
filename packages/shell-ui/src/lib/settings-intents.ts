@@ -60,14 +60,14 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     id: "layout",
     section: "",
     title: "Sidebar",
-    description: "Keep the sidebar always visible, or hide it and reveal it on hover.",
-    keywords: ["sidebar", "compact", "hide the sidebar", "narrow", "vertical tabs", "layout"],
+    description: "Show the whole sidebar, a rail of its icons, or hide it until the pointer reaches the window's left edge.",
+    keywords: ["sidebar", "compact", "hide the sidebar", "narrow", "vertical tabs", "layout", "rail", "icons", "whole", "hidden", "auto-hide"],
   },
   {
     id: "new-tab",
     section: "",
     title: "New tab & home page",
-    description: "Choose what a new tab opens, the page it lands on, and the page a new window or Space starts with.",
+    description: "Choose what a new tab opens, the page it lands on, and the page a new window or Profile starts with.",
     keywords: ["new tab", "start page", "homepage", "blank page", "startup page", "default page"],
   },
   {
@@ -160,9 +160,9 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
   {
     id: "tabs",
     section: "tabs",
-    title: "Tabs, auto-archive & groups",
-    description: "Choose when idle tabs are archived, whether related tabs are grouped, and whether favorites return to their home page.",
-    keywords: ["tidy", "auto archive", "archive tabs", "tab groups", "group tabs", "idle tabs", "clean up tabs", "too many tabs", "favorites reset", "12 hours"],
+    title: "Tabs, auto-archive & spaces",
+    description: "Choose when idle tabs are archived, whether related tabs are gathered into spaces, and whether favorites return to their home page.",
+    keywords: ["tidy", "auto archive", "archive tabs", "spaces", "space", "tab groups", "group tabs", "idle tabs", "clean up tabs", "too many tabs", "favorites reset", "12 hours"],
   },
   {
     id: "bookmarks",
@@ -236,7 +236,7 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     id: "site-data",
     section: "privacy",
     title: "Site data, cookies & cache",
-    description: "Clear the cookies, site storage and cache that websites keep in this Space.",
+    description: "Clear the cookies, site storage and cache that websites keep in this Profile.",
     keywords: ["clear cookies", "clear cache", "delete browsing data", "sign out of sites", "privacy", "storage"],
   },
   {
@@ -247,13 +247,13 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     keywords: ["history", "clear history", "delete recents", "recently visited", "chips", "forget sites"],
   },
 
-  // ── Spaces ───────────────────────────────────────────────────────────
+  // ── Profiles ─────────────────────────────────────────────────────────
   {
     id: "spaces",
     section: "privacy/spaces",
-    title: "Spaces",
-    description: "See, switch and fork your Spaces, each of which keeps its own cookie jar and sign-ins.",
-    keywords: ["workspace", "profile", "context", "separate logins", "fork", "containers", "new space"],
+    title: "Profiles",
+    description: "See, switch and fork your Profiles, each of which keeps its own cookie jar and sign-ins.",
+    keywords: ["workspace", "profile", "context", "separate logins", "fork", "containers", "new profile", "browser profile"],
   },
 
   // ── Agent isolation ──────────────────────────────────────────────────
@@ -288,7 +288,7 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     id: "sync",
     section: "sync",
     title: "Sync between devices",
-    description: "Sync your tabs, sessions and Spaces between your devices, and choose what is synced.",
+    description: "Sync your tabs, sessions and Profiles between your devices, and choose what is synced.",
     keywords: ["backup", "restore tabs", "other computer", "cookies sync", "hub", "converge", "icloud"],
   },
 
@@ -297,7 +297,7 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     id: "cloud",
     section: "cloud",
     title: "Cloud browser",
-    description: "Choose the Spaces the hosted browser may open, run new conversations there by default, and manage channels.",
+    description: "Choose the Profiles the hosted browser may open, run new conversations there by default, and manage channels.",
     keywords: ["remote", "hosted", "server", "run in the cloud", "headless", "channels", "webhook", "runs elsewhere"],
   },
 
@@ -306,7 +306,7 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     id: "egress",
     section: "egress",
     title: "Network identity & location",
-    description: "Send a Space's traffic through an address that belongs to your account, and read the gateway's health.",
+    description: "Send a Profile's traffic through an address that belongs to your account, and read the gateway's health.",
     keywords: ["vpn", "proxy", "ip address", "location", "region", "gateway", "egress", "appear from"],
   },
 

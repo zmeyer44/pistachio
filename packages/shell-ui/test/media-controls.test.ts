@@ -18,7 +18,7 @@ vi.mock("../src/store", () => ({
       readAloud: fixture.readAloud,
       snapshot: { activeTabId: "other", visibleTabIds: [] },
       sidebarWidth: 248,
-      settings: { layout: { sidebar: "pinned" } },
+      settings: { layout: { sidebar: "whole" } },
       sidebarRevealed: true,
       footerMenusOpen: 0,
       overlay: null,

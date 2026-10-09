@@ -15,7 +15,7 @@
 
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
-import { box, createGroup, fromFrameMenu, INVOICES, launchDesk, liveViews, openGroupDesk, openTabs, rowSelector, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { box, createGroup, fromFrameMenu, INVOICES, launchDesk, liveViews, selectSpace, openTabs, rowSelector, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
 
 const capture = screenshots("desk-minimize");
 
@@ -115,7 +115,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     const [invoice, vendor, accounts] = (await openTabs(shell, [INVOICES, VENDOR, ACCOUNTS])) as [string, string, string];
     await createGroup(shell, "desk-mini", [invoice, vendor, accounts], "Northstar", "blue");
     await selectTab(shell, invoice);
-    await openGroupDesk(shell, "desk-mini");
+    await selectSpace(shell, "desk-mini");
     await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(3);
     await settled(shell, app);
     // The vendor and the accounts out too: three windows.
@@ -333,52 +333,13 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     // Its page is its own size again.
     await expect.poll(async () => (await pageSize(app, VENDOR)).zoom).toBe(1);
 
-    // ── 9. Leave, from the More card: the window in use grows into the pane as its live page, laid out at the
-    //       pane's box from the start — never a picture of its window stretched to it, nor laid out anew there ─
-    await selectTab(shell, invoice);
-    await settled(shell, app);
-    await inPage(app, INVOICES, "window.__widths = [[Date.now(), innerWidth]]; (function tick() { if (__widths.at(-1)[1] !== innerWidth) __widths.push([Date.now(), innerWidth]); requestAnimationFrame(tick); })(); true");
-    const before = (await pageSize(app, INVOICES)).width;
-    await shell.getByTestId("desk-more").click();
-    await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
-    // (The window under the card come to rest as its still: the leave starts from there.)
-    await settled(shell, app);
-    // Every frame from the click on: is the window its still, or its live page?
-    const clickedAt = await shell.evaluate((selector) => {
-      const samples: boolean[] = [];
-      (window as unknown as { __leaveDrawn: boolean[] }).__leaveDrawn = samples;
-      const button = document.querySelector<HTMLElement>('[data-testid="desk-leave"]')!;
-      const at = Date.now();
-      button.click();
-      // From the next frame: the click's own task has not drawn the window anew yet.
-      const sample = (): void => {
-        const el = document.querySelector(selector);
-        if (el === null) return;
-        samples.push(el.hasAttribute("data-drawn"));
-        requestAnimationFrame(sample);
-      };
-      requestAnimationFrame(sample);
-      return at;
-    }, windowSelector(invoice));
-    await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-    // Live from the first frame (drawn under the card a moment before, it no longer waits on it).
-    const drawnFrames = await shell.evaluate(() => (window as unknown as { __leaveDrawn: boolean[] }).__leaveDrawn);
-    expect(drawnFrames.length).toBeGreaterThan(3);
-    expect(drawnFrames.filter(Boolean)).toEqual([]);
-    // Its page went from its window's width straight to the pane's, at once (the sidebar sliding back in narrows it after).
-    const widths = await inPage<Array<[number, number]>>(app, INVOICES, "__widths");
-    expect(widths[0]![1]).toBe(before);
-    expect(widths[1]![1]).toBe(Math.round(stage.width));
-    expect(widths[1]![0] - clickedAt).toBeLessThan(150);
-    for (let index = 2; index < widths.length; index += 1) expect(widths[index]![1]).toBeLessThan(widths[index - 1]![1]);
-
     expect(pageErrors).toEqual([]);
   } finally {
     await app.close();
   }
 });
 
-test("a desk reopened after a relaunch, a minimized window's tab asleep: the tab wakes zoomed out, and the app stays up", { tag: ["@desk", "@startup"] }, async () => {
+test("a desk come back after a relaunch, a minimized window's tab asleep: raised, the tab wakes zoomed out, and the app stays up", { tag: ["@desk", "@startup"] }, async () => {
   test.setTimeout(120_000);
   let userData: string | undefined;
   /** The app on the profile (a new one first, then the same again), and the signal it ever exits on. */
@@ -399,30 +360,44 @@ test("a desk reopened after a relaunch, a minimized window's tab asleep: the tab
       vendor = made;
       await createGroup(shell, "desk-relaunch", [invoice, vendor, accounts], "Northstar", "blue");
       await selectTab(shell, invoice);
-      await openGroupDesk(shell, "desk-relaunch");
+      await selectSpace(shell, "desk-relaunch");
       await settled(shell, app);
       await shell.locator(rowSelector(vendor)).click();
       await settled(shell, app);
       await fromFrameMenu(shell, shell.locator(windowSelector(vendor)), "desk-minimize");
       await settled(shell, app);
       await expect(shell.locator(windowSelector(vendor))).toHaveAttribute("data-mini", "parked");
-      await shell.keyboard.press("Meta+Alt+Backslash");
-      await expect(shell.getByTestId("desk-surface")).toHaveCount(0);
-      await shell.waitForTimeout(500);
+      // (The desk keeps its arrangement as it changes, in the shell's storage: the minimized window is in it before the quit.)
+      await expect
+        .poll(() =>
+          shell.evaluate((id) => {
+            const saved = (JSON.parse(localStorage.getItem("pistachio.desk.v1") ?? "{}") as { saved?: Record<string, { windows: Array<{ tabId: string; mini?: { parked: boolean } }> }> }).saved;
+            return saved?.["desk-relaunch"]?.windows.find((window) => window.tabId === id)?.mini?.parked ?? null;
+          }, vendor),
+        )
+        .toBe(true);
     } finally {
       await app.close();
     }
   }
 
-  // ── 2. Relaunched, the group's tabs asleep: its desk opens on its saved windows, the minimized one's tab woken
-  //       (as every window's is) and its page zoomed out once it has one — never before, which crashed main ─
+  // ── 2. Relaunched, the space's tabs asleep: the app comes up on its desk — the space current when it quit — with
+  //       its saved windows, nothing asked to open it. The minimized one is a placeholder, asleep, until it is raised
+  //       (docs/spaces.md §2, "Waking"); the pointer on its frame raises it, its tab wakes, and its page is zoomed out
+  //       once it has one — never before, which crashed main ─
   const { app, shell, exits } = await launch();
   try {
-    await expect.poll(async () => (await snapshot(shell)).tabGroups.some((group) => group.id === "desk-relaunch")).toBe(true);
-    await openGroupDesk(shell, "desk-relaunch");
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("desk-relaunch");
+    await expect(shell.locator('.desk-stage[data-phase="open"][data-group-id="desk-relaunch"]')).toHaveCount(1);
     await settled(shell, app);
-    await expect(shell.locator(windowSelector(vendor))).toHaveAttribute("data-mini", "parked");
-    await expect.poll(() => pageSize(app, VENDOR), { timeout: 15_000 }).toEqual({ width: MINI_PAGE.w * 2, height: MINI_PAGE.h * 2, zoom: 1 });
+    await expect(shell.locator('[data-testid="desk-window"]')).toHaveCount(2);
+    const vendorWindow = shell.locator(windowSelector(vendor));
+    await expect(vendorWindow).toHaveAttribute("data-mini", "parked");
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === vendor)?.lifecycle).toBe("suspended");
+    const parked = await box(shell, windowSelector(vendor));
+    await shell.mouse.move(parked.x + parked.width / 2, parked.y + 12);
+    await expect(vendorWindow).toHaveAttribute("data-raised", "");
+    await expect.poll(() => pageSize(app, VENDOR).catch(() => null), { timeout: 15_000 }).toEqual({ width: MINI_PAGE.w * 2, height: MINI_PAGE.h * 2, zoom: 1 });
     expect(exits).toEqual([]);
   } finally {
     await app.close().catch(() => undefined);

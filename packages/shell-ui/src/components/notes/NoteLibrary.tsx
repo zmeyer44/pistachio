@@ -9,10 +9,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Copy, FileText, Plus, Search, SquarePen, SquareSplitHorizontal, Trash2 } from "lucide-react";
+import { AppWindow, Copy, FileText, Plus, Search, SquarePen, SquareSplitHorizontal, Trash2 } from "lucide-react";
 import { noteUrl, searchNotes, NOTE_UNTITLED, type NoteSummary } from "@pistachio/shell-contracts/notes";
 import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
 import { cn } from "../../lib/cn";
+import { deskAvailable, showOnDesk, splitAvailable } from "../../lib/desk/open";
 import { useAppStore } from "../../store";
 import { relativeTime } from "../reminders/parts";
 import { useNow } from "../home/use-now";
@@ -140,6 +141,21 @@ export function NoteLibrary({ tabId }: { tabId: string | null }) {
   );
 }
 
+/**
+ * A note as a window of its own on the desk, beside the page it was chosen
+ * from: its tab, open already in the current space, comes out (or to the
+ * front); open in another space, it is chosen, and the desk passes there; not
+ * open, a new tab — which main puts in the current space and makes the one in
+ * use, so its window comes out on the desk (DeskSurface).
+ */
+function openNoteOnDesk(noteId: string): void {
+  const store = useAppStore.getState();
+  const url = noteUrl(noteId).replace(/\/$/u, "");
+  const open = store.snapshot?.tabs.find((tab) => tab.url.trim().replace(/\/$/u, "") === url);
+  if (open === undefined) void store.createTab(noteUrl(noteId));
+  else if (!showOnDesk(open.id)) void store.selectTab(open.id);
+}
+
 function Row({
   summary,
   now,
@@ -160,7 +176,12 @@ function Row({
 
   const items: RowMenuItem[] = [
     { id: "open", label: "Open", icon: <FileText />, run: onOpen },
-    { id: "split", label: "Open in split", icon: <SquareSplitHorizontal />, run: () => void openInSplit(summary.id) },
+    // Beside this page: a split on the web, a window of its own on the desk (splits are the web's since 2026-10-09).
+    ...(splitAvailable()
+      ? [{ id: "split", label: "Open in split", icon: <SquareSplitHorizontal />, run: () => void openInSplit(summary.id) }]
+      : deskAvailable()
+        ? [{ id: "desk", label: "Open on the desk", icon: <AppWindow />, run: () => openNoteOnDesk(summary.id) }]
+        : []),
     {
       id: "copy",
       label: "Copy link",

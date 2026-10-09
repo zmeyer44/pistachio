@@ -255,7 +255,7 @@ export class BrowserSession {
      */
     const actor = (): { leaseToken: string; viewerDeviceId: string } => {
       const viewerDeviceId = currentViewer()?.deviceId ?? this.viewerDeviceId;
-      if (viewerDeviceId === null) throw new Error("no viewer has proved this Space's key yet");
+      if (viewerDeviceId === null) throw new Error("no viewer has proved this Profile's key yet");
       return { leaseToken: this.leaseToken, viewerDeviceId };
     };
     return {

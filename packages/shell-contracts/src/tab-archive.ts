@@ -1,6 +1,6 @@
 /**
- * The tab archive: tabs Tidy closed because they went idle, and groups a
- * person closed, kept so that neither is a loss (docs/tab-tidy.md §3.6).
+ * The tab archive: tabs Tidy closed because they went idle, and spaces (tab
+ * groups) a person closed, kept so that neither is a loss (docs/tab-tidy.md §3.6).
  * Main owns the file (main/tab-archive-store.ts); the archive page reads it
  * through one request/response method, the way Watchtower's page does, so
  * the list never rides on the snapshot.
@@ -14,7 +14,7 @@
  */
 
 import { sanitizePageResume, type PageResumeState } from "./page-resume.js";
-import { isTabGroupColor, tabGroupTitle, type TabGroupColor, type TabGroupOrigin } from "./tab-groups.js";
+import { isTabGroupColor, isTabGroupId, storedTabGroupTitle, type TabGroupColor, type TabGroupOrigin } from "./tab-groups.js";
 import { normalizeRestorableTabUrl, sanitizeTabHistory, type DurableTabHistory } from "./tab-session.js";
 import { isAllowedNavigation } from "./url.js";
 
@@ -23,7 +23,7 @@ export const MAX_ARCHIVE_ENTRIES = 500;
 export const MAX_ARCHIVED_GROUP_TABS = 200;
 export { ARCHIVE_RETENTION_DAYS, DEFAULT_ARCHIVE_RETENTION_DAYS, type ArchiveRetentionDays } from "./tidy.js";
 
-/** Why an entry is here: the clock took it, or a person closed its group. */
+/** Why an entry is here: the clock took it, or a person closed its space (tab group). */
 export type ArchiveReason = "idle" | "closed";
 
 export interface ArchivedTab {
@@ -51,7 +51,16 @@ export interface ArchivedTabEntry extends ArchiveEntryBase {
 
 export interface ArchivedGroupEntry extends ArchiveEntryBase {
   kind: "group";
+  /**
+   * The space's (tab group's) own id (since 2026-10-09; absent in entries
+   * filed before): restoring makes the space with this id when it is free,
+   * so its Stack and its conversation — kept by that id — come back with it.
+   * With it the entry IS the space, and may hold no tabs: an empty space
+   * with a Stack filed and restored whole.
+   */
+  groupId?: string;
   group: { title: string; color: TabGroupColor; origin: TabGroupOrigin };
+  /** Its tabs; empty only with `groupId`. */
   tabs: ArchivedTab[];
 }
 
@@ -76,7 +85,7 @@ export interface ArchivedTabView {
 
 export type ArchiveEntryView =
   | (ArchiveEntryBase & { kind: "tab"; tab: ArchivedTabView })
-  | (ArchiveEntryBase & { kind: "group"; group: ArchivedGroupEntry["group"]; tabs: ArchivedTabView[] });
+  | (ArchiveEntryBase & { kind: "group"; group: ArchivedGroupEntry["group"]; tabs: ArchivedTabView[]; groupId?: string });
 
 function tabView(tab: ArchivedTab): ArchivedTabView {
   return { title: tab.title, url: tab.url, faviconUrl: tab.faviconUrl, lastActiveAt: tab.lastActiveAt };
@@ -92,7 +101,7 @@ export function archiveEntryView(entry: ArchiveEntry): ArchiveEntryView {
   };
   return entry.kind === "tab"
     ? { ...base, kind: "tab", tab: tabView(entry.tab) }
-    : { ...base, kind: "group", group: entry.group, tabs: entry.tabs.map(tabView) };
+    : { ...base, kind: "group", group: entry.group, tabs: entry.tabs.map(tabView), ...(entry.groupId === undefined ? {} : { groupId: entry.groupId }) };
 }
 
 /** How many tabs an entry holds. */
@@ -111,7 +120,8 @@ export type TabArchiveRequest =
 
 export type TabArchiveResponse =
   | { type: "list"; entries: ArchiveEntryView[]; retentionDays: number }
-  | { type: "done"; ok: boolean };
+  /** `reason`: why it was not done, in the person's words (a filed space the Profile has no room for). */
+  | { type: "done"; ok: boolean; reason?: string };
 
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,127}$/i;
 
@@ -191,13 +201,16 @@ function sanitizeEntry(value: unknown): ArchiveEntry | null {
     const tab = sanitizeArchivedTab(candidate);
     return tab === null ? [] : [tab];
   });
-  if (tabs.length === 0) return null;
+  // A space's entry may be the space alone — but only one that says which space it is.
+  const groupId = isTabGroupId(raw["groupId"]) ? raw["groupId"] : undefined;
+  if (tabs.length === 0 && groupId === undefined) return null;
   const group = typeof raw["group"] === "object" && raw["group"] !== null ? (raw["group"] as Record<string, unknown>) : {};
   return {
     ...base,
     kind: "group",
+    ...(groupId === undefined ? {} : { groupId }),
     group: {
-      title: tabGroupTitle(group["title"]),
+      title: storedTabGroupTitle(group["title"]),
       color: isTabGroupColor(group["color"]) ? group["color"] : "gray",
       origin: group["origin"] === "auto" ? "auto" : "manual",
     },

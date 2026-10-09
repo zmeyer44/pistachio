@@ -152,13 +152,15 @@ test.describe.serial("a tab sharing the screen", { tag: ["@sidebar", "@media", "
     await expect(tabMark).toHaveCount(0);
   });
 
-  test("the hidden compact sidebar keeps a red handle, and a share that begins says so", async () => {
+  test("the hidden sidebar keeps a red handle, and a share that begins says so", async () => {
     const { shell, app } = meeting;
-    // Back to the meeting, with the sidebar made compact.
+    // Back to the meeting, with the sidebar hidden (⌘S goes whole → rail → hidden).
     const tabId = (await snapshot(shell)).activeTabId;
     if (tabId === null) throw new Error("no active tab");
     await shell.evaluate(({ tabId, url }) => (window as unknown as { pistachio: PistachioApi }).pistachio.navigate(tabId, url), { tabId, url: meeting.pageUrl });
     await meetingLoaded(meeting);
+    await shell.keyboard.press("Meta+s");
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="rail"]')).toHaveCount(1);
     await shell.keyboard.press("Meta+s");
     const edge = shell.getByTestId("sidebar-edge");
     await expect(edge).toBeVisible();
@@ -170,9 +172,9 @@ test.describe.serial("a tab sharing the screen", { tag: ["@sidebar", "@media", "
     const notice = notices.getByTestId("notice-card");
     await expect(notice).toHaveCount(1);
     await expect(notice).toContainText(`Sharing a tab with ${new URL(meeting.pageUrl).host}`);
-    await captureShell(app, "03-compact-sharing.png", 450);
+    await captureShell(app, "03-hidden-sharing.png", 450);
     // The notice is its own view over the page, which a window capture leaves out.
-    await capturePage(notices, FOLDER, "05-compact-notice.png");
+    await capturePage(notices, FOLDER, "05-hidden-notice.png");
 
     await notice.getByRole("button", { name: "Stop sharing" }).click();
     await expect(edge).not.toHaveAttribute("data-screen-share", "");

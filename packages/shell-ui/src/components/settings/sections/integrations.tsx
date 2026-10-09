@@ -129,11 +129,11 @@ function IntegrationsPageBody() {
     >
       <Group
         title={spaces.length > 1 ? `Connected in ${spaceName}` : "Connected apps"}
-        note="One account per app per Space. The grant is encrypted with the Space key before it leaves this Mac; the servers keep only the ciphertext, and the agent never sees a token — only the account's name and what it may do."
+        note="One account per app per Profile. The grant is encrypted with the Profile key before it leaves this Mac; the servers keep only the ciphertext, and the agent never sees a token — only the account's name and what it may do."
         footerAction={
           spaces.length > 1 ? (
             <Select
-              aria-label="Space"
+              aria-label="Profile"
               value={selected ?? ""}
               items={spaces.map((space) => ({ value: space.id, label: space.name }))}
               onValueChange={(value) => setSpaceId(value)}

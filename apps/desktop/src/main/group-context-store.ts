@@ -157,13 +157,24 @@ export class GroupContextStore {
   }
 
   /**
+   * Whether the group's Stack holds anything — what keeps an emptied space
+   * standing (docs/spaces.md §2; BrowserController's groupHolds). Asked on
+   * every reconcile, so it reads the entry in place rather than cloning it
+   * (items); an entry with no items is none (#contextFor makes entries, and
+   * remove never deletes one).
+   */
+  hasItems(groupId: string): boolean {
+    return this.#contexts.some((context) => context.groupId === groupId && context.items.length > 0);
+  }
+
+  /**
    * One item as the agent reads it: a fact's text; a text file's, a Word
    * document's or a workbook's text; an image or a PDF to look at (a
    * picture the model cannot look at as it is, as a PNG).
    */
   async read(groupId: string, itemId: string): Promise<GroupContextReading> {
     const item = this.items(groupId).find((candidate) => candidate.id === itemId);
-    if (item === undefined) throw new Error(`no item ${itemId} in this group's context; the desk block lists what is there`);
+    if (item === undefined) throw new Error(`no item ${itemId} in this space's context; the desk block lists what is there`);
     if (item.kind !== "file") {
       const source = item.url === undefined ? "" : `\n(from ${item.title === undefined ? "" : `“${item.title}” `}${item.url})`;
       return { item, text: `${item.text}${source}` };
@@ -237,7 +248,7 @@ export class GroupContextStore {
     const find = (): GroupContextFile | undefined =>
       this.#contexts.find((context) => context.groupId === write.groupId)?.items.find((candidate): candidate is GroupContextFile => candidate.id === write.itemId && candidate.kind === "file");
     const before = find();
-    if (before === undefined) return { ok: false, reason: "gone", message: "That file is no longer in this desk's context" };
+    if (before === undefined) return { ok: false, reason: "gone", message: "That file is no longer in this space's context" };
     if (write.force !== true && before.blobId !== write.baseBlobId) return { ok: false, reason: "changed", message: `“${before.name}” was changed elsewhere since it was opened` };
     let bytes: Buffer = Buffer.from(write.bytes);
     if (write.as === "docx") {
@@ -252,7 +263,7 @@ export class GroupContextStore {
     if (bytes.byteLength > MAX_GROUP_FILE_BYTES) return { ok: false, reason: "too-large", message: `“${before.name}” would be larger than ${String(MAX_GROUP_FILE_BYTES / 1024 / 1024)} MB` };
     // Looked up again: the conversion took a moment, and the file may have gone or changed meanwhile.
     const item = find();
-    if (item === undefined) return { ok: false, reason: "gone", message: "That file is no longer in this desk's context" };
+    if (item === undefined) return { ok: false, reason: "gone", message: "That file is no longer in this space's context" };
     if (write.force !== true && item.blobId !== write.baseBlobId) return { ok: false, reason: "changed", message: `“${item.name}” was changed elsewhere since it was opened` };
     const context = this.#contexts.find((candidate) => candidate.groupId === write.groupId)!;
     const blobId = createHash("sha256").update(bytes).digest("hex").slice(0, 24);
@@ -385,7 +396,7 @@ export class GroupContextStore {
     const text = input.text.trim().slice(0, MAX_GROUP_TEXT_CHARS);
     if (text === "") throw new Error("nothing to save: the text is empty");
     const context = this.#contextFor(groupId, title);
-    if (context.items.length >= MAX_GROUP_CONTEXT_ITEMS) throw new Error(`the group's context already holds ${String(MAX_GROUP_CONTEXT_ITEMS)} things; one must be removed first`);
+    if (context.items.length >= MAX_GROUP_CONTEXT_ITEMS) throw new Error(`the space's context already holds ${String(MAX_GROUP_CONTEXT_ITEMS)} things; one must be removed first`);
     const item: GroupContextText = {
       id: newItemId(),
       kind: input.kind,

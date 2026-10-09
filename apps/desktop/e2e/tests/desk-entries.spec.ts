@@ -20,7 +20,7 @@ import {
   createGroup,
   INVOICES,
   launchDesk,
-  openGroupDesk,
+  selectSpace,
   openTabs,
   screenshots,
   selectTab,
@@ -114,7 +114,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     [g0, g1] = (await openTabs(shell, [INVOICES, SOUTH])) as [string, string];
     await createGroup(shell, "desk-g", [g0, g1], "Ledger", "blue");
     await selectTab(shell, g0);
-    await openGroupDesk(shell, "desk-g");
+    await selectSpace(shell, "desk-g");
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
     await settled(shell, app);
   });
@@ -123,7 +123,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await app?.close();
   });
 
-  test("a favorite's desk is its page's group: ⌘T and a file dropped there stay on it, under the favorite, counted on it once away, and it comes back as left", async () => {
+  test("a favorite's desk is its page's space: ⌘T and a file dropped there stay on it, under the favorite, counted on it once away, and it comes back as left", async () => {
     test.setTimeout(90_000);
     const stage = await box(shell, ".desk-stage");
 
@@ -177,7 +177,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await settled(shell, app);
   });
 
-  test("dragged into the day's tabs, a favorite's page brings its group down as a group like any other; the favorite stays, closed, and opens afresh", async () => {
+  test("dragged into the day's tabs, a favorite's page brings its space down as a space like any other; the favorite stays, closed, and opens afresh", async () => {
     test.setTimeout(90_000);
     const page = (await pageOf("fav-mail"))!;
     const group = (await pageGroupOf("fav-mail"))!;
@@ -209,7 +209,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     expect(near(await box(shell, windowSelector(again)), stage)).toBe(true);
   });
 
-  test("let go over another group's desk, a pin's page — or a favorite with none open — comes down into that group, its window where it was let go; the entry stays", async () => {
+  test("let go over another space's desk, a pin's page — or a favorite with none open — comes down into that space, its window where it was let go; the entry stays", async () => {
     test.setTimeout(90_000);
     const stage = await box(shell, ".desk-stage");
 
@@ -257,7 +257,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await settled(shell, app);
   });
 
-  test("Tidy's favorites reset brings a favorite's group down into the day's tabs, the favorite closed", async () => {
+  test("Tidy's favorites reset brings a favorite's space down into the day's tabs, the favorite closed", async () => {
     test.setTimeout(60_000);
     await sidebarCommand(shell, { type: "open", anchorId: "fav-mail" });
     await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(1);
@@ -267,8 +267,12 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await strikeInShell(app, "t");
     await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(2);
     const group = (await pageGroupOf("fav-mail"))!;
+    // (The new tab in use first, as ⌘T leaves it: chosen away before that, main's own choice of it would come after.)
+    const fresh = group.tabIds.find((tabId) => tabId !== page)!;
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(fresh);
     // Out of view: the reset never takes a page in sight.
     await selectTab(shell, g0);
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("desk-g");
     await expect(shell.locator(windowSelector(page))).toHaveCount(0);
     await settled(shell, app);
 

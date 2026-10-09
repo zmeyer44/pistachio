@@ -25,7 +25,7 @@ export function UpdatePill() {
   const label = update.status === "ready" ? "Restart" : update.status === "downloading" ? `${update.percent}%` : "Update";
   const title =
     update.status === "ready"
-      ? `Pistachio ${update.version} is downloaded. Restart to finish — tabs and Spaces come back as they are.`
+      ? `Pistachio ${update.version} is downloaded. Restart to finish — tabs and Profiles come back as they are.`
       : update.status === "downloading"
         ? `Downloading Pistachio ${update.version} in the background.`
         : `Pistachio ${update.version} is available. Download it in the background; nothing changes until you restart.`;

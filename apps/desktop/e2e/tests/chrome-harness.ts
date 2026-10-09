@@ -2,15 +2,15 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES, SURFACE_GUTTER } from "@pistachio/shell-contracts/chrome";
+import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { captureEnabled } from "./app";
-import { shellPage } from "./windows";
+import { liveViews, shellPage } from "./windows";
 
 /**
- * What the chrome specs (sidebar, splits, pane toolbar, tabs, notices,
- * media) share: the shell's snapshot, where main has the tab views, the pane
- * toolbar's reveal, waits for the chrome's motion to land, and the
+ * What the chrome specs (sidebar, tabs, notices, media) share: the shell's
+ * snapshot, where main has the tab views, waits for the chrome's motion to
+ * land, and the
  * screenshots a person reviewing a change asks for
  * (PISTACHIO_E2E_CAPTURE=1). Nothing asserts on a screenshot, so a capture
  * helper returns at once — and skips any settling wait with it — when
@@ -51,22 +51,14 @@ export async function closeApp(app: ElectronApplication | undefined): Promise<vo
   if (timer !== undefined) clearTimeout(timer);
 }
 
-/** Where main has each visible TAB view (utility chrome views are told apart by their hash), in child order. */
-export function visibleTabViewBoxes(app: ElectronApplication): Promise<Array<{ x: number; y: number; width: number; height: number }>> {
-  return app.evaluate(({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return window.contentView.children.flatMap((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return [];
-      const url = (child as WebContentsView).webContents.getURL();
-      return Object.values(hashes).some((hash) => url.endsWith(hash)) ? [] : [(child as WebContentsView).getBounds()];
-    });
-  }, CHROME_VIEW_HASHES);
+/** Where main has each visible TAB view (the chrome's own views told apart by their hash), in child order. */
+export async function visibleTabViewBoxes(app: ElectronApplication): Promise<Array<{ x: number; y: number; width: number; height: number }>> {
+  return (await liveViews(app)).map((view) => view.bounds);
 }
 
 /** How many tab views are on screen: a modal raises the chrome over them, and lowering it must bring them back. */
 export async function visibleTabViews(app: ElectronApplication): Promise<number> {
-  return (await visibleTabViewBoxes(app)).length;
+  return (await liveViews(app)).length;
 }
 
 /**
@@ -87,49 +79,6 @@ export async function settled(target: Locator): Promise<void> {
 /** Two painted frames of the shell: what a pointer move needs to land before the button comes up. */
 export async function nextFrames(shell: Page): Promise<void> {
   await shell.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-}
-
-/** One split pane left, filling the surface but for its trailing gutter (the sidebar's column owns the leading one). */
-export async function expectSingleFullWidthPane(shell: Page): Promise<void> {
-  await expect(shell.getByTestId("secondary-pane")).toHaveCount(0);
-  const surface = await shell.getByTestId("browser-surface").boundingBox();
-  const primary = await shell.getByTestId("primary-pane").boundingBox();
-  if (surface === null || primary === null) throw new Error("browser surface geometry is unavailable");
-  expect(primary.width).toBeCloseTo(surface.width - SURFACE_GUTTER, 0);
-}
-
-/**
- * The pane toolbar, revealed the Playwright way: main cannot read the OS
- * pointer here, so the trigger strip's own pointer move stands. The trigger
- * only exists while the row is hidden — a still-revealed row from an earlier
- * reveal, or a row mid-hide, must not strand the locator — so each attempt
- * re-reads the state and the whole exchange retries until the row is up.
- * Then the row's slide-in (and the surface's padding transition under it)
- * finishes, so reads and clicks meet the row at rest.
- */
-export async function revealPaneToolbar(shell: Page): Promise<void> {
-  await expect(async () => {
-    const trigger = shell.getByTestId("pane-toolbar-trigger");
-    if ((await trigger.count()) > 0) await trigger.dispatchEvent("pointermove");
-    await expect(shell.getByTestId("pane-toolbar")).not.toHaveAttribute("data-hidden", "", { timeout: 1_000 });
-  }).toPass({ timeout: 15_000 });
-  await shell.getByTestId("browser-surface").evaluate(async (surface) => {
-    await Promise.all(surface.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => undefined)));
-  });
-}
-
-/**
- * Click a button in the pane toolbar. With no readable OS pointer, any
- * scheduled leave-check hides the row again (getCursorPoint answers null),
- * possibly between a reveal and the click's own stability wait — so reveal
- * and click travel together, and the pair retries until the click lands.
- */
-export async function clickPaneToolbarButton(shell: Page, button: Locator): Promise<void> {
-  await expect(async () => {
-    const trigger = shell.getByTestId("pane-toolbar-trigger");
-    if ((await trigger.count()) > 0) await trigger.dispatchEvent("pointermove");
-    await button.click({ timeout: 2_000 });
-  }).toPass({ timeout: 20_000 });
 }
 
 /**

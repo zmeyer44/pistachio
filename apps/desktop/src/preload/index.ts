@@ -181,8 +181,8 @@ const api: PistachioApi = {
   reload: (tabId) => ipcRenderer.invoke(IPC.tabReload, tabId) as Promise<void>,
   setSplit: (mode: SplitMode) =>
     ipcRenderer.invoke(IPC.splitSet, mode) as Promise<void>,
-  reorderTab: (tabId, index) =>
-    ipcRenderer.invoke(IPC.tabReorder, tabId, index) as Promise<void>,
+  reorderTab: (tabId, index, among) =>
+    ipcRenderer.invoke(IPC.tabReorder, tabId, index, among) as Promise<void>,
   splitWith: (tabId, side: SplitSide) =>
     ipcRenderer.invoke(IPC.tabSplitWith, tabId, side) as Promise<void>,
   removeFromSplit: (tabId) =>

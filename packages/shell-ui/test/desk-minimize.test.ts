@@ -93,8 +93,8 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     save: () => undefined,
     moveTabToGroup: () => undefined,
     sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    sidebarAway: () => false,
     homeOf: () => null,
-    leaveDone: () => undefined,
     ...host,
   });
   created.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 1000 }) } as unknown as HTMLElement);
@@ -697,6 +697,8 @@ describe("a window growing into a larger box", () => {
       }
     };
     const held = { tabId: "tab-0", ...pageOf(filled), zoom: 1 };
+    // (The pictures asked for as the windows came out land first: a capture in flight is not asked for again.)
+    await flush();
     // A card over the desk: its windows are their stills.
     desk.setCover("card", { x: 0, y: 0, w: STAGE.w, h: STAGE.h });
     settle();
@@ -791,88 +793,8 @@ describe("a window growing into a larger box", () => {
   });
 });
 
-describe("leaving the desk", () => {
-  /** The window in use's box once it is the pane again: its page exactly the stage. */
-  const pane = { x: -insets.left, y: -insets.top, w: STAGE.w + insets.left + insets.right, h: STAGE.h + insets.top + insets.bottom };
-
-  it("grows the window in use into the pane as its live page, laid out at the pane's box from the start, never past it", () => {
-    let left = false;
-    const { desk, desks, layouts, rect, view } = open({ variants: () => ({ ...BAR_VARIANTS, spring: "bouncy" }), leaveDone: () => (left = true) });
-    desk.leave();
-    // Main lays the page out at the pane's box at once, before it has grown at all.
-    expect(desks.at(-1)?.zoomed).toEqual([{ tabId: "tab-0", width: STAGE.w, height: STAGE.h, zoom: 1 }]);
-    let frames = 0;
-    while (!left && frames < 120) {
-      run(1);
-      frames += 1;
-      if (!left) {
-        // Live all the way, never a picture of its window stretched to the pane.
-        expect(view("tab-0").drawn).toBe(false);
-        const now = rect("tab-0");
-        // (Within the rounding of the box written to the element.)
-        expect(now.x).toBeGreaterThanOrEqual(pane.x - 0.1);
-        expect(now.y).toBeGreaterThanOrEqual(pane.y - 0.1);
-        expect(now.x + now.w).toBeLessThanOrEqual(pane.x + pane.w + 0.1);
-        expect(now.y + now.h).toBeLessThanOrEqual(pane.y + pane.h + 0.1);
-      }
-    }
-    expect(left).toBe(true);
-    // A quick resize: there in 250ms, and handed back a couple of frames later.
-    expect(frames).toBeLessThanOrEqual(Math.ceil(250 / 16) + 4);
-    expectRect(rect("tab-0"), pane, 0.01);
-    expect(layouts.at(-1)!.views).toEqual([{ tabId: "tab-0", bounds: { x: 0, y: 0, width: STAGE.w, height: STAGE.h } }]);
-  });
-
-  it("goes live at once, though something of the desk was over it a moment before (the More card it was left from)", async () => {
-    vi.stubGlobal("Image", class {
-      src = "";
-      decode(): Promise<void> {
-        return Promise.resolve();
-      }
-    });
-    const { desk, view } = open({}, { stills: true });
-    const flush = async (): Promise<void> => {
-      for (let round = 0; round < 4; round += 1) {
-        await Promise.resolve();
-        await new Promise((done) => setImmediate(done));
-        run(3);
-      }
-    };
-    desk.setCover("more", { x: 0, y: 0, w: STAGE.w, h: STAGE.h });
-    settle();
-    await flush();
-    expect(view("tab-0").drawn).toBe(true);
-    desk.leave();
-    run(1);
-    expect(view("tab-0").drawn).toBe(false);
-    settle();
-    await flush();
-  });
-
-  it("from a minimized window in use, lays its page out at the pane's box, not zoomed out", () => {
-    const { desk, desks } = open();
-    desk.minimize("tab-0");
-    settle();
-    desk.activeChanged("tab-0");
-    settle();
-    desk.leave();
-    expect(desks.at(-1)?.zoomed).toEqual([{ tabId: "tab-0", width: STAGE.w, height: STAGE.h, zoom: 1 }]);
-    settle();
-  });
-
-  it("from a masked window in use, leaves its page to main's mask, unzoomed", () => {
-    const { desk, desks } = open();
-    desk.startMask("tab-0");
-    desk.applyMask("tab-0", { x: 10, y: 10, w: 120, h: 90 });
-    settle();
-    desk.leave();
-    expect(desks.at(-1)?.zoomed).toEqual([]);
-    settle();
-  });
-});
-
 describe("a desk with minimized windows, reopened", () => {
-  it("brings them back minimized, parked or out, with the box each grows back to; the window it opens on at its own size", () => {
+  it("brings them back minimized, parked or out, with the box each grows back to — the window in use too, as it was left", () => {
     const saved: SavedDeskWindow[] = [];
     const first = open({ save: (windows) => saved.splice(0, saved.length, ...windows) });
     first.desk.minimize("tab-1");
@@ -893,9 +815,11 @@ describe("a desk with minimized windows, reopened", () => {
     const views = new Map(desk.getView().windows.map((window) => [window.tabId, window]));
     expect(views.get("tab-1")?.mini).toBe("parked");
     expect(views.get("tab-2")?.mini).toBe("parked");
-    // The tab in view lifts off as the page it is: a window at its own size, on top.
-    expect(views.get("tab-0")?.mini).toBeNull();
-    expect(desk.windowTabIds().at(-1)).toBe("tab-2");
+    // The tab in use (main kept it, the last window minimized) comes back parked as it was left, still in use, in its
+    // place on the shelf: only a choice grows it back (2026-10-09; until then it came up at its own size).
+    expect(views.get("tab-0")?.mini).toBe("parked");
+    expect(desk.focusedTabId()).toBe("tab-0");
+    expect(desk.windowTabIds()).toEqual(["tab-1", "tab-2", "tab-0"]);
     desk.expand("tab-1");
     settle();
     const expanded = desk.getView().windows.find((window) => window.tabId === "tab-1");

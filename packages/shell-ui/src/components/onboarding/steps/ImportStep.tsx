@@ -157,7 +157,7 @@ export function ImportStep({
       <div
         className="scroll-thin flex max-h-[calc(100vh-200px)] flex-col gap-3 overflow-y-auto px-6 pt-1 pb-6"
         role="group"
-        aria-label="Profiles to bring over"
+        aria-label="Browser profiles to bring over"
       >
         {browsers === null && !failed ? (
           <>
@@ -186,7 +186,7 @@ export function ImportStep({
           const summary =
             installed.profiles.length === 1
               ? profileLabel(installed.profiles[0]!)
-              : `${String(installed.profiles.length)} profiles${own > 0 ? ` · ${String(own)} selected` : ""}`;
+              : `${String(installed.profiles.length)} ${brand.name} profiles${own > 0 ? ` · ${String(own)} selected` : ""}`;
           return (
             <div
               key={installed.kind}
@@ -295,7 +295,7 @@ export function ImportStep({
                     <p className="px-2.5 pt-2 pb-0.5 text-label-12 leading-4.5 text-gray-700">
                       {installed.supports.sessions &&
                       installed.supports.bookmarks
-                        ? "Signed-in sessions and bookmarks come over from each profile you tick."
+                        ? `Signed-in sessions and bookmarks come over from each ${brand.name} profile you tick.`
                         : installed.supports.bookmarks
                           ? `Bookmarks come over. ${installed.note ?? ""}`.trim()
                           : (installed.note ??
@@ -427,7 +427,7 @@ function ImportSummary({ results }: { results: BrowserImportResult[] }) {
         );
   const nothing = cookies === 0 && bookmarks === 0;
   const count =
-    results.length === 1 ? "" : ` (${String(results.length)} profiles)`;
+    results.length === 1 ? "" : ` (${String(results.length)} browser profiles)`;
   return (
     <div className="flex flex-col gap-4 px-7 pb-7">
       <div className="flex items-center gap-3">
@@ -451,7 +451,7 @@ function ImportSummary({ results }: { results: BrowserImportResult[] }) {
               : `Brought over from ${from}${count}`}
           </p>
           <p className="text-label-12 text-gray-700">
-            Into this Space, on this Mac.
+            Into this Profile, on this Mac.
           </p>
         </div>
       </div>
@@ -494,7 +494,7 @@ function ImportSummary({ results }: { results: BrowserImportResult[] }) {
       </ul>
       {results.length > 1 && cookies > 0 ? (
         <p className="text-label-12 leading-4.5 text-gray-700">
-          Where two profiles were signed in to the same site, the one imported
+          Where two browser profiles were signed in to the same site, the one imported
           last is the one you are signed in as now.
         </p>
       ) : null}

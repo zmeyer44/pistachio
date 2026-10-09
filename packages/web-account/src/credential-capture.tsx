@@ -343,7 +343,7 @@ function CredentialForm({
               <small>
                 So the agent can sign in to{" "}
                 <bdi>{hostname(capture.siteOrigin)}</bdi> next time without
-                asking. Encrypted with your Space key; the agent never sees the
+                asking. Encrypted with your Profile key; the agent never sees the
                 values. One-time codes are never kept. You can view or remove it
                 under Settings → Vault.
               </small>

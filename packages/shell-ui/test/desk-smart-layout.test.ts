@@ -244,7 +244,7 @@ describe("the arranger", () => {
     expect(asked[0]!.gone.map((gone) => gone.title)).toEqual(["CI run #8812 - GitHub Actions", "Inbox (12) - Gmail"]);
     expect(asked[0]!.fillers).toEqual(["Pull request #412 - GitHub"]);
     expectRect(engine.windows.get("pr"), desk);
-    expect(notices[0]!.message).toBe("“Pull request #412 - GitHub” took the space");
+    expect(notices[0]!.message).toBe("“Pull request #412 - GitHub” filled the gap");
   });
 
   it("drops an answer about a desk that changed while the model thought, or that a newer question superseded", async () => {

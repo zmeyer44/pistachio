@@ -289,7 +289,7 @@ function Browse(): ReactNode {
   if (cloudSpaces.length === 0) {
     return (
       <Curtain
-        title="No Space runs in the cloud yet"
+        title="No Profile runs in the cloud yet"
         detail={error}
         busy={busy}
         action={{
@@ -301,7 +301,7 @@ function Browse(): ReactNode {
           onClick: setupCloud,
         }}
       >
-        The pages here are real Chromium tabs on the cloud browser, in your signed-in sessions. Turn it on for a Space
+        The pages here are real Chromium tabs on the cloud browser, in your signed-in sessions. Turn it on for a Profile
         and they open here, on any device, whether or not your Mac is awake.
       </Curtain>
     );
@@ -309,9 +309,9 @@ function Browse(): ReactNode {
 
   if (spaceKeys === null) {
     return (
-      <Curtain title="This browser cannot open that Space" action={{ label: "Unlock", onClick: () => void relock({ preserveRemembered: true }) }}>
-        Your password unlocks the key this Space is sealed under, and this browser is not holding it. The cloud browser
-        will not show a pixel of a Space this device cannot read.
+      <Curtain title="This browser cannot open that Profile" action={{ label: "Unlock", onClick: () => void relock({ preserveRemembered: true }) }}>
+        Your password unlocks the key this Profile is sealed under, and this browser is not holding it. The cloud browser
+        will not show a pixel of a Profile this device cannot read.
       </Curtain>
     );
   }
@@ -328,7 +328,7 @@ function Browse(): ReactNode {
     return (
       <Curtain title="This session is not open" detail={status.error} action={{ label: "Try again", onClick: retry }}>
         {status.code === "ended"
-          ? "This browser session has ended. Opening it again starts a fresh one for this Space."
+          ? "This browser session has ended. Opening it again starts a fresh one for this Profile."
           : (status.error ?? "The cloud browser disconnected.")}
       </Curtain>
     );
@@ -337,7 +337,7 @@ function Browse(): ReactNode {
   if (api === null) {
     return (
       <Curtain title="Opening your browser session" busy>
-        Dialling the cloud browser with a one-minute ticket, and proving this Space&apos;s key before anything is sent.
+        Dialling the cloud browser with a one-minute ticket, and proving this Profile&apos;s key before anything is sent.
       </Curtain>
     );
   }

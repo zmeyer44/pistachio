@@ -54,12 +54,12 @@ export function SyncPage() {
   const unavailable = useUnavailable("getSyncStatus");
   const failed = useLoadFailure("getSyncStatus");
   if (unavailable !== null) {
-    return <Unavailable title="Sync" description="Cookies, Spaces and restore points." reason={unavailable} section="sync" />;
+    return <Unavailable title="Sync" description="Cookies, Profiles and restore points." reason={unavailable} section="sync" />;
   }
   // And a getter that FAILED is not a getter that refused: showing the
   // section's defaults would report an outage as a fact about the account.
   if (failed !== null) {
-    return <LoadFailed title="Sync" description="Cookies, Spaces and restore points." reason={failed} />;
+    return <LoadFailed title="Sync" description="Cookies, Profiles and restore points." reason={failed} />;
   }
   return <SyncPageBody />;
 }
@@ -69,7 +69,7 @@ function SyncPageBody() {
   return (
     <Page
       title="Sync"
-      description="Sessions, Spaces, and tab restore points travel between your devices sealed under keys only your devices hold. The hub stores ciphertext and routes it; it can read none of it."
+      description="Sessions, Profiles, and tab restore points travel between your devices sealed under keys only your devices hold. The hub stores ciphertext and routes it; it can read none of it."
     >
       <ConnectionGroup />
       <SpacesGroup />
@@ -87,7 +87,7 @@ function GuaranteesGroup() {
     <Group title="What the hub can see" note="Each line is a property of the protocol, so there is nothing here to turn off.">
       <Fixed
         label="The hub stores ciphertext"
-        note="Records are sealed with a key derived per Space on your devices. The hub routes and orders them; it can read none of them."
+        note="Records are sealed with a key derived per Profile on your devices. The hub routes and orders them; it can read none of them."
         badge="Always on"
       />
       <Fixed
@@ -167,8 +167,8 @@ function SpacesGroup() {
 
   return (
     <Group
-      title="Spaces"
-      note="Every Space of this account takes part while this Mac is enrolled — each with its own key, so one Space's sessions never open another's."
+      title="Profiles"
+      note="Every Profile of this account takes part while this Mac is enrolled — each with its own key, so one Profile's sessions never open another's."
       footer="To keep one site out of sync everywhere, give it a Never override below."
     >
       {spaces.map((space) => {
@@ -182,7 +182,7 @@ function SpacesGroup() {
                 {space.name}
               </span>
             }
-            note={`${cloud ? "Cloud browser holds this Space's key" : "This Mac and your other desktops only"} · ${space.egressPolicy === "identity" ? "identity egress" : "direct egress"}`}
+            note={`${cloud ? "Cloud browser holds this Profile's key" : "This Mac and your other desktops only"} · ${space.egressPolicy === "identity" ? "identity egress" : "direct egress"}`}
           >
             <Badge variant={off ? "gray-subtle" : "green-subtle"} size="sm">
               {off ? "Not syncing" : "Syncing"}
@@ -215,8 +215,8 @@ function RestorePointsGroup() {
   return (
     <>
       <Group
-        title="Tabs and Spaces"
-        note="Each device publishes a restore point — its Spaces and their open tabs — sealed under the workspace key. Pull one to rebuild those tabs here."
+        title="Tabs and Profiles"
+        note="Each device publishes a restore point — its Profiles and their open tabs — sealed under the workspace key. Pull one to rebuild those tabs here."
         footer={
           blocked
             ? "The cloud browser is driving a site of this account. Pushing would overwrite what it is doing, so it waits."
@@ -243,7 +243,7 @@ function RestorePointsGroup() {
           </>
         }
       >
-        <Row label="Workspace sync" note="Spaces travel as one document; tabs as a restore point per device.">
+        <Row label="Workspace sync" note="Profiles travel as one document; tabs as a restore point per device.">
           <Badge
             variant={workspace.state === "error" ? "red-subtle" : workspace.state === "idle" ? "green-subtle" : "gray-subtle"}
             size="sm"
@@ -322,11 +322,11 @@ function RestorePointDialog({ points, onClose }: { points: RemoteRestorePoint[];
     <SettingsDialog
       icon={<History aria-hidden="true" />}
       title="Restore tabs from another device"
-      subtitle="Every point is that device's Spaces and open tabs at the moment it published."
+      subtitle="Every point is that device's Profiles and open tabs at the moment it published."
       busy={pending !== null}
       onClose={onClose}
       testId="restore-point-dialog"
-      footer="Replace rebuilds the listed Spaces; Merge only adds what is missing."
+      footer="Replace rebuilds the listed Profiles; Merge only adds what is missing."
       actions={
         <>
           <Button variant="secondary" size="sm" disabled={pending !== null} onClick={onClose}>
@@ -388,7 +388,7 @@ function RestorePointDialog({ points, onClose }: { points: RemoteRestorePoint[];
 
       {selected === null || scoped.length === 0 ? null : (
         <fieldset>
-          <legend className="mb-2 text-label-12 font-medium text-gray-1000">Spaces to restore</legend>
+          <legend className="mb-2 text-label-12 font-medium text-gray-1000">Profiles to restore</legend>
           <div className="overflow-hidden rounded-md bg-background-100 shadow-border">
             {scoped.map((spaceId) => {
               const space = spaces.find((candidate) => candidate.id === spaceId) ?? null;
@@ -398,7 +398,7 @@ function RestorePointDialog({ points, onClose }: { points: RemoteRestorePoint[];
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-label-13 text-gray-1000">{space?.name ?? spaceId}</span>
                     <span className="block truncate text-label-12 text-gray-900">
-                      {space === null ? "Not on this Mac yet — it arrives with the Spaces document." : `Space ${spaceId}`}
+                      {space === null ? "Not on this Mac yet — it arrives with the Profiles document." : `Profile ${spaceId}`}
                     </span>
                   </span>
                   <Switch
@@ -418,12 +418,12 @@ function RestorePointDialog({ points, onClose }: { points: RemoteRestorePoint[];
       )}
 
       <Note type="warning" size="sm">
-        Replace closes the tabs those Spaces have here and opens the ones in the restore point. Agent tabs and Spaces you
+        Replace closes the tabs those Profiles have here and opens the ones in the restore point. Agent tabs and Profiles you
         left out are untouched. The sessions those tabs need are installed first, so nothing loads signed out.
       </Note>
       {included.length === 0 ? (
         <Note type="secondary" size="sm">
-          Choose at least one Space to restore.
+          Choose at least one Profile to restore.
         </Note>
       ) : null}
       {error === null ? null : (
@@ -496,7 +496,7 @@ function OriginsGroup() {
       return;
     }
     if (spaceId === "") {
-      setError("Open a Space first — an origin's state is a fact about one jar.");
+      setError("Open a Profile first — an origin's state is a fact about one jar.");
       return;
     }
     const found = await run(async () => {
@@ -521,7 +521,7 @@ function OriginsGroup() {
         <Block label="Look up a site" note="Any host — it does not have to be open.">
           <div className="flex flex-wrap items-start gap-2">
             <Select
-              aria-label="Space"
+              aria-label="Profile"
               value={spaceId}
               items={spaces.map((space) => ({ value: space.id, label: space.name }))}
               onValueChange={(next) => setChosen(next)}
@@ -682,15 +682,15 @@ function RollbackDialog({
     <ConfirmDialog
       icon={<RotateCcw aria-hidden="true" />}
       title={`Roll back ${info.host}?`}
-      subtitle="Put this site's cookies in this Space back to the last version everyone agreed on."
+      subtitle="Put this site's cookies in this Profile back to the last version everyone agreed on."
       does={[
-        "Restores this Space's cookies for the site from the last converged snapshot.",
+        "Restores this Profile's cookies for the site from the last converged snapshot.",
         "Publishes that restoration, so your other devices follow it.",
         "Leaves the site's page open — reload it to see the restored session.",
       ]}
       doesNot={[
         "Does not undo anything on the site itself; a password you changed there stays changed.",
-        "Does not touch other sites, other Spaces, or agent partitions.",
+        "Does not touch other sites, other Profiles, or agent partitions.",
         "Does not change the site's sync setting — it stays as it is above.",
       ]}
       confirmLabel="Roll back this site"

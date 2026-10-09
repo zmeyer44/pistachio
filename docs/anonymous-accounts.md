@@ -1,5 +1,7 @@
 # Anonymous accounts
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Pistachio works without signing in, and until now "without signing in" also
 meant "without models": every model call goes through control's `/v1/ai/*`
 under a device token (docs/cloud-sync-design.md §7.2), and a Mac nobody signed
@@ -22,7 +24,7 @@ is lost, because nothing moves.
 | Devices         | exactly one, a Mac                              | any number                             |
 | Reaches         | the allow-list below                            | every device-tier route                |
 | Model spend     | a monthly allowance it cannot raise, and a pace | its own optional cap (`ai_budgets`)    |
-| Keys, sync, hub | none — it holds no Space secret                 | §7, §10 of the sync design             |
+| Keys, sync, hub | none — it holds no Profile secret                 | §7, §10 of the sync design             |
 | Lifetime        | swept after 90 days unseen                      | until deleted                          |
 
 `users.email` is nullable for this (UNIQUE ignores NULLs) and BetterAuth never
@@ -83,7 +85,7 @@ The limiters are in memory, per control process, like every other limiter in
 - `POST /v1/accounts/anonymous` (public) — body is the enroll body
   (`deviceId, name, platform: "macos", devicePublicKey, agreementPublicKey,
   challenge, signature`). One transaction makes the user, its `work` and
-  `__workspace__` Spaces (so an upgraded account is identical to a signed-up
+  `__workspace__` Profiles (so an upgraded account is identical to a signed-up
   one), and the device. → 201 `{userId, device, token, exp}` — a **device**
   token; there is no bootstrap step because there is no credential to exchange.
 - `POST /v1/account/upgrade {email, password}` (anonymous device bearer) — in
@@ -98,7 +100,7 @@ The limiters are in memory, per control process, like every other limiter in
   account by its own device token. Moves `ai_usage` and `audit_events`,
   carries over a recorded onboarding (the real account's own wins),
   **re-parents the device** so the Mac keeps its one id (D24), deletes the
-  anonymous user (its empty Spaces cascade). → `{linked, usageRows, device,
+  anonymous user (its empty Profiles cascade). → `{linked, usageRows, device,
   token, exp}` with the device's token under the real account. Only an
   anonymous account can be the source: 409 `not_anonymous` otherwise.
 
@@ -133,7 +135,7 @@ layer asks the new `modelsAvailable()` / `getModelToken()`.
   since control still holds the signed-out account's device row.
 - **Sign up** while anonymous → `POST /account/upgrade`. The store goes to
   `signed-up` _keeping the device token_; `enroll()` sees the token, skips
-  device enrollment, and does what a first enrollment does: mint the Space
+  device enrollment, and does what a first enrollment does: mint the Profile
   secrets, upload password wrappers, show the recovery code once. Survives a
   restart between the two steps.
 - **Sign in** to an existing account while anonymous → password login, unwrap
@@ -144,7 +146,7 @@ layer asks the new `modelsAvailable()` / `getModelToken()`.
   device afresh; the anonymous account is left for the sweep.
 - A 401 on an anonymous token that re-proving the key cannot fix (the account
   was swept) resets to `unenrolled` and starts another — no "revoked" banner,
-  no `onSignedOut`, and in particular no clearing of the Spaces' cookie jars.
+  no `onSignedOut`, and in particular no clearing of the Profiles' cookie jars.
 - An anonymous sign-up and a sign-in never overlap: each waits out the other,
   because both install a token on the one control client. A retry that comes
   due during a sign-in is turned away, and is owed again when the sign-in ends
@@ -165,7 +167,7 @@ changes, since the anonymous account can land a moment after the wizard opens.
 
 ## What "nothing is lost" covers
 
-Everything local stays local either way — Spaces, tabs, memories, favorites,
+Everything local stays local either way — Profiles, tabs, memories, favorites,
 the watchtower archive; none of it ever lived in the anonymous account. On the
 server the anonymous account holds its meter, its audit trail, the onboarding
 timestamp and the device, and:
@@ -180,7 +182,7 @@ as it does today for a Mac that signs in after being used signed out.
 
 - **Anonymous integrations / vault.** Excluded on purpose (see "What it can
   do"). Allowing them means a link has to re-seal rows from the anonymous
-  account's Space keys to the real account's where Space ids collide (`work`,
+  account's Profile keys to the real account's where Profile ids collide (`work`,
   `__workspace__`) — the client holds both secrets at sign-in, so it is
   possible, but it is its own project.
 - **A shared limiter.** The three bounds are per control process; more than one

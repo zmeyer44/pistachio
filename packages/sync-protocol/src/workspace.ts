@@ -16,8 +16,9 @@ import { compareHlc, type Hlc } from "./hlc.js";
 import type { DeviceKind } from "./device.js";
 
 /* ------------------------------------------------------------------ *
- * Durable tab session — structural copy of the desktop's
- * `shared/tab-session.ts` shapes so this package never imports the app.
+ * Durable tab session — structural copy of the shapes in
+ * `@pistachio/shell-contracts/tab-session` (once the desktop's
+ * `shared/tab-session.ts`), so this package never imports the app.
  * ------------------------------------------------------------------ */
 
 export type DurableSplitMode = "vertical" | "horizontal" | "grid";
@@ -49,15 +50,27 @@ export interface DurableTab {
   resume?: { url: string; scrollX: number; scrollY: number; drafts: Array<{ id: string; name: string; value: string }> };
 }
 
-/** A titled, coloured run of day tabs kept together (the shell's `TabGroupInfo`). */
+/**
+ * A space (the shell's `TabGroupInfo`, a tab group): tabs kept together, titled and coloured — or none, an empty space
+ * (docs/spaces.md). A structural copy with no parity test behind it, so keep it in step with
+ * `@pistachio/shell-contracts/tab-groups` by hand: it fell behind once (`loose` and `anchorId` were missing until
+ * 2026-10-09). `naming` is of the moment and never stored, so it is not here.
+ */
 export interface DurableTabGroup {
   id: string;
   title: string;
   color: "gray" | "green" | "blue" | "purple" | "amber" | "pink" | "red" | "orange";
+  /** Empty for an empty space; never for a loose tab's or a page's. */
   tabIds: string[];
   origin: "auto" | "manual";
   open: boolean;
   createdAt: number;
+  /** A loose tab's space: of its one tab, drawn as the tab alone. */
+  loose?: boolean;
+  /** A page's space: led by a sidebar entry's page, this being the entry's anchor. */
+  anchorId?: string;
+  /** An empty space's place among the row's units (a tab id, `split:<id>` or `group:<id>`) it stands before. */
+  beforeUnit?: string;
 }
 
 export interface DurableSpaceSession {
@@ -67,8 +80,10 @@ export interface DurableSpaceSession {
   activeTabId: string | null;
   recentTabIds: string[];
   splitGroups: DurableSplitGroup[];
-  /** Absent in restore points written before tab groups. */
+  /** Absent in restore points written before tab groups; may hold empty spaces since 2026-10-09. */
   tabGroups?: DurableTabGroup[];
+  /** The Profile's (Space's) current space when it was saved; absent before 2026-10-09. */
+  currentGroupId?: string;
 }
 
 export const TAB_SESSION_VERSION = 1;
@@ -364,7 +379,11 @@ function sessionBytes(session: DurableTabSession): number {
     for (const tab of space.tabs) total += tabBytes(tab);
     total += space.recentTabIds.reduce((sum, id) => sum + id.length + 3, 0);
     total += space.splitGroups.length * 192;
-    for (const group of space.tabGroups ?? []) total += 160 + group.title.length + group.tabIds.reduce((sum, id) => sum + id.length + 3, 0);
+    total += space.currentGroupId?.length ?? 0;
+    for (const group of space.tabGroups ?? []) {
+      total += 160 + group.title.length + (group.anchorId?.length ?? 0) + (group.beforeUnit?.length ?? 0);
+      total += group.tabIds.reduce((sum, id) => sum + id.length + 3, 0);
+    }
   }
   return total;
 }
@@ -374,19 +393,21 @@ function sessionBytes(session: DurableTabSession): number {
  * group reopens its panes together, so a partial one is not the same group. */
 function withTabs(space: DurableSpaceSession, keep: readonly DurableTab[]): DurableSpaceSession {
   const ids = new Set(keep.map((tab) => tab.id));
+  // A space, unlike a split, is still itself with fewer tabs — or none (since 2026-10-09; until then an emptied one was
+  // dropped): it keeps the members that survived. A loose tab's or a page's is its tab's, and goes with it, as the
+  // session's own read (sanitizeTabGroups) would drop it anyway.
+  const tabGroups = space.tabGroups
+    ?.map((group) => ({ ...group, tabIds: group.tabIds.filter((id) => ids.has(id)) }))
+    .filter((group) => group.tabIds.length > 0 || (group.loose !== true && group.anchorId === undefined));
   return {
     tabs: [...keep],
     activeTabId: space.activeTabId !== null && ids.has(space.activeTabId) ? space.activeTabId : (keep[0]?.id ?? null),
     recentTabIds: space.recentTabIds.filter((id) => ids.has(id)),
     splitGroups: space.splitGroups.filter((group) => group.tabIds.every((id) => ids.has(id))),
-    // A tab group, unlike a split, is still itself with fewer tabs: it keeps the members that survived.
-    ...(space.tabGroups === undefined
-      ? {}
-      : {
-          tabGroups: space.tabGroups
-            .map((group) => ({ ...group, tabIds: group.tabIds.filter((id) => ids.has(id)) }))
-            .filter((group) => group.tabIds.length > 0),
-        }),
+    ...(tabGroups === undefined ? {} : { tabGroups }),
+    ...(space.currentGroupId !== undefined && tabGroups?.some((group) => group.id === space.currentGroupId) === true
+      ? { currentGroupId: space.currentGroupId }
+      : {}),
   };
 }
 
@@ -447,7 +468,9 @@ export function boundRestorePoint(
   const kept: Record<string, DurableSpaceSession> = {};
   for (const [spaceId, space] of Object.entries(trimmed.spaces)) {
     const keep = space.tabs.filter((tab) => !dropped.has(`${spaceId}\u0000${tab.id}`));
-    if (keep.length > 0) kept[spaceId] = withTabs(space, keep);
+    // (A Space — a Profile — with no tabs but spaces of its own is kept as the session's read keeps it.)
+    const rebuilt = withTabs(space, keep);
+    if (keep.length > 0 || (rebuilt.tabGroups?.length ?? 0) > 0) kept[spaceId] = rebuilt;
   }
   trimmed = { version: trimmed.version, spaces: kept };
   return trimmed;

@@ -14,7 +14,7 @@ import { createServer, type Server } from "node:http";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { isReaderUrl } from "@pistachio/shell-contracts/reader";
-import { api, box, center, createGroup, launchDesk, openGroupDesk, openTabs, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
+import { api, box, center, createGroup, launchDesk, selectSpace, openTabs, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-page-menu");
 
@@ -71,7 +71,7 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
     await expect.poll(tabUrl).toBe(article);
     await createGroup(shell, "page-menu", [tabId], "Reading", "blue");
     await selectTab(shell, tabId);
-    await openGroupDesk(shell, "page-menu");
+    await selectSpace(shell, "page-menu");
     await expect(shell.getByTestId("desk-surface")).toBeVisible();
     await expect(win()).toHaveCount(1);
     await settled(shell, app);

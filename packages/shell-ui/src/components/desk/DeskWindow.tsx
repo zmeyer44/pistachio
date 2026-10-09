@@ -706,8 +706,9 @@ function WindowPage({
     <div className="grid size-full place-items-center">
       <PanePlaceholder tab={tab}>
         <span className="max-w-60 truncate text-[12px] font-medium text-gray-1000">{tab.title || displayHost(tab.url)}</span>
-        {/* A window's tab is never left asleep: main wakes every tab with a window out (BrowserController.setDesk). */}
-        {waking || tab.lifecycle === "suspended" ? <span className="text-[11px] text-gray-700">Waking…</span> : null}
+        {/* Only a page main is waking says so: since 2026-10-09 a window nothing calls for (covered, minimized) is left
+            asleep on purpose (DeskState.live), its placeholder its favicon and title alone. */}
+        {waking ? <span className="text-[11px] text-gray-700">Waking…</span> : null}
       </PanePlaceholder>
     </div>
   );

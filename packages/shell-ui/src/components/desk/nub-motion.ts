@@ -380,8 +380,9 @@ export class NubMotion {
       const k = shape.radius / NUB_IDLE.radius;
       const shift = -(shape.sink - NUB_IDLE.sink);
       parts.face.style.transform = s === 0 && freed === 0 ? "" : `translate(${shift.toFixed(2)}px, ${shift.toFixed(2)}px) scale(${k.toFixed(4)})`;
-      // (Free, its mark is centred on it: in the corner, it sits where the circle shows, a little up and in.)
-      const centred = 2 * clamp(freed, 0, 1);
+      // (Free, its mark is centred on it: in the corner, it sits where the circle shows, a little up and in — 1px, its
+      // margin's half, .desk-nub-mark — so it comes that far back down and out.)
+      const centred = clamp(freed, 0, 1);
       parts.mark.style.transform = s === 0 && freed === 0 ? "" : `translate(${centred.toFixed(2)}px, ${centred.toFixed(2)}px) scale(${((1 + 0.08 * s) / k).toFixed(4)})`;
     }
     const centre: Point = { x: -shape.sink, y: -shape.sink };
@@ -457,7 +458,7 @@ export class NubMotion {
       const row = morph.open ? smooth(0.4, 0.9, m) : 1 - smooth(0, 0.35, m);
       pill.body.style.opacity = row.toFixed(3);
       pill.body.style.filter = row > 0.99 ? "" : `blur(${(2 * (1 - row)).toFixed(2)}px)`;
-      pill.body.style.clipPath = `inset(${inset} round 20px)`;
+      pill.body.style.clipPath = `inset(${inset} round 26px)`;
       if (morph.open && morph.bridged && m < BRIDGE_SNAP) {
         bridged = true;
         const end = { x: box.x + box.w - box.h / 2, y: box.y + box.h / 2 };

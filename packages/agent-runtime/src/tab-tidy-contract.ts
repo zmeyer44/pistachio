@@ -223,12 +223,14 @@ export function tidyTabDescription(tab: { title: string; url: string }): { title
 /**
  * A name the model gave a group, made fit to show: one line, bounded, no
  * quotes or trailing punctuation — or null when there is nothing left, or
- * when it only said what the placeholder says.
+ * when it only said what the placeholder says: "New space" since
+ * 2026-10-09, when a person's tab groups became spaces (docs/spaces.md),
+ * and "New group" before it, either of which a model may echo.
  */
 export function tidyGroupName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const name = cleanTitle(value.replace(/^["'“”‘’\s]+|["'“”‘’\s.,;:!]+$/gu, ""));
-  return name === "" || /^(new|untitled|tab) group$/iu.test(name) || /^group$/iu.test(name) ? null : name;
+  return name === "" || /^(?:(?:new|untitled|tab) )?(?:group|space)$/iu.test(name) ? null : name;
 }
 
 /** The model's raw answer (anonymised ids) mapped back to the host's ids; unknown ids fall away. */
@@ -287,9 +289,10 @@ export function tidySummaryText(summary: TidySummary): string {
   const parts: string[] = [];
   const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
   if (summary.archivedTabs > 0) parts.push(`archived ${count(summary.archivedTabs, "tab", "tabs")}`);
-  if (summary.newGroups > 0) parts.push(`made ${count(summary.newGroups, "group", "groups")}`);
-  if (summary.joinedTabs > 0) parts.push(`grouped ${count(summary.joinedTabs, "tab", "tabs")}`);
-  if ((summary.favoriteGroups ?? 0) > 0) parts.push(`brought down ${count(summary.favoriteGroups ?? 0, "favorite's group", "favorites' groups")}`);
+  // A person's tab groups are spaces (docs/spaces.md; "made 2 groups", "grouped 3 tabs" until 2026-10-09).
+  if (summary.newGroups > 0) parts.push(`made ${count(summary.newGroups, "space", "spaces")}`);
+  if (summary.joinedTabs > 0) parts.push(`put ${count(summary.joinedTabs, "tab in a space", "tabs in spaces")}`);
+  if ((summary.favoriteGroups ?? 0) > 0) parts.push(`brought down ${count(summary.favoriteGroups ?? 0, "favorite's space", "favorites' spaces")}`);
   if (summary.favoritesReset > 0 && parts.length === 0) parts.push(`reset ${count(summary.favoritesReset, "favorite", "favorites")}`);
   if (parts.length === 0) return "Tabs are already tidy";
   const said = parts.join(" · ");

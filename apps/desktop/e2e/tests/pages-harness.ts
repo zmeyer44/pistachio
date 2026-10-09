@@ -1,10 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { expect, type ElectronApplication, type Locator, type Page } from "@playwright/test";
-import type { WebContentsView } from "electron";
-import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { captureEnabled } from "./app";
+import { fromFrameMenu, reachFrame, windowSelector } from "./desk-harness";
+import { liveViews } from "./windows";
 
 /**
  * What the address, home, pages, site and popup specs share: finding a page
@@ -73,17 +73,9 @@ export async function pageAt(app: ElectronApplication, match: string | ((page: P
   return newest()!;
 }
 
-/** Tab views main is showing (the chrome's own views excluded): none while the shell draws the pane. */
-export function visibleTabViews(app: ElectronApplication): Promise<number> {
-  return app.evaluate(({ BrowserWindow }, hashes) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    if (window === undefined) throw new Error("Pistachio window is unavailable");
-    return window.contentView.children.filter((child) => {
-      if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return false;
-      const url = (child as WebContentsView).webContents.getURL();
-      return !Object.values(hashes).some((hash) => url.endsWith(hash));
-    }).length;
-  }, CHROME_VIEW_HASHES);
+/** Tab views main is showing, live (the chrome's own views excluded): none while the shell draws the page (home, the brief) or a still. */
+export async function visibleTabViews(app: ElectronApplication): Promise<number> {
+  return (await liveViews(app)).length;
 }
 
 /** The person's tabs, in order (the agent's left out). */
@@ -122,25 +114,16 @@ export async function pick(shell: Page, target: Locator, item: string | RegExp):
 }
 
 /**
- * Bring out the pane toolbar, by the trigger strip's own pointer move (main
- * cannot read the OS pointer under Playwright).
+ * The site-info popover of the tab in use, opened as a person does on the
+ * desk: from its window's ⋯ (the frame's menu, desk-harness's fromFrameMenu),
+ * the frame brought within reach first (a Drawer that is in comes out).
  */
-export async function revealPaneToolbar(shell: Page): Promise<void> {
-  await expect(async () => {
-    const trigger = shell.getByTestId("pane-toolbar-trigger");
-    if ((await trigger.count()) > 0) await trigger.dispatchEvent("pointermove");
-    await expect(shell.getByTestId("pane-toolbar")).not.toHaveAttribute("data-hidden", "", { timeout: 1_000 });
-  }).toPass({ timeout: 15_000 });
-}
-
-/** Open the active page's site-info popover from the pane toolbar. */
-export async function openSiteInfo(shell: Page): Promise<Locator> {
+export async function openSiteInfo(shell: Page, app: ElectronApplication): Promise<Locator> {
+  const tabId = await shell.evaluate(async () => (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).activeTabId);
+  if (tabId === null) throw new Error("no tab in use to show the site of");
+  await reachFrame(app, shell, tabId);
+  await fromFrameMenu(shell, windowSelector(tabId), "desk-page-site-info");
   const popover = shell.getByTestId("site-info-popover");
-  await expect(async () => {
-    const trigger = shell.getByTestId("pane-toolbar-trigger");
-    if ((await trigger.count()) > 0) await trigger.dispatchEvent("pointermove");
-    await shell.getByTestId("site-info-button").click({ timeout: 1_000 });
-    await expect(popover).toBeVisible({ timeout: 1_000 });
-  }).toPass({ timeout: 15_000 });
+  await expect(popover).toBeVisible();
   return popover;
 }

@@ -13,7 +13,7 @@
 
 import { expect, test, type ElectronApplication } from "@playwright/test";
 import { IPC } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, INVOICES, launchDesk, openGroupDesk, openNubMenu, openTabs, reachBar, screenshots, settled, VENDOR } from "./desk-harness";
+import { box, createGroup, INVOICES, launchDesk, selectSpace, openNubMenu, openTabs, reachBar, screenshots, settled, VENDOR } from "./desk-harness";
 
 const capture = screenshots("desk-dictation");
 
@@ -66,7 +66,7 @@ test("dictation in the desk's Bar: it listens, and what was said lands at the ca
     const speech = await transcriber(app);
     const tabIds = await openTabs(shell, [INVOICES, VENDOR]);
     await createGroup(shell, "desk-dictation", tabIds, "Northstar", "green");
-    await openGroupDesk(shell, "desk-dictation");
+    await selectSpace(shell, "desk-dictation");
     await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");

@@ -1369,8 +1369,8 @@ describe("streamed turns", () => {
 describe("the desk", () => {
   function deskHost() {
     const host = {
-      state: vi.fn(async () => "Desk: the tab group “Lisbon”.\n- tab tab-1 “Flight” — 0 0 50 100 — in use"),
-      arrange: vi.fn(async () => "Desk: the tab group “Lisbon”, arranged."),
+      state: vi.fn(async () => "Desk: the space “Lisbon”.\n- tab tab-1 “Flight” — 0 0 50 100 — in use"),
+      arrange: vi.fn(async () => "Desk: the space “Lisbon”, arranged."),
       note: vi.fn(async () => {}),
       ungroup: vi.fn(async () => {}),
       read: vi.fn(async (id: string) =>

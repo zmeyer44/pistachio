@@ -696,7 +696,7 @@ describe("Watchtower lifecycle", () => {
 
     it("never keeps an excluded site, or a tab the agent is driving", async () => {
       await service.request("personal", { type: "settings", patch: { excludedHosts: ["example.com"] } });
-      expect(await service.keep("tab", "example.com/first")).toEqual({ skipped: "This site or Space is excluded from Watchtower." });
+      expect(await service.keep("tab", "example.com/first")).toEqual({ skipped: "This site or Profile is excluded from Watchtower." });
       expect(await service.keep("gone", "x")).toEqual({ skipped: "The page is no longer open." });
       expect(count(worker, "keep")).toBe(0);
     });

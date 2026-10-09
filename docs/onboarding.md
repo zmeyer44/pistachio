@@ -1,5 +1,7 @@
 # Onboarding
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 The first time Pistachio opens it does not show the browser. It shows a
 four-step walkthrough, and only when that is done —
 or skipped — does the chrome appear, already furnished with what the
@@ -96,7 +98,11 @@ list, the person's own shortcut bindings) and `pistachio://learn/agent`,
 previous/next), reads the font and the video files off disk, and hands the
 builders the context through `setWelcomeContext`. They are drawn in the
 person's theme — the appearance's gradient, colours, and radius — and greet
-them by name.
+them by name. The desktop passes `splits: false` (2026-10-09): it has no split
+view, so lesson 2 (`learn/spaces`, *The sidebar, favorites & Profiles*;
+*Spaces, favorites & split view* until then) teaches a space in its place,
+its video slot the "coming soon" card, and the overview leaves out the split
+shortcut; the web keeps the split step. There is no lesson of spaces' own.
 
 Each page keeps a video slot. `WELCOME_VIDEOS` names the source for each;
 null draws a "coming soon" card. Files are served from the welcome assets

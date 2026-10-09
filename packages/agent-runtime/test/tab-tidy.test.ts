@@ -185,6 +185,7 @@ describe("naming a group", () => {
     expect(await nameTabGroup(tabs, [], { model: modelAnswering("not json") })).toBeNull();
     expect(await nameTabGroup([], [], { model: modelAnswering(JSON.stringify({ title: "Anything" })) })).toBeNull();
     expect(await nameTabGroup(tabs, [], { model: modelAnswering(JSON.stringify({ title: "New group" })) })).toBeNull();
+    expect(await nameTabGroup(tabs, [], { model: modelAnswering(JSON.stringify({ title: "New space" })) })).toBeNull();
   });
 
   it("makes a name fit to show", () => {
@@ -193,6 +194,12 @@ describe("naming a group", () => {
     expect(tidyGroupName("   ")).toBeNull();
     expect(tidyGroupName(7)).toBeNull();
     expect(tidyGroupName("Untitled group")).toBeNull();
+    expect(tidyGroupName("group")).toBeNull();
+    // A tab group is a space to a person since 2026-10-09: its placeholders are no name either.
+    expect(tidyGroupName("New space")).toBeNull();
+    expect(tidyGroupName("untitled space")).toBeNull();
+    expect(tidyGroupName("Space")).toBeNull();
+    expect(tidyGroupName("Space research")).toBe("Space research");
   });
 });
 
@@ -211,7 +218,9 @@ describe("tidySummaryText", () => {
   });
 
   it("says what a run did, in one line", () => {
-    expect(tidySummaryText(summary({ archivedTabs: 6, newGroups: 2 }))).toBe("Archived 6 tabs · made 2 groups");
+    expect(tidySummaryText(summary({ archivedTabs: 6, newGroups: 2 }))).toBe("Archived 6 tabs · made 2 spaces");
+    expect(tidySummaryText(summary({ newGroups: 1, joinedTabs: 3 }))).toBe("Made 1 space · put 3 tabs in spaces");
+    expect(tidySummaryText(summary({ joinedTabs: 1, favoriteGroups: 2 }))).toBe("Put 1 tab in a space · brought down 2 favorites' spaces");
     expect(tidySummaryText(summary({ archivedTabs: 1 }))).toBe("Archived 1 tab");
     expect(tidySummaryText(summary({ favoritesReset: 2 }))).toBe("Reset 2 favorites");
     expect(tidySummaryText(summary({}))).toBe("Tabs are already tidy");

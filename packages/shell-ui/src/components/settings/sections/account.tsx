@@ -85,7 +85,7 @@ function RevokedBanner() {
     <Group type="error" title="This device was revoked" note="Its enrollment is no longer accepted by the control plane.">
       <Block>
         <Note type="error" icon={<ShieldAlert aria-hidden="true" />}>
-          Sync stopped and the hub closed this device&rsquo;s socket. Your Spaces, tabs, and the sessions already on this
+          Sync stopped and the hub closed this device&rsquo;s socket. Your Profiles, tabs, and the sessions already on this
           Mac were left alone. Sign in again below to enroll a fresh key for this Mac.
         </Note>
       </Block>
@@ -189,7 +189,7 @@ function SignedOut() {
     }
     if (creating && confirm !== password) {
       setFieldError("confirm");
-      setError("The two passwords do not match. This one seals your Space keys, so it cannot be recovered later.");
+      setError("The two passwords do not match. This one seals your Profile keys, so it cannot be recovered later.");
       return;
     }
     const signedIn = await run(async () => {
@@ -206,8 +206,8 @@ function SignedOut() {
       title={creating ? "Create an account" : "Sign in"}
       note={
         creating
-          ? "Your password derives the key that wraps every Space secret. Pistachio cannot reset it for you; the recovery code minted after enrollment is the only other way in."
-          : "Signing in unwraps this account's Space keys on this Mac. Enrolling the machine is the next step."
+          ? "Your password derives the key that wraps every Profile secret. Pistachio cannot reset it for you; the recovery code minted after enrollment is the only other way in."
+          : "Signing in unwraps this account's Profile keys on this Mac. Enrolling the machine is the next step."
       }
       footer={
         creating
@@ -742,7 +742,7 @@ function RecoveryCodeCard() {
   return (
     <Group
       title="Recovery code"
-      note="A second way to unwrap your Space keys if you forget the password. Generating one retires the previous code."
+      note="A second way to unwrap your Profile keys if you forget the password. Generating one retires the previous code."
       footer={code === null ? "Shown once, right here. Nothing keeps a copy — not this Mac, not control." : "Keep it somewhere a password manager cannot lose."}
       footerHighlight={code !== null}
       footerAction={
@@ -806,7 +806,7 @@ function ChangePasswordCard() {
   return (
     <Group
       title="Change password"
-      note="Every Space wrapper is re-sealed under the new password from this Mac. Devices that are offline pick the new wrappers up when they next reach control."
+      note="Every Profile wrapper is re-sealed under the new password from this Mac. Devices that are offline pick the new wrappers up when they next reach control."
       footer={done ? "Password changed and every wrapper re-sealed." : "Your recovery code keeps working; only password wrappers are replaced."}
       footerHighlight={done}
       footerAction={
@@ -867,7 +867,7 @@ function SignOutCard() {
     <>
       <Group
         title="Sign out of this Mac"
-        note="Forgets the account here: keys, tokens, and every Space's cookie jar. Your Spaces, tabs, and settings stay."
+        note="Forgets the account here: keys, tokens, and every Profile's cookie jar. Your Profiles, tabs, and settings stay."
         footer="The account and your other devices are untouched."
         footerAction={
           <Button variant="error" size="sm" prefix={<LogOut aria-hidden="true" />} onClick={() => setOpen(true)} data-testid="account-sign-out">
@@ -881,14 +881,14 @@ function SignOutCard() {
         <ConfirmDialog
           icon={<LogOut aria-hidden="true" />}
           title="Sign out of this Mac?"
-          subtitle="You will be signed out of every site in every Space on this machine."
+          subtitle="You will be signed out of every site in every Profile on this machine."
           does={[
-            "Deletes this Mac's account keys, device token, and Space secrets.",
-            "Clears every Space's cookies, storage, and cache, then reloads its tabs.",
+            "Deletes this Mac's account keys, device token, and Profile secrets.",
+            "Clears every Profile's cookies, storage, and cache, then reloads its tabs.",
             "Stops sync; nothing more is published or pulled from this machine.",
           ]}
           doesNot={[
-            "Does not delete your account, your Spaces, your tabs, or your settings.",
+            "Does not delete your account, your Profiles, your tabs, or your settings.",
             "Does not sign out your other devices or the cloud browser.",
             "Does not remove anything already published — signing in again restores it.",
           ]}

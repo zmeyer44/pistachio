@@ -1,9 +1,10 @@
 import { createServer, type Server } from "node:http";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { shellPage } from "./windows";
+import { shellReady } from "./windows";
 import { launchApp, newProfile } from "./app";
 import { snapshot } from "./chrome-harness";
+import { box, openMore, openTabs, settled, windowSelector, type Box } from "./desk-harness";
 
 const navigate = (shell: Page, tabId: string, url: string): Promise<void> =>
   shell.evaluate(({ tabId, url }) => (window as unknown as { pistachio: PistachioApi }).pistachio.navigate(tabId, url), { tabId, url });
@@ -74,10 +75,10 @@ async function stackOf(shell: Page, tabId: string) {
 }
 
 // One profile, restarted twice: a tab's back/forward stack through duplicate,
-// reopen and restart, and which tabs, splits and sleeping tabs come back.
-// The restarts are shared — the stack's check runs in the launch that
-// restores the split — so each test leaves the app open for the next.
-test.describe.serial("tabs across restarts", { tag: ["@tabs", "@split", "@startup"] }, () => {
+// reopen and restart, and which tabs, spaces, desk windows and sleeping tabs
+// come back. The restarts are shared — the stack's check runs in the launch
+// that restores the space — so each test leaves the app open for the next.
+test.describe.serial("tabs across restarts", { tag: ["@tabs", "@desk", "@startup"] }, () => {
   test.describe.configure({ timeout: 60_000 });
   let server: Server;
   let origin: string;
@@ -90,9 +91,8 @@ test.describe.serial("tabs across restarts", { tag: ["@tabs", "@split", "@startu
   const draft = "Book two rooms near the station.";
 
   async function launch(): Promise<void> {
-    ({ app } = await launchApp({ userData }));
-    shell = await shellPage(app);
-    await shell.waitForLoadState("domcontentloaded");
+    ({ app } = await launchApp({ userData, size: { width: 1440, height: 900 }, clearOfCursor: true }));
+    shell = await shellReady(app);
   }
 
   async function restart(): Promise<void> {
@@ -169,44 +169,48 @@ test.describe.serial("tabs across restarts", { tag: ["@tabs", "@split", "@startu
     await expect.poll(async () => (await snapshot(shell)).tabs.map((tab) => tab.id)).toEqual([reopened]);
   });
 
-  test("human tabs and split groups restore durably while background tabs remain suspended", async () => {
-    // The reopened tab above is the first; a second joins it in a split, and a third sleeps.
+  test("human tabs and their space restore durably — the current space, its windows where they were — while background tabs remain suspended", async () => {
+    // The reopened tab above is the first; a second joins its space (a new tab joins the current one, out on its desk),
+    // and a third, opened in the background, sleeps.
     const first = reopened;
-    const open = async (url: string): Promise<string> => {
-      await shell.evaluate((target) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(target), url);
-      const active = (await snapshot(shell)).activeTabId;
-      if (active === null) throw new Error(`no tab for ${url}`);
-      return active;
-    };
-    second = await open("pistachio://demo/vendors/atlas-medical");
-    if (second === first) throw new Error("second tab unavailable");
-    background = await open("pistachio://demo/invoices?restored=background");
-    if (background === second) throw new Error("background tab unavailable");
-
-    await shell.evaluate(
-      ({ secondId, firstId }) =>
-        (window as unknown as { pistachio: PistachioApi }).pistachio
-          .selectTab(secondId)
-          .then(() => (window as unknown as { pistachio: PistachioApi }).pistachio.splitWith(firstId, "right")),
-      { secondId: second, firstId: first },
-    );
+    await shell.evaluate((target) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(target), "pistachio://demo/vendors/atlas-medical");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).not.toBe(first);
+    second = (await snapshot(shell)).activeTabId!;
+    [background] = (await openTabs(shell, ["pistachio://demo/invoices?restored=background"])) as [string];
+    const space = (await snapshot(shell)).currentGroupId!;
+    expect((await snapshot(shell)).tabGroups.find((group) => group.id === space)?.tabIds).toEqual([first, second]);
+    // Side by side, neither over the other: both in view, so both are woken after the restart.
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await openMore(shell);
+    await shell.getByTestId("desk-tile").click();
+    await shell.mouse.move(900, 450);
+    await settled(shell, app);
+    const left: Record<string, Box> = { [first]: await box(shell, windowSelector(first)), [second]: await box(shell, windowSelector(second)) };
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.suspendTab(tabId), background);
     let state = await snapshot(shell);
-    expect(state).toMatchObject({ activeTabId: second, secondaryTabId: first, splitMode: "vertical" });
+    expect(state).toMatchObject({ activeTabId: second, currentGroupId: space, splitMode: "single" });
     expect(state.tabs.find((tab) => tab.id === background)?.lifecycle).toBe("suspended");
 
     await restart();
     state = await snapshot(shell);
     expect(state.tabs.map((tab) => tab.id)).toEqual([first, second, background]);
-    expect(state).toMatchObject({ activeTabId: second, secondaryTabId: first, splitMode: "vertical" });
-    expect(state.tabs.find((tab) => tab.id === first)?.lifecycle).toBe("live");
-    expect(state.tabs.find((tab) => tab.id === second)?.lifecycle).toBe("live");
-    expect(state.tabs.find((tab) => tab.id === background)?.lifecycle).toBe("suspended");
+    expect(state).toMatchObject({ activeTabId: second, currentGroupId: space });
+    expect(state.tabGroups.find((group) => group.id === space)?.tabIds).toEqual([first, second]);
+    await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${space}"]`)).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell, app);
+    for (const tabId of [first, second]) {
+      const now = await box(shell, windowSelector(tabId));
+      for (const key of ["x", "y", "width", "height"] as const) expect(Math.abs(now[key] - left[tabId]![key])).toBeLessThan(3);
+    }
+    await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => tab.id === first)?.lifecycle).toBe("live");
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === second)?.lifecycle).toBe("live");
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === background)?.lifecycle).toBe("suspended");
     await expect(shell.getByLabel("Sleeping")).toHaveCount(1);
   });
 
   test("after a restart a tab's back/forward stack is back, and its draft, by design, is not", async () => {
-    // The reopened tab came back live, in its split, from the restart above.
+    // The reopened tab came back live, a window of its space, from the restart above.
     const hotels = `${origin}/hotels`;
     await expect.poll(() => stackOf(shell, reopened)).toEqual({ url: hotels, loading: false, canGoBack: true });
     expect(await draftsAt(app!, hotels)).toEqual([""]);
@@ -219,18 +223,24 @@ test.describe.serial("tabs across restarts", { tag: ["@tabs", "@split", "@startu
     expect((await snapshot(shell)).tabs.find((tab) => tab.id === reopened)).toMatchObject({ canGoBack: true, canGoForward: true });
   });
 
-  test("a woken tab stays live across a restart, and the split it left sleeps", async () => {
+  test("a tab chosen stays live across a restart, its space the current one, and the space it left sleeps", async () => {
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), background);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(background);
     expect((await snapshot(shell)).tabs.find((tab) => tab.id === background)?.lifecycle).toBe("live");
+    const space = (await snapshot(shell)).currentGroupId;
+    expect((await snapshot(shell)).looseGroups?.find((group) => group.id === space)?.tabIds).toEqual([background]);
 
     await restart();
     const state = await snapshot(shell);
     expect(state.activeTabId).toBe(background);
+    expect(state.currentGroupId).toBe(space);
     expect(state.tabs.find((tab) => tab.id === background)?.lifecycle).toBe("live");
     expect(state.tabs.find((tab) => tab.id === reopened)?.lifecycle).toBe("suspended");
     expect(state.tabs.find((tab) => tab.id === second)?.lifecycle).toBe("suspended");
-    expect(state.splitGroups).toEqual([expect.objectContaining({ primaryTabId: second, secondaryTabId: reopened, mode: "vertical" })]);
-    await expect(shell.getByLabel("Sleeping")).toHaveCount(2);
+    expect(state.splitGroups).toEqual([]);
+    // The desk is the tab's space's: its one window, live; the space it left keeps its windows to itself.
+    await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${space!}"]`)).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await expect(shell.locator(windowSelector(background))).toHaveCount(1);
   });
 });

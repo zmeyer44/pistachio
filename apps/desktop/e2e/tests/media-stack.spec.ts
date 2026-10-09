@@ -12,6 +12,24 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage } from "./windows";
 import { captureEnabled, launchApp } from "./app";
 import { capturePage, closeApp, pageAt } from "./chrome-harness";
+import { openTabs, selectTab, snapshot } from "./desk-harness";
+
+/**
+ * A page opened in a space of its own and chosen — as a new tab in front was
+ * before the desk was always up (docs/spaces.md): the desk passes to it, and
+ * choosing the tab that was in use again puts it off the desk, in the
+ * background, where what it plays is the sidebar's. (A new tab the shell makes
+ * would join the current space, its window staying out on the desk — in view.)
+ * Returns the tab that was in use before.
+ */
+async function openInItsOwnSpace(shell: Page, url: string): Promise<string> {
+  const original = (await snapshot(shell)).activeTabId;
+  if (original === null) throw new Error("No original tab");
+  const [tabId] = (await openTabs(shell, [url])) as [string];
+  await selectTab(shell, tabId);
+  await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(tabId);
+  return original;
+}
 
 let audioServer: Server;
 let AUDIO_URL: string;
@@ -157,13 +175,7 @@ test("background playback becomes a fully controllable sidebar stack", { tag: ["
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");
-    const originalTabId = await shell.evaluate(async (url) => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      const snapshot = await api.getSnapshot();
-      await api.createTab(url);
-      if (snapshot.activeTabId === null) throw new Error("No original tab");
-      return snapshot.activeTabId;
-    }, AUDIO_URL);
+    const originalTabId = await openInItsOwnSpace(shell, AUDIO_URL);
     const mediaPage = await pageAt(app, AUDIO_URL);
     await installPlayer(mediaPage);
     await expect
@@ -488,13 +500,7 @@ test("a playing video becomes a live extension of the sidebar mini player", { ta
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");
-    const originalTabId = await shell.evaluate(async () => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      const snapshot = await api.getSnapshot();
-      await api.createTab("pistachio://demo/invoices?media-stack");
-      if (snapshot.activeTabId === null) throw new Error("No original tab");
-      return snapshot.activeTabId;
-    });
+    const originalTabId = await openInItsOwnSpace(shell, MEDIA_URL);
     const mediaPage = await pageAt(app, MEDIA_URL);
     await installVideoPlayer(mediaPage);
     await mediaPage.locator("#start-video").click();
@@ -1019,14 +1025,7 @@ test.describe.serial("background videos", { tag: ["@sidebar", "@media"] }, () =>
   });
 
   test("a video in a page's own floating miniplayer fills the sidebar card, not its corner", async () => {
-    const original = await shell.evaluate(async () => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      const snapshot = await api.getSnapshot();
-      await api.createTab("pistachio://demo/invoices?media-stack");
-      return snapshot.activeTabId;
-    });
-    if (original === null) throw new Error("No original tab");
-    originalTabId = original;
+    originalTabId = await openInItsOwnSpace(shell, MEDIA_URL);
     firstPage = await pageAt(app, MEDIA_URL);
     await installVideoPlayer(firstPage);
     // YouTube's miniplayer: the player moved into a small fixed box in the
@@ -1081,12 +1080,8 @@ test.describe.serial("background videos", { tag: ["@sidebar", "@media"] }, () =>
   });
 
   test("only one background video plays at a time, and every card stays in reach", async () => {
-    // Second video started in a pane: the sidebar's video yields to it.
-    await shell.evaluate(async (url) => {
-      await (
-        window as unknown as { pistachio: PistachioApi }
-      ).pistachio.createTab(url);
-    }, SECOND_URL);
+    // Second video started on the desk: the sidebar's video yields to it.
+    await openInItsOwnSpace(shell, SECOND_URL);
     const secondPage = await pageAt(app, SECOND_URL);
     await installVideoPlayer(secondPage);
     await secondPage.locator("#start-video").click();
@@ -1116,7 +1111,16 @@ test.describe.serial("background videos", { tag: ["@sidebar", "@media"] }, () =>
     await expect(behind).toHaveCount(1);
     await expect(shell.getByTestId(`media-video-${firstTabId}`)).toHaveCount(0);
     // Its peek is a strip just above the picture's top edge; the rest of the
-    // card tucks behind the front one.
+    // card tucks behind the front one. (At rest: nothing of the stack under
+    // the pointer — the shell's, nor the pages': the one clicked to start its
+    // video, its page now the card's picture, would still have the pointer
+    // where the click was, over the picture, the desk having moved its page
+    // there from under it.)
+    await shell.mouse.move(900, 300);
+    await app.evaluate(({ webContents }, urls) => {
+      for (const contents of webContents.getAllWebContents()) if (urls.includes(contents.getURL())) contents.sendInputEvent({ type: "mouseLeave", x: 0, y: 0 });
+    }, [MEDIA_URL, SECOND_URL]);
+    await expect(stack.locator(".media-stack")).not.toHaveAttribute("data-expanded", "");
     await settled(stack);
     const rest = await Promise.all([front.boundingBox(), behind.boundingBox()]);
     expect(rest[0]).not.toBeNull();
@@ -1299,13 +1303,7 @@ test("a call's live audio never blinks a card in the stack, and a granted call h
   try {
     const shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");
-    const originalTabId = await shell.evaluate(async (url) => {
-      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      const snapshot = await api.getSnapshot();
-      await api.createTab(url);
-      if (snapshot.activeTabId === null) throw new Error("No original tab");
-      return snapshot.activeTabId;
-    }, AUDIO_URL);
+    const originalTabId = await openInItsOwnSpace(shell, AUDIO_URL);
     const callPage = await pageAt(app, AUDIO_URL);
     const callTabId = await shell.evaluate(async (url) => {
       const snapshot = await (

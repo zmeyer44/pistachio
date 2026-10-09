@@ -1,7 +1,7 @@
 /**
  * Screenshots of the window (@pistachio/shell-contracts/screenshot): ⌘⇧1
- * keeps the pages — the panes' box, without the sidebar or the window's
- * frame — or, on a desk, the whole desk without its Bar; ⌘⇧2 holds the
+ * keeps the pages — the desk, the desktop's surface, whole, without the
+ * sidebar, the window's frame or the desk's Bar; ⌘⇧2 holds the
  * window and keeps the area dragged out over it. Each is copied and saved
  * (here, in the spec's own folder: PISTACHIO_SCREENSHOT_DIR).
  *
@@ -18,7 +18,7 @@ import type { WebContentsView } from "electron";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { launchApp } from "./app";
 import { pageAt } from "./chrome-harness";
-import { box, createGroup, fromFrameMenu, INVOICES, launchDesk, liveViews, openGroupDesk, openTabs, selectTab, settled, windowSelector, type Box } from "./desk-harness";
+import { box, createGroup, fromFrameMenu, INVOICES, launchDesk, liveViews, selectSpace, openTabs, selectTab, settled, windowSelector, type Box } from "./desk-harness";
 import { findPage, noticePage, shellReady } from "./windows";
 
 /** A saved PNG's pixel size, and its colour (r, g, b) at each of `points` (in its own pixels). */
@@ -155,9 +155,10 @@ test.describe.serial("window screenshots", { tag: ["@screenshot", "@desk"] }, ()
     await app.close();
   });
 
-  test("⌘⇧1 keeps the pages' box, with the live page in it, and copies it", async () => {
+  test("⌘⇧1 keeps the desk's box, with the live page in it, and copies it", async () => {
     await expect.poll(async () => (await liveViews(app)).some((view) => view.url === INVOICES)).toBe(true);
-    const panes = await box(shell, "[data-testid='browser-surface'] .browser-pane-grid");
+    // (The desk: the window the app came up on fills it, its one tab's.)
+    const panes = await box(shell, ".desk-stage");
     const view = (await liveViews(app)).find((candidate) => candidate.url === INVOICES)!.bounds;
     await app.evaluate(({ clipboard }) => clipboard.clear());
     await shell.keyboard.press("Meta+Shift+Digit1");
@@ -174,7 +175,7 @@ test.describe.serial("window screenshots", { tag: ["@screenshot", "@desk"] }, ()
 
   test("from the address palette: \"take screenshot\" offers both; Enter takes the page, without the palette in it; a click starts the area", async () => {
     const view = (await liveViews(app)).find((candidate) => candidate.url === INVOICES)!.bounds;
-    const panes = await box(shell, "[data-testid='browser-surface'] .browser-pane-grid");
+    const panes = await box(shell, ".desk-stage");
     const inPage = { x: view.width / 2, y: Math.min(view.height / 2, 200) };
     const expected = await pageColor(app, INVOICES, inPage);
     const input = shell.getByTestId("address-input");
@@ -430,15 +431,15 @@ test.describe.serial("window screenshots", { tag: ["@screenshot", "@desk"] }, ()
     await expect.poll(async () => (await liveViews(app)).map((view) => view.url)).toEqual([INVOICES]);
   });
 
-  test("⌘⇧1 on a desk keeps the whole desk, without its Bar", async () => {
+  test("⌘⇧1 on another space's desk keeps the whole desk, without its Bar", async () => {
     const [invoice] = (await openTabs(shell, [INVOICES])) as [string];
     await createGroup(shell, "shot-desk", [invoice], "Northstar", "blue");
     await selectTab(shell, invoice);
-    await openGroupDesk(shell, "shot-desk");
+    await selectSpace(shell, "shot-desk");
     await settled(shell, app);
     const stage: Box = await box(shell, ".desk-stage");
     const nub = await box(shell, "[data-testid='desk-nub']");
-    // One window opens filling the desk: its page lies under the Bar's nub in the trailing corner.
+    // A space of one tab, never on a desk before: its window comes up filling the desk, its page under the Bar's nub in the trailing corner.
     const view = (await liveViews(app)).find((candidate) => candidate.url === INVOICES)!.bounds;
     const under = { x: nub.x + nub.width * 0.4, y: nub.y + nub.height * 0.4 };
     expect(under.y).toBeLessThan(view.y + view.height - 4);
@@ -483,7 +484,7 @@ test.describe.serial("window screenshots", { tag: ["@screenshot", "@desk"] }, ()
   });
 });
 
-test("⌘⇧1 with a page in HTML fullscreen keeps the whole page, not the pane it left", { tag: ["@screenshot", "@media"] }, async () => {
+test("⌘⇧1 with a page in HTML fullscreen keeps the whole page, not the window it left", { tag: ["@screenshot", "@media"] }, async () => {
   test.setTimeout(60_000);
   const url = "pistachio://demo/invoices?fullscreen";
   const folder = await mkdtemp(join(tmpdir(), "pistachio-screenshots-"));

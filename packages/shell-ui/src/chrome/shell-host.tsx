@@ -7,16 +7,23 @@
 import { createContext, useContext, useLayoutEffect, useMemo } from "react";
 import type { ShellCommand, ShellState } from "@pistachio/shell-contracts/chrome";
 import { isChatInsert } from "@pistachio/shell-contracts/chat-insert";
-import { isSettingsSection } from "@pistachio/shell-contracts/settings";
+import { isSettingsSection, nextSidebarMode, type SidebarMode } from "@pistachio/shell-contracts/settings";
 import { RUN_SHORTCUT_EVENT } from "@pistachio/shell-contracts/shortcuts";
 import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
-import { askDesk, newTabOnDesk } from "../lib/desk/open";
-import { useDeskStore } from "../lib/desk/store";
+import { askDesk, deskAvailable, newTabOnDesk } from "../lib/desk/open";
+import {
+  railOffered,
+  sidebarModeOf,
+  sidebarOnScreen,
+  sidebarOverlays,
+  useSidebarColumn,
+  useSidebarMode,
+  useSidebarOnScreen,
+} from "../lib/sidebar-mode";
 import { updatePromptShows } from "../lib/update-prompt";
 import { useAppStore, type AppState } from "../store";
-import { nextSplitMode } from "./split-mode";
 import { nativeApi, shellApi } from "../api";
 
 export interface ShellHost {
@@ -42,39 +49,39 @@ export function shellStateOf(state: AppState): ShellState {
     bookmarksOpen: state.overlay === "bookmarks",
     liveViewOpen: state.overlay === "liveView",
     tabSwitcherOpen: state.tabSwitcher !== null,
-    veiled:
-      state.overlay === "url" ||
-      state.overlay === "site" ||
-      state.overlay === "watchtower" ||
-      state.overlay === "site-info" ||
-      state.overlay === "permission" ||
-      state.overlay === "space-fork" ||
-      state.overlay === "update" ||
-      state.overlay === "tab-switcher" ||
-      state.overlay === "context-menu" ||
-      state.overlay === "downloads" ||
-      state.screenshotSelecting ||
-      state.error !== null ||
-      state.glance !== null,
-    sidebarRevealed: sidebarRevealedOf(state, deskUp(useDeskStore.getState())),
-    sidebarOnDesk: deskUp(useDeskStore.getState()),
-    sidebarRail: railOf(useDeskStore.getState()),
+    veiled: veiledOf(state),
+    sidebarRevealed: sidebarRevealedOf(state, useSidebarColumn.getState().out),
+    sidebarRail: sidebarModeOf(state.settings) === "rail",
   };
 }
 
-/** The desk's dock is the sidebar's rail (where the window's buttons would sit over it). */
-function railOf(desk: { opening: string | null; groupId: string | null; rail: boolean }): boolean {
-  return deskUp(desk) && desk.rail;
+/** A shell overlay is up over the native views (ShellState.veiled): they stay underneath it. */
+export function veiledOf(state: AppState): boolean {
+  return (
+    state.overlay === "url" ||
+    state.overlay === "site" ||
+    state.overlay === "watchtower" ||
+    state.overlay === "site-info" ||
+    state.overlay === "permission" ||
+    state.overlay === "space-fork" ||
+    state.overlay === "update" ||
+    state.overlay === "tab-switcher" ||
+    state.overlay === "context-menu" ||
+    state.overlay === "downloads" ||
+    state.screenshotSelecting ||
+    state.error !== null ||
+    state.glance !== null
+  );
 }
 
-/** A tab group's desk is up, or waiting to open: the sidebar's column is its dock (layouts/SidebarLayout.tsx). */
-function deskUp(desk: { opening: string | null; groupId: string | null }): boolean {
-  return desk.opening !== null || desk.groupId !== null;
-}
-
-/** The compact column is out: pinned it always is; compact, while the pointer holds it out. (On a desk it is the dock: `sidebarOnDesk`.) */
-function sidebarRevealedOf(state: Pick<AppState, "settings" | "sidebarRevealed">, onDesk: boolean): boolean {
-  return !onDesk && (state.settings.layout.sidebar === "pinned" || state.sidebarRevealed);
+/**
+ * The column is on screen (lib/sidebar-mode.ts's sidebarOnScreen): whole or a rail, always; hidden, once brought out
+ * — over the desk, once OUT (its cover clear, its slide begun), never on the intent alone. Main keys the window's
+ * buttons off this (and `sidebarRail`), and arms the hidden sidebar's edge only while it is false.
+ */
+function sidebarRevealedOf(state: Pick<AppState, "settings" | "sidebarRevealed">, out: boolean): boolean {
+  const mode = sidebarModeOf(state.settings);
+  return sidebarOnScreen(mode, sidebarOverlays(mode), state.sidebarRevealed, out);
 }
 
 function useStoreShellState(): ShellState {
@@ -85,25 +92,10 @@ function useStoreShellState(): ShellState {
   const bookmarksOpen = useAppStore((s) => s.overlay === "bookmarks");
   const liveViewOpen = useAppStore((s) => s.overlay === "liveView");
   const tabSwitcherOpen = useAppStore((s) => s.tabSwitcher !== null);
-  const veiled = useAppStore(
-    (s) =>
-      s.overlay === "url" ||
-      s.overlay === "site" ||
-      s.overlay === "watchtower" ||
-      s.overlay === "site-info" ||
-      s.overlay === "permission" ||
-      s.overlay === "space-fork" ||
-      s.overlay === "update" ||
-      s.overlay === "tab-switcher" ||
-      s.overlay === "context-menu" ||
-      s.overlay === "downloads" ||
-      s.screenshotSelecting ||
-      s.error !== null ||
-      s.glance !== null,
-  );
-  const sidebarOnDesk = useDeskStore(deskUp);
-  const sidebarRail = useDeskStore(railOf);
-  const sidebarRevealed = useAppStore((s) => sidebarRevealedOf(s, sidebarOnDesk));
+  const veiled = useAppStore(veiledOf);
+  // The rail is the desktop's alone: elsewhere a stored rail is drawn whole (lib/sidebar-mode.ts).
+  const sidebarRail = useSidebarMode() === "rail";
+  const sidebarRevealed = useSidebarOnScreen();
   return useMemo(
     () => ({
       consoleOpen,
@@ -115,10 +107,9 @@ function useStoreShellState(): ShellState {
       tabSwitcherOpen,
       veiled,
       sidebarRevealed,
-      sidebarOnDesk,
       sidebarRail,
     }),
-    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, tabSwitcherOpen, veiled, sidebarRevealed, sidebarOnDesk, sidebarRail],
+    [consoleOpen, evidenceOpen, settingsOpen, remindersOpen, bookmarksOpen, liveViewOpen, tabSwitcherOpen, veiled, sidebarRevealed, sidebarRail],
   );
 }
 
@@ -138,7 +129,7 @@ export function runShellCommand(command: ShellCommand): void {
   const s = useAppStore.getState();
   switch (command.type) {
     case "toggleConsole":
-      // On a desk, the agent is in its Bar.
+      // On the desk, the agent is in its Bar (the console only before the desk's engine is up, or on the web).
       if (askDesk()) break;
       s.toggleConsole();
       break;
@@ -148,9 +139,6 @@ export function runShellCommand(command: ShellCommand): void {
     case "toggleEvidence":
       if (s.evidence !== null) s.closeEvidence();
       else if (s.snapshot !== null && s.snapshot.run !== null) void s.loadEvidence();
-      break;
-    case "cycleSplit":
-      void s.setSplit(nextSplitMode(s.snapshot?.splitMode ?? "single"));
       break;
     case "toggleSettings":
       if (s.overlay === "settings") s.closeSettings();
@@ -178,8 +166,8 @@ export function runShellCommand(command: ShellCommand): void {
     case "showUpdate": {
       // Asked for, the dialog does not wait on the screen as the offer does (lib/update-prompt.ts): it goes up over
       // whatever was raised, put off or not — except where it never stands, and there the update's controls are About's.
-      const desk = useDeskStore.getState();
-      const dialogStands = !s.onboardingOpen && s.glance === null && desk.opening === null && desk.groupId === null;
+      // (On the desk too since 2026-10-09: a page over the surface, as Settings is.)
+      const dialogStands = !s.onboardingOpen && s.glance === null;
       if (updatePromptShows(s.update) && dialogStands) s.openUpdatePrompt();
       else s.openSettings("about");
       break;
@@ -258,11 +246,11 @@ export function runShellCommand(command: ShellCommand): void {
       s.openUrlBar(command.tabId);
       break;
     case "newTab": {
-      // On a desk, a new tab is a new window there, as its dock's + makes one:
-      // in the desk's group, on the home page, brought out as the window in use
-      // (on a loose tab's desk, in a new group of the two: lib/desk/open.ts).
-      const desk = useDeskStore.getState();
-      if (desk.groupId !== null && !desk.leaving) {
+      // On the desk (the desktop), a new tab is a new window there, as its dock's + makes one:
+      // in the current space, on the home page, brought out as the window in use
+      // (on a loose tab's space, a space of the two: lib/desk/open.ts). General's
+      // "New tabs open" is the web's.
+      if (deskAvailable()) {
         void newTabOnDesk();
         break;
       }
@@ -278,22 +266,13 @@ export function runShellCommand(command: ShellCommand): void {
       if (command.tabId !== undefined && command.tabId !== s.snapshot?.activeTabId) void s.selectTab(command.tabId);
       s.setConsoleOpen(true);
       break;
-    case "toggleSidebarPinned": {
-      // On a desk the sidebar is its dock, pinned: ⌘S switches it between the whole sidebar and its rail.
-      const desk = useDeskStore.getState();
-      if (desk.groupId !== null || desk.opening !== null) {
-        desk.setRail(!desk.rail);
-        break;
-      }
-      const layout = s.settings.layout;
-      // Going compact from a pinned column: it leaves the layout at once,
-      // rather than staying "revealed" until the pointer happens to leave it.
-      s.setSidebarRevealed(false);
-      void s.updateSettings({
-        layout: { sidebar: layout.sidebar === "pinned" ? "compact" : "pinned" },
-      });
+    case "toggleSidebarPinned":
+      // ⌘S: the next mode — whole → rail → hidden → whole, or whole ⇄ hidden where the rail is not offered (the web).
+      setSidebarMode(nextSidebarMode(sidebarModeOf(s.settings), railOffered()));
       break;
-    }
+    case "setSidebarMode":
+      setSidebarMode(command.mode);
+      break;
     case "runShortcut":
       window.dispatchEvent(new CustomEvent(RUN_SHORTCUT_EVENT, { detail: { id: command.id, tabId: command.tabId } }));
       break;
@@ -308,4 +287,17 @@ export function runShellCommand(command: ShellCommand): void {
       s.showNotice(command.message, command.tone === undefined ? {} : { tone: command.tone });
       break;
   }
+}
+
+/**
+ * The sidebar to `mode` (docs/spaces.md §3), a setting: ⌘S's next, a column's button to the next place, Settings ›
+ * General. Going hidden, the column goes at once, rather than staying out until the pointer happens to leave it; any
+ * other mode starts the hidden sidebar's reveal over (ChromeLayoutRoot). A rail asked for where none is offered is
+ * stored as asked — the Mac that synced it keeps it — and drawn whole.
+ */
+function setSidebarMode(mode: SidebarMode): void {
+  const s = useAppStore.getState();
+  if (mode === "hidden") s.setSidebarRevealed(false);
+  if (s.settings.layout.sidebar === mode) return;
+  void s.updateSettings({ layout: { sidebar: mode } });
 }

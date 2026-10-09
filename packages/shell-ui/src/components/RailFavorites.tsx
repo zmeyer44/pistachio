@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { nativeApi } from "../api";
-import { deskEngine } from "../lib/desk/open";
+import { useDeskCover } from "../lib/desk/chrome";
 import { Favicon } from "./Favicon";
 
 /** The pointer resting on the folder this long opens its sheet: one passing over it on its way down the rail does not. */
@@ -65,7 +65,6 @@ export function RailFavorites({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [shown, setShown] = useState(false);
   const [shift, setShift] = useState(0);
   const folderRef = useRef<HTMLButtonElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -122,40 +121,10 @@ export function RailFavorites({
     setShift(Math.max(0, top + sheet.offsetHeight - (window.innerHeight - SHEET_MARGIN)));
   }, [open, own.length]);
 
-  // A cover over the desk while it is out: it shows once the live pages under it have given way.
-  useLayoutEffect(() => {
-    const engine = deskEngine();
-    const sheet = sheetRef.current;
-    const stage = document.querySelector(".desk-stage");
-    if (!open || engine === null || sheet === null || stage === null) {
-      setShown(false);
-      return;
-    }
-    const measure = (): void => {
-      const box = sheet.getBoundingClientRect();
-      const at = stage.getBoundingClientRect();
-      engine.setCover(COVER, { x: box.left - at.left, y: box.top - at.top, w: box.width, h: box.height });
-    };
-    // A window taken in hand puts it away, as it does the desk's cards.
-    const update = (): void => {
-      const view = engine.getView();
-      if (view.gesture !== null) {
-        close();
-        return;
-      }
-      setShown(view.clearCovers.has(COVER));
-    };
-    measure();
-    update();
-    const observer = new ResizeObserver(measure);
-    observer.observe(sheet);
-    const off = engine.subscribe(update);
-    return () => {
-      off();
-      observer.disconnect();
-      engine.setCover(COVER, null);
-    };
-  }, [open, shift, close]);
+  // A cover over the desk while it is out: it shows once the live pages under it have given way. A window taken in
+  // hand puts it away, as it does the desk's cards. (Its shift moves it without a change of size: the hook measures
+  // it again as it renders.)
+  const shown = useDeskCover(COVER, sheetRef, open, { onGesture: close });
 
   // A press anywhere else (a live page's too, which main relays), or Escape.
   useEffect(() => {

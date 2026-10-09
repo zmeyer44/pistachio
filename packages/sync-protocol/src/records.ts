@@ -497,7 +497,12 @@ export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 
 export type ShellNewTabBehavior = "home" | "address" | "url";
 export type ShellHomePageBehavior = "pistachio" | "url";
-export type ShellSidebarPresentation = "pinned" | "compact";
+/**
+ * How the sidebar stands (the shell's `SidebarMode`, docs/spaces.md §3): whole, a rail of icons, or hidden at the
+ * window's edge. A record written before 2026-10-09 may still say "pinned" or "compact" — the shell's
+ * `sanitizeSettings` reads them as whole and hidden, so the record's version did not change for it.
+ */
+export type ShellSidebarMode = "whole" | "rail" | "hidden";
 export type ShellWebSearchProvider = "google" | "duckduckgo" | "yahoo" | "bing";
 export type ShellAiSearchProvider = "chatgpt" | "gemini" | "claude" | "grok" | "perplexity";
 
@@ -557,7 +562,7 @@ export interface ShellSettingsValue {
     learnFromRuns: boolean;
   };
   layout: {
-    sidebar: ShellSidebarPresentation;
+    sidebar: ShellSidebarMode;
   };
   organization: {
     presetLinks: ShellPresetLinkRecord[];

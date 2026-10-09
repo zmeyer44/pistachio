@@ -1,20 +1,24 @@
 /**
  * Shared contracts for the desktop chrome.
  *
- * The compact sidebar stays in the shell page: revealed, it is the pinned
- * sidebar's own column back in the shell's layout, and the page reflows
- * beside it exactly as it does when the sidebar is pinned. The only thing
- * compact adds is the auto-hide (layouts/SidebarLayout.tsx). Main takes two
- * parts in it: it hears whether the column is up (ShellState.sidebarRevealed,
- * for the traffic lights), and while it is up it WATCHES THE OS POINTER for
- * the column (PistachioApi.setSidebarWatch) — the authority on whether the
- * pointer has left, since the shell page's own leave events lie: the column
- * is a window drag region, whose native handling makes the page see the
- * pointer leave while it is still there, and the tab views above the page
- * and the traffic lights above the column take the pointer without a word.
- * The allowance: the pointer may leave the window through the
- * column's own edge and stay within SIDEBAR_POINTER_SLACK_X of it, or
- * hover the traffic lights, and the column keeps.
+ * The sidebar has three modes (settings' SidebarMode, docs/spaces.md §3):
+ * whole, a rail of its icons, or hidden at the window's left edge. The
+ * hidden sidebar stays in the shell page: brought out, it is the whole
+ * sidebar's own column back — on the web in the shell's layout, the page
+ * reflowing beside it as beside the whole one; on the desk (since
+ * 2026-10-09) laid OVER the desk's windows, a cover they give way to, so no
+ * page is laid out anew. The only thing hidden adds is the auto-hide
+ * (layouts/SidebarLayout.tsx). Main takes two parts in it: it hears whether
+ * the column is on screen (ShellState.sidebarRevealed, for the traffic
+ * lights), and while it is out it WATCHES THE OS POINTER for the column
+ * (PistachioApi.setSidebarWatch) — the authority on whether the pointer has
+ * left, since the shell page's own leave events lie: the column is a window
+ * drag region, whose native handling makes the page see the pointer leave
+ * while it is still there, and the tab views above the page and the traffic
+ * lights above the column take the pointer without a word. The allowance:
+ * the pointer may leave the window through the column's own edge and stay
+ * within SIDEBAR_POINTER_SLACK_X of it, or hover the traffic lights, and
+ * the column keeps.
  *
  * The drag layer (#drag) is a transparent utility view. It holds the pointer
  * for any drag that crosses the tab views and, for a tab drag, paints only
@@ -31,7 +35,8 @@ import { isShortcutActionId, type ShortcutActionId } from "./shortcuts.js";
 import { isChatInsert, type ChatInsert } from "./chat-insert.js";
 import { isNoticeTone, NOTICE_MESSAGE_MAX, type NoticeTone } from "./notice.js";
 
-import type { SettingsSection } from "./settings.js";
+// (Types only from settings: the shell's preload imports this module, and settings' own imports would ride in with it.)
+import type { SettingsSection, SidebarMode } from "./settings.js";
 import type { TidySummary } from "./tidy.js";
 
 /**
@@ -61,21 +66,33 @@ export function chromeViewFromHash(hash: string): ChromeViewId | null {
 }
 
 /* ------------------------------ geometry -------------------------------- */
-/** The compact sidebar's hidden layout slot; this preserves the page's left inset. */
+/**
+ * The hidden sidebar's layout slot (SidebarMode "hidden"; "compact" until
+ * 2026-10-09): a strip at the window's left edge that preserves the page's
+ * — or the desk's — left inset while the column is away.
+ */
 export const SIDEBAR_EDGE_W = 10;
 /**
- * The compact sidebar's interaction target. It may extend over the page
+ * The hidden sidebar's interaction target. It may extend over the page
  * without changing the hidden slot or the content card's position.
  */
 export const SIDEBAR_TRIGGER_W = 14;
-/** The sidebar's width bounds (px), pinned or compact. The renderer persists the choice per machine. */
+/**
+ * The hidden sidebar's interaction target on the desk: half the strip. The
+ * 14px target lay wholly over the west resize edge of a window flush with
+ * the desk's leading edge, so reaching for that edge brought the column out
+ * instead (2026-10-09).
+ */
+export const SIDEBAR_DESK_TRIGGER_W = 5;
+/** The sidebar's width bounds (px), whole or brought out from hidden. The renderer persists the choice per machine. */
 export const SIDEBAR_DEFAULT_W = 248;
 export const SIDEBAR_MIN_W = 200;
 export const SIDEBAR_MAX_W = 380;
 /**
- * The sidebar as a rail while a desk is up (docs/desk.md): its icons alone.
- * A row's icon sits 16px in (the list's padding and the row's), so a column
- * this wide centres them.
+ * The sidebar as a rail (SidebarMode "rail", docs/desk.md): its icons
+ * alone. A mode a person chooses since 2026-10-09 — until then the desk's
+ * own, kept by the desk apart from the setting. A row's icon sits 16px in
+ * (the list's padding and the row's), so a column this wide centres them.
  */
 export const SIDEBAR_RAIL_W = 48;
 /**
@@ -95,7 +112,7 @@ export const TRAFFIC_LIGHTS_CENTER_Y = 21;
 export const TRAFFIC_LIGHTS_H = 2 * TRAFFIC_LIGHTS_CENTER_Y;
 /**
  * How far past the window's edge the pointer may go, having left through
- * the compact sidebar's own edge, before the column counts it as gone.
+ * the hidden sidebar's own edge, before the column counts it as gone.
  * Sliding off the screen's edge is not leaving
  * the sidebar.
  */
@@ -103,14 +120,18 @@ export const SIDEBAR_POINTER_SLACK_X = 250;
 /** How far off the column's box, in any direction, still counts as on it. */
 export const SIDEBAR_POINTER_SLACK = 7;
 
-/** Whether a window-relative pointer is inside the compact reveal target. */
-export function pointerHitsSidebarTrigger(point: { x: number; y: number }, contentHeight: number): boolean {
-  return point.x >= 0 && point.x < SIDEBAR_TRIGGER_W && point.y >= 0 && point.y < contentHeight;
+/**
+ * Whether a window-relative pointer is inside the hidden sidebar's reveal
+ * target, `width` wide from the window's left edge (SIDEBAR_DESK_TRIGGER_W
+ * on the desk).
+ */
+export function pointerHitsSidebarTrigger(point: { x: number; y: number }, contentHeight: number, width: number = SIDEBAR_TRIGGER_W): boolean {
+  return point.x >= 0 && point.x < width && point.y >= 0 && point.y < contentHeight;
 }
 
 /**
  * Whether a pointer at `point` (window content coordinates) still holds the
- * compact sidebar's column at `box`: on the column (with a little slack),
+ * hidden sidebar's column, brought out, at `box`: on the column (with a little slack),
  * over the traffic lights above its toolbar, or past the window's edge on
  * the column's side within the column's vertical span. Pure, so the shell
  * and main agree, and vitest pins it.
@@ -132,7 +153,7 @@ export function pointerHoldsSidebar(point: { x: number; y: number }, box: { x: n
  * and reload. The gap is a window drag region, whose native handling keeps
  * pointer moves from the page, and the tab views take the pointer below it:
  * main watches the OS pointer for both the trigger and the hold, exactly as
- * it does for the compact sidebar.
+ * it does for the hidden sidebar.
  */
 /**
  * BrowserSurface's gutter around the page card (its Tailwind p-2). In the
@@ -317,23 +338,20 @@ export interface ShellState {
   /** A shell overlay is up: native utility views must stay underneath it. */
   veiled: boolean;
   /**
-   * The compact sidebar's column is in the layout right now (the pointer
-   * brought it out and has not left). Main keys the macOS traffic lights
-   * off it: they sit in the sidebar's toolbar, so they hide with the column.
-   * Always true when the sidebar is pinned.
+   * The sidebar's column is ON SCREEN: always while it is whole or a rail;
+   * while it is hidden, only brought out — and on the desk only once its
+   * cover is up and its slide has begun (docs/spaces.md §3), so the buttons
+   * never show over a window's live page before the column is there. Main
+   * keys the macOS traffic lights off it: they sit in the sidebar's
+   * toolbar, so they hide with the column. (Until 2026-10-09: the compact
+   * sidebar's column was in the layout; always true when pinned.)
    */
   sidebarRevealed: boolean;
   /**
-   * A tab group's desk is up, or opening (docs/desk.md): the sidebar's
-   * column is the desk's dock — up whole or as its rail, pinned or compact
-   * — so the traffic lights stay, over its top, and the compact sidebar's
-   * edge brings nothing out.
-   */
-  sidebarOnDesk: boolean;
-  /**
-   * The desk's dock is the sidebar's narrow rail: the window's buttons,
-   * which would hang over the desk's corner, are hidden (the whole sidebar
-   * has room for them in its toolbar). Always false without a desk.
+   * The sidebar is the narrow rail (SidebarMode "rail"): the window's
+   * buttons, which would hang over the desk's corner, are hidden at once
+   * (the whole sidebar has room for them in its toolbar). Always false
+   * without a desk.
    */
   sidebarRail: boolean;
   /** The reminders page (pistachio://reminders) is over the content hole. */
@@ -365,7 +383,6 @@ export const DEFAULT_SHELL_STATE: ShellState = {
   tabSwitcherOpen: false,
   veiled: false,
   sidebarRevealed: false,
-  sidebarOnDesk: false,
   sidebarRail: false,
 };
 
@@ -379,7 +396,6 @@ export function isShellState(value: unknown): value is ShellState {
       "settingsOpen",
       "veiled",
       "sidebarRevealed",
-      "sidebarOnDesk",
       "sidebarRail",
       "remindersOpen",
       "bookmarksOpen",
@@ -467,8 +483,13 @@ export type ShellCommand =
   | { type: "newTab" }
   /** Hand a tab (the active one when omitted) to the console as the delegation context. */
   | { type: "delegate"; tabId?: string }
-  /** Sidebar layout: pinned ⇄ compact. */
+  /**
+   * ⌘S: the sidebar's next mode (nextSidebarMode): whole → rail → hidden → whole, or whole ⇄ hidden where the rail
+   * is not offered. The name is the shortcut's id, kept: it is a key in everyone's saved shortcuts.
+   */
   | { type: "toggleSidebarPinned" }
+  /** A mode chosen outright — a column's button to the next place, Settings › General. */
+  | { type: "setSidebarMode"; mode: SidebarMode }
   /** A binding caught in a native webpage view and relayed to the shell. */
   | { type: "runShortcut"; id: ShortcutActionId; tabId?: string }
   /**
@@ -528,6 +549,11 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "openWatchtower": {
       const { entityId, view } = value as { entityId?: unknown; view?: unknown };
       return (entityId === undefined || (typeof entityId === "number" && Number.isSafeInteger(entityId) && entityId > 0)) && (view === undefined || view === "saved");
+    }
+    case "setSidebarMode": {
+      // (Compared, not imported: settings.ts at runtime would ride into the shell's preload with all it imports.)
+      const mode = (value as { mode?: unknown }).mode;
+      return mode === "whole" || mode === "rail" || mode === "hidden";
     }
     case "openNotes": {
       const noteId = (value as { noteId?: unknown }).noteId;

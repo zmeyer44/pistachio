@@ -948,7 +948,7 @@ export class Archive {
     }
     if (!hit)
       throw Object.assign(
-        new Error("This saved visit was removed or belongs to another Space."),
+        new Error("This saved visit was removed or belongs to another Profile."),
         { code: "NOT_FOUND" },
       );
     const blocks = hit.snapshotId === null ? [] : this.blocks(hit.snapshotId);

@@ -60,7 +60,7 @@ export function WatchtowerPage({ initialView = "timeline" }: { initialView?: Vie
   const savedCount = useAppStore((state) => state.bookmarks.bookmarks.length);
   const focusEntity = useAppStore((state) => state.watchtowerFocus);
   const openSettings = useAppStore((state) => state.openSettings);
-  const spaceName = useAppStore((state) => state.snapshot?.spaces.find((space) => space.id === state.snapshot?.activeSpaceId)?.name ?? "This Space");
+  const spaceName = useAppStore((state) => state.snapshot?.spaces.find((space) => space.id === state.snapshot?.activeSpaceId)?.name ?? "This Profile");
   const native = useSurface().kind === "native";
   const status = useWatchtower(false);
   const { absorb } = status;
@@ -518,7 +518,7 @@ export function WatchtowerPage({ initialView = "timeline" }: { initialView?: Vie
                 )
               ) : results === null ? null : results.length === 0 ? (
                 fullQuery === "" ? (
-                  <Centered icon={<FileClock className="size-6" aria-hidden="true" />} title="Nothing saved yet" body="Pages you read in this Space appear here a moment after you open them." />
+                  <Centered icon={<FileClock className="size-6" aria-hidden="true" />} title="Nothing saved yet" body="Pages you read in this Profile appear here a moment after you open them." />
                 ) : (
                   <div className="p-5">
                     <Note type="secondary" size="sm">

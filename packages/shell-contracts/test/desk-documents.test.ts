@@ -56,7 +56,7 @@ describe("documents on the desk (docs/desk-documents.md)", () => {
     expect(isDeskAgentState(state)).toBe(true);
     expect(isDeskAgentState({ ...state, windows: [{ ...state.windows[0], kind: "movie" }] })).toBe(false);
     expect(deskStateLines(state)).toEqual([
-      "Desk: the tab group “Lisbon” (2 tabs).",
+      "Desk: the space “Lisbon” (2 tabs).",
       "Windows, bottom to top (x y w h as % of the desk):",
       "- tab tab-1 “Flight” https://air.example/ — 0 0 50 100",
       "- document file:0123456789ab “trip.docx” — 50 0 50 100 — in use",

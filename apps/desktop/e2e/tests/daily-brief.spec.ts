@@ -15,6 +15,7 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { BRIEF_PAGE_URL } from "@pistachio/shell-contracts/reports";
 import { noticePage, shellReady } from "./windows";
 import { launchApp } from "./app";
+import { windowInUse } from "./desk-harness";
 import { captureShell as captureWindow, capturePage, humanTabs as tabs, visibleTabViews } from "./pages-harness";
 
 /** capturePage can trail the DOM by a frame or two; the page settles first. */
@@ -144,7 +145,8 @@ test.describe.serial("the daily brief", { tag: ["@home", "@pages"] }, () => {
     // The home page is the truth about to-dos in BOTH directions: reopened there, it is unticked here,
     // whatever this brief filed a moment ago.
     await shell.keyboard.press("Meta+t");
-    const between = shell.getByTestId("home-page").last();
+    // (⌘T puts a home window out on the desk, in use: the other home window is under it.)
+    const between = windowInUse(shell).getByTestId("home-page");
     const homeTodo = between.getByTestId("home-todo").filter({ hasText: "Book flights to Lisbon" });
     await expect(homeTodo.getByRole("checkbox")).toHaveAttribute("aria-checked", "true");
     await homeTodo.getByRole("checkbox").click();
@@ -184,7 +186,7 @@ test.describe.serial("the daily brief", { tag: ["@home", "@pages"] }, () => {
 
     // Back on a home page the to-do is done.
     await shell.keyboard.press("Meta+t");
-    const home = shell.getByTestId("home-page").last();
+    const home = windowInUse(shell).getByTestId("home-page");
     await expect(home.getByTestId("home-todo").filter({ hasText: "Book flights to Lisbon" }).getByRole("checkbox")).toHaveAttribute("aria-checked", "true");
     // …and its teaser now carries the brief's own headline.
     await expect(home.getByTestId("home-brief")).toContainText("waiting on you");
@@ -197,7 +199,7 @@ test.describe.serial("the daily brief", { tag: ["@home", "@pages"] }, () => {
     });
     await expect(shell.locator("html")).toHaveAttribute("data-color-scheme", "dark");
     // From the home page the test before left in front.
-    await shell.getByTestId("home-page").last().getByTestId("home-brief").click();
+    await windowInUse(shell).getByTestId("home-page").getByTestId("home-brief").click();
     const page = shell.getByTestId("brief-page").last();
     await expect(page.getByTestId("report-title")).toContainText("Brief", { timeout: 30_000 });
     await captureShell(app, "05-brief-dark.png");

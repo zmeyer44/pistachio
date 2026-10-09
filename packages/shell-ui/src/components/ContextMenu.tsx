@@ -71,16 +71,28 @@ export function useContextMenu(): {
   const [state, setState] = useState<MenuState | null>(null);
   const overlayReady = useAppStore((store) => store.overlayReady);
   const setContextMenuOpen = useAppStore((store) => store.setContextMenuOpen);
+  // The overlay flag is the window's, one for every menu: only the owner of the menu that is up may lower it. (A desk
+  // window's frame going — flown home, closed — while a row's menu was up dropped that menu's overlay, leaving it
+  // drawn at no opacity and passing the pointer through to the rows under it.)
+  const shown = useRef(false);
   const open = useCallback((at: { clientX: number; clientY: number }, items: MenuEntry[]) => {
     if (items.length === 0) return;
+    shown.current = true;
     setState({ x: at.clientX, y: at.clientY, items });
     setContextMenuOpen(true);
   }, [setContextMenuOpen]);
   const close = useCallback(() => {
     setState(null);
+    if (!shown.current) return;
+    shown.current = false;
     setContextMenuOpen(false);
   }, [setContextMenuOpen]);
-  useEffect(() => () => setContextMenuOpen(false), [setContextMenuOpen]);
+  useEffect(
+    () => () => {
+      if (shown.current) setContextMenuOpen(false);
+    },
+    [setContextMenuOpen],
+  );
   return {
     open,
     close,

@@ -16,7 +16,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { noticePage } from "./windows";
-import { box, createGroup, createTab, launchDesk, openGroupDesk, openMore, rowSelector, screenshots, selectTab, settled, snapshot, windowSelector, type Box } from "./desk-harness";
+import { box, createGroup, launchDesk, selectSpace, openMore, openTabs, rowSelector, screenshots, selectTab, settled, snapshot, windowSelector, type Box } from "./desk-harness";
 
 const capture = screenshots("desk-layout");
 const GAP = 8;
@@ -57,13 +57,13 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
   });
   try {
     const notices = await noticePage(app);
-    for (const url of urls.slice(1)) await createTab(shell, url);
+    await openTabs(shell, urls.slice(1));
     await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url) && tab.title !== "").length).toBe(urls.length);
     const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
     const [budget, inbox, invoice, vendor] = urls.map((url) => byUrl.get(url)!) as [string, string, string, string];
     await createGroup(shell, "desk-layout", [budget, inbox, invoice, vendor], "Accounts", "orange");
     await selectTab(shell, budget);
-    await openGroupDesk(shell, "desk-layout");
+    await selectSpace(shell, "desk-layout");
     await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(4);
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
@@ -138,7 +138,7 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     // ── 2. A window leaves: its neighbour closes the gap up, as a split view's pane does ─
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(tabId), inbox);
     await expect(shell.locator(windowSelector(inbox))).toHaveCount(0);
-    await expect(notices.getByTestId("notice-card").filter({ hasText: "took the space" })).toHaveCount(1);
+    await expect(notices.getByTestId("notice-card").filter({ hasText: "filled the gap" })).toHaveCount(1);
     await settled(shell, app);
     await expect.poll(async () => near(await at(budget), { x: left, y: top, width, height: halfH })).toBe("there");
     await expect.poll(async () => near(await at(vendor), quarter.bottomLeft)).toBe("there");

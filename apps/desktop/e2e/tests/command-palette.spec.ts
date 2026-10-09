@@ -48,7 +48,7 @@ test.describe.serial("the address overlay", { tag: ["@tabs", "@address"] }, () =
     await app?.close();
   });
 
-  test("the address overlay fuzzy-ranks commands, tabs, Spaces, settings, and recovery actions", { tag: ["@smoke"] }, async () => {
+  test("the address overlay fuzzy-ranks commands, tabs, Profiles, settings, and recovery actions", { tag: ["@smoke"] }, async () => {
     // Settings sections participate in the same fuzzy inventory and an exact
     // section match beats the generic web-search row.
     await openPalette(shell, "keyboard shortcuts");
@@ -149,11 +149,20 @@ test.describe.serial("the address overlay", { tag: ["@tabs", "@address"] }, () =
 
     // A tab in another Space is still searchable. Selecting it switches Space;
     // the dedicated new-tab flow's duplicate behavior is covered separately.
-    await shell.evaluate((spaceId) => {
-      return (
-        window as unknown as { pistachio: PistachioApi }
-      ).pistachio.switchSpace(spaceId);
+    // The first Profile is left with no tab (its one moved): a page of its own
+    // in front there, since a palette over an empty space composes a new tab
+    // with its choice instead (docs/spaces.md §1).
+    await shell.evaluate(async (spaceId) => {
+      const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
+      await api.switchSpace(spaceId);
+      await api.createTab("pistachio://demo/vendors/atlas-medical");
     }, setup.sourceSpaceId);
+    await expect
+      .poll(async () => {
+        const current = await snapshot(shell);
+        return current.activeSpaceId === setup.sourceSpaceId && current.activeTabId !== null;
+      })
+      .toBe(true);
     await openPalette(shell, "palette-source");
     const crossSpaceTab = shell.locator(
       `[data-testid="open-tab-result"][data-tab-id="${setup.sourceTabId}"]`,

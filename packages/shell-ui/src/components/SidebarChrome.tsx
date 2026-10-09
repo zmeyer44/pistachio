@@ -6,8 +6,8 @@ import { DeskMoreButton, DeskRailToggle } from "./desk/DeskSidebarControls";
 import { SidebarRailContext } from "./sidebar-rail";
 
 /**
- * The sidebar column, pinned or compact (layouts/SidebarLayout.tsx places
- * it; compact only adds the auto-hide). Top to bottom: the toolbar row, the
+ * The sidebar column, in any of its modes (layouts/SidebarLayout.tsx places
+ * it; hidden only adds the auto-hide). Top to bottom: the toolbar row, the
  * address row, the favorites grid, the scrolling tab list, background media,
  * and the footer
  * row; each is a REGION the manifest fills (chrome/manifest.ts), never a
@@ -19,15 +19,17 @@ import { SidebarRailContext } from "./sidebar-rail";
  * sidebar space — the toolbar is the titlebar here — and every control
  * inside opts out. The toolbar shares the titlebar with the traffic lights:
  * its leading pad clears them, and its height centres its buttons on the
- * lights' own centre line. (A desk's rail hides them, and there is nothing
- * to clear.)
+ * lights' own centre line. (The rail hides them, and there is nothing to
+ * clear.) Brought out over the desk from hidden, it is the same column on a
+ * ground of its own (`.sidebar-motion-pane[data-overlay] .chrome-sidebar`).
  *
- * As a RAIL (a desk's dock, `rail`) it is the same column and the same
- * regions drawn narrow, its icons alone (sidebar-rail.ts): the toolbar gives
- * way to the desk's own two buttons — the whole sidebar back, and the desk's
- * card — at its head, where the window's buttons were (main hides them while
- * the rail is up: ShellState.sidebarRail), and background media is the desk's
- * now playing (desk/DeskNowPlaying.tsx) instead of the stack's cards.
+ * As a RAIL (SidebarMode "rail", the desktop's alone) it is the same column
+ * and the same regions drawn narrow, its icons alone (sidebar-rail.ts): the
+ * toolbar gives way to the desk's own two buttons — the whole sidebar back,
+ * and the desk's card — at its head, where the window's buttons were (main
+ * hides them while the rail is up: ShellState.sidebarRail), and background
+ * media is the desk's now playing (desk/DeskNowPlaying.tsx) instead of the
+ * stack's cards.
  */
 export function SidebarChrome({ rail = false }: { rail?: boolean }) {
   return (

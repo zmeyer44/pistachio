@@ -107,7 +107,7 @@ export default function AgentPage(): ReactNode {
 
       {runnable.length === 0 ? (
         <Section heading="Nothing can run yet">
-          <Empty title="No Space has the cloud browser turned on">
+          <Empty title="No Profile has the cloud browser turned on">
             <p>
               Turn it on here to run tasks from the web or iMessage, even when no Mac is awake.
             </p>
@@ -130,7 +130,7 @@ export default function AgentPage(): ReactNode {
           <form onSubmit={start} className="pa-section">
             <TextArea
               label="What should it do?"
-              help="It runs in the Space you choose, using the sessions that Space is signed in to."
+              help="It runs in the Profile you choose, using the sessions that Profile is signed in to."
               value={intent}
               placeholder="Reorder the coffee I bought last month"
               onChange={(event) => setIntent(event.target.value)}
@@ -138,7 +138,7 @@ export default function AgentPage(): ReactNode {
             />
             {runnable.length === 1 ? null : (
               <div className="pa-field">
-                <label htmlFor="space">Space</label>
+                <label htmlFor="space">Profile</label>
                 <select
                   id="space"
                   className="pa-input"

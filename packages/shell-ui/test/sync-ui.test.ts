@@ -153,8 +153,8 @@ describe("restore points", () => {
   });
 
   it("summarizes one in the line under its device name", () => {
-    expect(restorePointSummary(point(), NOW)).toBe("12 tabs · 2 Spaces · saved 1m ago");
-    expect(restorePointSummary(point({ tabCount: 1, spaceIds: ["work"], savedAtMs: 0 }), NOW)).toBe("1 tab · 1 Space");
+    expect(restorePointSummary(point(), NOW)).toBe("12 tabs · 2 Profiles · saved 1m ago");
+    expect(restorePointSummary(point({ tabCount: 1, spaceIds: ["work"], savedAtMs: 0 }), NOW)).toBe("1 tab · 1 Profile");
     expect(restorePointKindLabel(point())).toBe("Desktop");
     expect(restorePointKindLabel(point({ deviceKind: "cloud" }))).toBe("Cloud browser");
   });

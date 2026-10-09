@@ -206,7 +206,7 @@ port.on("message", ({ data }: { data: Message }) => {
       return;
     }
     const spaceId = message.spaceId;
-    if (!spaceId) throw new Error("A Space is required.");
+    if (!spaceId) throw new Error("A Profile is required.");
     let result: Partial<WatchtowerResponse> = {};
     const request = watchtowerRequestSchema.parse(message.request);
     switch (request.type) {

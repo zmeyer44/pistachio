@@ -34,10 +34,10 @@ export const IMPORT_ON_THE_WEB = {
   blurb:
     "The browser you use today lives on your Mac, and so do its sessions and bookmarks. Bring them over there and they arrive here on their own.",
   aside:
-    "Nothing to do in this tab. What a Mac imports is sealed under keys only your devices hold and converges into this Space.",
+    "Nothing to do in this tab. What a Mac imports is sealed under keys only your devices hold and converges into this Profile.",
   reason:
-    "Bringing a browser over reads the profiles installed on a Mac — its cookies, its bookmarks — so it happens in the Mac app, not in this tab.",
-  sync: "Install Pistachio on your Mac and sign in with this account: everything you import there travels here, sealed under keys only your devices hold. Your sessions and bookmarks arrive in this Space on their own.",
+    "Bringing a browser over reads the browser profiles installed on a Mac — its cookies, its bookmarks — so it happens in the Mac app, not in this tab.",
+  sync: "Install Pistachio on your Mac and sign in with this account: everything you import there travels here, sealed under keys only your devices hold. Your sessions and bookmarks arrive in this Profile on their own.",
   /** The link's own words; the address comes from the surface. */
   download: "Download Pistachio for Mac",
 } as const;
@@ -134,11 +134,11 @@ export function appearanceCopy(surface: OnboardingSurface): { aside: string } {
   if (surface === "stream") {
     return {
       aside:
-        "Appearance is saved to this account's synced settings, so every device that reads them opens wearing it. Sessions and Spaces travel the same way.",
+        "Appearance is saved to this account's synced settings, so every device that reads them opens wearing it. Sessions and Profiles travel the same way.",
     };
   }
   return {
     aside:
-      "Appearance is a per-machine preference: it stays on this Mac. Sessions and Spaces are what travel between your devices.",
+      "Appearance is a per-machine preference: it stays on this Mac. Sessions and Profiles are what travel between your devices.",
   };
 }

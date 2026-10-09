@@ -1,8 +1,12 @@
 /**
- * A tab group in the sidebar's list (docs/tab-tidy.md §3.3): ONE row at rest
- * — a cluster of its tabs' icons made small, its title in its colour, its
- * count — that opens in place when the pointer settles on it, showing its
- * tabs as ordinary rows under a rail of the same colour.
+ * A tab group — a space (docs/spaces.md) — in the sidebar's list
+ * (docs/tab-tidy.md §3.3): ONE row at rest — a cluster of its tabs' icons
+ * made small, its title in its colour, its count — that opens in place when
+ * the pointer settles on it, showing its tabs as ordinary rows under a rail
+ * of the same colour. An EMPTY space (since 2026-10-09) is its name and
+ * colour alone: its mark a ring of its colour (with its Stack's pile over it
+ * when it holds something), no count, nothing to open but — the current
+ * space's — its Stack's row.
  *
  * The row decides nothing about WHEN it is open: the list does
  * (components/TabList.tsx), because only one group is ever open by hover and
@@ -13,8 +17,8 @@
  * The favicon cluster and the colour tone are shared with the archive page.
  */
 
-import { useEffect, useState } from "react";
-import { AppWindow, ChevronDown, Columns2, X } from "lucide-react";
+import { Children, useEffect, useState } from "react";
+import { ChevronDown, Columns2, X } from "lucide-react";
 import { MAX_TAB_GROUP_TITLE, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { cn } from "../lib/cn";
 import { displayHost } from "../lib/url";
@@ -38,16 +42,32 @@ export interface ClusterTab {
  * holds, as the favorites folder's says how many favorites (the whole
  * sidebar's row says the count beside the title instead).
  *
+ * With no tabs — an empty space, or an archived one filed without any — the
+ * mark is a ring of the group's colour, and no count: there is nothing to
+ * count. `stack`, how many things its Stack holds, lays a small pile of
+ * sheets over the ring (the Stack's own mark, DeskContextRow's).
+ *
  * The mark is drawn in a 20px field but takes only the 16px a tab's icon
  * does in layout, so a group's title lines up with the tab titles around it.
  */
-export function FaviconCluster({ tabs, className }: { tabs: readonly ClusterTab[]; className?: string }) {
+export function FaviconCluster({ tabs, stack = 0, className }: { tabs: readonly ClusterTab[]; stack?: number; className?: string }) {
   const seed = (tab: ClusterTab): string => displayHost(tab.url) || tab.title;
   const shown = tabs.slice(0, 4);
+  if (shown.length === 0)
+    return (
+      <span aria-hidden="true" data-testid="favicon-cluster" data-empty="" className={cn("tab-group-mosaic relative -mx-0.5 size-5 shrink-0", className)}>
+        <span data-testid="space-empty-mark" className="tab-group-ring" />
+        {stack > 0 ? (
+          <span className="tab-group-ring-stack desk-context-pile">
+            <span className="desk-context-sheet" data-layer="2" />
+            <span className="desk-context-sheet" data-layer="1" />
+          </span>
+        ) : null}
+      </span>
+    );
   return (
     <span aria-hidden="true" data-testid="favicon-cluster" className={cn("tab-group-mosaic relative -mx-0.5 size-5 shrink-0", className)}>
       <span className="tab-group-mosaic-grid" data-count={Math.max(1, shown.length)}>
-        {shown.length === 0 ? <span className="tab-group-mosaic-cell bg-(--tg-solid)/55" /> : null}
         {shown.map((tab, index) => (
           // A page with no icon is the group's colour: a letter this small reads as dirt.
           <Favicon
@@ -101,7 +121,7 @@ export function GroupTitleInput({ title, onDone }: { title: string; onDone: (tit
   return (
     <input
       autoFocus
-      aria-label="Group name"
+      aria-label="Space name"
       data-testid="tab-group-name-input"
       value={value}
       maxLength={MAX_TAB_GROUP_TITLE}
@@ -117,7 +137,7 @@ export function GroupTitleInput({ title, onDone }: { title: string; onDone: (tit
       }}
       spellCheck={false}
       autoComplete="off"
-      placeholder="Group name"
+      placeholder="Space name"
       className="h-6 min-w-0 flex-1 bg-transparent p-0 text-[12.5px] font-medium text-(--tg-text) caret-(--tg-solid) outline-none selection:bg-(--tg-solid)/30 selection:text-(--tg-text) placeholder:text-(--tg-text)/45"
     />
   );
@@ -137,8 +157,8 @@ export function TabGroupRow({
   onToggleOpen,
   onRename,
   onOpenAsSplit,
-  onOpenAsDesk,
-  deskOpen = false,
+  current = false,
+  stack = 0,
   onClose,
   onPointerDown,
   onContextMenu,
@@ -165,11 +185,12 @@ export function TabGroupRow({
   onToggleOpen: () => void;
   /** Called with null to START renaming (a double click), then with the new title — or null — when the field is done. */
   onRename: (title: string | null) => void;
-  onOpenAsSplit: () => void;
-  /** Open (or put away) the group's desk; absent where there is no desk to open. */
-  onOpenAsDesk?: () => void;
-  /** This group's desk is the one up. */
-  deskOpen?: boolean;
+  /** Show its tabs side by side: the web's alone (splitAvailable); absent on the desktop, where a desk tiles windows. */
+  onOpenAsSplit?: () => void;
+  /** The current space: the one the desk shows (ShellSnapshot.currentGroupId). */
+  current?: boolean;
+  /** An empty space's Stack: how many things it holds, drawn as a pile over its mark. */
+  stack?: number;
   onClose: () => void;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onContextMenu: (e: React.MouseEvent) => void;
@@ -181,13 +202,16 @@ export function TabGroupRow({
   children: React.ReactNode;
 }) {
   const count = tabs.length;
+  const empty = count === 0;
   return (
     <div
       role="group"
-      aria-label={`Tab group: ${group.title}`}
+      aria-label={`Space: ${group.title}`}
       data-testid="tab-group"
       data-group-id={group.id}
       data-group-color={group.color}
+      data-current={current ? "" : undefined}
+      data-empty={empty ? "" : undefined}
       data-expanded={expanded ? "" : undefined}
       // One UNIT among the day's rows, whatever it holds. The drag measures
       // its header as the group's row and, while it is open, each tab below
@@ -214,7 +238,7 @@ export function TabGroupRow({
         aria-expanded={expanded}
         data-testid="tab-group-header"
         data-group-header=""
-        title={renaming ? undefined : `${group.title}\n${String(count)} ${count === 1 ? "tab" : "tabs"}`}
+        title={renaming ? undefined : empty ? group.title : `${group.title}\n${String(count)} ${count === 1 ? "tab" : "tabs"}`}
         onClick={() => {
           if (!renaming) onToggleOpen();
         }}
@@ -243,7 +267,7 @@ export function TabGroupRow({
           renaming && "cursor-text bg-(--tg-tint-strong) ring-1 ring-(--tg-solid)/55 ring-inset",
         )}
       >
-        <FaviconCluster tabs={tabs} />
+        <FaviconCluster tabs={tabs} stack={stack} />
         {renaming ? (
           <GroupTitleInput title={group.title} onDone={onRename} />
         ) : (
@@ -259,32 +283,34 @@ export function TabGroupRow({
                 only gives up the controls' width while they are out. */}
             <span className="grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-focus-visible/tg:grid-cols-[1fr] group-focus-visible/tg:opacity-100 group-has-[:focus-visible]/tg:grid-cols-[1fr] group-has-[:focus-visible]/tg:opacity-100 group-hover/tg:grid-cols-[1fr] group-hover/tg:opacity-100 motion-reduce:transition-none">
               <span className="flex min-w-0 items-center overflow-hidden">
-                {onOpenAsDesk === undefined ? null : (
-                  <HeaderButton label={deskOpen ? "Leave the desk" : "Open as desk"} testId="tab-group-desk" onClick={onOpenAsDesk}>
-                    <AppWindow aria-hidden="true" />
+                {/* (No desk button since 2026-10-09: the desk is always up, and the row itself chooses the space.) */}
+                {onOpenAsSplit === undefined ? null : (
+                  <HeaderButton label={count > 4 ? "Open 4 most recent as split view" : "Open as split view"} testId="tab-group-split" disabled={count < 2} onClick={onOpenAsSplit}>
+                    <Columns2 aria-hidden="true" />
                   </HeaderButton>
                 )}
-                <HeaderButton label={count > 4 ? "Open 4 most recent as split view" : "Open as split view"} testId="tab-group-split" disabled={count < 2} onClick={onOpenAsSplit}>
-                  <Columns2 aria-hidden="true" />
-                </HeaderButton>
-                <HeaderButton label="Close group" testId="tab-group-close" onClick={onClose}>
+                <HeaderButton label="Close space" testId="tab-group-close" onClick={onClose}>
                   <X aria-hidden="true" />
                 </HeaderButton>
               </span>
             </span>
             <span className="grid grid-cols-[1fr] transition-[grid-template-columns,opacity] duration-200 ease-out group-focus-visible/tg:grid-cols-[0fr] group-focus-visible/tg:opacity-0 group-has-[:focus-visible]/tg:grid-cols-[0fr] group-has-[:focus-visible]/tg:opacity-0 group-hover/tg:grid-cols-[0fr] group-hover/tg:opacity-0 motion-reduce:transition-none">
               <span className="flex min-w-0 items-center justify-end overflow-hidden">
-                <span data-testid="tab-group-count" className="text-[10.5px] font-normal opacity-80">
-                  {count}
-                </span>
+                {/* (An empty space has nothing to count.) */}
+                {empty ? null : (
+                  <span data-testid="tab-group-count" className="text-[10.5px] font-normal opacity-80">
+                    {count}
+                  </span>
+                )}
               </span>
             </span>
           </span>
         )}
-        {renaming ? null : (
+        {renaming || (empty && !current) ? null : (
           // Always there, so how to fold a group away is never a mystery: it points down while the
           // group is open and right while it is folded, and is only faint while a hover is peeking in.
-          <HeaderButton label={held ? "Collapse group" : expanded ? "Keep group open" : "Expand group"} testId="tab-group-toggle" onClick={onToggleOpen}>
+          // (An empty space has nothing to fold, unless it is the current one, its Stack's row under it.)
+          <HeaderButton label={held ? "Collapse space" : expanded ? "Keep space open" : "Expand space"} testId="tab-group-toggle" onClick={onToggleOpen}>
             <ChevronDown
               aria-hidden="true"
               data-testid="tab-group-chevron"
@@ -312,7 +338,9 @@ const MEMBERS_EXIT_MS = 200;
  * are inert and marked `data-exiting`, so the drag does not measure them.
  * Opening again mid-fold simply unfolds the same rows.
  */
-function GroupMembers({ open, snap, label, children }: { open: boolean; snap: boolean; label: string; children: React.ReactNode }) {
+function GroupMembers({ open: wanted, snap, label, children }: { open: boolean; snap: boolean; label: string; children: React.ReactNode }) {
+  // Nothing to draw (an empty space's, not the current one): no strip either, open or not.
+  const open = wanted && Children.toArray(children).length > 0;
   const [present, setPresent] = useState(open);
   // Derived in render, so an opening group has its height in the same frame.
   if (open && !present) setPresent(true);

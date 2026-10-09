@@ -19,7 +19,7 @@ const REPO = "https://github.com/zmeyer44/pistachio";
 const SECTIONS = [
   { id: "getting-started", title: "Getting started" },
   { id: "agent", title: "The agent" },
-  { id: "spaces", title: "Tabs and Spaces" },
+  { id: "spaces", title: "Tabs and Profiles" },
   { id: "memory", title: "Memory and reminders" },
   { id: "privacy", title: "Privacy and permissions" },
   { id: "shortcuts", title: "Keyboard shortcuts" },
@@ -80,23 +80,23 @@ export default function DocsPage() {
                 <li>Each run leaves a signed activity record you can replay from the conversation.</li>
               </ul>
               <p>
-                With an account, a Space you have explicitly enabled for cloud runs can also run when your Mac is
+                With an account, a Profile you have explicitly enabled for cloud runs can also run when your Mac is
                 asleep, in a hosted browser that shares your private egress address. Nothing runs in the cloud for a
-                Space you have not turned that on for.
+                Profile you have not turned that on for.
               </p>
             </Prose>
 
-            <Prose id="spaces" title="Tabs and Spaces">
+            <Prose id="spaces" title="Tabs and Profiles">
               <p>
                 Tabs live in a sidebar (or a top strip, from Settings → General). The sidebar has a favorites grid,
-                pinned pages in collapsible folders, then today&apos;s tabs, all drag-and-drop. A Space is a separate set
+                pinned pages in collapsible folders, then today&apos;s tabs, all drag-and-drop. A Profile is a separate set
                 of tabs and sessions; forking one lets you carry chosen tabs and logins into it.
               </p>
               <ul>
                 <li>Split the window into up to four panes with <code>⌘\</code>, and drag a tab onto a page to split.</li>
                 <li>Hold Option and click a link to glance at it in a preview without leaving the page.</li>
                 <li>Playing audio and video follows you into a small card when you switch tabs.</li>
-                <li>Reader view strips a page down to the article; the command bar (<code>⌘L</code>) opens tabs, pins, Spaces, and settings.</li>
+                <li>Reader view strips a page down to the article; the command bar (<code>⌘L</code>) opens tabs, pins, Profiles, and settings.</li>
               </ul>
             </Prose>
 
@@ -131,7 +131,7 @@ export default function DocsPage() {
                 </li>
                 <li>
                   <strong>Site data.</strong> Settings → Privacy &amp; security can sign you out of every site and
-                  clear cookies, storage, and cache for the active Space, and clear recent history.
+                  clear cookies, storage, and cache for the active Profile, and clear recent history.
                 </li>
                 <li>
                   <strong>Agent access.</strong> The agent works in your live tabs with your signed-in sessions. It
@@ -175,7 +175,7 @@ export default function DocsPage() {
               </p>
               <ul>
                 <li>
-                  <strong>Sessions</strong> (cookies) go into the active Space, so you arrive already signed in.
+                  <strong>Sessions</strong> (cookies) go into the active Profile, so you arrive already signed in.
                   Chromium-based browsers keep their cookie key in the login keychain, which is why macOS asks you to
                   allow Pistachio to read it. Safari&apos;s cookies belong to the OS and are not imported.
                 </li>

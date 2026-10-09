@@ -430,7 +430,7 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
     expect(await cookieNames(app)).not.toContain("tp");
 
     // The popover counts what was stopped on this page, and names the host.
-    const popover = await openSiteInfo(shell);
+    const popover = await openSiteInfo(shell, app);
     await expect(popover.getByTestId("site-info-shields")).toContainText("1 request blocked");
     await popover.getByRole("button", { name: "Show what was blocked" }).click();
     await expect(popover.getByTestId("site-info-shields-hosts")).toContainText("localhost");
@@ -478,7 +478,7 @@ test("Shields block, hide, clean, and protect — and stand down for a site", { 
     await navigate(app, page);
     await expect.poll(() => tabEval<string>(app, "document.readyState")).toBe("complete");
     fixture.hits.length = 0;
-    await openSiteInfo(shell);
+    await openSiteInfo(shell, app);
     await popover.getByRole("switch", { name: "Shields" }).click();
     await expect(popover.getByTestId("site-info-shields")).toContainText("Down for this site");
     await shell.keyboard.press("Escape");

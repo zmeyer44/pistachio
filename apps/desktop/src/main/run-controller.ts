@@ -163,11 +163,23 @@ export interface NoteRecordStore {
  */
 export interface DeskAgentHost {
   bridge: Pick<DeskBridge, "request" | "cancelAll">;
-  bindings: Pick<DeskConversationStore, "get" | "bind" | "unbind" | "forgetRun">;
+  bindings: Pick<DeskConversationStore, "get" | "bind" | "unbind" | "forgetRun" | "groupsOf">;
   browser: DeskScopeBrowser & {
     ungroupTabs(groupId: string, tabIds: readonly string[]): string[];
     /** A desk turn is working in the group: pages its tabs open join it until the release (BrowserController.holdGroup). */
     holdGroup(groupId: string): () => void;
+    /** The space (tab group) in front, main's (docs/spaces.md §2): what the person's choices of conversation are checked against. */
+    currentGroupId(): string | null;
+    /**
+     * A conversation was bound to a space or let go of: a bound one keeps an emptied space standing (isPersonsGroup),
+     * so main's reconcile reads the bindings again now, not at its next publish (BrowserController.refreshSpaces).
+     */
+    refreshSpaces?(): void;
+    /**
+     * Make a space current, as choosing it does (BrowserController.selectGroup): main's current space follows, and so
+     * does the console (followGroup). For an answer that came from afar to a conversation put away in its space.
+     */
+    selectGroup?(groupId: string): Promise<void>;
   };
   context: {
     items(groupId: string): GroupContextItem[];
@@ -407,11 +419,27 @@ export class RunController {
   readonly #artifactWebUrl: () => string | null;
   readonly #deskHost: DeskAgentHost | null;
   /**
-   * The desk in view, while one is up (docs/desk-agent.md §3): its group,
-   * and the conversation that was open before it came up, which leaving
-   * the desk goes back to. The open thread is the group's while it is up.
+   * The space (tab group) whose desk is in front, as main last said
+   * (followGroup; docs/desk-agent.md §3): the open thread is its
+   * conversation, unless a turn is still running elsewhere. Null only while
+   * main has none to name. (Until 2026-10-09 the shell said when a desk came
+   * up and went, and this kept the conversation from before it to go back
+   * to: there is no off the desk now.)
    */
-  #desk: { groupId: string; before: string | null } | null = null;
+  #desk: { groupId: string } | null = null;
+  /**
+   * A desk turn of this thread ended in a space no longer in front while the
+   * thread still waited on the person (or another turn of it had started):
+   * the console stayed on it, and follows the space in front once a turn of
+   * it ends idle (#refollow). The space the turn was in. (2026-10-09.)
+   */
+  #refollowLater: { runId: string; groupId: string } | null = null;
+  /**
+   * iMessage answers to conversations put away in their spaces that came
+   * while another conversation was acting, by run: each is taken once a turn
+   * ends with none acting (#takeQueuedAnswer). (2026-10-09.)
+   */
+  readonly #queuedAnswers = new Map<string, { questionId: string; value: string }>();
   #run: RunSummary | null = null;
   /** The open thread's model history: what the next turn continues from. */
   #history: ModelMessage[] = [];
@@ -634,11 +662,82 @@ export class RunController {
     this.#onChange();
   }
 
-  /** A command from this desktop run's iMessage watcher, never from the model. */
+  /**
+   * A command from this desktop run's iMessage watcher, never from the
+   * model. The conversation it answers may be put away in its space
+   * (#putAway: the person looked at another one), and the watcher has moved
+   * past the answer, so it is taken all the same: the space the
+   * conversation is bound to comes up — the person answered it — its
+   * conversation opens there (followGroup), and the answer runs as it would
+   * from its Bar, at its own desk. While another conversation is acting the
+   * answer waits for it (#queuedAnswers). (Until 2026-10-09 an answer to a
+   * conversation not open was dropped, and its question stayed pending.)
+   */
   async answerIMessageQuestion(runId: string, questionId: string, value: string): Promise<void> {
-    const run = this.#run;
-    if (run === null || isCloudRun(run) || run.runId !== runId || run.pendingQuestion?.id !== questionId) return;
+    await this.#takeAnswer(runId, questionId, value);
+  }
+
+  /** answerIMessageQuestion, saying what came of it: the answer ran as a turn, waits for one, or had nothing left to answer. */
+  async #takeAnswer(runId: string, questionId: string, value: string): Promise<"answered" | "waiting" | "skipped"> {
+    const open = this.#run;
+    if (open !== null && open.runId === runId) {
+      if (isCloudRun(open) || open.pendingQuestion?.id !== questionId) return "skipped";
+      await this.answerQuestion(questionId, value);
+      return "answered";
+    }
+    /** The saved conversation still asking this question. */
+    const asking = (): ThreadRecord | null => {
+      const record = this.#threads?.get(runId) ?? null;
+      return record !== null && !isCloudRun(record.run) && record.run.pendingQuestion?.id === questionId ? record : null;
+    };
+    const saved = asking();
+    if (saved === null) return "skipped";
+    if (this.#active()) {
+      this.#queuedAnswers.set(runId, { questionId, value });
+      return "waiting";
+    }
+    const host = this.#deskHost;
+    const groupId = host === null ? null : this.#boundGroup(host, runId, saved.run.groupId);
+    if (host !== null && groupId !== null && host.browser.currentGroupId() !== groupId) await host.browser.selectGroup?.(groupId);
+    if (this.#run?.runId !== runId) {
+      // Its space is gone, or could not come up: the conversation opens in the console all the same.
+      if (this.#active()) {
+        this.#queuedAnswers.set(runId, { questionId, value });
+        return "waiting";
+      }
+      const record = asking();
+      if (record === null) return "skipped";
+      if (this.#awaitsPerson()) this.#putAway();
+      this.#adopt(record);
+      this.#onChange();
+    }
+    if (this.#run?.runId !== runId || this.#run.pendingQuestion?.id !== questionId) return "skipped";
     await this.answerQuestion(questionId, value);
+    return "answered";
+  }
+
+  /** The space a conversation opens in: the one it started in while still bound to it, else the last bound to it. */
+  #boundGroup(host: DeskAgentHost, runId: string, started: string | undefined): string | null {
+    if (started !== undefined && host.bindings.get(started) === runId) return started;
+    return host.bindings.groupsOf(runId).at(-1) ?? null;
+  }
+
+  /**
+   * The iMessage answers that waited while another conversation acted,
+   * taken now that none is (answerIMessageQuestion): one that has nothing
+   * left to answer (its conversation deleted, its question answered at the
+   * Mac) is passed over for the next, until one runs as a turn — whose end
+   * takes the rest — or waits again. (Until 2026-10-09 the first passed over
+   * stopped the drain, and the rest waited for a turn that never came.)
+   */
+  async #takeQueuedAnswers(): Promise<void> {
+    while (!this.#active()) {
+      const next = this.#queuedAnswers.entries().next();
+      if (next.done === true) return;
+      const [runId, { questionId, value }] = next.value;
+      this.#queuedAnswers.delete(runId);
+      if ((await this.#takeAnswer(runId, questionId, value)) !== "skipped") return;
+    }
   }
 
   /** Every saved thread, newest first, with the open one reflecting its live state. */
@@ -729,38 +828,95 @@ export class RunController {
     // next folded event re-saves the thread and the conversation returns.
     this.#cloud?.forget(runId);
     this.#threads?.remove(runId);
+    this.#deskHost?.browser.refreshSpaces?.();
     this.#onChange();
   }
 
   /**
-   * The desk tells main what is in view (docs/desk-agent.md §1,
-   * "Conversations"): a desk came up or passed to another group, left, or
-   * the person chose a conversation to continue here or asked for a new one.
-   * A thread still acting keeps the console through any of it — the agent
-   * is not stopped because the person moved.
+   * The space (tab group) in front changed, as main says (BrowserController
+   * onCurrentGroupChange; docs/spaces.md §2): its conversation opens — the
+   * thread bound to it, or an empty console for a new one — unless a turn is
+   * still running, which keeps the console until it ends (#refollow); a
+   * thread waiting on the person is put away pending, not set aside
+   * (#openForDesk, #putAway). Null:
+   * main has no space to name; nothing more is the desk's. (Until 2026-10-09
+   * the shell's `enter` and `leave` did this, and leaving went back to the
+   * conversation from before the desk.)
+   */
+  followGroup(groupId: string | null): void {
+    const host = this.#deskHost;
+    if (host === null) return;
+    if (groupId === null) {
+      if (this.#desk === null) return;
+      this.#desk = null;
+      host.bridge.cancelAll();
+      this.#onChange();
+      return;
+    }
+    if (this.#desk?.groupId === groupId) return;
+    this.#desk = { groupId };
+    this.#openForDesk(host, groupId);
+    this.#onChange();
+  }
+
+  /**
+   * A desk turn ended in a space no longer in front (the person moved on
+   * while it ran): the console follows them now — the conversation of the
+   * space they are in — rather than stay on the old thread, where the next
+   * message from the Bar would run unscoped.
+   */
+  #refollow(turnGroupId: string): void {
+    const host = this.#deskHost;
+    const desk = this.#desk;
+    const runId = this.#run?.runId ?? null;
+    this.#refollowLater = null;
+    if (host === null || desk === null || desk.groupId === turnGroupId || runId === null) return;
+    // Setting aside a thread waiting on the person cancels their question,
+    // approval or takeover before they ever saw it (and closes its research
+    // tabs): it keeps the console until a turn of it ends idle — the one
+    // their answer starts, which runs off this desk and so names no space of
+    // its own. (Until 2026-10-09 only #active() was checked.)
+    if (this.#active() || this.#awaitsPerson()) {
+      this.#refollowLater = { runId, groupId: turnGroupId };
+      return;
+    }
+    this.#openForDesk(host, desk.groupId);
+    this.#onChange();
+  }
+
+  /** The open thread waits on the person: a question, an approval or a takeover still theirs to answer. */
+  #awaitsPerson(): boolean {
+    const run = this.#run;
+    if (run === null) return false;
+    return (
+      run.pendingQuestion !== null ||
+      run.pendingApproval !== null ||
+      run.pendingTakeover !== null ||
+      run.status === "waiting_for_approval" ||
+      run.status === "waiting_for_judgment" ||
+      run.status === "waiting_for_step_up" ||
+      run.status === "human_control"
+    );
+  }
+
+  /**
+   * What the person chose in the Bar (docs/desk-agent.md §1,
+   * "Conversations"): a conversation to continue in this space, or a new
+   * one — checked against main's space in front. A thread still acting keeps
+   * the console through any of it — the agent is not stopped because the
+   * person moved. (`enter` and `leave` are an older shell's, and do nothing:
+   * main's current space is followed — followGroup.)
    */
   async deskConversation(command: DeskConversationCommand): Promise<void> {
     const host = this.#deskHost;
     if (host === null) return;
     switch (command.type) {
-      case "enter": {
-        if (this.#desk?.groupId === command.groupId) return;
-        // Passing the desk to another group keeps what was open before the first.
-        const before = this.#desk === null ? (this.#run?.runId ?? null) : this.#desk.before;
-        this.#desk = { groupId: command.groupId, before };
-        this.#openForDesk(host, command.groupId);
-        break;
-      }
-      case "leave": {
-        const desk = this.#desk;
-        if (desk === null) return;
-        this.#desk = null;
-        host.bridge.cancelAll();
-        if (!this.#active()) this.#reopen(desk.before);
-        break;
-      }
+      case "enter":
+      case "leave":
+        console.debug(`[desk] an older shell's "${command.type}" was ignored: the desk follows main's current space`);
+        return;
       case "choose": {
-        if (this.#desk?.groupId !== command.groupId) throw new Error("that desk is not open");
+        if (host.browser.currentGroupId() !== command.groupId) throw new Error("that desk is not open");
         if (this.#run?.runId !== command.runId) {
           if (this.#active()) throw new Error("pause or end the current task before continuing another conversation");
           const record = this.#threads?.get(command.runId) ?? null;
@@ -769,11 +925,13 @@ export class RunController {
         }
         // This group's from now on; the group it came from keeps it too.
         host.bindings.bind(command.groupId, command.runId);
+        host.browser.refreshSpaces?.();
         break;
       }
       case "new": {
-        if (this.#desk?.groupId !== command.groupId) throw new Error("that desk is not open");
+        if (host.browser.currentGroupId() !== command.groupId) throw new Error("that desk is not open");
         host.bindings.unbind(command.groupId);
+        host.browser.refreshSpaces?.();
         // The next message from the Bar starts the group's new conversation (#startFresh binds it).
         await this.newThread();
         return;
@@ -790,27 +948,52 @@ export class RunController {
     return host.bindings.get(desk.groupId) === run.runId ? { groupId: desk.groupId, host } : null;
   }
 
-  /** A desk came up: open its group's conversation, or an empty console for a new one. */
+  /**
+   * A desk came up: open its group's conversation, or an empty console for a
+   * new one. Only an idle thread is set aside on the way (#adopt,
+   * #clearOpen): one acting keeps the console, its hold and its scope until
+   * its turn ends (#refollow); one waiting on the person is put away as it
+   * stands (#putAway) — its question, approval or takeover still pending,
+   * bound to its space, which opens it again with them. (Until 2026-10-09 a
+   * waiting thread was set aside, and the person looking at another space
+   * cancelled what it asked.)
+   */
   #openForDesk(host: DeskAgentHost, groupId: string): void {
     if (this.#active()) return;
     const bound = host.bindings.get(groupId);
     if (bound !== null && this.#run?.runId === bound) return;
     const record = bound === null ? null : (this.#threads?.get(bound) ?? null);
+    if (this.#awaitsPerson()) this.#putAway();
     if (record !== null) {
       this.#adopt(record);
       return;
     }
     // A thread deleted since it was bound leaves nothing to open.
-    if (bound !== null) host.bindings.unbind(groupId);
+    if (bound !== null) {
+      host.bindings.unbind(groupId);
+      host.browser.refreshSpaces?.();
+    }
     this.#clearOpen();
   }
 
-  /** Back to the conversation that was open before the desk came up (none: an empty console). */
-  #reopen(runId: string | null): void {
-    if (runId !== null && this.#run?.runId === runId) return;
-    const record = runId === null ? null : (this.#threads?.get(runId) ?? null);
-    if (record !== null) this.#adopt(record);
-    else this.#clearOpen();
+  /**
+   * The open thread waits on the person, who moved to another space: it is
+   * saved as it stands and leaves the console — nothing cancelled, its
+   * research tabs kept, a reminder's scheduler still waiting on it — to be
+   * opened again by its space's desk (#openForDesk, #adopt) and answered
+   * there. Its turn, once answered and ended, re-follows the space in front
+   * (#refollowLater).
+   */
+  #putAway(): void {
+    if (this.#run === null) return;
+    this.#clearTimers();
+    this.#persistNow();
+    this.#run = null;
+    this.#runSpaceId = null;
+    this.#history = [];
+    this.#chain = null;
+    this.#storedEvidence = [];
+    this.#storedSigningKey = null;
   }
 
   /** Nothing open: the thread that was is saved and set aside. */
@@ -836,7 +1019,7 @@ export class RunController {
     const ask = async (request: DeskRequestFor): Promise<DeskAgentState> => {
       const reply = await host.bridge.request({ ...request, groupId } as DeskRequest);
       if (!reply.ok) throw new Error(reply.error);
-      if (reply.state.groupId !== groupId) throw new Error("the desk in view is another group's now; nothing was changed");
+      if (reply.state.groupId !== groupId) throw new Error("the desk in view is another space's now; nothing was changed");
       sawState(reply.state);
       return reply.state;
     };
@@ -1132,7 +1315,11 @@ export class RunController {
     this.#storedEvidence = [];
     this.#storedSigningKey = null;
     const activeTab = this.#browser.activeTab();
-    if (activeTab === null || activeTab.kind !== "human") {
+    // The space the Bar's message came from: the one in front as it was sent (the console's message names none, and
+    // main's current space is followed synchronously, so this is it). An empty space has no tab in use, and its Bar may
+    // start a conversation all the same (docs/spaces.md §1).
+    const groupId = this.#deskHost === null ? null : (this.#deskHost.browser.currentGroupId() ?? this.#desk?.groupId ?? null);
+    if (activeTab === null ? groupId === null : activeTab.kind !== "human") {
       throw new Error("select a browser tab before starting a conversation");
     }
     const purpose = intent.trim() || "Help me with the page in front of me";
@@ -1156,7 +1343,7 @@ export class RunController {
       turns: 1,
       notes: "",
       context: freshContext(this.#budget),
-      humanTabId: activeTab.id,
+      humanTabId: activeTab?.id ?? null,
       // Retained for protocol compatibility; direct-control runs do not own
       // a separate agent tab.
       agentTabId: null,
@@ -1183,19 +1370,22 @@ export class RunController {
           id: randomUUID(),
           at: startedAt,
           label: "Conversation started",
-          detail: `Connected to ${activeTab.title} in your existing browser session`,
+          detail: activeTab === null ? "Started in an empty space of your browser session" : `Connected to ${activeTab.title} in your existing browser session`,
           tone: "safe",
         },
       ],
       result: null,
       executor: { kind: "desktop" },
-      // Started at a desk: the conversation is that group's (docs/desk-agent.md §1).
-      ...(this.#desk === null || this.#deskHost === null ? {} : { groupId: this.#desk.groupId }),
+      // Started at a desk: the conversation is that space's (docs/desk-agent.md §1).
+      ...(groupId === null ? {} : { groupId }),
     };
-    if (this.#desk !== null) this.#deskHost?.bindings.bind(this.#desk.groupId, runId);
+    if (groupId !== null) {
+      this.#deskHost?.bindings.bind(groupId, runId);
+      this.#deskHost?.browser.refreshSpaces?.();
+    }
     this.#chain.append("interaction.started", {
-      tabId: activeTab.id,
-      url: activeTab.url,
+      tabId: activeTab?.id ?? null,
+      url: activeTab?.url ?? "",
       purpose,
       sessionMode: "user-session",
       forkCreated: false,
@@ -1612,6 +1802,8 @@ export class RunController {
     const current = (): boolean => generation === this.#aiGeneration && this.#run?.runId === runId;
     /** The desk turn's hold on its group in the browser, released when the turn ends however it ends. */
     let releaseGroup: (() => void) | null = null;
+    /** The space (tab group) this turn is working in, if it is a desk turn: the console re-follows from it once it ends. */
+    let turnGroupId: string | null = null;
 
     try {
       // A turn at a desk works on the desk (docs/desk-agent.md §2): the
@@ -1621,6 +1813,7 @@ export class RunController {
       // group's tabs joins the group even after the person has left it.
       const desk = this.#deskTurn(run);
       if (desk !== null) releaseGroup = desk.host.browser.holdGroup(desk.groupId);
+      turnGroupId = desk?.groupId ?? null;
       let deskState: DeskAgentState | null = null;
       if (desk !== null) {
         const reply = await desk.host.bridge.request({ type: "state", groupId: desk.groupId });
@@ -1928,6 +2121,16 @@ export class RunController {
       await this.#failRun(runId, error);
     } finally {
       releaseGroup?.();
+      // The turn kept the space it started in; ended, the console follows the person to the space they are in.
+      // A turn off the desk (the answer to a question asked away from it) re-follows for the turn it continues.
+      const away = this.#refollowLater?.runId === runId ? this.#refollowLater.groupId : null;
+      if (turnGroupId !== null || away !== null) this.#refollow(turnGroupId ?? away!);
+      // An answer from afar that waited for this turn: taken once it has settled.
+      if (this.#queuedAnswers.size > 0) {
+        queueMicrotask(() => {
+          void this.#takeQueuedAnswers().catch((error: unknown) => console.error("[agent] a waiting iMessage answer could not be taken", error));
+        });
+      }
     }
   }
 

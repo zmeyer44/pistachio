@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { UpdateState } from "@pistachio/shell-contracts/updates";
+import { NATIVE_SURFACE_MEMBERS } from "@pistachio/shell-contracts/ipc";
+import { setShellApi, type ShellApiBridge } from "../src/api";
 import { runShellCommand } from "../src/chrome/shell-host";
-import { useDeskStore } from "../src/lib/desk/store";
 import { useAppStore } from "../src/store";
 
 const due: UpdateState = { status: "available", version: "0.0.31", releaseDate: null, prompt: { due: true, snoozes: 0 } };
@@ -10,7 +11,7 @@ const due: UpdateState = { status: "available", version: "0.0.31", releaseDate: 
 describe("showUpdate", () => {
   beforeEach(() => {
     useAppStore.setState({ overlay: "none", update: due, onboardingOpen: false, glance: null, settingsSection: "" });
-    useDeskStore.setState({ opening: null, groupId: null });
+    setShellApi({} as unknown as ShellApiBridge);
   });
 
   it("raises the update dialog, put off or not, over whatever was raised", () => {
@@ -19,12 +20,14 @@ describe("showUpdate", () => {
     expect(useAppStore.getState().overlay).toBe("update");
   });
 
-  it("opens About in Settings where the dialog never stands: a desk up, a Glance open, the first-run wizard", () => {
-    useDeskStore.setState({ groupId: "work" });
+  it("raises the dialog on the desk too: the desktop's surface since 2026-10-09, a page over which stands as Settings does", () => {
+    // A native bridge: the desk is up (lib/desk/open.ts deskAvailable).
+    setShellApi(Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, () => undefined])) as unknown as ShellApiBridge);
     runShellCommand({ type: "showUpdate" });
-    expect(useAppStore.getState()).toMatchObject({ overlay: "settings", settingsSection: "about" });
+    expect(useAppStore.getState().overlay).toBe("update");
+  });
 
-    useDeskStore.setState({ groupId: null });
+  it("opens About in Settings where the dialog never stands: a Glance open, the first-run wizard", () => {
     useAppStore.setState({ overlay: "none", onboardingOpen: true });
     runShellCommand({ type: "showUpdate" });
     expect(useAppStore.getState()).toMatchObject({ overlay: "settings", settingsSection: "about" });

@@ -54,7 +54,7 @@ export default function PrivacyPage() {
                 <li>AI features send the information they need through Pistachio&apos;s services to model providers.</li>
                 <li>
                   With an account, sync and cloud runs store records that are encrypted on your devices before they
-                  reach our storage service. A cloud worker can decrypt the data needed for a Space you enable,
+                  reach our storage service. A cloud worker can decrypt the data needed for a Profile you enable,
                   and AI requests are processed as described below.
                 </li>
                 <li>We do not sell personal data and do not run third-party advertising trackers in the app.</li>
@@ -67,7 +67,7 @@ export default function PrivacyPage() {
                 transmit the records or excerpts needed for those features, as described on this page:
               </p>
               <ul>
-                <li>Browsing history, cookies and site data, bookmarks, pins, favorites, Spaces, and open tabs.</li>
+                <li>Browsing history, cookies and site data, bookmarks, pins, favorites, Profiles, and open tabs.</li>
                 <li>
                   Memory: the facts you tell the agent to remember, in <code>memory.json</code>, with their version
                   history. You can read, edit, restore, or erase every entry in Settings → Memory.
@@ -101,7 +101,7 @@ export default function PrivacyPage() {
 
             <Prose id="google" title="Gmail and Google Calendar">
               <p>
-                Connecting Google is optional. In Settings → Integrations, you choose the Google account, Space,
+                Connecting Google is optional. In Settings → Integrations, you choose the Google account, Profile,
                 and access level, then authorize Pistachio on Google&apos;s consent screen. We do not receive your
                 Google password. The account label and granted permissions identify the connection.
               </p>
@@ -145,7 +145,7 @@ export default function PrivacyPage() {
 
             <Prose id="google-retention" title="Google data retention and deletion">
               <p>
-                The refresh token that maintains your connection is encrypted under your Space key on your Mac
+                The refresh token that maintains your connection is encrypted under your Profile key on your Mac
                 before it is stored by Pistachio. Devices holding that key, including your assigned cloud worker
                 when enabled, can use it. Access tokens are kept in memory by the executor and are not stored
                 as connection records or sent to the model. The provider, account label, access level, connection
@@ -153,7 +153,7 @@ export default function PrivacyPage() {
               </p>
               <p>
                 We keep a connection until you disconnect it or request account deletion. Disconnect from
-                Settings → Integrations to stop future use. A device with the Space key attempts to revoke the
+                Settings → Integrations to stop future use. A device with the Profile key attempts to revoke the
                 grant with Google and deletes the connection record. A disconnect requested on the web blocks
                 further use immediately and leaves an encrypted record pending revocation by a key-holding
                 device. You can also revoke access directly in your{" "}
@@ -173,7 +173,7 @@ export default function PrivacyPage() {
 
             <Prose id="account" title="What an account stores">
               <p>
-                A signed-in account lets your devices share sessions and Spaces and lets the agent run when
+                A signed-in account lets your devices share sessions and Profiles and lets the agent run when
                 your Mac is asleep. AI features can also use an anonymous device account for authentication
                 and usage limits before you sign in. Account records include:
               </p>
@@ -184,7 +184,7 @@ export default function PrivacyPage() {
                   from, and the signed tokens they use.
                 </li>
                 <li>
-                  Synced records for sessions (cookies), Spaces, and tab restore points. Each is encrypted on your
+                  Synced records for sessions (cookies), Profiles, and tab restore points. Each is encrypted on your
                   device under keys only your devices hold before it is uploaded. Our servers see record ids, sizes,
                   and timestamps.
                 </li>
@@ -208,13 +208,13 @@ export default function PrivacyPage() {
 
             <Prose id="cloud" title="Cloud browser and egress">
               <p>
-                For a Space you explicitly turn the cloud browser on for, a hosted browser can run agent tasks using
-                that Space&apos;s synced sessions. While a run is active, that browser holds the Space&apos;s sessions in
+                For a Profile you explicitly turn the cloud browser on for, a hosted browser can run agent tasks using
+                that Profile&apos;s synced sessions. While a run is active, that browser holds the Profile&apos;s sessions in
                 memory and its requests go through a private egress gateway with a static address dedicated to you,
                 so sites see the same address from your Mac and from the cloud. Runs, their conversations, and their
                 activity records are stored for your account so you can review them from any device.
               </p>
-              <p>Spaces you have not enabled never run in the cloud.</p>
+              <p>Profiles you have not enabled never run in the cloud.</p>
             </Prose>
 
             <Prose id="website" title="This website">
@@ -228,9 +228,9 @@ export default function PrivacyPage() {
             <Prose id="control" title="Your choices">
               <ul>
                 <li>Use local browsing without enabling sync, integrations, cloud tasks, or AI features.</li>
-                <li>Edit or erase memory and reminders, and clear a Space&apos;s site data, at any time from Settings.</li>
+                <li>Edit or erase memory and reminders, and clear a Profile&apos;s site data, at any time from Settings.</li>
                 <li>Revoke any enrolled device, disconnect any integration, or remove any vault entry from Settings.</li>
-                <li>Turn the cloud browser off per Space.</li>
+                <li>Turn the cloud browser off per Profile.</li>
                 <li>Ask us to remove your account and the records above; see the contact section below.</li>
               </ul>
             </Prose>

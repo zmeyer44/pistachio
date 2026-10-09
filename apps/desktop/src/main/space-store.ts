@@ -74,7 +74,7 @@ export class SpaceStore {
 
   createFork(parentSpaceId: string, name: string, purpose: string, carriedOrigins: string[]): SpaceInfo {
     const parent = this.#spaces.find((candidate) => candidate.id === parentSpaceId);
-    if (parent === undefined) throw new Error("The parent Space no longer exists.");
+    if (parent === undefined) throw new Error("The parent Profile no longer exists.");
     const id = randomUUID();
     const space: SpaceInfo = {
       id,

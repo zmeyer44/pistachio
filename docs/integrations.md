@@ -1,5 +1,7 @@
 # Dedicated integrations
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 A dedicated integration gives the agent a service's API with a grant the person made, instead of driving the service's website in a tab. Gmail was the first and Google Calendar is the second. The design is one framework; a provider is a catalog entry and a tool family.
 
 ## What a connection is

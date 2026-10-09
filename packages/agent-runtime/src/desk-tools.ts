@@ -47,14 +47,14 @@ export type AttachFile = (toolCallId: string, file: { dataUrl: string; mediaType
 
 export const DESK_RULES = `
 Desk rules:
-- The person is working at a desk: a tab group whose tabs are laid out as windows, for one task. The desk is your workspace for this request, and the message tells you what is on it (under "Desk:"): every window with its place and which one is in use, the group's tabs in the dock, and the group's context. Work from it; list tabs only when it may have changed.
-- Stay on the desk. Its tabs are the ones you can use, and your hidden tabs: a tab you open with tab_open is hidden — not in the group, not on the desk — so look things up there and leave the desk as the person has it. Bring a page onto the desk only when they ask to open or see it, or to put it on the desk: tab_show adds a hidden tab to the group and brings it out beside the window in use, without taking the person's keyboard. Anything outside the group — another of the person's tabs, their mail, their calendar — ask about first.
+- The person is working in a space: a set of tabs for one task, laid out as windows on its desk. The desk is your workspace for this request, and the message tells you what is on it (under "Desk:"): every window with its place and which one is in use, the space's tabs in the dock, and the space's context. Work from it; list tabs only when it may have changed.
+- Stay on the desk. Its tabs are the ones you can use, and your hidden tabs: a tab you open with tab_open is hidden — not in the space, not on the desk — so look things up there and leave the desk as the person has it. Bring a page onto the desk only when they ask to open or see it, or to put it on the desk: tab_show adds a hidden tab to the space and brings it out beside the window in use, without taking the person's keyboard. Anything outside the space — another of the person's tabs, their mail, their calendar — ask about first.
 - Use the desk to answer. You may rearrange the person's windows: with desk_arrange, put what should be compared side by side (left and right halves, or quarters), bring out what matters, put away what is in the way, tile or cascade when asked to tidy. Every layout you make can be undone in one click, so arrange confidently when it helps, and say what you did.
 - Pin a short note (a few words) to a window with desk_note when that window holds part of the answer, such as "Lands 11:05, before check-in". Notes clear when the next turn starts.
-- The group's context keeps the task's files and facts. Read what a request needs with context_read. Save what the person will want again — confirmation numbers, times, addresses, decisions — with context_save, and say that you saved it.
+- The space's context keeps the task's files and facts. Read what a request needs with context_read. Save what the person will want again — confirmation numbers, times, addresses, decisions — with context_save, and say that you saved it.
 - The context's files open on the desk as document windows (a PDF, a Word or Excel file, a picture, notes), listed among the windows as "document file:<id>". Arrange them as you arrange tabs: place, bring out or put away "file:<the item's id>" with desk_arrange. A file the person @mentions in their message comes with the message; you need not read it again.
 - A window marked "minimized" is one the person made small and set aside, most often peeking up at the desk's foot, where they can see it at a glance. Leave it minimized unless the answer needs it; placing it with desk_arrange gives it its size back.
-- Before moving a tab out of the group with desk_ungroup, ask with ask_user.
+- Before moving a tab out of the space with desk_ungroup, ask with ask_user.
 - Name windows by their titles; the person never sees tab ids.
 `;
 
@@ -67,9 +67,9 @@ function deskLabel(request: DeskToolRequest): string {
     case "desk.note":
       return request.text === null ? "Clearing a note" : "Pinning a note";
     case "desk.ungroup":
-      return request.tabIds.length === 1 ? "Moving a tab out of the group" : "Moving tabs out of the group";
+      return request.tabIds.length === 1 ? "Moving a tab out of the space" : "Moving tabs out of the space";
     case "context.read":
-      return "Reading the group's context";
+      return "Reading the space's context";
     case "context.save":
       return request.kind === "fact" ? "Saving a fact" : "Saving a snippet";
   }
@@ -127,7 +127,7 @@ export function deskTools(host: DeskToolHost, callbacks: AiAgentRunCallbacks, at
   return {
     desk_state: tool({
       description:
-        "The desk as it stands now: every window (a tab's id, title and address, or a document's file:<id> and name; its place as percents of the desk; which is in use), the group's tabs in the dock, and the group's context. The message already carries it; call this after the desk may have changed.",
+        "The desk as it stands now: every window (a tab's id, title and address, or a document's file:<id> and name; its place as percents of the desk; which is in use), the space's tabs in the dock, and the space's context. The message already carries it; call this after the desk may have changed.",
       inputSchema: z.object({}),
       execute: async () => perform({ name: "desk.state" }, () => host.state(), () => "Read the desk"),
     }),
@@ -175,17 +175,17 @@ export function deskTools(host: DeskToolHost, callbacks: AiAgentRunCallbacks, at
         }, () => (text === null ? "Cleared the note" : "Pinned the note")),
     }),
     desk_ungroup: tool({
-      description: "Move tabs out of the group (they stay open, beside it). Only after the person agreed with ask_user.",
+      description: "Move tabs out of the space (they stay open, beside it). Only after the person agreed with ask_user.",
       inputSchema: z.object({ tabIds: z.array(TAB_ID).min(1).max(24) }),
       execute: async ({ tabIds }) =>
         perform({ name: "desk.ungroup", tabIds }, async () => {
           await host.ungroup(tabIds);
           return { tabIds };
-        }, () => `Moved ${String(tabIds.length)} tab${tabIds.length === 1 ? "" : "s"} out of the group`),
+        }, () => `Moved ${String(tabIds.length)} tab${tabIds.length === 1 ? "" : "s"} out of the space`),
     }),
     context_read: tool({
       description:
-        "Read one item of the group's context by its id from the desk block: a fact's or a text file's text, or an image or PDF, which follows the result as a file you can look at.",
+        "Read one item of the space's context by its id from the desk block: a fact's or a text file's text, or an image or PDF, which follows the result as a file you can look at.",
       inputSchema: z.object({ id: z.string().min(1).describe("The item's id, from the desk block's context list.") }),
       execute: async ({ id }, { toolCallId }) =>
         perform({ name: "context.read", id }, async () => {
@@ -199,7 +199,7 @@ export function deskTools(host: DeskToolHost, callbacks: AiAgentRunCallbacks, at
     }),
     context_save: tool({
       description:
-        "Save a fact or a snippet to the group's context, where the person and later turns find it: a confirmation number, a time, an address, a decision. Keep a fact to one line.",
+        "Save a fact or a snippet to the space's context, where the person and later turns find it: a confirmation number, a time, an address, a decision. Keep a fact to one line.",
       inputSchema: z.object({
         kind: z.enum(["fact", "snippet"]),
         text: z.string().min(1).max(4_000),

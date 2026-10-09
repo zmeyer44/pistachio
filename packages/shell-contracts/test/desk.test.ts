@@ -36,6 +36,21 @@ describe("the desk's contract", () => {
     expect(isDeskState(null)).toBe(false);
   });
 
+  it("takes the windows to wake only from among its own, and the space they are of only as an id", () => {
+    expect(isDeskState({ tabIds: ["a", "b", "c"], grab: null, live: ["a", "c"] })).toBe(true);
+    expect(isDeskState({ tabIds: ["a"], grab: null, live: [] })).toBe(true);
+    // A stranger's tab is no window of this desk's to wake.
+    expect(isDeskState({ tabIds: ["a"], grab: null, live: ["a", "z"] })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, live: [1] })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, live: "a" })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, live: Array.from({ length: MAX_DESK_WINDOWS + 1 }, () => "a") })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, groupId: "g-1" })).toBe(true);
+    expect(isDeskState({ tabIds: [], grab: null, groupId: "g-1", live: [] })).toBe(true);
+    expect(isDeskState({ tabIds: ["a"], grab: null, groupId: "" })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, groupId: "tab:a" })).toBe(false);
+    expect(isDeskState({ tabIds: ["a"], grab: null, groupId: 7 })).toBe(false);
+  });
+
   it("takes where the dock stands aside only as a finite box, or none", () => {
     const dock = { x: 0, y: 300, width: 68, height: 400 };
     expect(isDeskState({ tabIds: ["a"], grab: null, dock })).toBe(true);

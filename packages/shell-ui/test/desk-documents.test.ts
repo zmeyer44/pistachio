@@ -1,8 +1,8 @@
 /**
  * Documents on the desk (docs/desk-documents.md): a window need not be a
  * tab's. A document's window is the shell's own — never reported to main,
- * always drawn — whose home is the Stack; the desk's pane on leaving is
- * always a tab's; the agent reads and arranges documents as windows; and
+ * always drawn — whose home is the Stack; main is asked to wake tabs'
+ * pages only; the agent reads and arranges documents as windows; and
  * the Bar's @mentions find and insert files.
  */
 
@@ -56,8 +56,8 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     save: () => undefined,
     moveTabToGroup: () => undefined,
     sidebar: () => ({ x: -48, y: 0, w: 48, h: 1000 }),
+    sidebarAway: () => false,
     homeOf: () => null,
-    leaveDone: () => undefined,
     ...host,
   });
   created.attachStage({ getBoundingClientRect: () => STAGE } as unknown as HTMLElement);
@@ -219,18 +219,18 @@ describe("a document's window", () => {
     desk.destroy();
   });
 
-  it("leaves the desk as a tab's pane, even when a document is the window in use", () => {
-    native();
-    const done = vi.fn();
-    const desk = engine({ leaveDone: done });
-    desk.start([], "tab-0", ["tab-0"], [PLAN]);
+  it("asks main to wake tabs' pages only, even when a document is the window in use", () => {
+    const { desks } = native();
+    const desk = engine();
+    desk.start([], "tab-0", ["tab-0"], [PLAN], "g1");
     settle();
     desk.add(PLAN, { focus: true });
     settle();
     expect(desk.focusedTabId()).toBe(PLAN);
-    desk.leave();
-    settle();
-    expect(done).toHaveBeenCalled();
+    const last = desks.at(-1)!;
+    expect(last.tabIds).toEqual(["tab-0"]);
+    expect(last.live ?? []).not.toContain(PLAN);
+    for (const id of last.live ?? []) expect(last.tabIds).toContain(id);
     desk.destroy();
   });
 

@@ -37,11 +37,11 @@ describe("a message's attached text", () => {
     const content = [
       "What's left to pack in @notes.md ?",
       formatAttachmentText("notes.md", "# Trip notes\n\n- Pack the adapter"),
-      "“scan.pdf” is in this desk's context as abc: read it with context_read.",
+      "“scan.pdf” is in this space's context as abc: read it with context_read.",
       formatSelectionText("Hotel", "https://hotel.example/", "Check-in from 15:00"),
     ].join("\n\n");
     expect(splitAttachedText(content)).toEqual({
-      text: "What's left to pack in @notes.md ?\n\n“scan.pdf” is in this desk's context as abc: read it with context_read.",
+      text: "What's left to pack in @notes.md ?\n\n“scan.pdf” is in this space's context as abc: read it with context_read.",
       attached: [
         { kind: "file", name: "notes.md", text: "# Trip notes\n\n- Pack the adapter" },
         { kind: "selection", name: "Hotel (https://hotel.example/)", text: "Check-in from 15:00" },

@@ -1,5 +1,7 @@
 # Watchtower
 
+(Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
+
 Watchtower is the browser's photographic memory: a local, searchable
 Markdown archive of what the person actually read, not just where they went.
 "That article about pistachio blight from a few weeks ago" and "the video

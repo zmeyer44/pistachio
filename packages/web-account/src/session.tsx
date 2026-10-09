@@ -327,8 +327,8 @@ export function SessionProvider({
           setFailure(
             failureOf(
               kept.missing.length === 1
-                ? "A new Space was added on another device. Unlock once to open it."
-                : `${String(kept.missing.length)} new Spaces were added on another device. Unlock once to open them.`,
+                ? "A new Profile was added on another device. Unlock once to open it."
+                : `${String(kept.missing.length)} new Profiles were added on another device. Unlock once to open them.`,
             ),
           );
           setState("locked");

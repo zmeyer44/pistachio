@@ -83,7 +83,7 @@ const REASONS: Partial<Record<keyof ShellApi, string>> = {
   addBookmark: PREVIEW,
   watchtower: "Watchtower stores browsing memories on your Mac. It has nothing to search in a preview.",
   getArtifacts: "Artifacts are pages the agent builds for you in the app; a preview has none yet.",
-  tabGroupCommand: "Tab groups are kept by the app. Download Pistachio to group tabs.",
+  tabGroupCommand: "Spaces are kept by the app. Download Pistachio to make one.",
   tabArchive: "The tab archive is kept by the app.",
   tidy: "Tidy runs in the app.",
   reports: "The daily brief is built by the app from what you actually read.",

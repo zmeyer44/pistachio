@@ -188,6 +188,22 @@ export function isDeskHover(value: unknown): value is DeskHover {
 export interface DeskState {
   /** The tabs shown as desk windows right now. */
   tabIds: string[];
+  /**
+   * The windows the shell wants WOKEN now, a subset of `tabIds`: the window
+   * in use and every window neither covered nor minimized (a cascade of
+   * eight wants two). Main wakes those — the one in use first, the rest one
+   * at a time as each paints — and leaves the others asleep as placeholders
+   * until they are raised or uncovered (docs/spaces.md §2, "Waking"). Absent
+   * means every window, as before 2026-10-09.
+   */
+  live?: string[];
+  /**
+   * The space (tab group) whose windows these are (docs/spaces.md §2): main
+   * owns which space is current, and while the desk passes from one to
+   * another this says which one a report is about. Absent from a shell
+   * that does not say.
+   */
+  groupId?: string;
   /** The modifier that grabs a window from inside its page, or null for none. */
   grab: DeskGrabModifier | null;
   /**
@@ -196,6 +212,11 @@ export interface DeskState {
    * it); null or absent while it stands. The window in use is live there,
    * so a pointer coming to the dock's place is over its page, which the
    * shell never hears: main tells it (DeskPageInput "dock").
+   *
+   * @deprecated The dock is the sidebar now and never steps aside: the
+   * engine always reports null, and main no longer reads it nor sends
+   * DeskPageInput "dock" (since 2026-10-09). Still accepted, so an older
+   * shell's report is not refused.
    */
   dock?: DeskBox | null;
   /**
@@ -213,14 +234,27 @@ export interface DeskState {
 
 export const MAX_DESK_WINDOWS = 24;
 
+/**
+ * A space's (tab group's) id, as @pistachio/shell-contracts/tab-groups
+ * `isTabGroupId` takes one — said again here, not imported: this module
+ * imports types only (the note at its top), so what the shell's preload
+ * takes from it drags no sibling module into the preload bundles.
+ */
+const GROUP_ID = /^[a-z0-9][a-z0-9-]{0,127}$/i;
+
 export function isDeskState(value: unknown): value is DeskState {
   if (typeof value !== "object" || value === null) return false;
   const state = value as Record<string, unknown>;
   const tabIds = state["tabIds"];
+  const live = state["live"];
+  const groupId = state["groupId"];
   return (
     Array.isArray(tabIds) &&
     tabIds.length <= MAX_DESK_WINDOWS &&
     tabIds.every((tabId) => typeof tabId === "string" && tabId.length > 0 && tabId.length <= 128) &&
+    (live === undefined ||
+      (Array.isArray(live) && live.length <= MAX_DESK_WINDOWS && live.every((tabId) => typeof tabId === "string" && tabIds.includes(tabId)))) &&
+    (groupId === undefined || (typeof groupId === "string" && GROUP_ID.test(groupId))) &&
     (state["grab"] === null || isDeskGrabModifier(state["grab"])) &&
     (state["dock"] === undefined || state["dock"] === null || isDeskBox(state["dock"])) &&
     (state["dockHover"] === undefined || typeof state["dockHover"] === "boolean") &&

@@ -7,7 +7,6 @@ import { NoticeHost } from "./components/NoticeHost";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { PistachioMark } from "./components/PistachioMark";
 import { ScreenshotOverlay } from "./components/ScreenshotOverlay";
-import { useDeskStore } from "./lib/desk/store";
 import { updatePromptWaiting } from "./lib/update-prompt";
 import { useAppStore } from "./store";
 
@@ -90,8 +89,8 @@ export function App() {
   }, [paused]);
 
   // A newer Pistachio nobody has put off is offered over the page, as soon
-  // as the screen is free (lib/update-prompt.ts).
-  const deskUp = useDeskStore((desk) => desk.opening !== null || desk.groupId !== null);
+  // as the screen is free (lib/update-prompt.ts) — on the desk too, since
+  // 2026-10-09: it is a page over the surface, as Settings is.
   const updateWaiting = useAppStore(
     (state) =>
       state.snapshot !== null &&
@@ -100,7 +99,6 @@ export function App() {
         overlay: state.overlay,
         onboardingOpen: state.onboardingOpen,
         glanceOpen: state.glance !== null,
-        deskUp,
       }),
   );
   useEffect(() => {
@@ -126,7 +124,7 @@ export function App() {
         ) : (
           <main className="theme-window grid h-full w-full place-content-center justify-items-center gap-4 bg-background-100 text-label-14 text-gray-900">
             <PistachioMark size={48} />
-            <span>Opening secure Space…</span>
+            <span>Opening secure Profile…</span>
           </main>
         )
       ) : (
