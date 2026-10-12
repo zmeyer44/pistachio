@@ -168,6 +168,9 @@ export function uncoveredWindows(order: readonly string[], frames: ReadonlyMap<s
 
 export type SnapZone = "left" | "right" | "top-left" | "top-right" | "bottom-left" | "bottom-right" | "maximize";
 
+/** How near an edge of the desk the pointer arms that edge's zone (edgeZone). */
+export const SNAP_EDGE = 18;
+
 /**
  * The zone a pointer arms by pushing into an edge of the desk while it
  * carries a window, the way a window pushed into a screen edge offers to
@@ -176,7 +179,7 @@ export type SnapZone = "left" | "right" | "top-left" | "top-right" | "bottom-lef
  * at it: a pointer carried out over the sidebar lights the left half, as one
  * carried off the window's right side lights the right.
  */
-export function edgeZone(point: Point, bounds: Rect, edge = 18, corner = 96): SnapZone | null {
+export function edgeZone(point: Point, bounds: Rect, edge = SNAP_EDGE, corner = 96): SnapZone | null {
   const nearLeft = point.x <= bounds.x + edge;
   const nearRight = point.x >= rightOf(bounds) - edge;
   const nearTop = point.y <= bounds.y + edge;
@@ -300,6 +303,32 @@ export function windowSize(bounds: Rect): { w: number; h: number } {
     w: Math.max(Math.min(MIN_WINDOW_W, bounds.w), Math.round(bounds.w * 0.58)),
     h: Math.max(Math.min(MIN_WINDOW_H, bounds.h), Math.round(bounds.h * 0.74)),
   };
+}
+
+/** The furthest out a page is zoomed for its window's size (pageZoom). */
+export const PAGE_ZOOM_MIN = 0.5;
+
+/**
+ * The zoom a page is shown at in a window of `size` on a desk of `bounds`
+ * (the Feel's Page zoom, Fit): the less of the desk the window takes, the
+ * further out — a quarter off for every halving of its share of the desk's
+ * area, so a half tile is at 75% and a quarter tile, or a column a quarter
+ * of the desk wide, at 50%, the least (PAGE_ZOOM_MIN). Never so far out that
+ * the page is laid out wider than the desk: a window the desk's whole width
+ * (a top or bottom half) stays at 100%, as one filling it does. A share
+ * counts the gap a tile leaves, so tiles come out at exactly those; to the
+ * whole percent. That is at a `strength` of 1, the Feel's Medium: each
+ * halving costs a quarter times the strength (Slight's 0.5 an eighth, a half
+ * tile at 88%; Strong's 1.5, 63%; Strongest's 2, 50%), and 0, Off, is
+ * always 100%. The floors stay whatever the strength.
+ */
+export function pageZoom(size: { w: number; h: number }, bounds: { w: number; h: number }, strength = 1, gap = DESK_GAP): number {
+  if (strength <= 0) return 1;
+  const wide = Math.min(1, Math.max(0, (size.w + gap) / (bounds.w + gap)));
+  const tall = Math.min(1, Math.max(0, (size.h + gap) / (bounds.h + gap)));
+  const area = wide * tall;
+  const zoom = area > 0 ? Math.max(wide, 1 + (strength * Math.log2(area)) / 4) : PAGE_ZOOM_MIN;
+  return Math.round(Math.min(1, Math.max(PAGE_ZOOM_MIN, zoom)) * 100) / 100;
 }
 
 /** As good as the whole desk: this much of it both ways. */
@@ -1062,6 +1091,19 @@ const NUB_CLOSE_GAP = 8;
 
 export function nubClose(): Point {
   return { x: -(NUB_CLOSE_INSET + NUB_CLOSE_R), y: -(nubExtent(NUB_SWELL) + NUB_CLOSE_GAP + NUB_CLOSE_R) };
+}
+
+/**
+ * The chat's side button (DeskBar, 2026-10-09): while the chat is docked, a
+ * second round button stands above the pill's close, the same size,
+ * NUB_SIDE_GAP above it — the column the menu's droplets once stood in. Its
+ * centre, from the corner.
+ */
+const NUB_SIDE_GAP = 8;
+
+export function nubSide(): Point {
+  const close = nubClose();
+  return { x: close.x, y: close.y - (NUB_CLOSE_R * 2 + NUB_SIDE_GAP) };
 }
 
 /**

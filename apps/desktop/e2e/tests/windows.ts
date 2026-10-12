@@ -35,15 +35,14 @@ async function pageWhere(app: ElectronApplication, predicate: (page: Page) => bo
  * premise still holds; its own sections — its own home page, its layout —
  * win over them.
  *
- * (`newTab: "address"` is the web's since 2026-10-09: on the desktop the desk
- * is always up, and ⌘T always puts a new tab out on it as a window on the
- * home page — docs/spaces.md §1. It no longer asks for an address there;
- * the seed is kept for the web's specs, and is harmless here.)
+ * (It seeded `newTab: "address"` until 2026-10-10, when the desk began to
+ * honor it: ⌘T is a home window again — here, a window at `homeUrl` — as the
+ * specs that press it on a desk expect.)
  */
 export function pageFirst(settings: { general?: Record<string, unknown> } & Record<string, unknown> = {}): Record<string, unknown> {
   return {
     ...settings,
-    general: { homePage: "url", homeUrl: "https://www.google.com/", newTab: "address", ...settings.general },
+    general: { homePage: "url", homeUrl: "https://www.google.com/", ...settings.general },
   };
 }
 

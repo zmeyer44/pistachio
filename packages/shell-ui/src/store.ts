@@ -126,6 +126,7 @@ import {
 import { hostOf, displayHost } from "./lib/url";
 import { clearRecents, dismissRecent, loadRecents, recordVisit, refaviconVisit, retitleVisit, type RecentSite } from "./lib/recents";
 import { share } from "./lib/share";
+import { startTerminalIn, terminalFolder } from "./lib/terminal/places";
 import { clampPanelWidth, getStoredPanelWidth, storePanelWidth } from "./lib/panel";
 import { permissionPromptOverlay } from "./lib/permission-prompt";
 import { updatePromptShows } from "./lib/update-prompt";
@@ -139,6 +140,7 @@ import {
   type TabSwitcherModifier,
 } from "@pistachio/shell-contracts/tab-switcher";
 import { noteUrl } from "@pistachio/shell-contracts/notes";
+import { newTerminalId, terminalUrl, terminalUrlId } from "@pistachio/shell-contracts/terminal";
 import { BRIEF_PAGE_URL } from "@pistachio/shell-contracts/reports";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { updateVersion, type UpdateSnooze, type UpdateState } from "@pistachio/shell-contracts/updates";
@@ -310,8 +312,11 @@ export interface AppState {
   imagePreview: { src: string; alt: string } | null;
   /** The tab the address bar edits; null means the active tab. */
   urlBarTabId: string | null;
-  /** The address bar is composing a NEW tab rather than editing one. */
-  urlBarNew: boolean;
+  /**
+   * The address bar is composing a NEW tab rather than editing one: in the current space ("tab": ⌥L, the web's ⌘T),
+   * or in a new space of its own ("space": ⌘⇧L). False, it edits a tab.
+   */
+  urlBarNew: false | "tab" | "space";
   /**
    * A pane-resize drag is live — the split divider, a panel's edge. It tints
    * the handle and nothing else: the pointer is held by the drag layer, not
@@ -468,6 +473,8 @@ export interface AppState {
   openAddress(url: string): void;
   /** A blank note in a tab. There is nothing to save, so there is nothing to confirm. */
   newNote(): Promise<void>;
+  /** A shell on this Mac in a new tab (docs/terminal.md), in the folder of the terminal in use, if one is. */
+  newTerminal(): Promise<void>;
   /** The same note, beside whatever is open now. */
   openNoteInSplit(noteId: string): Promise<void>;
   closeReminders(): void;
@@ -557,7 +564,7 @@ export interface AppState {
   setOverlay(overlay: Overlay): void;
   setContextMenuOpen(open: boolean): void;
   openUrlBar(tabId?: string): void;
-  openNewTabBar(): void;
+  openNewTabBar(into?: "tab" | "space"): void;
   setPaneResizing(resizing: boolean): void;
   setTabDragging(dragging: boolean): void;
   setSplitDropZone(zone: SplitSide | null): void;
@@ -1210,6 +1217,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     // open and nothing to say twice.
     if (note !== null) get().openNotes(note.id);
   },
+  newTerminal: async () => {
+    const state = get();
+    state.closePage();
+    const active = selectActiveTab(state);
+    const from = active === null ? null : terminalUrlId(active.url);
+    const id = newTerminalId();
+    // As Ghostty's new windows do: where the shell in use is.
+    startTerminalIn(id, from === null ? null : terminalFolder(from));
+    await state.createTab(terminalUrl(id));
+  },
   openNoteInSplit: async (noteId) => {
     const url = noteUrl(noteId);
     const openTab = () => get().snapshot?.tabs.find((tab) => sameAddress(tab.url, url)) ?? null;
@@ -1445,7 +1462,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     return state.overlay === "context-menu" ? { overlay: "none" } : {};
   }),
   openUrlBar: (tabId) => set({ overlay: "url", urlBarTabId: tabId ?? null, urlBarNew: false }),
-  openNewTabBar: () => set({ overlay: "url", urlBarTabId: null, urlBarNew: true }),
+  openNewTabBar: (into = "tab") => set({ overlay: "url", urlBarTabId: null, urlBarNew: into }),
   setPaneResizing: (paneResizing) => set({ paneResizing }),
   setTabDragging: (tabDragging) => set(tabDragging ? { tabDragging } : { tabDragging, splitDropZone: null, splitDragTab: null }),
   setSplitDropZone: (splitDropZone) => set((state) => state.splitDropZone === splitDropZone ? {} : { splitDropZone }),
@@ -1682,7 +1699,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   tabGroupCommand: async (command) => {
     const result = await attemptValue(() => shellApi().tabGroupCommand(command));
     if (result.ok) return result.value;
-    get().showNotice(result.error, { tone: "warning" });
+    get().showNotice(result.error.replace(/^Error invoking remote method '[^']+': (Error: )?/, ""), { tone: "warning" });
     return null;
   },
   tidyRunning: false,

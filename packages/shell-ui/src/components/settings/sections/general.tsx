@@ -1,9 +1,9 @@
-/** Settings → General: how the sidebar behaves, what a tab does, where a search goes, and what the window opens with. */
+/** Settings → General: how the sidebar behaves, what a tab does, where a search goes, what the window opens with, and how fast media plays. */
 
 import { Globe } from "lucide-react";
 import { useState } from "react";
 import { AI_SEARCH_PROVIDERS, WEB_SEARCH_PROVIDERS, aiSearchLabel, webSearchLabel } from "@pistachio/shell-contracts/search";
-import { effectiveSidebarMode, type SidebarMode } from "@pistachio/shell-contracts/settings";
+import { effectiveSidebarMode, PLAYBACK_RATE_OPTIONS, type SidebarMode } from "@pistachio/shell-contracts/settings";
 import { isAllowedNavigation, withScheme as withSchemeForHost } from "@pistachio/shell-contracts/url";
 import { runShellCommand } from "../../../chrome/shell-host";
 import { briefTimeItems } from "../../../lib/reports";
@@ -33,6 +33,11 @@ const SIDEBAR_ITEMS: ReadonlyArray<{ value: SidebarMode; label: string }> = [
   { value: "hidden", label: "Hidden — reveal at the left edge" },
 ];
 const WEB_SIDEBAR_ITEMS = SIDEBAR_ITEMS.filter((item) => item.value !== "rail");
+
+const PLAYBACK_RATE_ITEMS = PLAYBACK_RATE_OPTIONS.map((rate) => ({
+  value: rate as number,
+  label: rate === 1 ? "Normal" : `${String(rate)}×`,
+}));
 
 /**
  * An address a setting stores. Committed on Enter/blur rather than per
@@ -173,6 +178,7 @@ export function GeneralPage() {
   const sidebar = effectiveSidebarMode(stored, native);
   const general = useAppStore((s) => s.settings.general);
   const search = useAppStore((s) => s.settings.search);
+  const media = useAppStore((s) => s.settings.media);
   const updateSettings = useAppStore((s) => s.updateSettings);
 
   return (
@@ -200,25 +206,18 @@ export function GeneralPage() {
         </Row>
       </Group>
 
-      <Group
-        title="New tabs"
-        note={native ? "What it costs to close a tab the agent is working in." : "What ⌘T does, and what it costs to close a tab the agent is working in."}
-      >
-        {/* (Not on the desktop: ⌘T there always opens a home window in the current space, docs/spaces.md §1.) */}
-        {native ? null : (
-          <>
-            <Row label="New tabs open" note="⌘T can open your home page, ask for an address every time, or go straight to a page you name below.">
-              <Select
-                aria-label="New tab behavior"
-                value={general.newTab}
-                items={NEW_TAB_ITEMS}
-                onValueChange={(newTab) => void updateSettings({ general: { newTab } })}
-                className="w-35"
-              />
-            </Row>
-            <NewTabPageRow />
-          </>
-        )}
+      {/* On the desktop too since 2026-10-10: whichever it is, a window in the current space (docs/spaces.md §1). */}
+      <Group title="New tabs" note="What ⌘T does, and what it costs to close a tab the agent is working in.">
+        <Row label="New tabs open" note="⌘T can open your home page, ask for an address every time, or go straight to a page you name below.">
+          <Select
+            aria-label="New tab behavior"
+            value={general.newTab}
+            items={NEW_TAB_ITEMS}
+            onValueChange={(newTab) => void updateSettings({ general: { newTab } })}
+            className="w-35"
+          />
+        </Row>
+        <NewTabPageRow />
         <Row
           label="Ask before closing a tab with a live run"
           note="Closing the tab the agent is using ends the browser task. A confirmation keeps ⌘W from stopping work by accident."
@@ -323,6 +322,25 @@ export function GeneralPage() {
           </>
         ) : null}
       </Group>
+
+      {/* The Mac's alone: it is the desktop's page preload that starts media at it (preload/tab.ts). */}
+      {native ? (
+        <Group title="Audio & video" note="How the media on every site plays.">
+          <Row
+            label="Default playback speed"
+            note="Audio and video on every site start at this speed, and so does Read aloud. Live streams, calls and muted looping backgrounds stay at normal speed, and a site that starts its player at a speed of its own keeps it. The speed control on the playing card changes one player at a time."
+          >
+            <Select
+              aria-label="Default playback speed"
+              data-testid="default-playback-rate"
+              value={media.defaultPlaybackRate}
+              items={PLAYBACK_RATE_ITEMS}
+              onValueChange={(defaultPlaybackRate) => void updateSettings({ media: { defaultPlaybackRate } })}
+              className="w-35"
+            />
+          </Row>
+        </Group>
+      ) : null}
     </Page>
   );
 }

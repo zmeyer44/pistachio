@@ -21,8 +21,11 @@ import { CHROME_INSETS, DeskEngine, MINI_SIZE, SHELF_INSET, type DeskHost } from
 import { DESK_GAP, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
-/** The frame these were written for: the Title bar (its insets; a window held by its title bar). */
-const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const };
+/**
+ * The frame these were written for: the Title bar (its insets; a window held by its title bar). And every page at its
+ * own size unless minimized, as they were written for too (Page zoom's Fit: desk-page-zoom.test.ts).
+ */
+const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const, zoom: "actual" as const };
 
 let frames: Array<(now: number) => void> = [];
 let timers: Array<{ id: number; run: () => void; at: number }> = [];

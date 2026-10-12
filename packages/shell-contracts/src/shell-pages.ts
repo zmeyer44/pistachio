@@ -3,7 +3,8 @@
  *
  * The home page was the first (`./home.ts` says why: local typing, the
  * viewer's own clock); the daily brief (`pistachio://brief/`, `./reports.ts`)
- * is the second; notes (`pistachio://notes/`, `./notes.ts`) are the third.
+ * is the second; notes (`pistachio://notes/`, `./notes.ts`) are the third;
+ * terminals (`pistachio://terminal/<id>`, `./terminal.ts`) the fourth.
  * For all of them the host owns only the TAB — a strip entry with a title, an
  * icon and back/forward history — and keeps the tab's own view down under the
  * shell's drawing. Everything that asks "who draws this pane?" or "who holds
@@ -13,11 +14,12 @@
  * What stays home-only is what is ABOUT the home page: the new-tab and
  * home-page settings, and Tidy closing idle home tabs.
  */
-import { homePlaceholderHtml, isHomeUrl } from "./home.js";
+import { HOME_PAGE_TITLE, homePlaceholderHtml, isHomeUrl } from "./home.js";
 import { NOTES_PAGE_FAVICON, NOTES_PAGE_TITLE, isNotesUrl } from "./notes.js";
 import { BRIEF_PAGE_TITLE, isBriefUrl } from "./reports.js";
+import { TERMINAL_PAGE_FAVICON, TERMINAL_PAGE_TITLE, isTerminalUrl } from "./terminal.js";
 
-export type ShellPage = "home" | "brief" | "notes";
+export type ShellPage = "home" | "brief" | "notes" | "terminal";
 
 /** A folded sheet with three lines of text, in the brand's green: the brief tab's favicon. */
 export const BRIEF_PAGE_FAVICON =
@@ -28,11 +30,17 @@ export function shellPageOf(url: string): ShellPage | null {
   if (isHomeUrl(url)) return "home";
   if (isBriefUrl(url.trim())) return "brief";
   if (isNotesUrl(url)) return "notes";
+  if (isTerminalUrl(url)) return "terminal";
   return null;
 }
 
 export function isShellPageUrl(url: string): boolean {
   return shellPageOf(url) !== null;
+}
+
+/** What a shell page's tab is called when its page names it nothing (setTabTitle with an empty title). */
+export function shellPageTitle(page: ShellPage): string {
+  return page === "notes" ? NOTES_PAGE_TITLE : page === "terminal" ? TERMINAL_PAGE_TITLE : page === "brief" ? BRIEF_PAGE_TITLE : HOME_PAGE_TITLE;
 }
 
 /**
@@ -44,8 +52,8 @@ export function shellPagePlaceholderHtml(url: string): string | null {
   const page = shellPageOf(url);
   if (page === null) return null;
   if (page === "home") return homePlaceholderHtml();
-  const title = page === "notes" ? NOTES_PAGE_TITLE : BRIEF_PAGE_TITLE;
-  const favicon = page === "notes" ? NOTES_PAGE_FAVICON : BRIEF_PAGE_FAVICON;
+  const title = page === "notes" ? NOTES_PAGE_TITLE : page === "terminal" ? TERMINAL_PAGE_TITLE : BRIEF_PAGE_TITLE;
+  const favicon = page === "notes" ? NOTES_PAGE_FAVICON : page === "terminal" ? TERMINAL_PAGE_FAVICON : BRIEF_PAGE_FAVICON;
   return `<!doctype html>
 <html lang="en">
   <head>

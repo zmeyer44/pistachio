@@ -13,7 +13,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { AudioLines, ChevronLeft, ChevronRight, Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, RotateCw, X } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Crop, Ellipsis, Expand, Maximize2, Minimize2, Minus, PictureInPicture2, RotateCw, Search, X, ZoomOut } from "lucide-react";
 import { agentRingDelayMs } from "@pistachio/shell-contracts/agent-glow";
 import { DESK_DRAWER_TRIGGER, DESK_MINI_ZOOM, MIN_DESK_MASK, type DeskMask } from "@pistachio/shell-contracts/desk";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
@@ -21,6 +21,7 @@ import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
 import type { ShellPage } from "@pistachio/shell-contracts/shell-pages";
+import { terminalUrlId } from "@pistachio/shell-contracts/terminal";
 import { nativeApi } from "../../api";
 import { useAppStore } from "../../store";
 import { cn } from "../../lib/cn";
@@ -42,6 +43,8 @@ import { usePageEntries } from "./page-entries";
 import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
 
 const NotesPage = lazy(() => import("../notes/NotesPage").then((m) => ({ default: m.NotesPage })));
+// xterm.js and its addons come with the first terminal opened (docs/terminal.md §2).
+const TerminalPage = lazy(() => import("../terminal/TerminalPage").then((m) => ({ default: m.TerminalPage })));
 
 /** A frame button's tooltip opens after this long, as the Bar's do. */
 const TIP_DELAY_MS = 350;
@@ -338,6 +341,13 @@ export const DeskWindow = memo(function DeskWindow({
         });
       rare.push({ label: "Minimize", icon: <PictureInPicture2 aria-hidden="true" />, testId: "desk-minimize", onSelect: () => engine.minimize(tabId) });
     }
+    // Above them, the zoom its page is shown at as the menu opens (the Feel's Page zoom, or minimized): a web page's, which main zooms.
+    const zoom = tab === null || shellPage ? null : engine.pageZoom(tabId);
+    if (zoom !== null)
+      rare.unshift(
+        { readout: { label: "Zoom", value: `${String(Math.round(zoom * 100))}%`, icon: zoom < 1 ? <ZoomOut aria-hidden="true" /> : <Search aria-hidden="true" />, testId: "desk-page-zoom" } },
+        ...(rare.length > 0 ? [{ separator: true } as const] : []),
+      );
     if (!all) return rare;
     const common: MenuEntry[] = masked
       ? [{ label: "Unmask", icon: <Expand aria-hidden="true" />, onSelect: () => engine.unmask(tabId) }]
@@ -618,6 +628,8 @@ export const DeskWindow = memo(function DeskWindow({
                 unmasking={view.unmasking}
                 waking={waking}
                 focused={view.focused}
+                // A terminal keeps the size it has while its box is not its own (docs/terminal.md §2).
+                frozen={mini || view.flight !== null || view.closing}
               />
             )}
           </div>
@@ -659,6 +671,7 @@ export function pageKind(url: string): ShellPage | null {
   if (isHomeUrl(url)) return "home";
   if (briefUrlDate(url.trim()) !== undefined) return "brief";
   if (notesUrlId(url.trim()) !== undefined) return "notes";
+  if (terminalUrlId(url) !== null) return "terminal";
   return null;
 }
 
@@ -671,6 +684,7 @@ function WindowPage({
   unmasking,
   waking,
   focused,
+  frozen,
 }: {
   tab: BrowserTabInfo;
   still: string | null;
@@ -680,9 +694,10 @@ function WindowPage({
   unmasking: DeskMask | null;
   waking: boolean;
   focused: boolean;
+  frozen: boolean;
 }) {
   const kind = pageKind(tab.url);
-  if (kind !== null) return <ShellPageView tab={tab} kind={kind} active={focused} />;
+  if (kind !== null) return <ShellPageView tab={tab} kind={kind} active={focused} frozen={frozen} />;
   if (still !== null && unmasking !== null) {
     // Growing back from a mask: the whole page where it stands now (the
     // engine moves the box each frame), or the region, where it is in it.
@@ -715,8 +730,16 @@ function WindowPage({
 }
 
 /** One of the shell's own pages (pageKind), drawn by the shell. */
-function ShellPageView({ tab, kind, active }: { tab: BrowserTabInfo; kind: ShellPage; active: boolean }) {
+function ShellPageView({ tab, kind, active, frozen }: { tab: BrowserTabInfo; kind: ShellPage; active: boolean; frozen: boolean }) {
   if (kind === "home") return <HomePage tabId={tab.id} active={active} />;
+  if (kind === "terminal") {
+    const terminalId = terminalUrlId(tab.url) ?? "";
+    return (
+      <Suspense fallback={null}>
+        <TerminalPage key={terminalId} tabId={tab.id} terminalId={terminalId} active={active} frozen={frozen} />
+      </Suspense>
+    );
+  }
   if (kind === "brief") return <BriefPage tabId={tab.id} date={briefUrlDate(tab.url.trim()) ?? null} active={active} />;
   return (
     <Suspense fallback={null}>

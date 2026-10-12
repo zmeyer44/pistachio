@@ -10,7 +10,8 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { api, box, createGroup, INVOICES, launchDesk, openChats, selectSpace, openTabs, openTray, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, selectSpace, openTabs, openTray, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { shellReady } from "./windows";
 
 const capture = screenshots("desk-agent");
 
@@ -467,11 +468,18 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await drag(grab, { x: grab.x, y: grab.y - 24 }, 8);
     await expect(answer).toHaveAttribute("data-mode", "docked");
     await expect.poll(atRest).toBe("");
+    // The @ list up as it tears off: the list goes with the field into the card, and its cover with it — read again
+    // where the list now is (2026-10-10: the cover stayed with the pill's list, gone from the DOM).
+    await shell.getByTestId("desk-bar-input").fill("@");
+    await expect(shell.locator('[data-testid="desk-mentions"][data-shown]')).toHaveCount(1);
     // Pulled further, it tears off: a window, narrower, under the hand.
     grab = await grabPoint();
     await drag(grab, { x: grab.x - 160, y: grab.y - 160 });
     await expect(answer).toHaveAttribute("data-mode", "detached");
-    await expect(answerButton).toHaveAttribute("data-floating", "");
+    // Its message field comes with it, into its foot on the pill's glass; the pill goes back into the nub.
+    await expect(shell.locator('[data-testid="desk-answer-field"] [data-testid="desk-bar-input"]')).toHaveCount(1);
+    await expect(shell.locator('[data-testid="desk-answer"] [data-testid="desk-mentions"][data-shown]')).toHaveCount(1);
+    await expect(bar).toHaveAttribute("data-compact", "");
     await settled(shell, app);
     let floating = await box(shell, '[data-testid="desk-answer"]');
     // (The width it was docked at, the pill's: it keeps it torn off.)
@@ -481,6 +489,34 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-answer-dock")).toBeVisible();
     await expect(shell.getByTestId("desk-answer-close")).toBeHidden();
     await capture(app, shell, "05c-desk-answer-floating.png");
+    // Carried to the desk's leading edge, over the invoice alone: the accounts window is clear of it, and live.
+    const deskAt = await box(shell, ".desk-stage");
+    grab = await grabPoint();
+    await drag(grab, { x: grab.x - (floating.x - (deskAt.x + 20)), y: grab.y }, 16);
+    await settled(shell, app);
+    floating = await box(shell, '[data-testid="desk-answer"]');
+    expect(floating.x).toBeLessThan(deskAt.x + 40);
+    // A tooltip in its row is a band above the row where the card is drawn — not where it is laid out, above the
+    // pill's place (2026-10-10): a window clear of the card stays live.
+    const clearOfCard = await shell.evaluate(() => {
+      const card = document.querySelector('[data-testid="desk-answer"]')!.getBoundingClientRect();
+      for (const el of document.querySelectorAll<HTMLElement>('[data-testid="desk-window"]:not([data-drawn])')) {
+        const rect = el.getBoundingClientRect();
+        if (rect.right < card.left || rect.left > card.right || rect.bottom < card.top || rect.top > card.bottom) return el.getAttribute("data-tab-id");
+      }
+      return null;
+    });
+    expect(clearOfCard, "a live window clear of the floating answer").not.toBeNull();
+    const clearWindow = shell.locator(`[data-testid="desk-window"][data-tab-id="${clearOfCard!}"]`);
+    // (The @ list's cover, in the card with it: nothing of the pill's place is covered.)
+    await expect(clearWindow).not.toHaveAttribute("data-drawn", "");
+    await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-mentions"]')).toHaveCount(0);
+    await shell.getByTestId("desk-bar-input").fill("");
+    await shell.locator('[data-testid="desk-answer-field"] [data-testid="desk-bar-dictate"]').hover();
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Dictate");
+    await settled(shell, app);
+    await expect(clearWindow).not.toHaveAttribute("data-drawn", "");
     // A window: a press on the desk leaves it be.
     await shell.getByTestId("desk-surface").click({ position: { x: 4, y: 4 } });
     await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
@@ -503,6 +539,44 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect.poll(async () => Math.abs(((await kept()) ?? 0) - resized.width)).toBeLessThan(2);
     await settled(shell, app);
     near((await kept()) ?? 0, resized.width, 2);
+    // Six files staged in its field and a long draft: the files take only so many rows and the field grows only so
+    // far, so the row stays whole in the card, its send button too (2026-10-10: the foot grew past the card's foot,
+    // the button with it).
+    await shell.getByTestId("desk-bar-attach-input").setInputFiles(
+      Array.from({ length: 6 }, (_, index) => ({ name: `a-rather-long-file-name-for-the-chip-to-wrap-${String(index + 1)}.txt`, mimeType: "text/plain", buffer: Buffer.from(`file ${String(index + 1)}`) })),
+    );
+    await expect(shell.locator('[data-testid="desk-bar-staged"] button[aria-label^="Remove"]')).toHaveCount(6);
+    await shell.getByTestId("desk-bar-input").fill(Array.from({ length: 40 }, (_, line) => `line ${String(line + 1)}`).join("\n"));
+    await expect
+      .poll(async () => {
+        const card = await box(shell, '[data-testid="desk-answer"]');
+        const field = await box(shell, '[data-testid="desk-answer-field"]');
+        const send = await box(shell, '[data-testid="desk-bar-send"]');
+        return Math.max(field.y + field.height, send.y + send.height) - (card.y + card.height);
+      })
+      .toBeLessThanOrEqual(1);
+    await shell.getByTestId("desk-bar-input").fill("");
+    const chips = shell.locator('[data-testid="desk-bar-staged"] button[aria-label^="Remove"]');
+    while ((await chips.count()) > 0) await chips.first().click({ force: true });
+    await expect(shell.locator('[data-testid="desk-bar-staged"]')).toHaveCount(0);
+    // At its narrowest, the field's placeholder keeps to its line, cut short: the field is one line, and no scrollbar
+    // ever shows in it. (Held there, then let go with Escape: back to its size.) Once the card is still: an edge pressed
+    // while it is still settling is not taken.
+    await expect.poll(() => shell.locator('[data-testid="desk-answer"] .desk-answer-vis').evaluate((el) => (el as HTMLElement).style.willChange)).toBe("");
+    const leading = await box(shell, '[data-testid="desk-answer"] .desk-answer-edge[data-edge="w"]');
+    await drag({ x: leading.x + leading.width / 2, y: leading.y + leading.height / 2 }, { x: leading.x + leading.width / 2 + 400, y: leading.y + leading.height / 2 }, 10, false);
+    await expect.poll(async () => Math.round((await box(shell, '[data-testid="desk-answer"]')).width)).toBe(320);
+    const fieldFit = (): Promise<{ scroll: number; client: number; bar: number; placeholder: string }> =>
+      shell.getByTestId("desk-bar-input").evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight, bar: (el as HTMLElement).offsetWidth - el.clientWidth, placeholder: (el as HTMLTextAreaElement).placeholder }));
+    await expect.poll(async () => (await fieldFit()).client).toBeLessThanOrEqual(36);
+    const narrow = await fieldFit();
+    expect(narrow.placeholder.length).toBeGreaterThan(20);
+    expect(narrow.scroll).toBeLessThanOrEqual(narrow.client);
+    expect(narrow.bar).toBe(0);
+    await capture(app, shell, "05c1-desk-answer-narrow-field.png");
+    await shell.keyboard.press("Escape");
+    await shell.mouse.up();
+    await expect.poll(async () => Math.round((await box(shell, '[data-testid="desk-answer"]')).width)).toBe(Math.round(resized.width));
     // A window among the desk's: one it lies over, pressed clear of it, comes in front of it, its page live again.
     const under = await shell.evaluate(() => {
       const card = document.querySelector('[data-testid="desk-answer"]')!.getBoundingClientRect();
@@ -523,11 +597,13 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(pressed).not.toHaveAttribute("data-drawn", "");
     expect(await zIndex(pressed)).toBeGreaterThan(await zIndex(answer));
     await capture(app, shell, "05c2-desk-answer-behind-a-window.png");
-    // The Bar's button calls it out rather than hiding it, back in front of every window.
-    await reachBar(shell);
-    await answerButton.click();
+    // The nub's prompt calls it out, back in front of every window, the keyboard in its field.
+    await openNubMenu(shell);
+    await shell.getByTestId("desk-nub-prompt").click();
     await expect(shell.locator('[data-testid="desk-answer"] .desk-answer-flash.desk-answer-flashing')).toHaveCount(1);
     await expect(answer).toHaveAttribute("data-mode", "detached");
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
+    await expect(bar).toHaveAttribute("data-compact", "");
     await expect(pressed).toHaveAttribute("data-drawn", "");
     expect(await zIndex(answer)).toBeGreaterThan(await zIndex(pressed));
     // Brought back over the Bar: the slot's ghost comes up and brightens; let go, it docks, as wide as the Bar again.
@@ -546,9 +622,10 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     near(redocked.x, docked.x, 1);
     await expect.poll(() => shell.getByTestId("desk-answer-ghost").evaluate((el) => Number(getComputedStyle(el).opacity))).toBe(0);
     await capture(app, shell, "05e-desk-answer-docked-again.png");
-    // Torn off again, its dock button puts it back.
+    // Torn off again — far enough that its foot (its field's, too) is clear of the slot it came from — its dock button
+    // puts it back.
     grab = await grabPoint();
-    await drag(grab, { x: grab.x + 120, y: grab.y - 140 });
+    await drag(grab, { x: grab.x + 120, y: grab.y - 260 });
     await expect(answer).toHaveAttribute("data-mode", "detached");
     await settled(shell, app);
     // (It comes back at the size it was left at.)
@@ -556,6 +633,77 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await shell.getByTestId("desk-answer-dock").click();
     await expect(answer).toHaveAttribute("data-mode", "docked");
     await expect.poll(atRest).toBe("");
+    // ── The header's side button and its × (2026-10-09) ─
+    // The side button — above the pill's close at the nub while the chat is docked — sends the docked card straight
+    // into the chat's place: torn off and sprung to the desk's trailing side, the desk's whole height, as a drag there
+    // would leave it; at the side, the button goes back into the nub.
+    const side = shell.getByTestId("desk-answer-side");
+    await expect(side).toHaveAttribute("data-shown", "");
+    const closeBtn = await box(shell, '[data-testid="desk-bar-close"]');
+    const sideBtn = await box(shell, '[data-testid="desk-answer-side"]');
+    near(sideBtn.x, closeBtn.x, 1);
+    expect(sideBtn.y + sideBtn.height).toBeLessThan(closeBtn.y);
+    // (The windows as they stand: the room the chat's place keeps gives them back exactly once it goes — 2026-10-10.)
+    const beforeSide = await box(shell, windowSelector(invoice));
+    await side.click();
+    await expect(answer).toHaveAttribute("data-mode", "detached");
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await settled(shell, app);
+    const stageBox = await box(shell, ".desk-stage");
+    const atSide = await box(shell, '[data-testid="desk-answer"]');
+    near(atSide.x + atSide.width, stageBox.x + stageBox.width, 3);
+    near(atSide.height, stageBox.height, 3);
+    await expect(side).not.toHaveAttribute("data-shown", "");
+    await expect.poll(() => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { zone?: string } | null)?.zone)).toBe("chat");
+    // Its × closes it, at the side as anywhere: the windows have the desk back.
+    await settled(shell, app);
+    const invoiceSide = await box(shell, windowSelector(invoice));
+    await shell.getByTestId("desk-answer-dismiss").click();
+    await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
+    await settled(shell, app);
+    near((await box(shell, windowSelector(invoice))).width, beforeSide.width, 1);
+    // The browser opened again: the chat comes up in its place still, and the windows give way to it as before — the
+    // desk was saved with no room kept, and is read so (2026-10-10: read against the desk short of the room, a window
+    // the room had squeezed to its least width came back wider once the chat docked).
+    await shell.reload();
+    await shellReady(app);
+    await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await settled(shell, app);
+    near((await box(shell, windowSelector(invoice))).width, invoiceSide.width, 1);
+    await expect(shell.getByTestId("desk-answer-dismiss")).toBeVisible();
+    // The browser opened again with the chat at the side: the desk's room for it is kept from the first, so the
+    // windows come back as they were — a minimized one too, which keeps the box it grows back to (2026-10-10: read
+    // against the whole desk, it grew back wider).
+    await settled(shell, app);
+    const accountsBefore = await box(shell, windowSelector(opened.id));
+    await fromFrameMenu(shell, windowSelector(opened.id), "desk-minimize");
+    await settled(shell, app);
+    await expect(shell.locator(windowSelector(opened.id))).toHaveAttribute("data-mini", "parked");
+    const invoiceBefore = await box(shell, windowSelector(invoice));
+    await shell.reload();
+    await shellReady(app);
+    await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await settled(shell, app);
+    const invoiceAfter = await box(shell, windowSelector(invoice));
+    near(invoiceAfter.x, invoiceBefore.x, 1);
+    near(invoiceAfter.width, invoiceBefore.width, 1);
+    await expect(shell.locator(windowSelector(opened.id))).toHaveAttribute("data-mini", "parked");
+    await shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${opened.id}"]`).click();
+    await settled(shell, app);
+    await expect(shell.locator(windowSelector(opened.id))).not.toHaveAttribute("data-mini", /.+/);
+    const accountsAfter = await box(shell, windowSelector(opened.id));
+    near(accountsAfter.width, accountsBefore.width, 2);
+    near(accountsAfter.height, accountsBefore.height, 2);
+    // Back onto the Bar for what follows — and the window back to its box, to the pixel.
+    await shell.getByTestId("desk-answer-dock").click();
+    await expect(answer).toHaveAttribute("data-mode", "docked");
+    await expect.poll(atRest).toBe("");
+    await settled(shell, app);
+    const afterSide = await box(shell, windowSelector(invoice));
+    near(afterSide.x, beforeSide.x, 1);
+    near(afterSide.width, beforeSide.width, 1);
     // Escape while tearing it off: it goes back onto the Bar.
     grab = await grabPoint();
     await drag(grab, { x: grab.x, y: grab.y - 140 }, 16, false);
@@ -583,12 +731,13 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await shell.mouse.up();
     await shell.evaluate(() => new Promise(requestAnimationFrame));
     await expect(answer).toHaveAttribute("data-mode", "detached");
-    // The Bar growing under it (a message of several lines) moves it up, clear of the Bar.
+    // Its field grows with a message of several lines, in the card, which keeps its size (the thread gives way).
     const field = shell.getByTestId("desk-bar-input");
+    const unwritten = await box(shell, '[data-testid="desk-answer"]');
     await field.fill("one\ntwo\nthree\nfour\nfive");
-    const grown = await box(shell, '[data-testid="desk-bar"]');
-    expect(grown.height).toBeGreaterThan(80);
-    await expect.poll(async () => { const card = await box(shell, '[data-testid="desk-answer"]'); return card.y + card.height <= grown.y + 1; }).toBe(true);
+    await expect.poll(async () => (await box(shell, '[data-testid="desk-answer-field"]')).height).toBeGreaterThan(80);
+    near((await box(shell, '[data-testid="desk-answer"]')).height, unwritten.height, 1);
+    await expect(bar).toHaveAttribute("data-compact", "");
     await field.fill("");
     // Sent home, and a press elsewhere puts it away before it is there: its slot's ghost goes with it.
     await shell.getByTestId("desk-answer-dock").click();
@@ -677,6 +826,236 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
     await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
 
+    // ── 10. Floating, the answer snaps as a window does — and into a place of its own, the chat's, the message field in it ─
+    const zone = shell.getByTestId("desk-answer-zone");
+    // The card at rest (settled waits for the windows; the card has springs of its own): answer-motion.ts drops its
+    // layer's will-change on the frame it comes to rest, and not before.
+    const cardStill = async (): Promise<Box> => {
+      await expect.poll(() => shell.locator('[data-testid="desk-answer"] .desk-answer-vis').evaluate((el) => (el as HTMLElement).style.willChange)).toBe("");
+      return box(shell, '[data-testid="desk-answer"]');
+    };
+    const spot = (): Promise<{ floating: boolean; w: number; zone?: string; cw?: number } | null> => shell.evaluate(() => JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { floating: boolean; w: number; zone?: string; cw?: number } | null);
+    await openChats(shell);
+    await shell.locator(`[data-testid="desk-conversation"][data-run-id="${runId}"]`).click();
+    await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
+    await expect(answer).toHaveAttribute("data-mode", "docked");
+    // (Once the conversations and the menu are back in the nub: going, they still lie over the card's header.)
+    await expect(shell.getByTestId("desk-conversations")).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
+    await expect.poll(atRest).toBe("");
+    grab = await grabPoint();
+    await drag(grab, { x: grab.x - 240, y: grab.y - 160 });
+    await expect(answer).toHaveAttribute("data-mode", "detached");
+    await settled(shell, app);
+    // Carried into the desk's leading edge, its half lights, as a window's would; let go, it is that half.
+    grab = await grabPoint();
+    await drag(grab, { x: stage.x + 4, y: stage.y + stage.height / 2 }, 24, false);
+    await expect(zone).toHaveAttribute("data-on", "");
+    await expect(zone).toHaveAttribute("data-kind", "tile");
+    await capture(app, shell, "08a-desk-answer-half-lit.png");
+    await shell.mouse.up();
+    await expect(answer).toHaveAttribute("data-zone", "left");
+    await expect(zone).not.toHaveAttribute("data-on", "");
+    const half = await cardStill();
+    near(half.x, stage.x, 2);
+    near(half.y, stage.y, 2);
+    near(half.width, (stage.width - 8) / 2, 3);
+    // Its edge pressed and let go without a move: in its tile still, and its own size still its own — not the
+    // tile's (2026-10-10).
+    const ownSize = (await spot())!.w;
+    const edge = await box(shell, '[data-testid="desk-answer"] .desk-answer-edge[data-edge="e"]');
+    await shell.mouse.click(edge.x + edge.width / 2, edge.y + edge.height / 2);
+    await cardStill();
+    await expect(answer).toHaveAttribute("data-zone", "left");
+    expect((await spot())!.w).toBe(ownSize);
+    // Resized from its trailing edge, the tile keeps its other edges — through the relayout its new size brings on,
+    // too (2026-10-10: that read it as any floating card, shrank it to the lane and moved it in to the lane's corner).
+    const east = await box(shell, '[data-testid="desk-answer"] .desk-answer-edge[data-edge="e"]');
+    await drag({ x: east.x + east.width / 2, y: east.y + east.height / 2 }, { x: east.x + east.width / 2 + 60, y: east.y + east.height / 2 }, 10);
+    await settled(shell, app);
+    const widened = await cardStill();
+    near(widened.x, half.x, 2);
+    near(widened.y, half.y, 2);
+    near(widened.height, half.height, 2);
+    near(widened.width, half.width + 60, 3);
+    // And from its leading edge, out of the tile already: on the desk's bounds still, not the lane's (2026-10-10: its
+    // second resize read the lane's, and the edge jumped 20px in).
+    const west = await box(shell, '[data-testid="desk-answer"] .desk-answer-edge[data-edge="w"]');
+    await drag({ x: west.x + west.width / 2, y: west.y + west.height / 2 }, { x: west.x + west.width / 2 + 10, y: west.y + west.height / 2 }, 10);
+    await settled(shell, app);
+    const narrowed = await cardStill();
+    near(narrowed.x, widened.x + 10, 2);
+    near(narrowed.x + narrowed.width, widened.x + widened.width, 2);
+    near(narrowed.y, widened.y, 2);
+    // Closed and opened again, it is there still, in the desk's frame (2026-10-10: its spot said a floating card, and
+    // it came back moved in to the lane's corner, shorter by the lane's edges).
+    await shell.getByTestId("desk-answer-dismiss").click();
+    await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
+    await reachBar(shell);
+    await answerButton.click();
+    await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
+    await expect(answer).toHaveAttribute("data-mode", "detached");
+    const back = await cardStill();
+    near(back.x, narrowed.x, 2);
+    near(back.y, narrowed.y, 2);
+    near(back.width, narrowed.width, 2);
+    near(back.height, narrowed.height, 2);
+    // Pressed by its header and let go without a move: where it was (2026-10-10: it moved in to the lane's corner).
+    grab = await grabPoint();
+    await shell.mouse.click(grab.x, grab.y);
+    const stayed = await cardStill();
+    near(stayed.x, back.x, 2);
+    near(stayed.y, back.y, 2);
+    near(stayed.width, back.width, 2);
+    // Taken out of it — back to its own size under the hand — and toward the trailing side, short of its edge: the chat's
+    // place lights, one no window has, the message field sketched at its foot.
+    const own = (await spot())!;
+    // (How far the desk's windows reach toward its trailing edge: they keep out of the chat's place.)
+    const windowsReach = (): Promise<number> =>
+      shell.evaluate(() => Math.max(0, ...[...document.querySelectorAll<HTMLElement>('[data-testid="desk-window"]')].map((el) => el.getBoundingClientRect()).filter((rect) => rect.width > 1).map((rect) => rect.right)));
+    const reachFree = await windowsReach();
+    // (In the chat's place the header's head is the conversation's name, a button: the card is taken by the header beside it.)
+    const chatGrab = async (): Promise<{ x: number; y: number }> => {
+      const head = await box(shell, '[data-testid="desk-answer-head"]');
+      const name = await box(shell, '[data-testid="desk-chat-title"]');
+      return { x: name.x + name.width + 16, y: head.y + head.height / 2 };
+    };
+    expect(reachFree).toBeGreaterThan(stage.x + stage.width - 600);
+    grab = await grabPoint();
+    const toChat = { x: stage.x + stage.width - 70, y: stage.y + stage.height * 0.4 };
+    await drag(grab, toChat, 30, false);
+    await expect(answer).not.toHaveAttribute("data-zone");
+    // (Its own size, a hair larger as it is held — once its lift has settled: read too soon, it is still growing.)
+    await expect.poll(async () => Math.abs((await box(shell, '[data-testid="desk-answer"]')).width - own.w * 1.01)).toBeLessThanOrEqual(3);
+    await expect(zone).toHaveAttribute("data-kind", "chat");
+    await expect(zone).toHaveAttribute("data-on", "");
+    await capture(app, shell, "08b-desk-answer-chat-lit.png");
+    // Shift pressed with the pointer still: the snap's tiles, read from the pointer in thirds, light at once; let go,
+    // the chat's place again (2026-10-10: only a pointer sample carried Shift, so a key alone changed nothing).
+    await shell.keyboard.down("Shift");
+    await expect(zone).toHaveAttribute("data-kind", "tile");
+    await expect(zone).toHaveAttribute("data-snap", "");
+    await shell.keyboard.up("Shift");
+    await expect(zone).toHaveAttribute("data-kind", "chat");
+    await expect(zone).not.toHaveAttribute("data-snap", "");
+    // (Pushed on, into the edge itself, it is the right half again, as a window's.)
+    await shell.mouse.move(stage.x + stage.width - 2, toChat.y);
+    await expect(zone).toHaveAttribute("data-kind", "tile");
+    await shell.mouse.move(toChat.x, toChat.y);
+    await expect(zone).toHaveAttribute("data-kind", "chat");
+    await shell.mouse.up();
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    // The desk's whole height at its trailing side, as wide as a card torn off; the windows give way to it, a gutter clear.
+    const column = await cardStill();
+    near(column.x + column.width, stage.x + stage.width, 2);
+    near(column.y, stage.y, 2);
+    near(column.width, 480, 2);
+    near(column.y + column.height, stage.y + stage.height, 2);
+    await expect.poll(windowsReach).toBeLessThanOrEqual(column.x - 8 + 1);
+    // The message field is the card's, at its foot, beside the nub where the pill lies, the nub a hole in its glass.
+    const cardField = shell.locator('[data-testid="desk-answer-field"] [data-testid="desk-bar-input"]');
+    await expect(cardField).toHaveCount(1);
+    await expect(bar).toHaveAttribute("data-compact", "");
+    const footField = await box(shell, '[data-testid="desk-answer-field"]');
+    near(footField.y + footField.height, stage.y + stage.height - 8, 2);
+    // (46px in: the resting nub's circle reaches 38px from the corner, and the foot's own gap is 8px — 2026-10-09.)
+    near(footField.x + footField.width, stage.x + stage.width - 46, 2);
+    near(footField.height, 52, 1);
+    expect(await shell.locator('[data-testid="desk-answer"] .desk-answer-frame').evaluate((el) => (el as HTMLElement).style.clipPath)).toContain("path(evenodd");
+    // (The answer is right above it: no button for it.)
+    await expect(shell.locator('[data-testid="desk-answer-field"] [data-testid="desk-bar-answer"]')).toHaveCount(0);
+    expect((await spot())?.zone).toBe("chat");
+    await cardField.fill("A draft for the column");
+    await capture(app, shell, "08c-desk-answer-chat.png");
+    // Only its leading edge resizes it; its trailing edge holds on the desk's, and it keeps the width.
+    await expect(shell.locator('[data-testid="desk-answer"] .desk-answer-edge[data-edge="se"]')).toBeHidden();
+    const lead = await box(shell, '[data-testid="desk-answer"] .desk-answer-edge[data-edge="w"]');
+    await drag({ x: lead.x + lead.width / 2, y: lead.y + lead.height / 2 }, { x: lead.x + lead.width / 2 - 60, y: lead.y + lead.height / 2 }, 10);
+    const wider = await cardStill();
+    near(wider.width, column.width + 60, 3);
+    near(wider.x + wider.width, column.x + column.width, 2);
+    near(wider.height, column.height, 1);
+    await expect.poll(async () => Math.abs(((await spot())?.cw ?? 0) - wider.width)).toBeLessThan(2);
+    await expect.poll(windowsReach).toBeLessThanOrEqual(wider.x - 8 + 1);
+    // Taken out of the chat's place — by its header beside the conversation's name — it is a floating card again, the
+    // field (what was typed in it too) still its own, the pill still in the nub; and the windows come back.
+    grab = await chatGrab();
+    await drag(grab, { x: stage.x + stage.width * 0.45, y: stage.y + stage.height * 0.3 });
+    await expect(answer).not.toHaveAttribute("data-zone");
+    await expect(cardField).toHaveValue("A draft for the column");
+    await expect(bar).toHaveAttribute("data-compact", "");
+    await expect.poll(async () => Math.abs((await windowsReach()) - reachFree)).toBeLessThan(2);
+    await cardField.fill("");
+    // Back into it, at the width it was left at.
+    await cardStill();
+    grab = await grabPoint();
+    await drag(grab, toChat, 30);
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    near((await cardStill()).width, wider.width, 2);
+    await expect(cardField).toHaveCount(1);
+    // There its header is a chat's: no grip, the conversation's name with a chevron at its head, its actions at the other
+    // end. It reads the whole conversation, from its start.
+    const chatTitle = shell.getByTestId("desk-chat-title");
+    await expect(chatTitle).toBeVisible();
+    await expect(chatTitle).toContainText((await snapshot(shell)).run!.title.slice(0, 12));
+    await expect(shell.locator('[data-testid="desk-answer"] .desk-answer-grab')).toBeHidden();
+    await expect(shell.getByTestId("desk-answer-title")).toBeHidden();
+    await expect(shell.getByTestId("desk-chat-new")).toBeVisible();
+    await expect(shell.getByTestId("desk-answer-dock")).toBeVisible();
+    const header = await box(shell, '[data-testid="desk-answer-head"]');
+    const named = await box(shell, '[data-testid="desk-chat-title"]');
+    const newer = await box(shell, '[data-testid="desk-chat-new"]');
+    const dismiss = await box(shell, '[data-testid="desk-answer-dismiss"]');
+    expect(named.x - header.x).toBeLessThan(12);
+    // The actions at the other end, the × last of them (2026-10-09): New conversation, back to the pill, ×.
+    expect(header.x + header.width - (dismiss.x + dismiss.width)).toBeLessThan(12);
+    expect(dismiss.x - (newer.x + newer.width)).toBeLessThan(60);
+    await expect(answer).toContainText("Atlas Medical is beside the invoice now");
+    await capture(app, shell, "08d-desk-answer-chat-header.png");
+    // The name drops down every conversation, the one open marked; Escape puts them away, the chat's place staying.
+    await chatTitle.click();
+    const chatPicker = shell.locator('[data-testid="desk-chat-picker"][data-open]');
+    await expect(chatPicker).toHaveCount(1);
+    await expect(chatTitle).toHaveAttribute("aria-expanded", "true");
+    await expect(chatPicker.locator(`[data-testid="desk-conversation"][data-run-id="${runId}"]`)).toHaveAttribute("aria-current", "true");
+    await expect(chatPicker.getByTestId("desk-conversation-new")).toBeVisible();
+    await capture(app, shell, "08e-desk-chat-picker.png");
+    await shell.keyboard.press("Escape");
+    await expect(chatPicker).toHaveCount(0);
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    // Its New conversation: the chat's place stays up, empty, the field in it…
+    await shell.getByTestId("desk-chat-new").click();
+    await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
+    await expect(shell.getByTestId("desk-answer-empty")).toBeVisible();
+    await expect(chatTitle).toHaveText("New conversation");
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await expect(cardField).toHaveCount(1);
+    await capture(app, shell, "08f-desk-answer-chat-empty.png");
+    // …and the name chooses the earlier one again, continued here, the list going.
+    await chatTitle.click();
+    await chatPicker.locator(`[data-testid="desk-conversation"][data-run-id="${runId}"]`).click();
+    await expect.poll(async () => (await snapshot(shell)).run?.runId).toBe(runId);
+    await expect(shell.getByTestId("desk-chat-picker")).toHaveCount(0);
+    await expect(answer).toContainText("Opened the vendor record from the invoice");
+    // A new one again, empty:
+    await shell.getByTestId("desk-chat-new").click();
+    await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
+    // Put away with its ×, empty, the pill's side button brings it back — the chat is a floating one still meanwhile
+    // (2026-10-10: the button hid for that, and with no conversation there was no answer button either).
+    await shell.getByTestId("desk-answer-dismiss").click();
+    await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
+    await reachBar(shell);
+    await expect(shell.getByTestId("desk-answer-side")).toHaveAttribute("data-shown", "");
+    await shell.getByTestId("desk-answer-side").click();
+    await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await expect(shell.getByTestId("desk-answer-empty")).toBeVisible();
+    await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
+    // Its dock button puts it back on the pill; with nothing in it, it goes, and opens docked next time.
+    await shell.getByTestId("desk-answer-dock").click();
+    await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
+    await expect(shell.locator('[data-testid="desk-bar"] [data-testid="desk-bar-input"]')).toHaveCount(1);
+    await expect.poll(async () => (await spot())?.floating).toBe(false);
   } finally {
     await app.close();
   }

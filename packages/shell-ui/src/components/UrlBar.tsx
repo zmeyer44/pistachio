@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FileClock, Globe, Search, X } from "lucide-react";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
+import type { ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import { DEFAULT_SIDEBAR_STATE, favoriteOf, isPresetAnchorId } from "@pistachio/shell-contracts/sidebar";
 import { cn } from "../lib/cn";
 import { displayHost, hostOf, prettyUrl } from "../lib/url";
@@ -11,7 +12,8 @@ import { Favicon, TabMark } from "./Favicon";
 import { Kbd } from "./ui/kbd";
 import { useIntentOrder } from "../lib/use-address-intent";
 import { useFieldPreview } from "../lib/use-field-preview";
-import { PALETTE_DETAIL_CLASS, PALETTE_FAVICON_CLASS, PALETTE_ROW_CLASS, PALETTE_TITLE_CLASS, PaletteResultRow, primaryItemFor, usePaletteInventory, useShelfRows, useTypedEntries, type Entry } from "./address-palette";
+import { deskAvailable, newSpaceAt } from "../lib/desk/open";
+import { PALETTE_DETAIL_CLASS, PALETTE_FAVICON_CLASS, PALETTE_ROW_CLASS, PALETTE_TITLE_CLASS, PaletteResultRow, primaryItemFor, usePaletteInventory, useShelfRows, useTypedEntries, enterDestination, type Entry, type NewDestination } from "./address-palette";
 
 import { shellApi } from "../api";
 import { useSurface } from "../surface";
@@ -70,7 +72,11 @@ function chipWidthEstimate(label: string): number {
  * The address bar, as a search-style modal (⌘L, ⌘T's new tab, or clicking a
  * sidebar's address row). The chrome has no editable field of its own: editing
  * happens here, with the input prefilled with the current URL and selected, so
- * typing replaces it and Escape leaves the page untouched.
+ * typing replaces it and Escape leaves the page untouched. ⌥L and ⌘⇧L open it
+ * composing a new tab instead (store `urlBarNew`): ↵ leaves the page in use as
+ * it was and opens what was chosen in a new tab of this space, or in a new
+ * space of its own. ⌥↵ and ⌘⇧↵ do the same from any of its faces
+ * (enterDestination).
  *
  * Two faces, keyed on whether the address has been EDITED:
  *
@@ -95,6 +101,7 @@ export function UrlBar() {
 }
 
 const EMPTY_TABS: BrowserTabInfo[] = [];
+const PLATFORM: ShortcutPlatform = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
 
 function UrlBarDialog() {
   const open = useAppStore((s) => s.overlay === "url");
@@ -114,6 +121,12 @@ function UrlBarDialog() {
   const dismissRecent = useAppStore((s) => s.dismissRecent);
   const shelf = useAppStore((s) => s.snapshot?.sidebar ?? DEFAULT_SIDEBAR_STATE);
   const sidebarCommand = useAppStore((s) => s.sidebarCommand);
+  /** Where a new tab's address opens when no modifier says otherwise: this space, or (⌘⇧L) a space of its own. */
+  const newDestination: NewDestination = urlBarNew === "space" ? "space" : "tab";
+  const openAt = useCallback(
+    (url: string, into: NewDestination) => void (into === "space" ? newSpaceAt(url) : createTab(url)),
+    [createTab],
+  );
 
   const [query, setQuery] = useState("");
   // -1 ⇒ nothing selected: ↵ acts on the typed address, never on a region.
@@ -241,8 +254,8 @@ function UrlBarDialog() {
     kind: "action", id: `watchtower:${hit.observationId}`, title: hit.title || hostOf(hit.url),
     subtitle: `Saved ${new Date(hit.visitedAt).toLocaleDateString()} · ${hit.snippet}`,
     category: "Saved", hint: "Watchtower", icon: <FileClock size={16} />,
-    run: () => { void createTab(`pistachio://watchtower/v/${hit.observationId}`); },
-  }))], [order.entries, savedHits, createTab]);
+    run: (into) => openAt(`pistachio://watchtower/v/${hit.observationId}`, into ?? newDestination),
+  }))], [order.entries, savedHits, openAt, newDestination]);
 
   const entries = useMemo<Entry[]>(() => {
     if (!browsing) return typedEntries;
@@ -291,25 +304,28 @@ function UrlBarDialog() {
   const favoriteTab =
     tab !== null && tab.anchorId !== null && (isPresetAnchorId(tab.anchorId) || favoriteOf(shelf, tab.anchorId) !== null);
 
-  const commit = (url: string | undefined) => {
+  /** Go to `url`: in the page in use, or — composing a new tab, or asked to by `into` (⌥↵, ⌘⇧↵) — in a new one. */
+  const commit = (url: string | undefined, into?: NewDestination) => {
     if (url === undefined) return;
     close();
-    if (tab === null || favoriteTab) void createTab(url);
+    if (into !== undefined) openAt(url, into);
+    else if (tab === null || favoriteTab) openAt(url, newDestination);
     else void navigate(tab.id, url);
   };
 
-  const act = (entry: Entry | undefined) => {
+  const act = (entry: Entry | undefined, into?: NewDestination) => {
     if (entry === undefined) return;
     if (entry.kind === "action") {
       close();
-      entry.run();
+      entry.run(into);
       return;
     }
     // In the dedicated new-tab flow every result is an address source. An
     // open-tab or shelf result may already have a live owner, but choosing it
-    // here explicitly asks for another tab at that URL, not for that owner.
-    if (tab === null) {
-      commit(entry.url);
+    // here explicitly asks for another tab at that URL, not for that owner —
+    // as ⌥↵ and ⌘⇧↵ do from ⌘L's bar.
+    if (tab === null || into !== undefined) {
+      commit(entry.url, into);
       return;
     }
     if (entry.kind === "tab") {
@@ -379,16 +395,17 @@ function UrlBarDialog() {
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
+      const into = enterDestination(e, PLATFORM, deskAvailable());
       // Typing: ↵ acts on the row that was under it when they decided to
       // press it, which is not the same thing as the row that is under it
       // now if the model reordered the list a moment ago.
       const entry = browsing ? entries[selected] : order.entryFor(selected);
       if (entry !== undefined) {
-        act(entry);
+        act(entry, into);
         return;
       }
-      if (q.length > 0) commit(q);
-      else if (!browsing) act(order.entryFor(0));
+      if (q.length > 0) commit(q, into);
+      else if (!browsing) act(order.entryFor(0), into);
       return;
     }
     if (e.key === "Escape") {
@@ -473,7 +490,7 @@ function UrlBarDialog() {
             type="text"
             spellCheck={false}
             autoComplete="off"
-            placeholder={tab === null ? "Search, open, or run a command" : "Search, switch tabs, or run a command"}
+            placeholder={urlBarNew === "space" ? "Search or open, in a new space" : tab === null ? "Search, open, or run a command" : "Search, switch tabs, or run a command"}
             aria-label="Address"
             data-testid="address-input"
             value={preview.value}
@@ -484,6 +501,12 @@ function UrlBarDialog() {
             onKeyDown={onKeyDown}
             className="h-full min-w-0 flex-1 border-0 bg-transparent text-[16px] text-gray-1000 outline-none placeholder:text-gray-700"
           />
+          {/* Where ↵ goes, when it is not the page in use (⌥L, ⌘⇧L). */}
+          {urlBarNew === false ? null : (
+            <span className="shrink-0 text-[12px] text-gray-700" data-testid="url-bar-destination">
+              {urlBarNew === "space" ? "New space" : "New tab"}
+            </span>
+          )}
           <Kbd>esc</Kbd>
         </div>
 
@@ -628,7 +651,7 @@ function UrlBarDialog() {
                         {t.kind === "agent" ? `Agent · ${t.title}` : t.title || prettyUrl(t.url) || "New tab"}
                       </span>
                       <span className={PALETTE_DETAIL_CLASS}>{displayHost(t.url)}</span>
-                      <span className="shrink-0 text-[12px] text-gray-700">{tab === null ? "New tab" : "Switch"}</span>
+                      <span className="shrink-0 text-[12px] text-gray-700">{urlBarNew === "space" ? "New space" : tab === null ? "New tab" : "Switch"}</span>
                     </button>
                   );
                 })}

@@ -24,7 +24,9 @@ import type { MediaControl } from "./media.js";
  * - which pages are ZOOMED (DeskZoomedPage): a MINIMIZED window's, shown as
  *   if the page were zoomed out, so a small window still shows the page as
  *   it lays out on a desk-sized one — and a window growing back from
- *   minimized, held at its new size until it lands there.
+ *   minimized, held at its new size until it lands there. Any window taking
+ *   less than the whole desk is zoomed out too, the further the less of it
+ *   it takes (the desk's Page zoom, Fit).
  *
  * Pure on purpose — no Electron, no DOM — so vitest pins it under node.
  */
@@ -130,7 +132,9 @@ export const DESK_MINI_ZOOM = 0.5;
  * shown at. Main lays the page out at the box over the zoom and draws it
  * scaled into the view (Chromium's device emulation, which maps input
  * itself), whatever the view's own size: a view cut short shows the top of
- * the page, and the page never learns of it. A zoom of 1 holds a page
+ * the page, and the page never learns of it. A window smaller than the desk
+ * shows its page at a zoom below 1 too, for its share of the desk (the
+ * shell's pageZoom, between 0.5 and 1). A zoom of 1 holds a page
  * growing back from minimized at the size it is growing to, so it lays
  * out once, there, not at every size between; its emulation comes off
  * once the page is no longer listed.
@@ -228,7 +232,10 @@ export interface DeskState {
   dockHover?: boolean;
   /** The desk's masked pages (DeskMask); absent or empty when none is. */
   masks?: DeskMaskedPage[];
-  /** The desk's zoomed pages (DeskZoomedPage): its minimized windows', and any growing back from minimized; absent or empty when none is. */
+  /**
+   * The desk's zoomed pages (DeskZoomedPage): its minimized windows', any growing back from minimized, those held at
+   * the box they grow to, and those zoomed out for their window's share of the desk; absent or empty when none is.
+   */
   zoomed?: DeskZoomedPage[];
 }
 

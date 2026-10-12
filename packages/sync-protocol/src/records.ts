@@ -491,7 +491,11 @@ export type ShellShortcutAction =
   | "arrangeDesk"
   | "toggleDesk"
   | "screenshotView"
-  | "screenshotArea";
+  | "screenshotArea"
+  | "newTabAddress"
+  | "newSpaceAddress"
+  | "newSpace"
+  | "newTerminal";
 
 export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 
@@ -641,6 +645,13 @@ export interface ShellSettingsValue {
   };
   cloud: {
     runByDefault: boolean;
+  };
+  /**
+   * A record written before this section existed carries no answer; the
+   * shell's own `sanitizeSettings` reads that absence as the default, 1×.
+   */
+  media: {
+    defaultPlaybackRate: number;
   };
 }
 

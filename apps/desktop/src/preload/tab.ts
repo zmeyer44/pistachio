@@ -4,6 +4,10 @@ import type { GlanceIntentRequest, GlanceOpenRequest } from "@pistachio/shell-co
 import {
   MAX_PLAYBACK_RATE,
   MIN_PLAYBACK_RATE,
+  defaultRateAnswer,
+  defaultRateVerdict,
+  watchMediaPlays,
+  type DefaultRateCandidate,
   type MediaControl,
   type MediaPresentation,
   type TabMediaReport,
@@ -179,10 +183,98 @@ function watchDomForHiding(): void {
 
 startShields();
 
+// ── Default playback speed (Settings → General) ────────────────────────────
+// Every frame, not only the top one: a video embedded from another site
+// starts at the default too. Each new source an element plays is judged once,
+// as it starts (`defaultRateVerdict`); main is asked for the speed only then,
+// so a page that never plays anything never asks, and the answer is always
+// the current setting. A speed set from the media card, or by the page after
+// the start, is never overridden. Media the document's events never carry —
+// outside the document, or in a shadow root — is handed over by the page
+// world (`watchMediaPlays`).
+const MEDIA_DEFAULT_RATE_CHANNEL = "pistachio:media-default-rate";
+/** Elements whose speed the person set from the media card: the default leaves them alone from then on. */
+const rateChosenOnCard = new WeakSet<HTMLMediaElement>();
+
+function startDefaultPlaybackRate(): void {
+  // An element's loads so far; a source is judged once, by its load's number.
+  const loads = new WeakMap<HTMLMediaElement, number>();
+  const judged = new WeakMap<HTMLMediaElement, number>();
+  const candidate = (media: HTMLMediaElement): DefaultRateCandidate => ({
+    duration: media.duration,
+    stream: media.srcObject !== null,
+    loop: media.loop,
+    muted: media.muted || media.volume === 0,
+    playbackRate: media.playbackRate,
+  });
+
+  function judge(media: HTMLMediaElement): void {
+    const load = loads.get(media) ?? 0;
+    if (judged.get(media) === load || media.paused) return;
+    const verdict = rateChosenOnCard.has(media) ? "skip" : defaultRateVerdict(candidate(media));
+    if (verdict === "wait") return;
+    judged.set(media, load);
+    if (verdict === "skip") return;
+    void ipcRenderer
+      .invoke(MEDIA_DEFAULT_RATE_CHANNEL)
+      .then((answer: unknown) => {
+        const rate = defaultRateAnswer(answer);
+        // A new source since the question is judged by its own start.
+        if (rate === null || rate === 1 || (loads.get(media) ?? 0) !== load) return;
+        if (rateChosenOnCard.has(media) || defaultRateVerdict(candidate(media)) !== "apply") return;
+        media.playbackRate = rate;
+      })
+      .catch(() => undefined);
+  }
+
+  const countLoad = (media: HTMLMediaElement): void => {
+    loads.set(media, (loads.get(media) ?? 0) + 1);
+  };
+
+  // Media the window does not hear — played outside the document, or inside
+  // a shadow root — is handed over by the page world as it is played or, in
+  // a shadow root, as it loads or starts (`watchMediaPlays`), and listened to
+  // on the element itself from then on.
+  const observed = new WeakSet<HTMLMediaElement>();
+  const observe = (media: unknown): void => {
+    if (!(media instanceof HTMLMediaElement) || observed.has(media)) return;
+    observed.add(media);
+    media.addEventListener("loadstart", () => countLoad(media));
+    media.addEventListener("playing", () => judge(media));
+    media.addEventListener("durationchange", () => judge(media));
+  };
+  try {
+    contextBridge.executeInMainWorld({ func: watchMediaPlays, args: [observe] });
+  } catch {
+    // A page the watcher cannot reach still has its document's media, below.
+  }
+
+  // Everything else, on its events' way down to it. An element listened to
+  // on its own is not counted twice should it join the document.
+  const heard = (event: Event): HTMLMediaElement | null =>
+    event.target instanceof HTMLMediaElement && !observed.has(event.target) ? event.target : null;
+  window.addEventListener(
+    "loadstart",
+    (event) => {
+      const media = heard(event);
+      if (media !== null) countLoad(media);
+    },
+    true,
+  );
+  const onMedia = (event: Event): void => {
+    const media = heard(event);
+    if (media !== null) judge(media);
+  };
+  window.addEventListener("playing", onMedia, true);
+  window.addEventListener("durationchange", onMedia, true);
+}
+
+startDefaultPlaybackRate();
+
 // Everything below is the page's own preload — Glance, media, read aloud,
 // passkeys, screen sharing — and belongs to the top frame alone. Subframes
-// run this file too (nodeIntegrationInSubFrames, so that Shields above
-// protect every frame) and stop here.
+// run this file too (nodeIntegrationInSubFrames, so that Shields and the
+// default playback speed above reach every frame) and stop here.
 if (window === window.top) startPagePreload();
 
 function startPagePreload(): void {
@@ -814,14 +906,22 @@ function startPagePreload(): void {
       enabledControl(NEXT_SELECTOR)?.click();
     } else if (control.type === "setRate" && Number.isFinite(control.rate)) {
       const rate = Math.min(MAX_PLAYBACK_RATE, Math.max(MIN_PLAYBACK_RATE, control.rate));
+      rateChosenOnCard.add(media);
       // Both, so a site that resets to the default on the next track keeps the choice.
       media.defaultPlaybackRate = rate;
       media.playbackRate = rate;
     } else if (control.type === "setVolume" && Number.isFinite(control.volume)) {
       // Its own volume, whatever the system's or another page's; turned up, it is heard again if it was muted.
       const volume = Math.min(1, Math.max(0, control.volume));
-      media.volume = volume;
-      if (volume > 0 && media.muted) media.muted = false;
+      const restore = control.restore;
+      if (volume === 0 && restore !== undefined && Number.isFinite(restore) && restore > 0) {
+        // All the way down: muted, as its own mute would be, at the level Unmute brings back.
+        media.volume = Math.min(1, restore);
+        media.muted = true;
+      } else {
+        media.volume = volume;
+        if (volume > 0 && media.muted) media.muted = false;
+      }
     } else if (control.type === "mute") {
       media.muted = !media.muted;
     } else if (control.type === "dismiss") {

@@ -137,6 +137,41 @@ describe("editable shortcuts", () => {
     expect(sanitizeShortcuts({ ...older, readerView: "Mod+Shift+T" })).toMatchObject({ readerView: "Mod+Shift+T", restoreClosedTab: null });
   });
 
+  it("opens the address bar for a new tab on ⌥L and a new space on ⌘⇧L, yielding either key to an older custom binding", () => {
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "l", code: "KeyL", meta: true }, "darwin")).toBe("editAddress");
+    // US Option composes ⌥L into "¬": the physical key names the binding.
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "¬", code: "KeyL", alt: true }, "darwin", "native")).toBe("newTabAddress");
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "L", code: "KeyL", metaKey: true, shiftKey: true }, "darwin", "native")).toBe("newSpaceAddress");
+    expect(shortcutLabel(DEFAULT_SHORTCUTS.newTabAddress, "darwin")).toBe("⌥L");
+    expect(shortcutLabel(DEFAULT_SHORTCUTS.newSpaceAddress, "darwin")).toBe("⌘⇧L");
+    // The web makes no spaces (its host refuses them): ⌘⇧L is not its to take.
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "L", code: "KeyL", metaKey: true, shiftKey: true }, "darwin", "stream")).toBeNull();
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "¬", code: "KeyL", alt: true }, "darwin", "stream")).toBe("newTabAddress");
+    const { newTabAddress: _tab, newSpaceAddress: _space, ...older } = DEFAULT_SHORTCUTS;
+    expect(sanitizeShortcuts(older)).toMatchObject({ newTabAddress: "Alt+L", newSpaceAddress: "Mod+Shift+L" });
+    expect(sanitizeShortcuts({ ...older, openNotes: "Mod+Shift+L" })).toMatchObject({ openNotes: "Mod+Shift+L", newSpaceAddress: null });
+  });
+
+  it("makes a new space on ⌘N, on the Mac alone", () => {
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "n", code: "KeyN", meta: true }, "darwin", "native")).toBe("newSpace");
+    expect(shortcutLabel(DEFAULT_SHORTCUTS.newSpace, "darwin")).toBe("⌘N");
+    // The web has no desk to make a space on: the key is not its to take.
+    expect(shortcutOffered(SHORTCUT_DEFINITIONS.find((definition) => definition.id === "newSpace")!, "stream")).toBe(false);
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "n", code: "KeyN", meta: true }, "darwin", "stream")).toBeNull();
+    const { newSpace: _omitted, ...older } = DEFAULT_SHORTCUTS;
+    expect(sanitizeShortcuts({ ...older, openNotes: "Mod+N" })).toMatchObject({ openNotes: "Mod+N", newSpace: null });
+  });
+
+  it("leaves Option alone to type where the layout puts a character there", () => {
+    // A German Mac types @ on ⌥L, and [ on ⌥5: those presses are text, never a binding.
+    expect(shortcutFromEvent({ key: "@", code: "KeyL", alt: true }, "darwin")).toBeNull();
+    expect(shortcutFromEvent({ key: "[", code: "Digit5", altKey: true }, "darwin")).toBeNull();
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "@", code: "KeyL", alt: true }, "darwin", "native")).toBeNull();
+    // With ⌘ held it is a binding as ever (⌥⌘L arranges the desk), and off the Mac Alt composes nothing.
+    expect(shortcutFromEvent({ key: "@", code: "KeyL", alt: true, meta: true }, "darwin")).toBe("Mod+Alt+L");
+    expect(shortcutFromEvent({ key: "l", code: "KeyL", altKey: true }, "other")).toBe("Alt+L");
+  });
+
   it("keeps disabled bindings and removes duplicates from an edited file", () => {
     const next = sanitizeShortcuts({ ...DEFAULT_SHORTCUTS, newTab: null, editAddress: "Mod+W" });
     expect(next.newTab).toBeNull();

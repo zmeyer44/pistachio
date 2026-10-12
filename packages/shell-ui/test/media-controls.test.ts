@@ -75,7 +75,7 @@ beforeEach(() => {
   fixture.listed = true;
 });
 describe("media control capability preservation", () => {
-  it("keeps video PiP, return-to-tab, track navigation, mute, speed and seek controls", () => {
+  it("keeps video PiP, return-to-tab, track navigation, volume, speed and seek controls", () => {
     fixture.media = [
       media({
         hasVideo: true,
@@ -93,7 +93,7 @@ describe("media control capability preservation", () => {
       "Back 15 seconds",
       "Forward 15 seconds",
       "Next track",
-      "Mute",
+      "Volume of Track: 100%",
       "Pause",
       "Playback speed: 1x",
       "Seek Track",
@@ -135,6 +135,15 @@ describe("media control capability preservation", () => {
       'aria-label="Follow the text on the page" aria-pressed="false"',
     );
   });
+  it("says each player's own volume on its speaker, the level it was turned to or muted", () => {
+    fixture.media = [media({ volume: 0.3 })];
+    expect(render()).toContain('aria-label="Volume of Track: 30%"');
+    // Turned all the way down is silent, as muted is.
+    fixture.media = [media({ volume: 0 })];
+    expect(render()).toContain('aria-label="Volume of Track: muted"');
+    fixture.media = [media({ volume: 0.8, muted: true })];
+    expect(render()).toContain('aria-label="Volume of Track: muted"');
+  });
   it("gives a call no card, but keeps one for a live stream that is not a call", () => {
     const live = { kind: "live" as const, duration: null, seekable: false, canSetRate: false, stream: true };
     fixture.media = [media({ ...live, call: true })];
@@ -159,7 +168,8 @@ describe("media control capability preservation", () => {
     expect(html).not.toContain('data-testid="media-rate-trigger"');
     expect(html).toMatch(/aria-label="Back 15 seconds"[^>]* disabled=""/);
     expect(html).toMatch(/aria-label="Forward 15 seconds"[^>]* disabled=""/);
-    expect(html).toContain('aria-label="Unmute"');
+    // Its volume is still its own to set, muted as it is.
+    expect(html).toContain('aria-label="Volume of Track: muted"');
     expect(html).toContain('aria-label="Play"');
   });
   it("retains generating/failed read-aloud toasts and their cancel/dismiss actions", () => {

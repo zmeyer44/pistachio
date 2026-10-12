@@ -7,6 +7,7 @@ import type { TabArchiveRequest, TabArchiveResponse } from "./tab-archive.js";
 import type { TabGroupCommand, TabGroupCommandResult, TabGroupInfo } from "./tab-groups.js";
 import type { TidyRequest, TidyResponse } from "./tidy.js";
 import type { TabSwitcherInput } from "./tab-switcher.js";
+import type { TerminalEvent, TerminalRequest } from "./terminal.js";
 import type { LiveFrame, LiveInput, LiveTabInfo } from "@pistachio/live-view";
 import type { EvidenceEntry } from "@pistachio/evidence";
 import type {
@@ -1284,6 +1285,16 @@ export interface NativeSurfaceApi {
   writeGroupFile(write: GroupFileWrite): Promise<GroupFileWriteResult>;
   /** A context file as a message carries it, @mentioned in the Bar: its text, or the file for the model to look at. */
   groupFileForMessage(groupId: string, itemId: string): Promise<GroupFileForMessage>;
+  // ── Terminals (@pistachio/shell-contracts/terminal, docs/terminal.md) ──────────
+  /**
+   * To this Mac's terminal host: open a terminal tab's shell, type into it,
+   * resize it, say how much of its output is drawn. Sent over a port main
+   * hands the shell on the first request, so main is never on the path of
+   * a terminal's input or output.
+   */
+  terminalSend(request: TerminalRequest): void;
+  /** What the terminal host says: a shell's output, its end; `hostGone` when the host stopped. */
+  onTerminalEvent(listener: (event: TerminalEvent) => void): () => void;
   /**
    * The owner's still is painted under its live view: main can now hide the
    * view without a blank frame, and the renderer starts the opening motion.
@@ -1459,6 +1470,8 @@ export const NATIVE_SURFACE_MEMBERS = {
   readGroupFile: "A document window's file is kept by main's context store beside the native desk.",
   writeGroupFile: "A document edited on the native desk is saved into main's context store.",
   groupFileForMessage: "Reads a context file as the native desk's agent reads it, converted by main.",
+  terminalSend: "Runs a shell on this Mac, in main's terminal host (node-pty).",
+  onTerminalEvent: "A shell on this Mac speaks through main's terminal host.",
   recedeGlanceOwner: "Coordinates the owner tab's native view with the glance view.",
   setGlanceBounds: "Places the native glance preview view at the shell's frame.",
   prepareGlanceClose: "Captures the native glance view's last frame before it hides.",
@@ -1557,6 +1570,8 @@ export const IPC = {
   mediaControl: "pistachio:media-control",
   mediaCommand: "pistachio:media-command",
   mediaPresentation: "pistachio:media-presentation",
+  /** Any frame of a page → main: the default playback speed (Settings → General). */
+  mediaDefaultRate: "pistachio:media-default-rate",
   mediaPreviewSet: "pistachio:media-preview-set",
   mediaPreviewHoverReport: "pistachio:media-preview-hover-report",
   mediaPreviewHoverChanged: "pistachio:media-preview-hover-changed",
@@ -1625,6 +1640,12 @@ export const IPC = {
   groupFileRead: "pistachio:group-file-read",
   groupFileWrite: "pistachio:group-file-write",
   groupFileForMessage: "pistachio:group-file-for-message",
+  /** The shell → main: hand me a port to the terminal host (docs/terminal.md §3). */
+  terminalConnect: "pistachio:terminal-connect",
+  /** Main → the shell: the port (in the message's ports). */
+  terminalPort: "pistachio:terminal-port",
+  /** Main → the shell: the terminal host stopped, and every shell with it. */
+  terminalHostGone: "pistachio:terminal-host-gone",
   /** A tab's isolated preload → main: files from outside the app were dragged over its page (docs/desk-documents.md §1). */
   tabFileDrag: "pistachio:tab-file-drag",
   tabSwitcherPreviewsGet: "pistachio:tab-switcher-previews-get",

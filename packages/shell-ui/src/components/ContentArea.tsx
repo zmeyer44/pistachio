@@ -21,6 +21,7 @@ import { displayHost } from "../lib/url";
 import { useAppStore, type AppState } from "../store";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
+import { terminalUrlId } from "@pistachio/shell-contracts/terminal";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
 import DeskSurface from "./desk/DeskSurface";
 import { Favicon } from "./Favicon";
@@ -473,6 +474,8 @@ function SplitPane({
   const briefDate = tab === null ? undefined : briefUrlDate(tab.url.trim());
   // Same convention: `undefined` is not a notes address, `null` is the library.
   const noteId = tab === null ? undefined : notesUrlId(tab.url.trim());
+  // A terminal is a Mac's (docs/terminal.md §6): the desktop draws it on its desk; here it is only named.
+  const terminal = tab !== null && terminalUrlId(tab.url) !== null;
   return (
     <div
       data-testid={testId}
@@ -494,6 +497,10 @@ function SplitPane({
           // The daily brief is shell-drawn the same way
           // (@pistachio/shell-contracts/shell-pages).
           <BriefPage tabId={tabId} date={briefDate} active={paneActive} />
+        ) : terminal ? (
+          <div className="grid size-full place-items-center text-[12px] text-gray-900" data-testid="terminal-page">
+            Terminals open in the Pistachio desktop app.
+          </div>
         ) : noteId !== undefined ? (
           // A note is shell-drawn too, and lazily: the editor's chunk loads
           // the first time one is opened.

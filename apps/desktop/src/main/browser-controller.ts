@@ -161,6 +161,7 @@ import { recordTabVisit, TAB_SWITCHER_LIMIT, type PassedKeystroke } from "@pista
 import { pasteAndGoUrl, searchUrl } from "@pistachio/shell-contracts/url";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { isShellPageUrl, shellPageOf, shellPagePlaceholderHtml } from "@pistachio/shell-contracts/shell-pages";
+import { isTerminalUrl } from "@pistachio/shell-contracts/terminal";
 import { isPrivateHost } from "@pistachio/shell-contracts/private-network";
 import {
   spacePartition,
@@ -749,7 +750,8 @@ const DESK_MASK_SCRIPT = `(() => {
 
 /**
  * A desk page shown at a zoom (@pistachio/shell-contracts/desk
- * DeskZoomedPage): a minimized window's, laid out at its page box over the
+ * DeskZoomedPage): a minimized window's, or one zoomed out for the share of
+ * the desk its window takes, laid out at its page box over the
  * zoom and drawn scaled into its view by Chromium's device emulation —
  * Electron's, not the debugger's, so it holds no debugger session and
  * leaves the zoom factor (⌘+, per site) alone. PROBED (Electron 43): the
@@ -775,6 +777,11 @@ interface DeskZoomState {
 
 function deskZoomKey(zoom: { width: number; height: number; zoom: number }): string {
   return `${String(Math.round(zoom.width))}x${String(Math.round(zoom.height))}@${String(zoom.zoom)}`;
+}
+
+/** The viewport a zoomed page lays out at: its box over its zoom. */
+function deskZoomViewport(zoom: { width: number; height: number; zoom: number }): { width: number; height: number } {
+  return { width: Math.max(1, Math.round(zoom.width / zoom.zoom)), height: Math.max(1, Math.round(zoom.height / zoom.zoom)) };
 }
 
 interface DeskMaskState {
@@ -1120,9 +1127,11 @@ export class BrowserController {
   /** The tabs whose pages measure their media's loudness for the desk's rail (setMediaMeters). */
   #mediaMeters = new Set<string>();
   /**
-   * The last pane a live tab was laid out in. A page composed into the
-   * sidebar keeps this viewport (see #syncMediaPresentation), so the card's
-   * far narrower box never reaches the document.
+   * The last pane a live tab was laid out in — the viewport its document
+   * had there, which for a desk page zoomed for its size is its zoom's, not
+   * its view's (DeskZoomState). A page composed into the sidebar keeps this
+   * viewport (see #syncMediaPresentation), so the card's far narrower box
+   * never reaches the document.
    */
   readonly #paneSizes = new Map<string, { width: number; height: number }>();
   /** Emulation overrides waiting for their view's own box to land again. */
@@ -4367,7 +4376,16 @@ export class BrowserController {
       if (POINTER_INPUT_TYPES.has(input.type)) this.#hooks.onPointerInput?.();
     });
     this.#installWindowOpenHandler(tab, view.webContents);
+    // A page never makes itself a terminal (docs/terminal.md §5): a shell is started by the person, not by a link — nor by
+    // a server's redirect, which will-navigate never sees (it saw the address that redirected).
+    view.webContents.on("will-redirect", (event) => {
+      if (event.isMainFrame && isTerminalUrl(event.url)) event.preventDefault();
+    });
     view.webContents.on("will-navigate", (event, url) => {
+      if (isTerminalUrl(url)) {
+        event.preventDefault();
+        return;
+      }
       const allowed =
         info.kind === "agent"
           ? tab.enforcer?.isNavigationAllowed(url) === true
@@ -4405,12 +4423,13 @@ export class BrowserController {
           // Beside the page, in its space (as a link it opens itself), not the space in front's by default (2026-10-09).
           openInNewTab: (url) =>
             void this.createTab(url, { spaceId: info.spaceId, beside: info.id }),
+          // (Electron's point is the view's, not the page's: drawn at a zoom, the two differ.)
           openInGlance: (url) =>
-            void this.openGlance(view.webContents.id, {
-              url,
-              source: { x: params.x, y: params.y, width: 1, height: 1 },
-              automatic: false,
-            }),
+            void this.openGlance(
+              view.webContents.id,
+              { url, source: { x: params.x, y: params.y, width: 1, height: 1 }, automatic: false },
+              "view",
+            ),
           copyText: (text) => clipboard.writeText(text),
           copyImage: () => view.webContents.copyImageAt(params.x, params.y),
           // Goes through the session's will-download hook like any other
@@ -4605,7 +4624,8 @@ export class BrowserController {
    */
   #installWindowOpenHandler(tab: ManagedTab, contents: WebContents): void {
     contents.setWindowOpenHandler((details: HandlerDetails) => {
-      if (tab.info.kind === "agent") return { action: "deny" };
+      // (Nor does it open one: docs/terminal.md §5.)
+      if (tab.info.kind === "agent" || isTerminalUrl(details.url)) return { action: "deny" };
       const preservePopup = shouldPreserveAuthenticationPopup(details);
       const safeUrl =
         isAllowedNavigation(details.url) ||
@@ -4787,11 +4807,17 @@ export class BrowserController {
     // The page moving itself — a script redirect once its credential exchange
     // returns, or an opener reload from the callback page — is the site
     // finishing sign-in on its own. A browser reload issued into that
-    // navigation cancels it and strands the stale sign-in document.
+    // navigation cancels it and strands the stale sign-in document. So is an
+    // app routing in place to its callback address (Notion pushes
+    // `/oauth2callback?code=…` and exchanges the code from there): a reload
+    // would re-serve that address, and the code is good for one exchange.
     const onOwnerNavigation = (
       details: ElectronEvent<WebContentsDidStartNavigationEventParams>,
     ): void => {
-      if (details.isMainFrame && !details.isSameDocument)
+      if (
+        details.isMainFrame &&
+        (!details.isSameDocument || details.url !== ownerUrl)
+      )
         watch.ownerNavigated = true;
     };
     ownerContents.on("did-start-navigation", onOwnerNavigation);
@@ -5953,7 +5979,8 @@ export class BrowserController {
     // meant for.
     // ⌘I is the Bar's (docs/desk-agent.md §1): its field is the shell's too — always, since the desk is the browser
     // (2026-10-09; until then only while a desk was up).
-    if (action === "editAddress" || action === "newTab" || action === "toggleConsole") this.#hooks.focusShell?.();
+    // A new space's name field (⌘N) is the shell's too, and a new terminal (⌘J, docs/terminal.md).
+    if (action === "editAddress" || action === "newTabAddress" || action === "newSpaceAddress" || action === "newTab" || action === "newSpace" || action === "newTerminal" || action === "toggleConsole") this.#hooks.focusShell?.();
     switch (action) {
       case "back":
         void this.goBack(tab.info.id);
@@ -6037,10 +6064,15 @@ export class BrowserController {
       });
   }
 
-  /** Open a Glance explicitly, or automatically from a pinned/favorited tab. */
+  /**
+   * Open a Glance explicitly, or automatically from a pinned/favorited tab.
+   * Its source box is the page's own (CSS px, what its preload measures), or
+   * — from the page's context menu, Electron's own point — the view's.
+   */
   async openGlance(
     senderId: number,
     request: GlanceOpenRequest,
+    sourceIn: "page" | "view" = "page",
   ): Promise<void> {
     if (this.#glance !== null || !isAllowedNavigation(request.url)) return;
     const owner = [...this.#tabs.values()].find(
@@ -6056,7 +6088,10 @@ export class BrowserController {
       return;
 
     const ownerBounds = owner.view.getBounds();
-    const localSource = clampSourceBounds(request.source, ownerBounds);
+    // A box of the page's own: a page drawn at a zoom in its view (#drawnScale) shows it that much smaller.
+    const scale = sourceIn === "page" ? this.#drawnScale(owner) : 1;
+    const drawn = { x: request.source.x * scale, y: request.source.y * scale, width: request.source.width * scale, height: request.source.height * scale };
+    const localSource = clampSourceBounds(drawn, ownerBounds);
     const source = {
       x: ownerBounds.x + localSource.x,
       y: ownerBounds.y + localSource.y,
@@ -7678,6 +7713,17 @@ export class BrowserController {
       case "create": {
         // (No tabs: the person's New space, in the active Profile — the shell opens its name field.)
         const group = this.createTabGroup({ id: command.id, title: command.title, color: command.color, tabIds: command.tabIds, origin: "manual", loose: command.loose, anchored: command.anchored });
+        if (command.url !== undefined) {
+          // ⌘⇧L's address bar: a space opened at a page. The tab is made in it before either is shown, so the desk
+          // passes straight to the page; naming waits for that tab, as for any space's first. It is in use as it is
+          // made, the space current with it, not once its page has loaded: a slow page must neither keep the person
+          // on the old space nor, loaded, take them back from wherever they went meanwhile.
+          const spaceId = group === null ? null : this.#spaceOf(group.id);
+          if (group === null || spaceId === null) throw new Error(`There's no room for another space: a Profile holds ${MAX_TAB_GROUPS_PER_SPACE}.`);
+          await this.createTab(command.url, { spaceId, activate: true, group: group.id });
+          this.#reconcileTabGroups();
+          break;
+        }
         // (A loose tab's group is called by its tab, drawn as it is; it is named once it has a second. A page's, by its page.)
         if (group !== null && command.title === undefined && group.loose !== true && group.anchorId === undefined) this.#nameTabGroup(group);
         if (group !== null && command.select === true) await this.#selectGroup(group.id);
@@ -7878,8 +7924,9 @@ export class BrowserController {
     staleHomeTabIds: string[];
   } {
     const visible = new Set(this.activeSpaceId() === spaceId ? this.#visibleTabIds() : []);
+    // (A terminal is never idle: its shell may be serving, building or waiting, and archiving it would end it.)
     const idle = (info: BrowserTabInfo): boolean =>
-      idleMs > 0 && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null;
+      idleMs > 0 && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null && !isTerminalUrl(info.url);
     // Never the space in front, nor a space that is the person's (docs/spaces.md §1, "Tidy"; ./spaces tidyReach).
     const reach = this.#tidyReach(spaceId);
     const current = this.currentGroupId(spaceId);
@@ -7936,8 +7983,8 @@ export class BrowserController {
     const archived: Array<{ tabId: string; index: number; tab: ArchivedTab }> = [];
     for (const tabId of tabIds) {
       const info = this.#tabInfo(tabId);
-      // (The last line: a tab of the space in front, or a loose tab whose space is the person's, never goes.)
-      if (!this.#groupable(info) || visible.has(tabId) || this.#media.has(tabId) || info.runId !== null || spared(info)) continue;
+      // (The last line: a tab of the space in front, or a loose tab whose space is the person's, never goes; nor a terminal.)
+      if (!this.#groupable(info) || visible.has(tabId) || this.#media.has(tabId) || info.runId !== null || spared(info) || isTerminalUrl(info.url)) continue;
       const tab = this.#archivedTabOf(tabId);
       if (tab === null) continue;
       archived.push({ tabId, index: this.#spaceTabIds(info.spaceId).indexOf(tabId), tab });
@@ -8038,7 +8085,8 @@ export class BrowserController {
         (info) => info !== null && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null && now - info.lastActiveAt >= minIdleMs,
       );
       if (!settled) return [];
-      const idle = idleMs > 0 && members.every((info) => info !== null && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs);
+      // (Holding a terminal, it is never idle: it comes down instead of going to the archive, which would end the shell.)
+      const idle = idleMs > 0 && members.every((info) => info !== null && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs && !isTerminalUrl(info.url));
       return [{ groupId: group.id, idle }];
     });
   }
@@ -8055,7 +8103,8 @@ export class BrowserController {
     if (spaceId === null || this.currentGroupId(spaceId) === groupId || this.#isPersons(group)) return null;
     const visible = new Set(this.#visibleTabIds());
     const members = group.tabIds.map((tabId) => this.#tabInfo(tabId));
-    if (members.some((info) => info === null || !this.#canHold(group, info) || visible.has(info.id) || this.#media.has(info.id) || info.runId !== null)) return null;
+    // (Nor a terminal: archiving ends its shell — docs/terminal.md §2.)
+    if (members.some((info) => info === null || !this.#canHold(group, info) || visible.has(info.id) || this.#media.has(info.id) || info.runId !== null || isTerminalUrl(info.url))) return null;
     const pageTabId = members.find((info) => info?.anchorId === group.anchorId)?.id;
     if (pageTabId === undefined) return null;
     const tabs = members.flatMap((info) => {
@@ -8303,8 +8352,10 @@ export class BrowserController {
     const hovered = this.#deskHovered;
     if (hovered !== null && !(this.#desk?.tabIds.includes(hovered.tabId) ?? false)) this.#noteDeskHover(hovered.tabId, false);
     this.#queueDeskWakes();
-    this.#syncDeskMasks(state?.masks ?? []);
+    // Zooms first: a page masked as it leaves them (a window zoomed for its size, masked) has its zoom's emulation off
+    // before its mask's override is set up.
     this.#syncDeskZooms(state?.zoomed ?? []);
+    this.#syncDeskMasks(state?.masks ?? []);
     const desk = this.#desk;
     for (const tabId of [...this.#deskCursors.keys()]) {
       const tab = this.#tabs.get(tabId);
@@ -8903,6 +8954,12 @@ export class BrowserController {
       if (contents.isDestroyed()) return;
       if (contents.debugger.isAttached()) await contents.debugger.sendCommand("Emulation.clearDeviceMetricsOverride").catch(() => undefined);
       releaseDebugger(contents, "desk-mask");
+      // Zoomed for its window's size since (DeskZoomState): set now that the override is off.
+      const zoom = this.#deskZooms.get(tabId);
+      if (zoom !== undefined && this.#tabs.get(tabId) === tab) {
+        zoom.applied = null;
+        this.#applyDeskZoom(tab, zoom);
+      }
     });
   }
 
@@ -8950,11 +9007,16 @@ export class BrowserController {
   /**
    * Emulate the page's zoomed box, unless that is what is in place (or it is
    * fullscreen) — or the page has no document yet (#committedPages): its
-   * first navigation applies it (DeskZoomState.onNavigate).
+   * first navigation applies it (DeskZoomState.onNavigate). Nor while
+   * another emulation owns the page — a mask's override or its release, the
+   * sidebar card's presentation — which sets this one again as it goes
+   * (#endDeskRelease, #releasePresentation): the two would undo each other.
    */
   #applyDeskZoom(tab: ManagedTab, state: DeskZoomState): void {
     const contents = tab.view.webContents;
     if (state.suspended || contents.isDestroyed() || contents !== state.contents || !this.#committedPages.has(contents)) return;
+    const tabId = tab.info.id;
+    if (this.#deskMasks.has(tabId) || this.#deskReleases.has(tabId) || this.#presentation?.tabId === tabId) return;
     const key = deskZoomKey(state);
     if (state.applied === key) return;
     contents.enableDeviceEmulation({
@@ -8962,7 +9024,7 @@ export class BrowserController {
       screenSize: { width: 0, height: 0 },
       viewPosition: { x: 0, y: 0 },
       deviceScaleFactor: 0,
-      viewSize: { width: Math.max(1, Math.round(state.width / state.zoom)), height: Math.max(1, Math.round(state.height / state.zoom)) },
+      viewSize: deskZoomViewport(state),
       scale: state.zoom,
     });
     state.applied = key;
@@ -8970,14 +9032,35 @@ export class BrowserController {
     tab.offscreenViewport = false;
   }
 
-  /** A page no longer zoomed: it lays out at its view's own size again. */
+  /**
+   * A page no longer zoomed: it lays out at its view's own size again —
+   * unless it is masked now (a window zoomed for its size, masked): its
+   * mask's override takes the emulation over where it stands, at the box the
+   * page is laid out at already. Taken off first, the page laid out at its
+   * view's size for a moment (two resizes) before the override put it back.
+   * Nor while the sidebar's card or the floating player presents it (its
+   * window popped out, put away or closing as it plays): the card holds the
+   * viewport the page has, its zoom's (#paneSizes), until it lets it go.
+   */
   #clearDeskZoom(tabId: string): void {
     const state = this.#deskZooms.get(tabId);
     if (state === undefined) return;
     this.#deskZooms.delete(tabId);
     if (state.contents.isDestroyed()) return;
     state.contents.removeListener("did-navigate", state.onNavigate);
-    if (state.applied !== null && this.#presentation?.tabId !== tabId) state.contents.disableDeviceEmulation();
+    const masked = this.#desk?.masks?.some((page) => page.tabId === tabId) === true;
+    if (state.applied === null || masked) return;
+    if (this.#presentation?.tabId === tabId) {
+      this.#paneSizes.set(tabId, deskZoomViewport(state));
+      return;
+    }
+    state.contents.disableDeviceEmulation();
+  }
+
+  /** The scale a page is drawn at in its view: a desk page zoomed for its size (DeskZoomState) at its zoom, while that is in place. */
+  #drawnScale(tab: ManagedTab): number {
+    const zoom = this.#deskZooms.get(tab.info.id);
+    return zoom !== undefined && zoom.applied !== null && zoom.contents === tab.view.webContents ? zoom.zoom : 1;
   }
 
   /** A zoomed page gone fullscreen (a player's own button) is the page itself on the whole screen, until it comes back. */
@@ -9260,8 +9343,9 @@ export class BrowserController {
         width: Math.max(1, Math.round(placement.bounds.width)),
         height: Math.max(1, Math.round(placement.bounds.height)),
       };
+      // The viewport the page lays out at in its pane: a zoomed desk page's is its zoom's, not its view's.
       if (panePlacement !== undefined)
-        this.#paneSizes.set(tabId, { width: bounds.width, height: bounds.height });
+        this.#paneSizes.set(tabId, zoomed !== undefined && zoomed.applied !== null ? deskZoomViewport(zoomed) : { width: bounds.width, height: bounds.height });
       if (masked !== undefined && panePlacement !== undefined) {
         masked.want = {
           bounds,
@@ -9466,25 +9550,37 @@ export class BrowserController {
     const contents = tab.view.webContents;
     contents.send(IPC.mediaPresentation, null);
     if (previous.viewport === null) return;
+    // Back to a desk window zoomed for its size (DeskZoomState): held at its zoom's viewport, drawn at its zoom.
+    const zoom = this.#deskZooms.get(previous.tabId);
+    const zoomed = zoom !== undefined && !zoom.suspended && zoom.contents === contents ? zoom : null;
     const pane = this.#paneSizes.get(previous.tabId) ?? previous.viewport;
     if (!this.#layout.views.some(({ tabId }) => tabId === previous.tabId)) {
       const { x, y } = tab.view.getBounds();
-      tab.view.setBounds({ x, y, width: pane.width, height: pane.height });
+      tab.view.setBounds({ x, y, width: zoomed?.width ?? pane.width, height: zoomed?.height ?? pane.height });
     }
     contents.enableDeviceEmulation({
       screenPosition: "desktop",
       screenSize: { width: 0, height: 0 },
       viewPosition: { x: 0, y: 0 },
       deviceScaleFactor: 0,
-      viewSize: pane,
-      scale: 1,
+      viewSize: zoomed === null ? pane : deskZoomViewport(zoomed),
+      scale: zoomed?.zoom ?? 1,
     });
     this.#cancelPresentationRelease(previous.tabId);
     this.#presentationReleases.set(
       previous.tabId,
       setTimeout(() => {
         this.#presentationReleases.delete(previous.tabId);
-        if (!contents.isDestroyed()) contents.disableDeviceEmulation();
+        if (contents.isDestroyed()) return;
+        // A desk window's page zoomed for its size (DeskZoomState) is laid out at its zoom's box again, not its view's —
+        // unless it went fullscreen from the card (its zoom suspended): it is the page itself on the whole screen.
+        const zoom = this.#deskZooms.get(previous.tabId);
+        if (zoom === undefined || zoom.suspended) {
+          contents.disableDeviceEmulation();
+          return;
+        }
+        zoom.applied = null;
+        this.#applyDeskZoom(tab, zoom);
       }, PRESENTATION_RELEASE_MS),
     );
   }
@@ -9504,7 +9600,9 @@ export class BrowserController {
     tab: ManagedTab;
     bounds: ContentBounds;
   }): InstalledPresentation {
-    const pane = this.#paneSizes.get(tab.info.id);
+    // A desk window's page zoomed for its size (DeskZoomState) is laid out at its zoom's viewport, not its view's.
+    const zoom = this.#deskZooms.get(tab.info.id);
+    const pane = zoom !== undefined && zoom.applied !== null && zoom.contents === tab.view.webContents ? deskZoomViewport(zoom) : this.#paneSizes.get(tab.info.id);
     const aspect = rounded(bounds.height / bounds.width);
     // A page that has never been laid out in a pane has no viewport worth
     // keeping, so the card simply is its viewport, and the band is all of it.

@@ -83,6 +83,9 @@ test.describe.serial("app links", { tag: ["@glance", "@site"] }, () => {
     ({ app, userData } = await launchApp({
       settings: pageFirst({ general: { homeUrl: `http://localhost:${String(port)}/` }, layout: { sidebar: "pinned" } }),
       name: "external-app",
+      // Its pages are clicked by Playwright beside another window, which Fit zooms out: Playwright's own click geometry
+      // misses on a page under device emulation (a person's press is mapped), so every page is at its own size.
+      deskFeel: { zoom: "actual" },
     }));
     shell = await shellReady(app);
   });

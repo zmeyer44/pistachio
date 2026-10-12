@@ -32,6 +32,7 @@ export const ACTION_INTENT_DETAILS: Readonly<Record<string, string>> = {
   "chrome:openBrief": "Open today's daily brief: a one-page overview of the day's meetings, email waiting for a reply, and to-dos.",
   "chrome:openNotes": "Open the notes you have written: a library of your own markdown documents, kept as you type.",
   "chrome:newNote": "Start writing a new, blank note.",
+  "chrome:newTerminal": "Open a terminal: a command-line shell (zsh or bash) in a tab, to run commands and command-line tools.",
   "chrome:openReminders": "Open the list of reminders and scheduled tasks.",
   "chrome:openBookmarks": "Open the list of saved bookmarks.",
   "chrome:openArchive": "Open the archive of tabs that were put away and spaces that were closed, to restore them.",

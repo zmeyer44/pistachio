@@ -102,8 +102,12 @@ export type MediaControl =
   | { type: "focus" }
   | { type: "seek"; position: number }
   | { type: "setRate"; rate: number }
-  /** The page's player alone, 0 to 1 (its element's volume): above 0, it is heard again if it was muted. */
-  | { type: "setVolume"; volume: number }
+  /**
+   * The page's player alone, 0 to 1 (its element's volume): above 0, it is heard again if it was muted. At 0 with a
+   * `restore` level, it is muted at that level instead, as its own mute would be: the player keeps what Unmute brings
+   * back, whichever control (a card, the floating player) presses it.
+   */
+  | { type: "setVolume"; volume: number; restore?: number }
   /** A "Read aloud" card: light the spoken words on the page they came from, or stop. */
   | { type: "followText"; enabled: boolean };
 
@@ -124,6 +128,118 @@ export function isMediaLevelReport(value: unknown): value is number | null {
 
 export const MIN_PLAYBACK_RATE = 0.25;
 export const MAX_PLAYBACK_RATE = 2;
+
+/** What `defaultRateVerdict` reads off a playing element. */
+export interface DefaultRateCandidate {
+  duration: number;
+  /** It plays a MediaStream — a call, a capture — not a file. */
+  stream: boolean;
+  loop: boolean;
+  muted: boolean;
+  playbackRate: number;
+}
+
+/**
+ * Whether media that has just started playing a new source takes the
+ * default playback speed (Settings → General). The tab preload asks once per
+ * source, on every site and in every frame:
+ *
+ *  - "wait" while its length is unknown; the next `playing` or
+ *    `durationchange` asks again.
+ *  - "skip" a stream, a live broadcast, or a muted loop (a page's moving
+ *    backdrop, a GIF made video): a speed means nothing to them, or changes
+ *    how the page looks rather than how fast it is heard.
+ *  - "skip" media already at another speed: the page set one — a site
+ *    remembering the speed chosen in its own player — and that choice stands.
+ *  - "apply" otherwise.
+ */
+export function defaultRateVerdict(media: DefaultRateCandidate): "apply" | "skip" | "wait" {
+  if (media.stream) return "skip";
+  if (Number.isNaN(media.duration)) return "wait";
+  if (!Number.isFinite(media.duration)) return "skip";
+  if (media.loop && media.muted) return "skip";
+  if (media.playbackRate !== 1) return "skip";
+  return "apply";
+}
+
+/**
+ * The page-world half of the default playback speed: media whose events the
+ * document never carries. An element the page plays without putting it in
+ * the document (`new Audio(url).play()`) has no window above it, and a media
+ * event does not leave a shadow root, so the preload's window listeners hear
+ * neither. This hands such an element to `report`, before its events reach
+ * the element itself, so the preload can listen there:
+ *
+ *  - as the page calls `play()` on it (a Proxy of the built-in), wherever it is;
+ *  - as it loads or starts in a shadow root, whatever started it — autoplay,
+ *    the browser's own controls — heard at every shadow root the page
+ *    attaches, open or closed (a Proxy of `attachShadow`).
+ *
+ * Media in the document's own tree is not reported: the window hears it.
+ * Shadow roots the parser makes (declarative shadow DOM) are not attached
+ * through `attachShadow`; their media is reported only when the page plays it.
+ *
+ * Run by `contextBridge.executeInMainWorld` from its source text, so it
+ * reaches nothing outside itself. `report` failing never fails the page's
+ * call, and a call the built-in refuses throws as it would.
+ */
+export function watchMediaPlays(report: (media: HTMLMediaElement) => void): void {
+  const Media = globalThis.HTMLMediaElement;
+  const Host = globalThis.Element;
+  if (Media === undefined || Host === undefined) return;
+  const connected = Object.getOwnPropertyDescriptor(Node.prototype, "isConnected")?.get;
+  const targetOf = Object.getOwnPropertyDescriptor(Event.prototype, "target")?.get;
+  const rootOf = Node.prototype.getRootNode;
+  const listen = EventTarget.prototype.addEventListener;
+  const call = Reflect.apply;
+  if (connected === undefined || targetOf === undefined) return;
+  const told = new WeakSet<HTMLMediaElement>();
+  const tell = (media: HTMLMediaElement): void => {
+    if (told.has(media)) return;
+    told.add(media);
+    try {
+      report(media);
+    } catch {
+      // The page's media is the page's; a watcher that failed changes nothing about it.
+    }
+  };
+
+  /** Where the page finds `name`, a Proxy of the built-in, kept as writable and hidden as the method it replaces. */
+  const wrap = (target: object, name: string, apply: (fn: (...args: never[]) => unknown, self: unknown, args: never[]) => unknown): void => {
+    const descriptor = Object.getOwnPropertyDescriptor(target, name);
+    if (descriptor === undefined || typeof descriptor.value !== "function") return;
+    const value = new Proxy(descriptor.value as (...args: never[]) => unknown, { apply });
+    Object.defineProperty(target, name, { ...descriptor, value });
+  };
+
+  wrap(Media.prototype, "play", (fn, self, args) => {
+    try {
+      if (self instanceof Media && (!call(connected, self, []) || call(rootOf, self, []) !== document)) tell(self);
+    } catch {
+      // As above: the call is the page's.
+    }
+    return call(fn, self, args);
+  });
+
+  // Capture, at the root: the element's own listeners, added by `report`,
+  // are still ahead of the event that told about it.
+  const heard = (event: Event): void => {
+    const media: unknown = call(targetOf, event, []);
+    if (media instanceof Media) tell(media);
+  };
+  wrap(Host.prototype, "attachShadow", (fn, self, args) => {
+    const root = call(fn, self, args);
+    for (const name of ["loadstart", "playing", "durationchange"]) call(listen, root, [name, heard, true]);
+    return root;
+  });
+}
+
+/** A default speed main answered with, or null for anything else. */
+export function defaultRateAnswer(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= MIN_PLAYBACK_RATE && value <= MAX_PLAYBACK_RATE
+    ? value
+    : null;
+}
 
 const KINDS = new Set<MediaPlaybackKind>(["audio", "video", "live"]);
 const ARTWORK_PROTOCOLS = new Set(["http:", "https:", "data:", "pistachio:"]);
@@ -226,7 +342,13 @@ export function isMediaControl(value: unknown): value is MediaControl {
   }
   if (control["type"] === "followText") return typeof control["enabled"] === "boolean";
   if (control["type"] === "setVolume") {
-    return typeof control["volume"] === "number" && Number.isFinite(control["volume"]) && control["volume"] >= 0 && control["volume"] <= 1;
+    const restore = control["restore"];
+    return typeof control["volume"] === "number" &&
+      Number.isFinite(control["volume"]) &&
+      control["volume"] >= 0 &&
+      control["volume"] <= 1 &&
+      (restore === undefined ||
+        (control["volume"] === 0 && typeof restore === "number" && Number.isFinite(restore) && restore > 0 && restore <= 1));
   }
   if (control["type"] === "seek") {
     return typeof control["position"] === "number" &&

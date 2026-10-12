@@ -12,7 +12,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import type { ShortcutSurface } from "@pistachio/shell-contracts/shortcuts";
 import type { DeskEngine } from "../../components/desk/desk-engine";
 import { nativeApi } from "../../api";
-import { useAppStore } from "../../store";
+import { isPageOverlay, useAppStore, type Overlay } from "../../store";
 import { deskGroups, passedEntry, useDeskStore } from "./store";
 
 /**
@@ -116,6 +116,41 @@ export async function newSpace(): Promise<string | null> {
   const id = crypto.randomUUID();
   const made = await useAppStore.getState().tabGroupCommand({ type: "create", id, tabIds: [], select: true });
   return made === null ? null : id;
+}
+
+/** A space ⌘N just made, its id the detail: the sidebar opens its name field, as for its own New space (TabList). */
+export const NEW_SPACE_EVENT = "pistachio:new-space";
+
+/**
+ * What is open over the window that steps aside for a new space: the address bar and the passing popovers (a page
+ * over the desk goes too: closePage). Not a context menu: its owner holds its state (useContextMenu), and lowering the
+ * flag would leave it mounted, its keys still caught.
+ */
+const GIVES_WAY_TO_NEW_SPACE: ReadonlySet<Overlay> = new Set(["none", "url", "downloads", "site-info", "site"]);
+
+/**
+ * ⌘N: a new space (newSpace), named in the sidebar if it is up to hear of it. What is open over the window steps
+ * aside for it and its name field — the address bar, a popover, a page over the desk (Settings) — but a dialog
+ * asking something (a site's permission, a fork's draft, an update), or a menu, keeps the keyboard, as a Mac's menu
+ * does: false, and the key goes on.
+ */
+export function newSpaceByKey(): boolean {
+  const store = useAppStore.getState();
+  if (!isPageOverlay(store.overlay) && !GIVES_WAY_TO_NEW_SPACE.has(store.overlay)) return false;
+  store.closePage();
+  if (useAppStore.getState().overlay !== "none") store.setOverlay("none");
+  void newSpace().then((id) => {
+    if (id !== null) window.dispatchEvent(new CustomEvent(NEW_SPACE_EVENT, { detail: id }));
+  });
+  return true;
+}
+
+/**
+ * A new space opened at `url` (⌘⇧L's address bar): main makes the space and its tab together and shows that tab, so
+ * the desk passes straight to the page, never through an empty space. With no room for another, main says so (a notice).
+ */
+export async function newSpaceAt(url: string): Promise<void> {
+  await useAppStore.getState().tabGroupCommand({ type: "create", id: crypto.randomUUID(), tabIds: [], url });
 }
 
 /** How long a tab that just joined the desk's space may take to reach the snapshot. */
@@ -238,6 +273,19 @@ export async function newTabOnDesk(): Promise<void> {
   // (createTab has no `group` option on the wire yet: main's default for a tab the shell makes is the current space.)
   if (groupId === null) await store.createTab(store.settings.general.homeUrl);
   else await store.tabGroupCommand({ type: "newTab", groupId });
+}
+
+/**
+ * ⌘T on the desk, and the empty desk's New tab, as General's "New tabs open" says (since 2026-10-10; until then
+ * always a home window): a home window (newTabOnDesk), the address bar composing a new tab of this space (⌥L's), or a
+ * window at the page named there — a tab the shell makes lands in the current space (main), out as the window in use.
+ */
+export function newTabAsChosen(): void {
+  const store = useAppStore.getState();
+  const { newTab, newTabUrl } = store.settings.general;
+  if (newTab === "address") store.openNewTabBar("tab");
+  else if (newTab === "url" && newTabUrl !== "") void store.createTab(newTabUrl);
+  else void newTabOnDesk();
 }
 
 /**

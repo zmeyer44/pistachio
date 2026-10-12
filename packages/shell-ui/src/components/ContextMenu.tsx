@@ -28,6 +28,8 @@ export type MenuEntry =
   | { separator: true }
   /** A muted caption, e.g. "Managed by your organization". */
   | { note: string }
+  /** A reading, not an action: a name and its value, as an item lays out (a desk window's page zoom). */
+  | { readout: { label: string; value: string; icon?: React.ReactNode; testId?: string } }
   /**
    * One row of round colour swatches — a tab group's colour. `color` is a
    * `data-group-color` name (shell.css), so the swatch is the colour the row
@@ -194,6 +196,22 @@ function ContextMenu({ state, ready, onClose }: { state: MenuState; ready: boole
             <span key={i} className="px-2 py-1 text-[11px] text-gray-700">
               {item.note}
             </span>
+          );
+        }
+        if ("readout" in item) {
+          const { label, value, icon, testId } = item.readout;
+          return (
+            <div
+              key={i}
+              role="menuitem"
+              aria-disabled="true"
+              data-testid={testId}
+              className="flex h-7 w-full cursor-default items-center gap-2 px-2 text-[12.5px] text-gray-1000 [&_svg]:size-3.5 [&_svg]:shrink-0"
+            >
+              <span className="grid size-3.5 shrink-0 place-items-center text-gray-900">{icon}</span>
+              <span className="min-w-0 flex-1 truncate">{label}</span>
+              <span className="shrink-0 tabular-nums text-gray-900">{value}</span>
+            </div>
           );
         }
         if ("swatches" in item) {

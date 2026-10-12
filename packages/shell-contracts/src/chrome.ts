@@ -446,6 +446,8 @@ export type ShellCommand =
   | { type: "openNotes"; noteId?: string }
   /** Write a new note and open it: what ⌘⌥N does. */
   | { type: "newNote" }
+  /** A shell on this Mac in a new tab (docs/terminal.md): what ⌘J does. */
+  | { type: "newTerminal" }
   | { type: "toggleBookmarks" }
   /**
    * Watchtower, optionally landing on one index entry (a save's card names
@@ -529,6 +531,7 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "undoTidy":
     case "toggleBookmarks":
     case "newNote":
+    case "newTerminal":
     case "openDownloads":
     case "toggleDownloads":
     case "closeLiveView":

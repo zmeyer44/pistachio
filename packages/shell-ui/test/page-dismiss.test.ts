@@ -29,7 +29,7 @@ describe("closePage", () => {
   });
 
   it.each(["none", "url", "downloads", "site-info"] as const)("leaves the %s overlay alone", (overlay) => {
-    useAppStore.setState({ overlay, urlBarNew: true });
+    useAppStore.setState({ overlay, urlBarNew: "tab" });
     useAppStore.getState().closePage();
     expect(useAppStore.getState().overlay).toBe(overlay);
   });

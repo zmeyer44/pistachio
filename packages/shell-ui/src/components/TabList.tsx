@@ -60,9 +60,9 @@ import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useDeskChrome } from "../lib/desk/chrome";
 import { useGroupContexts } from "../lib/desk/group-context";
-import { deskAvailable, deskEngine, newSpace, selectSpace, showOnDesk, splitAvailable, useCurrentSpace } from "../lib/desk/open";
+import { deskAvailable, deskEngine, NEW_SPACE_EVENT, newSpace, selectSpace, showOnDesk, splitAvailable, useCurrentSpace } from "../lib/desk/open";
 import { groupPageOf } from "../lib/desk/store";
-import { useSidebarColumn } from "../lib/sidebar-mode";
+import { sidebarOverlays, useSidebarColumn, useSidebarMode } from "../lib/sidebar-mode";
 import { DeskContextRow, DeskRowMark, deskTabEntries, hoverDeskRow } from "./desk/DeskSidebarControls";
 import { useSidebarRail } from "./sidebar-rail";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
@@ -974,16 +974,35 @@ export function TabList() {
   const menu = useContextMenu();
   const menuOpen = menu.isOpen;
   const [renaming, setRenamingRow] = useState<string | null>(null);
+  /** A row to rename once the hidden column is out (below). */
+  const [renameWhenOut, setRenameWhenOut] = useState<string | null>(null);
   const rail = useSidebarRail();
+  const overDesk = sidebarOverlays(useSidebarMode());
+  const columnOut = useSidebarColumn((state) => state.out);
   // A rail has no room for a name: the whole sidebar comes back to edit one in, as a setting (⌘S takes it back).
+  // Hidden and away (⌘N's new space), the column is brought out first, and the field opens once it is out: an inert
+  // column takes no focus.
   const setRenaming = (id: string | null): void => {
     if (id !== null && rail) void useAppStore.getState().updateSettings({ layout: { sidebar: "whole" } });
+    if (id !== null && overDesk && !useSidebarColumn.getState().out) {
+      setRenameWhenOut(id);
+      useAppStore.getState().setSidebarRevealed(true);
+      return;
+    }
+    setRenameWhenOut(null);
     setRenamingRow(id);
   };
-  // A row being renamed holds the hidden sidebar out until it is done (lib/sidebar-mode.ts).
   useEffect(() => {
-    useSidebarColumn.getState().setRenaming(renaming !== null);
-  }, [renaming]);
+    // (The column put in the layout meanwhile — whole, a rail — the field opens there.)
+    if (renameWhenOut === null || (overDesk && !columnOut)) return;
+    setRenamingRow(renameWhenOut);
+    setRenameWhenOut(null);
+  }, [renameWhenOut, overDesk, columnOut]);
+  // A row being renamed — or about to be, the column on its way out — holds the hidden sidebar out until it is done
+  // (lib/sidebar-mode.ts).
+  useEffect(() => {
+    useSidebarColumn.getState().setRenaming(renaming !== null || renameWhenOut !== null);
+  }, [renaming, renameWhenOut]);
   useEffect(() => () => useSidebarColumn.getState().setRenaming(false), []);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
@@ -1824,6 +1843,14 @@ export function TabList() {
       if (id !== null) trackNewGroup(id);
     });
   };
+  // ⌘N's new space (chrome/actions.tsx) gets its name field here too.
+  const trackRef = useRef(trackNewGroup);
+  trackRef.current = trackNewGroup;
+  useEffect(() => {
+    const onNewSpace = (event: Event): void => trackRef.current((event as CustomEvent<string>).detail);
+    window.addEventListener(NEW_SPACE_EVENT, onNewSpace);
+    return () => window.removeEventListener(NEW_SPACE_EVENT, onNewSpace);
+  }, []);
   const newSpaceEntries = (): MenuEntry[] =>
     deskAvailable() ? [{ label: "New space", icon: <LayoutPanelLeft aria-hidden="true" />, onSelect: startNewSpace }] : [];
   /** The rail's + menu (a right click or a long press): what the whole sidebar's foot row offers on hover. */

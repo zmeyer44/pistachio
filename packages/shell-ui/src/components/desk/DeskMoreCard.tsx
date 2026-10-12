@@ -72,7 +72,7 @@ export function DeskMoreCard({
         <div className="px-1.5 pt-0.5 pb-1 text-[10.5px] font-semibold tracking-wide text-gray-700 uppercase">Feel</div>
         {DESK_AXES.map((axis) => (
           <Fragment key={axis.key}>
-            <VariantRow axisKey={axis.key} label={axis.label} />
+            {axis.key === "zoom" ? <PageZoomRow label={axis.label} /> : <VariantRow axisKey={axis.key} label={axis.label} />}
             {/* Glide's own setting, under the throw it belongs to. */}
             {axis.key === "physics" ? <DecelerationRow /> : null}
           </Fragment>
@@ -121,6 +121,32 @@ function DecelerationRow() {
         disabled={!glide}
         onChange={(value) => useDeskStore.getState().setVariant("deceleration", value)}
         className={cn("grid-cols-[76px_minmax(60px,1fr)_30px] gap-2 px-1.5 py-1", !glide && "opacity-60")}
+        labelClassName="text-[12px] text-gray-700"
+      />
+    </div>
+  );
+}
+
+/**
+ * Page zoom: how far a page zooms out as its window takes less of the desk,
+ * a slider over its strengths, weakest first, from Off (every page at 100%)
+ * to Strongest. The windows on the desk follow it as it moves.
+ */
+function PageZoomRow({ label }: { label: string }) {
+  const value = useDeskStore((state) => state.variants.zoom);
+  const options = DESK_AXES.find((axis) => axis.key === "zoom")!.options;
+  const index = Math.max(0, options.findIndex((option) => option.id === value));
+  const option = options[index]!;
+  return (
+    <div data-testid="desk-variant-zoom" data-value={option.id} title={option.hint}>
+      <Slider
+        label={label}
+        value={index}
+        min={0}
+        max={options.length - 1}
+        readout={option.label}
+        onChange={(step) => useDeskStore.getState().setVariant("zoom", options[step]!.id)}
+        className="grid-cols-[76px_minmax(60px,1fr)_56px] gap-2 px-1.5 py-1"
         labelClassName="text-[12px] text-gray-700"
       />
     </div>

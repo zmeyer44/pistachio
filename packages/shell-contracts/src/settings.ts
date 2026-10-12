@@ -309,6 +309,15 @@ export interface DesktopSettings {
     /** Start new conversations in the cloud when the active Space allows it. */
     runByDefault: boolean;
   };
+  /** Audio and video on every site, and Read aloud. */
+  media: {
+    /**
+     * The speed a page's audio or video starts at (`defaultRateVerdict` in
+     * @pistachio/shell-contracts/media says which media takes it). One of
+     * `PLAYBACK_RATE_OPTIONS`; 1 leaves every page as it is.
+     */
+    defaultPlaybackRate: number;
+  };
 }
 
 export const CAPSULE_MINUTES = [10, 15, 30, 60, 120] as const;
@@ -317,6 +326,9 @@ export const APPROVAL_EXPIRY_MINUTES = [2, 5, 10, 30] as const;
 
 /** `0` is "never": Tidy then runs only when asked. */
 export const ARCHIVE_AFTER_HOURS_OPTIONS = [0, ...ARCHIVE_AFTER_HOURS] as const;
+
+/** The speeds Settings offers as the default; the media card's own slider reaches further. */
+export const PLAYBACK_RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] as const;
 
 export const MAX_PRESET_LINKS = 24;
 export const MAX_PRESET_TITLE = 80;
@@ -395,6 +407,9 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   },
   cloud: {
     runByDefault: false,
+  },
+  media: {
+    defaultPlaybackRate: 1,
   },
 };
 
@@ -592,6 +607,7 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
   const shields = section(root["shields"]);
   const tabs = section(root["tabs"]);
   const cloud = section(root["cloud"]);
+  const media = section(root["media"]);
   // An `ai` section (provider keys) may still be in a file written before
   // models came with the account; it is dropped, not carried, on the next write.
   const d = DEFAULT_SETTINGS;
@@ -740,6 +756,13 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
     },
     cloud: {
       runByDefault: bool(cloud["runByDefault"], d.cloud.runByDefault),
+    },
+    media: {
+      defaultPlaybackRate: oneOf(
+        media["defaultPlaybackRate"],
+        PLAYBACK_RATE_OPTIONS,
+        d.media.defaultPlaybackRate,
+      ),
     },
   };
 }

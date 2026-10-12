@@ -27,6 +27,15 @@ export type DeskChrome = "bar" | "tab" | "bare" | "drawer";
 export type DeskGrab = DeskGrabModifier | "off";
 /** Whether windows coming and going may move the others (docs/desk-layout.md). */
 export type DeskLayoutFeel = "smart" | "hand";
+/**
+ * How far a page in a window smaller than the desk is zoomed out to suit it (geometry's pageZoom), weakest first:
+ * never (Off), and Slight, Medium, Strong, Strongest. Medium and Off keep the ids they had when they were the only
+ * two, Fit and Actual size (until 2026-10-11), so what was chosen then, and the specs' pins, still read.
+ */
+export type DeskPageZoom = "actual" | "slight" | "fit" | "strong" | "strongest";
+
+/** The strength each Page zoom asks of geometry's pageZoom: how many quarters a page loses for each halving of its window's share of the desk. */
+export const PAGE_ZOOM_STRENGTH: Record<DeskPageZoom, number> = { actual: 0, slight: 0.5, fit: 1, strong: 1.5, strongest: 2 };
 
 export interface DeskVariants {
   /** What a released window does. */
@@ -41,6 +50,8 @@ export interface DeskVariants {
   grab: DeskGrab;
   /** Smart: a window coming or going asks the layout model whether the others should move. By hand: they stay put. */
   layout: DeskLayoutFeel;
+  /** How far a page is zoomed out as its window takes less of the desk (back to 100% as it fills it), from Off (never) to Strongest. */
+  zoom: DeskPageZoom;
   /** Glide's deceleration: the share of its speed a thrown window loses every 100 ms, in percent (GLIDE_DECELERATION). */
   deceleration: number;
 }
@@ -68,6 +79,7 @@ export const DESK_AXES: readonly [
   Axis<"chrome">,
   Axis<"grab">,
   Axis<"layout">,
+  Axis<"zoom">,
 ] = [
   {
     key: "physics",
@@ -124,6 +136,18 @@ export const DESK_AXES: readonly [
       { id: "hand", label: "By hand", hint: "Windows stay where they are put; ⌘⌥L still arranges them on request" },
     ],
   },
+  {
+    key: "zoom",
+    label: "Page zoom",
+    // Weakest first: the card shows them as the stops of a slider.
+    options: [
+      { id: "actual", label: "Off", hint: "Every page at 100%, whatever its window's size" },
+      { id: "slight", label: "Slight", hint: "A page zooms out a little as its window takes less of the desk: 88% at half of it, 75% at a quarter, 100% filling it" },
+      { id: "fit", label: "Medium", hint: "A page zooms out as its window takes less of the desk: 75% at half of it, 50% at a quarter, 100% filling it" },
+      { id: "strong", label: "Strong", hint: "A page zooms out further as its window takes less of the desk: 63% at half of it, 50% at a quarter, 100% filling it" },
+      { id: "strongest", label: "Strongest", hint: "A page zooms out as far as it goes: 50% at half of the desk or less, 100% filling it" },
+    ],
+  },
 ];
 
 export const DEFAULT_DESK_VARIANTS: DeskVariants = {
@@ -133,6 +157,7 @@ export const DEFAULT_DESK_VARIANTS: DeskVariants = {
   chrome: "drawer",
   grab: "shift",
   layout: "smart",
+  zoom: "fit",
   deceleration: GLIDE_DECELERATION.default,
 };
 
@@ -141,13 +166,21 @@ export interface SavedDeskWindow {
   tabId: string;
   rect: Rect;
   mask?: DeskMask;
-  /** Minimized (the engine's Minimized): the box it grows back to, as fractions of the desk, and whether it is parked in the shelf at the desk's foot. */
-  mini?: { restore: Rect; parked: boolean };
+  /** Minimized (the engine's Minimized): the box it grows back to, as fractions of the desk, and whether it is parked in the shelf at the desk's foot; `own`, that box with no room kept for the chat's place, as `own` below. */
+  mini?: { restore: Rect; parked: boolean; own?: Rect };
+  /**
+   * Its box with no room kept for the chat's place (DeskEngine's #unreserved), as fractions of the whole desk —
+   * saved while the room is kept, so the room gone after a relaunch gives the box back exactly (2026-10-10: a window
+   * the room had squeezed to its least width came back wider).
+   */
+  own?: Rect;
 }
 
 /** A group's desk as it was left, windows bottom to top. */
 export interface SavedDesk {
   windows: SavedDeskWindow[];
+  /** How much room was kept for the chat's place (DeskEngine.setReserve), in px: the windows' boxes are of the desk short of it (2026-10-10). Left out: none. */
+  reserve?: number;
 }
 
 /**
@@ -267,6 +300,7 @@ export function sanitizeVariants(value: unknown): DeskVariants {
     chrome: pick("chrome"),
     grab: pick("grab"),
     layout: pick("layout"),
+    zoom: pick("zoom"),
     deceleration:
       typeof deceleration === "number" && Number.isFinite(deceleration)
         ? Math.min(GLIDE_DECELERATION.max, Math.max(GLIDE_DECELERATION.min, Math.round(deceleration)))
@@ -282,18 +316,21 @@ export function sanitizeSaved(value: unknown): Record<string, SavedDesk> {
     if (groupId.startsWith(TAB_DESK)) continue;
     const windows = (desk as { windows?: unknown } | null)?.windows;
     if (!Array.isArray(windows)) continue;
+    const reserve = (desk as { reserve?: unknown }).reserve;
     saved[groupId] = {
+      ...(typeof reserve === "number" && Number.isFinite(reserve) && reserve > 0 ? { reserve } : {}),
       windows: windows
         .filter(
           (window): window is SavedDeskWindow =>
             typeof window === "object" && window !== null && typeof (window as SavedDeskWindow).tabId === "string" && isFiniteRect((window as SavedDeskWindow).rect),
         )
         // A mask that does not hold up is dropped, and the window comes back whole; so is a minimized state, and it comes back at its own size.
-        .map(({ tabId, rect, mask, mini }): SavedDeskWindow => {
-          if (isDeskMask(mask)) return { tabId, rect, mask };
+        .map(({ tabId, rect, mask, mini, own }): SavedDeskWindow => {
+          const kept = isFiniteRect(own) ? { own } : {};
+          if (isDeskMask(mask)) return { tabId, rect, mask, ...kept };
           if (typeof mini === "object" && mini !== null && isFiniteRect(mini.restore) && typeof mini.parked === "boolean")
-            return { tabId, rect, mini: { restore: mini.restore, parked: mini.parked } };
-          return { tabId, rect };
+            return { tabId, rect, mini: { restore: mini.restore, parked: mini.parked, ...(isFiniteRect(mini.own) ? { own: mini.own } : {}) }, ...kept };
+          return { tabId, rect, ...kept };
         }),
     };
   }

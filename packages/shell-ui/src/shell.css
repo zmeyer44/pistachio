@@ -607,6 +607,7 @@
   background: color-mix(in oklch, var(--color-background-100) 92%, transparent);
   box-shadow: var(--shadow-menu);
   backdrop-filter: blur(14px);
+  cursor: pointer;
   transition:
     transform 120ms ease,
     background-color 120ms ease;
@@ -624,6 +625,7 @@
 }
 .glance-action:disabled {
   opacity: 0.55;
+  cursor: default;
 }
 .glance-action svg {
   width: 16px;
@@ -888,6 +890,10 @@
   --notice-open: 350ms;
   --notice-close: 250ms;
   --notice-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* The dismiss button coming out from under the action, and going back:
+     transitions.dev's --duration-fast in, --duration-quick out. */
+  --notice-reveal: 250ms;
+  --notice-conceal: 150ms;
   --notice-surface: #ffffff;
   --notice-text: #0d0d0d;
   --notice-disc: #eeeeef;
@@ -1049,7 +1055,18 @@
   flex: 1 1 auto;
   overflow-wrap: anywhere;
 }
+/* The dismiss button keeps its place at rest, unseen: that is the demo
+   pill's open right end, and nothing is laid out again when the pointer
+   brings it in. With an action beside it, the action rests on the pill's
+   right end instead — shifted 26px over the dismiss button's slot, so its
+   edge sits the body's 16px in — and slides back off it on hover, the
+   dismiss button coming out from under it. Transforms only: the pill never
+   changes width, so a message already wrapping at the stack's width does
+   not re-wrap under the pointer. */
 .notice-action {
+  position: relative;
+  /* Over the dismiss button it covers. */
+  z-index: 1;
   flex: 0 0 auto;
   cursor: pointer;
   border-radius: 50px;
@@ -1059,13 +1076,14 @@
   font-size: 12px;
   font-weight: 500;
   line-height: 16px;
-  transition: opacity 120ms ease;
+  transform: translateX(26px);
+  transition:
+    transform var(--notice-conceal) var(--notice-ease),
+    opacity 120ms ease;
 }
 .notice-action:hover {
   opacity: 0.85;
 }
-/* The dismiss button keeps its place at rest, unseen: that is the demo
-   pill's open right end, and nothing shifts when the pointer brings it in. */
 .notice-close {
   display: grid;
   width: 24px;
@@ -1082,6 +1100,16 @@
     background-color 120ms ease,
     color 120ms ease;
 }
+/* Its slot runs 8px past the shifted action's edge (the margin above), so
+   at rest it tucks that far under the action to be wholly behind it. */
+.notice-action + .notice-close {
+  transform: translateX(-8px);
+  transition:
+    transform var(--notice-conceal) var(--notice-ease),
+    opacity var(--notice-conceal) var(--notice-ease),
+    background-color 120ms ease,
+    color 120ms ease;
+}
 .notice-close svg {
   width: 14px;
   height: 14px;
@@ -1089,6 +1117,22 @@
 .notice-card:hover .notice-close,
 .notice-close:focus-visible {
   opacity: 1;
+}
+.notice-card:hover .notice-action,
+.notice-card:has(.notice-close:focus-visible) .notice-action {
+  transform: translateX(0);
+  transition:
+    transform var(--notice-reveal) var(--notice-ease),
+    opacity 120ms ease;
+}
+.notice-card:hover .notice-action + .notice-close,
+.notice-action + .notice-close:focus-visible {
+  transform: translateX(0);
+  transition:
+    transform var(--notice-reveal) var(--notice-ease),
+    opacity var(--notice-reveal) var(--notice-ease),
+    background-color 120ms ease,
+    color 120ms ease;
 }
 .notice-close:hover {
   background: var(--notice-disc);
@@ -1102,6 +1146,12 @@
   }
   .notice-card-body[data-bumped] {
     animation: none;
+  }
+  /* The action still rests over the dismiss button and gives way to it,
+     only without the slide. */
+  .notice-action,
+  .notice-action + .notice-close {
+    transition: none;
   }
 }
 
@@ -1586,6 +1636,20 @@
 .media-rate-trigger:hover,
 .media-rate-trigger[aria-expanded="true"] {
   background: var(--color-alpha-100);
+}
+/* The player's own volume (MediaStack's VolumeControl): the speaker, which
+   opens the speed card's twin over the stack. */
+.media-volume {
+  display: grid;
+  width: 27px;
+}
+.media-volume .media-control[aria-expanded="true"] {
+  color: var(--color-gray-1000);
+  background: var(--color-alpha-100);
+}
+.media-volume-card .media-speed-bounds span:nth-child(2) {
+  position: static;
+  transform: none;
 }
 .media-rate-trigger:focus-visible,
 .media-speed-slider:focus-visible {
@@ -5208,6 +5272,14 @@ body:not([data-chrome-view])::after {
     background-color 150ms ease,
     color 150ms ease;
 }
+/* The chat's side button above the close (DeskNub's NubPillSide, 2026-10-09): the same button, come up out of the nub
+   a step further — so the two rise from it as the droplets' column once did. */
+.desk-nub-pill-side {
+  translate: 0 74px;
+}
+.desk-nub-pill-side[data-shown] {
+  translate: 0 0;
+}
 .desk-nub-pill-close:hover {
   background: color-mix(in oklch, var(--color-background-100), var(--color-gray-1000) 6%);
   color: var(--color-gray-1000);
@@ -5224,7 +5296,9 @@ body:not([data-chrome-view])::after {
 }
 @media (prefers-reduced-motion: reduce) {
   .desk-nub-pill-close,
-  .desk-nub-pill-close[data-shown] {
+  .desk-nub-pill-close[data-shown],
+  .desk-nub-pill-side,
+  .desk-nub-pill-side[data-shown] {
     translate: none;
     scale: none;
     filter: none;
@@ -5825,6 +5899,113 @@ body[data-chrome-view="shelf"] {
 .desk-answer[data-mode="detached"] .desk-answer-docked-only {
   display: none;
 }
+/* In the chat's place its header is a chat's rather than a drawer's: no grip, the conversation's name at its head
+   dropping down the conversations (.desk-chat-picker), its actions as round buttons at the other end. Read off the
+   content (answer-motion.ts sets its zone once the still copy of how it was is taken, so the copy keeps its header). */
+.desk-answer-head .desk-answer-chat-only {
+  display: none;
+}
+.desk-answer-content[data-zone="chat"] .desk-answer-head {
+  height: 44px;
+  gap: 2px;
+  padding: 0 8px 0 6px;
+}
+.desk-answer-content[data-zone="chat"] .desk-answer-head :is(.desk-answer-grab, .desk-answer-title, .desk-answer-not-chat) {
+  display: none;
+}
+.desk-answer-content[data-zone="chat"] .desk-answer-head .desk-bar-button.desk-answer-chat-only {
+  display: grid;
+}
+.desk-answer-content[data-zone="chat"] .desk-answer-head .desk-bar-button {
+  margin-bottom: 0;
+}
+.desk-answer-content[data-zone="chat"] .desk-answer-head .desk-answer-chat-title {
+  display: inline-flex;
+}
+/* (Never the whole header: what is left of it beside the name is what the card is taken out of its place by.) */
+.desk-answer-chat-title {
+  min-width: 0;
+  max-width: 62%;
+  height: 30px;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+  padding: 0 6px 0 8px;
+  border-radius: 8px;
+  color: var(--color-gray-1000);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 150ms ease;
+}
+.desk-answer-chat-title:hover,
+.desk-answer-chat-title[aria-expanded="true"] {
+  background: var(--color-alpha-200);
+}
+.desk-answer-chat-title:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.desk-answer-chat-title svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--color-gray-800);
+  transition: rotate 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.desk-answer-chat-title[aria-expanded="true"] svg {
+  rotate: 180deg;
+}
+.desk-bar-button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+/* The conversations dropped down from the chat's name: its rows (.desk-conversation) on the Bar's glass, under the
+   header, unfolding from the name. */
+.desk-chat-picker {
+  position: absolute;
+  top: 46px;
+  left: 6px;
+  z-index: 3;
+  display: flex;
+  width: min(340px, calc(100% - 12px));
+  max-height: min(420px, calc(100% - 120px));
+  flex-direction: column;
+  border-radius: 14px;
+  background: var(--desk-bar-fill);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 22px 48px -18px oklch(0 0 0 / 0.42);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px) scale(0.98);
+  transform-origin: 24px 0;
+  transition:
+    opacity 120ms ease,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.desk-chat-picker[data-open] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition:
+    opacity 150ms ease,
+    transform 220ms cubic-bezier(0.34, 1.25, 0.64, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-chat-picker,
+  .desk-chat-picker[data-open] {
+    transform: none;
+    transition: opacity 120ms ease;
+  }
+  .desk-answer-chat-title svg {
+    transition: none;
+  }
+}
 /* The resize ring: the edges straddle the border, mostly outside it, as a floating window's do. */
 .desk-answer-edges {
   position: absolute;
@@ -5938,6 +6119,185 @@ body[data-chrome-view="shelf"] {
     inset 0 0 0 1.5px var(--color-alpha-600),
     0 0 0 4px oklch(1 0 0 / 0.05),
     0 18px 40px -24px oklch(0 0 0 / 0.5);
+}
+/* Where a floating answer in hand would land, pushed into an edge: a tile, frosted in the space's colour as a window's
+   landing place is (.desk-zone), just under the card among the windows; Shift's snap mode drawn surer. */
+.desk-answer-zone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: calc(var(--desk-answer-z, 55) - 1);
+  overflow: hidden;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--color-background-100) 22%, transparent), transparent 70%),
+    color-mix(in oklch, var(--tg-solid) 13%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  backdrop-filter: blur(10px) saturate(1.3);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--tg-solid) 52%, transparent),
+    inset 0 0 0 4px color-mix(in oklch, var(--tg-solid) 7%, transparent),
+    0 18px 44px -24px color-mix(in oklch, var(--tg-solid) 70%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    width 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    height 200ms cubic-bezier(0.2, 0.9, 0.3, 1),
+    background-color 200ms ease,
+    box-shadow 200ms ease,
+    opacity 140ms ease;
+}
+.desk-answer-zone[data-on] {
+  opacity: 1;
+}
+.desk-answer-zone[data-snap] {
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--color-background-100) 22%, transparent), transparent 70%),
+    color-mix(in oklch, var(--tg-solid) 17%, transparent);
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 72%, transparent),
+    inset 0 0 0 5px color-mix(in oklch, var(--tg-solid) 9%, transparent),
+    0 18px 44px -22px color-mix(in oklch, var(--tg-solid) 75%, transparent);
+}
+/* The chat's own place, which no window has: surer than a tile, named, and with the message field sketched at its foot,
+   where the field comes into the card. */
+.desk-answer-zone[data-kind="chat"] {
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--color-background-100) 30%, transparent), transparent 60%),
+    color-mix(in oklch, var(--tg-solid) 19%, transparent);
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 78%, transparent),
+    inset 0 0 0 6px color-mix(in oklch, var(--tg-solid) 10%, transparent),
+    0 18px 44px -20px color-mix(in oklch, var(--tg-solid) 80%, transparent);
+}
+.desk-answer-zone-chat {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.desk-answer-zone[data-kind="chat"] .desk-answer-zone-chat {
+  opacity: 1;
+  transition-delay: 60ms;
+}
+/* (At its head: the card in hand, held by its header, hangs below the pointer.) */
+.desk-answer-zone-label {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--color-background-100) 82%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--tg-solid) 40%, transparent);
+  color: color-mix(in oklch, var(--tg-solid) 70%, var(--color-gray-1000));
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+.desk-answer-zone-label svg {
+  width: 14px;
+  height: 14px;
+}
+/* (Beside the nub, where the field comes to: .desk-answer-foot's inset.) */
+.desk-answer-zone-field {
+  position: absolute;
+  right: 46px;
+  bottom: 8px;
+  left: 8px;
+  height: 52px;
+  border-radius: 26px;
+  background: color-mix(in oklch, var(--color-background-100) 72%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--tg-solid) 42%, transparent);
+}
+/* The chat's place hinted while a floating answer is carried toward it: a rail at the desk's trailing edge, brighter as
+   it comes nearer (answer-motion.ts). */
+.desk-answer-hint {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: calc(var(--desk-answer-z, 55) - 1);
+  width: 5px;
+  border-radius: 3px;
+  background: color-mix(in oklch, var(--tg-solid) 78%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--color-background-100) 55%, transparent),
+    0 0 14px 2px color-mix(in oklch, var(--tg-solid) 40%, transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+/* In the chat's place: the desk's whole height at its trailing side, resized only from its leading edge. */
+.desk-answer[data-zone="chat"] .desk-answer-edge:not([data-edge="w"]) {
+  display: none;
+}
+.desk-answer[data-zone="chat"] .desk-answer-edge[data-edge="w"] {
+  top: 0;
+  bottom: 0;
+}
+/* Floating, the message field is the card's, at its foot: the pill's own row on the pill's glass (DeskBar moves it here;
+   the pill stays in the nub). Read off the content (answer-motion.ts sets its mode and zone once the still copy of how it
+   was is taken, so the copy keeps its own layout as it fades). */
+.desk-answer-foot {
+  position: relative;
+  display: none;
+  flex: none;
+  padding: 0 8px 8px;
+}
+.desk-answer-content[data-mode="detached"] .desk-answer-foot {
+  display: flex;
+}
+/* Floating, the card is only so tall (FLOAT_MIN.h at the least): in it the field grows only so far, and the files
+   staged in it take only so many rows (scrolling past that), so the row — its send button — stays whole in the card
+   (2026-10-10: a long draft with files staged grew the foot past the card's). Shares of the card: its content is a size
+   container while it floats, its height the card's then. */
+.desk-answer-content[data-mode="detached"] {
+  container-type: size;
+}
+.desk-answer-foot .desk-bar-field textarea {
+  max-height: max(66px, 40cqh);
+}
+.desk-answer-foot .desk-bar-staged {
+  max-height: max(36px, 20cqh);
+  overflow-y: auto;
+}
+/* In the chat's place — the desk's whole height, the nub a hole in its foot corner — the field lies beside the nub at
+   rest with the foot's own gap between them (2026-10-09, the user's call): the resting nub's circle reaches 38px from
+   the corner (NUB_IDLE, geometry.ts: sink 20 + radius 18), and the foot's padding is 8px — 46px. Swelled under the
+   pointer the circle reaches 49px, and the hole it cuts takes the field's last pixels with it, as it takes a window's.
+   (Until then 54px, the pill's own inset — 46px in from the lane, itself DESK_GAP in from the desk's edge — which kept
+   the swelled nub clear and left 16px beside the resting one.) */
+.desk-answer-content[data-zone="chat"] .desk-answer-foot {
+  padding-right: 46px;
+}
+.desk-answer-field .desk-bar-frame {
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    inset 0 1px 0 var(--desk-glass-edge),
+    0 8px 20px -12px oklch(0 0 0 / 0.28);
+}
+.desk-answer:not([data-shown]) .desk-answer-field {
+  pointer-events: none;
+}
+/* The message field's own box, in the pill or in the card. */
+.desk-bar-composer {
+  display: flex;
+  min-width: 0;
+  width: 100%;
+  flex-direction: column;
+}
+/* No conversation yet: a floating card (or the chat's place) stays, saying where it will show. */
+.desk-answer-empty {
+  margin: auto;
+  padding: 24px 20px;
+  color: var(--color-gray-700);
+  font-size: 12.5px;
+  line-height: 18px;
+  text-align: center;
 }
 /* The Bar's button while the answer floats: a dot that says it is out on the desk. */
 .desk-bar-button[data-floating] {
@@ -6243,6 +6603,8 @@ body[data-chrome-view="shelf"] {
   .desk-answer-vis,
   .desk-answer-grab,
   .desk-answer-ghost,
+  .desk-answer-zone,
+  .desk-answer-zone-chat,
   .desk-answer-flash,
   .desk-bar-floating-dot,
   .desk-conversations {
@@ -7039,6 +7401,20 @@ body[data-chrome-view="shelf"] {
   display: flex;
   min-width: 0;
   flex: 1;
+}
+/* The field never shows a scrollbar — a message taller than it may grow still scrolls — and its placeholder keeps to
+   its one line where the field is narrow (a floating card): wrapped, it made the field overflow. Cut short there, it
+   fades out at the field's end (a textarea's placeholder takes no ellipsis). */
+.desk-bar-field textarea {
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.desk-bar-field textarea::placeholder {
+  white-space: nowrap;
+}
+.desk-bar-field textarea:placeholder-shown {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
 .desk-bar-mirror {
   position: absolute;

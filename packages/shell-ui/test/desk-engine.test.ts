@@ -23,12 +23,15 @@ import type { DragSample } from "@pistachio/shell-contracts/chrome";
 import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { CHROME_INSETS, DeskEngine, takesOnInPlace, type DeskHost } from "../src/components/desk/desk-engine";
+import { CHROME_INSETS, DeskEngine, takesOnInPlace, type DeskHost, MASK_INSETS } from "../src/components/desk/desk-engine";
 import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, rescaleRect, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
-/** The frame these were written for: the Title bar (its insets; a window held by its title bar). */
-const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const };
+/**
+ * The frame these were written for: the Title bar (its insets; a window held by its title bar). And every page at its
+ * own size, as they were written for too (Page zoom's Fit: desk-page-zoom.test.ts).
+ */
+const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const, zoom: "actual" as const };
 
 let frames: Array<(now: number) => void> = [];
 let clock = 0;
@@ -81,7 +84,7 @@ function native(options: { stills?: boolean } = {}) {
 const SIDEBAR: Rect = { x: -48, y: 0, w: 48, h: 1000 };
 
 /** A desk whose pages are all shell-drawn (no live views), over a 1600×1000 stage. */
-function engine(host: Partial<DeskHost> = {}): DeskEngine {
+function engine(host: Partial<DeskHost> = {}, stage = { left: 0, top: 0, width: 1600, height: 1000 }): DeskEngine {
   const created = new DeskEngine({
     variants: () => BAR_VARIANTS,
     hasLivePage: () => false,
@@ -95,7 +98,8 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
     homeOf: () => null,
     ...host,
   });
-  created.attachStage({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 1600, height: 1000 }) } as unknown as HTMLElement);
+  // (`stage` is read at every measure: a test resizes the desk by changing it, then desk.measure().)
+  created.attachStage({ getBoundingClientRect: () => stage } as unknown as HTMLElement);
   return created;
 }
 
@@ -132,6 +136,548 @@ describe("the desk's first layout", () => {
     const desk = engine();
     desk.start([], "tab-0", tabIds(2));
     expect(layouts[0]).toEqual({ views: [], stacked: true });
+    desk.destroy();
+  });
+});
+
+describe("room kept for the chat's place", () => {
+  it("gives a window its own box back exactly once the room goes, even one the room squeezed to its least width", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, { x: 0, y: 0, w: 1600, h: 1000 }) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(win), own, 1);
+    // The chat's place takes 1000px: the desk left is 600 wide, and the window, scaled with it, stops at its least width.
+    desk.setReserve(1000);
+    settle();
+    const squeezed = rectOf(win);
+    expect(squeezed.w).toBe(300);
+    expect(squeezed.x + squeezed.w).toBeLessThanOrEqual(600);
+    // The room gone, it is where and as it was — not its least width scaled back up (505px, until 2026-10-10).
+    desk.setReserve(0);
+    settle();
+    expectRect(rectOf(win), own, 1);
+    desk.destroy();
+  });
+
+  it("reads a window moved while the room was kept off where it now stands, not off its old box", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    desk.start([{ tabId: "tab-0", rect: normalizeRect({ x: 100, y: 100, w: 320, h: 400 }, { x: 0, y: 0, w: 1600, h: 1000 }) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    desk.setReserve(400);
+    settle();
+    // Tiled while the room was kept (one window: the whole desk short of the room).
+    desk.arrange("tile", ["tab-0"]);
+    settle();
+    const filled = rectOf(win);
+    expect(filled.x + filled.w).toBeLessThanOrEqual(1200 + 1);
+    desk.setReserve(0);
+    settle();
+    // Back to the whole desk at the same share — not to the small box it had before the room was kept.
+    const whole = rectOf(win);
+    expect(whole.w).toBeGreaterThan(1500);
+    desk.destroy();
+  });
+
+  it("gives a minimized window the box it grows back to exactly once the room goes", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    // Minimized and out on the desk (off the shelf), with its own box to grow back to.
+    desk.start([{ tabId: "tab-0", rect: normalizeRect({ x: 600, y: 600, w: 160, h: 100 }, whole), mini: { restore: normalizeRect(own, whole), parked: false } }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    // The chat's place takes 960px and goes again: the box it grows back to is its own — not its least width scaled
+    // back up (750px, until 2026-10-10).
+    desk.setReserve(960);
+    settle();
+    desk.setReserve(0);
+    settle();
+    desk.expand("tab-0");
+    settle();
+    expectRect(rectOf(win), own, 1);
+    desk.destroy();
+  });
+
+  it("restores saved windows against the desk short of the room, when the room is kept before they come back", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const parked = element();
+    // Saved with the chat's place taking 488px: the desk was 1112 wide, a window half of it, a parked one to grow back to the other half.
+    const usable: Rect = { x: 0, y: 0, w: 1112, h: 1000 };
+    const half: Rect = { x: 0, y: 0, w: 552, h: 1000 };
+    const other: Rect = { x: 560, y: 0, w: 552, h: 1000 };
+    desk.setReserve(488);
+    desk.start(
+      [
+        { tabId: "tab-0", rect: normalizeRect(half, usable) },
+        { tabId: "tab-1", rect: normalizeRect(other, usable), mini: { restore: normalizeRect(other, usable), parked: true } },
+      ],
+      "tab-0",
+      tabIds(2),
+      null,
+      null,
+      488,
+    );
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    desk.attachWindow("tab-1", parked as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(win), half, 1);
+    desk.expand("tab-1");
+    settle();
+    expectRect(rectOf(parked), other, 1);
+    desk.destroy();
+  });
+
+  it("gives a window its own box back after a relaunch with the room kept: the box with no room is saved with the desk", () => {
+    native();
+    const saves: SavedDeskWindow[][] = [];
+    const desk = engine({ save: (windows) => saves.push(windows) });
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    // The chat's place takes 488px: the window, scaled with what is left, stops at its least width; the desk is saved so.
+    desk.setReserve(488);
+    settle();
+    expect(rectOf(win).w).toBe(300);
+    const saved = saves.at(-1)!;
+    expect(saved[0]!.own).toBeDefined();
+    desk.destroy();
+    // The browser opened again, the chat still in its place: the room kept first, the desk restored, the room gone.
+    const again = engine();
+    const back = element();
+    again.setReserve(488);
+    again.start(saved, "tab-0", tabIds(1), null, null, 488);
+    again.attachWindow("tab-0", back as unknown as HTMLElement);
+    settle();
+    expect(rectOf(back).w).toBe(300);
+    again.setReserve(0);
+    settle();
+    // (434px until 2026-10-10: its least width, scaled back up.)
+    expectRect(rectOf(back), own, 1);
+    again.destroy();
+  });
+
+  it("gives a space saved with the room kept its windows' own boxes when it comes back with no room kept", () => {
+    native();
+    const saves: SavedDeskWindow[][] = [];
+    const desk = engine({ save: (windows) => saves.push(windows) });
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    desk.setReserve(488);
+    settle();
+    const saved = saves.at(-1)!;
+    desk.destroy();
+    // The chat docked on another space since: the desk comes back whole, and the window as it was with no room kept
+    // (432px wide until 2026-10-10: the box the room left it, read as the whole desk's).
+    const again = engine();
+    const back = element();
+    again.start(saved, "tab-0", tabIds(1), null, null, 488);
+    again.attachWindow("tab-0", back as unknown as HTMLElement);
+    settle();
+    expectRect(rectOf(back), own, 1);
+    again.destroy();
+  });
+
+  it("shrinks a masked window too wide for what is left of the desk as a whole, its shape kept, and gives its size back once the room goes", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const mask = { x: 0, y: 0, width: 1000, height: 600, pageWidth: 1200, pageHeight: 2000 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect({ x: 100, y: 100, w: 1000, h: 618 }, whole), mask }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const size = rectOf(win);
+    const shape = (size.h - MASK_INSETS.top) / size.w;
+    // The chat's place takes 968px: 632 are left, and the picture is shrunk whole into them (2026-10-10: its width
+    // alone was cut, to 632×618).
+    desk.setReserve(968);
+    settle();
+    const fitted = rectOf(win);
+    expect(fitted.w).toBeLessThanOrEqual(632 + 1);
+    expect(fitted.h).toBeLessThan(size.h);
+    expect(Math.abs((fitted.h - MASK_INSETS.top) / fitted.w - shape)).toBeLessThan(0.01);
+    desk.setReserve(0);
+    settle();
+    expect(Math.abs(rectOf(win).w - size.w)).toBeLessThanOrEqual(1);
+    expect(Math.abs(rectOf(win).h - size.h)).toBeLessThanOrEqual(1);
+    desk.destroy();
+  });
+
+  it("gives a window minimized while the room was kept its own box back when it grows back with the room gone", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    desk.setReserve(488);
+    settle();
+    expect(rectOf(win).w).toBe(300);
+    desk.minimize("tab-0");
+    settle();
+    desk.setReserve(0);
+    settle();
+    desk.expand("tab-0");
+    settle();
+    // (434px until 2026-10-10: the box the room had left it, scaled back up.)
+    expectRect(rectOf(win), own, 1);
+    // And minimized again with no room kept, then the room kept and gone while it is parked: its own box still.
+    desk.minimize("tab-0");
+    settle();
+    desk.setReserve(488);
+    settle();
+    desk.setReserve(0);
+    settle();
+    desk.expand("tab-0");
+    settle();
+    expectRect(rectOf(win), own, 1);
+    desk.destroy();
+  });
+
+  it("saves a picture's size as it is after a desk resize with the room kept, so a relaunch gives it back", () => {
+    native();
+    const saves: SavedDeskWindow[][] = [];
+    const stage = { left: 0, top: 0, width: 1600, height: 1000 };
+    const desk = engine({ save: (windows) => saves.push(windows) }, stage);
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect({ x: 600, y: 600, w: 160, h: 100 }, whole), mini: { restore: normalizeRect({ x: 100, y: 100, w: 320, h: 400 }, whole), parked: false } }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const size = rectOf(win);
+    desk.setReserve(488);
+    settle();
+    // The desk narrower while the room is kept, then the chat's place resized: the desk is saved.
+    stage.width = 1200;
+    desk.measure();
+    settle();
+    desk.setReserve(500);
+    settle();
+    const saved = saves.at(-1)!;
+    desk.destroy();
+    // Opened again on the narrower desk, the chat in its place, then the room gone: the picture at its size.
+    const again = engine({}, { left: 0, top: 0, width: 1200, height: 1000 });
+    const back = element();
+    again.setReserve(500);
+    again.start(saved, "tab-0", tabIds(1), null, null, 500);
+    again.attachWindow("tab-0", back as unknown as HTMLElement);
+    settle();
+    again.setReserve(0);
+    settle();
+    // (Three quarters as wide until 2026-10-10: its size saved as a share of the desk it was first kept on.)
+    expect(Math.abs(rectOf(back).w - size.w)).toBeLessThanOrEqual(1);
+    expect(Math.abs(rectOf(back).h - size.h)).toBeLessThanOrEqual(1);
+    again.destroy();
+  });
+
+  it("reads a desk saved with no room kept as the whole desk's, however much room is kept as it comes back", () => {
+    native();
+    const saves: Array<{ windows: SavedDeskWindow[]; reserve: number }> = [];
+    const desk = engine({ save: (windows, reserve) => saves.push({ windows, reserve }) });
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    desk.setReserve(488);
+    settle();
+    // The chat closed with its ×: the windows have the desk back, and it is saved so — the chat's spot still at the side.
+    desk.setReserve(0);
+    settle();
+    const saved = saves.at(-1)!;
+    expect(saved.reserve).toBe(0);
+    expect(saved.windows[0]!.own).toBeUndefined();
+    desk.destroy();
+    // Opened again, the chat comes up in its place and asks for its room first: the desk saved with none is read as
+    // the whole desk's and given the room (2026-10-10: read against the desk short of the room, then squeezed, the
+    // window came back 434px wide once the chat docked).
+    const again = engine();
+    const back = element();
+    again.setReserve(488);
+    again.start(saved.windows, "tab-0", tabIds(1), null, null, saved.reserve);
+    again.attachWindow("tab-0", back as unknown as HTMLElement);
+    settle();
+    expect(rectOf(back).w).toBe(300);
+    again.setReserve(0);
+    settle();
+    expectRect(rectOf(back), own, 1);
+    again.destroy();
+  });
+
+  it("gives a window filled and let go of the desk while the room was kept its own box back once the room goes", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    // Filled before the room is kept, let go of the desk while it is, the room gone after: its own box (434px until 2026-10-10).
+    desk.toggleMaximize("tab-0");
+    settle();
+    desk.setReserve(488);
+    settle();
+    desk.toggleMaximize("tab-0");
+    settle();
+    expect(rectOf(win).w).toBe(300);
+    desk.setReserve(0);
+    settle();
+    expectRect(rectOf(win), own, 1);
+    // And filled and let go while the room is kept.
+    desk.setReserve(488);
+    settle();
+    desk.toggleMaximize("tab-0");
+    settle();
+    desk.toggleMaximize("tab-0");
+    settle();
+    desk.setReserve(0);
+    settle();
+    expectRect(rectOf(win), own, 1);
+    desk.destroy();
+  });
+
+  it("keeps a window's own box through a desk resize while it is still on its way in with the room kept", () => {
+    native();
+    const stage = { left: 0, top: 0, width: 1600, height: 1000 };
+    const desk = engine({}, stage);
+    desk.start([], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", element() as unknown as HTMLElement);
+    settle();
+    desk.setReserve(488);
+    settle();
+    // The desk passes to a space whose window was saved with no room kept, 320 wide: it lands squeezed to its least width.
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [{ tabId: "b-0", rect: normalizeRect({ x: 100, y: 100, w: 320, h: 400 }, whole) }], reserve: 0, entry: "b-0" });
+    const incoming = element();
+    desk.attachWindow("b-0", incoming as unknown as HTMLElement);
+    run(1);
+    // The desk narrower while it is on its way; then the room goes: its own box, scaled with the desk and no narrower
+    // than a window may be — 300 (483 until 2026-10-10: the resize mid-flight was taken for a hand moving it).
+    stage.width = 1300;
+    desk.measure();
+    settle();
+    desk.setReserve(0);
+    settle();
+    expect(rectOf(incoming).w).toBe(300);
+    desk.destroy();
+  });
+
+  it("puts a layout back into the desk short of the room kept since, and gives the room back exactly", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    // The agent fills the desk with it; then the chat takes its place at the side; then Undo layout.
+    const undo = desk.applyLayout(new Map([["tab-0", { ...whole }]]))!;
+    settle();
+    desk.setReserve(488);
+    settle();
+    desk.restoreLayout(undo);
+    settle();
+    // Back where it was, in the desk short of the room — not under the chat (2026-10-10) — at its least width there.
+    const back = rectOf(win);
+    expect(back.x + back.w).toBeLessThanOrEqual(1112 + 1);
+    expect(back.w).toBe(300);
+    desk.setReserve(0);
+    settle();
+    expectRect(rectOf(win), own, 1);
+    desk.destroy();
+  });
+
+  it("puts a layout taken with the room kept back with each window's own box, so the room gone gives it back exactly", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    // The chat in its place first (the window at its least width); then the agent fills the desk; then Undo layout.
+    desk.setReserve(488);
+    settle();
+    expect(rectOf(win).w).toBe(300);
+    const undo = desk.applyLayout(new Map([["tab-0", { x: 0, y: 0, w: 1112, h: 1000 }]]))!;
+    settle();
+    desk.restoreLayout(undo);
+    settle();
+    expect(rectOf(win).w).toBe(300);
+    // The room gone: its own box (434px until 2026-10-10: read back off its least width).
+    desk.setReserve(0);
+    settle();
+    expectRect(rectOf(win), own, 1);
+    desk.destroy();
+  });
+
+  it("puts a layout taken with the room kept back at each window's own box once the room is gone", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const own: Rect = { x: 100, y: 100, w: 320, h: 400 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect(own, whole) }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    // The chat in its place (the window at its least width); the agent fills the desk; the chat docked; then Undo layout.
+    desk.setReserve(488);
+    settle();
+    const undo = desk.applyLayout(new Map([["tab-0", { x: 0, y: 0, w: 1112, h: 1000 }]]))!;
+    settle();
+    desk.setReserve(0);
+    settle();
+    desk.restoreLayout(undo);
+    settle();
+    // (434px until 2026-10-10: its least width then, scaled up to the whole desk.)
+    expectRect(rectOf(win), own, 1);
+    desk.destroy();
+  });
+
+  it("puts a masked window back whole, its shape kept, into the desk short of the room kept since", () => {
+    native();
+    const desk = engine();
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const mask = { x: 0, y: 0, width: 1000, height: 600, pageWidth: 1200, pageHeight: 2000 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect({ x: 100, y: 100, w: 1000, h: 618 }, whole), mask }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const size = rectOf(win);
+    const shape = (size.h - MASK_INSETS.top) / size.w;
+    const undo = desk.layoutSnapshot();
+    // The chat takes 968px: 632 are left. Put back there, the picture is shrunk whole (2026-10-10: its width alone was cut).
+    desk.setReserve(968);
+    settle();
+    desk.restoreLayout(undo);
+    settle();
+    const fitted = rectOf(win);
+    expect(fitted.w).toBeLessThanOrEqual(632 + 1);
+    expect(Math.abs((fitted.h - MASK_INSETS.top) / fitted.w - shape)).toBeLessThan(0.01);
+    desk.setReserve(0);
+    settle();
+    expect(Math.abs(rectOf(win).w - size.w)).toBeLessThanOrEqual(1);
+    expect(Math.abs(rectOf(win).h - size.h)).toBeLessThanOrEqual(1);
+    desk.destroy();
+  });
+
+  it("gives a masked window saved with the room kept its shape on a desk of another shape, with the room and without", () => {
+    native();
+    const saves: Array<{ windows: SavedDeskWindow[]; reserve: number }> = [];
+    const desk = engine({ save: (windows, reserve) => saves.push({ windows, reserve }) });
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    const mask = { x: 0, y: 0, width: 800, height: 480, pageWidth: 1200, pageHeight: 2000 };
+    desk.start([{ tabId: "tab-0", rect: normalizeRect({ x: 100, y: 100, w: 800, h: 498 }, whole), mask }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    const size = rectOf(win);
+    const shape = (size.h - MASK_INSETS.top) / size.w;
+    desk.setReserve(488);
+    settle();
+    const saved = saves.at(-1)!;
+    desk.destroy();
+    // Opened again on a desk 1200 wide (not 1600) and as tall: the picture is narrower in proportion, and its shape is
+    // its region's (2026-10-10: 600×498, its height scaled on its own).
+    const again = engine({}, { left: 0, top: 0, width: 1200, height: 1000 });
+    const back = element();
+    again.setReserve(488);
+    again.start(saved.windows, "tab-0", tabIds(1), null, null, saved.reserve);
+    again.attachWindow("tab-0", back as unknown as HTMLElement);
+    settle();
+    expect(Math.abs((rectOf(back).h - MASK_INSETS.top) / rectOf(back).w - shape)).toBeLessThan(0.01);
+    again.setReserve(0);
+    settle();
+    const free = rectOf(back);
+    expect(Math.abs(free.w - 600)).toBeLessThanOrEqual(1);
+    expect(Math.abs((free.h - MASK_INSETS.top) / free.w - shape)).toBeLessThan(0.01);
+    again.destroy();
+  });
+
+  it("keeps a picture's size when the desk is resized while the room is kept, and when the room goes", () => {
+    native();
+    const stage = { left: 0, top: 0, width: 1600, height: 1000 };
+    const desk = engine({}, stage);
+    const win = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    // Minimized and out on the desk: a picture of its page, 160×100.
+    desk.start([{ tabId: "tab-0", rect: normalizeRect({ x: 600, y: 600, w: 160, h: 100 }, whole), mini: { restore: normalizeRect({ x: 100, y: 100, w: 320, h: 400 }, whole), parked: false } }], "tab-0", tabIds(1));
+    desk.attachWindow("tab-0", win as unknown as HTMLElement);
+    settle();
+    // (Its size out on the desk is the engine's to say — the one it keeps from here on.)
+    const size = rectOf(win);
+    desk.setReserve(488);
+    settle();
+    expect(rectOf(win).w).toBe(size.w);
+    // The desk narrower by 400px while the room is kept: a picture keeps its size through that too.
+    stage.width = 1200;
+    desk.measure();
+    settle();
+    expect(rectOf(win).w).toBe(size.w);
+    expect(rectOf(win).h).toBe(size.h);
+    // And once the room goes (2026-10-10: it came back three quarters as wide, its size read as a share of the desk it
+    // was first kept on).
+    desk.setReserve(0);
+    settle();
+    expect(rectOf(win).w).toBe(size.w);
+    expect(rectOf(win).h).toBe(size.h);
+    desk.destroy();
+  });
+
+  it("gives a parked window the box it grows back to in the desk short of the room, not its old box over the windows that gave way", () => {
+    native();
+    const desk = engine();
+    const left = element();
+    const parked = element();
+    const whole: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    // Two halves; the right one parked before the chat's place is taken.
+    desk.start(
+      [
+        { tabId: "tab-0", rect: normalizeRect({ x: 0, y: 0, w: 796, h: 1000 }, whole) },
+        { tabId: "tab-1", rect: normalizeRect({ x: 804, y: 0, w: 796, h: 1000 }, whole), mini: { restore: normalizeRect({ x: 804, y: 0, w: 796, h: 1000 }, whole), parked: true } },
+      ],
+      "tab-0",
+      tabIds(2),
+    );
+    desk.attachWindow("tab-0", left as unknown as HTMLElement);
+    desk.attachWindow("tab-1", parked as unknown as HTMLElement);
+    settle();
+    desk.setReserve(488);
+    settle();
+    const half = rectOf(left);
+    expect(half.x + half.w).toBeLessThan(600);
+    // Grown back, it is the right half of what is left of the desk — beside the left one, short of the room
+    // (2026-10-10: its old half, 796 wide, over the left one).
+    desk.expand("tab-1");
+    settle();
+    const grown = rectOf(parked);
+    expect(grown.x).toBeGreaterThanOrEqual(half.x + half.w);
+    expect(grown.x + grown.w).toBeLessThanOrEqual(1112 + 1);
+    expect(grown.w).toBeLessThan(600);
     desk.destroy();
   });
 });

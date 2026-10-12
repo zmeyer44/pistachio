@@ -133,6 +133,7 @@ import {
 import { welcomeDocumentHtml, welcomeTabFor, type WelcomePageContext } from "@pistachio/shell-contracts/welcome-pages";
 import { HOME_PAGE_FAVICON, HOME_PAGE_TITLE, HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
 import { BRIEF_PAGE_FAVICON, isShellPageUrl, shellPageOf, shellPagePlaceholderHtml, type ShellPage } from "@pistachio/shell-contracts/shell-pages";
+import { TERMINAL_PAGE_FAVICON, TERMINAL_PAGE_TITLE, terminalUrl, terminalUrlId } from "@pistachio/shell-contracts/terminal";
 import { BRIEF_PAGE_TITLE, briefUrl, briefUrlDate } from "@pistachio/shell-contracts/reports";
 import {
   isNoteBlobId,
@@ -4203,12 +4204,15 @@ const SHELL_PAGE_TITLES: Record<ShellPage, string> = {
   home: HOME_PAGE_TITLE,
   brief: BRIEF_PAGE_TITLE,
   notes: NOTES_PAGE_TITLE,
+  // (A terminal is a Mac's: on the web its tab is only its name, docs/terminal.md §6.)
+  terminal: TERMINAL_PAGE_TITLE,
 };
 
 const SHELL_PAGE_FAVICONS: Record<ShellPage, string> = {
   home: HOME_PAGE_FAVICON,
   brief: BRIEF_PAGE_FAVICON,
   notes: NOTES_PAGE_FAVICON,
+  terminal: TERMINAL_PAGE_FAVICON,
 };
 
 /**
@@ -4222,6 +4226,7 @@ function shellPageAddress(url: string): string | null {
   if (page === null) return null;
   if (page === "home") return HOME_PAGE_URL;
   if (page === "notes") return noteUrl(notesUrlId(url));
+  if (page === "terminal") return terminalUrl(terminalUrlId(url) ?? "");
   return briefUrl(briefUrlDate(url.trim()));
 }
 
@@ -4449,6 +4454,18 @@ function mediaControlScript(control: MediaControl): string {
       case "mute":
         media.muted = !media.muted;
         return true;
+      case "setVolume": {
+        const volume = Math.min(1, Math.max(0, control.volume));
+        if (volume === 0 && typeof control.restore === "number" && control.restore > 0) {
+          // All the way down: muted, as its own mute would be, at the level Unmute brings back.
+          media.volume = Math.min(1, control.restore);
+          media.muted = true;
+        } else {
+          media.volume = volume;
+          if (volume > 0 && media.muted) media.muted = false;
+        }
+        return true;
+      }
       case "seek":
         media.currentTime = control.position;
         return true;

@@ -240,6 +240,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     // ── 3b. Its own volume: the slider beside the speaker, out while the pointer is on it, sets the page's player
     //        alone; all the way down it is silent, and Unmute brings it back where it was ─
     const elementVolume = (): Promise<number> => videoPage.locator("#test-video").evaluate((element) => (element as HTMLVideoElement).volume);
+    const elementMuted = (): Promise<boolean> => videoPage.locator("#test-video").evaluate((element) => (element as HTMLVideoElement).muted);
     const slider = face.getByTestId("desk-pip-volume");
     await faceView.hover();
     await face.getByTestId("desk-pip-mute").hover();
@@ -250,11 +251,15 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(async () => (await mediaOf(shell, video))?.volume ?? 1).toBeCloseTo(0.4, 2);
     await slider.blur();
     await slider.fill("0");
-    await expect.poll(elementVolume).toBe(0);
+    // Silent as the page's own mute is: its player muted, its level kept for Unmute wherever that is pressed.
+    await expect.poll(elementMuted).toBe(true);
+    expect(await elementVolume()).toBeCloseTo(0.4, 2);
     await expect.poll(async () => (await mediaOf(shell, video))?.muted ?? false).toBe(true);
     await face.getByTestId("desk-pip-mute").click();
     await expect.poll(elementVolume).toBeCloseTo(0.4, 2);
     await expect.poll(async () => (await mediaOf(shell, video))?.muted ?? true).toBe(false);
+    // The slider shows it too, though it was moved last and still has the keyboard.
+    await expect(slider).toHaveValue("0.4");
     await face.mouse.move(2, 2);
 
     // ── 4. Moved: a press on the picture, held and dragged, and it stays where it is let go ─
@@ -382,10 +387,41 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(async () => (await mediaOf(shell, audio))?.muted ?? true).toBe(false);
     await card.getByTestId("media-rate-trigger").click();
     await expect(ratePopup).toHaveCount(0);
+    // Its own volume, set apart from the floating video's (0.4, above): each player is turned up or down alone.
+    const audioVolume = (): Promise<number> => audioPage.locator("#test-audio").evaluate((element) => (element as HTMLAudioElement).volume);
+    await card.getByTestId(`media-volume-${audio}`).click();
+    const volumePopup = shell.getByTestId("media-volume-card");
+    await expect(volumePopup).toBeVisible();
+    await volumePopup.hover();
+    await volumePopup.getByRole("slider").fill("0.25");
+    await expect.poll(audioVolume).toBeCloseTo(0.25, 2);
+    await expect.poll(async () => (await mediaOf(shell, audio))?.volume ?? 1).toBeCloseTo(0.25, 2);
+    expect(await elementVolume()).toBeCloseTo(0.4, 2);
+    await expect(card).toHaveCount(1);
+    await capture(app, shell, "05a-audio-volume.png");
+    // Then all the way down: muted.
+    await volumePopup.getByRole("button", { name: "Mute", exact: true }).focus();
+    await volumePopup.getByRole("slider").fill("0");
+    await expect.poll(async () => (await mediaOf(shell, audio))?.muted ?? false).toBe(true);
+    expect(await audioVolume()).toBeCloseTo(0.25, 2);
+    await shell.keyboard.press("Escape");
+    await expect(volumePopup).toHaveCount(0);
     await railButton.hover();
     await railButton.click();
     await expect.poll(async () => (await mediaOf(shell, audio))?.playing ?? true).toBe(false);
     await expect(railButton).not.toHaveAttribute("data-playing");
+    await shell.mouse.move(900, 450);
+    await expect(card).toHaveCount(0);
+    // The card gone and back, Unmute still brings it back to where it was turned down from.
+    await railButton.hover();
+    await expect(card).toHaveAttribute("data-shown", "");
+    await card.getByTestId(`media-volume-${audio}`).click();
+    await expect(volumePopup).toBeVisible();
+    await volumePopup.hover();
+    await volumePopup.getByTestId(`media-mute-${audio}`).click();
+    await expect.poll(audioVolume).toBeCloseTo(0.25, 2);
+    await shell.keyboard.press("Escape");
+    await expect(volumePopup).toHaveCount(0);
     await shell.mouse.move(900, 450);
     await expect(card).toHaveCount(0);
 
@@ -399,6 +435,19 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(async () => near(await viewAt(app, "?video"), await box(shell, `[data-testid="media-video-${video}"]`), 3)).toBe(true);
     await expect.poll(() => viewAt(app, CHROME_VIEW_HASHES.pip)).toBe(null);
     await capture(app, shell, "06-whole-sidebar-card.png");
+    // Its volume from the card: 60%, then all the way down.
+    const cardVolume = shell.getByTestId(`media-volume-${video}`);
+    await videoCard.hover();
+    await cardVolume.click();
+    await expect(volumePopup).toBeVisible();
+    await volumePopup.hover();
+    await volumePopup.getByRole("slider").fill("0.6");
+    await expect.poll(elementVolume).toBeCloseTo(0.6, 2);
+    await volumePopup.getByRole("button", { name: "Mute", exact: true }).focus();
+    await volumePopup.getByRole("slider").fill("0");
+    await expect.poll(async () => (await mediaOf(shell, video))?.muted ?? false).toBe(true);
+    await shell.keyboard.press("Escape");
+    await expect(volumePopup).toHaveCount(0);
 
     // ── 8. Back to the rail, and back to the desk from the player: its window comes out again ─
     await shell.getByTestId("desk-rail-toggle").click();
@@ -406,6 +455,10 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect(pip).toHaveCount(1);
     const face2 = await pipPage(app);
     await face2.getByTestId("desk-pip-view").hover();
+    // Unmuted there, it is heard at the card's 60%: another renderer's control, the same player.
+    await face2.getByTestId("desk-pip-mute").click();
+    await expect.poll(elementMuted).toBe(false);
+    expect(await elementVolume()).toBeCloseTo(0.6, 2);
     await face2.getByTestId("desk-pip-return").click();
     await expect(windowOf(video)).toHaveCount(1);
     await expect(pip).toHaveCount(0);

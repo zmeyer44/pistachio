@@ -17,6 +17,12 @@ extraResources:
     filter:
       - "icon*.png"
 asar: true
+# node-pty (the terminals' shells, docs/terminal.md): its native module loads
+# from a real file, and its spawn-helper is executed — neither can be inside
+# the archive. Its prebuilt binary is Node-API, so it needs no rebuild for
+# Electron (npmRebuild stays off).
+asarUnpack:
+  - "**/node_modules/node-pty/**"
 npmRebuild: false
 mac:
   category: public.app-category.productivity

@@ -77,7 +77,11 @@ export interface LaunchOptions {
    * is loaded again — a second cold start, the path a reload takes anyway
    * (docs/spaces.md §2). (Seeding it before the launch would need main to hand
    * the shell a seed; there is no such hook yet.) Settings a spec seeds win
-   * over nothing here: the Feel is not a setting.
+   * over nothing here: the Feel is not a setting. A spec whose pages
+   * Playwright clicks (`locator.click` in a page) while they share the desk
+   * wants `{ zoom: "actual" }`: Page zoom's Fit, the default, zooms such a
+   * page out by device emulation, and Playwright's click geometry then misses
+   * ("<html> intercepts pointer events"), though a person's press is mapped.
    */
   deskFeel?: DeskFeelSeed;
 }
@@ -90,6 +94,7 @@ export interface DeskFeelSeed {
   chrome?: "bar" | "tab" | "bare" | "drawer";
   grab?: "shift" | "alt" | "meta" | "off";
   layout?: "smart" | "hand";
+  zoom?: "actual" | "slight" | "fit" | "strong" | "strongest";
   deceleration?: number;
 }
 

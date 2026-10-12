@@ -223,8 +223,8 @@ export default function DeskSurface() {
       editAddress: (tabId) => {
         if (isTabWindow(tabId)) useAppStore.getState().openUrlBar(tabId);
       },
-      save: (windows) => {
-        if (shownGroup.current !== null) useDeskStore.getState().save(shownGroup.current, { windows });
+      save: (windows, reserve) => {
+        if (shownGroup.current !== null) useDeskStore.getState().save(shownGroup.current, reserve > 0 ? { windows, reserve } : { windows });
       },
       moveTabToGroup: (tabId, groupId, next) => {
         void (async () => {
@@ -259,7 +259,10 @@ export default function DeskSurface() {
     const entry = active !== null && ids.includes(active) ? active : null;
     // Its documents, once main has said what the context holds (until then the saved ones come out, and go if they are gone).
     const documents = latest.current.contextsLoaded ? documentWindowIds(latest.current.contexts.find((candidate) => candidate.groupId === startGroup)) : null;
-    created.start(useDeskStore.getState().saved[startGroup]?.windows ?? [], entry, ids, documents, startGroup);
+    // (Saved with room kept for the chat's place, its boxes are of the desk short of it; the card, once up, asks for
+    // the room kept now — DeskBar — and the engine gives it then.)
+    const startDesk = useDeskStore.getState().saved[startGroup];
+    created.start(startDesk?.windows ?? [], entry, ids, documents, startGroup, startDesk?.reserve ?? 0);
     setEngine(created);
 
     const measure = (): void => {
@@ -341,9 +344,10 @@ export default function DeskSurface() {
       return;
     }
     const saved = desk.saved[groupId]?.windows ?? [];
+    const reserve = desk.saved[groupId]?.reserve ?? 0;
     const entry = chosen ?? passedEntry(saved, latest.current.tabs);
     // A tab chosen (not the space: selectSpace marks that) comes out whole, minimized or not (2026-10-09).
-    engine.switchGroup({ from: from ?? groupId, groupId, tabIds: groupTabIds, shellIds, saved, entry, reveal: revealFor(chosen, spaceChosen) });
+    engine.switchGroup({ from: from ?? groupId, groupId, tabIds: groupTabIds, shellIds, saved, reserve, entry, reveal: revealFor(chosen, spaceChosen) });
     shownGroup.current = groupId;
   }, [engine, groupId, groupKnown]);
 

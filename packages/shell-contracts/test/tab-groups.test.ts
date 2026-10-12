@@ -323,6 +323,12 @@ describe("group helpers", () => {
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: [], anchored: true })).toBe(false);
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: [], loose: false, anchored: false })).toBe(true);
     expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: Array.from({ length: 201 }, (_, i) => `t${String(i)}`) })).toBe(false);
+    // A space opened at an address (⌘⇧L): what was typed, for a space of no tabs yet.
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: [], url: "weather in lisbon" })).toBe(true);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: [], url: "" })).toBe(false);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: [], url: 42 })).toBe(false);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: [], url: "x".repeat(16_385) })).toBe(false);
+    expect(isTabGroupCommand({ type: "create", id: "g-1", tabIds: ["t1"], url: "https://example.com" })).toBe(false);
     // Choosing a space, with or without the window to put in use.
     expect(isTabGroupCommand({ type: "select", groupId: "g-1" })).toBe(true);
     expect(isTabGroupCommand({ type: "select", groupId: "g-1", tabId: "cloud:t2" })).toBe(true);

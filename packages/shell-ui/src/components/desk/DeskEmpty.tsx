@@ -1,5 +1,5 @@
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
-import { newTabOnDesk } from "../../lib/desk/open";
+import { newTabAsChosen } from "../../lib/desk/open";
 import { useAppStore } from "../../store";
 import { Kbd } from "../ui/kbd";
 
@@ -31,7 +31,7 @@ export function DeskEmpty({ title }: { title: string }) {
         data-testid="desk-empty-new-tab"
         // The keyboard stays where it is (the shell's: nothing is in use).
         onMouseDown={(event) => event.preventDefault()}
-        onClick={() => void newTabOnDesk()}
+        onClick={() => newTabAsChosen()}
         className="no-drag pointer-events-auto flex h-7 cursor-pointer items-center gap-2 rounded-md px-2.5 text-[12px] text-gray-900 outline-none transition-colors duration-150 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
       >
         New tab

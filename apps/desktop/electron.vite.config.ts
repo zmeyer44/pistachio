@@ -36,6 +36,8 @@ export default defineConfig({
           index: "src/main/index.ts",
           "watchtower-worker": "src/main/watchtower/worker.ts",
           "shields-worker": "src/main/shields/compile-worker.ts",
+          // The terminals' shells (docs/terminal.md §3): node-pty, in a utility process of its own.
+          "terminal-host": "src/main/terminal/host.ts",
         },
       },
     },

@@ -503,7 +503,7 @@ describeChromium("S6 capabilities", () => {
     expect(harness.host.sessionState().zoom[host]).toBeUndefined();
   });
 
-  it("lists the playing media in a tab and mutes it", async () => {
+  it("lists the playing media in a tab, mutes it, and sets its own volume", async () => {
     const harness = await makeHost();
     await harness.host.createTab(pageUrl);
     const page = pageOf(harness);
@@ -523,6 +523,16 @@ describeChromium("S6 capabilities", () => {
     const tabId = must((await harness.host.getSnapshot()).tabs[0]?.id, "the tab");
     await harness.host.controlMedia(tabId, { type: "mute" });
     expect(await page.evaluate(`document.getElementById("player").muted`)).toBe(true);
+
+    // Its own volume, as a card's slider sets it: above zero it is heard again; all the way down, muted at the level
+    // Unmute brings back.
+    const player = `(() => { const audio = document.getElementById("player"); return [audio.volume, audio.muted]; })()`;
+    await harness.host.controlMedia(tabId, { type: "setVolume", volume: 0.3 });
+    expect(await page.evaluate(player)).toEqual([0.3, false]);
+    await settleIn(async () => (await harness.host.getMedia())[0]?.volume === 0.3);
+    await harness.host.controlMedia(tabId, { type: "setVolume", volume: 0, restore: 0.3 });
+    expect(await page.evaluate(player)).toEqual([0.3, true]);
+    await settleIn(async () => (await harness.host.getMedia())[0]?.muted === true);
   });
 
   it("captures a still for each recent tab in the switcher", async () => {

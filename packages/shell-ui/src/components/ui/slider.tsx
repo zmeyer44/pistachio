@@ -17,6 +17,8 @@ export interface SliderProps {
   step?: number;
   /** Appended to the readout. */
   suffix?: string;
+  /** Read back in place of the value and its suffix: a stepped slider's name for its step. */
+  readout?: string;
   disabled?: boolean;
   className?: string;
   /** The label's type, where the slider sits among rows of another size (the desk's Feel settings). */
@@ -37,6 +39,7 @@ export function Slider({
   max = 100,
   step = 1,
   suffix = "%",
+  readout,
   disabled = false,
   className,
   labelClassName,
@@ -62,8 +65,12 @@ export function Slider({
         )}
       />
       <span className="text-right font-mono text-[10.5px] tabular-nums text-gray-700">
-        {value}
-        {suffix}
+        {readout ?? (
+          <>
+            {value}
+            {suffix}
+          </>
+        )}
       </span>
     </label>
   );

@@ -57,6 +57,7 @@ import {
 import { UpdateService } from "./update-service";
 import { ReadAloudService, shellReadAloudSource } from "./read-aloud";
 import { WatchtowerService } from "./watchtower/service";
+import { TerminalService } from "./terminal/service";
 import { frameOwnerUrl, ShieldsService } from "./shields/service";
 import { isShieldsRequest } from "@pistachio/shell-contracts/shields";
 import { SHIELDS_COSMETICS_CHANNEL, SHIELDS_FRAME_CHANNEL, type ShieldsDomFeatures } from "@pistachio/shell-contracts/shields-page";
@@ -64,7 +65,7 @@ import { watchtowerRequestSchema } from "@pistachio/shell-contracts/watchtower";
 import { ReaderStore } from "./reader-store";
 import { RunController } from "./run-controller";
 import { createMemoryEmbedder } from "./memory-engine";
-import { aiProviderStatus, configuredBriefModel, configuredIntentModel, configuredTidyModel, setAiSession } from "./model-provider";
+import { aiProviderStatus, configuredBriefModel, configuredIntentModel, configuredTidyModel, setAiSession, workspaceEnvironmentKeys } from "./model-provider";
 import type { ReportRecord } from "@pistachio/reports/contract";
 import { BriefScheduler } from "./brief-scheduler";
 import { BriefService, scriptedBriefMaterials } from "./brief-service";
@@ -209,7 +210,6 @@ import {
   isNoteId,
   MAX_NOTE_TITLE,
   NOTE_BLOB_MEDIA_TYPES,
-  NOTES_PAGE_TITLE,
   type NoteBlobMediaType,
   type NoteHosting,
   type NoteInput,
@@ -218,7 +218,8 @@ import {
   type NoteResponse,
   type NoteSource,
 } from "@pistachio/shell-contracts/notes";
-import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
+import { shellPageOf, shellPageTitle } from "@pistachio/shell-contracts/shell-pages";
+import { terminalUrlId } from "@pistachio/shell-contracts/terminal";
 import { isUpdateSnooze } from "@pistachio/shell-contracts/updates";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
@@ -470,6 +471,8 @@ const briefNotifications = new Set<Notification>();
 const readAloud = new ReadAloudService();
 const reader = new ReaderStore();
 let watchtower: WatchtowerService | null = null;
+/** The terminals' shells (docs/terminal.md): a utility process of their own, started with the first terminal. */
+let terminals: TerminalService | null = null;
 /** Ad and tracker protection (docs/shields.md), made before the window so the first page is covered. */
 let shields: ShieldsService | null = null;
 
@@ -1955,6 +1958,8 @@ function flushPublish(): void {
   }
   const tabsChanged = tabsPublishPending;
   const runChanged = runPublishPending;
+  // A terminal no tab names any more (its tab closed, or gone elsewhere) has its shell closed (docs/terminal.md §3).
+  if (tabsChanged) terminals?.retain(browser.allTabs().flatMap((tab) => terminalUrlId(tab.url) ?? []));
   tabsPublishPending = false;
   runPublishPending = false;
   if (!tabsChanged && !runChanged) return;
@@ -2795,6 +2800,12 @@ function installMenu(): void {
             label: "Notes",
             click: () => sendShellCommand({ type: "openNotes" }),
           }),
+          { type: "separator" },
+          // A shell on this Mac in a tab of its own (docs/terminal.md).
+          ...item("newTerminal", {
+            label: "New Terminal",
+            click: () => sendShellCommand({ type: "newTerminal" }),
+          }),
         ],
       },
       { role: "windowMenu" },
@@ -3093,6 +3104,9 @@ function installIpc(): void {
   ipcMain.on(IPC.mediaReport, (event, report: unknown) => {
     requireBrowser().acceptMediaReport(event.sender.id, report);
   });
+  // Any frame of a page, as its media starts (preload/tab.ts): the speed to
+  // start at. Nothing private — the one number the person chose.
+  ipcMain.handle(IPC.mediaDefaultRate, () => settings?.get().media.defaultPlaybackRate ?? 1);
   // The top document's share; the tab preload runs nowhere else.
   ipcMain.on(IPC.screenShareReport, (event, report: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame) return;
@@ -3301,6 +3315,10 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.deskReply, (event, id: unknown, reply: unknown) => {
     if (isShell(event.sender)) deskBridge.reply(id, reply);
+  });
+  // A terminal tab's shell (docs/terminal.md §3): the shell window asks for its port to the terminal host.
+  ipcMain.on(IPC.terminalConnect, (event) => {
+    if (isShell(event.sender)) terminals?.connect(event.sender);
   });
   ipcMain.handle(IPC.groupContextsGet, (event) => {
     shellOnly(event, "the groups' context");
@@ -4078,9 +4096,11 @@ function installIpc(): void {
     shellOnly(event, "naming a tab");
     const id = requireString(tabId, "tabId");
     const tab = requireBrowser().tab(id);
-    if (tab === null || !isShellPageUrl(tab.url)) throw new Error("only a shell page may name its own tab");
+    const page = tab === null ? null : shellPageOf(tab.url);
+    if (page === null) throw new Error("only a shell page may name its own tab");
     const wanted = typeof title === "string" ? title.replace(/\s+/gu, " ").trim().slice(0, MAX_NOTE_TITLE) : "";
-    requireBrowser().setShellPageTitle(id, wanted === "" ? NOTES_PAGE_TITLE : wanted);
+    // (Empty: what its placeholder named it — a note "Notes", a terminal "Terminal".)
+    requireBrowser().setShellPageTitle(id, wanted === "" ? shellPageTitle(page) : wanted);
   });
   // ── App updates (@pistachio/shell-contracts/updates) ────────────────────────────────────
   ipcMain.handle(IPC.updateGet, () => requireUpdates().state());
@@ -4845,6 +4865,13 @@ app.whenReady().then(async () => {
   threads = new ThreadStore(app.getPath("userData"));
   setArtifactStore(artifacts);
   watchtower = new WatchtowerService(app.getPath("userData"), join(currentDir, "watchtower-worker.js"), () => browser?.watchtowerSources() ?? []);
+  terminals = new TerminalService({
+    hostPath: join(currentDir, "terminal-host.js"),
+    stateDir: join(app.getPath("userData"), "terminal"),
+    appVersion: app.getVersion(),
+    locale: app.getLocale(),
+    omitEnv: workspaceEnvironmentKeys,
+  });
   const shieldsSettings = settings;
   shields = new ShieldsService({
     directory: join(app.getPath("userData"), "shields"),
@@ -4976,6 +5003,7 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   briefScheduler?.stop();
   watchtower?.close();
+  terminals?.dispose();
   shields?.stop();
   runs?.flush();
   sidebar?.flush();

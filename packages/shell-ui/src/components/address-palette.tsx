@@ -61,8 +61,30 @@ export type Entry =
       hint?: string;
       category: "Action" | "Profile" | "Settings" | "Closed" | "Saved";
       icon: React.ReactNode;
-      run(): void;
+      /** `into`: where ⌥↵ or ⌘⇧↵ asked for an address to open (UrlBar); only an action that opens one reads it. */
+      run(into?: NewDestination): void;
     };
+
+/** Where the address bar opens a choice instead of the page in use: a new tab of this space, or a new space. */
+export type NewDestination = "tab" | "space";
+
+/**
+ * Where a modified ↵ opens the address bar's choice, whatever the bar was
+ * opened for: ⌥↵ in a new tab of this space (Chrome's omnibox has it so),
+ * ⌘⇧↵ in a new space — ⌥L's and ⌘⇧L's destinations, decided at the end.
+ * A plain ↵ (or any other chord): undefined. Where no space can be made
+ * (`spaces` false: the web, whose host refuses them), ⌘⇧↵ is a plain ↵.
+ */
+export function enterDestination(
+  e: Pick<KeyboardEvent, "altKey" | "metaKey" | "ctrlKey" | "shiftKey">,
+  platform: ShortcutPlatform,
+  spaces: boolean,
+): NewDestination | undefined {
+  const mod = platform === "darwin" ? e.metaKey : e.ctrlKey;
+  if (mod && e.shiftKey && !e.altKey) return spaces ? "space" : undefined;
+  if (e.altKey && !mod) return "tab";
+  return undefined;
+}
 
 export type ShelfEntry = Extract<Entry, { kind: "shelf" }>;
 
@@ -82,6 +104,7 @@ const ACTION_KEYWORDS: Partial<Record<ChromeActionId, readonly string[]>> = {
   openBrief: ["daily brief briefing morning report today my day summary digest pistachio://brief"],
   openNotes: ["notes notebook my writing documents written jot pad pistachio://notes"],
   newNote: ["new note blank note write jot down start writing scratch"],
+  newTerminal: ["terminal shell bash zsh command line console cli prompt run commands claude code"],
   openReminders: ["schedule alarm calendar scheduled tasks pistachio://reminders"],
   openWatchtower: ["browsing memory history archive saved pages recall wiki pistachio://watchtower"],
   openArchive: ["archive archived tabs closed spaces closed groups put away restore old tabs"],

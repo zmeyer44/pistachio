@@ -258,10 +258,9 @@ test("background playback becomes a fully controllable sidebar stack", { tag: ["
       /Mute audio from Northstar/,
     );
     await audioIndicator.click();
-    await expect(stack.getByTestId(`media-mute-${mediaTabId}`)).toHaveAttribute(
-      "aria-label",
-      "Unmute",
-    );
+    await expect(
+      stack.getByTestId(`media-volume-${mediaTabId}`),
+    ).toHaveAttribute("aria-label", "Volume of Loop Theory: muted");
     await expect(audioIndicator).toHaveAccessibleName(
       /Unmute audio from Northstar/,
     );
@@ -385,9 +384,54 @@ test("background playback becomes a fully controllable sidebar stack", { tag: ["
     const times = await frontCard.locator(".media-times").boundingBox();
     const track = await seek.boundingBox();
     expect(times!.y).toBeGreaterThanOrEqual(track!.y + track!.height);
-    await frontCard
-      .getByRole("button", { name: "Unmute", exact: true })
-      .click();
+    // Its own volume: the speaker opens the speed card's twin, the page's
+    // player alone; all the way down it is silent, and Unmute brings it back
+    // where it was.
+    const volumeTrigger = frontCard.getByTestId(`media-volume-${mediaTabId}`);
+    const elementVolume = () =>
+      mediaPage
+        .locator("#test-audio")
+        .evaluate((audio) => (audio as HTMLAudioElement).volume);
+    await volumeTrigger.click();
+    const volumeCard = shell.getByTestId("media-volume-card");
+    await expect(volumeCard).toBeVisible();
+    const volumeSlider = volumeCard.getByRole("slider", {
+      name: "Volume of Loop Theory",
+    });
+    await expect(volumeSlider).toBeFocused();
+    await volumeCard.getByRole("button", { name: "Unmute", exact: true }).click();
+    await expect(volumeTrigger).toHaveAttribute(
+      "aria-label",
+      "Volume of Loop Theory: 100%",
+    );
+    await volumeSlider.fill("0.3");
+    await expect.poll(elementVolume).toBeCloseTo(0.3, 2);
+    await expect(volumeTrigger).toHaveAttribute(
+      "aria-label",
+      "Volume of Loop Theory: 30%",
+    );
+    await captureAtRest(shell, "volume-slider.png", volumeCard);
+    // Taken up again (focus elsewhere in the card and back), from 30%.
+    await volumeCard.getByRole("button", { name: "Mute", exact: true }).focus();
+    await volumeSlider.fill("0");
+    // Muted as the page's own mute is, its 30% kept for Unmute.
+    await expect
+      .poll(() =>
+        mediaPage
+          .locator("#test-audio")
+          .evaluate((audio) => (audio as HTMLAudioElement).muted),
+      )
+      .toBe(true);
+    expect(await elementVolume()).toBeCloseTo(0.3, 2);
+    await expect(volumeTrigger).toHaveAttribute(
+      "aria-label",
+      "Volume of Loop Theory: muted",
+    );
+    await volumeCard.getByRole("button", { name: "Unmute", exact: true }).click();
+    await expect.poll(elementVolume).toBeCloseTo(0.3, 2);
+    await shell.keyboard.press("Escape");
+    await expect(volumeCard).toHaveCount(0);
+    await expect(volumeTrigger).toBeFocused();
     await expect
       .poll(() =>
         shell.evaluate(
@@ -494,6 +538,9 @@ test("background playback becomes a fully controllable sidebar stack", { tag: ["
 test("a playing video becomes a live extension of the sidebar mini player", { tag: ["@media", "@sidebar"] }, async () => {
   const { app } = await launchApp({
     settings: { layout: { sidebar: "pinned" } },
+    // Its page is hovered by Playwright's mouse in the card, from a window Fit zoomed out: Playwright's own pointer
+    // misses on a page under device emulation (a person's is mapped), so the page is at its own size.
+    deskFeel: { zoom: "actual" },
     name: "video-mini",
   });
 

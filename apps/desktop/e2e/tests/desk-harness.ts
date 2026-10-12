@@ -117,19 +117,24 @@ export type DeskFrame = "bar" | "tab" | "bare" | "drawer";
  * 2026-10-09 and is a setting since, docs/spaces.md §3), and its desk
  * windows framed by `chrome`: the Title bar unless said, the frame the
  * desk's specs were written for (the default until 2026-10-07, when the
- * Drawer became it). What it does is launchApp's options (`size`,
- * `clearOfCursor`, `sidebar`, `deskFeel`); this is those, set for the
- * desk's specs. A relaunch (`userData`) keeps the profile's own settings
- * and Feel unless said.
+ * Drawer became it), their pages at `zoom`: Actual size unless said, as
+ * the specs were written for (the default since 2026-10-10 is Fit, a page
+ * zoomed out as its window takes less of the desk). What it does is
+ * launchApp's options (`size`, `clearOfCursor`, `sidebar`, `deskFeel`);
+ * this is those, set for the desk's specs. A relaunch (`userData`) keeps
+ * the profile's own settings and Feel unless said.
  */
-export async function launchDesk(options: Omit<LaunchOptions, "settings"> & { homeUrl?: string; chrome?: DeskFrame } = {}): Promise<DeskLaunch> {
-  const { homeUrl = INVOICES, chrome = "bar", ...launch } = options;
+export async function launchDesk(
+  options: Omit<LaunchOptions, "settings"> & { homeUrl?: string; chrome?: DeskFrame; zoom?: "fit" | "actual" } = {},
+): Promise<DeskLaunch> {
+  const { homeUrl = INVOICES, chrome = "bar", zoom = "actual", ...launch } = options;
   const fresh = launch.userData === undefined;
+  const feel = { ...(chrome !== "drawer" ? { chrome } : {}), ...(zoom !== "fit" ? { zoom } : {}) };
   const { app, userData } = await launchApp({
     size: { width: 1440, height: 900 },
     clearOfCursor: true,
     ...(fresh ? { sidebar: "rail" as const } : {}),
-    ...(fresh && chrome !== "drawer" ? { deskFeel: { chrome } } : {}),
+    ...(fresh && Object.keys(feel).length > 0 ? { deskFeel: feel } : {}),
     ...launch,
     name: `desk-${launch.name ?? "spec"}`,
     settings: fresh ? pageFirst({ onboarding: { completed: true, completedAt: null }, general: { homeUrl } }) : undefined,

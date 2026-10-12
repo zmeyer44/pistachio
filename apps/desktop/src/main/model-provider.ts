@@ -53,6 +53,8 @@ export interface AiSession {
 
 let envLoaded = false;
 let session: AiSession | null = null;
+/** The keys the workspace's .env added to the app's environment (not those it found there already). */
+const workspaceKeys = new Set<string>();
 
 export function loadWorkspaceEnvironment(): void {
   if (envLoaded) return;
@@ -63,7 +65,16 @@ export function loadWorkspaceEnvironment(): void {
     resolve(process.cwd(), "../../.env"),
   ];
   const path = candidates.find((candidate) => existsSync(candidate));
-  if (path !== undefined) loadEnv({ path, quiet: true });
+  if (path === undefined) return;
+  const before = new Set(Object.keys(process.env));
+  loadEnv({ path, quiet: true });
+  for (const key of Object.keys(process.env)) if (!before.has(key)) workspaceKeys.add(key);
+}
+
+/** What the workspace's .env put in the app's environment: the app's alone, never a terminal's shell's (docs/terminal.md §4). */
+export function workspaceEnvironmentKeys(): ReadonlySet<string> {
+  loadWorkspaceEnvironment();
+  return workspaceKeys;
 }
 
 /** Called once the account services exist; null when they could not start. */

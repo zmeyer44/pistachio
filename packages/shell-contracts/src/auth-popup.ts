@@ -104,7 +104,8 @@ export interface AuthenticationRefreshSignals {
   /**
    * The owner page started a cross-document navigation of its own (a script
    * redirect after its credential exchange, or an opener reload from the
-   * callback page), or is still loading one.
+   * callback page), or is still loading one, or moved to another address in
+   * place (an app routing to its callback address).
    */
   ownerNavigated: boolean;
 }

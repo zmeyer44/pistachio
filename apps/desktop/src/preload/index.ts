@@ -129,6 +129,39 @@ import {
 import type { ArtifactListing } from "@pistachio/shell-contracts/artifacts";
 import type { NoteResponse, NoteSnapshot } from "@pistachio/shell-contracts/notes";
 import type { ReportResponse } from "@pistachio/shell-contracts/reports";
+import type { TerminalEvent, TerminalRequest } from "@pistachio/shell-contracts/terminal";
+
+/**
+ * The shell's end of a port to the terminal host (docs/terminal.md §3).
+ * Asked of main on the first request; until it comes, requests wait here.
+ * When main says the host stopped, the port is let go, and the next
+ * request asks for a new one (main starts the host again then).
+ */
+let terminalPort: MessagePort | null = null;
+let terminalAsked = false;
+const terminalQueue: TerminalRequest[] = [];
+const terminalListeners = new Set<(event: TerminalEvent) => void>();
+
+function terminalEmit(event: TerminalEvent): void {
+  for (const listener of terminalListeners) listener(event);
+}
+
+ipcRenderer.on(IPC.terminalPort, (event) => {
+  const port = event.ports[0];
+  if (port === undefined) return;
+  terminalPort?.close();
+  terminalPort = port;
+  terminalAsked = false;
+  port.onmessage = (message: MessageEvent) => terminalEmit(message.data as TerminalEvent);
+  for (const request of terminalQueue.splice(0)) port.postMessage(request);
+});
+ipcRenderer.on(IPC.terminalHostGone, () => {
+  terminalPort?.close();
+  terminalPort = null;
+  terminalAsked = false;
+  terminalQueue.length = 0;
+  terminalEmit({ type: "hostGone" });
+});
 
 /** Subscribe to one main → renderer channel; the returned function unsubscribes. */
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
@@ -411,6 +444,20 @@ const api: PistachioApi = {
   readGroupFile: (groupId, itemId) => ipcRenderer.invoke(IPC.groupFileRead, groupId, itemId) as Promise<GroupFileContent | null>,
   writeGroupFile: (write) => ipcRenderer.invoke(IPC.groupFileWrite, write) as Promise<GroupFileWriteResult>,
   groupFileForMessage: (groupId, itemId) => ipcRenderer.invoke(IPC.groupFileForMessage, groupId, itemId) as Promise<GroupFileForMessage>,
+  terminalSend(request) {
+    if (terminalPort !== null) {
+      terminalPort.postMessage(request);
+      return;
+    }
+    terminalQueue.push(request);
+    if (terminalAsked) return;
+    terminalAsked = true;
+    ipcRenderer.send(IPC.terminalConnect);
+  },
+  onTerminalEvent(listener) {
+    terminalListeners.add(listener);
+    return () => terminalListeners.delete(listener);
+  },
   getTabSwitcherPreviews: (limit) =>
     ipcRenderer.invoke(IPC.tabSwitcherPreviewsGet, limit) as Promise<
       TabSwitcherPreview[]

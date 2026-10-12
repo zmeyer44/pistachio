@@ -49,6 +49,7 @@ import {
   Sparkles,
   SplitSquareHorizontal,
   SquareDashedMousePointer,
+  SquareTerminal,
   Undo2,
 } from "lucide-react";
 import type { ShellCommand, ShellState } from "@pistachio/shell-contracts/chrome";
@@ -68,7 +69,7 @@ import {
 import { nativeApi } from "../api";
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
-import { arrangeDesk, shortcutSurface, splitAvailable } from "../lib/desk/open";
+import { arrangeDesk, newSpaceByKey, shortcutSurface, splitAvailable } from "../lib/desk/open";
 import { screenshotArea, screenshotView } from "../lib/screenshot";
 import { railOffered, sidebarModeOf } from "../lib/sidebar-mode";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
@@ -91,6 +92,7 @@ export type ChromeActionId =
   | "openBrief"
   | "openNotes"
   | "newNote"
+  | "newTerminal"
   | "openBookmarks"
   | "openWatchtower"
   | "openArchive"
@@ -342,6 +344,15 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
     shortcutId: "newNote",
     run: ({ run }) => run({ type: "newNote" }),
   },
+  newTerminal: {
+    id: "newTerminal",
+    label: () => "New terminal",
+    icon: () => <SquareTerminal aria-hidden="true" />,
+    shortcutId: "newTerminal",
+    // A shell runs on the Mac (docs/terminal.md): the web has none.
+    enabled: () => nativeApi() !== null,
+    run: ({ run }) => run({ type: "newTerminal" }),
+  },
   openWatchtower: {
     id: "openWatchtower",
     label: ({ store }) =>
@@ -581,6 +592,17 @@ export function runConfiguredShortcut(
     // Retired (2026-10-09): the desk is always up, and there is none to leave. Its id stays a key in saved shortcuts.
     case "toggleDesk":
       return false;
+    // ⌘L's siblings: the address bar, its ↵ opening a new tab in this space, or a new space (components/UrlBar.tsx).
+    // Pressed with the bar up, the bar stays and only where ↵ goes changes.
+    case "newTabAddress":
+      store.openNewTabBar("tab");
+      return true;
+    case "newSpaceAddress":
+      store.openNewTabBar("space");
+      return true;
+    // An empty space, current at once, its name field open in the sidebar — unless a dialog is asking something (lib/desk/open.ts).
+    case "newSpace":
+      return newSpaceByKey();
   }
 }
 

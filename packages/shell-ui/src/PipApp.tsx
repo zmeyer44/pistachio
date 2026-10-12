@@ -23,6 +23,7 @@ import { nativeApi } from "./api";
 import { Back15, Forward15, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX, X, type MediaIcon } from "./components/media-icons";
 import { PIP_EDGE_CURSORS } from "./lib/desk/pip-box";
 import { formatTime, projectedPosition } from "./lib/media-stack";
+import { useMediaVolume } from "./lib/media-volume";
 
 /** How far the player's back and forward buttons move the playhead, as the media stack's do. */
 const SEEK_STEP_SECONDS = 15;
@@ -95,13 +96,6 @@ function PipFace({ frame }: { frame: DeskPipFrame }) {
   const [clock, setClock] = useState(Date.now);
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const seekDraftRef = useRef<number | null>(null);
-  // Its own volume (the page's player's alone): as it is dragged, what it is set to; and the volume to come back to
-  // when it is unmuted from silence — turned all the way down — which is what it was before.
-  const [volumeDraft, setVolumeDraft] = useState<number | null>(null);
-  const restoreVolume = useRef(media.volume > 0 ? media.volume : 1);
-  useEffect(() => {
-    if (volumeDraft === null && media.volume > 0) restoreVolume.current = media.volume;
-  }, [media.volume, volumeDraft]);
   useEffect(() => {
     setClock(Date.now());
     if (!media.playing) return;
@@ -110,6 +104,8 @@ function PipFace({ frame }: { frame: DeskPipFrame }) {
   }, [media.playing, media.updatedAt]);
 
   const send = (control: MediaControl): void => nativeApi()?.sendDeskPipInput({ type: "control", control });
+  // Its own volume, the page's player's alone (lib/media-volume.ts).
+  const { volume, held: volumeHeld, take: takeVolume, set: setVolume, release: releaseVolume, toggleMute } = useMediaVolume(media, send);
   const position = seekDraft ?? projectedPosition(media, Math.max(clock, media.updatedAt));
   const skip = (delta: number): void => send({ type: "seek", position: Math.min(media.duration ?? Infinity, Math.max(0, position + delta)) });
   const commitSeek = (): void => {
@@ -118,15 +114,6 @@ function PipFace({ frame }: { frame: DeskPipFrame }) {
     seekDraftRef.current = null;
     setSeekDraft(null);
     send({ type: "seek", position: next });
-  };
-  const volume = volumeDraft ?? (media.muted ? 0 : media.volume);
-  const setVolume = (next: number): void => {
-    setVolumeDraft(next);
-    send({ type: "setVolume", volume: next });
-  };
-  const toggleMute = (): void => {
-    if (media.muted && media.volume === 0) send({ type: "setVolume", volume: restoreVolume.current });
-    else send({ type: "mute" });
   };
   const trackNav = media.canPrevious || media.canNext;
   const progress = media.duration === null || media.duration === 0 ? 0 : Math.min(100, Math.max(0, (position / media.duration) * 100));
@@ -152,7 +139,7 @@ function PipFace({ frame }: { frame: DeskPipFrame }) {
         data-testid="desk-pip-view"
         data-tab-id={media.tabId}
         // Shown while the pointer is on it (its edges too), and while nothing plays: a still picture wants its play button.
-        data-shown={hovered || !media.playing || seekDraft !== null || volumeDraft !== null ? "" : undefined}
+        data-shown={hovered || !media.playing || seekDraft !== null || volumeHeld ? "" : undefined}
         aria-label={`${media.title} player`}
         style={{ inset: DESK_PIP_OUTSET }}
         onPointerDown={(event) => {
@@ -204,7 +191,7 @@ function PipFace({ frame }: { frame: DeskPipFrame }) {
               <span className="desk-pip-time">{formatTime(media.duration)}</span>
             </>
           )}
-          <div className="desk-pip-volume" data-held={volumeDraft !== null ? "" : undefined}>
+          <div className="desk-pip-volume" data-held={volumeHeld ? "" : undefined}>
             <PipButton label={media.muted ? "Unmute" : "Mute"} icon={media.muted ? VolumeX : Volume2} testId="desk-pip-mute" onClick={toggleMute} />
             <input
               className="desk-pip-volume-slider"
@@ -218,16 +205,12 @@ function PipFace({ frame }: { frame: DeskPipFrame }) {
               style={{ "--desk-pip-volume": `${String(volume * 100)}%` } as React.CSSProperties}
               // Taken up (by the pointer or the keyboard) from where it was heard: let go all the way down, unmuting
               // comes back there.
-              onPointerDown={() => {
-                if (volume > 0) restoreVolume.current = volume;
-              }}
-              onFocus={() => {
-                if (volume > 0) restoreVolume.current = volume;
-              }}
+              onPointerDown={takeVolume}
+              onFocus={takeVolume}
               onChange={(event) => setVolume(Number(event.currentTarget.value))}
-              onPointerUp={() => setVolumeDraft(null)}
-              onPointerCancel={() => setVolumeDraft(null)}
-              onBlur={() => setVolumeDraft(null)}
+              onPointerUp={releaseVolume}
+              onPointerCancel={releaseVolume}
+              onBlur={releaseVolume}
             />
           </div>
         </div>

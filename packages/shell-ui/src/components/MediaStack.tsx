@@ -32,6 +32,7 @@ import {
   SkipBack,
   SkipForward,
   Video,
+  Volume1,
   Volume2,
   VolumeX,
   X,
@@ -48,6 +49,7 @@ import {
   readAloudFinished,
 } from "../lib/media-stack";
 import { useMediaPresence } from "./useMediaPresence";
+import { formatVolume, useMediaVolume } from "../lib/media-volume";
 import { useAppStore } from "../store";
 import { useDeskChrome } from "../lib/desk/chrome";
 import { useNowPlaying } from "../lib/desk/now-playing";
@@ -191,36 +193,30 @@ function formatRate(rate: number): string {
   return `${Number(rate.toFixed(2))}x`;
 }
 
-/** Fixed-width trigger with a keyboard-accessible speed slider above the cards. */
-function RateControl({
-  rate,
-  onChange,
+/**
+ * A card's popup — speed or volume — in the body, above the stack: open from
+ * its trigger, kept beside it as the stack moves, its slider focused, and
+ * closed by a press elsewhere, by Escape, or when the stack asks
+ * (`closeRequested`). `onOpenChange` tells the stack it is up, so it holds
+ * the stack open and keeps a native video from covering it.
+ */
+function useCardPopup({
   onOpenChange,
   closeRequested,
 }: {
-  rate: number;
-  onChange(rate: number): void;
   onOpenChange(open: boolean): void;
   closeRequested: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<number | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
   const dialogId = useId();
-  const shown = draft ?? rate;
-  const close = useCallback(() => {
-    setOpen(false);
-    setDraft(null);
-  }, []);
+  const close = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
     if (closeRequested) close();
   }, [closeRequested, close]);
-  useEffect(() => {
-    if (draft !== null && Math.abs(rate - draft) < 0.001) setDraft(null);
-  }, [rate, draft]);
   useLayoutEffect(() => {
     if (!open) return;
     onOpenChange(true);
@@ -258,6 +254,63 @@ function RateControl({
     };
   }, [open, close]);
 
+  /** The popup's own props: its place in the body, and the ways out of it. */
+  const popupProps = {
+    ref: popupRef,
+    id: dialogId,
+    role: "dialog",
+    // What a desk card measures to keep pages from covering it (DeskNowPlaying.tsx).
+    "data-media-popup": "",
+    onBlur: (event: React.FocusEvent<HTMLDivElement>) => {
+      if (
+        !event.currentTarget.contains(event.relatedTarget as Node | null) &&
+        event.relatedTarget !== triggerRef.current
+      )
+        close();
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        triggerRef.current?.focus({ preventScroll: true });
+      }
+    },
+  } as const;
+  const triggerProps = {
+    ref: triggerRef,
+    type: "button",
+    "aria-expanded": open,
+    "aria-haspopup": "dialog",
+    "aria-controls": open ? dialogId : undefined,
+    onClick: () => (open ? close() : setOpen(true)),
+  } as const;
+  return { open, close, sliderRef, popupProps, triggerProps };
+}
+
+/** Fixed-width trigger with a keyboard-accessible speed slider above the cards. */
+function RateControl({
+  rate,
+  onChange,
+  onOpenChange,
+  closeRequested,
+}: {
+  rate: number;
+  onChange(rate: number): void;
+  onOpenChange(open: boolean): void;
+  closeRequested: boolean;
+}) {
+  const { open, sliderRef, popupProps, triggerProps } = useCardPopup({ onOpenChange, closeRequested });
+  const [draft, setDraft] = useState<number | null>(null);
+  const shown = draft ?? rate;
+
+  useEffect(() => {
+    if (!open) setDraft(null);
+  }, [open]);
+  useEffect(() => {
+    if (draft !== null && Math.abs(rate - draft) < 0.001) setDraft(null);
+  }, [rate, draft]);
+
   const apply = (next: number) => {
     setDraft(next);
     onChange(next);
@@ -265,16 +318,11 @@ function RateControl({
   return (
     <div className="media-rate" data-open={open || undefined}>
       <button
-        ref={triggerRef}
-        type="button"
+        {...triggerProps}
         className="media-rate-trigger"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-controls={open ? dialogId : undefined}
         aria-label={`Playback speed: ${formatRate(shown)}`}
         title="Playback speed"
         data-testid="media-rate-trigger"
-        onClick={() => (open ? close() : setOpen(true))}
       >
         <span>{formatRate(shown)}</span>
         <ChevronUp aria-hidden="true" />
@@ -282,29 +330,10 @@ function RateControl({
       {open
         ? createPortal(
             <div
-              ref={popupRef}
-              id={dialogId}
+              {...popupProps}
               className="media-rate-card no-drag"
-              role="dialog"
               aria-label="Playback speed"
               data-testid="media-rate-card"
-              onBlur={(event) => {
-                if (
-                  !event.currentTarget.contains(
-                    event.relatedTarget as Node | null,
-                  ) &&
-                  event.relatedTarget !== triggerRef.current
-                )
-                  close();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  close();
-                  triggerRef.current?.focus({ preventScroll: true });
-                }
-              }}
             >
               <div className="media-rate-heading">
                 <Gauge aria-hidden="true" />
@@ -341,6 +370,96 @@ function RateControl({
                 <span>0.25x</span>
                 <span>1x</span>
                 <span>2x</span>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+/**
+ * The player's own volume, beside its speed: the speaker shows how loud it
+ * is, and opens a slider above the cards with its mute. Each card's is its
+ * own player's alone, so two things playing at once — a video in the desk's
+ * floating player and Read aloud — are each set apart from the other.
+ */
+function VolumeControl({
+  media,
+  title,
+  send,
+  onOpenChange,
+  closeRequested,
+}: {
+  media: BrowserMediaInfo;
+  title: string;
+  send(control: MediaControl): void;
+  onOpenChange(open: boolean): void;
+  closeRequested: boolean;
+}) {
+  const { open, sliderRef, popupProps, triggerProps } = useCardPopup({ onOpenChange, closeRequested });
+  const { volume, take, set, release, toggleMute } = useMediaVolume(media, send);
+  useEffect(() => {
+    if (!open) release();
+  }, [open, release]);
+  const silent = volume === 0;
+  const Icon = silent ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  return (
+    <div className="media-volume" data-open={open || undefined}>
+      <button
+        {...triggerProps}
+        className="media-control"
+        aria-label={`Volume of ${title}: ${silent ? "muted" : formatVolume(volume)}`}
+        title={silent ? "Muted" : `Volume ${formatVolume(volume)}`}
+        data-testid={`media-volume-${media.tabId}`}
+      >
+        <Icon aria-hidden="true" />
+      </button>
+      {open
+        ? createPortal(
+            <div
+              {...popupProps}
+              className="media-rate-card media-volume-card no-drag"
+              aria-label={`Volume of ${title}`}
+              data-testid="media-volume-card"
+            >
+              <div className="media-rate-heading">
+                <Icon aria-hidden="true" />
+                <div>
+                  <output aria-live="off">{silent ? "Muted" : formatVolume(volume)}</output>
+                  <span>This player alone</span>
+                </div>
+                <MediaButton
+                  label={media.muted ? "Unmute" : "Mute"}
+                  icon={media.muted ? Volume2 : VolumeX}
+                  pressed={media.muted}
+                  testId={`media-mute-${media.tabId}`}
+                  onClick={toggleMute}
+                />
+              </div>
+              <input
+                ref={sliderRef}
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={volume}
+                aria-label={`Volume of ${title}`}
+                aria-valuetext={silent ? "Muted" : formatVolume(volume)}
+                className="media-speed-slider"
+                data-testid={`media-volume-slider-${media.tabId}`}
+                style={{ "--media-speed-fill": `${volume * 100}%` } as CSSProperties}
+                onPointerDown={take}
+                onFocus={take}
+                onChange={(event) => set(Number(event.currentTarget.value))}
+                onPointerUp={release}
+                onPointerCancel={release}
+                onBlur={release}
+              />
+              <div className="media-speed-bounds" aria-hidden="true">
+                <span>0%</span>
+                <span>100%</span>
               </div>
             </div>,
             document.body,
@@ -396,7 +515,7 @@ export const MediaCard = memo(function MediaCard({
   exiting,
   closePopovers,
   onEngage,
-  onRateOpen,
+  onPopupOpen,
 }: {
   media: BrowserMediaInfo;
   index: number;
@@ -407,15 +526,16 @@ export const MediaCard = memo(function MediaCard({
   exiting: boolean;
   closePopovers: boolean;
   onEngage(tabId: string): void;
-  onRateOpen(tabId: string | null): void;
+  /** A popup of the card's — speed or volume — is up (its tab), or none is (null). */
+  onPopupOpen(tabId: string | null): void;
 }) {
   const controlMedia = useAppStore((state) => state.controlMedia);
   const [clock, setClock] = useState(Date.now);
   const [seekDraft, setSeekDraft] = useState<number | null>(null);
   const seekDraftRef = useRef<number | null>(null);
-  const rateOpenChanged = useCallback(
-    (open: boolean) => onRateOpen(open ? media.tabId : null),
-    [onRateOpen, media.tabId],
+  const popupOpenChanged = useCallback(
+    (open: boolean) => onPopupOpen(open ? media.tabId : null),
+    [onPopupOpen, media.tabId],
   );
   useEffect(() => {
     setClock(Date.now());
@@ -609,7 +729,7 @@ export const MediaCard = memo(function MediaCard({
               <RateControl
                 rate={media.playbackRate}
                 onChange={(rate) => run({ type: "setRate", rate })}
-                onOpenChange={rateOpenChanged}
+                onOpenChange={popupOpenChanged}
                 closeRequested={closePopovers}
               />
             ) : (
@@ -647,12 +767,17 @@ export const MediaCard = memo(function MediaCard({
                 />
               ) : null}
             </div>
-            <MediaButton
-              label={media.muted ? "Unmute" : "Mute"}
-              icon={media.muted ? VolumeX : Volume2}
-              testId={`media-mute-${media.tabId}`}
-              onClick={() => run({ type: "mute" })}
-            />
+            {exiting ? (
+              <span />
+            ) : (
+              <VolumeControl
+                media={media}
+                title={title}
+                send={run}
+                onOpenChange={popupOpenChanged}
+                closeRequested={closePopovers}
+              />
+            )}
           </div>
           {utilities ? (
             <div className="media-utility-controls">
@@ -888,7 +1013,7 @@ export function MediaStack() {
   const [stackHovered, setStackHovered] = useState(false);
   const [hoveredCardId, setHoveredCardId] = useState<string | null>(null);
   const [focusedCardId, setFocusedCardId] = useState<string | null>(null);
-  const [rateTabId, setRateTabId] = useState<string | null>(null);
+  const [popupTabId, setPopupTabId] = useState<string | null>(null);
   const stackRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPointer = useRef({ x: -1, y: -1 });
@@ -998,10 +1123,10 @@ export function MediaStack() {
   const engaged =
     stackHovered ||
     focusedCardId !== null ||
-    rateTabId !== null ||
+    popupTabId !== null ||
     Boolean(videoHovered);
   const activeId =
-    rateTabId ??
+    popupTabId ??
     focusedCardId ??
     hoveredCardId ??
     (videoHovered ? hoveredVideoTabId : null);
@@ -1044,7 +1169,7 @@ export function MediaStack() {
                 setHoveredCardId(slot.dataset["mediaId"] ?? null);
             }}
             onPointerMove={(event) => {
-              if (event.pointerType === "touch" || rateTabId || event.buttons)
+              if (event.pointerType === "touch" || popupTabId || event.buttons)
                 return;
               if (
                 lastPointer.current.x === event.clientX &&
@@ -1112,7 +1237,7 @@ export function MediaStack() {
                   (pinned || sidebarRevealed) &&
                   !footerMenuOpen &&
                   !sidebarCovered &&
-                  rateTabId === null &&
+                  popupTabId === null &&
                   !deskWindows.includes(entry.media.tabId)
                 }
                 closePopovers={
@@ -1122,7 +1247,7 @@ export function MediaStack() {
                 }
                 stackEngaged={engaged}
                 onEngage={setFocusedCardId}
-                onRateOpen={setRateTabId}
+                onPopupOpen={setPopupTabId}
               />
             ))}
           </div>

@@ -12,7 +12,7 @@ import { RUN_SHORTCUT_EVENT } from "@pistachio/shell-contracts/shortcuts";
 import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
-import { askDesk, deskAvailable, newTabOnDesk } from "../lib/desk/open";
+import { askDesk, deskAvailable, newTabAsChosen } from "../lib/desk/open";
 import {
   railOffered,
   sidebarModeOf,
@@ -187,6 +187,9 @@ export function runShellCommand(command: ShellCommand): void {
     case "newNote":
       void s.newNote();
       break;
+    case "newTerminal":
+      void s.newTerminal();
+      break;
     case "prepareBrief":
       prepareBrief(command.spaceId);
       break;
@@ -247,11 +250,10 @@ export function runShellCommand(command: ShellCommand): void {
       break;
     case "newTab": {
       // On the desk (the desktop), a new tab is a new window there, as its dock's + makes one:
-      // in the current space, on the home page, brought out as the window in use
-      // (on a loose tab's space, a space of the two: lib/desk/open.ts). General's
-      // "New tabs open" is the web's.
+      // in the current space, brought out as the window in use, made as General's "New tabs
+      // open" says (on a loose tab's space, a space of the two: lib/desk/open.ts).
       if (deskAvailable()) {
-        void newTabOnDesk();
+        newTabAsChosen();
         break;
       }
       const general = s.settings.general;

@@ -281,14 +281,15 @@ function RailMediaButton({ media }: { media: BrowserMediaInfo }) {
   useLevelBars(media, button, bars);
   const [open, setOpen] = useState(false);
   const timer = useRef(0);
-  const rateOpen = useRef(false);
+  const popupOpen = useRef(false);
   const card = useRef<HTMLDivElement | null>(null);
   const title = media.title || media.tabTitle || (media.hasVideo ? "Video" : "Audio");
-  // The pointer on the button or its card keeps the card; off both, it goes a moment after (unless a rate is being set).
+  // The pointer on the button or its card keeps the card; off both, it goes a moment after (unless a speed or a
+  // volume is being set).
   const hover = useCallback((over: boolean): void => {
     window.clearTimeout(timer.current);
     if (over) timer.current = window.setTimeout(() => setOpen(true), card.current === null ? CARD_OPEN_MS : 0);
-    else if (!rateOpen.current)
+    else if (!popupOpen.current)
       timer.current = window.setTimeout(() => {
         if (button.current?.matches(":hover") !== true && card.current?.matches(":hover") !== true) setOpen(false);
       }, CARD_LINGER_MS);
@@ -308,12 +309,12 @@ function RailMediaButton({ media }: { media: BrowserMediaInfo }) {
     };
   }, [hover]);
   useEffect(() => () => window.clearTimeout(timer.current), []);
-  // The rate's popup open holds the card (the pointer is then over a popup of the body's, not the card): any close
-  // already on its way is called off. Closed, the card may go. One function throughout — the card's rate control
-  // hears it as closed and open again whenever it changes.
-  const rateChanged = useCallback(
+  // A popup of the card's open — its speed or its volume — holds the card (the pointer is then over a popup of the
+  // body's, not the card): any close already on its way is called off. Closed, the card may go. One function
+  // throughout — the card's controls hear it as closed and open again whenever it changes.
+  const popupChanged = useCallback(
     (isOpen: boolean): void => {
-      rateOpen.current = isOpen;
+      popupOpen.current = isOpen;
       if (isOpen) window.clearTimeout(timer.current);
       else hover(false);
     },
@@ -352,7 +353,7 @@ function RailMediaButton({ media }: { media: BrowserMediaInfo }) {
           anchor={button}
           cardRef={card}
           onHover={hover}
-          onRateOpen={rateChanged}
+          onPopupOpen={popupChanged}
         />
       ) : null}
     </div>
@@ -369,13 +370,13 @@ function RailMediaCard({
   anchor,
   cardRef,
   onHover,
-  onRateOpen,
+  onPopupOpen,
 }: {
   media: BrowserMediaInfo;
   anchor: React.RefObject<HTMLButtonElement | null>;
   cardRef: React.RefObject<HTMLDivElement | null>;
   onHover(over: boolean): void;
-  onRateOpen(open: boolean): void;
+  onPopupOpen(open: boolean): void;
 }) {
   const engine = useDeskEngine();
   const view = useDeskView(engine);
@@ -401,32 +402,33 @@ function RailMediaCard({
     return () => observer.disconnect();
   }, [engine, place, card, cover]);
   useLayoutEffect(() => () => engine?.setCover(cover, null), [engine, cover]);
-  // The rate's popup (MediaCard's, in the body, above the card) is a cover of its own while it is open.
-  const [rateUp, setRateUp] = useState(false);
-  const rateChanged = useCallback(
+  // A popup of the card's (its speed or its volume: MediaCard's, in the body, above the card) is a cover of its own
+  // while it is open.
+  const [popupUp, setPopupUp] = useState(false);
+  const popupChanged = useCallback(
     (tabId: string | null): void => {
-      setRateUp(tabId !== null);
-      onRateOpen(tabId !== null);
+      setPopupUp(tabId !== null);
+      onPopupOpen(tabId !== null);
     },
-    [onRateOpen],
+    [onPopupOpen],
   );
   useLayoutEffect(() => {
-    const popup = rateUp ? document.querySelector<HTMLElement>('[data-testid="media-rate-card"]') : null;
+    const popup = popupUp ? document.querySelector<HTMLElement>("[data-media-popup]") : null;
     const box = stage?.getBoundingClientRect();
     if (engine === null || popup === null || box === undefined) return;
-    const rateCover = `${cover}:rate`;
+    const popupCover = `${cover}:popup`;
     const measure = (): void => {
       const at = popup.getBoundingClientRect();
-      engine.setCover(rateCover, { x: at.left - box.left, y: at.top - box.top, w: at.width, h: at.height });
+      engine.setCover(popupCover, { x: at.left - box.left, y: at.top - box.top, w: at.width, h: at.height });
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(popup);
     return () => {
       observer.disconnect();
-      engine.setCover(rateCover, null);
+      engine.setCover(popupCover, null);
     };
-  }, [engine, rateUp, cover, stage]);
+  }, [engine, popupUp, cover, stage]);
   useEffect(() => {
     const el = card.current;
     if (el === null) return;
@@ -459,7 +461,7 @@ function RailMediaCard({
         exiting={false}
         closePopovers={false}
         onEngage={NO_ENGAGE}
-        onRateOpen={rateChanged}
+        onPopupOpen={popupChanged}
       />
     </div>,
     stage,

@@ -77,6 +77,11 @@ export const AREAS = [
     paths: [`${UI}/components/home/**`, `${UI}/lib/{home,weather}.ts`, `${C}/{home,shell-pages}.ts`],
   },
   {
+    // Terminals (docs/terminal.md): the page and its sessions in the shell, the host and its shells in main.
+    tag: "@terminal",
+    paths: [`${UI}/components/terminal/**`, `${UI}/lib/terminal/**`, `${UI}/terminal.css`, `${C}/terminal.ts`, `${M}/terminal/**`],
+  },
+  {
     tag: "@glance",
     paths: [`${UI}/components/{GlanceOverlay,ImagePreview}.tsx`, `${UI}/lib/glance.ts`],
   },

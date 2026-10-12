@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, type RefObject } from "react";
-import { History, Keyboard, Mic, X } from "lucide-react";
-import { NUB_CLOSE_R, NUB_DROP_R, nubClose, nubDrops, type NotchShape } from "../../lib/desk/geometry";
+import { History, Keyboard, Mic, PanelRight, X } from "lucide-react";
+import { NUB_CLOSE_R, NUB_DROP_R, nubClose, nubDrops, nubSide, type NotchShape } from "../../lib/desk/geometry";
 import { PistachioGlyph } from "../PistachioMark";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { NubMotion, type PillParts } from "./nub-motion";
@@ -60,6 +60,39 @@ export function NubPillClose({ ref, shown, tip, onClose }: { ref: React.Ref<HTML
       </TooltipTrigger>
       <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={tip.shown ? "" : undefined} className={tip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
         Close
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * The chat's side button (2026-10-09), above the pill's close while the chat
+ * is docked: it sends the answer straight into the chat's place at the
+ * desk's side, torn off and sprung there as a drag would leave it
+ * (AnswerMotion.snapInto) — or, no card out, brings the chat out there. It
+ * comes up out of the nub with the close, a step further, and goes back
+ * into it; floating or at the side already, it is not offered.
+ */
+export function NubPillSide({ ref, shown, tip, onSide }: { ref: React.Ref<HTMLButtonElement>; shown: boolean; tip: NubTip; onSide: () => void }) {
+  const at = nubSide();
+  return (
+    <Tooltip open={tip.open} onOpenChange={tip.onOpenChange}>
+      <TooltipTrigger
+        ref={ref}
+        type="button"
+        className="desk-nub-pill-close desk-nub-pill-side"
+        data-testid="desk-answer-side"
+        data-shown={shown ? "" : undefined}
+        aria-label="Put the chat at the side"
+        inert={!shown}
+        style={{ left: NUB_BOX.w + at.x - NUB_CLOSE_R, top: NUB_BOX.h + at.y - NUB_CLOSE_R, width: NUB_CLOSE_R * 2, height: NUB_CLOSE_R * 2 }}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onSide}
+      >
+        <PanelRight aria-hidden="true" />
+      </TooltipTrigger>
+      <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={tip.shown ? "" : undefined} className={tip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
+        Chat at the side
       </TooltipContent>
     </Tooltip>
   );

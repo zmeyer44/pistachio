@@ -903,9 +903,13 @@ export class DemoShellHost {
       case "setRate":
         this.#updateMedia(tabId, () => ({ playbackRate: control.rate }));
         return;
-      case "setVolume":
-        this.#updateMedia(tabId, () => ({ volume: control.volume, muted: control.volume === 0, elementMuted: control.volume === 0 }));
+      case "setVolume": {
+        // All the way down with a level to come back to: muted at it, as the desktop's player is.
+        const silent = control.volume === 0;
+        const volume = silent && control.restore !== undefined ? control.restore : control.volume;
+        this.#updateMedia(tabId, () => ({ volume, muted: silent, elementMuted: silent }));
         return;
+      }
       case "mute":
         this.#updateMedia(tabId, (item) => ({ muted: !item.muted, elementMuted: !item.muted, audible: item.playing && item.muted }));
         return;

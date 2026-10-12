@@ -465,9 +465,10 @@ export type TabGroupCommand =
    * once. `loose`: a loose tab's group (TabGroupInfo.loose), of one tab. `anchored`: a page's group (TabGroupInfo.anchorId),
    * of one tab, a sidebar entry's page — or, that entry having one already, nothing. With no tabs, neither loose nor
    * anchored (since 2026-10-09): an empty space in the active Profile (Space) — "New space". `select`: make it the current
-   * space at once, as `select` does.
+   * space at once, as `select` does. `url`, with no tabs (⌘⇧L's address bar, 2026-10-10): the space opens with a tab
+   * there, current with that tab in use — never empty in between; at the bound of spaces it fails, and opens nothing.
    */
-  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean; anchored?: boolean; select?: boolean }
+  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean; anchored?: boolean; select?: boolean; url?: string }
   /**
    * Make the space current (docs/spaces.md §2; main owns which one is, ShellSnapshot.currentGroupId): main activates
    * `tabId` if it is the space's, else the space's tab used last, else nothing — an empty space, `activeTabId` null. The
@@ -508,6 +509,9 @@ const COMMAND_TYPES: ReadonlySet<string> = new Set([
   "move",
 ]);
 
+/** What `create`'s `url` may be: what was typed or pasted in the address bar — a pasted link can run long. */
+const MAX_CREATE_URL = 16_384;
+
 function isTabId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 192;
 }
@@ -534,7 +538,9 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
         (raw["color"] === undefined || isTabGroupColor(raw["color"])) &&
         (raw["loose"] === undefined || (typeof raw["loose"] === "boolean" && (raw["loose"] === false || raw["tabIds"].length === 1))) &&
         (raw["anchored"] === undefined || (typeof raw["anchored"] === "boolean" && (raw["anchored"] === false || (raw["tabIds"].length === 1 && raw["loose"] !== true)))) &&
-        (raw["select"] === undefined || typeof raw["select"] === "boolean")
+        (raw["select"] === undefined || typeof raw["select"] === "boolean") &&
+        (raw["url"] === undefined ||
+          (typeof raw["url"] === "string" && raw["url"].length > 0 && raw["url"].length <= MAX_CREATE_URL && raw["tabIds"].length === 0 && raw["loose"] !== true && raw["anchored"] !== true))
       );
     case "select":
       return isTabGroupId(raw["groupId"]) && (raw["tabId"] === undefined || isTabId(raw["tabId"]));

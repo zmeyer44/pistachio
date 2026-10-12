@@ -295,6 +295,125 @@ async function selfRedirectingRelyingParty(options: {
 }
 
 /**
+ * A relying party shaped like Notion's Google sign-in: the provider sends the
+ * popup back to a callback page on the relying party's own origin, which
+ * posts its address to the opener and closes. The opener routes in place —
+ * history.pushState to `/oauth2callback?code=…` — and exchanges the one-time
+ * code over fetch from there. A browser reload while it waits re-serves that
+ * address, whose page redeems the code again and is refused, as Google
+ * refuses a used code ("Something went wrong. (400)").
+ */
+async function routingRelyingParty(options: {
+  exchangeDelayMs: number;
+}): Promise<SelfRedirectingRelyingParty> {
+  const requests: string[] = [];
+  let origin = "";
+
+  const providerServer = createServer((request, response) => {
+    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (path === "/o/oauth2/auth") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html>
+        <html><head><title>Choose an account</title></head>
+        <body data-opener="pending"><main>
+          <h1>Choose an account</h1><button>Continue as Avery</button>
+        </main><script>
+          document.body.dataset.opener = window.opener ? "connected" : "isolated";
+          document.querySelector("button").addEventListener("click", () => {
+            const query = new URLSearchParams(location.search);
+            location.href = query.get("redirect_uri") + "?code=one-time&state=" + query.get("state");
+          });
+        </script></body></html>`);
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  const providerOrigin = await listenOnLoopback(providerServer);
+
+  let redeemed = false;
+  const relyingPartyServer = createServer((request, response) => {
+    const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const authenticated = (request.headers.cookie ?? "").includes(
+      "routed-session=connected",
+    );
+    requests.push(`${request.method} ${path}${authenticated ? " [authenticated]" : ""}`);
+    if (path === "/googlepopupcallback") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(`<!doctype html><title>Signing in</title><script>
+        window.opener.postMessage({ type: "popup-callback", url: location.href }, location.origin);
+        window.close();
+      </script>`);
+      return;
+    }
+    if (path === "/api/loginWithGoogleAuth" && request.method === "POST") {
+      if (redeemed) {
+        response.writeHead(400, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ debugMessage: "Invalid grant." }));
+        return;
+      }
+      redeemed = true;
+      setTimeout(() => {
+        response.writeHead(200, {
+          "Content-Type": "application/json",
+          "Set-Cookie": "routed-session=connected; Path=/; HttpOnly; SameSite=Lax",
+        });
+        response.end("{}");
+      }, options.exchangeDelayMs);
+      return;
+    }
+    // Every other address is the app, which routes on the client.
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html>
+      <html><head><title>Sign in</title></head>
+      <body data-authenticated="false" data-state="idle"><main>
+        <h1>Sign in</h1>
+        <button>Continue with Google</button>
+      </main><script>
+        const show = (heading, authenticated) => {
+          document.querySelector("main").replaceChildren(Object.assign(document.createElement("h1"), { textContent: heading }));
+          document.body.dataset.authenticated = String(authenticated);
+        };
+        async function route() {
+          if (location.pathname !== "/oauth2callback") return;
+          document.body.dataset.state = "submitting";
+          const response = await fetch("/api/loginWithGoogleAuth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code: new URLSearchParams(location.search).get("code") }),
+          });
+          if (!response.ok) {
+            document.body.dataset.state = "error";
+            show("Something went wrong. (" + response.status + ")", false);
+            return;
+          }
+          history.pushState({}, "", "/");
+          show("Welcome home", true);
+        }
+        document.querySelector("button").addEventListener("click", () => {
+          window.open(
+            "${providerOrigin}/o/oauth2/auth?redirect_uri=" + encodeURIComponent(location.origin + "/googlepopupcallback") + "&state=flow",
+            "Google",
+            "popup=yes,width=500,height=600",
+          );
+        });
+        window.addEventListener("message", (event) => {
+          if (event.origin !== location.origin || event.data?.type !== "popup-callback") return;
+          history.pushState({}, "", "/oauth2callback" + new URL(event.data.url).search);
+          void route();
+        });
+        void route();
+      </script></body></html>`);
+  });
+  origin = await listenOnLoopback(relyingPartyServer);
+  return {
+    origin,
+    providerOrigin,
+    requests: () => requests,
+    servers: [providerServer, relyingPartyServer],
+  };
+}
+
+/**
  * Sign in to a self-redirecting relying party at `origin` (its own server's
  * address, or the same server by another host name) through its Google
  * popup, and see the page's own navigation land. Answers the page and when
@@ -353,6 +472,9 @@ test.describe.serial("authentication popups", { tag: ["@site", "@popup"] }, () =
         general: { consoleOpenOnLaunch: false },
       },
       name: "oauth-popup",
+      // Its pages are clicked by Playwright beside another window, which Fit zooms out: Playwright's own click geometry
+      // misses on a page under device emulation (a person's press is mapped), so every page is at its own size.
+      deskFeel: { zoom: "actual" },
     }));
     shell = await shellReady(app);
   });
@@ -664,11 +786,13 @@ test.describe.serial("authentication popups", { tag: ["@site", "@popup"] }, () =
   });
 
   // A page that redirects itself once its popup closes must not be reloaded
-  // out from under it — with a quiet sign-in page, and with one rewriting an
-  // analytics cookie mid-exchange. The two run on two host names (cookies
-  // are kept per host), and are judged together once both have had the
-  // time a late reload would take (the browser's settle window is 5 s).
-  test("a relying party that redirects itself after a Google popup is not reloaded out from under it, cookie churn or not", async () => {
+  // out from under it — with a quiet sign-in page, with one rewriting an
+  // analytics cookie mid-exchange, and with one that routes in place to its
+  // callback address and redeems a one-time code from there (Notion). The
+  // first two run on two host names (cookies are kept per host), and all are
+  // judged together once each has had the time a late reload would take (the
+  // browser's settle window is 5 s).
+  test("a relying party that redirects or routes itself after a Google popup is not reloaded out from under it, cookie churn or not", async () => {
     const quiet = await selfRedirectingRelyingParty({
       exchangeDelayMs: 400,
       homeDelayMs: 1_000,
@@ -679,27 +803,28 @@ test.describe.serial("authentication popups", { tag: ["@site", "@popup"] }, () =
       homeDelayMs: 1_000,
       analyticsCookieChurn: true,
     });
-    servers.push(...quiet.servers, ...churning.servers);
+    // Slower than the browser's 1 s wait after a callback page on the owner's origin.
+    const routing = await routingRelyingParty({ exchangeDelayMs: 1_500 });
+    servers.push(...quiet.servers, ...churning.servers, ...routing.servers);
     const first = await signInThroughPopup(app, shell, quiet.origin, quiet);
     const second = await signInThroughPopup(app, shell, churning.origin.replace("127.0.0.1", "localhost"), churning);
+    const third = await signInThroughPopup(app, shell, routing.origin, routing);
 
     // Give the browser every chance to issue a late reload before judging.
-    await shell.waitForTimeout(Math.max(0, Math.max(first.closedAt, second.closedAt) + 6_500 - Date.now()));
-    for (const [{ owner }, relyingParty, name] of [
-      [first, quiet, "01-self-redirect"],
-      [second, churning, "02-cookie-churn"],
+    await shell.waitForTimeout(Math.max(0, Math.max(first.closedAt, second.closedAt, third.closedAt) + 6_500 - Date.now()));
+    // One sign-in page, one exchange, one home — the page's own — and no
+    // reload re-serving any document.
+    const redirected = ["GET /session/new", "POST /auth/jwt", "GET / [authenticated]"];
+    for (const [{ owner }, relyingParty, name, served] of [
+      [first, quiet, "01-self-redirect", redirected],
+      [second, churning, "02-cookie-churn", redirected],
+      [third, routing, "03-routed-callback", ["GET /session/new", "GET /googlepopupcallback", "POST /api/loginWithGoogleAuth"]],
     ] as const) {
       expect(
         await owner.evaluate(() => (window as unknown as { __landed?: boolean }).__landed),
       ).toBe(true);
       await capturePage(owner, `oauth-popup-self-redirect/${name}-home.png`, { fullPage: true });
-      // One sign-in page, one exchange, one home load — the page's own — and
-      // no reload re-serving either document.
-      expect(relyingParty.requests()).toEqual([
-        "GET /session/new",
-        "POST /auth/jwt",
-        "GET / [authenticated]",
-      ]);
+      expect(relyingParty.requests()).toEqual(served);
     }
   });
 

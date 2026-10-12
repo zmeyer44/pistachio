@@ -37,7 +37,11 @@ export type ShortcutActionId =
   | "arrangeDesk"
   | "toggleDesk"
   | "screenshotView"
-  | "screenshotArea";
+  | "screenshotArea"
+  | "newTabAddress"
+  | "newSpaceAddress"
+  | "newSpace"
+  | "newTerminal";
 
 export type ShortcutSettings = Record<ShortcutActionId, string | null>;
 export type ShortcutPlatform = "darwin" | "other";
@@ -114,6 +118,13 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "toggleDesk", group: "Window", label: "Toggle desk (retired)", note: "The desk is always up since 2026-10-09.", surfaces: [] },
   { id: "screenshotView", group: "Window", label: "Screenshot the page", note: "The desk, without the sidebar or the window around it. Copied, and saved where your Mac saves screenshots." },
   { id: "screenshotArea", group: "Window", label: "Screenshot an area", note: "Drag over the part of the window to keep; Escape cancels. Copied, and saved where your Mac saves screenshots." },
+  // ⌘L's two siblings (2026-10-10): the same address bar, but ↵ leaves the page in use as it was.
+  { id: "newTabAddress", group: "Tabs", label: "Open address in new tab", note: "The address bar; what you choose opens in a new tab of this space." },
+  // A space is a desk's (docs/spaces.md): the web has none to make (its host refuses tabGroupCommand).
+  { id: "newSpaceAddress", group: "Tabs", label: "Open address in new space", note: "The address bar; what you choose opens in a new space of its own.", surfaces: ["native"] },
+  { id: "newSpace", group: "Tabs", label: "New space", note: "An empty space, current at once, its name ready to type.", surfaces: ["native"] },
+  // A shell on the Mac (docs/terminal.md): the web has none to run.
+  { id: "newTerminal", group: "Tabs", label: "New terminal", note: "A shell on this Mac in a tab of its own, in the folder of the terminal in use.", surfaces: ["native"] },
 ];
 
 export const SHORTCUT_ACTION_IDS = SHORTCUT_DEFINITIONS.map((definition) => definition.id) as readonly ShortcutActionId[];
@@ -175,6 +186,14 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   // Beside the Mac's own ⌘⇧3 and ⌘⇧4, which take the whole screen.
   screenshotView: "Mod+Shift+1",
   screenshotArea: "Mod+Shift+2",
+  // Option alone: on a layout that types a character there (⌥L is @ on a German Mac) the key stays typing
+  // (shortcutFromEvent).
+  newTabAddress: "Alt+L",
+  newSpaceAddress: "Mod+Shift+L",
+  // A Mac browser's ⌘N is a new window; a space is the nearest thing here.
+  newSpace: "Mod+N",
+  // VS Code's key for its terminal panel; free in every browser on the Mac.
+  newTerminal: "Mod+J",
 };
 
 const NAMED_KEYS = new Set([
@@ -333,6 +352,9 @@ export function shortcutFromEvent(input: PortableShortcutEvent, platform: Shortc
   const meta = input.metaKey ?? input.meta ?? false;
   const control = input.ctrlKey ?? input.control ?? false;
   const alt = input.altKey ?? input.alt ?? false;
+  // Option alone on a Mac composes a character, and on many layouts one people type: ⌥L is @ on a German Mac, ⌥5 is
+  // [. A press that composed plain ASCII is typing, never a binding (US's ⌥L composes ¬, and stays one).
+  if (platform === "darwin" && alt && !meta && !control && /^[!-~]$/.test(input.key)) return null;
   // With Option down the character is the composed one (⌥⇧C is "Ç"), so the
   // physical key names the binding; otherwise the character does, so a
   // binding follows the person's keyboard layout, and the code is only a

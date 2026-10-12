@@ -82,6 +82,9 @@ test.describe.serial("the composer's attachments", { tag: ["@agent"] }, () => {
     ({ app } = await launchApp({
       name: "add-to-chat",
       settings: { layout: { sidebar: "pinned" }, general: { consoleOpenOnLaunch: false } },
+      // Its pages are clicked by Playwright beside another window, which Fit zooms out: Playwright's own click geometry
+      // misses on a page under device emulation (a person's press is mapped), so every page is at its own size.
+      deskFeel: { zoom: "actual" },
     }));
     shell = await shellReady(app);
   });
