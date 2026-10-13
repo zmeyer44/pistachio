@@ -159,7 +159,7 @@ import {
   VelocityTracker,
   type SpringConfig,
 } from "../../lib/desk/motion";
-import { PAGE_ZOOM_STRENGTH, type DeskChrome, type DeskVariants, type SavedDeskWindow } from "../../lib/desk/store";
+import { PAGE_ZOOM_STRENGTH, type DeskVariants, type SavedDeskWindow } from "../../lib/desk/store";
 import type { DeskArrangePlan, DeskPercentBox } from "@pistachio/shell-contracts/desk-agent";
 import { boxRect, deskZoneRect, percentBox } from "../../lib/desk/agent";
 import { isTabWindow, windowKind, type DeskWindowKind } from "../../lib/desk/windows";
@@ -171,19 +171,15 @@ export interface Insets {
   left: number;
 }
 
-/** Where the page sits inside a window of each frame style. */
-export const CHROME_INSETS: Record<DeskChrome, Insets> = {
-  bar: { top: 34, right: 5, bottom: 5, left: 5 },
-  tab: { top: 30, right: 4, bottom: 4, left: 4 },
-  bare: { top: 18, right: 0, bottom: 0, left: 0 },
-  drawer: { top: 0, right: 0, bottom: 0, left: 0 },
-};
-
-/** How far below the window's top edge its card begins (the tab or the handle rides above it). */
-export const CHROME_CARD_TOP: Record<DeskChrome, number> = { bar: 0, tab: 26, bare: 18, drawer: 0 };
+/**
+ * Where the page sits inside a window: it is the whole of it, its drawer
+ * lying behind its top edge. (Until 2026-10-12 this was each frame's —
+ * Title bar, Tab, Bare, Drawer — the Feel's Frame.)
+ */
+export const WINDOW_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
 /**
- * The Drawer frame: at rest a window is its page and nothing else. Its
+ * The Drawer, every window's frame: at rest a window is its page and nothing else. Its
  * controls are on a strip this tall behind its top edge, which slides up
  * out of it — or, with less room than that above the window, as far as
  * there is, the window sliding down the rest, as the main window's page
@@ -213,9 +209,10 @@ interface DrawerHover {
 
 const NO_HOVER: DrawerHover = { window: false, strip: false, menu: false, page: false, top: false };
 
-/** A masked window's frame is the bare frame's handle, riding above its region: nothing beside or below it. */
-export const MASK_INSETS: Insets = CHROME_INSETS.bare;
-export const MASK_CARD_TOP = CHROME_CARD_TOP.bare;
+/** A masked window's frame is a handle riding above its region: nothing beside or below it. */
+export const MASK_INSETS: Insets = { top: 18, right: 0, bottom: 0, left: 0 };
+/** How far below a masked window's top edge its card begins: the handle rides above it. */
+export const MASK_CARD_TOP = MASK_INSETS.top;
 /** A masked window's least size: its region's shorter side no less than a mask may be. */
 const MASK_MIN: MinSize = { w: MIN_DESK_MASK, h: MIN_DESK_MASK + MASK_INSETS.top };
 /** Masked, the rest of the window fades from around its region in this long. */
@@ -695,12 +692,18 @@ interface Gesture {
   /** Where the pointer holds the window, as fractions of its size — kept as a pulled-out window grows. */
   grab: Point;
   /**
-   * Held by its title bar (or tab, or handle): the pointer's distance below
-   * the window's top edge, kept whatever the window's size, so a window
-   * that shrinks in hand stays held by its bar. Null: `grab.y` holds.
+   * Held by its drawer (or a masked window's handle): the pointer's distance
+   * below the window's top edge, kept whatever the window's size, so a
+   * window that shrinks in hand stays held by its frame. Null: `grab.y` holds.
    */
   pinTop: number | null;
   edges: Edges | null;
+  /**
+   * A resize by the top of a window its drawer pushed down (no room above
+   * it): how far down, as the press began. Its top edge is its drawer's
+   * (DeskWindow's ResizeEdges), where the window is shown, not its own box.
+   */
+  drawerPush?: number;
   /** A resize from a gutter other windows meet the window across: the seams it moves, split-view style. */
   joint: Joint | null;
   tracker: VelocityTracker;
@@ -1249,7 +1252,7 @@ export class DeskEngine {
     if (this.#editing === tabId) this.#editing = null;
     const target = this.#unmaskedRect(win);
     const mask = win.mask;
-    const insets = CHROME_INSETS[this.#host.variants().chrome];
+    const insets = WINDOW_INSETS;
     const from = {
       x: win.rect.x + MASK_INSETS.left,
       y: win.rect.y + MASK_INSETS.top,
@@ -2036,9 +2039,7 @@ export class DeskEngine {
     const usable = this.#usable();
     const at = this.#toStage(client);
     const size = windowSize(usable);
-    const chrome = this.#host.variants().chrome;
-    const pinTop = chrome === "bar" ? CHROME_INSETS.bar.top / 2 : CHROME_CARD_TOP[chrome] / 2;
-    const rect = clampRect({ x: at.x - clamp(at.x - usable.x, 28, size.w / 2), y: at.y - pinTop, w: size.w, h: size.h }, usable);
+    const rect = clampRect({ x: at.x - clamp(at.x - usable.x, 28, size.w / 2), y: at.y, w: size.w, h: size.h }, usable);
     this.add(tabId, { focus: true, rect });
   }
 
@@ -2298,7 +2299,7 @@ export class DeskEngine {
     const hover = { ...(this.#drawerHover.get(tabId) ?? NO_HOVER), ...change };
     if (Object.values(hover).some(Boolean)) this.#drawerHover.set(tabId, hover);
     else this.#drawerHover.delete(tabId);
-    if (this.#host.variants().chrome === "drawer") this.#kick();
+    this.#kick();
   }
 
   /** Raise this parked window into full view (the others down), or put the raised one back down (null). */
@@ -2447,7 +2448,7 @@ export class DeskEngine {
       this.#emit();
       this.#kick();
     }
-    const insets = CHROME_INSETS[this.#host.variants().chrome];
+    const insets = WINDOW_INSETS;
     const page = { x: rect.x + insets.left, y: rect.y + insets.top, w: rect.w - insets.left - insets.right, h: rect.h - insets.top - insets.bottom };
     const { left, top, height } = this.#stageBox;
     const y = Math.round(top + page.y);
@@ -2879,7 +2880,11 @@ export class DeskEngine {
     this.#raise(tabId);
     this.#unblur();
     const start = this.#toStage({ x: event.clientX, y: event.clientY });
-    const joint = this.#jointAt(win, edges, start);
+    // Its top edge and corners ride its drawer while that is out, as high above the window's own box as the drawer
+    // rises out of it: the seams are found where the press is on that box, as they were before the drawer was out.
+    const push = edges.top ? this.#drawerShift(win) : 0;
+    const lift = edges.top ? win.drawer.t * DRAWER_H - push : 0;
+    const joint = this.#jointAt(win, edges, { x: start.x, y: start.y + lift });
     // The windows on its seams are resized with it: none goes on moving as it was.
     for (const id of joint?.start.keys() ?? [tabId]) {
       const held = this.#wins.get(id)!;
@@ -2900,6 +2905,7 @@ export class DeskEngine {
       pinTop: null,
       edges,
       joint,
+      drawerPush: push,
       tracker: new VelocityTracker(),
       zone: null,
       snapping: false,
@@ -3064,7 +3070,7 @@ export class DeskEngine {
     const lift = { scale: variants.motion === "lifted" ? LIFT_SCALE : 1, tilt: 0 };
     const point = gesture.pointer;
     const masked = this.#wins.get(gesture.tabId)?.mask != null;
-    const pinTop = masked ? MASK_CARD_TOP / 2 : variants.chrome === "bar" ? CHROME_INSETS.bar.top / 2 : CHROME_CARD_TOP[variants.chrome] / 2;
+    const pinTop = masked ? MASK_CARD_TOP / 2 : 0;
     const holdX = (w: number): number => clamp(point.x - usable.x, 28, w / 2);
     gesture.pinTop = pinTop;
     gesture.tracker.reset();
@@ -3224,7 +3230,12 @@ export class DeskEngine {
     const ownY = joint === null || joint.y === null;
     // An edge that is the window's alone: out to the desk's leading edge; the desk's own edges stick on the way.
     const alone: Edges = { left: edges.left && ownX, right: edges.right && ownX, top: edges.top && ownY, bottom: edges.bottom && ownY };
-    const free = magnetizeEdges(resizedRect(gesture.startRect, alone, dx, dy, this.#reach()), alone, this.#others(win.tabId), this.#usable());
+    // Pushed down by its drawer, the window is taken by its top where it is shown: moved, its top goes from there, and
+    // the push gives way as the room above opens — else the edge in hand would stay put for the drawer's height. (Not
+    // pressed and let go: then its box is as it was, filling the desk again once the drawer is in.)
+    const push = alone.top && dy !== 0 ? (gesture.drawerPush ?? 0) : 0;
+    const from = push > 0 ? { ...gesture.startRect, y: gesture.startRect.y + push, h: gesture.startRect.h - push } : gesture.startRect;
+    const free = magnetizeEdges(resizedRect(from, alone, dx, dy, this.#reach()), alone, this.#others(win.tabId), this.#usable());
     if (joint === null) {
       win.rect = free;
       return;
@@ -3825,7 +3836,7 @@ export class DeskEngine {
 
   /** The window has a drawer now: the Drawer frame, on the open desk, at rest in it (not masked, flying or closing; parked, only while raised). */
   #hasDrawer(win: Win): boolean {
-    if (this.#host.variants().chrome !== "drawer" || this.#phase !== "open") return false;
+    if (this.#phase !== "open") return false;
     if (win.mask !== null || win.unmasking !== null || win.flight !== null || win.closing || !win.framed) return false;
     if (win.mini?.parked === true && this.#raised !== win.tabId) return false;
     return this.#editing !== win.tabId && this.#selecting !== win.tabId;
@@ -4281,7 +4292,7 @@ export class DeskEngine {
         : (this.#notchClip(win, y, foot, sides, radii) ??
           `inset(${(-sides.top).toFixed(1)}px ${(-sides.right).toFixed(1)}px ${(h - foot).toFixed(1)}px ${(-sides.left).toFixed(1)}px${round})`);
     // Its drawer: how far out (the strip's own slide, CSS), and whether it would push the window down (the strip at its top brings it out then).
-    const drawer = this.#host.variants().chrome === "drawer" && win.mask === null;
+    const drawer = win.mask === null;
     const tight = drawer && this.#drawerRoom(win) < DRAWER_H;
     // (Whether it is out at all too: the last frame of its going in can round to the same thousandth as all the way in.)
     const drawerKey = drawer ? `${win.drawer.t.toFixed(3)}:${win.drawer.t > 0 ? "out" : "in"}:${tight ? "tight" : "roomy"}` : "";
@@ -4614,7 +4625,7 @@ export class DeskEngine {
       this.#inflight.add(tabId);
       this.#requestedAt.set(tabId, at);
       const win = this.#wins.get(tabId);
-      const insets = win === undefined ? CHROME_INSETS[this.#host.variants().chrome] : this.#insets(win);
+      const insets = win === undefined ? WINDOW_INSETS : this.#insets(win);
       // A mask being edited is shown as its whole page.
       const shown = win !== undefined && this.#editing === tabId && win.mask !== null ? this.#editPage(win).w : (win?.target?.w ?? win?.rect.w ?? 640) - insets.left - insets.right;
       width = Math.max(width, shown, 640);
@@ -4933,7 +4944,7 @@ export class DeskEngine {
 
   /** Where a window's page sits in it: its frame's insets, or a masked window's handle. */
   #insets(win: Win): Insets {
-    return win.mask !== null ? MASK_INSETS : CHROME_INSETS[this.#host.variants().chrome];
+    return win.mask !== null ? MASK_INSETS : WINDOW_INSETS;
   }
 
   #minSize(win: Win): MinSize {
@@ -4951,7 +4962,7 @@ export class DeskEngine {
 
   /** The whole window a masked window at `rect` was cut from, as #unmaskedRect. */
   #wholeFor(rect: Rect, mask: DeskMask): Rect {
-    const insets = CHROME_INSETS[this.#host.variants().chrome];
+    const insets = WINDOW_INSETS;
     const regionX = rect.x + MASK_INSETS.left;
     const regionY = rect.y + MASK_INSETS.top;
     return clampRect(

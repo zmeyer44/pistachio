@@ -70,11 +70,8 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
     await settled(shell, app);
     await expect(shell.locator('[data-testid="desk-window"]')).toHaveCount(2);
 
-    // ── 1. The Drawer frame, from the More card's Feel; the windows cascaded, each with room above it ─
+    // ── 1. The windows cascaded from the More card, each with room above it ─
     await openMore(shell);
-    const frame = shell.getByTestId("desk-variant-chrome");
-    for (let i = 0; i < 4 && (await frame.getAttribute("data-value")) !== "drawer"; i += 1) await frame.click();
-    await expect(frame).toHaveAttribute("data-value", "drawer");
     await shell.getByTestId("desk-cascade").click();
     await shell.keyboard.press("Escape");
     await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(0);
@@ -89,7 +86,6 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
     const url = tabId === invoice ? INVOICES : VENDOR;
     const other = tabId === invoice ? vendor : invoice;
     const win = shell.locator(windowSelector(tabId));
-    await expect(win).toHaveAttribute("data-chrome", "drawer");
     await expect(win).toHaveAttribute("data-drawer-room", "roomy");
     // In use: its drawer out above it, the window's page where the window is.
     await expect(win).toHaveAttribute("data-drawer-out", "");
@@ -118,12 +114,30 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
     expect(otherCorners.every((radius) => radius !== "0px")).toBe(true);
     await capture(app, shell, "01-drawer-out-in-use.png");
 
+    // ── 1b. Its top is its drawer's while that is out: its top edge rides there, and taken by it the window is resized
+    //       from the top, as from any other side ─
+    const north = await box(shell, `${windowSelector(tabId)} [data-desk-edge="n"]`);
+    expect(Math.abs(north.y + north.height / 2 - drawer.y)).toBeLessThan(2);
+    const from = { x: north.x + north.width / 2, y: north.y + north.height / 2 };
+    await shell.mouse.move(from.x, from.y);
+    await shell.mouse.down();
+    await shell.mouse.move(from.x, from.y + 60, { steps: 8 });
+    await shell.mouse.up();
+    await settled(shell, app);
+    const shortened = await box(shell, windowSelector(tabId));
+    expect(Math.abs(shortened.y - (cascaded.y + 60))).toBeLessThan(3);
+    expect(Math.abs(shortened.height - (cascaded.height - 60))).toBeLessThan(3);
+    expect(Math.abs(shortened.x - cascaded.x)).toBeLessThan(1);
+    await expect.poll(async () => (await liveViews(app)).find((view) => view.url === url)?.bounds.y).toBe(Math.round(shortened.y));
+
     // ── 2. Filled from its drawer: no room above, so in — until the pointer is at its page's top ─
     await win.getByRole("button", { name: "Fill the desk" }).click();
     await away();
     await settled(shell, app);
     await expect(win).toHaveAttribute("data-drawer-room", "tight");
     await expect(win).not.toHaveAttribute("data-drawer-out", "");
+    // Its top edge lies over the strip there that brings out its drawer: a press on it resizes the window.
+    expect(await shell.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.getAttribute("data-desk-edge") ?? null, { x: stage.x + 400, y: stage.y + 2 })).toBe("n");
     const whole = { x: Math.round(stage.x), y: Math.round(stage.y), width: Math.round(stage.width), height: Math.round(stage.height) };
     await expect.poll(async () => (await liveViews(app)).find((view) => view.url === url)?.bounds).toEqual(whole);
     await expect.poll(() => pageSize(app, url)).toEqual({ width: whole.width, height: whole.height });

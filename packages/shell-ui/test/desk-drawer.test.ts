@@ -21,8 +21,8 @@ import type { DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout, type CursorPoint } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
 import { DeskEngine, DRAWER_H } from "../src/components/desk/desk-engine";
-import type { Rect } from "../src/lib/desk/geometry";
-import { DEFAULT_DESK_VARIANTS, type DeskChrome } from "../src/lib/desk/store";
+import { DESK_GAP, type Rect } from "../src/lib/desk/geometry";
+import { DEFAULT_DESK_VARIANTS } from "../src/lib/desk/store";
 
 let frames: Array<(now: number) => void> = [];
 let clock = 0;
@@ -65,6 +65,14 @@ function shownTop(el: ReturnType<typeof element>): number {
   return Number(/translate3d\(-?[\d.]+px, (-?[\d.]+)px/.exec(el.style["transform"] ?? "")![1]);
 }
 
+/** Where a window is shown: its element's box (pushed down by its drawer, its top is below its own box's). */
+function shownBox(el: ReturnType<typeof element>): Rect {
+  const [x, y] = /translate3d\((-?[\d.]+)px, (-?[\d.]+)px/.exec(el.style["transform"] ?? "")!.slice(1).map(Number);
+  return { x: x!, y: y!, w: Number.parseFloat(el.style["width"]!), h: Number.parseFloat(el.style["height"]!) };
+}
+
+const TOP: { left: boolean; right: boolean; top: boolean; bottom: boolean } = { left: false, right: false, top: true, bottom: false };
+
 beforeEach(() => {
   frames = [];
   clock = performance.now();
@@ -93,11 +101,10 @@ afterEach(() => {
 });
 
 /**
- * Two windows out side by side with room above them (tab-0 in use), in the Drawer frame, their elements attached; the
- * OS pointer where `cursor` says (null: main cannot say). With `stills`, every picture asked for comes back; `chrome`
- * says the frame, the Drawer unless it says otherwise.
+ * Two windows out side by side with room above them (tab-0 in use), their elements attached; the OS pointer where
+ * `cursor` says (null: main cannot say). With `stills`, every picture asked for comes back.
  */
-async function open(options: { stills?: boolean; chrome?: () => DeskChrome } = {}) {
+async function open(options: { stills?: boolean } = {}) {
   const layouts: BrowserLayout[] = [];
   const desks: Array<DeskState | null> = [];
   const cursor: { point: CursorPoint | null } = { point: null };
@@ -120,7 +127,7 @@ async function open(options: { stills?: boolean; chrome?: () => DeskChrome } = {
   } as unknown as ShellApiBridge);
   const desk = new DeskEngine({
     // (Every page at its own size, as these were written for: Page zoom's Fit is desk-page-zoom.test.ts's.)
-    variants: () => ({ ...DEFAULT_DESK_VARIANTS, chrome: options.chrome?.() ?? "drawer", zoom: "actual" as const }),
+    variants: () => ({ ...DEFAULT_DESK_VARIANTS, zoom: "actual" as const }),
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,
@@ -262,6 +269,78 @@ describe("the Drawer frame", () => {
     expect(shownTop(els.get("tab-0")!)).toBeCloseTo(0, 0);
     expect(page("tab-0")).toEqual({ x: 0, y: 0, width: FILLED.w, height: FILLED.h });
     expect(held("tab-0")).toBeUndefined();
+    desk.destroy();
+  });
+
+  it("taken by its top edge, the drawer's top, a window its drawer pushed down follows the pointer from there", async () => {
+    const { desk, els, drag, out } = await open();
+    const el = els.get("tab-0")!;
+    desk.toggleMaximize("tab-0");
+    await settle();
+    desk.hoverPage("tab-0", true, true);
+    await settle();
+    expect(out("tab-0")).toBe(1);
+    expect(shownTop(el)).toBeCloseTo(DRAWER_H, 0);
+    // Its top edge is the drawer's, at the desk's top: pressed there and drawn 60px down, the drawer comes down with
+    // the pointer from the first step, the page under it — not held still for the drawer's height as the push gave way.
+    desk.resize("tab-0", TOP, { clientX: 400, clientY: 0, button: 0 });
+    drag.sample?.({ x: 400, y: 10, phase: "move" });
+    await frame();
+    expect(shownTop(el)).toBeCloseTo(10 + DRAWER_H, 0);
+    for (let step = 1; step <= 10; step += 1) {
+      drag.sample?.({ x: 400, y: 6 * step, phase: "move" });
+      await frame();
+    }
+    expect(shownTop(el)).toBeCloseTo(60 + DRAWER_H, 0);
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    await settle();
+    // Let go: the room above it is the drawer's now, nothing pushes it, and its foot is where it was.
+    expect(shownBox(el)).toMatchObject({ y: 60 + DRAWER_H, h: FILLED.h - 60 - DRAWER_H });
+    expect(out("tab-0")).toBe(1);
+    desk.destroy();
+  });
+
+  it("pressed by its top edge and let go without moving, a window its drawer pushed down keeps its box", async () => {
+    const { desk, els, drag } = await open();
+    const el = els.get("tab-0")!;
+    desk.toggleMaximize("tab-0");
+    await settle();
+    desk.hoverPage("tab-0", true, true);
+    await settle();
+    desk.resize("tab-0", TOP, { clientX: 400, clientY: 0, button: 0 });
+    drag.sample?.({ x: 400, y: 0, phase: "move" });
+    await frame();
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    desk.hoverPage("tab-0", false, false);
+    await pass(1_000);
+    // Its drawer back in, it fills the desk again.
+    expect(shownBox(el)).toMatchObject({ y: 0, h: FILLED.h });
+    desk.destroy();
+  });
+
+  it("takes a top corner riding the drawer on the gutter it is beside, and moves the window across it with it", async () => {
+    const { desk, els, drag, out } = await open();
+    const left: Rect = { x: 100, y: 200, w: 600, h: 500 };
+    const right: Rect = { x: left.x + left.w + DESK_GAP, y: 200, w: 600, h: 500 };
+    desk.applyLayout(
+      new Map([
+        ["tab-1", right],
+        ["tab-0", left],
+      ]),
+    );
+    await settle();
+    expect(out("tab-0")).toBe(1);
+    // Its top-right corner is a drawer's height above the window, where its drawer's corner is: still on the gutter.
+    const corner = { x: left.x + left.w + 2, y: left.y - DRAWER_H + 3 };
+    desk.resize("tab-0", { left: false, right: true, top: true, bottom: false }, { clientX: corner.x, clientY: corner.y, button: 0 });
+    for (let step = 1; step <= 10; step += 1) {
+      drag.sample?.({ x: corner.x + 6 * step, y: corner.y, phase: "move" });
+      await frame();
+    }
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    await settle();
+    expect(shownBox(els.get("tab-0")!)).toMatchObject({ x: left.x, w: left.w + 60 });
+    expect(shownBox(els.get("tab-1")!)).toMatchObject({ x: right.x + 60, w: right.w - 60 });
     desk.destroy();
   });
 

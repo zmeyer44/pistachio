@@ -20,7 +20,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, createTab, launchDesk, selectSpace, openMore, rowSelector, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
+import { box, createGroup, createTab, launchDesk, selectSpace, openMore, rowSelector, screenshots, selectTab, settled, showFrame, snapshot, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-grow");
 
@@ -120,6 +120,7 @@ test.describe.serial("a desk window growing, and shrinking", { tag: ["@desk"] },
   test("Fill the desk, pressed with its tooltip up, grows the window as its live page", async () => {
     await sideBySide();
     const fill = shell.locator(windowSelector(tabs[0])).getByRole("button", { name: "Fill the desk" });
+    await showFrame(shell, windowSelector(tabs[0]));
     await fill.hover();
     // The tooltip is a cover: its own window is its still while it is up.
     await expect(shell.locator('[data-testid="desk-window-tip"][data-shown]')).toHaveCount(1);
@@ -138,6 +139,7 @@ test.describe.serial("a desk window growing, and shrinking", { tag: ["@desk"] },
     // Back beside its neighbour. Shrinking, it stays its live page, laid out at the sizes it passes through.
     const filled = await pageSize(app, urls[0]);
     const shrink = await watchDrawnFromPress(shell, tabs[0]);
+    await showFrame(shell, windowSelector(tabs[0]));
     await shell.locator(windowSelector(tabs[0])).getByRole("button", { name: "Restore" }).click();
     await settled(shell, app);
     const shrinkFrames = await shrink();

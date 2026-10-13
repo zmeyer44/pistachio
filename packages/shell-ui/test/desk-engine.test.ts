@@ -23,15 +23,16 @@ import type { DragSample } from "@pistachio/shell-contracts/chrome";
 import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { CHROME_INSETS, DeskEngine, takesOnInPlace, type DeskHost, MASK_INSETS } from "../src/components/desk/desk-engine";
+import { DeskEngine, takesOnInPlace, type DeskHost, MASK_INSETS, WINDOW_INSETS } from "../src/components/desk/desk-engine";
 import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, rescaleRect, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
 /**
- * The frame these were written for: the Title bar (its insets; a window held by its title bar). And every page at its
- * own size, as they were written for too (Page zoom's Fit: desk-page-zoom.test.ts).
+ * Every page at its own size, as these were written for (Page zoom's Fit: desk-page-zoom.test.ts). (Until 2026-10-12
+ * they were written for the Title bar frame too: its insets, a window held by its title bar. A window is its page now,
+ * held by its drawer, at its top edge.)
  */
-const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const, zoom: "actual" as const };
+const VARIANTS = { ...DEFAULT_DESK_VARIANTS, zoom: "actual" as const };
 
 let frames: Array<(now: number) => void> = [];
 let clock = 0;
@@ -64,6 +65,11 @@ function native(options: { stills?: boolean } = {}) {
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
   setShellApi({
     ...members,
+    // Main cannot say where the pointer is (as under Playwright), and says so at once: a drawer that pushed its window
+    // down (no room above it) goes back in as soon as nothing holds it out, within these synchronous frames.
+    getCursorPoint: () => {
+      throw new Error("no pointer");
+    },
     setLayout: (layout: BrowserLayout) => layouts.push(layout),
     setDesk: (state: DeskState | null) => desks.push(state),
     // A picture of every page asked for, when the pages are live ones.
@@ -86,7 +92,7 @@ const SIDEBAR: Rect = { x: -48, y: 0, w: 48, h: 1000 };
 /** A desk whose pages are all shell-drawn (no live views), over a 1600×1000 stage. */
 function engine(host: Partial<DeskHost> = {}, stage = { left: 0, top: 0, width: 1600, height: 1000 }): DeskEngine {
   const created = new DeskEngine({
-    variants: () => BAR_VARIANTS,
+    variants: () => VARIANTS,
     hasLivePage: () => false,
     select: () => undefined,
     close: () => undefined,
@@ -141,6 +147,14 @@ describe("the desk's first layout", () => {
 });
 
 describe("room kept for the chat's place", () => {
+  // (The engine's own clock is the frames': a window's drawer lingers on it.)
+  let restoreNow: () => void = () => undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+  });
+  afterEach(() => restoreNow());
+
   it("gives a window its own box back exactly once the room goes, even one the room squeezed to its least width", () => {
     native();
     const desk = engine();
@@ -800,13 +814,13 @@ describe("a window in hand", () => {
     return { desk, zone, win, move, release, letGo };
   }
 
-  it("lets go of the whole desk once dragged: back to its own size, still held by its title bar", () => {
+  it("lets go of the whole desk once dragged: back to its own size, still held where it was", () => {
     const { desk, win, move, release } = open();
     expectRect(rectOf(win), centeredRect(usable));
     desk.toggleMaximize("tab-0");
     settle();
     expectRect(rectOf(win), usable);
-    // Grab the title bar three quarters along it, and pull.
+    // Grab it three quarters along, just below its top, and pull.
     const at = { x: usable.x + usable.w * 0.75, y: usable.y + 17 };
     desk.grab("tab-0", at);
     // Not on the move yet: nothing changes.
@@ -817,10 +831,10 @@ describe("a window in hand", () => {
     const carried = rectOf(win);
     expect(Math.abs(carried.w - own.w)).toBeLessThan(2);
     expect(Math.abs(carried.h - own.h)).toBeLessThan(2);
-    // Held where it was: three quarters along the bar, 17px below the top.
+    // Held where it was: three quarters along it, as far down it as it was (its page, not a title bar: it has none).
     const pointer = { x: at.x - 160, y: at.y + 120 };
     expect(Math.abs(pointer.x - (carried.x + carried.w * 0.75))).toBeLessThan(3);
-    expect(Math.abs(pointer.y - (carried.y + 17))).toBeLessThan(3);
+    expect(Math.abs(pointer.y - (carried.y + (17 * carried.h) / usable.h))).toBeLessThan(3);
     release();
     const rested = rectOf(win);
     expect(Math.abs(rested.w - own.w)).toBeLessThan(2);
@@ -830,7 +844,7 @@ describe("a window in hand", () => {
 
   it("coasts a shorter way, thrown alike, the more Glide decelerates", () => {
     const thrownWith = (deceleration: number): number => {
-      const { desk, win, move, release } = open({ variants: () => ({ ...BAR_VARIANTS, deceleration }) });
+      const { desk, win, move, release } = open({ variants: () => ({ ...VARIANTS, deceleration }) });
       const start = rectOf(win);
       const at = { x: start.x + 200, y: start.y + 17 };
       desk.grab("tab-0", at);
@@ -841,7 +855,7 @@ describe("a window in hand", () => {
       desk.destroy();
       return travelled;
     };
-    const usual = thrownWith(BAR_VARIANTS.deceleration);
+    const usual = thrownWith(VARIANTS.deceleration);
     const quick = thrownWith(60);
     const gentle = thrownWith(12);
     // Past where the pointer let go, by the coast.
@@ -871,7 +885,7 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
-  /** One window out where it was saved (fractions of the desk beside the dock), dragged by its title bar `by` a step at a time. */
+  /** One window out where it was saved (fractions of the desk beside the dock), dragged just below its top `by` a step at a time. */
   function dragSaved(saved: Rect, by: { x: number; y: number }) {
     const { drag } = native();
     const desk = engine();
@@ -893,12 +907,12 @@ describe("a window in hand", () => {
     return { before, carried, at: { x: at.x + by.x, y: at.y + by.y } };
   }
 
-  it("lets go of the desk's height once dragged, a tall half keeping its width, still held by its title bar", () => {
+  it("lets go of the desk's height once dragged, a tall half keeping its width, still held where it was", () => {
     const { before, carried, at } = dragSaved({ x: 0, y: 0, w: 0.5, h: 1 }, { x: 160, y: 80 });
     expect(before.h).toBeGreaterThan(usable.h * 0.95);
     expect(Math.abs(carried.w - before.w)).toBeLessThan(2);
     expect(Math.abs(carried.h - windowSize(usable).h)).toBeLessThan(2);
-    expect(Math.abs(at.y - (carried.y + 17))).toBeLessThan(3);
+    expect(Math.abs(at.y - (carried.y + (17 * carried.h) / before.h))).toBeLessThan(3);
   });
 
   it("lets go of the desk's width once dragged, a wide half keeping its height", () => {
@@ -1149,7 +1163,7 @@ describe("the sidebar, the desk's dock", () => {
     const size = windowSize(usable);
     expect(carried.w).toBeCloseTo(size.w, 0);
     // The title bar is under the pointer, near its leading end.
-    expect(pointer.y - carried.y).toBeCloseTo(CHROME_INSETS.bar.top / 2, 0);
+    expect(pointer.y - carried.y).toBeCloseTo(WINDOW_INSETS.top / 2, 0);
     expect(pointer.x - carried.x).toBeGreaterThanOrEqual(28);
     expect(pointer.x - carried.x).toBeLessThan(size.w / 2);
     for (let step = 0; step < 12; step += 1) move(pointer.x, pointer.y);
@@ -1175,7 +1189,7 @@ describe("the sidebar, the desk's dock", () => {
     expect(carried.h).toBeLessThan(before.h);
     expect(held.w).toBeCloseTo(carried.w, 0);
     expect(held.h).toBeCloseTo(carried.h, 0);
-    expect(pointer.y - held.y).toBeCloseTo(CHROME_INSETS.bar.top / 2, 0);
+    expect(pointer.y - held.y).toBeCloseTo(WINDOW_INSETS.top / 2, 0);
     expect(pointer.x - held.x).toBeGreaterThanOrEqual(28);
     release();
     expect(desk.windowTabIds()).toEqual(["tab-0"]);
@@ -1338,7 +1352,7 @@ describe("a Glance taken in", () => {
   }
 
   const pageOf = (rect: Rect): Rect => {
-    const insets = CHROME_INSETS.bar;
+    const insets = WINDOW_INSETS;
     return { x: rect.x + insets.left, y: rect.y + insets.top, w: rect.w - insets.left - insets.right, h: rect.h - insets.top - insets.bottom };
   };
 
@@ -1447,7 +1461,7 @@ describe("a masked window", () => {
     }
   }
 
-  /** Tab 0 out, centred, its page live; masked (by the bar variant's insets) at a region of its page. */
+  /** Tab 0 out, centred, its page live; masked at a region of its page. */
   async function masked(region: Rect = { x: 100, y: 50, w: 300, h: 200 }, host: Partial<DeskHost> = {}) {
     const { drag, layouts, desks } = native({ stills: true });
     const desk = engine({ hasLivePage: () => true, ...host });
@@ -1475,7 +1489,7 @@ describe("a masked window", () => {
     return { desk, win, before, region, move, release, layouts, lastMasks, livePages };
   }
 
-  const bar = CHROME_INSETS.bar;
+  const bar = WINDOW_INSETS;
 
   it("is its region, where it was on the page, at its own size, and main shows only that region", async () => {
     const { desk, win, before, region, lastMasks, livePages, layouts } = await masked();
@@ -2107,8 +2121,8 @@ describe("a gutter between windows", () => {
     drag("tab-1", { left: true }, right.x - DESK_GAP / 2, 500, { x: 160, y: 0 });
     expectRect(at("tab-0"), { ...left, w: left.w + 160 });
     expectRect(at("tab-1"), { ...right, x: right.x + 160, w: right.w - 160 });
-    expect(page("tab-0").width).toBe(Math.round(left.w + 160 - CHROME_INSETS.bar.left - CHROME_INSETS.bar.right));
-    expect(page("tab-1").x).toBe(Math.round(right.x + 160 + CHROME_INSETS.bar.left));
+    expect(page("tab-0").width).toBe(Math.round(left.w + 160 - WINDOW_INSETS.left - WINDOW_INSETS.right));
+    expect(page("tab-1").x).toBe(Math.round(right.x + 160 + WINDOW_INSETS.left));
     // And back the other way, by the left-hand window's right edge; both are saved as they were left.
     drag("tab-0", { right: true }, left.x + left.w + 160 + DESK_GAP / 2, 300, { x: -300, y: 0 });
     expectRect(at("tab-0"), { ...left, w: left.w - 140 });
@@ -2280,7 +2294,7 @@ describe("a cold start (the shell's boot, a reload, a Profile switch: docs/space
     native();
     const box = { left: 0, top: 0, width: 1600, height: 1000 };
     const desk = new DeskEngine({
-      variants: () => BAR_VARIANTS,
+      variants: () => VARIANTS,
       hasLivePage: () => false,
       select: () => undefined,
       close: () => undefined,

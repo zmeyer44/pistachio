@@ -460,56 +460,54 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
 });
 
 // On a desk, the window the link was in recedes: under main's picture of it, dimmed, and back — filling the desk, as
-// its space came up, and set down on it, in either frame.
-for (const chrome of ["bar", "drawer"] as const) {
-  test(`a Glance from a desk window (${chrome} frame) recedes the desk on the pictures it was opened over`, { tag: ["@glance", "@desk"] }, async () => {
-    test.setTimeout(90_000);
-    const { app, shell } = await launchDesk({ name: `glance-${chrome}`, chrome });
-    try {
-      const [invoice, vendor] = (await openTabs(shell, [OWNER_URL, PREVIEW_URL])) as [string, string];
-      await createGroup(shell, "glance", [invoice, vendor], "Glance", "blue");
-      await selectTab(shell, invoice);
-      await selectSpace(shell, "glance");
-      await settled(shell, app);
-      const stage = shell.locator(".desk-stage");
-      const win = shell.locator(windowSelector(invoice));
-      const filter = (): Promise<string> => win.evaluate((el) => getComputedStyle(el).filter);
-      const glanceOnce = async (label: string): Promise<void> => {
-        const owner = await pageAt(app, OWNER_URL);
-        await owner.locator("#vendor-record-link").click({ modifiers: ["Alt"] });
-        await expect(shell.getByTestId("glance-overlay")).toBeVisible();
-        // Every page under it is down; the window shows what main captured as the Glance came up, dimmed.
-        await expect(stage).toHaveAttribute("data-glance", "");
-        const captured = await api(shell, async (pistachio) => (await pistachio.getGlance())?.backgroundStills.map((still) => [still.tabId, still.dataUrl.length] as const) ?? []);
-        const mine = captured.find(([tabId]) => tabId === invoice);
-        expect(mine, "the window's page among the pictures main took").toBeDefined();
-        const drawn = win.locator('[data-testid="desk-window-page"] img').first();
-        await expect.poll(() => drawn.evaluate((img) => (img as HTMLImageElement).src.length)).toBe(mine![1]);
-        await expect.poll(filter).toBe("opacity(0.3)");
-        await captureWindow(app, `desk-${chrome}-${label}.png`);
-        // Gone, the window is back as it was: undimmed, its page live again.
-        await shell.keyboard.press("Escape");
-        await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
-        await expect(stage).not.toHaveAttribute("data-glance", "");
-        await expect.poll(filter).toBe("none");
-        await expect.poll(async () => (await liveViews(app)).some((view) => view.url === OWNER_URL)).toBe(true);
-      };
-      // Filling the desk, as its space came up (its tab the one it was on).
-      const whole = (await stage.boundingBox())!;
-      await expect.poll(async () => Math.round((await win.boundingBox())!.width)).toBe(Math.round(whole.width));
-      await glanceOnce("filled");
-      // A window set down on the desk (its frame within reach first: a Drawer comes out for the pointer).
-      await reachFrame(app, shell, invoice);
-      await win.getByRole("button", { name: "Restore" }).click();
-      await shell.mouse.move(10, 10);
-      await settled(shell, app);
-      await expect.poll(async () => Math.round((await win.boundingBox())!.width)).toBeLessThan(Math.round(whole.width) - 40);
-      await glanceOnce("opened");
-    } finally {
-      await app.close();
-    }
-  });
-}
+// its space came up, and set down on it. (Until 2026-10-12 in each frame, the Title bar's and the Drawer's.)
+test("a Glance from a desk window recedes the desk on the pictures it was opened over", { tag: ["@glance", "@desk"] }, async () => {
+  test.setTimeout(90_000);
+  const { app, shell } = await launchDesk({ name: "glance-desk" });
+  try {
+    const [invoice, vendor] = (await openTabs(shell, [OWNER_URL, PREVIEW_URL])) as [string, string];
+    await createGroup(shell, "glance", [invoice, vendor], "Glance", "blue");
+    await selectTab(shell, invoice);
+    await selectSpace(shell, "glance");
+    await settled(shell, app);
+    const stage = shell.locator(".desk-stage");
+    const win = shell.locator(windowSelector(invoice));
+    const filter = (): Promise<string> => win.evaluate((el) => getComputedStyle(el).filter);
+    const glanceOnce = async (label: string): Promise<void> => {
+      const owner = await pageAt(app, OWNER_URL);
+      await owner.locator("#vendor-record-link").click({ modifiers: ["Alt"] });
+      await expect(shell.getByTestId("glance-overlay")).toBeVisible();
+      // Every page under it is down; the window shows what main captured as the Glance came up, dimmed.
+      await expect(stage).toHaveAttribute("data-glance", "");
+      const captured = await api(shell, async (pistachio) => (await pistachio.getGlance())?.backgroundStills.map((still) => [still.tabId, still.dataUrl.length] as const) ?? []);
+      const mine = captured.find(([tabId]) => tabId === invoice);
+      expect(mine, "the window's page among the pictures main took").toBeDefined();
+      const drawn = win.locator('[data-testid="desk-window-page"] img').first();
+      await expect.poll(() => drawn.evaluate((img) => (img as HTMLImageElement).src.length)).toBe(mine![1]);
+      await expect.poll(filter).toBe("opacity(0.3)");
+      await captureWindow(app, `desk-${label}.png`);
+      // Gone, the window is back as it was: undimmed, its page live again.
+      await shell.keyboard.press("Escape");
+      await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
+      await expect(stage).not.toHaveAttribute("data-glance", "");
+      await expect.poll(filter).toBe("none");
+      await expect.poll(async () => (await liveViews(app)).some((view) => view.url === OWNER_URL)).toBe(true);
+    };
+    // Filling the desk, as its space came up (its tab the one it was on).
+    const whole = (await stage.boundingBox())!;
+    await expect.poll(async () => Math.round((await win.boundingBox())!.width)).toBe(Math.round(whole.width));
+    await glanceOnce("filled");
+    // A window set down on the desk (its frame within reach first: its drawer comes out for the pointer).
+    await reachFrame(app, shell, invoice);
+    await win.getByRole("button", { name: "Restore" }).click();
+    await shell.mouse.move(10, 10);
+    await settled(shell, app);
+    await expect.poll(async () => Math.round((await win.boundingBox())!.width)).toBeLessThan(Math.round(whole.width) - 40);
+    await glanceOnce("opened");
+  } finally {
+    await app.close();
+  }
+});
 
 /** Watch, from main, whether the preview's view is up — every few milliseconds, until stopWatchingPreview. */
 function watchPreview(app: ElectronApplication): Promise<void> {
@@ -539,7 +537,7 @@ function stopWatchingPreview(app: ElectronApplication): Promise<boolean[]> {
 // down while its tab joins the group and the desk makes its window where the page landed.
 test("a Glance taken in on a desk fills the desk, or takes a tile beside its window, its page up throughout", { tag: ["@glance", "@desk"] }, async () => {
   test.setTimeout(90_000);
-  const { app, shell } = await launchDesk({ name: "glance-taken-in", chrome: "drawer" });
+  const { app, shell } = await launchDesk({ name: "glance-taken-in" });
   try {
     const [invoice] = (await openTabs(shell, [OWNER_URL])) as [string];
     await createGroup(shell, "glance", [invoice], "Glance", "blue");

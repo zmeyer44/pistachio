@@ -27,6 +27,7 @@ import {
   box,
   center,
   createGroup,
+  frameGrip,
   INVOICES,
   launchDesk,
   selectSpace,
@@ -36,6 +37,7 @@ import {
   screenshots,
   selectTab,
   settled,
+  showFrame,
   VENDOR,
   windowSelector,
   type Box,
@@ -182,8 +184,10 @@ test.describe.serial("the sidebar's three modes on the desk", { tag: ["@desk", "
     await shell.keyboard.press("Meta+s");
     await expect(shell.locator(`${SLOT}[data-mode="hidden"]`)).toHaveCount(1);
     // One window filling the desk: wholly under the column when it comes out.
+    await showFrame(shell, windowSelector(vendor));
     await shell.locator(windowSelector(vendor)).getByTestId("desk-collapse").click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await showFrame(shell, windowSelector(invoices));
     await shell.locator(windowSelector(invoices)).getByRole("button", { name: "Fill the desk" }).click();
     await onDesk();
     await settled(shell, app);
@@ -228,13 +232,13 @@ test.describe.serial("the sidebar's three modes on the desk", { tag: ["@desk", "
 
   test("hidden: a window carried to the leading edge lights the left half and never brings the column out, nor does a resize from the west edge of a window flush with it", async () => {
     test.setTimeout(90_000);
+    await showFrame(shell, windowSelector(invoices));
     await shell.locator(windowSelector(invoices)).getByRole("button", { name: "Restore" }).click();
     await onDesk();
     await settled(shell, app);
 
-    // ── 1. Carried by its bar to the edge and into the strip: the left half lights, the column stays away ─
-    const bar = await box(shell, `${windowSelector(invoices)} .desk-window-bar`);
-    const grip = { x: bar.x + 60, y: bar.y + bar.height / 2 };
+    // ── 1. Carried by its drawer to the edge and into the strip: the left half lights, the column stays away ─
+    const { at: grip } = await frameGrip(app, shell, invoices);
     const edge = { x: 3, y: stage.y + stage.height * 0.5 };
     await shell.mouse.move(grip.x, grip.y);
     await shell.mouse.down();
@@ -291,6 +295,7 @@ test.describe.serial("the sidebar's three modes on the desk", { tag: ["@desk", "
       };
       requestAnimationFrame(sample);
     }, windowSelector(invoices));
+    await showFrame(shell, windowSelector(invoices));
     await shell.locator(windowSelector(invoices)).getByTestId("desk-collapse").click();
     await expect(shell.locator(windowSelector(invoices))).toHaveCount(0);
     const flight = await shell.evaluate(() => (window as unknown as { __flight: Array<{ x: number; right: number }> }).__flight);
@@ -319,19 +324,30 @@ test.describe.serial("the sidebar's three modes on the desk", { tag: ["@desk", "
       await shell.mouse.move(at.x, at.y);
       await shell.waitForTimeout(16);
     }
-    // In hand, a window of its own (a tab not out comes out of its row as one: the desk's "spawn"), held by its bar…
+    // In hand, a window of its own (a tab not out comes out of its row as one: the desk's "spawn"), held by its top…
     await expect(shell.locator(".desk-stage[data-gesture]")).toHaveCount(1);
     await expect(shell.locator(windowSelector(vendor))).toHaveCount(1);
     // …and the column gives the desk its leading edge back.
     await expect(shell.locator(PANE)).toHaveAttribute("data-hidden", "");
     await capture(app, shell, "08-row-in-hand.png");
+    // (Arrived in the hand from its row: still from one look to the next.)
+    let lastBox = "";
+    await expect
+      .poll(async () => {
+        const inHand = JSON.stringify(await box(shell, windowSelector(vendor)));
+        const still = inHand === lastBox;
+        lastBox = inHand;
+        return still;
+      })
+      .toBe(true);
     await shell.mouse.up();
     await onDesk();
     await settled(shell, app);
     await expect(shell.locator(windowSelector(vendor))).toHaveCount(1);
-    const bar = await box(shell, `${windowSelector(vendor)} .desk-window-bar`);
-    // (Set down where it was let go, held by its bar: the bar about the pointer.)
-    expect(Math.abs(bar.y + bar.height / 2 - to.y)).toBeLessThan(24);
+    const set = await box(shell, windowSelector(vendor));
+    // (Set down where it was let go, held by its top: its top about the pointer — or as near it as keeps the window on
+    // the desk, its foot at the desk's.)
+    expect(Math.abs(set.y - Math.min(to.y, stage.y + stage.height - set.height))).toBeLessThan(24);
   });
 
   test("hidden: the desk's card opened from the column brought out holds it there until the card goes", async () => {

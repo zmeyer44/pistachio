@@ -19,8 +19,8 @@ import { type Rect } from "../src/lib/desk/geometry";
 import { EASE_SMOOTH_OUT } from "../src/lib/desk/motion";
 import { DEFAULT_DESK_VARIANTS, sanitizeVariants, type DeskVariants } from "../src/lib/desk/store";
 
-/** The frame these were written for: the Title bar (its insets; a window held by its title bar). */
-const BAR_VARIANTS: DeskVariants = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" };
+/** The desk's own variants: the Eased spring, where a test asks for it, set on them. */
+const VARIANTS: DeskVariants = DEFAULT_DESK_VARIANTS;
 
 let frames: Array<(now: number) => void> = [];
 let clock = 0;
@@ -52,7 +52,7 @@ function rectOf(el: ReturnType<typeof element>): Rect {
   return { x: x!, y: y!, w: Number.parseFloat(el.style["width"]!), h: Number.parseFloat(el.style["height"]!) };
 }
 
-const EASED: DeskVariants = { ...BAR_VARIANTS, spring: "eased" };
+const EASED: DeskVariants = { ...VARIANTS, spring: "eased" };
 const STAGE = { w: 1600, h: 1000 };
 
 beforeEach(() => {
@@ -88,6 +88,11 @@ function open(variants: DeskVariants = EASED, host: Partial<DeskHost> = {}) {
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
   setShellApi({
     ...members,
+    // Main cannot say where the pointer is (as under Playwright), and says so at once: a drawer that pushed its window
+    // down (no room above it) goes back in as soon as nothing holds it out, within these synchronous frames.
+    getCursorPoint: () => {
+      throw new Error("no pointer");
+    },
     setLayout: () => undefined,
     setDesk: () => undefined,
     captureTabStills: () => Promise.resolve([]),
@@ -149,6 +154,10 @@ describe("the Eased feel", () => {
 
   it("fills the desk in 300ms on the smooth ease-out (a resize), never past it", () => {
     const { desk, rect } = open();
+    // Left (a press on the desk), its drawer goes in and stays in: in use, it would be out as the window grows into
+    // the desk's top, pushing it down until it went back in (desk-drawer.test.ts).
+    desk.pressDesk();
+    settle();
     const from = rect("tab-0");
     const to = { x: 0, y: 0, w: STAGE.w, h: STAGE.h };
     desk.toggleMaximize("tab-0");
@@ -236,7 +245,7 @@ describe("the Eased feel", () => {
       return Math.max(...xs) - Math.min(...xs.slice(peak));
     };
     // The springs rebound off the edge; Eased does not.
-    expect(rebound(thrown({ ...BAR_VARIANTS, spring: "bouncy" }))).toBeGreaterThan(2);
+    expect(rebound(thrown({ ...VARIANTS, spring: "bouncy" }))).toBeGreaterThan(2);
     expect(rebound(thrown(EASED))).toBeLessThan(0.5);
   });
 });

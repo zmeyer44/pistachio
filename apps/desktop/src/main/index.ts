@@ -4674,6 +4674,42 @@ app.on("second-instance", () => {
   shellWindow.focus();
 });
 
+/**
+ * Links other apps open, Pistachio being the default web browser (the http
+ * and https schemes electron-builder.yml claims). A link that launches the
+ * app arrives before the window and its tabs are up, so links wait until
+ * the launch's window is; one opened after the window was closed brings a
+ * new one. Each opens as a tab of the showing Space, in front.
+ */
+const pendingOpenUrls: string[] = [];
+let openUrlsReady = false;
+let openingUrls = false;
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  if (!/^https?:/iu.test(url)) return;
+  pendingOpenUrls.push(url);
+  void openPendingUrls();
+});
+
+async function openPendingUrls(): Promise<void> {
+  if (!openUrlsReady || openingUrls) return;
+  openingUrls = true;
+  try {
+    while (pendingOpenUrls.length > 0) {
+      if (shellWindow === null || shellWindow.isDestroyed()) await createWindow();
+      await requireBrowser().createTab(pendingOpenUrls.shift()!, { activate: true });
+    }
+    if (shellWindow === null || shellWindow.isDestroyed()) return;
+    if (shellWindow.isMinimized()) shellWindow.restore();
+    shellWindow.show();
+    shellWindow.focus();
+  } catch (error) {
+    console.warn("Could not open a link from another app:", error);
+  } finally {
+    openingUrls = false;
+  }
+}
+
 /** `<TEAM_ID>.<BUNDLE_ID>.webauthn`, matching entitlements.mac.plist. */
 const DEFAULT_WEBAUTHN_ACCESS_GROUP =
   "PHSRT54C87.run.pistachio.desktop.webauthn";
@@ -4987,6 +5023,8 @@ app.whenReady().then(async () => {
   installMenu();
   installIpc();
   await createWindow();
+  openUrlsReady = true;
+  void openPendingUrls();
   void reminderScheduler.start();
   briefScheduler?.start();
   updates.start();

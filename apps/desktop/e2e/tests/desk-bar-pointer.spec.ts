@@ -79,7 +79,7 @@ function pointerAt(app: ElectronApplication, x: number, y: number): Promise<void
 
 test("the notch view's word that the pointer came is the OS pointer's to confirm, and the Bar lets go once it has gone", { tag: ["@desk"] }, async () => {
   test.setTimeout(90_000);
-  const { app, shell } = await launchDesk({ name: "bar-pointer", chrome: "drawer", env: { PISTACHIO_E2E_CURSOR: "1" } });
+  const { app, shell } = await launchDesk({ name: "bar-pointer", env: { PISTACHIO_E2E_CURSOR: "1" } });
   try {
     // The pointer up in the window, well clear of the Bar.
     await pointerAt(app, 720, 200);

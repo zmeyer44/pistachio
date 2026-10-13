@@ -105,9 +105,6 @@ export interface DeskLaunch {
   userData: string;
 }
 
-/** A desk window's frame (the Feel's Frame; the shell's DeskChrome). */
-export type DeskFrame = "bar" | "tab" | "bare" | "drawer";
-
 /**
  * The app at the desk's size (1440 × 900), off the real cursor, its chrome
  * and its desk up and — on a new profile — its first tab on `homeUrl` (the
@@ -115,21 +112,21 @@ export type DeskFrame = "bar" | "tab" | "bare" | "drawer";
  * sidebar the rail (unless `sidebar` says otherwise: the mode the desk's
  * specs were written for, which was the desk's own default until
  * 2026-10-09 and is a setting since, docs/spaces.md §3), and its desk
- * windows framed by `chrome`: the Title bar unless said, the frame the
- * desk's specs were written for (the default until 2026-10-07, when the
- * Drawer became it), their pages at `zoom`: Actual size unless said, as
- * the specs were written for (the default since 2026-10-10 is Fit, a page
- * zoomed out as its window takes less of the desk). What it does is
+ * windows' pages at `zoom`: Actual size unless said, as the specs were
+ * written for (the default since 2026-10-10 is Fit, a page zoomed out as
+ * its window takes less of the desk). (Until 2026-10-12 it also framed the
+ * windows by `chrome`, the Title bar unless said: the Drawer is every
+ * window's frame now — frameGrip takes a window by it.) What it does is
  * launchApp's options (`size`, `clearOfCursor`, `sidebar`, `deskFeel`);
  * this is those, set for the desk's specs. A relaunch (`userData`) keeps
  * the profile's own settings and Feel unless said.
  */
 export async function launchDesk(
-  options: Omit<LaunchOptions, "settings"> & { homeUrl?: string; chrome?: DeskFrame; zoom?: "fit" | "actual" } = {},
+  options: Omit<LaunchOptions, "settings"> & { homeUrl?: string; zoom?: "fit" | "actual" } = {},
 ): Promise<DeskLaunch> {
-  const { homeUrl = INVOICES, chrome = "bar", zoom = "actual", ...launch } = options;
+  const { homeUrl = INVOICES, zoom = "actual", ...launch } = options;
   const fresh = launch.userData === undefined;
-  const feel = { ...(chrome !== "drawer" ? { chrome } : {}), ...(zoom !== "fit" ? { zoom } : {}) };
+  const feel = zoom !== "fit" ? { zoom } : {};
   const { app, userData } = await launchApp({
     size: { width: 1440, height: 900 },
     clearOfCursor: true,
@@ -177,15 +174,15 @@ export function center(rect: Box): { x: number; y: number } {
 }
 
 /**
- * A window's frame within reach, as the person's pointer brings it: a Drawer
- * that is in (its window filling the desk, no room above it) comes out for
- * the pointer at its page's top — main relays the page's move — and the
- * shell's pointer is then put on it, which keeps it out. Any other frame is
- * in reach already.
+ * A window's frame within reach, as the person's pointer brings it: a drawer
+ * that is in (its window not in use, or filling the desk with no room above
+ * it) comes out for the pointer at its page's top — main relays the page's
+ * move — and the shell's pointer is then put on it, which keeps it out. A
+ * masked window's handle is in reach already.
  */
 export async function reachFrame(app: ElectronApplication, shell: Page, tabId: string): Promise<void> {
   const win = shell.locator(windowSelector(tabId));
-  if ((await win.getAttribute("data-chrome")) !== "drawer" || (await win.getAttribute("data-drawer-out")) !== null) return;
+  if ((await win.getAttribute("data-masked")) !== null || (await win.getAttribute("data-drawer-out")) !== null) return;
   const url = (await snapshot(shell)).tabs.find((tab) => tab.id === tabId)?.url ?? "";
   const pageMouse = (type: "mouseMove" | "mouseLeave"): Promise<void> =>
     app.evaluate(
@@ -204,8 +201,53 @@ export async function reachFrame(app: ElectronApplication, shell: Page, tabId: s
   await shell.mouse.move(drawer.x + drawer.width * 0.3, drawer.y + drawer.height / 2);
 }
 
+/**
+ * Where to take a window by its frame: its drawer brought within reach and
+ * all the way out, and a point on it between its title and its buttons —
+ * where a press is the frame's, neither a button's nor the address's. The
+ * drawer's box comes with it (the window's top, while it is out).
+ */
+export async function frameGrip(app: ElectronApplication, shell: Page, tabId: string): Promise<{ frame: Box; at: { x: number; y: number } }> {
+  await reachFrame(app, shell, tabId);
+  const win = shell.locator(windowSelector(tabId));
+  await expect.poll(() => win.evaluate((el) => (el as HTMLElement).style.getPropertyValue("--drawer-t"))).toBe("1.000");
+  const drawer = `${windowSelector(tabId)} [data-testid="desk-window-drawer"]`;
+  const frame = await box(shell, drawer);
+  const title = await box(shell, `${drawer} [data-testid="desk-window-address"]`);
+  const buttons = await box(shell, `${drawer} .desk-window-controls`);
+  return { frame, at: { x: (title.x + title.width + buttons.x) / 2, y: frame.y + frame.height / 2 } };
+}
+
+/**
+ * A window's frame brought out by the shell's own pointer, as the person's
+ * brings it, so its buttons are there to press: its drawer comes out for
+ * the pointer on the window (with room above it) or on its top edge (with
+ * none) — on the window near its top, the part of a parked one that
+ * peeks up from the desk's foot. Once it is out, the pointer is put on it,
+ * which keeps it out: a drawer with no room above it pushes its window down,
+ * from under the pointer that brought it, and main cannot read Playwright's
+ * pointer to see it is still there. A masked window's handle is there already.
+ */
+export async function showFrame(shell: Page, win: string | Locator): Promise<void> {
+  const window = typeof win === "string" ? shell.locator(win) : win;
+  if ((await window.getAttribute("data-masked")) !== null) return;
+  // (Even out already: it may be on its way back in, the pointer gone from it.)
+  const strip = window.getByTestId("desk-window-drawer-trigger");
+  // (With no room above it, its top edge lies over that strip and holds the drawer out as the strip does: taken just
+  // inside the window, the part of it above a window at the desk's top being cut off with the window.)
+  if (await strip.isVisible()) {
+    const top = window.locator('[data-desk-edge="n"]');
+    await top.hover({ position: { x: (await top.boundingBox())!.width / 2, y: 7 } });
+  } else await window.hover({ position: { x: (await window.boundingBox())!.width / 2, y: 12 } });
+  await expect(window).toHaveAttribute("data-drawer-out", "");
+  await expect.poll(() => window.evaluate((el) => (el as HTMLElement).style.getPropertyValue("--drawer-t"))).toBe("1.000");
+  const drawer = (await window.getByTestId("desk-window-drawer").boundingBox())!;
+  await shell.mouse.move(drawer.x + drawer.width * 0.3, drawer.y + drawer.height / 2);
+}
+
 /** One of a window's less-used controls, on its frame's menu (⋯): mask, minimize, a document's own. */
 export async function fromFrameMenu(shell: Page, win: string | Locator, testId: string): Promise<void> {
+  await showFrame(shell, win);
   await (typeof win === "string" ? shell.locator(win) : win).getByTestId("desk-window-more").click();
   await shell.locator(`[data-testid="context-menu"] [data-testid="${testId}"]`).click();
 }

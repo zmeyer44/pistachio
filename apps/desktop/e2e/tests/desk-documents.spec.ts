@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { expect, test, type JSHandle, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { docxFixture, xlsxFixture } from "../../../../packages/documents/test/fixtures";
-import { api, box, createGroup, INVOICES, launchDesk, selectSpace, openTabs, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector } from "./desk-harness";
+import { api, box, createGroup, INVOICES, launchDesk, selectSpace, openTabs, reachBar, screenshots, selectTab, settled, showFrame, snapshot, VENDOR, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-documents");
 
@@ -292,6 +292,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await capture(app, shell, "02-text-edited.png");
 
     // ── 5. Collapsed, it goes into the Stack; from the Stack it comes back, as it was left ─
+    await showFrame(shell, planWindow);
     await shell.locator(`${planWindow} [data-testid="desk-collapse"]`).click();
     await settled(shell, app);
     await expect(docs).toHaveCount(0);
@@ -408,7 +409,8 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await settled(shell, app);
     await expect(shell.locator(`${memoWindow} [data-testid="desk-document-viewer"]`)).toContainText("Budget review on Monday.", { timeout: 15_000 });
     await expect(shell.locator(`${windowSelector(`file:${sunsetId}`)} [data-testid="desk-window-detail"]`)).toHaveText("64 × 40", { timeout: 15_000 });
-    // (The photo, dropped with it, came out over it: its title bar brings it to the top.)
+    // (The photo, dropped with it, came out over it: its title, on its drawer, brings it to the top.)
+    await showFrame(shell, memoWindow);
     await shell.locator(`${memoWindow} [data-testid="desk-window-title"]`).click();
     await shell.locator(`${memoWindow} [data-testid="desk-document-viewer"] p`, { hasText: "Budget review" }).click();
     await caretIn(shell, `${memoWindow} [data-testid="desk-document-viewer"]`, "Budget review on Monday.");

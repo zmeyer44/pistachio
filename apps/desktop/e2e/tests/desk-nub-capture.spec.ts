@@ -36,7 +36,6 @@ test("the Bar's nub, state by state", { tag: ["@desk"] }, async () => {
   test.setTimeout(240_000);
   const { app, shell } = await launchDesk({
     name: "nub-capture",
-    chrome: "drawer",
     args: ["--force-device-scale-factor=2", "--use-fake-device-for-media-stream"],
     env: { PISTACHIO_AGENT_SCRIPT: JSON.stringify(SCRIPT) },
   });

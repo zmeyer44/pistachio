@@ -20,7 +20,7 @@
 
 import { expect, test, type ElectronApplication } from "@playwright/test";
 import type { WebContentsView } from "electron";
-import { createGroup, fromFrameMenu, INVOICES, launchDesk, selectSpace, openTabs, rowSelector, selectTab, settled, windowSelector } from "./desk-harness";
+import { createGroup, fromFrameMenu, INVOICES, launchDesk, selectSpace, openTabs, rowSelector, selectTab, settled, showFrame, windowSelector } from "./desk-harness";
 
 const ACCOUNTS = "pistachio://demo/auth/relying-party";
 
@@ -99,6 +99,7 @@ test("a parked window raised from the shelf view goes back down once the pointer
     await expect(invoiceWindow).toHaveAttribute("data-mini", "parked");
     await selectTab(shell, accounts);
     await settled(shell, app);
+    await showFrame(shell, windowSelector(accounts));
     await shell.locator(`${windowSelector(accounts)} button[aria-label="Fill the desk"]`).click({ force: true });
     await settled(shell, app);
     await shell.mouse.move(720, 160);

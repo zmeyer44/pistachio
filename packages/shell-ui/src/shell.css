@@ -2864,15 +2864,11 @@ body:not([data-chrome-view])::after {
 .desk-stage {
   --desk-well-shade: oklch(0 0 0 / 0.13);
   --desk-well-light: oklch(1 0 0 / 0.85);
-  /* A window's corner, so one filling the desk fills it to the curve: a framed window's card (the title bar's, the
-     tab's) is the page's radius and 4px more; a bare or drawer window is its page, rounded as main rounds the live
-     page (the Appearance radius, --radius-md). The windows, the drawer and a lit tile all read it from here.
-     (The engine's SHELF_INSET keeps the shelf clear of these corners.) */
-  --desk-window-radius: calc(var(--radius-md) + 4px);
-  border-radius: var(--desk-window-radius);
-}
-.desk-stage:is([data-chrome="bare"], [data-chrome="drawer"]) {
+  /* A window's corner, so one filling the desk fills it to the curve: a window is its page, rounded as main rounds
+     the live page (the Appearance radius, --radius-md). The windows, the drawer and a lit tile all read it from
+     here. (The engine's SHELF_INSET keeps the shelf clear of these corners.) */
   --desk-window-radius: var(--radius-md);
+  border-radius: var(--desk-window-radius);
 }
 /* The well itself, under everything on the desk: the Bar's notch is a hole in it down to the shell's ground (the
    engine's --desk-notch-clip), as it is through the windows under it. */
@@ -2982,18 +2978,6 @@ body:not([data-chrome-view])::after {
   pointer-events: none;
 }
 
-.desk-window-bar {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 5px 0 11px;
-  font-size: 12px;
-  color: var(--color-gray-900);
-}
 .desk-window-host {
   font-size: 11px;
   color: var(--color-gray-700);
@@ -3016,62 +3000,18 @@ body:not([data-chrome-view])::after {
 .desk-stage[data-gesture] .desk-window-address:hover {
   background: none;
 }
-/* A window not in use dims its title bar, as macOS does an inactive window's:
-   the title and site fade back, its icon loses its colour, and the controls
-   grey out until the pointer comes to them. */
-.desk-window-bar > :not(.desk-window-controls, .desk-window-marks),
-.desk-window-tab > :not(.desk-window-controls) {
-  transition:
-    opacity 150ms ease-out,
-    filter 150ms ease-out;
-}
-/* (The agent's word and its note stay as they are: the agent works in a window not in use.) */
-.desk-window:not([data-focused]) :is(.desk-window-bar, .desk-window-tab) > :not(.desk-window-controls, .desk-window-marks) {
-  opacity: 0.45;
-}
-.desk-window:not([data-focused]) :is(.desk-window-bar, .desk-window-tab) :is(img, .desk-window-address > :first-child, .desk-window-title > :first-child) {
-  filter: grayscale(1);
-}
+/* The controls grey out until the pointer comes to them. */
 .desk-window-controls {
   opacity: 0.35;
   transition: opacity 150ms ease-out;
 }
 .desk-window-chrome:hover .desk-window-controls,
-.desk-window[data-menu] .desk-window-controls,
-.desk-window[data-focused] .desk-window-bar .desk-window-controls {
+.desk-window[data-menu] .desk-window-controls {
   opacity: 1;
 }
 
-/* The folder tab: on the card's shoulder, one material with it. */
-.desk-window[data-chrome="tab"] .desk-window-card {
-  border-top-left-radius: 0;
-}
-.desk-window-tab {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 1;
-  display: flex;
-  height: 27px;
-  max-width: min(72%, 260px);
-  align-items: center;
-  gap: 6px;
-  padding: 0 3px 0 10px;
-  border-radius: var(--desk-window-radius) var(--desk-window-radius) 0 0;
-  background: var(--color-background-100);
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--color-gray-1000);
-}
-.desk-window-tab .desk-window-controls {
-  opacity: 0;
-}
-.desk-window-tab:hover .desk-window-controls {
-  opacity: 1;
-}
-
-/* Bare: the page alone, and a handle to lift it by. */
-.desk-window[data-chrome="bare"] .desk-window-card {
+/* A masked window: its region alone, and a handle to lift it by. */
+.desk-window[data-masked] .desk-window-card {
   border-radius: var(--radius-md);
 }
 .desk-window-handle {
@@ -3174,8 +3114,7 @@ body:not([data-chrome-view])::after {
   display: block;
 }
 
-/* Under a bar — the Bar and Tab frames' title row, the Drawer frame's drawer as it comes out (--drawer-t) — the page
-   meets it square, its foot round. A live page is a native view main cuts round at all four corners alike: through
+/* Under its drawer as that comes out (--drawer-t), the page meets it square, its foot round. A live page is a native view main cuts round at all four corners alike: through
    its top corners shows this box, square there and painted in the page's own colours at its top (DeskWindow:
    --page-corner-l/-r), so the page looks square where it meets the bar. A drawn page (a still) is this box's. */
 .desk-window-page {
@@ -3187,14 +3126,11 @@ body:not([data-chrome-view])::after {
     linear-gradient(to right, var(--page-corner-l, transparent) 50%, var(--page-corner-r, transparent) 50%) top / 100% var(--radius-md) no-repeat,
     var(--color-background-100);
 }
-.desk-window:is([data-chrome="bar"], [data-chrome="tab"]):not([data-framed="off"]) .desk-window-page {
-  --page-top-radius: 0px;
-}
-.desk-window[data-chrome="drawer"][data-drawer-out]:not([data-framed="off"]) .desk-window-page {
+.desk-window[data-drawer-out]:not([data-framed="off"]) .desk-window-page {
   --page-top-radius: calc(var(--radius-md) * (1 - var(--drawer-t, 0)));
 }
-/* (The Drawer frame's card is its page's box: it squares off with it, the drawer's own corners the window's top.) */
-.desk-window[data-chrome="drawer"][data-drawer-out]:not([data-framed="off"]) .desk-window-card {
+/* (The card is its page's box: it squares off with it, the drawer's own corners the window's top.) */
+.desk-window[data-drawer-out]:not([data-framed="off"]) .desk-window-card {
   border-top-left-radius: calc(var(--desk-window-radius) * (1 - var(--drawer-t, 0)));
   border-top-right-radius: calc(var(--desk-window-radius) * (1 - var(--drawer-t, 0)));
 }
@@ -3499,8 +3435,10 @@ body:not([data-chrome-view])::after {
   }
 }
 
+/* Over the strip at the top of a window with no room above it that brings out its drawer (z-index 2): the top
+   edge is there too, and a press on it resizes the window rather than moving it. */
 .desk-window-edge {
-  z-index: 2;
+  z-index: 3;
 }
 .desk-window:is([data-flight], [data-framed="off"], [data-carried]) .desk-window-edge {
   display: none;

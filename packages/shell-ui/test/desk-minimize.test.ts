@@ -17,15 +17,15 @@ import type { DragSample } from "@pistachio/shell-contracts/chrome";
 import { DESK_MINI_ZOOM, isDeskState, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { CHROME_INSETS, DeskEngine, MINI_SIZE, SHELF_INSET, type DeskHost } from "../src/components/desk/desk-engine";
+import { DeskEngine, WINDOW_INSETS, MINI_SIZE, SHELF_INSET, type DeskHost } from "../src/components/desk/desk-engine";
 import { DESK_GAP, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
 /**
- * The frame these were written for: the Title bar (its insets; a window held by its title bar). And every page at its
- * own size unless minimized, as they were written for too (Page zoom's Fit: desk-page-zoom.test.ts).
+ * Every page at its own size unless minimized, as these were written for (Page zoom's Fit: desk-page-zoom.test.ts).
+ * (Until 2026-10-12 they were written for the Title bar frame too; a window is its page now.)
  */
-const BAR_VARIANTS = { ...DEFAULT_DESK_VARIANTS, chrome: "bar" as const, zoom: "actual" as const };
+const VARIANTS = { ...DEFAULT_DESK_VARIANTS, zoom: "actual" as const };
 
 let frames: Array<(now: number) => void> = [];
 let timers: Array<{ id: number; run: () => void; at: number }> = [];
@@ -67,6 +67,11 @@ function native(options: { stills?: boolean } = {}) {
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
   setShellApi({
     ...members,
+    // Main cannot say where the pointer is (as under Playwright), and says so at once: a drawer that pushed its window
+    // down (no room above it) goes back in as soon as nothing holds it out, within these synchronous frames.
+    getCursorPoint: () => {
+      throw new Error("no pointer");
+    },
     setLayout: (layout: BrowserLayout) => layouts.push(layout),
     setDesk: (state: DeskState | null) => desks.push(state),
     // No pictures, unless asked for (a test that is then awaited): none comes back after a test is over to ask for a frame.
@@ -88,7 +93,7 @@ function native(options: { stills?: boolean } = {}) {
 /** A desk over a 1600×1000 stage whose tabs' pages are live. */
 function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const created = new DeskEngine({
-    variants: () => BAR_VARIANTS,
+    variants: () => VARIANTS,
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,
@@ -113,6 +118,12 @@ function element() {
   return { style, dataset: {} as Record<string, string> };
 }
 
+/** How much of a window its clip cuts off at its foot (the clip's bottom inset; none when it has no clip). */
+function clipBottom(el: ReturnType<typeof element>): number {
+  const inset = /inset\((-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px/.exec(el.style["clipPath"] ?? "");
+  return inset === null ? 0 : Math.max(0, Number(inset[3]));
+}
+
 function rectOf(el: ReturnType<typeof element>): Rect {
   const [x, y] = /translate3d\((-?[\d.]+)px, (-?[\d.]+)px/.exec(el.style["transform"] ?? "")!.slice(1).map(Number);
   return { x: x!, y: y!, w: Number.parseFloat(el.style["width"]!), h: Number.parseFloat(el.style["height"]!) };
@@ -123,7 +134,7 @@ function expectRect(actual: Rect, expected: Rect, within = 1): void {
 }
 
 const STAGE = { w: 1600, h: 1000 };
-const insets = CHROME_INSETS[BAR_VARIANTS.chrome];
+const insets = WINDOW_INSETS;
 /** How much of a parked window shows above the desk's foot: a quarter of it (the engine's MINI_PEEK). */
 const PEEK = MINI_SIZE.h / 4;
 /** The shelf's band at the desk's foot: where they peek up, and a gap above (a minimized window let go in it parks). */
@@ -330,7 +341,7 @@ describe("minimizing a window", () => {
   });
 
   it("rises and goes back down smoothly, never past its place, even with the Bouncy spring", () => {
-    const { desk, rect } = open({ variants: () => ({ ...BAR_VARIANTS, spring: "bouncy" }) });
+    const { desk, rect } = open({ variants: () => ({ ...VARIANTS, spring: "bouncy" }) });
     desk.minimize("tab-0");
     settle();
     const path = (): number[] => {
@@ -590,7 +601,7 @@ describe("a minimized window snapped", () => {
   });
 
   it("with the Snap throw lands in a tile wherever it is let go, as any window does", () => {
-    const { desk, drag, view } = open({ variants: () => ({ ...BAR_VARIANTS, physics: "snap" }) });
+    const { desk, drag, view } = open({ variants: () => ({ ...VARIANTS, physics: "snap" }) });
     desk.minimize("tab-0");
     settle();
     carry(desk, drag, "tab-0", titleOf(PEEKING), { x: 800, y: 450 });
@@ -656,7 +667,7 @@ describe("a window growing into a larger box", () => {
         return Promise.resolve();
       }
     });
-    const { desk, desks, layouts, rect, view } = open({ variants: () => ({ ...BAR_VARIANTS, spring: "bouncy" }) }, { stills: true });
+    const { desk, desks, els, layouts, rect, view } = open({ variants: () => ({ ...VARIANTS, spring: "bouncy" }) }, { stills: true });
     const start = rect("tab-0");
     desk.toggleMaximize("tab-0");
     run(1);
@@ -667,11 +678,14 @@ describe("a window growing into a larger box", () => {
       await new Promise((done) => setImmediate(done));
       expect(view("tab-0").drawn).toBe(false);
       const now = rect("tab-0");
+      // In use, its drawer is out as it grows into the desk's top, pushing it down until it goes back in: what is
+      // drawn of it is cut at its own foot then (desk-drawer.test.ts).
+      const foot = now.y + now.h - clipBottom(els.get("tab-0")!);
       // (Within the rounding of the box written to the element.)
       expect(now.x).toBeGreaterThanOrEqual(Math.min(start.x, filled.x) - 0.1);
       expect(now.y).toBeGreaterThanOrEqual(Math.min(start.y, filled.y) - 0.1);
       expect(now.x + now.w).toBeLessThanOrEqual(Math.max(start.x + start.w, filled.x + filled.w) + 0.1);
-      expect(now.y + now.h).toBeLessThanOrEqual(Math.max(start.y + start.h, filled.y + filled.h) + 0.1);
+      expect(foot).toBeLessThanOrEqual(Math.max(start.y + start.h, filled.y + filled.h) + 0.1);
       const shown = layouts.at(-1)!.views.find((entry) => entry.tabId === "tab-0")!;
       expect(shown.bounds.width).toBeLessThanOrEqual(pageOf(filled).width);
       expect(shown.bounds.height).toBeLessThanOrEqual(pageOf(filled).height);

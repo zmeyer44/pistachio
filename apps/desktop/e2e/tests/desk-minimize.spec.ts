@@ -15,7 +15,7 @@
 
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
-import { box, createGroup, fromFrameMenu, INVOICES, launchDesk, liveViews, selectSpace, openTabs, rowSelector, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { box, createGroup, frameGrip, fromFrameMenu, INVOICES, launchDesk, liveViews, selectSpace, openTabs, rowSelector, screenshots, selectTab, settled, showFrame, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
 
 const capture = screenshots("desk-minimize");
 
@@ -100,9 +100,9 @@ function pageMouse(app: ElectronApplication, url: string, type: "mouseMove" | "m
 }
 
 const ACCOUNTS = "pistachio://demo/auth/relying-party";
-/** A minimized window (the least a window may be), its page box inside the title bar frame, and that box at 50%. */
+/** A minimized window (the least a window may be), and its page box: the whole of it (its drawer lies behind its top edge). */
 const MINI = { w: 300, h: 200 };
-const MINI_PAGE = { w: 290, h: 161 };
+const MINI_PAGE = { w: 300, h: 200 };
 /** Where the shelf begins: in from the desk's leading edge, clear of its rounded corner (the engine's SHELF_INSET). */
 const LEFT = 18;
 
@@ -160,7 +160,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     // Live while it peeks: its view cut short at the desk's edge.
     await expect
       .poll(async () => (await liveViews(app)).find((view) => view.url === INVOICES)?.bounds ?? null)
-      .toEqual({ x: Math.round(parked.x + 5), y: Math.round(parked.y + 34), width: MINI_PAGE.w, height: Math.round(edge - (parked.y + 34)) });
+      .toEqual({ x: Math.round(parked.x), y: Math.round(parked.y), width: MINI_PAGE.w, height: Math.round(edge - parked.y) });
     // The shelf lies over the windows at the desk's foot: a live page under it stops where it peeks up.
     for (const url of [VENDOR, ACCOUNTS]) {
       const view = (await liveViews(app)).find((candidate) => candidate.url === url);
@@ -202,8 +202,12 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await expect(vendorWindow).not.toHaveAttribute("data-raised", "");
     await settled(shell, app);
 
-    // ── 4. Dragged out by its title bar: out on the desk, still minimized and zoomed; the shelf closes up ─
-    const grip = { x: second.x + MINI.w - 80, y: second.y + 17 };
+    // ── 4. Dragged out by its drawer (out once the pointer has raised it): out on the desk, still minimized and zoomed;
+    //       the shelf closes up ─
+    await shell.mouse.move(second.x + MINI.w - 60, second.y + 17);
+    await expect(vendorWindow).toHaveAttribute("data-raised", "");
+    await expect(vendorWindow).toHaveAttribute("data-drawer-out", "");
+    const { at: grip } = await frameGrip(app, shell, vendor);
     await shell.mouse.move(grip.x, grip.y);
     await shell.mouse.down();
     for (let step = 1; step <= 24; step += 1) await shell.mouse.move(grip.x + step * 22, grip.y - step * 18);
@@ -231,7 +235,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     expect(resized.width).toBeGreaterThan(MINI.w + 100);
     await expect
       .poll(async () => (await pageSize(app, VENDOR)).width)
-      .toBe(Math.round(resized.width - 10) * 2);
+      .toBe(Math.round(resized.width) * 2);
     await capture(app, shell, "05-dragged-out-resized.png");
 
     // ── 5. Filling the desk, a window grows into it as its live page, laid out at the desk's size from the start
@@ -259,7 +263,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     near(filled.y + filled.height, foot, 3);
     await expect.poll(async () => {
       const view = (await liveViews(app)).find((candidate) => candidate.url === ACCOUNTS);
-      return view === undefined ? null : Math.abs(view.bounds.y + view.bounds.height - (foot - 5)) <= 1;
+      return view === undefined ? null : Math.abs(view.bounds.y + view.bounds.height - foot) <= 1;
     }).toBe(true);
     await expect.poll(() => shelfView(app)).not.toBeNull();
     const shelfBox = (await shelfView(app))!;
@@ -270,7 +274,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     const fillWidths = await inPage<Array<[number, number]>>(app, ACCOUNTS, "__widths");
     expect(fillWidths[0]![1]).toBe(accountsBefore);
     // Straight to the filled page's width, at once, and nothing after.
-    expect(fillWidths.slice(1).map(([, width]) => width)).toEqual([Math.round(filled.width - 10)]);
+    expect(fillWidths.slice(1).map(([, width]) => width)).toEqual([Math.round(filled.width)]);
     expect(fillWidths[1]![0] - fillAt).toBeLessThan(150);
 
     // ── 6. Expand: back to the box it had, its page at its own size again. The pointer onto the shelf view raises it,
@@ -280,6 +284,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await expect.poll(() => shelfView(app)).toBeNull();
     await shell.mouse.move(parked.x + 60, peekY + 17);
     await expect(invoiceWindow).toHaveAttribute("data-raised", "");
+    await showFrame(shell, invoiceWindow);
     await invoiceWindow.getByTestId("desk-expand").click();
     await settled(shell, app);
     await expect(invoiceWindow).not.toHaveAttribute("data-mini", /.+/);
@@ -295,15 +300,14 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await expect.poll(async () => {
       const page = await box(shell, `${windowSelector(accounts)} [data-testid="desk-window-page"]`);
       return Math.round(page.y + page.height);
-    }).toBe(Math.round(foot - 5));
+    }).toBe(Math.round(foot));
     await capture(app, shell, "06-expanded.png");
 
     // ── 7. Snapped as any window is — into the left half, at the desk's edge — it is a window at its own size again ─
     await selectTab(shell, vendor);
     await settled(shell, app);
     await expect(vendorWindow).toHaveAttribute("data-mini", "free");
-    const carried = await box(shell, windowSelector(vendor));
-    const hold = { x: carried.x + 60, y: carried.y + 17 };
+    const { at: hold } = await frameGrip(app, shell, vendor);
     // (In the desk's leading edge band, its first 30px.)
     const zoneAt = { x: stage.x + 12, y: stage.y + stage.height * 0.45 };
     await shell.mouse.move(hold.x, hold.y);
@@ -327,6 +331,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await fromFrameMenu(shell, vendorWindow, "desk-minimize");
     await settled(shell, app);
     await expect(vendorWindow).toHaveAttribute("data-mini", "parked");
+    await showFrame(shell, vendorWindow);
     await vendorWindow.getByTestId("desk-collapse").click();
     await expect(vendorWindow).toHaveCount(0);
     await expect(shell.locator('[data-testid="desk-window"]')).toHaveCount(2);

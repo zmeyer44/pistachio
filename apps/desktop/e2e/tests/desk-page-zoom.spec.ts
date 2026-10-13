@@ -18,7 +18,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, createTab, fromFrameMenu, launchDesk, openMore, screenshots, selectSpace, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
+import { box, createGroup, createTab, fromFrameMenu, launchDesk, openMore, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-page-zoom");
 
@@ -103,6 +103,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
   const pageBox = (tabId: string) => box(shell, `${windowSelector(tabId)} [data-testid="desk-window-page"]`);
   /** What the window's ⋯ says of its zoom. */
   const menuZoom = async (tabId: string): Promise<string> => {
+    await showFrame(shell, windowSelector(tabId));
     await shell.locator(windowSelector(tabId)).getByTestId("desk-window-more").click();
     const reading = shell.locator('[data-testid="context-menu"] [data-testid="desk-page-zoom"]');
     await expect(reading).toBeVisible();
@@ -158,6 +159,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
     expect(zoomed.siteZoom).toBe(1);
     expect((await pageState(app, urls[1])).width).toBe(zoomed.width);
     expect(await menuZoom(tabs[0])).toContain("75%");
+    await showFrame(shell, windowSelector(tabs[0]));
     await shell.locator(windowSelector(tabs[0])).getByTestId("desk-window-more").click();
     await expect(shell.getByTestId("context-menu")).toBeVisible();
     await capture(app, shell, "01-side-by-side-menu.png");
@@ -212,6 +214,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
     await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
 
     // Filling the desk: back at 100%, laid out at its own box.
+    await showFrame(shell, windowSelector(tabs[0]));
     await shell.locator(windowSelector(tabs[0])).getByRole("button", { name: "Fill the desk" }).click();
     await away();
     await settled(shell, app);
@@ -223,6 +226,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
   });
 
   test("masked while zoomed, its page stays laid out as it was, the region at the size it was seen; unmasked, it is zoomed for its size again", async () => {
+    await showFrame(shell, windowSelector(tabs[0]));
     await shell.locator(windowSelector(tabs[0])).getByRole("button", { name: "Restore" }).click();
     await away();
     await settled(shell, app);
@@ -286,6 +290,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
     };
 
     // Behind the other window filling the desk: its video floats, its page laid out as in its window.
+    await showFrame(shell, windowSelector(tabs[1]));
     await shell.locator(windowSelector(tabs[1])).getByRole("button", { name: "Fill the desk" }).click();
     await expect(pip).toHaveAttribute("data-tab-id", tabs[0]);
     await away();
@@ -319,6 +324,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
     await expect.poll(async () => (await pageState(app, urls[0])).width).toBe(before.width);
     await kept();
     // Let down: its window's again, at its zoom.
+    await showFrame(shell, windowSelector(tabs[1]));
     await shell.locator(windowSelector(tabs[1])).getByRole("button", { name: "Restore" }).click();
     await expect(pip).toHaveCount(0);
     await away();
@@ -329,6 +335,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
     // did there, in the floating player too.
     await selectTab(shell, tabs[0]);
     await settled(shell, app);
+    await showFrame(shell, windowSelector(tabs[0]));
     await shell.locator(windowSelector(tabs[0])).getByTestId("desk-pop-out").click();
     await expect(shell.locator(windowSelector(tabs[0]))).toHaveCount(0);
     await expect(pip).toHaveAttribute("data-tab-id", tabs[0]);

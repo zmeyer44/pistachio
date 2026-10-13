@@ -484,10 +484,13 @@ export interface AppState {
   /** Watchtower, landing on one index entry when given. */
   openWatchtower(entityId?: number): void;
   /**
-   * Dismiss whichever full-window page (settings, reminders, bookmarks) is
-   * covering the content hole, so a tab the user just picked is what shows.
+   * Dismiss whichever page is covering the content hole — a full-window page
+   * (settings, reminders, bookmarks), the site controls, an image's lightbox,
+   * a cloud run's live view — so a tab the user just picked is what shows.
+   * True when one was up. A dialog asking something (a site's permission, an
+   * update) and the popovers stay: they are not a page in the way.
    */
-  closePage(): void;
+  closePage(): boolean;
   toggleBookmarks(): void;
   /** The Library: artifacts, notes, saved pages and Watchtower's visits in one page. */
   toggleLibrary(): void;
@@ -1253,8 +1256,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeBookmarks: () => set((state) => (state.overlay === "bookmarks" ? { overlay: "none", bookmarksFocus: null } : {})),
   openWatchtower: (entityId) =>
     set({ overlay: "watchtower", watchtowerFocus: entityId ?? null, urlBarTabId: null, urlBarNew: false }),
-  closePage: () =>
-    set((state) => (isPageOverlay(state.overlay) ? { overlay: "none", remindersFocus: null, bookmarksFocus: null } : {})),
+  closePage: () => {
+    const { overlay } = get();
+    if (overlay === "liveView") void get().closeLiveView();
+    else if (overlay === "image-preview") get().closeImagePreview();
+    else if (isPageOverlay(overlay) || overlay === "site") set({ overlay: "none", remindersFocus: null, bookmarksFocus: null });
+    else return false;
+    return true;
+  },
   toggleBookmarks: () =>
     set((state) =>
       state.overlay === "bookmarks"
@@ -1695,7 +1704,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   controlMedia: (tabId, control) => safeAction(() => shellApi().controlMedia(tabId, control), set),
   cancelReadAloud: (id) => safeAction(() => shellApi().cancelReadAloud(id), set),
   readAloudText: (text, title) => safeAction(() => shellApi().readAloudText(text, title), set),
-  sidebarCommand: (command) => safeAction(() => shellApi().sidebarCommand(command), set),
+  sidebarCommand: (command) => {
+    // A favorite or pin opened is a tab asked for, as selectTab's is.
+    if (command.type === "open") get().closePage();
+    return safeAction(() => shellApi().sidebarCommand(command), set);
+  },
   tabGroupCommand: async (command) => {
     const result = await attemptValue(() => shellApi().tabGroupCommand(command));
     if (result.ok) return result.value;

@@ -23,7 +23,6 @@ import { GLIDE_DECELERATION } from "./motion";
 export type DeskPhysics = "glide" | "snap" | "free";
 export type DeskSpringFeel = "snappy" | "bouncy" | "smooth" | "eased";
 export type DeskMotion = "lifted" | "live";
-export type DeskChrome = "bar" | "tab" | "bare" | "drawer";
 export type DeskGrab = DeskGrabModifier | "off";
 /** Whether windows coming and going may move the others (docs/desk-layout.md). */
 export type DeskLayoutFeel = "smart" | "hand";
@@ -44,8 +43,6 @@ export interface DeskVariants {
   spring: DeskSpringFeel;
   /** A carried window: its still, free to lift and tilt — or its live page, flat. */
   motion: DeskMotion;
-  /** The frame around each page. */
-  chrome: DeskChrome;
   /** The key that grabs a window from anywhere on its page. */
   grab: DeskGrab;
   /** Smart: a window coming or going asks the layout model whether the others should move. By hand: they stay put. */
@@ -76,7 +73,6 @@ export const DESK_AXES: readonly [
   Axis<"physics">,
   Axis<"spring">,
   Axis<"motion">,
-  Axis<"chrome">,
   Axis<"grab">,
   Axis<"layout">,
   Axis<"zoom">,
@@ -106,16 +102,6 @@ export const DESK_AXES: readonly [
     options: [
       { id: "lifted", label: "Lifted", hint: "A carried window lifts, tilts with the throw, and shows its still" },
       { id: "live", label: "Live", hint: "A carried window stays a live page, flat" },
-    ],
-  },
-  {
-    key: "chrome",
-    label: "Frame",
-    options: [
-      { id: "bar", label: "Title bar", hint: "A title bar above each page" },
-      { id: "tab", label: "Tab", hint: "A folder tab on each page's shoulder" },
-      { id: "bare", label: "Bare", hint: "Just the page, with a handle above it" },
-      { id: "drawer", label: "Drawer", hint: "Just the page: its controls slide out from behind its top edge, on hover or while you are using it" },
     ],
   },
   {
@@ -154,7 +140,6 @@ export const DEFAULT_DESK_VARIANTS: DeskVariants = {
   physics: "glide",
   spring: "snappy",
   motion: "lifted",
-  chrome: "drawer",
   grab: "shift",
   layout: "smart",
   zoom: "fit",
@@ -245,18 +230,14 @@ interface DeskStore {
 const STORAGE_KEY = "pistachio.desk.v1";
 const MAX_SAVED_DESKS = 40;
 /**
- * What is saved, as of 2026-10-07: the Drawer is the default frame. Every
- * save wrote all the variants, chosen or not, so a desk saved before has the
- * old default's "bar" whether or not it was chosen: it is read as the Drawer
- * (once — the next save is this version, whatever the frame is then).
- */
-const PERSISTED_VERSION = 2;
-
-/**
  * (Until 2026-10-09 this also kept `rail`, whether the desk's sidebar was its
  * rail: the sidebar's mode is a setting now (layout.sidebar, docs/spaces.md
  * §3). A stored one is ignored, not migrated — its `true` was the default,
- * written by every save, not a choice — and no longer written.)
+ * written by every save, not a choice — and no longer written. Until
+ * 2026-10-12 the variants also had `chrome`, the frame around each page —
+ * Title bar, Tab, Bare or Drawer — and a save its `version`, which read a
+ * save from before the Drawer was the default as the Drawer: the Drawer is
+ * every window's frame now, and a stored frame or version is ignored.)
  */
 interface Persisted {
   variants: DeskVariants;
@@ -267,11 +248,8 @@ export function readPersistedDesk(raw: string | null): Persisted {
   const fallback: Persisted = { variants: DEFAULT_DESK_VARIANTS, saved: {} };
   if (raw === null) return fallback;
   try {
-    const value = JSON.parse(raw) as Partial<Persisted> & { version?: unknown };
-    const variants = sanitizeVariants(value.variants);
-    const version = typeof value.version === "number" ? value.version : 1;
-    if (version < 2 && variants.chrome === "bar") variants.chrome = "drawer";
-    return { variants, saved: sanitizeSaved(value.saved) };
+    const value = JSON.parse(raw) as Partial<Persisted>;
+    return { variants: sanitizeVariants(value.variants), saved: sanitizeSaved(value.saved) };
   } catch {
     return fallback;
   }
@@ -297,7 +275,6 @@ export function sanitizeVariants(value: unknown): DeskVariants {
     physics: pick("physics"),
     spring: pick("spring"),
     motion: pick("motion"),
-    chrome: pick("chrome"),
     grab: pick("grab"),
     layout: pick("layout"),
     zoom: pick("zoom"),
@@ -338,7 +315,7 @@ export function sanitizeSaved(value: unknown): Record<string, SavedDesk> {
 }
 
 function persist(state: Persisted): void {
-  writeStorageLater(STORAGE_KEY, JSON.stringify({ ...state, version: PERSISTED_VERSION }));
+  writeStorageLater(STORAGE_KEY, JSON.stringify(state));
 }
 
 const initial = readPersisted();

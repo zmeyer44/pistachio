@@ -19,7 +19,7 @@ import { deskGroups, groupPageOf, passedEntry, useDeskStore, type DeskVariants }
 import { useAppStore } from "../../store";
 import { GlanceOverlay, type GlanceDesk } from "../GlanceOverlay";
 import { DeskBar } from "./DeskBar";
-import { CHROME_INSETS, DeskEngine, takesOnInPlace, type DeskLayoutSnapshot } from "./desk-engine";
+import { DeskEngine, takesOnInPlace, WINDOW_INSETS, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDropZone } from "./DeskDropZone";
 import { DeskEmpty } from "./DeskEmpty";
@@ -597,14 +597,14 @@ export default function DeskSurface() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, activeTabId]);
 
-  // The desk's corners are a window's (the frame's, at the Appearance radius): read again as either changes, a frame
-  // later, once the radius is on the page (ThemeRuntime), so windows filling the desk are clipped to its curve.
+  // The desk's corners are a window's (the Appearance radius): read again as it changes, a frame later, once the
+  // radius is on the page (ThemeRuntime), so windows filling the desk are clipped to its curve.
   const cornerRadius = useAppStore((state) => state.settings.appearance.radius);
   useEffect(() => {
     if (engine === null) return;
     const frame = requestAnimationFrame(() => engine.measure());
     return () => cancelAnimationFrame(frame);
-  }, [engine, variants.chrome, cornerRadius]);
+  }, [engine, cornerRadius]);
 
   // The grab key held over the desk: the frames show an open hand.
   useEffect(() => {
@@ -659,7 +659,7 @@ export default function DeskSurface() {
     const left = Math.min(...shelf.map((spot) => spot.rect.x));
     const right = Math.max(...shelf.map((spot) => spot.rect.x + spot.rect.w));
     const top = Math.min(...shelf.map((spot) => spot.rect.y));
-    const insets = CHROME_INSETS[variants.chrome];
+    const insets = WINDOW_INSETS;
     const frame = {
       bounds: { x: at.left + left - pad, y: at.top + top - pad, width: right - left + pad * 2, height: at.height - top + pad },
       pad,
@@ -683,7 +683,7 @@ export default function DeskSurface() {
     if (key === sentShelf.current) return;
     sentShelf.current = key;
     api.setDeskShelf(frame);
-  }, [view, tabsById, variants.chrome]);
+  }, [view, tabsById]);
   useEffect(() => () => nativeApi()?.setDeskShelf(null), []);
   // The pointer onto one of the shelf view's windows (it rises), or off it: the view's own word, apart from the shell's.
   useEffect(() => nativeApi()?.onDeskShelfInput((input) => engine?.hoverMini(input.tabId, "shelf", input.over)), [engine]);
@@ -781,7 +781,6 @@ export default function DeskSurface() {
         data-group-id={view === null ? undefined : (shownGroup.current ?? undefined)}
         data-empty={empty ? "" : undefined}
         data-group-color={group?.color}
-        data-chrome={variants.chrome}
         data-glance={glance !== null && glanceStaged ? "" : undefined}
         data-glance-closing={glanceClosing ? "" : undefined}
         className="desk-stage no-drag tab-group-tone relative min-h-0 min-w-0 flex-1"
@@ -809,7 +808,6 @@ export default function DeskSurface() {
                   key={window.tabId}
                   view={overlayStill === undefined || (window.stillShows === "page" && window.stillSize === null) ? window : { ...window, stillShows: "page", stillSize: null }}
                   tab={tabsById.get(window.tabId) ?? null}
-                  chrome={variants.chrome}
                   grab={variants.grab}
                   still={overlayStill ?? window.still}
                   // Main is waking it, or is to (wanted live, still asleep): a window left asleep on purpose says nothing.

@@ -91,7 +91,6 @@ export interface DeskFeelSeed {
   physics?: "glide" | "snap" | "free";
   spring?: "snappy" | "bouncy" | "smooth" | "eased";
   motion?: "lifted" | "live";
-  chrome?: "bar" | "tab" | "bare" | "drawer";
   grab?: "shift" | "alt" | "meta" | "off";
   layout?: "smart" | "hand";
   zoom?: "actual" | "slight" | "fit" | "strong" | "strongest";

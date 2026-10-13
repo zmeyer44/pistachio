@@ -40,6 +40,13 @@ mac:
   # build/embedded.provisionprofile exists (enables Touch ID passkeys).
   # Notarization runs when APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID are set.
   notarize: true
+  # Claiming http and https is what lists Pistachio under System Settings →
+  # Desktop & Dock → Default web browser (once installed in /Applications);
+  # links other apps open then arrive as main's `open-url`.
+  protocols:
+    - name: Web site URL
+      schemes: [http, https]
+      role: Viewer
   extendInfo:
     NSCameraUsageDescription: Pistachio needs camera access for sites that request it.
     NSMicrophoneUsageDescription: Pistachio needs microphone access for sites that request it.

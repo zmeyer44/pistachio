@@ -60,11 +60,13 @@ export function useCurrentSpace(): string | null {
  * so the shell names it (passedEntry) — or, with none, main's choice: its tab
  * used last, or for an empty space nothing. The passing is marked a SPACE
  * chosen (takeSpaceChoice): the space comes up as it was left, its window
- * on top too, minimized if it was.
+ * on top too, minimized if it was. A page over the desk (Settings) steps
+ * aside for it (closePage).
  */
 export function selectSpace(groupId: string): void {
   const store = useAppStore.getState();
   if (store.snapshot?.currentGroupId === groupId) return;
+  store.closePage();
   const group = deskGroups(store.snapshot).find((candidate) => candidate.id === groupId);
   const tabs = group === undefined ? [] : (store.snapshot?.tabs ?? []).filter((tab) => group.tabIds.includes(tab.id));
   const tabId = passedEntry(useDeskStore.getState().saved[groupId]?.windows ?? [], tabs);
@@ -250,11 +252,13 @@ export function deskEngine(): DeskEngine | null {
  * out of the desk leaves its tab the one in use when it was the last out,
  * and selecting it again would change nothing. False for any other tab
  * (another space's, or no engine yet): selecting it is the browser's, and
- * the desk passes to its own.
+ * the desk passes to its own. A page over the desk (Settings) steps aside
+ * for the window, as it does for a tab selected (closePage).
  */
 export function showOnDesk(tabId: string): boolean {
   const engine = deskEngine();
   if (engine === null || !engine.hasGroupTab(tabId)) return false;
+  useAppStore.getState().closePage();
   engine.add(tabId, { focus: true });
   return true;
 }
@@ -270,6 +274,7 @@ export function showOnDesk(tabId: string): boolean {
 export async function newTabOnDesk(): Promise<void> {
   const store = useAppStore.getState();
   const groupId = currentSpace();
+  store.closePage();
   // (createTab has no `group` option on the wire yet: main's default for a tab the shell makes is the current space.)
   if (groupId === null) await store.createTab(store.settings.general.homeUrl);
   else await store.tabGroupCommand({ type: "newTab", groupId });

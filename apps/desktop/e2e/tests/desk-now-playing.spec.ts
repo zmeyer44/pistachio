@@ -18,7 +18,7 @@ import { deskPipSlot } from "@pistachio/shell-contracts/desk";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 import { demoPortalHtml, demoToneWav } from "../../src/main/demo-page";
-import { box, createGroup, createTab, launchDesk, openMore, openTabs, screenshots, selectSpace, selectTab, settled, snapshot, type Box } from "./desk-harness";
+import { box, createGroup, createTab, launchDesk, openMore, openTabs, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, type Box } from "./desk-harness";
 
 let server: Server;
 let ORIGIN: string;
@@ -191,6 +191,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await capture(app, shell, "01-pop-out-buttons.png");
 
     // ── 2. The video popped out: its window goes, and it floats over the desk, its page's own picture ─
+    await showFrame(shell, windowOf(video));
     await windowOf(video).getByTestId("desk-pop-out").click();
     await expect(windowOf(video)).toHaveCount(0);
     const pip = shell.getByTestId("desk-pip");
@@ -358,6 +359,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await expect.poll(() => viewAt(app, "?video").then((bounds) => near(bounds, shrunk))).toBe(true);
 
     // ── 5. The audio popped out: a button in the rail, moving with how loud the page measures it ─
+    await showFrame(shell, windowOf(audio));
     await windowOf(audio).getByTestId("desk-pop-out").click();
     await expect(windowOf(audio)).toHaveCount(0);
     const railButton = shell.getByTestId(`rail-media-${audio}`);
@@ -466,6 +468,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
 
     // ── 9. Popped out as the desk's last window, its tab still the one in use: back to the desk all the same ─
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await showFrame(shell, windowOf(video));
     await windowOf(video).getByTestId("desk-pop-out").click();
     await expect(windowOf(video)).toHaveCount(0);
     await expect(pip).toHaveCount(1);
@@ -489,6 +492,7 @@ test("a window playing something pops out: on the rail, a video floats over the 
 
     // ── 10. Put away as any window is (not popped out), watched: it floats too; muted there, the whole sidebar still has it ─
     await settled(shell, app);
+    await showFrame(shell, windowOf(video));
     await windowOf(video).getByTestId("desk-collapse").click();
     await expect(windowOf(video)).toHaveCount(0);
     await expect(pip).toHaveCount(1);
@@ -609,6 +613,7 @@ test("a window playing a video behind a window filling the desk: its video float
     // The other window in use, filling the desk: the video's window is behind it, out of sight — its video floats,
     // the page's own picture, and its window draws no live picture of it there.
     await selectTab(shell, other);
+    await showFrame(shell, windowOf(other));
     await windowOf(other).getByRole("button", { name: "Fill the desk" }).click();
     await expect(pip).toHaveCount(1);
     await expect(pip).toHaveAttribute("data-tab-id", video);
@@ -620,6 +625,7 @@ test("a window playing a video behind a window filling the desk: its video float
     await capture(app, shell, "08-behind-a-filled-window.png");
 
     // Let down: the video is its window's again, playing on.
+    await showFrame(shell, windowOf(other));
     await windowOf(other).getByRole("button", { name: "Restore" }).click();
     await expect(pip).toHaveCount(0);
     await settled(shell, app);
@@ -667,6 +673,7 @@ test("a window closed while another's video floats leaves the floating player it
     await settled(shell, app);
 
     // The muted video popped out floats.
+    await showFrame(shell, windowOf(video));
     await windowOf(video).getByTestId("desk-pop-out").click();
     await expect(windowOf(video)).toHaveCount(0);
     const pip = shell.getByTestId("desk-pip");
@@ -696,6 +703,7 @@ test("a window closed while another's video floats leaves the floating player it
       note();
       new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-tab-id"] });
     });
+    await showFrame(shell, windowOf(closing));
     await windowOf(closing).getByTestId("desk-close").click();
     await expect(windowOf(closing)).toHaveCount(0);
     await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.id === closing), { timeout: 15_000 }).toBe(false);

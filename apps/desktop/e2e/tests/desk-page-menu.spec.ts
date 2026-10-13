@@ -14,7 +14,7 @@ import { createServer, type Server } from "node:http";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { isReaderUrl } from "@pistachio/shell-contracts/reader";
-import { api, box, center, createGroup, launchDesk, selectSpace, openTabs, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
+import { api, box, center, createGroup, launchDesk, selectSpace, openTabs, screenshots, selectTab, settled, showFrame, snapshot, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-page-menu");
 
@@ -46,6 +46,7 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
   /** An entry of the menu that is up. */
   const entry = (testId: string) => shell.locator(`[data-testid="context-menu"] [data-testid="${testId}"]`);
   const openMenu = async (): Promise<void> => {
+    await showFrame(shell, win());
     await win().getByTestId("desk-window-more").click();
     await expect(shell.getByTestId("context-menu")).toBeVisible();
   };
@@ -88,6 +89,7 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
     const close = win().getByTestId("desk-close");
     const more = win().getByTestId("desk-window-more");
     await expect(win()).not.toHaveAttribute("data-drawn", "");
+    await showFrame(shell, win());
     await close.hover();
     await expect(tip).toHaveText("Close");
     // Under the button, over the window's own page: the page is its still while the tooltip is up.
@@ -101,6 +103,7 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
     await shell.mouse.move(placed.x + placed.width / 2, placed.y + placed.height / 2);
     await expect(tip).toHaveCount(0);
     await expect(win()).not.toHaveAttribute("data-drawn", "");
+    await showFrame(shell, win());
     await close.hover();
     await expect(tip).toHaveText("Close");
     // Its neighbour's, at once.
@@ -195,6 +198,7 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
 
   test("site information stays on screen for a low frame and scrolls in a short viewport", async () => {
     // The desk's one tab fills the desk: made a window in the middle first.
+    await showFrame(shell, windowSelector(tabId));
     await shell.locator(`${windowSelector(tabId)} button[aria-label="Restore"]`).click();
     await settled(shell, app);
     // Shrink from the top so the frame sits low while the page stays on screen.

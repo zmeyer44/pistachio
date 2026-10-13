@@ -1,7 +1,6 @@
 import { ArrowDown, TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/cn";
-import { useAppStore } from "../../store";
-import { PistachioMark } from "../PistachioMark";
+import { PistachioGlyph } from "../PistachioMark";
 import { Button } from "../ui/button";
 import { armedStyle, useUpdatePrompt, type UpdatePromptPhase } from "./model";
 
@@ -14,14 +13,14 @@ const COMES_BACK = "Your tabs and Profiles come back just as they are.";
  * offered until it is installed or put off. App.tsx raises it when main says
  * it is due; lib/update-prompt.ts says when.
  *
- * The app's own icon at the centre, the way a Mac app announces itself: one
+ * The app's mark at the centre, the way a Mac app announces itself: one
  * narrow card, the choice stacked under it, and the download drawn as a
- * ring around the icon rather than a bar beside it.
+ * ring around the mark rather than a bar beside it. The nut alone, not the
+ * dock icon: a squircle's corners fight the ring's circle.
  */
 export function UpdatePrompt() {
   const model = useUpdatePrompt();
   const { phase } = model;
-  const icon = useAppStore((s) => s.settings.appearance.desktopIcon);
   const chip =
     phase.kind === "offer"
       ? model.current === null
@@ -50,11 +49,8 @@ export function UpdatePrompt() {
         className="animate-overlay-in w-full max-w-[340px] rounded-xl bg-background-100 px-6 pt-7 pb-5 text-center text-gray-1000 shadow-modal outline-none"
       >
         <div className="relative mx-auto grid size-20 place-items-center">
-          {ring === null ? null : <ProgressRing percent={ring} />}
-          {/* An edge of its own: the white dock icon would vanish into the card. */}
-          <div className={cn("overflow-hidden rounded-[19px] shadow-[0_0_0_1px_var(--color-alpha-400),0_6px_16px_oklch(0_0_0/0.1)]", phase.kind === "restarting" && "animate-pulse")}>
-            <PistachioMark size={64} desktopIcon variant={icon} />
-          </div>
+          <ProgressRing percent={ring} />
+          <PistachioGlyph className={cn("size-11 text-[#52a862]", phase.kind === "restarting" && "animate-pulse")} />
           {phase.kind === "offer" || phase.kind === "error" ? (
             <span
               className={cn(
@@ -175,27 +171,29 @@ function body(phase: UpdatePromptPhase): string {
   }
 }
 
-/** A ring round the icon: the download's progress, full once it is in, spinning (-1) while unknown. */
-function ProgressRing({ percent }: { percent: number }) {
+/** A ring round the mark: the download's progress, full once it is in, spinning (-1) while unknown, just the track (null) before and after. */
+function ProgressRing({ percent }: { percent: number | null }) {
   const r = 38;
   const length = 2 * Math.PI * r;
-  const spinning = percent < 0;
-  const shown = spinning ? 25 : percent;
+  const spinning = percent !== null && percent < 0;
+  const shown = spinning ? 25 : (percent ?? 0);
   return (
     <svg viewBox="0 0 80 80" className={cn("absolute inset-0 size-20 -rotate-90", spinning && "animate-spin")} aria-hidden="true">
       <circle cx="40" cy="40" r={r} fill="none" stroke="var(--color-alpha-200)" strokeWidth="3" />
-      <circle
-        cx="40"
-        cy="40"
-        r={r}
-        fill="none"
-        stroke="var(--color-blue-700)"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeDasharray={length}
-        strokeDashoffset={length * (1 - shown / 100)}
-        className="transition-[stroke-dashoffset] duration-300 ease-out"
-      />
+      {percent === null ? null : (
+        <circle
+          cx="40"
+          cy="40"
+          r={r}
+          fill="none"
+          stroke="var(--color-blue-700)"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={length}
+          strokeDashoffset={length * (1 - shown / 100)}
+          className="transition-[stroke-dashoffset] duration-300 ease-out"
+        />
+      )}
     </svg>
   );
 }

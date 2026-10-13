@@ -28,7 +28,7 @@ import { cn } from "../../lib/cn";
 import { editedMaskRegion, type Edges, type Rect } from "../../lib/desk/geometry";
 
 import { useNowPlaying } from "../../lib/desk/now-playing";
-import type { DeskChrome, DeskGrab } from "../../lib/desk/store";
+import type { DeskGrab } from "../../lib/desk/store";
 import { displayHost } from "../../lib/url";
 import { CONTEXT_MENU_W, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { Favicon } from "../Favicon";
@@ -37,7 +37,7 @@ import { SiteInfoFrom } from "../SiteInfoPopover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { HomePage } from "../home/HomePage";
 import { BriefPage } from "../reports/BriefPage";
-import { CHROME_CARD_TOP, CHROME_INSETS, DRAWER_H, MASK_CARD_TOP, MASK_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
+import { DRAWER_H, MASK_CARD_TOP, MASK_INSETS, WINDOW_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
 import { DeskLivePicture } from "./DeskLivePicture";
 import { usePageEntries } from "./page-entries";
 import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
@@ -91,17 +91,19 @@ export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: 
  * actions — is on the frame's menu (⋯, or a right-click on the frame).
  *
  * Masked (DeskMask), the window is a region of its page, shown alone and
- * scaled like a picture — still the live page, used as it always is: the
- * bare frame's handle above the region and nothing else, its controls
+ * scaled like a picture — still the live page, used as it always is: a
+ * handle above the region and nothing else, its controls
  * Unmask, Collapse and Close, and Edit mask on its menu. Choosing the region, its
  * page is frozen under a MaskSelector; editing it, the whole page is shown
  * around it under a MaskEditor.
  *
- * In the Drawer frame the window is its page alone: its title and controls
- * are on a strip behind its top edge that the engine slides out above it
- * (`--drawer-t`), pushing the window down where there is no room above
- * it. The pointer on the window, on the drawer, or on the strip at its
- * top is said to the engine (hoverWindow), which decides when.
+ * Otherwise its frame is the Drawer: the window is its page alone, its title
+ * and controls on a strip behind its top edge that the engine slides out
+ * above it (`--drawer-t`), pushing the window down where there is no room
+ * above it. The pointer on the window, on the drawer, or on the strip at
+ * its top is said to the engine (hoverWindow), which decides when. (Until
+ * 2026-10-12 the Feel's Frame chose this or a Title bar, a Tab or a Bare
+ * handle.)
  *
  * Minimized, the window is small and its page zoomed out (DESK_MINI_ZOOM):
  * a web page by main, a page the shell draws by a CSS scale here. Its
@@ -111,7 +113,6 @@ export function holdsGrab(event: { shiftKey: boolean; altKey: boolean; metaKey: 
 export const DeskWindow = memo(function DeskWindow({
   view,
   tab,
-  chrome,
   grab,
   still,
   waking,
@@ -126,7 +127,6 @@ export const DeskWindow = memo(function DeskWindow({
   tab: BrowserTabInfo | null;
   /** A window the shell draws itself (a document's, `file:<item id>`): what it shows (window-kinds.tsx). */
   shell?: ShellWindowSubject | null;
-  chrome: DeskChrome;
   grab: DeskGrab;
   /** What to paint where the page goes when it is not live. */
   still: string | null;
@@ -150,10 +150,10 @@ export const DeskWindow = memo(function DeskWindow({
     [engine, tabId],
   );
   const masked = view.mask !== null;
-  // A masked window is framed by the bare frame's handle, whatever the frame variant.
-  const frame: DeskChrome = masked ? "bare" : chrome;
-  const insets = masked ? MASK_INSETS : CHROME_INSETS[chrome];
-  const cardTop = masked ? MASK_CARD_TOP : CHROME_CARD_TOP[chrome];
+  // A masked window is framed by a handle above its region; any other by its drawer.
+  const drawer = !masked;
+  const insets = masked ? MASK_INSETS : WINDOW_INSETS;
+  const cardTop = masked ? MASK_CARD_TOP : 0;
   const parts = shell === null ? null : shellWindowParts(shell, tabId, view.focused);
   const title = parts !== null ? parts.name : tab?.title || displayHost(tab?.url ?? "") || "Untitled";
   const host = parts !== null ? "" : displayHost(tab?.url ?? "");
@@ -169,14 +169,14 @@ export const DeskWindow = memo(function DeskWindow({
   // window filling the desk (no one sees it there; its video floats).
   const livePicture =
     view.drawn && media !== null && media.hasVideo && media.playing && !masked && view.unmasking === null && !mini && view.flight === null && !view.closing && !view.selecting && !waking && !behind;
-  // A bar over its page's top — the Bar and Tab frames' title row, the Drawer frame's drawer while it is out (the
-  // engine writes data-drawer-out) — and the page meets it square, its foot still round (shell.css). Main cuts a live
+  // Its drawer over its page's top while it is out (the engine writes data-drawer-out), and the page meets it
+  // square, its foot still round (shell.css). Main cuts a live
   // page round at all four corners alike: what shows through its top corners is the page box behind it, painted there
   // in the page's own colours (deskPageCorners), read again now and then while it is so.
   const [drawerOut, setDrawerOut] = useState(false);
   useEffect(() => {
     const el = root.current;
-    if (el === null || frame !== "drawer") {
+    if (el === null || !drawer) {
       setDrawerOut(false);
       return;
     }
@@ -185,8 +185,8 @@ export const DeskWindow = memo(function DeskWindow({
     const observer = new MutationObserver(read);
     observer.observe(el, { attributes: true, attributeFilter: ["data-drawer-out"] });
     return () => observer.disconnect();
-  }, [frame]);
-  const barOver = view.framed && (frame === "bar" || frame === "tab" || (frame === "drawer" && drawerOut));
+  }, [drawer]);
+  const barOver = view.framed && drawer && drawerOut;
   const readCorners = barOver && !view.drawn && tab !== null && !shellPage && !mini;
   const [corners, setCorners] = useState<{ left: string; right: string } | null>(null);
   const pageUrl = tab?.url;
@@ -212,7 +212,7 @@ export const DeskWindow = memo(function DeskWindow({
   const working = agent !== null;
   // Phased on the wall clock like every other ring, taken as this one goes on.
   const ringDelay = useMemo(() => (working ? `${String(agentRingDelayMs(Date.now()))}ms` : undefined), [working]);
-  // The agent's word and its note ride the frame: in the bar's title row, or above a tab or handle.
+  // The agent's word and its note ride the frame: on the drawer, or above a masked window's handle.
   const marks =
     agent === null && note === null ? null : (
       <span className="desk-window-marks" data-testid="desk-window-marks">
@@ -280,7 +280,6 @@ export const DeskWindow = memo(function DeskWindow({
     return () => engine.hoverWindow(tabId, "menu", false);
   }, [engine, tabId, menuUp]);
   // Gone (or framed otherwise), the pointer is on it no more.
-  const drawer = frame === "drawer";
   useEffect(() => {
     if (!drawer) return;
     return () => {
@@ -475,7 +474,6 @@ export const DeskWindow = memo(function DeskWindow({
       data-testid="desk-window"
       data-tab-id={tabId}
       data-window-kind={shell?.kind ?? "tab"}
-      data-chrome={frame}
       data-masked={masked ? "" : undefined}
       data-mini={view.mini ?? undefined}
       data-raised={view.raised ? "" : undefined}
@@ -499,7 +497,7 @@ export const DeskWindow = memo(function DeskWindow({
           "--desk-drawer-trigger": `${String(DESK_DRAWER_TRIGGER)}px`,
         } as CSSProperties
       }
-      // Parked at the desk's foot, the pointer on it raises it into view; in the Drawer frame, it may bring out its drawer
+      // Parked at the desk's foot, the pointer on it raises it into view; unmasked, it may bring out its drawer
       // (over its live page, main says so instead).
       onPointerEnter={
         mini || drawer
@@ -519,7 +517,7 @@ export const DeskWindow = memo(function DeskWindow({
       }
     >
       {view.maskFade !== null && view.stillShows === "page" && still !== null ? (
-        <MaskFade from={view.maskFade} insets={view.maskFade.framed ? CHROME_INSETS[chrome] : NO_INSETS} still={still} />
+        <MaskFade from={view.maskFade} still={still} />
       ) : null}
       {view.editing !== null && view.mask !== null ? (
         <MaskEditor
@@ -533,24 +531,12 @@ export const DeskWindow = memo(function DeskWindow({
           stillShows={view.stillShows}
         />
       ) : null}
-      {frame === "tab" ? (
-        <div className="desk-window-chrome desk-window-tab" onPointerDown={onFrameDown} onContextMenu={onFrameMenu}>
-          {parts !== null ? (
-            parts.title("flex-1")
-          ) : (
-            <span className="desk-window-address flex-1" data-testid="desk-window-address" title={tab?.url}>
-              <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
-              <span className="min-w-0 truncate">{title}</span>
-            </span>
-          )}
-          {controls}
-        </div>
-      ) : frame === "bare" ? (
+      {masked ? (
         <div className="desk-window-chrome desk-window-handle" onPointerDown={onFrameDown} onContextMenu={onFrameMenu} title={title}>
           <span className="desk-window-pill" />
           {controls}
         </div>
-      ) : drawer ? (
+      ) : (
         // Behind the card (which lies over its foot), slid up out of it as far as the engine says.
         <div className="desk-window-drawer-clip">
           <div
@@ -576,29 +562,12 @@ export const DeskWindow = memo(function DeskWindow({
             {controls}
           </div>
         </div>
-      ) : null}
-      {frame === "bar" || drawer || marks === null ? null : <div className="desk-window-marks-float">{marks}</div>}
+      )}
+      {masked && marks !== null ? <div className="desk-window-marks-float">{marks}</div> : null}
       <div
         className={cn("desk-window-card", working && "agent-ring")}
         style={{ top: cardTop, "--agent-ring-delay": ringDelay, "--agent-ring-radius": "var(--desk-window-radius)" } as CSSProperties}
       >
-        {frame === "bar" ? (
-          <div className="desk-window-chrome desk-window-bar" style={{ height: insets.top }} onPointerDown={onFrameDown} onContextMenu={onFrameMenu}>
-            {/* Clicked, the address palette opens on this tab; dragged, it is the bar. */}
-            {parts !== null ? (
-              parts.title()
-            ) : (
-              <span className="desk-window-address" data-testid="desk-window-address" title={tab?.url}>
-                <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="size-3.5 shrink-0" />
-                <span className="min-w-0 truncate font-medium text-gray-1000">{title}</span>
-                {host !== "" && host !== title ? <span className="desk-window-host min-w-0 shrink-[2] truncate">{host}</span> : null}
-              </span>
-            )}
-            <span className="flex-1" />
-            {marks}
-            {controls}
-          </div>
-        ) : null}
         <div
           className="desk-window-page"
           data-testid="desk-window-page"
@@ -637,7 +606,7 @@ export const DeskWindow = memo(function DeskWindow({
           {/* Its page frozen (drawn), a region can be drawn over it. */}
           {view.selecting && view.drawn ? <MaskSelector tabId={tabId} engine={engine} /> : null}
         </div>
-        <ResizeEdges tabId={tabId} engine={engine} top={frame === "bar"} />
+        <ResizeEdges tabId={tabId} engine={engine} drawer={drawer} />
       </div>
       {/* With no room above it, its drawer comes out for the pointer at its top: over a live page main says so (the page's
           own top band), here over a drawn one, and just above the window. A press here is the frame's. */}
@@ -1003,16 +972,14 @@ function regionOf(drag: { x0: number; y0: number; x1: number; y1: number }): Rec
   return { x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w: Math.abs(drag.x1 - drag.x0), h: Math.abs(drag.y1 - drag.y0) };
 }
 
-const NO_INSETS = { top: 0, right: 0, bottom: 0, left: 0 };
-
 /**
  * Just masked: the page the region was cut from, where the window stood,
  * dimmed as it was while the region was chosen — fading out from around the
  * region, which the window's own page now covers. Its mask just edited: the
- * page shown around the region, as the editor showed it (`insets` none: the
- * page box alone, no frame).
+ * page shown around the region, as the editor showed it. Either way the
+ * page fills the box, as it fills an unmasked window (WINDOW_INSETS).
  */
-function MaskFade({ from, insets, still }: { from: Rect & { framed: boolean }; insets: typeof NO_INSETS; still: string }) {
+function MaskFade({ from, still }: { from: Rect & { framed: boolean }; still: string }) {
   return (
     <div
       className="desk-mask-fade"
@@ -1024,7 +991,7 @@ function MaskFade({ from, insets, still }: { from: Rect & { framed: boolean }; i
         src={still}
         alt=""
         draggable={false}
-        style={{ left: insets.left, top: insets.top, width: from.w - insets.left - insets.right, height: from.h - insets.top - insets.bottom }}
+        style={{ left: 0, top: 0, width: from.w, height: from.h }}
       />
     </div>
   );
@@ -1112,25 +1079,45 @@ const EDGES: ReadonlyArray<{ id: string; edges: Edges; style: CSSProperties; cur
  * The edges and corners that resize the window. They straddle the card's
  * border, mostly outside it: inside, the live page covers everything but
  * the frame's thin bezel, and no shell element can take a pointer there.
+ *
+ * A window's top is its drawer's top while that is out: the top edge and
+ * corners ride up with it (`--drawer-t`), so the window is taken by its top
+ * where it is seen to end, as by its other sides; and the pointer on them
+ * is on the drawer's edge, which keeps the drawer out (`hoverWindow`'s
+ * "strip"), so it never slides away from under the edge it brought there.
+ * (Until 2026-10-12 only the Title bar frame had a top edge: the Drawer's
+ * top had none, and a window could not be resized from there.) A masked
+ * window's top is its handle, which moves it: only its corners resize it
+ * from there.
  */
-function ResizeEdges({ tabId, engine, top }: { tabId: string; engine: DeskEngine; top: boolean }) {
+function ResizeEdges({ tabId, engine, drawer }: { tabId: string; engine: DeskEngine; drawer: boolean }) {
   return (
     <>
-      {EDGES.filter((edge) => top || edge.id !== "n").map((edge) => (
-        <div
-          key={edge.id}
-          aria-hidden="true"
-          data-desk-edge={edge.id}
-          className={cn("desk-window-edge absolute")}
-          style={{ ...edge.style, cursor: edge.cursor }}
-          onPointerDown={(event) => {
-            if (event.button !== 0) return;
-            event.preventDefault();
-            event.stopPropagation();
-            engine.resize(tabId, edge.edges, event);
-          }}
-        />
-      ))}
+      {EDGES.filter((edge) => drawer || edge.id !== "n").map((edge) => {
+        const onDrawer = drawer && edge.edges.top;
+        return (
+          <div
+            key={edge.id}
+            aria-hidden="true"
+            data-desk-edge={edge.id}
+            className={cn("desk-window-edge absolute")}
+            style={{ ...edge.style, ...(onDrawer ? { top: overDrawer(edge.style.top) } : {}), cursor: edge.cursor }}
+            onPointerEnter={onDrawer ? () => engine.hoverWindow(tabId, "strip", true) : undefined}
+            onPointerLeave={onDrawer ? () => engine.hoverWindow(tabId, "strip", false) : undefined}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.stopPropagation();
+              engine.resize(tabId, edge.edges, event);
+            }}
+          />
+        );
+      })}
     </>
   );
+}
+
+/** A top edge's or corner's place, `top` from the page's top, carried up by the drawer as far as it is out. */
+function overDrawer(top: CSSProperties["top"]): string {
+  return `calc(${String(top)}px - var(--drawer-t, 0) * var(--desk-drawer-h))`;
 }

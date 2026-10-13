@@ -949,6 +949,7 @@ export function TabList() {
   // The dock at the list's foot: the media stack, then any screen share's card.
   const mediaInset = useMediaStackInset() + useScreenShareInset();
   const selectTab = useAppStore((s) => s.selectTab);
+  const closePage = useAppStore((s) => s.closePage);
   const closeTab = useAppStore((s) => s.closeTab);
   const sidebarCommand = useAppStore((s) => s.sidebarCommand);
   const tabGroups = useAppStore((s) => s.snapshot?.tabGroups ?? NO_TAB_GROUPS);
@@ -1429,16 +1430,17 @@ export function TabList() {
       // top in use. Out and in use already, the press is the address's, below.
       const engine = deskEngine();
       if (engine !== null && engine.hasGroupTab(tabId) && !engine.inUse(tabId)) {
-        engine.add(tabId, { focus: true });
+        showOnDesk(tabId);
         return;
       }
       // Pressing the tab you are already on is an address press, not a
       // re-selection that would do nothing: the sidebar's row stands in for
-      // the omnibox.
+      // the omnibox. Under a page (Settings) the press asks for the tab back
+      // instead: the page steps aside, and the address stays shut.
       // A modified click never reaches here — selectForBulk keeps range and
       // additive presses for bulk selection.
       if (tabs.find((candidate) => candidate.id === tabId)?.active === true) {
-        run({ type: "openUrlBar", tabId });
+        if (!closePage()) run({ type: "openUrlBar", tabId });
         return;
       }
       void selectTab(tabId);

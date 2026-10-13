@@ -10,7 +10,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, selectSpace, openTabs, openTray, reachBar, screenshots, selectTab, settled, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, selectSpace, openTabs, openTray, reachBar, screenshots, selectTab, settled, showFrame, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
 import { shellReady } from "./windows";
 
 const capture = screenshots("desk-agent");
@@ -94,7 +94,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     near(idle.y + idle.height, stage.y + stage.height - 2, 1);
     // A window reaching the desk's foot under it keeps its whole page: the nub lies over it, not cutting it.
     const entryPage = await box(shell, `${windowSelector(invoice)} [data-testid="desk-window-page"]`);
-    if (entryPage.x + entryPage.width > idle.x - 20 && entryPage.y + entryPage.height > idle.y - 20) near(entryPage.y + entryPage.height, stage.y + stage.height - 5, 1);
+    if (entryPage.x + entryPage.width > idle.x - 20 && entryPage.y + entryPage.height > idle.y - 20) near(entryPage.y + entryPage.height, stage.y + stage.height, 1);
     await capture(app, shell, "01a-desk-nub.png");
     // The pointer resting on it swells it, and its tooltip names the group and the key. It is the circle that grows, drawn
     // out of the corner as if pulled from it, clear of both edges — its joins to them tightening, reaching no further
@@ -748,6 +748,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect.poll(() => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { floating: boolean } | null)?.floating)).toBe(false);
 
     // ── 8. A page the agent's click opens — from a tab in the dock — is hidden: nowhere on the desk, in no group ─
+    await showFrame(shell, windowSelector(invoice));
     await shell.locator(`${windowSelector(invoice)} [data-testid="desk-collapse"]`).click();
     await settled(shell, app);
     await expect(shell.locator(windowSelector(invoice))).toHaveCount(0);

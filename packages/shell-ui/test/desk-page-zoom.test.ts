@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DESK_MINI_ZOOM, type DeskState, type DeskZoomedPage } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { CHROME_INSETS, DeskEngine, MASK_INSETS, type DeskHost } from "../src/components/desk/desk-engine";
+import { DeskEngine, MASK_INSETS, WINDOW_INSETS, type DeskHost } from "../src/components/desk/desk-engine";
 import { DESK_GAP, pageZoom, zoneRect, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, DESK_AXES, PAGE_ZOOM_STRENGTH, sanitizeVariants, type DeskPageZoom } from "../src/lib/desk/store";
 
@@ -51,8 +51,8 @@ async function flush(): Promise<void> {
 }
 
 const DESK: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
-/** The frame these are written for: the Title bar (its insets). */
-const insets = CHROME_INSETS.bar;
+/** Where a window's page sits in it: the whole of it. */
+const insets = WINDOW_INSETS;
 const pageOf = (rect: Rect) => ({ width: Math.round(rect.w - insets.left - insets.right), height: Math.round(rect.h - insets.top - insets.bottom) });
 
 function native() {
@@ -61,6 +61,11 @@ function native() {
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
   setShellApi({
     ...members,
+    // Main cannot say where the pointer is (as under Playwright), and says so at once: a drawer that pushed its window
+    // down (no room above it) goes back in as soon as nothing holds it out, within these synchronous frames.
+    getCursorPoint: () => {
+      throw new Error("no pointer");
+    },
     setLayout: (layout: BrowserLayout) => layouts.push(layout),
     setDesk: (state: DeskState | null) => desks.push(state),
     captureTabStills: (ids: readonly string[]) => Promise.resolve(ids.map((tabId) => ({ tabId, dataUrl: `data:image/jpeg;base64,${tabId}` }))),
@@ -92,7 +97,7 @@ function expectRect(actual: Rect, expected: Rect, within = 1): void {
 function open(zoom: DeskPageZoom = "fit", host: Partial<DeskHost> = {}) {
   const api = native();
   const desk = new DeskEngine({
-    variants: () => ({ ...DEFAULT_DESK_VARIANTS, chrome: "bar", zoom }),
+    variants: () => ({ ...DEFAULT_DESK_VARIANTS, zoom }),
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,
@@ -316,7 +321,7 @@ describe("Page zoom, Fit", () => {
 describe("Page zoom's strength, changed on the Feel's slider", () => {
   it("tells main each page's zoom at the new strength as the desk refreshes, and nothing once it is Off", () => {
     let zoom: DeskPageZoom = "fit";
-    const { desk, told } = open("fit", { variants: () => ({ ...DEFAULT_DESK_VARIANTS, chrome: "bar", zoom }) });
+    const { desk, told } = open("fit", { variants: () => ({ ...DEFAULT_DESK_VARIANTS, zoom }) });
     const left = zoneRect("left", DESK);
     desk.applyLayout(
       new Map([
