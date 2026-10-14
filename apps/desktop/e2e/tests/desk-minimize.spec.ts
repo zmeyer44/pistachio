@@ -15,7 +15,7 @@
 
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
-import { box, createGroup, frameGrip, fromFrameMenu, INVOICES, launchDesk, liveViews, selectSpace, openTabs, rowSelector, screenshots, selectTab, settled, showFrame, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { box, createGroup, frameGrip, fromFrameMenu, INVOICES, launchDesk, liveViews, openTabs, rowSelector, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, spaceRows, VENDOR, windowSelector, type Box } from "./desk-harness";
 
 const capture = screenshots("desk-minimize");
 
@@ -116,7 +116,7 @@ test("minimized windows: parked peeking at the desk's foot, zoomed out and live,
     await createGroup(shell, "desk-mini", [invoice, vendor, accounts], "Northstar", "blue");
     await selectTab(shell, invoice);
     await selectSpace(shell, "desk-mini");
-    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(3);
+    await expect(spaceRows(shell)).toHaveCount(3);
     await settled(shell, app);
     // The vendor and the accounts out too: three windows.
     for (const tabId of [vendor, accounts]) {

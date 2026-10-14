@@ -24,7 +24,6 @@ import { useSidebarMode } from "../../lib/sidebar-mode";
 import { useAppStore } from "../../store";
 import { runShellCommand } from "../../chrome/shell-host";
 import type { MenuEntry } from "../ContextMenu";
-import { useSidebarRail } from "../sidebar-rail";
 import { carriesSomething, rejectionLine, takeDrop } from "./DeskStack";
 
 const PLATFORM: ShortcutPlatform = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
@@ -135,7 +134,6 @@ export function DeskMoreButton({ className }: { className?: string }) {
  * into it and come out of it, and it bounces when something comes in.
  */
 export function DeskContextRow({ group }: { group: TabGroupInfo }) {
-  const rail = useSidebarRail();
   const contexts = useGroupContexts();
   const count = contexts.find((candidate) => candidate.groupId === group.id)?.items.length ?? 0;
   const open = useDeskChrome((state) => state.card?.kind === "stack");
@@ -187,7 +185,7 @@ export function DeskContextRow({ group }: { group: TabGroupInfo }) {
       data-open={open ? "" : undefined}
       data-dropping={dropping ? "" : undefined}
       data-drop-target={fileDrag && !dropping ? "" : undefined}
-      className={cn("desk-context-row no-drag", rail && "desk-context-row-rail")}
+      className="desk-context-row no-drag"
       onMouseDown={(event) => event.preventDefault()}
       onClick={toggle}
       onKeyDown={(event) => {
@@ -216,7 +214,6 @@ export function DeskContextRow({ group }: { group: TabGroupInfo }) {
       <span className="desk-context-pile" aria-hidden="true">
         <span className="desk-context-sheet" data-layer="2" />
         <span className="desk-context-sheet" data-layer="1" />
-        {count === 0 ? null : <span className="desk-context-count">{count}</span>}
       </span>
       <span className="desk-context-label">Context</span>
       <span className="desk-context-meta">{count === 0 ? "Drop files" : count}</span>

@@ -10,7 +10,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import type { ShortcutSurface } from "@pistachio/shell-contracts/shortcuts";
-import type { DeskEngine } from "../../components/desk/desk-engine";
+import type { DeskEngine, DeskView } from "../../components/desk/desk-engine";
 import { nativeApi } from "../../api";
 import { isPageOverlay, useAppStore, type Overlay } from "../../store";
 import { deskGroups, passedEntry, useDeskStore } from "./store";
@@ -240,6 +240,20 @@ export function useDeskEngine(): DeskEngine | null {
   );
 }
 
+/**
+ * What the desk shows (DeskEngine.getView) for a component: rendered again
+ * at every change of it — its windows, the layout they are in, a layout
+ * looked at. Null with no engine. (Lifted from DeskNowPlaying 2026-10-13,
+ * for the space view's layouts.)
+ */
+export function useDeskView(engine: DeskEngine | null): DeskView | null {
+  return useSyncExternalStore(
+    useCallback((listener: () => void) => engine?.subscribe(listener) ?? (() => undefined), [engine]),
+    () => engine?.getView() ?? null,
+    () => null,
+  );
+}
+
 /** The desk's engine, or null before it is up (the first frames of a cold start) and off the desktop. */
 export function deskEngine(): DeskEngine | null {
   return engineUp;
@@ -275,7 +289,7 @@ export async function newTabOnDesk(): Promise<void> {
   const store = useAppStore.getState();
   const groupId = currentSpace();
   store.closePage();
-  // (createTab has no `group` option on the wire yet: main's default for a tab the shell makes is the current space.)
+  // (With no current space named yet, a plain new tab: main's default for a tab the shell makes is the current space.)
   if (groupId === null) await store.createTab(store.settings.general.homeUrl);
   else await store.tabGroupCommand({ type: "newTab", groupId });
 }

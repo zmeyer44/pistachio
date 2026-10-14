@@ -7,7 +7,7 @@
  * renderer is a type error, not a blank spot in the sidebar.
  */
 
-import { Globe, Search } from "lucide-react";
+import { Globe } from "lucide-react";
 import type { FC } from "react";
 import { DeskMoreButton, DeskRailToggle } from "../components/desk/DeskSidebarControls";
 import { DownloadsChip } from "../components/DownloadsChip";
@@ -21,7 +21,6 @@ import { TabList } from "../components/TabList";
 import { UpdatePill } from "../components/UpdatePill";
 import { Kbd } from "../components/ui/kbd";
 import { cn } from "../lib/cn";
-import { useSidebarRail } from "../components/sidebar-rail";
 import { deskAvailable } from "../lib/desk/open";
 import { selectActiveTab, useAppStore } from "../store";
 import { ActionButton, useAction } from "./actions";
@@ -51,7 +50,6 @@ function NavigationCluster() {
  * like every control that opens a modal.
  */
 function SidebarAddress() {
-  const rail = useSidebarRail();
   const { hint, run } = useAction("editAddress");
   const tab = useAppStore(selectActiveTab);
   const chrome = useChromeTabs().find((t) => t.id === tab?.id) ?? null;
@@ -60,24 +58,6 @@ function SidebarAddress() {
   const editing = useAppStore(
     (s) => s.overlay === "url" && !s.urlBarNew && (s.urlBarTabId === null || s.urlBarTabId === tab?.id),
   );
-  // As a rail (a desk's dock): the same button, its icon alone.
-  if (rail)
-    return (
-      <button
-        type="button"
-        data-testid="sidebar-address"
-        title={hint === null ? "Search or enter URL" : `Search or enter URL (${hint})`}
-        aria-label="Edit address"
-        aria-expanded={editing}
-        onClick={run}
-        className={cn(
-          "no-drag grid size-8 shrink-0 cursor-pointer place-items-center rounded-md text-gray-900 transition-colors [&_svg]:size-[18px]",
-          editing ? "bg-background-100 shadow-small" : "bg-alpha-100 hover:bg-alpha-200",
-        )}
-      >
-        <Search aria-hidden="true" />
-      </button>
-    );
   return (
     <button
       type="button"
@@ -136,7 +116,7 @@ function ScreenShareFeature() {
  * browser, beside the desk's card (arrange, feel): the whole sidebar's goes
  * to the rail, the hidden sidebar's (brought out over the desk) keeps it
  * open. On the web, the ⌘S action itself (whole ⇄ hidden). (The rail's head
- * draws its own: SidebarChrome.)
+ * draws its own: the double sidebar's SpaceRail.)
  */
 function SidebarPinFeature() {
   if (deskAvailable())

@@ -133,10 +133,20 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
     // context menu so pinned rows cannot silently regress to a no-op.
     await pin.hover();
     await pin.getByRole("button", { name: /^Close / }).click();
+    // Its page was the Profile's last tab: main stands a fresh empty space up, current, and the double sidebar's card
+    // shows it — Pinned is Home's (docs/double-sidebar.md). Home chosen on the rail, with no Home tab left, opens one.
+    await expect(shell.getByTestId("space-view")).toHaveCount(1);
+    await expect(pin).toHaveCount(0);
+    const beforeHome = new Set((await snapshot(shell)).tabs.map((tab) => tab.id));
+    await shell.getByTestId("rail-home").click();
     await expect(pin).toHaveCount(1);
     await expect(pin).not.toHaveAttribute("data-live");
     await pin.click();
     await expect(pin).toHaveAttribute("data-live", "");
+    // (Home's new tab closed again: the pin's page the Profile's only tab, as it was.)
+    const homeTab = (await snapshot(shell)).tabs.find((tab) => !beforeHome.has(tab.id) && tab.anchorId === null);
+    if (homeTab !== undefined) await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(tabId), homeTab.id);
+    await expect.poll(async () => (await snapshot(shell)).tabs.length).toBe(1);
 
     // Unpin is a separate hover action: it removes the kept entry while its
     // open page returns to the day's tabs. Pin it again for the folder flow.
@@ -285,7 +295,8 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
     const missing = Math.max(0, 3 - (await liveTabs.count()));
     await shell.evaluate(async (count) => {
       const api = (window as unknown as { pistachio: PistachioApi }).pistachio;
-      for (let index = 0; index < count; index += 1) await api.createTab(`pistachio://demo/invoices?selection=${String(index)}`);
+      // (Each a Home tab of its own — a loose one, Today's: a new tab in front would join the space in use.)
+      for (let index = 0; index < count; index += 1) await api.createTab(`pistachio://demo/invoices?selection=${String(index)}`, { group: "loose" });
     }, missing);
     await expect(liveTabs).toHaveCount(3);
 
@@ -384,7 +395,11 @@ test("rows and tiles drag between the day's tabs, the pinned tree, its folders, 
     await expect(pin).toHaveAttribute("data-live", "");
     await expect(list.getByTestId("human-tab")).toHaveCount(0);
 
-    // A pin dropped on a folder's header goes inside it.
+    // A pin dropped on a folder's header goes inside it. (New folder shows on the "New tab" row's hover: first the pin's
+    // Context row comes in under it — its page alone is Home's, its desk up — moving the "New tab" row down, from
+    // under a pointer that rested there.)
+    await expect(sidebar.getByTestId("pinned-section").getByTestId("desk-stack")).toHaveCount(1);
+    await settled(sidebar);
     await sidebar.getByTestId("new-tab-button").hover();
     await sidebar.getByTestId("new-folder-button").click();
     const nameInput = sidebar.getByTestId("folder-name-input");
@@ -425,7 +440,7 @@ test("rows and tiles drag between the day's tabs, the pinned tree, its folders, 
 });
 
 // Its own window: four day tabs, the last two of them an open group.
-test("a row dragged below the last tab lands last, past a group that ends the list, without scrolling the list away", { tag: ["@sidebar"] }, async () => {
+test("a row dragged below the last tab lands last, without scrolling the list away, and never in a space that ends the day's row", { tag: ["@sidebar"] }, async () => {
   const { app } = await launchApp({ settings: { layout: { sidebar: "pinned" } }, name: "sidebar-drag-end" });
   try {
     const shell = await shellReady(app);
@@ -450,23 +465,31 @@ test("a row dragged below the last tab lands last, past a group that ends the li
     });
     await expect.poll(async () => (await order()).at(-1)).toBe(first);
 
-    // The last two tabs grouped and open: a row dropped well below the
-    // group's last tab, however far in, lands after the group, not in it.
+    // The last two tabs grouped: the group ends the day's row — on the desktop a tile on the rail, its tabs not
+    // Today's (docs/double-sidebar.md), the first tab in use so Home stays shown. A row dropped well below Today's last
+    // lands last in Today, just after the row it was let go under (the space keeping its place after that, as the
+    // person saw it), and never in the space. (Until 2026-10-13 the group's rows ended the one list, and the row landed
+    // after them.)
+    const [kept] = await order();
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), kept!);
     const grouped = (await order()).slice(-2);
     await shell.evaluate(
       async ({ tabIds }) => {
         const pistachio = (window as unknown as { pistachio: PistachioApi }).pistachio;
         await pistachio.tabGroupCommand({ type: "create", id: "end-group", tabIds, title: "End", color: "blue" });
-        await pistachio.tabGroupCommand({ type: "setOpen", groupId: "end-group", open: true });
       },
       { tabIds: grouped },
     );
-    await expect(list.locator('[data-row-kind="member"]')).toHaveCount(2);
+    await expect(shell.locator('[data-testid="rail-space"][data-group-id="end-group"]')).toHaveCount(1);
+    await expect(rows).toHaveCount(2);
     const lastBox = await rows.last().boundingBox();
     if (lastBox === null) throw new Error("no last tab");
     const [moved] = await order();
+    const dayOrder = async (): Promise<string[]> => (await snapshot(shell)).tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id);
     await drag(shell, rows.first(), { x: lastBox.x + lastBox.width / 2, y: lastBox.y + lastBox.height + 60 });
     await expect.poll(async () => (await order()).at(-1)).toBe(moved);
+    const [under] = await order();
+    expect((await dayOrder()).indexOf(moved!)).toBe((await dayOrder()).indexOf(under!) + 1);
     expect((await snapshot(shell)).tabGroups.find((group) => group.id === "end-group")?.tabIds).toEqual(grouped);
   } finally {
     await app.close();

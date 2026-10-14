@@ -15,10 +15,16 @@
  * resolves to this .ts first).
  */
 
-/** The sidebar's regions: one column, top to bottom. */
-export type SidebarRegion = "toolbar" | "address" | "favorites" | "tabs" | "media" | "footer";
+/**
+ * The sidebar's regions: one column, top to bottom. The footer's start is a
+ * region of its own, `profile` (the Profile's menu), since the double
+ * sidebar (docs/double-sidebar.md, 2026-10-13) stands it at the rail's foot
+ * and the pills at the card's; the single sidebar (the web's) still draws
+ * the two as one row, the menu first.
+ */
+export type SidebarRegion = "toolbar" | "address" | "favorites" | "tabs" | "media" | "profile" | "footer";
 
-export const SIDEBAR_REGIONS: readonly SidebarRegion[] = ["toolbar", "address", "favorites", "tabs", "media", "footer"];
+export const SIDEBAR_REGIONS: readonly SidebarRegion[] = ["toolbar", "address", "favorites", "tabs", "media", "profile", "footer"];
 
 /**
  * Where a feature goes: a region and its order within it (spaced by 10 so a
@@ -63,7 +69,7 @@ export const CHROME_MANIFEST = {
   // Stop, at the foot of the dock below the media stack, where the stack's
   // fan-out never covers it (ScreenShareIndicator).
   screenShare: { region: "media", order: 20 },
-  menu: { region: "footer", order: 10 },
+  menu: { region: "profile", order: 10 },
   // Empty while session sync is doing its job; a pill when it is stuck,
   // revoked, or a run is working in the cloud browser (SyncPill).
   sync: { region: "footer", order: 20 },

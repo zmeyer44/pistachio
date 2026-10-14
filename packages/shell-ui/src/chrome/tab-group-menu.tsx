@@ -4,7 +4,7 @@ import { DEFAULT_TAB_GROUP_TITLE, type TabGroupColor, type TabGroupInfo } from "
 import { shellApi } from "../api";
 import type { MenuEntry } from "../components/ContextMenu";
 import { useAppStore } from "../store";
-import { splitAvailable } from "../lib/desk/open";
+import { deskAvailable, splitAvailable } from "../lib/desk/open";
 
 /**
  * A space's (tab group's) menu and its close, declared once for the
@@ -114,11 +114,16 @@ export function useTabGroupMenu(options: {
           },
         ]
       : []),
-    {
-      label: "Keep open",
-      checked: group.open,
-      onSelect: () => void tabGroupCommand({ type: "setOpen", groupId: group.id, open: !group.open }),
-    },
+    // (The web's: in the double sidebar a space is a tile on the rail and has no rows to keep open, docs/double-sidebar.md.)
+    ...(deskAvailable()
+      ? []
+      : [
+          {
+            label: "Keep open",
+            checked: group.open,
+            onSelect: () => void tabGroupCommand({ type: "setOpen", groupId: group.id, open: !group.open }),
+          },
+        ]),
     { separator: true },
     {
       // Each tab its own space again; the space itself stays, empty, if it holds a Stack or a conversation (main's).

@@ -20,7 +20,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
-import { groupSelector, INVOICES, launchDesk, snapshot, windowSelector } from "./desk-harness";
+import { INVOICES, launchDesk, snapshot, spaceView, windowSelector } from "./desk-harness";
 import { captureShell } from "./pages-harness";
 
 let server: Server;
@@ -246,8 +246,8 @@ test.describe.serial("the address bar's destinations", { tag: ["@address", "@des
       })
       .toEqual({ fresh: true, empty: 0, title: "New space", inUse: null });
     const made = (await snapshot(shell)).currentGroupId!;
-    // The rail gives way to the whole sidebar for the name, and the keyboard is the field's.
-    const name = shell.locator(groupSelector(made)).getByTestId("tab-group-name-input");
+    // The card turns to the new space, its name field open in its head, and the keyboard is the field's.
+    const name = spaceView(shell, made).getByTestId("tab-group-name-input");
     await expect(name).toBeFocused();
     await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${made}"][data-empty]`)).toHaveCount(1);
     await name.fill("Errands");
@@ -267,10 +267,10 @@ test.describe.serial("the address bar's destinations", { tag: ["@address", "@des
       await expect(shell.getByTestId(cover)).toHaveCount(0);
       await expect.poll(async () => {
         const now = await snapshot(shell);
-        return now.currentGroupId !== null && !spaces.has(now.currentGroupId);
+        return now.currentGroupId != null && !spaces.has(now.currentGroupId);
       }).toBe(true);
       const next = (await snapshot(shell)).currentGroupId!;
-      const field = shell.locator(groupSelector(next)).getByTestId("tab-group-name-input");
+      const field = spaceView(shell, next).getByTestId("tab-group-name-input");
       await expect(field).toBeFocused();
       await field.fill(cover === "url-bar" ? "Over the bar" : "Over Settings");
       await field.press("Enter");
@@ -284,10 +284,10 @@ test.describe.serial("the address bar's destinations", { tag: ["@address", "@des
     await shell.keyboard.press("Meta+N");
     await expect.poll(async () => {
       const now = await snapshot(shell);
-      return now.currentGroupId !== null && !shown.has(now.currentGroupId);
+      return now.currentGroupId != null && !shown.has(now.currentGroupId);
     }).toBe(true);
     const away = (await snapshot(shell)).currentGroupId!;
-    const field = shell.locator(groupSelector(away)).getByTestId("tab-group-name-input");
+    const field = spaceView(shell, away).getByTestId("tab-group-name-input");
     await expect(shell.getByTestId("sidebar-pane")).not.toHaveAttribute("data-hidden", "");
     await expect(field).toBeFocused();
     await field.fill("Hidden away");

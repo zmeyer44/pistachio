@@ -798,6 +798,20 @@ export function tileRects(count: number, bounds: Rect, gap = DESK_GAP): Rect[] {
   return rects;
 }
 
+/** `count` windows one above another, each the desk's full width, a gutter between (the named layout "stack"). */
+export function stackRects(count: number, bounds: Rect, gap = DESK_GAP): Rect[] {
+  if (count <= 0) return [];
+  const h = (bounds.h - gap * (count - 1)) / count;
+  return Array.from({ length: count }, (_, index) => ({ x: bounds.x, y: bounds.y + index * (h + gap), w: bounds.w, h }));
+}
+
+/** `count` windows side by side, each the desk's full height, a gutter between (the named layouts "columns" and "halves"). */
+export function columnRects(count: number, bounds: Rect, gap = DESK_GAP): Rect[] {
+  if (count <= 0) return [];
+  const w = (bounds.w - gap * (count - 1)) / count;
+  return Array.from({ length: count }, (_, index) => ({ x: bounds.x + index * (w + gap), y: bounds.y, w, h: bounds.h }));
+}
+
 /** `count` windows fanned from the top left, each a step down and right of the last. */
 export function cascadeRects(count: number, bounds: Rect, step = 32): Rect[] {
   if (count <= 0) return [];

@@ -18,19 +18,18 @@
  *   opens a card beside the rail with the media stack's own controls.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { DeskPipMedia } from "@pistachio/shell-contracts/desk";
 import type { BrowserMediaInfo } from "@pistachio/shell-contracts/media";
 import { nativeApi } from "../../api";
 import { useDeskChrome } from "../../lib/desk/chrome";
-import { showOnDesk, useDeskEngine, useDeskWindowKey } from "../../lib/desk/open";
+import { showOnDesk, useDeskEngine, useDeskView, useDeskWindowKey } from "../../lib/desk/open";
 import { useNowPlaying, type PipSpot } from "../../lib/desk/now-playing";
 import { PIP_EDGE_CURSORS, PIP_W, clampPipBox, pipHeight, pipWidth, resizedPipBox, type PipBox } from "../../lib/desk/pip-box";
 import { useAppStore } from "../../store";
 import { MediaCard, useBackgroundMedia } from "../MediaStack";
 import { Play } from "../media-icons";
-import type { DeskEngine, DeskView } from "./desk-engine";
 
 /** Its first place: beside the rail, clear of the desk's foot (the notch, a shelf of parked windows). */
 const PIP_GAP = 12;
@@ -44,14 +43,6 @@ const CARD_W = 300;
 const CARD_COVER = "now-playing";
 /** The card is the stack's, every control out already: nothing to engage. */
 const NO_ENGAGE = (): void => undefined;
-
-function useDeskView(engine: DeskEngine | null): DeskView | null {
-  return useSyncExternalStore(
-    useCallback((listener: () => void) => engine?.subscribe(listener) ?? (() => undefined), [engine]),
-    () => engine?.getView() ?? null,
-    () => null,
-  );
-}
 
 function useWindowSize(): { width: number; height: number } {
   const [size, setSize] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));

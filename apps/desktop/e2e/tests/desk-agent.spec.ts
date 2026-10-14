@@ -10,7 +10,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, selectSpace, openTabs, openTray, reachBar, screenshots, selectTab, settled, showFrame, snapshot, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, openTabs, openTray, reachBar, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, spaceRows, VENDOR, windowSelector, type Box } from "./desk-harness";
 import { shellReady } from "./windows";
 
 const capture = screenshots("desk-agent");
@@ -73,7 +73,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await createGroup(shell, "desk-agent", [invoice, vendor], "Northstar", "green");
     await selectTab(shell, invoice);
     await selectSpace(shell, "desk-agent");
-    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
+    await expect(spaceRows(shell)).toHaveCount(2);
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
     const away = (): Promise<void> => shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.4);
@@ -407,9 +407,9 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     expect((await snapshot(shell)).tabs.map((tab) => tab.url)).not.toContain(ACCOUNTS);
     expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-agent")?.tabIds).not.toContain(hiddenId);
     await expect(shell.locator(windowSelector(hiddenId))).toHaveCount(0);
-    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
+    await expect(spaceRows(shell)).toHaveCount(2);
     await expect(shell.getByTestId("desk-answer")).toContainText("Opened the connected accounts", { timeout: 15_000 });
-    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(3);
+    await expect(spaceRows(shell)).toHaveCount(3);
     const opened = (await snapshot(shell)).tabs.find((tab) => tab.url === ACCOUNTS)!;
     expect(opened.id).toBe(hiddenId);
     expect((await snapshot(shell)).hiddenTabs).toEqual([]);

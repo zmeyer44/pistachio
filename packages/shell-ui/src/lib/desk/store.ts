@@ -118,7 +118,7 @@ export const DESK_AXES: readonly [
     key: "layout",
     label: "Layout",
     options: [
-      { id: "smart", label: "Smart", hint: "When a window comes or goes, the desk may lay the others out anew (Undo in the notice)" },
+      { id: "smart", label: "Smart", hint: "When a window comes or goes, the desk may lay the others out anew (⌃Z right after puts them back)" },
       { id: "hand", label: "By hand", hint: "Windows stay where they are put; ⌘⌥L still arranges them on request" },
     ],
   },

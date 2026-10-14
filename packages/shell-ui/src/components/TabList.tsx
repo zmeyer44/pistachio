@@ -1,5 +1,4 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Archive,
   Check,
@@ -14,6 +13,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Plus,
   Sparkles,
   Star,
   Trash2,
@@ -64,12 +64,14 @@ import { deskAvailable, deskEngine, NEW_SPACE_EVENT, newSpace, selectSpace, show
 import { groupPageOf } from "../lib/desk/store";
 import { sidebarOverlays, useSidebarColumn, useSidebarMode } from "../lib/sidebar-mode";
 import { DeskContextRow, DeskRowMark, deskTabEntries, hoverDeskRow } from "./desk/DeskSidebarControls";
-import { useSidebarRail } from "./sidebar-rail";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { Favicon, TabMark } from "./Favicon";
 import { EntryTabCount } from "./EntryTabCount";
 import { TabGroupRow } from "./TabGroupRow";
 import { useAgentWorkingIn } from "./useAgentTab";
+import { renameSpace } from "./space-rail/column-state";
+import { openBeside } from "./space-rail/actions";
+import { Kbd } from "./ui/kbd";
 
 /**
  * The sidebar's tab column — the `tabs` feature in its vertical orientation
@@ -179,6 +181,7 @@ function TabRow({
   dragging = false,
   memberOf = null,
   underEntry = false,
+  beside,
   onActivate,
   onPointerDown,
   onContextMenu,
@@ -192,12 +195,16 @@ function TabRow({
   memberOf?: string | null;
   /** A page's group's, drawn under its favorite or pin while its desk is up: no slot among the rows to the drag. */
   underEntry?: boolean;
+  /** A Home tab's row in the double sidebar's card (Today): its + on hover opens a window beside it, making it a space. */
+  beside?: () => void;
   onActivate: (event: TabSelectionEvent) => void;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
   const closeTab = useAppStore((s) => s.closeTab);
   const working = useAgentWorkingIn(tab.id);
+  // A row taken away under the pointer (the card put away by ⌘S, turned to another view) never hears it leave.
+  useEffect(() => () => hoverDeskRow(tab.id, false), [tab.id]);
 
   return (
     <div
@@ -242,6 +249,16 @@ function TabRow({
       <span className="min-w-0 flex-1 truncate">
         <TabTitle tab={tab} />
       </span>
+      {beside === undefined ? null : (
+        // Out with the row's other controls on hover, as they are (TabTrailing's clip box).
+        <span className="-my-1 grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-hover:grid-cols-[1fr] group-hover:opacity-100 group-has-[:focus-visible]:grid-cols-[1fr] group-has-[:focus-visible]:opacity-100">
+          <span className="flex min-w-0 items-center overflow-hidden">
+            <RowButton label="Open a window beside it" testId="row-beside" onClick={beside}>
+              <Plus className="size-3" aria-hidden="true" />
+            </RowButton>
+          </span>
+        </span>
+      )}
       <TabTrailing tab={tab} />
       <DeskRowMark tabId={tab.id} />
     </div>
@@ -374,11 +391,13 @@ function RowButton({
   label,
   onClick,
   tone = "neutral",
+  testId,
   children,
 }: {
   label: string;
   onClick: () => void;
   tone?: "neutral" | "accent";
+  testId?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -386,6 +405,7 @@ function RowButton({
       type="button"
       title={label}
       aria-label={label}
+      data-testid={testId}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -796,7 +816,7 @@ const SECTION_SLIDE_MS = 120;
  * mounted — the grid-rows 0fr/1fr trick animates to whatever height they
  * take — and are inert while folded so nothing in them can take focus. The
  * section clips them only while it slides: open and still, what stands past a
- * row's edge (a group's count on the rail, over its tile's corner) shows whole.
+ * row's edge (a count on its corner) shows whole.
  */
 function SectionBody({
   open,
@@ -841,25 +861,18 @@ function SectionBody({
 /**
  * The day's foot: New tab, and on hover New folder and — on the desktop,
  * where a space is a desk — New space (docs/spaces.md §1): an empty space,
- * current at once, its name field open. On the rail only the + shows; its
- * menu (a right click, or a long press) offers all three.
+ * current at once, its name field open. (Until 2026-10-13 the desk's rail
+ * showed only the +, its menu offering all three on a right click or a long
+ * press: the double sidebar's rail replaced it, its own New space at its foot.)
  */
-function NewTabRow({ onNewFolder, onNewSpace, onMenu }: { onNewFolder: () => void; onNewSpace?: () => void; onMenu?: (event: React.MouseEvent) => void }) {
+function NewTabRow({ onNewFolder, onNewSpace }: { onNewFolder: () => void; onNewSpace?: () => void }) {
   const newTab = useAction("newTab");
-  const press = useRef<number | null>(null);
-  // A long press opened the menu: the click it ends with is not a new tab.
-  const longPressed = useRef(false);
-  const cancelPress = (): void => {
-    if (press.current !== null) window.clearTimeout(press.current);
-    press.current = null;
-  };
 
   return (
     <div
       data-flip-id={SHELF_DIVIDER_FLIP_ID}
       data-row-kind="divider"
       data-entity-id={SHELF_DIVIDER_FLIP_ID}
-      onContextMenu={onMenu}
       style={{ height: ROW_H }}
       className="no-drag group/new flex shrink-0 items-center rounded-md pr-1 text-gray-700 transition-colors hover:bg-alpha-200 hover:text-gray-1000 [&_svg]:size-3.5"
     >
@@ -872,28 +885,7 @@ function NewTabRow({ onNewFolder, onNewSpace, onMenu }: { onNewFolder: () => voi
         }
         aria-label={newTab.label}
         data-testid="new-tab-button"
-        onClick={() => {
-          if (longPressed.current) {
-            longPressed.current = false;
-            return;
-          }
-          newTab.run();
-        }}
-        // A long press is the + menu's too, where a right click is not at hand.
-        onPointerDown={(event) => {
-          if (onMenu === undefined || event.button !== 0) return;
-          longPressed.current = false;
-          const target = event.currentTarget;
-          const { clientX, clientY } = event;
-          cancelPress();
-          press.current = window.setTimeout(() => {
-            press.current = null;
-            longPressed.current = true;
-            target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX, clientY }));
-          }, LONG_PRESS_MS);
-        }}
-        onPointerUp={cancelPress}
-        onPointerLeave={cancelPress}
+        onClick={() => newTab.run()}
         className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 text-left text-[12.5px] outline-none"
       >
         <span className="grid size-4 shrink-0 place-items-center">
@@ -927,12 +919,38 @@ function NewTabRow({ onNewFolder, onNewSpace, onMenu }: { onNewFolder: () => voi
   );
 }
 
+/**
+ * A space's own New tab, under its rows in the double sidebar's card (⌘T's,
+ * in the space in use). Not the shelf's divider: the space's rows are the
+ * only rows its list has, and a drop there counts them alone.
+ */
+function SpaceNewTabRow() {
+  const newTab = useAction("newTab");
+  return (
+    <button
+      type="button"
+      title={newTab.hint === null ? newTab.label : `${newTab.label} (${newTab.hint})`}
+      aria-label={newTab.label}
+      data-testid="new-tab-button"
+      onClick={() => newTab.run()}
+      style={{ height: ROW_H }}
+      className="no-drag group/new flex shrink-0 cursor-pointer items-center gap-2 rounded-md px-2 text-left text-[12.5px] text-gray-800 outline-none transition-colors hover:bg-alpha-200 hover:text-gray-1000 focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5"
+    >
+      <span className="grid size-4 shrink-0 place-items-center">{newTab.icon}</span>
+      <span className="min-w-0 flex-1 truncate">{newTab.label}</span>
+      {newTab.hint === null ? null : (
+        <Kbd small className="opacity-0 transition-opacity duration-150 group-hover/new:opacity-100 group-focus-visible/new:opacity-100">
+          {newTab.hint}
+        </Kbd>
+      )}
+    </button>
+  );
+}
+
 /* --------------------------------- list --------------------------------- */
 
 
 const NO_TAB_GROUPS: readonly TabGroupInfo[] = [];
-/** A press held this long on the rail's + opens its menu (New tab, New folder, New space). */
-const LONG_PRESS_MS = 450;
 /** The pointer must settle on a group this long before it opens, so crossing the list does not make it ripple. */
 const GROUP_OPEN_MS = 140;
 /** …less when another group is already open by hover: the person is browsing groups. */
@@ -941,7 +959,19 @@ const GROUP_CLOSE_MS = 240;
 /** How long a group stays open after a row is dropped into it, unless the pointer is seen to still be on it. */
 const GROUP_LANDED_MS = 700;
 
-export function TabList() {
+/**
+ * What the list draws. Unset, the single sidebar's list (the web's): pinned,
+ * the divider, and every unit of the day — spaces as group rows that open in
+ * place. In the double sidebar's card (docs/double-sidebar.md, the
+ * desktop's since 2026-10-13) the rail holds the spaces, and the list is one
+ * of two views: `"home"`, the pinned and the day's LOOSE rows (Today) — the
+ * group units are the rail's, and are not drawn — or `"space"`, the space in
+ * use's own tabs as its member rows (a page's space: its page first), with
+ * the space's New tab under them.
+ */
+export type TabListView = "home" | "space";
+
+export function TabList({ view }: { view?: TabListView } = {}) {
   const tabs = useChromeTabs();
   const shelf = useAppStore(
     (s) => s.snapshot?.sidebar ?? DEFAULT_SIDEBAR_STATE,
@@ -977,14 +1007,17 @@ export function TabList() {
   const [renaming, setRenamingRow] = useState<string | null>(null);
   /** A row to rename once the hidden column is out (below). */
   const [renameWhenOut, setRenameWhenOut] = useState<string | null>(null);
-  const rail = useSidebarRail();
   const overDesk = sidebarOverlays(useSidebarMode());
   const columnOut = useSidebarColumn((state) => state.out);
-  // A rail has no room for a name: the whole sidebar comes back to edit one in, as a setting (⌘S takes it back).
   // Hidden and away (⌘N's new space), the column is brought out first, and the field opens once it is out: an inert
-  // column takes no focus.
+  // column takes no focus. (Until 2026-10-13 a rename on the desk's rail brought the whole sidebar back to edit it in:
+  // the double sidebar's rail replaced it, and draws no list.)
   const setRenaming = (id: string | null): void => {
-    if (id !== null && rail) void useAppStore.getState().updateSettings({ layout: { sidebar: "whole" } });
+    // In the double sidebar's card a space's name is edited in the card's head (components/space-rail), never in a row.
+    if (id !== null && view !== undefined && tabGroups.some((group) => group.id === id)) {
+      renameSpace(id);
+      return;
+    }
     if (id !== null && overDesk && !useSidebarColumn.getState().out) {
       setRenameWhenOut(id);
       useAppStore.getState().setSidebarRevealed(true);
@@ -994,7 +1027,7 @@ export function TabList() {
     setRenamingRow(id);
   };
   useEffect(() => {
-    // (The column put in the layout meanwhile — whole, a rail — the field opens there.)
+    // (The column put in the layout meanwhile — whole — the field opens there.)
     if (renameWhenOut === null || (overDesk && !columnOut)) return;
     setRenamingRow(renameWhenOut);
     setRenameWhenOut(null);
@@ -1142,7 +1175,9 @@ export function TabList() {
       let ghostTab: ChromeTab | null = null;
       let openFolderId: string | null = null;
       let receivingFolderId: string | null = null;
-      if (dragItem === null)
+      // Over the double sidebar's rail the item waits where it was — its slot kept, the rail's tile saying where it
+      // would go (chrome/shelf-drag.tsx's RailDrop). (Until 2026-10-13 it was lifted out and drawn nowhere.)
+      if (dragItem === null || dragDrop?.zone === "rail")
         return { entries, units, ghostTab, openFolderId, receivingFolderId, receivingGroupId };
       const item = dragItem;
       const drop = dragDrop;
@@ -1312,9 +1347,6 @@ export function TabList() {
     setHoverBlockedId(null);
     void tabGroupCommand({ type: "setOpen", groupId: id, open: true });
   };
-  // On the rail a group of one tab is that tab: its mark is the tab's icon already, so the tab's row is not drawn under
-  // it again, and the mark does the row's work — its window's dot, a press bringing the window out.
-  const railLone = (unit: Extract<DayUnit, { kind: "group" }>): ChromeTab | null => (rail && unit.tabs.length === 1 ? (unit.tabs[0] ?? null) : null);
   const isExpanded = (unit: Extract<DayUnit, { kind: "group" }>): boolean =>
     isHeld(unit) ||
     receivingGroupId === unit.group.id ||
@@ -1335,6 +1367,23 @@ export function TabList() {
   // anything hidden by a collapsed folder or section.
   const selectableTabs = useMemo<SelectableSidebarTab[]>(() => {
     const selected: SelectableSidebarTab[] = [];
+    // A space's view (the double sidebar's card) draws its own tabs alone: a drawn space's, or a page's space's — its
+    // page first, then the tabs beside it, as its rows are drawn (spaceRows).
+    if (view === "space") {
+      const unit = dayUnits.find((candidate) => candidate.kind === "group" && candidate.group.id === currentSpace);
+      if (unit?.kind === "group") {
+        for (const tab of unit.tabs) selected.push({ key: tabSelectionKey(tab.id), kind: "tab", tab });
+        return selected;
+      }
+      const page = pageGroups.find((group) => group.id === currentSpace);
+      if (page === undefined) return selected;
+      const pageTabId = groupPageOf(page, tabs);
+      const members = page.tabIds.flatMap((tabId) => tabs.find((tab) => tab.id === tabId) ?? []);
+      for (const tab of [...members.filter((tab) => tab.id === pageTabId), ...members.filter((tab) => tab.id !== pageTabId)]) {
+        selected.push({ key: tabSelectionKey(tab.id), kind: "tab", tab });
+      }
+      return selected;
+    }
     if (!collapsed.has("pinned")) {
       for (const row of pinnedRows(shelf.entries)) {
         if (row.kind !== "pin") continue;
@@ -1348,8 +1397,8 @@ export function TabList() {
     }
     if (!collapsed.has("live")) {
       for (const unit of dayUnits) {
-        // A closed group's tabs are not on screen, so a range never sweeps them up unseen.
-        if (unit.kind === "group" && !isExpanded(unit)) continue;
+        // A closed group's tabs are not on screen, so a range never sweeps them up unseen; Home's view draws no group.
+        if (unit.kind === "group" && (view === "home" || !isExpanded(unit))) continue;
         for (const tab of unit.kind === "group" ? unit.tabs : unit.row.tabs) {
           selected.push({ key: tabSelectionKey(tab.id), kind: "tab", tab });
         }
@@ -1358,7 +1407,7 @@ export function TabList() {
     return selected;
     // isExpanded reads exactly the state listed after the units.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collapsed, dayUnits, liveByAnchor, shelf.entries, hoverGroupId, renaming, menuOpen, menuGroupId, currentSpace]);
+  }, [collapsed, dayUnits, liveByAnchor, shelf.entries, hoverGroupId, renaming, menuOpen, menuGroupId, currentSpace, view, pageGroups, tabs]);
   const selectedTabs = useMemo(
     () => selectableTabs.filter((item) => selectedKeys.has(item.key)),
     [selectableTabs, selectedKeys],
@@ -1506,9 +1555,11 @@ export function TabList() {
       (item): item is Extract<SelectableSidebarTab, { kind: "pin" }> =>
         item.kind === "pin",
     );
+    // (A page's space's own page — selectable among its rows in the double sidebar's card — is its entry's, not a day
+    // tab: it goes into no new space or folder.)
     const dayTabs = selection.filter(
       (item): item is Extract<SelectableSidebarTab, { kind: "tab" }> =>
-        item.kind === "tab" && item.tab.kind === "human",
+        item.kind === "tab" && item.tab.kind === "human" && item.tab.anchorId === null,
     );
     const liveTabs = selection.flatMap((item) =>
       item.tab === null ? [] : [item.tab],
@@ -1654,7 +1705,15 @@ export function TabList() {
 
   // One live tab's menu is the chrome's shared one (chrome/tab-menu.tsx).
   // A group made here is named by the host from its tabs; the name field opens only when it is not.
-  const trackNewGroup = useNewGroupNaming(setRenaming);
+  const trackHere = useNewGroupNaming(setRenaming);
+  // In the double sidebar's card the column waits for the name (SpaceColumn hears NEW_SPACE_EVENT): this list is one
+  // of its views, and goes as the card turns to the new space — its own wait would go with it, and the field never
+  // open. (Until 2026-10-13 a space made from Home's New space, a row's "New space with this tab" or a selection was
+  // waited for here.)
+  const trackNewGroup = (groupId: string): void => {
+    if (view === undefined) trackHere(groupId);
+    else window.dispatchEvent(new CustomEvent(NEW_SPACE_EVENT, { detail: groupId }));
+  };
   // On the desktop the sidebar is the desk's dock (the desk is always up since 2026-10-09): a tab whose window is out
   // cannot be suspended, and one of the desk's tabs sent to another group goes the way the desk sends it (its window
   // flying into that group's row).
@@ -1695,8 +1754,6 @@ export function TabList() {
   // — a pin's under its row, a favorite's at the head of the list, under the favorites, its page's row first — and the
   // Stack after them.
   const deskPage = pageGroups.find((group) => group.id === deskGroupId) ?? null;
-  // On the rail, the place under that favorite's row in the favorites, where its desk's tabs and Stack go.
-  const favoriteEntry = useDeskChrome((state) => state.favoriteEntry);
   const deskPageTabId = deskPage === null ? null : groupPageOf(deskPage, tabs);
   const deskPageTab = deskPageTabId === null ? null : (tabs.find((tab) => tab.id === deskPageTabId) ?? null);
   const deskPageRows = useMemo(
@@ -1805,9 +1862,9 @@ export function TabList() {
       },
     ];
   };
-  /** Right-click on the "Live tabs" header: close every tab in the section. */
+  /** Right-click on the "Live tabs" header (Today's): close every tab in the section — Today's, its loose rows alone. */
   const liveSectionMenu = (): MenuEntry[] => {
-    const tabs = dayItems.flatMap((item) => item.tabs);
+    const tabs = view === "home" ? dayUnits.flatMap((unit) => (unit.kind === "row" ? unit.row.tabs : [])) : dayItems.flatMap((item) => item.tabs);
     return [
       {
         label: newTabAction.label,
@@ -1849,18 +1906,14 @@ export function TabList() {
   const trackRef = useRef(trackNewGroup);
   trackRef.current = trackNewGroup;
   useEffect(() => {
+    // (The double sidebar's column hears it itself: the name field is its card's head — SpaceColumn.)
+    if (view !== undefined) return;
     const onNewSpace = (event: Event): void => trackRef.current((event as CustomEvent<string>).detail);
     window.addEventListener(NEW_SPACE_EVENT, onNewSpace);
     return () => window.removeEventListener(NEW_SPACE_EVENT, onNewSpace);
-  }, []);
+  }, [view]);
   const newSpaceEntries = (): MenuEntry[] =>
     deskAvailable() ? [{ label: "New space", icon: <LayoutPanelLeft aria-hidden="true" />, onSelect: startNewSpace }] : [];
-  /** The rail's + menu (a right click or a long press): what the whole sidebar's foot row offers on hover. */
-  const newRowMenu = (): MenuEntry[] => [
-    { label: newTabAction.label, icon: newTabAction.icon, onSelect: () => newTabAction.run() },
-    { label: "New folder", icon: <FolderPlus aria-hidden="true" />, onSelect: () => newFolder() },
-    ...newSpaceEntries(),
-  ];
   const newFolderWith = (pin: SidebarPin): void => {
     const id = crypto.randomUUID();
     void sidebarCommand({
@@ -1945,7 +1998,7 @@ export function TabList() {
     };
   };
   /** One of the day's rows — at the top level, or inside the tab group `groupId`. */
-  const renderRow = (item: RowItem, groupId: string | null, options: { underEntry?: boolean; drag?: ShelfItem } = {}): React.ReactNode => {
+  const renderRow = (item: RowItem, groupId: string | null, options: { underEntry?: boolean; drag?: ShelfItem; beside?: () => void } = {}): React.ReactNode => {
     const [first] = item.tabs;
     if (first === undefined) return null;
     const underEntry = options.underEntry === true;
@@ -1961,6 +2014,7 @@ export function TabList() {
         tab={first}
         memberOf={groupId}
         underEntry={underEntry}
+        beside={options.beside}
         selected={isShownSelected(tabSelectionKey(first.id))}
         dragging={grabbedId === item.id}
         onActivate={(event) => activate(first.id, event)}
@@ -2000,7 +2054,7 @@ export function TabList() {
               underEntry: true,
               drag: { flipId: page.id, kind: pin ? "pin" : "favorite", entityId: anchorId, title: page.title, url: page.url, faviconUrl: page.faviconUrl, tabs: [page], deskTab: page, managed: isPresetAnchorId(anchorId) },
             })}
-        <div className={cn("flex flex-col gap-0.5", !rail && "pl-[18px]")}>{deskPageRows.map((row) => renderRow(row, group.id, { underEntry: true }))}</div>
+        <div className="flex flex-col gap-0.5 pl-[18px]">{deskPageRows.map((row) => renderRow(row, group.id, { underEntry: true }))}</div>
         <DeskContextRow group={group} />
       </div>
     );
@@ -2042,6 +2096,36 @@ export function TabList() {
     tabs: [],
   });
 
+  // The double sidebar's views (docs/double-sidebar.md §1). Home draws a page's desk under its entry only while the page
+  // is Home's — alone; with tabs opened beside it, it is a space of the rail's, its tabs the space view's.
+  const entryDesk = view === "home" && deskPage !== null && deskPage.tabIds.length >= 2 ? null : deskPage;
+  // Today: the day's loose rows; the group units are the rail's.
+  const shownUnits = view === "home" ? units.filter((unit) => unit.kind === "row") : units;
+  // A space's view: the space in use's own rows (with the drag's ghost among them, as a group's are drawn).
+  const spaceUnit =
+    view === "space" ? (units.find((unit): unit is Extract<DayUnit, { kind: "group" }> => unit.kind === "group" && unit.group.id === currentSpace) ?? null) : null;
+  const spacePage = view === "space" && spaceUnit === null && deskPage !== null && deskPage.tabIds.length >= 2 ? deskPage : null;
+  /** The space view's rows: a drawn space's as its member rows; a page's space its page first, then the tabs beside it. */
+  const spaceRows = (): React.ReactNode => {
+    if (spaceUnit !== null) return spaceUnit.rows.map((row) => renderRow(row, spaceUnit.group.id));
+    if (spacePage === null) return null;
+    const anchorId = spacePage.anchorId ?? "";
+    const pin = shelf.entries.some((entry) => entry.kind === "pin" && entry.id === anchorId);
+    const page = deskPageTab;
+    return (
+      <>
+        {page === null
+          ? null
+          : renderRow({ id: page.id, tabs: [page], active: page.active }, null, {
+              underEntry: true,
+              drag: { flipId: page.id, kind: pin ? "pin" : "favorite", entityId: anchorId, title: page.title, url: page.url, faviconUrl: page.faviconUrl, tabs: [page], deskTab: page, managed: isPresetAnchorId(anchorId) },
+            })}
+        {deskPageRows.map((row) => renderRow(row, spacePage.id, { underEntry: true }))}
+      </>
+    );
+  };
+  const spaceEmpty = view === "space" && (spaceUnit === null ? spacePage === null : spaceUnit.rows.length === 0);
+
   return (
     <>
       <div
@@ -2054,202 +2138,202 @@ export function TabList() {
       >
         <div
           ref={listRef}
+          // (The shelf drag reads the view: a drop in a space's counts its rows alone, and Today's the day's units.)
+          data-view={view}
+          data-space-id={view === "space" ? (currentSpace ?? undefined) : undefined}
           className="relative flex flex-col gap-0.5 px-2 py-1"
           style={{ paddingBottom: mediaInset + 4 }}
         >
-          {/* A favorite's desk (or a pin's whose row is folded away): its page and the tabs of its group, under the favorites —
-              on the rail, under the favorite's own row there, which is its page's (FavoritesGrid's rail-favorite-entry). */}
-          {deskPage !== null && !(sectionOpen("pinned") && rows.some((row) => row.kind === "pin" && row.pin.id === deskPage.anchorId))
-            ? rail && favoriteEntry !== null && favoriteEntry.anchorId === deskPage.anchorId
-              ? createPortal(entryTabs(deskPage, false), favoriteEntry.el)
-              : entryTabs(deskPage, true)
-            : null}
-          {rows.length > 0 ? (
-            <SectionHeader
-              id="pinned"
-              label="Pinned"
-              count={rows.length}
-              open={sectionOpen("pinned")}
-              onToggle={() => toggleSection("pinned")}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                menu.open(e, pinnedSectionMenu());
-              }}
-            />
-          ) : null}
-          <SectionBody open={sectionOpen("pinned")} unclipped={drag !== null}>
-            <div
-              role="list"
-              aria-label="Pinned"
-              id="sidebar-section-pinned"
-              data-testid="pinned-section"
-              className="flex flex-col gap-0.5"
-            >
-              {rows.map((row) =>
-                row.kind === "folder" ? (
-                  <FolderRow
-                    key={row.folder.id}
-                    folder={row.folder}
-                    count={row.count}
-                    receiving={receivingFolderId === row.folder.id}
-                    renaming={renaming === row.folder.id}
-                    dragging={grabbedId === row.folder.id}
-                    onToggle={() => {
-                      if (!justDragged())
-                        void sidebarCommand({
-                          type: "toggleFolder",
-                          folderId: row.folder.id,
-                        });
-                    }}
-                    onRename={(name) =>
-                      renaming === row.folder.id
-                        ? finishRename(row.folder.id, name)
-                        : setRenaming(row.folder.id)
-                    }
-                    onPointerDown={(e) => beginPress(folderItem(row.folder), e)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      menu.open(e, folderMenu(row.folder));
-                    }}
-                  />
-                ) : (
-                  <Fragment key={row.pin.id}>
-                    <PinRow
-                      pin={row.pin}
-                      depth={row.depth}
-                      live={liveFor(row.pin)}
-                      tabCount={deskPage?.anchorId === row.pin.id ? 0 : (entryTabCounts.get(row.pin.id) ?? 0)}
-                      selected={isShownSelected(pinSelectionKey(row.pin.id))}
-                      dragging={grabbedId === row.pin.id}
-                      onOpen={(event) => openPin(row.pin, event)}
-                      onPointerDown={(e) => beginPress(pinItem(row.pin), e)}
-                      onContextMenu={(e) => {
-                        openTabContextMenu(
-                          pinSelectionKey(row.pin.id),
-                          e,
-                          () => pinMenu(row.pin),
-                        );
-                      }}
-                    />
-                    {/* Its desk up: the tabs of its page's group under it, and the Stack. */}
-                    {deskPage !== null && deskPage.anchorId === row.pin.id ? entryTabs(deskPage, false) : null}
-                  </Fragment>
-                ),
-              )}
-            </div>
-          </SectionBody>
-          <NewTabRow
-            onNewFolder={() => newFolder()}
-            onNewSpace={deskAvailable() ? startNewSpace : undefined}
-            onMenu={
-              rail
-                ? (e) => {
+          {view === "space" ? (
+            <>
+              <div role="tablist" aria-orientation="vertical" aria-label="This space's tabs" data-testid="space-tabs" className="flex flex-col gap-0.5">
+                {spaceRows()}
+              </div>
+              {spaceEmpty ? (
+                <p data-testid="space-empty-line" className="space-view-empty">
+                  Nothing open here yet
+                </p>
+              ) : null}
+              <SpaceNewTabRow />
+            </>
+          ) : (
+            <>
+              {/* A favorite's desk (or a pin's whose row is folded away): its page and the tabs of its group, under the favorites. */}
+              {entryDesk !== null && !(sectionOpen("pinned") && rows.some((row) => row.kind === "pin" && row.pin.id === entryDesk.anchorId))
+                ? entryTabs(entryDesk, true)
+                : null}
+              {rows.length > 0 ? (
+                <SectionHeader
+                  id="pinned"
+                  label="Pinned"
+                  count={rows.length}
+                  open={sectionOpen("pinned")}
+                  onToggle={() => toggleSection("pinned")}
+                  onContextMenu={(e) => {
                     e.preventDefault();
-                    menu.open(e, newRowMenu());
-                  }
-                : undefined
-            }
-          />
-          <div className="group/live flex min-w-0 items-center gap-0.5">
-            {/* The header is w-full by itself; here it shares its row. */}
-            <div className="min-w-0 flex-1">
-            <SectionHeader
-              id="live"
-              label="Live tabs"
-              count={units.length}
-              open={sectionOpen("live")}
-              busyLabel={tidyRunning ? "Tidying tabs…" : null}
-              onToggle={() => toggleSection("live")}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                menu.open(e, liveSectionMenu());
-              }}
-            />
-            </div>
-            {/* Tidy, where the tabs it tidies are (docs/tab-tidy.md §3.2): there on hover, and for as long as a run takes. */}
-            <button
-              type="button"
-              title={tidyRunning ? "Tidying tabs…" : "Tidy tabs — archive idle tabs and gather related ones into spaces"}
-              aria-label="Tidy tabs"
-              data-testid="tidy-tabs-button"
-              data-running={tidyRunning ? "" : undefined}
-              disabled={tidyRunning}
-              onClick={() => tidyAction.run()}
-              className="no-drag grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-gray-700 opacity-0 outline-none transition-[opacity,background-color,color] duration-150 group-hover/live:opacity-100 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default data-[running]:opacity-100 motion-reduce:transition-none"
-            >
-              <Sparkles aria-hidden="true" className={cn("size-3.5", tidyRunning && "animate-pulse text-green-900")} />
-            </button>
-          </div>
-          <SectionBody open={sectionOpen("live")} unclipped={drag !== null}>
-            <div
-              role="tablist"
-              aria-orientation="vertical"
-              aria-label="Open tabs"
-              aria-busy={tidyRunning}
-              id="sidebar-section-live"
-              data-tidying={tidyRunning ? "" : undefined}
-              // While Tidy reads the tabs a light sweeps down the list, so a run
-              // that takes a few seconds reads as work under way on these rows.
-              className={cn("flex flex-col gap-0.5", tidyRunning && "tidy-sweep")}
-            >
-              {units.map((unit) => {
-                if (unit.kind === "row")
-                  return (
-                    <Fragment key={unit.id}>
-                      {renderRow(unit.row, null)}
-                      {/* A loose tab's desk: its context — the Stack — under its row, as a group's is under its tabs. */}
-                      {deskLoose !== null && unit.row.tabs[0]?.id === deskLoose.tabIds[0] ? <DeskContextRow group={deskLoose} /> : null}
-                    </Fragment>
-                  );
-                const lone = railLone(unit);
-                const current = deskGroupId === unit.group.id;
-                return (
-                  <TabGroupRow
-                    key={unit.id}
-                    group={unit.group}
-                    flipId={unit.id}
-                    tabs={unit.tabs}
-                    // A group in hand is drawn closed: it is one thing being moved. A lone tab's on the rail has nothing to
-                    // open but the desk's Stack; an empty space nothing but that (its own, the current space's).
-                    expanded={grabbedId !== unit.id && isExpanded(unit) && (lone === null || current) && (unit.tabs.length > 0 || current)}
-                    held={isHeld(unit)}
-                    current={current}
-                    stack={unit.tabs.length === 0 ? (contexts.find((context) => context.groupId === unit.group.id)?.items.length ?? 0) : 0}
-                    snapClose={drag !== null || snapCloseId === unit.group.id}
-                    renaming={renaming === unit.group.id}
-                    receiving={receivingGroupId === unit.group.id}
-                    dragging={grabbedId === unit.id}
-                    onHover={(inside) => onGroupHover(unit.group.id, inside)}
-                    onToggleOpen={() => {
-                      if (justDragged()) return;
-                      // A row of another space chooses it (main's `select`): the desk passes to it, as the Dock's icon
-                      // did. The current one's folds or holds open as ever; on the rail a lone tab's is that tab's.
-                      if (deskAvailable() && !current) selectSpace(unit.group.id);
-                      else if (lone !== null) activate(lone.id, { shiftKey: false, metaKey: false, ctrlKey: false });
-                      else toggleGroup(unit);
-                    }}
-                    onRename={(title) => (renaming === unit.group.id ? finishGroupRename(unit.group.id, title) : setRenaming(unit.group.id))}
-                    onOpenAsSplit={splitAvailable() ? () => void tabGroupCommand({ type: "openAsSplit", groupId: unit.group.id }) : undefined}
-                    onClose={() => closeGroup(unit.group)}
-                    // A lone tab's header is its row: carried out over the desk it is that tab's window, as its row's would be
-                    // (in the sidebar it is still the group, moved as one), and under the pointer it is the row ⇧⌫ closes.
-                    onPointerDown={(e) => beginPress(lone === null ? groupItem(unit) : { ...groupItem(unit), deskTab: lone }, e)}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      setMenuGroupId(unit.group.id);
-                      menu.open(e, lone === null ? groupMenu(unit.group) : [...deskTabEntries(lone.id), ...groupMenu(unit.group)]);
-                    }}
-                    mark={lone === null ? undefined : <DeskRowMark tabId={lone.id} />}
-                    onHeaderHover={lone === null ? undefined : (inside) => hoverDeskRow(lone.id, inside)}
-                  >
-                    {lone === null ? unit.rows.map((row) => renderRow(row, unit.group.id)) : null}
-                    {/* The desk's space: its context — the Stack — under its tabs (docs/desk-agent.md §1). */}
-                    {current ? <DeskContextRow group={unit.group} /> : null}
-                  </TabGroupRow>
-                );
-              })}
-            </div>
-          </SectionBody>
+                    menu.open(e, pinnedSectionMenu());
+                  }}
+                />
+              ) : null}
+              <SectionBody open={sectionOpen("pinned")} unclipped={drag !== null}>
+                <div
+                  role="list"
+                  aria-label="Pinned"
+                  id="sidebar-section-pinned"
+                  data-testid="pinned-section"
+                  className="flex flex-col gap-0.5"
+                >
+                  {rows.map((row) =>
+                    row.kind === "folder" ? (
+                      <FolderRow
+                        key={row.folder.id}
+                        folder={row.folder}
+                        count={row.count}
+                        receiving={receivingFolderId === row.folder.id}
+                        renaming={renaming === row.folder.id}
+                        dragging={grabbedId === row.folder.id}
+                        onToggle={() => {
+                          if (!justDragged())
+                            void sidebarCommand({
+                              type: "toggleFolder",
+                              folderId: row.folder.id,
+                            });
+                        }}
+                        onRename={(name) =>
+                          renaming === row.folder.id
+                            ? finishRename(row.folder.id, name)
+                            : setRenaming(row.folder.id)
+                        }
+                        onPointerDown={(e) => beginPress(folderItem(row.folder), e)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          menu.open(e, folderMenu(row.folder));
+                        }}
+                      />
+                    ) : (
+                      <Fragment key={row.pin.id}>
+                        <PinRow
+                          pin={row.pin}
+                          depth={row.depth}
+                          live={liveFor(row.pin)}
+                          tabCount={entryDesk?.anchorId === row.pin.id ? 0 : (entryTabCounts.get(row.pin.id) ?? 0)}
+                          selected={isShownSelected(pinSelectionKey(row.pin.id))}
+                          dragging={grabbedId === row.pin.id}
+                          onOpen={(event) => openPin(row.pin, event)}
+                          onPointerDown={(e) => beginPress(pinItem(row.pin), e)}
+                          onContextMenu={(e) => {
+                            openTabContextMenu(
+                              pinSelectionKey(row.pin.id),
+                              e,
+                              () => pinMenu(row.pin),
+                            );
+                          }}
+                        />
+                        {/* Its desk up: the tabs of its page's group under it, and the Stack. */}
+                        {entryDesk !== null && entryDesk.anchorId === row.pin.id ? entryTabs(entryDesk, false) : null}
+                      </Fragment>
+                    ),
+                  )}
+                </div>
+              </SectionBody>
+              <NewTabRow onNewFolder={() => newFolder()} onNewSpace={deskAvailable() ? startNewSpace : undefined} />
+              <div className="group/live flex min-w-0 items-center gap-0.5">
+                {/* The header is w-full by itself; here it shares its row. */}
+                <div className="min-w-0 flex-1">
+                <SectionHeader
+                  id="live"
+                  // (Today in the double sidebar's Home: the day's loose tabs. The test id stays the section's.)
+                  label={view === "home" ? "Today" : "Live tabs"}
+                  count={shownUnits.length}
+                  open={sectionOpen("live")}
+                  busyLabel={tidyRunning ? "Tidying tabs…" : null}
+                  onToggle={() => toggleSection("live")}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    menu.open(e, liveSectionMenu());
+                  }}
+                />
+                </div>
+                {/* Tidy, where the tabs it tidies are (docs/tab-tidy.md §3.2): there on hover, and for as long as a run takes. */}
+                <button
+                  type="button"
+                  title={tidyRunning ? "Tidying tabs…" : "Tidy tabs — archive idle tabs and gather related ones into spaces"}
+                  aria-label="Tidy tabs"
+                  data-testid="tidy-tabs-button"
+                  data-running={tidyRunning ? "" : undefined}
+                  disabled={tidyRunning}
+                  onClick={() => tidyAction.run()}
+                  className="no-drag grid size-6 shrink-0 cursor-pointer place-items-center rounded-sm text-gray-700 opacity-0 outline-none transition-[opacity,background-color,color] duration-150 group-hover/live:opacity-100 hover:bg-alpha-200 hover:text-gray-1000 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default data-[running]:opacity-100 motion-reduce:transition-none"
+                >
+                  <Sparkles aria-hidden="true" className={cn("size-3.5", tidyRunning && "animate-pulse text-green-900")} />
+                </button>
+              </div>
+              <SectionBody open={sectionOpen("live")} unclipped={drag !== null}>
+                <div
+                  role="tablist"
+                  aria-orientation="vertical"
+                  aria-label="Open tabs"
+                  aria-busy={tidyRunning}
+                  id="sidebar-section-live"
+                  data-tidying={tidyRunning ? "" : undefined}
+                  // While Tidy reads the tabs a light sweeps down the list, so a run
+                  // that takes a few seconds reads as work under way on these rows.
+                  className={cn("flex flex-col gap-0.5", tidyRunning && "tidy-sweep")}
+                >
+                  {shownUnits.map((unit) => {
+                    if (unit.kind === "row")
+                      return (
+                        <Fragment key={unit.id}>
+                          {renderRow(unit.row, null, view === "home" && unit.row.tabs.length === 1 ? { beside: () => void openBeside(unit.row.tabs[0]?.id ?? "") } : {})}
+                          {/* A loose tab's desk: its context — the Stack — under its row, as a group's is under its tabs. */}
+                          {deskLoose !== null && unit.row.tabs[0]?.id === deskLoose.tabIds[0] ? <DeskContextRow group={deskLoose} /> : null}
+                        </Fragment>
+                      );
+                    const current = deskGroupId === unit.group.id;
+                    return (
+                      <TabGroupRow
+                        key={unit.id}
+                        group={unit.group}
+                        flipId={unit.id}
+                        tabs={unit.tabs}
+                        // A group in hand is drawn closed: it is one thing being moved. An empty space has nothing to open but
+                        // the desk's Stack (its own, the current space's).
+                        expanded={grabbedId !== unit.id && isExpanded(unit) && (unit.tabs.length > 0 || current)}
+                        held={isHeld(unit)}
+                        current={current}
+                        stack={unit.tabs.length === 0 ? (contexts.find((context) => context.groupId === unit.group.id)?.items.length ?? 0) : 0}
+                        snapClose={drag !== null || snapCloseId === unit.group.id}
+                        renaming={renaming === unit.group.id}
+                        receiving={receivingGroupId === unit.group.id}
+                        dragging={grabbedId === unit.id}
+                        onHover={(inside) => onGroupHover(unit.group.id, inside)}
+                        onToggleOpen={() => {
+                          if (justDragged()) return;
+                          // A row of another space chooses it (main's `select`): the desk passes to it, as the Dock's icon
+                          // did. The current one's folds or holds open as ever.
+                          if (deskAvailable() && !current) selectSpace(unit.group.id);
+                          else toggleGroup(unit);
+                        }}
+                        onRename={(title) => (renaming === unit.group.id ? finishGroupRename(unit.group.id, title) : setRenaming(unit.group.id))}
+                        onOpenAsSplit={splitAvailable() ? () => void tabGroupCommand({ type: "openAsSplit", groupId: unit.group.id }) : undefined}
+                        onClose={() => closeGroup(unit.group)}
+                        onPointerDown={(e) => beginPress(groupItem(unit), e)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setMenuGroupId(unit.group.id);
+                          menu.open(e, groupMenu(unit.group));
+                        }}
+                      >
+                        {unit.rows.map((row) => renderRow(row, unit.group.id))}
+                        {/* The desk's space: its context — the Stack — under its tabs (docs/desk-agent.md §1). */}
+                        {current ? <DeskContextRow group={unit.group} /> : null}
+                      </TabGroupRow>
+                    );
+                  })}
+                </div>
+              </SectionBody>
+            </>
+          )}
         </div>
       </div>
       {menu.menu}

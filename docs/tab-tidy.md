@@ -24,9 +24,19 @@ made, the browser cleans up; nothing is ever lost.*
    the current space, or in a space that holds a Stack or a conversation, is
    touched (`tidyReach`, docs/spaces.md §1).
 3. **The person's hand outranks the model's.** Renaming, recolouring, or
-   adding a tab to an auto-made space makes it theirs (`origin: "manual"`),
-   and Tidy stops managing it. Tidy never renames, dissolves, or reorders a
-   space it did not make, and never moves a tab *out* of any space.
+   bringing a tab to an auto-made space (a drag, Add to) makes it theirs
+   (`origin: "manual"`), and Tidy stops managing it. Opening a window in it
+   (⌘T, New tab in space, a link opened beside a page) does not, since
+   2026-10-13; until then it did. A space *grown* from a Home tab by a
+   window opened beside it is `auto` too (`docs/double-sidebar.md`: down to
+   one tab it goes back to Home as that tab, unless it is theirs), but made
+   *for* the person, not by Tidy (`TabGroupInfo.grown`): Tidy never archives
+   it whole nor unmakes it (`isTidysGroup`); its tabs are the person's to
+   close, and Tidy treats them as any tab in a space it did not make (it
+   may add tabs to it). Gone back to Home, a space lets go of its name, so
+   grown again it is named afresh. Tidy never renames, dissolves, or
+   reorders a space it did not make, and never moves a tab *out* of any
+   space.
 4. **Quiet, legible, reversible.** A run says what it did in one notice
    ("Archived 6 tabs · made 2 spaces — Undo"). If the window was not in front
    when it ran, the notice waits until it is.
@@ -40,7 +50,7 @@ made, the browser cleans up; nothing is ever lost.*
 | Term | Meaning |
 | --- | --- |
 | **Loose tab** | A human day tab (no anchor) in no named space: in its loose space (`TabGroupInfo.loose`, docs/spaces.md: a space of one, made for every listed tab, drawn as the tab alone), which Tidy never sees. Archived or put in a space by Tidy, the tab leaves it, and the emptied loose space is gone unless it holds a Stack or a conversation. |
-| **Space** | A titled, coloured run of day tabs drawn as one row that opens on hover — a tab group until 2026-10-09; the identifier is still `TabGroupInfo` (docs/spaces.md). `origin` is `auto` (Tidy made it, Tidy may archive it) or `manual`. |
+| **Space** | A titled, coloured run of day tabs drawn as one row that opens on hover — a tab group until 2026-10-09; the identifier is still `TabGroupInfo` (docs/spaces.md). `origin` is `auto` (Tidy made it, Tidy may archive it — or, `grown`, it grew from a Home tab for the person, and Tidy leaves it whole) or `manual`. |
 | **Archive** | Closed tabs and closed spaces, per Profile, newest first, kept 30 days (max 500 entries). A shell page over the content, like Watchtower — not a tab. |
 | **Tidy run** | One pass over one Profile: archive + gather into spaces + reset favorites, applied atomically, undoable until the next run. |
 | **Idle** | `now − lastActiveAt ≥ archiveAfterHours`. Viewing a tab resets it (`#activateTab` already stamps `lastActiveAt`). |
@@ -51,7 +61,7 @@ made, the browser cleans up; nothing is ever lost.*
 
 1. The tab lifecycle sweep (every 60 s, the one that already suspends idle
    tabs) asks whether a run is **due** for each Profile: auto-archive is on, and
-   at least one of — a loose tab is idle; an `auto` space is wholly idle; a
+   at least one of — a loose tab is idle; an `auto` space Tidy made is wholly idle; a
    favorite's tab is idle and away from its home address — and no run
    happened in the last 30 minutes. Waking the Mac or unlocking the screen
    asks the same question at once (the morning case).
@@ -66,7 +76,8 @@ made, the browser cleans up; nothing is ever lost.*
 4. **Undo** reopens what the run archived — only what is STILL in the archive:
    a tab the person already restored from the archive page, or removed from
    it, is not Undo's to open again — dissolves the spaces the run made (not one
-   the person has since given a Stack or a conversation),
+   the person has since given a Stack or a conversation, nor one gone back to
+   Home since and grown again for them under the same id),
    removes tabs it added to existing spaces, puts the whole row back in the
    ORDER the run found it (gathering moves tabs together; dissolving a space
    does not scatter them again), and sends favorites back to where they had been. Also in the
@@ -88,12 +99,13 @@ the model is asked (≤ 12 s). With nothing to do: "Tabs are already tidy".
 
 - **At rest** one row: where a tab has its icon, the space's mark — its
   first four tabs' icons in a 2×2 of small rounded squares, each icon filling
-  its square, left to right and down (a lone tab's fills the mark), in the
-  style of the desk rail's favorites folder (docs/desk.md). A page with no
-  icon is a square of the space's colour. Then the title in the space's
-  colour on a tint of it, and the tab count at the far end. On the desk's
-  rail, where the row is its mark alone, the mark is a tile of the space's
-  colour with the count on its corner, as the favorites folder's is.
+  its square, left to right and down (a lone tab's fills the mark). A page
+  with no icon is a square of the space's colour. Then the title in the
+  space's colour on a tint of it, and the tab count at the far end. On the
+  double sidebar's rail (docs/double-sidebar.md) the mark is a tile of the
+  space's colour with the count on its corner. (Until 2026-10-13 that was
+  the old desk rail's, the mark in the style of its favorites folder: the
+  double sidebar's rail replaced it.)
   (Until 2026-10-02 the mark was a pile of overlapping round bubbles, like a
   stack of avatars.)
 - **Hover** (after 140 ms of intent, so crossing the list does not make it
@@ -254,8 +266,9 @@ archive: [tabId] }`.
   TOGETHER, as one titled entry, restorable as a group (grouping must not be
   a way for stale tabs to live forever, and the model's title is worth
   keeping);
-- `auto` groups wholly idle are archived as group entries, by the clock,
-  without asking the model.
+- Tidy's own `auto` groups (`isTidysGroup`: not one grown from a Home tab)
+  wholly idle are archived as group entries, by the clock, without asking
+  the model.
 
 With no model: every eligible tab is archived, nothing is grouped.
 

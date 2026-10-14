@@ -69,6 +69,8 @@ export interface DurableTabGroup {
   loose?: boolean;
   /** A page's space: led by a sidebar entry's page, this being the entry's anchor. */
   anchorId?: string;
+  /** Grown from a Home tab by a window opened beside it: made for the person, and never Tidy's to archive or unmake (2026-10-13). */
+  grown?: true;
   /** An empty space's place among the row's units (a tab id, `split:<id>` or `group:<id>`) it stands before. */
   beforeUnit?: string;
 }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { Building2, Copy, Star, StarOff, X } from "lucide-react";
 import {
   DEFAULT_SIDEBAR_STATE,
@@ -8,18 +8,14 @@ import {
 import { useShelfDrag, type ShelfItem } from "../chrome/shelf-drag";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { cn } from "../lib/cn";
-import { useDeskChrome } from "../lib/desk/chrome";
 import { showOnDesk, useCurrentSpace } from "../lib/desk/open";
-import { hoverDeskRow } from "./desk/DeskSidebarControls";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { useBrandColors } from "../lib/brand-colors";
 import { BrandWash, brandBorderStyle } from "./BrandTile";
 import { Favicon, TabMark } from "./Favicon";
-import { RailFavorites } from "./RailFavorites";
 import { EntryTabCount } from "./EntryTabCount";
-import { useSidebarRail } from "./sidebar-rail";
 
 /**
  * The favorites grid under the address row — the `favorites` feature
@@ -63,7 +59,14 @@ interface Tile {
   ghost: boolean;
 }
 
-export function FavoritesGrid() {
+/**
+ * `columns`: three to a row in the single sidebar, four in the double
+ * sidebar's card (Home, docs/double-sidebar.md §1), where the card is the
+ * sidebar's width less the rail's. (Until 2026-10-13 the desk's rail drew the
+ * favorites as one folder, its sheet holding this grid, and the open ones as
+ * rows under it: the double sidebar's rail replaced it, and Home holds them.)
+ */
+export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
   const presets = useAppStore((s) => s.settings.organization.presetLinks);
   const favorites = useAppStore(
     (s) => s.snapshot?.sidebar.favorites ?? DEFAULT_SIDEBAR_STATE.favorites,
@@ -75,28 +78,11 @@ export function FavoritesGrid() {
   const glance = useAppStore((s) => s.glance);
   const { drag, beginPress, justDragged, gridRef } = useShelfDrag();
   const menu = useContextMenu();
-  // On the desk's rail the favorites are one folder, its sheet holding this grid (RailFavorites).
-  const rail = useSidebarRail();
   // A favorite's page's group (TabGroupInfo.anchorId): how many tabs wait on its desk besides its page — and, its desk
   // up, the favorite whose rows the list draws (TabList's entryTabs).
   const pageGroups = useAppStore((s) => s.snapshot?.anchorGroups);
   const deskGroupId = useCurrentSpace();
   const deskFavorite = pageGroups?.find((group) => group.id === deskGroupId)?.anchorId ?? null;
-  // On the rail, the place under that favorite's row where the list draws its desk's tabs and Stack (TabList's entryTabs).
-  const entryEl = useRef<HTMLDivElement | null>(null);
-  const entryRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      const chrome = useDeskChrome.getState();
-      if (el === null) {
-        if (chrome.favoriteEntry !== null && chrome.favoriteEntry.el === entryEl.current) chrome.setFavoriteEntry(null);
-        entryEl.current = null;
-        return;
-      }
-      entryEl.current = el;
-      if (deskFavorite !== null) chrome.setFavoriteEntry({ anchorId: deskFavorite, el });
-    },
-    [deskFavorite],
-  );
   // (Never below none: a page's group without its page is let go of by main, but a snapshot may say so first.)
   const tabCounts = useMemo(() => new Map((pageGroups ?? []).map((group) => [group.anchorId ?? "", Math.max(0, group.tabIds.length - 1)])), [pageGroups]);
 
@@ -129,7 +115,9 @@ export function FavoritesGrid() {
     if (dragItem !== null) {
       const item = dragItem;
       const drop = dragDrop;
-      if (item.kind === "favorite")
+      // (Over the double sidebar's rail a favorite stays in its place, as a row stays in its slot: the tile it is aimed at
+      // lights, and nothing else moves.)
+      if (item.kind === "favorite" && drop?.zone !== "rail")
         own = own.filter((tile) => tile.id !== item.entityId);
       if (
         drop !== null &&
@@ -344,75 +332,6 @@ export function FavoritesGrid() {
     );
   });
 
-  if (rail) {
-    // Under the folder, the favorites whose pages are open, a row each (as a tab's on the rail): shown on a click,
-    // closed with the middle button, the tile's own menu on a right-click. They keep the favorites' order: the one
-    // whose desk is up stays where it is, its desk's tabs and Stack under it (the list draws them there:
-    // TabList's entryTabs) — not taken out to stand under the folder's rows, as it was until 2026-10-07, so that
-    // choosing one moved it to the end.
-    const open = tiles.flatMap((tile) => {
-      const live = tile.ghost ? null : liveFor(tile);
-      if (live === null) return [];
-      const here = deskFavorite === tile.id;
-      const label = tile.title || prettyUrl(tile.url);
-      // (Its desk up, its tabs are under it, not counted on it.)
-      const waiting = here ? 0 : (tabCounts.get(tile.id) ?? 0);
-      const flipId = `open:${tile.id}`;
-      return [
-        <button
-          key={tile.id}
-          type="button"
-          role="listitem"
-          data-testid="rail-favorite-open"
-          data-active={live.active ? "" : undefined}
-          data-live-tab-id={live.id}
-          // Carried as its tile is: into the list, a group, the pinned, or out over the desk as its page's window.
-          data-flip-id={flipId}
-          data-drag-handle="true"
-          aria-label={`${label}, open`}
-          title={`${label}\n${prettyUrl(tile.url)}`}
-          className={cn("rail-favorite-open no-drag relative touch-none", grabbedId === tile.id && "z-30 cursor-grabbing")}
-          onPointerDown={(e) => beginPress({ ...itemFor(tile), flipId }, e)}
-          onClick={() => {
-            if (justDragged()) return;
-            if (!showOnDesk(live.id)) void sidebarCommand({ type: "open", anchorId: tile.id });
-          }}
-          onAuxClick={(e) => {
-            if (e.button === 1) void closeTab(live.id);
-          }}
-          // A desk up, ⇧⌫ closes the tab whose row is under the pointer — this one's page, its desk's (as any tab's row: TabList).
-          onPointerEnter={() => hoverDeskRow(live.id, true)}
-          onPointerLeave={() => hoverDeskRow(live.id, false)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            menu.open(e, tileMenu(tile));
-          }}
-        >
-          <span aria-hidden="true" className="[&>*]:size-5 [&>*]:rounded-[5px]">
-            <TabMark tab={live} fallbackFaviconUrl={tile.faviconUrl} />
-          </span>
-          {waiting > 0 ? <EntryTabCount count={waiting} testId="favorite-tab-count" className="absolute -right-0.5 -bottom-0.5 h-3.5 min-w-3.5 bg-background-100 text-[9px] shadow-border" /> : null}
-        </button>,
-        ...(here ? [<div key={`entry:${tile.id}`} ref={entryRef} role="group" aria-label={`${label}, its space`} data-testid="rail-favorite-entry" className="rail-favorite-entry" />] : []),
-      ];
-    });
-    return (
-      <>
-        <RailFavorites
-          open={open}
-          favorites={tiles.map((tile) => ({ id: tile.id, title: tile.title, url: tile.url, faviconUrl: liveFor(tile)?.faviconUrl ?? tile.faviconUrl, ghost: tile.ghost }))}
-          gridRef={gridRef}
-          gridClassName={cn("no-drag grid grid-cols-3 gap-1.5 rounded-md transition-[background-color,box-shadow] duration-150", receiving)}
-          dragging={canReceive}
-          dropping={canReceive && drag?.drop?.zone === "favorites"}
-        >
-          {tileNodes}
-        </RailFavorites>
-        {menu.menu}
-      </>
-    );
-  }
-
   return (
     <div className={cn("shrink-0", overlay ? "relative h-0" : "")}>
       <div
@@ -420,8 +339,10 @@ export function FavoritesGrid() {
         role="list"
         aria-label="Favorites"
         data-testid="favorites-grid"
+        data-columns={columns}
         className={cn(
-          "no-drag grid grid-cols-3 gap-1.5 rounded-md transition-[background-color,box-shadow] duration-150",
+          "no-drag grid gap-1.5 rounded-md transition-[background-color,box-shadow] duration-150",
+          columns === 4 ? "grid-cols-4" : "grid-cols-3",
           overlay
             ? "absolute inset-x-2 -top-10 z-20 h-10 bg-background-200/95"
             : "relative mx-2 mb-2",
@@ -429,7 +350,7 @@ export function FavoritesGrid() {
         )}
       >
         {tiles.length === 0 ? (
-          <span className="favorites-empty col-span-3 grid h-10 place-items-center text-[11px] text-gray-700">
+          <span className="favorites-empty col-span-full grid h-10 place-items-center text-[11px] text-gray-700">
             <span className="flex items-center gap-1">
               <Star className="size-3" aria-hidden="true" /> Drop to add a
               favorite

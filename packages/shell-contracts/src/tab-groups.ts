@@ -28,8 +28,10 @@
  *
  * `origin` is who the group belongs to. Tidy makes `auto` groups and may
  * archive one once every tab in it has gone idle; the moment a person
- * renames, recolours, or adds a tab to it, it is `manual` — theirs — and
- * Tidy only ever adds tabs to it.
+ * renames, recolours, or brings a tab to it, it is `manual` — theirs — and
+ * Tidy only ever adds tabs to it. A space grown from a Home tab by a window
+ * opened beside it is `auto` too, but `grown`: made FOR the person, not by
+ * Tidy, which never archives or unmakes it (isTidysGroup).
  *
  * Pure on purpose — no Electron, no DOM — so vitest pins it under node.
  */
@@ -94,6 +96,16 @@ export interface TabGroupInfo {
    * group like any other (or, of one tab, a loose tab's).
    */
   anchorId?: string;
+  /**
+   * Grown from a Home tab (a loose tab's group) by a window opened beside it
+   * — ⌘T, its row's +, a link opened beside its page (docs/double-sidebar.md
+   * §1, "And back"; since 2026-10-13): made FOR the person, so `auto` — down
+   * to one tab again, it goes back to Home as that tab (looseInPlace) — but
+   * not Tidy's: Tidy never archives it whole nor unmakes it (isTidysGroup),
+   * as it may a space it made. Only on an `auto` drawn space; gone once it is
+   * the person's (`manual`: asPersons) or a Home tab's again.
+   */
+  grown?: true;
   /**
    * Where an EMPTY space stands among the day's row units (dayRowUnits):
    * the unit it is drawn before — a tab's id, `split:<id>` or `group:<id>`,
@@ -230,6 +242,8 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
       // (A loose tab's group holds its one tab: with more, it is a group like any other.)
       ...(isLoose ? { loose: true } : {}),
       ...(anchorId !== undefined ? { anchorId } : {}),
+      // (Grown from a Home tab: only a drawn space made for the person — Tidy's to leave whole.)
+      ...(raw["grown"] === true && raw["origin"] === "auto" && !isLoose && anchorId === undefined ? { grown: true as const } : {}),
       // (Only an empty space stands by its unit: one with tabs stands where its first tab does.)
       ...(empty && isUnitId(beforeUnit) ? { beforeUnit } : {}),
     });
@@ -259,9 +273,9 @@ export function tabGroupOf(groups: readonly TabGroupInfo[], tabId: string): TabG
  *   but with other tabs does (main's reconcile, which titles it after its
  *   entry).
  * - an `auto` group left with ONE tab, not kept: that tab's loose space IN
- *   PLACE (`loose`, grey), keeping its id — what the desk and the agent
- *   track it by. Kept, it stays drawn; so does a `manual` group of one tab,
- *   as it always did.
+ *   PLACE (looseInPlace: `loose`, grey, its name let go of), keeping its id
+ *   — what the desk and the agent track it by. Kept, it stays drawn; so does
+ *   a `manual` group of one tab, as it always did.
  *
  * (Until 2026-10-09 an emptied group dissolved whatever it held, and so did
  * an auto group of one, its tab left in no group for main to make a loose
@@ -290,12 +304,49 @@ export function withoutTabs(
       continue;
     }
     if (group.origin === "auto" && group.anchorId === undefined && tabIds.length === 1 && !kept) {
-      next.push({ ...group, tabIds, loose: true, color: "gray" });
+      next.push(looseInPlace({ ...group, tabIds }));
       continue;
     }
     next.push({ ...group, tabIds });
   }
   return next;
+}
+
+/**
+ * An `auto` space (tab group) of one tab as that tab's loose space, in place
+ * — its id kept, what the desk and the agent track it by (withoutTabs; main's
+ * reconcile, step 3): grey, standing where its tab does, and its name let go
+ * of — `DEFAULT_TAB_GROUP_TITLE`, no `naming` — so grown again it is named
+ * afresh from its tabs, or called "New space" when nobody can name it, never
+ * by what it held before (since 2026-10-13; until then a space gone back to
+ * Home and regrown came back under its old name). No longer `grown`: it is a
+ * Home tab again.
+ */
+export function looseInPlace(group: TabGroupInfo): TabGroupInfo {
+  const { beforeUnit: _beforeUnit, grown: _grown, naming: _naming, ...rest } = group;
+  return { ...rest, title: DEFAULT_TAB_GROUP_TITLE, color: "gray", loose: true };
+}
+
+/**
+ * A space (tab group) made the person's by their hand — renamed,
+ * recoloured, a tab brought to it (a drag, Add to): `manual`, and no longer
+ * one grown for them (`grown`).
+ */
+export function asPersons(group: TabGroupInfo): TabGroupInfo {
+  const { grown: _grown, ...rest } = group;
+  return { ...rest, origin: "manual" };
+}
+
+/**
+ * Whether a space (tab group) is Tidy's own to manage whole
+ * (docs/tab-tidy.md §1, rule 3): an `auto` drawn space it may archive once
+ * all of it has gone idle, and its Undo may unmake — not one grown from a
+ * Home tab for the person (`grown`, since 2026-10-13), which is theirs to
+ * close tab by tab, nor a loose tab's or a page's. Whether it is the
+ * person's by what it holds (isPersonsGroup) is asked apart.
+ */
+export function isTidysGroup(group: Pick<TabGroupInfo, "origin" | "grown" | "loose" | "anchorId">): boolean {
+  return group.origin === "auto" && group.grown !== true && group.loose !== true && group.anchorId === undefined;
 }
 
 /**

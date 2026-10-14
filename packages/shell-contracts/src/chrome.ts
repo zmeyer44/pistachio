@@ -89,12 +89,18 @@ export const SIDEBAR_DEFAULT_W = 248;
 export const SIDEBAR_MIN_W = 200;
 export const SIDEBAR_MAX_W = 380;
 /**
- * The sidebar as a rail (SidebarMode "rail", docs/desk.md): its icons
- * alone. A mode a person chooses since 2026-10-09 — until then the desk's
- * own, kept by the desk apart from the setting. A row's icon sits 16px in
- * (the list's padding and the row's), so a column this wide centres them.
+ * The desktop sidebar's rail (docs/double-sidebar.md): Home and the spaces
+ * as 38px tiles, 9px in from either edge. On the rail mode (SidebarMode
+ * "rail") it is the whole column; whole, the card stands beside it. (48 until
+ * 2026-10-13, when the rail was the single sidebar's rows drawn as icons.)
  */
-export const SIDEBAR_RAIL_W = 48;
+export const SIDEBAR_RAIL_W = 56;
+/**
+ * The double sidebar's card is set this far in from the window's top and
+ * bottom, and the desk's well this far past its trailing edge: the column is
+ * the rail, the card (the sidebar's width setting) and this gap.
+ */
+export const SIDEBAR_CARD_INSET = 8;
 /**
  * Clearance for the macOS traffic lights at the window's top-left
  * (BrowserWindow trafficLightPosition {x: 16, y: 15}, three 12px buttons on

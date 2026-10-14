@@ -1,15 +1,13 @@
 import { TRAFFIC_LIGHTS_H, TRAFFIC_LIGHTS_W } from "@pistachio/shell-contracts/chrome";
 import { ChromeRegion } from "../chrome/manifest-renderers";
 import { ShelfDragProvider } from "../chrome/shelf-drag";
-import { RailNowPlaying } from "./desk/DeskNowPlaying";
-import { DeskMoreButton, DeskRailToggle } from "./desk/DeskSidebarControls";
-import { SidebarRailContext } from "./sidebar-rail";
 
 /**
- * The sidebar column, in any of its modes (layouts/SidebarLayout.tsx places
- * it; hidden only adds the auto-hide). Top to bottom: the toolbar row, the
- * address row, the favorites grid, the scrolling tab list, background media,
- * and the footer
+ * The single sidebar column, whole (layouts/SidebarLayout.tsx places it;
+ * hidden only adds the auto-hide): the web's and the cloud browser's. On the
+ * desktop the column is the double sidebar (components/space-rail) since
+ * 2026-10-13. Top to bottom: the toolbar row, the address row, the
+ * favorites grid, the scrolling tab list, background media, and the footer
  * row; each is a REGION the manifest fills (chrome/manifest.ts), never a
  * list of features. The grid and the list are one drag surface — a row can
  * be dropped on the grid and a tile in the list — so the column hosts the
@@ -19,54 +17,36 @@ import { SidebarRailContext } from "./sidebar-rail";
  * sidebar space — the toolbar is the titlebar here — and every control
  * inside opts out. The toolbar shares the titlebar with the traffic lights:
  * its leading pad clears them, and its height centres its buttons on the
- * lights' own centre line. (The rail hides them, and there is nothing to
- * clear.) Brought out over the desk from hidden, it is the same column on a
- * ground of its own (`.sidebar-motion-pane[data-overlay] .chrome-sidebar`).
+ * lights' own centre line.
  *
- * As a RAIL (SidebarMode "rail", the desktop's alone) it is the same column
- * and the same regions drawn narrow, its icons alone (sidebar-rail.ts): the
- * toolbar gives way to the desk's own two buttons — the whole sidebar back,
- * and the desk's card — at its head, where the window's buttons were (main
- * hides them while the rail is up: ShellState.sidebarRail), and background
- * media is the desk's now playing (desk/DeskNowPlaying.tsx) instead of the
- * stack's cards.
+ * (Until 2026-10-13 it was also the desk's RAIL — the same column and
+ * regions drawn narrow, its icons alone, the favorites one folder: the
+ * double sidebar's rail replaced it.)
  */
-export function SidebarChrome({ rail = false }: { rail?: boolean }) {
+export function SidebarChrome() {
   return (
-    <SidebarRailContext.Provider value={rail}>
-      <div data-testid="sidebar-chrome" data-rail={rail ? "" : undefined} className="chrome-sidebar drag-region flex h-full w-full min-w-0 flex-col">
-        {rail ? (
-          <div className="flex shrink-0 flex-col items-center gap-0.5 pb-1" style={{ paddingTop: 6 }}>
-            <DeskRailToggle />
-            <DeskMoreButton />
-          </div>
-        ) : (
-          <div className="flex shrink-0 items-center gap-1 pr-2" style={{ height: TRAFFIC_LIGHTS_H, paddingLeft: TRAFFIC_LIGHTS_W }}>
-            <ChromeRegion region="toolbar" />
-          </div>
-        )}
-        <div className="sidebar-address-row flex shrink-0 px-2 pb-2">
-          <ChromeRegion region="address" />
-        </div>
-        {/* The dock — the media stack, then a screen share's card — floats over the bottom of the tab list rather than taking a slot of its own. */}
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          <ShelfDragProvider>
-            <ChromeRegion region="favorites" />
-            <ChromeRegion region="tabs" />
-          </ShelfDragProvider>
-          {rail ? null : (
-            <div className="sidebar-media-dock">
-              <ChromeRegion region="media" />
-            </div>
-          )}
-        </div>
-        {/* On the rail, background media is the desk's now playing: a floating player for a video, a button here for the rest. */}
-        {rail ? <RailNowPlaying /> : null}
-        {/* The footer: the menu (the Space avatar) at its start, then any pills. All are buttons, so the row opts out as one. */}
-        <div className="sidebar-footer no-drag flex h-10 shrink-0 items-center gap-1.5 border-t border-alpha-400 px-2">
-          <ChromeRegion region="footer" />
+    <div data-testid="sidebar-chrome" className="chrome-sidebar drag-region flex h-full w-full min-w-0 flex-col">
+      <div className="flex shrink-0 items-center gap-1 pr-2" style={{ height: TRAFFIC_LIGHTS_H, paddingLeft: TRAFFIC_LIGHTS_W }}>
+        <ChromeRegion region="toolbar" />
+      </div>
+      <div className="sidebar-address-row flex shrink-0 px-2 pb-2">
+        <ChromeRegion region="address" />
+      </div>
+      {/* The dock — the media stack, then a screen share's card — floats over the bottom of the tab list rather than taking a slot of its own. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <ShelfDragProvider>
+          <ChromeRegion region="favorites" />
+          <ChromeRegion region="tabs" />
+        </ShelfDragProvider>
+        <div className="sidebar-media-dock">
+          <ChromeRegion region="media" />
         </div>
       </div>
-    </SidebarRailContext.Provider>
+      {/* The footer: the menu (the Profile's avatar) at its start, then any pills. All are buttons, so the row opts out as one. */}
+      <div className="sidebar-footer no-drag flex h-10 shrink-0 items-center gap-1.5 border-t border-alpha-400 px-2">
+        <ChromeRegion region="profile" />
+        <ChromeRegion region="footer" />
+      </div>
+    </div>
   );
 }

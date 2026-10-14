@@ -5,19 +5,22 @@ import {
   SIDEBAR_EDGE_W,
   SIDEBAR_MAX_W,
   SIDEBAR_MIN_W,
-  SIDEBAR_RAIL_W,
 } from "@pistachio/shell-contracts/chrome";
 import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
+import type { SidebarMode } from "@pistachio/shell-contracts/settings";
 import { AgentConsole } from "../components/AgentConsole";
 import { ContentArea } from "../components/ContentArea";
 import { ResizeHandle } from "../components/ResizeHandle";
 import { useScreenShares, useScreenShareStartNotice } from "../components/ScreenShareIndicator";
 import { SidebarChrome } from "../components/SidebarChrome";
 import { revealSidebar, SidebarEdge } from "../components/SidebarEdge";
+import { SpaceColumn } from "../components/space-rail/SpaceColumn";
+import { spaceColumnWidth } from "../components/space-rail/rail-model";
 import { cn } from "../lib/cn";
 import { useDeskChrome, useDeskCover } from "../lib/desk/chrome";
 import { deskAvailable } from "../lib/desk/open";
 import {
+  columnRenaming,
   nextSidebarOverlay,
   SIDEBAR_OVERLAY_AWAY,
   sidebarCoverWanted,
@@ -35,7 +38,7 @@ import { nativeApi } from "../api";
  * console.
  *
  * The column has three modes (lib/sidebar-mode.ts, docs/spaces.md §3): the
- * whole sidebar or a rail of its icons, in the layout with the page (or the
+ * whole sidebar or its rail alone, in the layout with the page (or the
  * desk) beside it; or hidden, its layout slot narrowed to the edge's strip
  * and the column translated out with it until the pointer comes to the
  * window's edge. Brought out on the web, the hidden column is back in the
@@ -49,7 +52,9 @@ import { nativeApi } from "../api";
  * contents do not reset.
  *
  * The layout places the sidebar and nothing else about it: what the column
- * holds is SidebarChrome's business, and what THAT holds is the manifest's.
+ * holds is SidebarChrome's business — on the desktop SpaceColumn's, the
+ * double sidebar (docs/double-sidebar.md, since 2026-10-13: the rail of
+ * spaces and the card beside it) — and what THAT holds is the manifest's.
  */
 export function SidebarLayout() {
   return (
@@ -74,10 +79,14 @@ const OVERLAY_SHADOW = 16;
 /**
  * The sidebar's column: its layout slot, and the pane in it.
  *
- * Whole and rail (`data-mode`) are the column in the layout at its width, or
- * at the rail's (SIDEBAR_RAIL_W), the same chrome drawn narrow (SidebarChrome's
- * rail; the rail is the desktop's alone). Hidden, the slot is the edge's
- * strip (SIDEBAR_EDGE_W) with the trigger in it (SidebarEdge).
+ * Whole and rail (`data-mode`) are the column in the layout at its width
+ * (the rail is the desktop's alone). On the desktop the column is the double
+ * sidebar (SpaceColumn): whole, the rail, the card at the sidebar's width and
+ * the gap to the desk (spaceColumnWidth); the rail mode, the rail alone. On
+ * the web it is the single sidebar (SidebarChrome) at the sidebar's width,
+ * always whole there (a stored rail is drawn whole). Hidden, the slot is the edge's
+ * strip (SIDEBAR_EDGE_W) with the trigger in it (SidebarEdge), and the
+ * column brought out is the whole one.
  *
  * Hidden on the desk, the column comes out as an OVERLAY (`data-overlay`,
  * which raises the slot above the desk's surface): its cover goes up over
@@ -99,7 +108,7 @@ export function SidebarColumn() {
   const slotRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLElement>(null);
   const rail = mode === "rail";
-  const paneWidth = rail ? SIDEBAR_RAIL_W : width;
+  const paneWidth = deskAvailable() ? spaceColumnWidth(mode, width) : width;
   // In the layout: whole, a rail, or (on the web) hidden and brought out.
   const expanded = mode !== "hidden" || (!overlay && revealed);
   const slotWidth = expanded ? paneWidth : SIDEBAR_EDGE_W;
@@ -182,8 +191,9 @@ export function SidebarColumn() {
           revealed={revealed}
           shown={shown}
           overlay={floating}
-          rail={rail}
+          mode={mode}
           width={paneWidth}
+          cardWidth={width}
           slotRef={slotRef}
         />
       </div>
@@ -235,13 +245,13 @@ function AwayShareNotice() {
 
 /** What holds the hidden column out (lib/sidebar-mode.ts's sidebarHeld), now. */
 function sidebarHeldNow(): boolean {
-  return sidebarHeld(useAppStore.getState(), useDeskChrome.getState().card !== null, useSidebarColumn.getState().renaming);
+  return sidebarHeld(useAppStore.getState(), useDeskChrome.getState().card !== null, columnRenaming(useSidebarColumn.getState()));
 }
 
 /** sidebarHeld() for a component. */
 function useSidebarHeld(): boolean {
   const card = useDeskChrome((state) => state.card !== null);
-  const renaming = useSidebarColumn((state) => state.renaming);
+  const renaming = useSidebarColumn(columnRenaming);
   return useAppStore((state) => sidebarHeld(state, card, renaming));
 }
 
@@ -286,8 +296,9 @@ function SidebarPane({
   revealed,
   shown,
   overlay,
-  rail,
+  mode,
   width,
+  cardWidth,
   slotRef,
 }: {
   paneRef: RefObject<HTMLElement | null>;
@@ -298,11 +309,14 @@ function SidebarPane({
   shown: boolean;
   /** Laid over the desk (hidden mode on the desk), on a ground of its own. */
   overlay: boolean;
-  /** Drawn as a rail of its icons. */
-  rail: boolean;
+  mode: SidebarMode;
+  /** The column's width (on the desktop, the rail's and the card's together). */
   width: number;
+  /** The sidebar's width setting: the single sidebar's, or the double sidebar's card's. */
+  cardWidth: number;
   slotRef: RefObject<HTMLDivElement | null>;
 }) {
+  const rail = mode === "rail";
   const setSidebarWidth = useAppStore((state) => state.setSidebarWidth);
   const box = useRef<ContentBounds | null>(null);
   const check = useRef<number | null>(null);
@@ -435,17 +449,23 @@ function SidebarPane({
       onPointerEnter={cancelCheck}
       onPointerLeave={scheduleCheck}
     >
-      <SidebarChrome rail={rail} />
-      {rail ? null : (
-        <ResizeHandle
-          side="right"
-          width={width}
-          min={SIDEBAR_MIN_W}
-          max={SIDEBAR_MAX_W}
-          defaultWidth={SIDEBAR_DEFAULT_W}
-          label="Resize sidebar"
-          setWidth={setSidebarWidth}
-        />
+      {/* The desktop's double sidebar (its card carries its own resize handle, at the card's edge), or the web's single one,
+          whole (the rail is the desktop's alone: lib/sidebar-mode.ts). */}
+      {deskAvailable() ? (
+        <SpaceColumn mode={mode} cardWidth={cardWidth} />
+      ) : (
+        <>
+          <SidebarChrome />
+          <ResizeHandle
+            side="right"
+            width={width}
+            min={SIDEBAR_MIN_W}
+            max={SIDEBAR_MAX_W}
+            defaultWidth={SIDEBAR_DEFAULT_W}
+            label="Resize sidebar"
+            setWidth={setSidebarWidth}
+          />
+        </>
       )}
     </aside>
   );

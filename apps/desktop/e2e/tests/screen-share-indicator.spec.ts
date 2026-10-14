@@ -130,11 +130,13 @@ test.describe.serial("a tab sharing the screen", { tag: ["@sidebar", "@media", "
     await expect(card).toContainText(`with ${new URL(meeting.pageUrl).host}`);
     await expect(tabMark).toHaveCount(1);
     await expect(tabMark).toHaveAttribute("aria-label", "Sharing a tab");
-    // The card sits clear of the last row: the list pads for it.
+    // The card sits clear of the last row: the list pads for it — inside the sidebar's card, above its foot (the
+    // footer's pills, when it has any to show).
     const dock = await card.boundingBox();
-    const footer = await shell.getByTestId("sidebar-chrome").locator(":scope > div").last().boundingBox();
+    const sheet = await shell.getByTestId("space-card").boundingBox();
+    const footer = await shell.getByTestId("space-card").locator(".space-card-foot").boundingBox();
     expect(dock).not.toBeNull();
-    expect(dock!.y + dock!.height).toBeLessThanOrEqual(footer!.y);
+    expect(dock!.y + dock!.height).toBeLessThanOrEqual((footer ?? sheet)!.y + (footer === null ? sheet!.height : 0));
     await captureShell(meeting.app, "01-sidebar-sharing.png", 300);
 
     // Stop: every captured track stops, and the page hears it end as it would from a browser's own button.

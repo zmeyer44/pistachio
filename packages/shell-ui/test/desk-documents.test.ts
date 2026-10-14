@@ -210,7 +210,7 @@ describe("a document's window", () => {
     desk.add(PLAN, { focus: false });
     desk.add(TRIP, { focus: false });
     settle();
-    desk.arrange("tile", ["tab-0", "tab-1"]);
+    desk.arrange("tile");
     settle();
     const rects = desk.layoutSnapshot().windows.map((window) => window.rect);
     expect(rects).toHaveLength(4);

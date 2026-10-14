@@ -1,6 +1,7 @@
 /**
  * Tidy end to end (docs/tab-tidy.md): idle tabs are archived, related tabs
- * become a space that opens on hover, a space chosen is the desk's and closes
+ * become a space — a tile on the double sidebar's rail (docs/double-sidebar.md),
+ * Today keeping the day's loose tabs — a space chosen is the desk's and closes
  * into the archive, the archive restores, favorites go home, and one Undo
  * takes a whole run back.
  *
@@ -128,15 +129,13 @@ test("tidy archives idle tabs, puts related ones in a space, resets favorites, a
     await expect(shell.locator("#sidebar-section-live")).toHaveAttribute("aria-busy", "false");
     await capture(notices, "02-notice.png");
 
-    const group = list.getByTestId("tab-group");
-    await expect(group).toHaveCount(1);
-    await expect(group.getByTestId("tab-group-title")).toHaveText("Lisbon trip");
-    await expect(group.getByTestId("tab-group-count")).toHaveText("3");
+    // The space is a tile on the rail, named and counted; Today keeps the day's loose tabs alone.
+    const tiles = shell.getByTestId("rail-space");
+    await expect(tiles).toHaveCount(1);
+    const tile = tiles.first();
+    await expect(tile).toHaveAttribute("aria-label", "Lisbon trip, 3 windows");
     // (The first tab is the one in view: it loaded, so it wears its page's own title.)
     expect((await dayTitles(shell)).slice(1)).toEqual(["Flights to Lisbon", "Hotels in Alfama", "Lisbon food guide", "Fresh reading"]);
-    // At rest the group is ONE row: its tabs are not drawn.
-    await shell.mouse.move(900, 500);
-    await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
     await expect(list.getByTestId("human-tab")).toHaveCount(2);
     await capture(shell, "03-tidied-collapsed.png");
 
@@ -144,61 +143,47 @@ test("tidy archives idle tabs, puts related ones in a space, resets favorites, a
     const favorite = (await snapshot(shell)).tabs.find((tab) => tab.anchorId === FAVORITE_ID);
     expect(favorite?.url).toBe(FAVORITE_HOME);
 
-    // ── 2. Hover opens the group in place; leaving closes it ────────────────
-    await group.getByTestId("tab-group-header").hover();
-    await expect(group.getByTestId("tab-group-members").getByTestId("human-tab")).toHaveCount(3);
-    await capture(shell, "04-group-hover-open.png");
-    await shell.mouse.move(900, 500);
-    await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
-
-    // ── 3. The group's menu: colour, rename ─────────────────────────────────
-    await group.getByTestId("tab-group-header").click({ button: "right" });
+    // ── 2. The space's menu, from its tile: colour, rename ─────────────────────
+    // (Until 2026-10-13 the space was a row of the list that opened in place on hover, folded by its chevron: on the
+    // rail it is a tile, its tabs the card's once it is chosen.)
+    await tile.click({ button: "right" });
     const menu = shell.getByTestId("context-menu");
     await expect(menu.getByRole("menuitem", { name: "Release the tabs" })).toBeVisible();
     // No split view on the desktop: the desk lays a space's tabs out as windows.
     await expect(menu.getByRole("menuitem", { name: /split/i })).toHaveCount(0);
     await capture(shell, "05-group-menu.png");
     await menu.getByTestId("group-color-amber").click();
-    await expect(group).toHaveAttribute("data-group-color", "amber");
-    await group.getByTestId("tab-group-header").dblclick();
+    await expect(tile).toHaveAttribute("data-group-color", "amber");
+    // A double-click renames it in the card's head (it is chosen, the desk passed to it).
+    await tile.dblclick();
+    await expect(shell.getByTestId("space-view").getByTestId("tab-group-name-input")).toBeFocused();
     await shell.getByTestId("tab-group-name-input").fill("Portugal");
     await shell.getByTestId("tab-group-name-input").press("Enter");
-    await expect(group.getByTestId("tab-group-title")).toHaveText("Portugal");
+    await expect(tile).toHaveAttribute("aria-label", "Portugal, 3 windows");
+    await expect(shell.getByTestId("space-name")).toHaveText("Portugal");
     // Renaming made it the person's own.
     expect((await snapshot(shell)).tabGroups[0]).toMatchObject({ title: "Portugal", color: "amber", origin: "manual" });
 
-    // ── 4. One of its tabs chosen: the desk passes to the space ─────────────
+    // ── 3. One of its tabs chosen: the desk is the space's, its tabs the card's rows ─────────────
     const portugal = (await snapshot(shell)).tabGroups[0]!.id;
     await api(shell, (pistachio) => pistachio.selectTab("tab-flights"));
     await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(portugal);
     await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${portugal}"]`)).toHaveCount(1);
     expect((await snapshot(shell)).splitMode).toBe("single");
-    // It holds the tab in use, so it stays open without the pointer.
-    await shell.mouse.move(900, 500);
-    await expect(group.getByTestId("tab-group-members")).toHaveCount(1);
+    await expect(tile).toHaveAttribute("aria-current", "true");
+    await expect(shell.locator('[data-testid="space-tabs"] [data-testid="human-tab"]')).toHaveCount(3);
     await capture(shell, "06-space-on-the-desk.png");
-    // Its chevron folds it away anyway — the tab in use and the pointer on it notwithstanding — and opens it again.
-    await group.getByTestId("tab-group-header").hover();
-    await expect(group.getByTestId("tab-group-toggle")).toHaveAttribute("aria-label", "Collapse space");
-    await group.getByTestId("tab-group-toggle").click();
-    await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
-    await shell.mouse.move(900, 500);
-    await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
-    await group.getByTestId("tab-group-toggle").click();
-    await expect(group.getByTestId("tab-group-members").getByTestId("human-tab")).toHaveCount(3);
-    await shell.mouse.move(900, 500);
-    await expect(group.getByTestId("tab-group-members")).toHaveCount(1);
 
-    // ── 5. Close the group: it is filed whole, and Undo brings it back ──────
-    await group.getByTestId("tab-group-header").hover();
-    await group.getByTestId("tab-group-close").click();
-    await expect(list.getByTestId("tab-group")).toHaveCount(0);
+    // ── 4. Close the space (its menu): it is filed whole, and Undo brings it back ──────
+    await tile.click({ button: "right" });
+    await menu.getByRole("menuitem", { name: "Close space", exact: true }).click();
+    await expect(tiles).toHaveCount(0);
     await expect(card).toContainText("Closed “Portugal” · 3 tabs");
     await card.getByRole("button", { name: "Undo" }).click();
-    await expect(list.getByTestId("tab-group")).toHaveCount(1);
-    await expect(list.getByTestId("tab-group").getByTestId("tab-group-title")).toHaveText("Portugal");
+    await expect(tiles).toHaveCount(1);
+    await expect(tile).toHaveAttribute("aria-label", "Portugal, 3 windows");
 
-    // ── 6. The archive ─────────────────────────────────────────────────────
+    // ── 5. The archive (Today's menu, Home's) ─────────────────────────────────
     await api(shell, (pistachio) => pistachio.selectTab("tab-active"));
     await shell.getByTestId("section-header-live").click({ button: "right" });
     await shell.getByTestId("context-menu").getByRole("menuitem", { name: "Archived tabs" }).click();
@@ -218,16 +203,16 @@ test("tidy archives idle tabs, puts related ones in a space, resets favorites, a
     await deskEntry.hover();
     await deskEntry.getByTestId("archive-restore").click();
     await expect(archive).toHaveCount(0);
-    await expect(list.getByTestId("tab-group")).toHaveCount(2);
+    await expect(tiles).toHaveCount(2);
     const restored = (await snapshot(shell)).tabGroups.find((candidate) => candidate.title === "Desk research");
     expect(restored?.tabIds).toHaveLength(2);
     await capture(shell, "08-restored-group.png");
 
-    // ── 7. Groups survive a restart ────────────────────────────────────────
+    // ── 6. Spaces survive a restart ────────────────────────────────────────
     await app.close();
     ({ app } = await launchApp({ userData: launched.userData }));
     const again = await shellReady(app);
-    await expect(again.getByTestId("sidebar-tab-list").getByTestId("tab-group")).toHaveCount(2);
+    await expect(again.getByTestId("rail-space")).toHaveCount(2);
     expect((await snapshot(again)).tabGroups.map((candidate) => candidate.title).sort()).toEqual(["Desk research", "Portugal"]);
   } finally {
     await app?.close();
@@ -253,11 +238,13 @@ test("tidy runs from the sidebar menu and from its keyboard shortcut", { tag: ["
     const notices = await noticePage(app);
     const card = notices.locator('[data-testid="notice-card"][data-depth="0"]');
     await expect(card).toContainText("Archived 3 tabs · made 1 space");
-    await expect(list.getByTestId("tab-group")).toHaveCount(1);
+    // (Its spaces are the rail's tiles.)
+    const tiles = shell.getByTestId("rail-space");
+    await expect(tiles).toHaveCount(1);
 
     // Take it back, so the shortcut has the same work to do.
     await card.getByRole("button", { name: "Undo" }).click();
-    await expect(list.getByTestId("tab-group")).toHaveCount(0);
+    await expect(tiles).toHaveCount(0);
     await expect.poll(async () => (await dayTitles(shell)).length).toBe(8);
 
     // ── ⌘⇧K, from the shell ──
@@ -265,7 +252,7 @@ test("tidy runs from the sidebar menu and from its keyboard shortcut", { tag: ["
     // them straight back), so nothing is idle now: this run archives nothing,
     // and the desk tabs — all idle before — become a live group this time.
     await shell.keyboard.press("Meta+Shift+K");
-    await expect(list.getByTestId("tab-group")).toHaveCount(2);
+    await expect(tiles).toHaveCount(2);
     // The earlier notice may still be on its way out: the live card is the one that speaks.
     await expect(notices.locator('[data-testid="notice-card"][data-phase="live"]').filter({ hasText: "Made 2 spaces" })).toBeVisible();
     expect((await snapshot(shell)).tabGroups.map((candidate) => candidate.title).sort()).toEqual(["Desk research", "Lisbon trip"]);
@@ -280,7 +267,7 @@ test("tidy runs from the sidebar menu and from its keyboard shortcut", { tag: ["
 });
 
 // (Undo's order and its never-twice rule are apps/desktop/test/tab-tidy.test.ts's.)
-test("a new tab makes a space yours; a tab moved to another Profile leaves its space behind", { tag: ["@tabs"] }, async () => {
+test("a new tab leaves Tidy's space Tidy's; a tab moved to another Profile leaves its space behind", { tag: ["@tabs"] }, async () => {
   // Flights and Fresh reading sit far apart in the row, so grouping them MOVES one of them.
   const script = { groups: [{ title: "Mix", titles: ["Flights to Lisbon", "Fresh reading"] }] };
   let app: ElectronApplication | null = null;
@@ -289,13 +276,15 @@ test("a new tab makes a space yours; a tab moved to another Profile leaves its s
     const shell = await shellReady(app);
     await expect(shell.getByTestId("sidebar-tab-list").getByTestId("human-tab")).toHaveCount(8);
 
-    // ── "New tab in group" is the person's own addition: the group is theirs, and Tidy will not archive it ──
+    // ── "New tab in group" opens a window in the space without making it the person's: Tidy's space stays Tidy's (since
+    //    2026-10-13, docs/double-sidebar.md; until then a new tab made it theirs). Naming, colouring or a Stack make it theirs. ──
     await api(shell, (pistachio) => pistachio.tidy({ type: "run" }));
     const made = (await snapshot(shell)).tabGroups.find((candidate) => candidate.title === "Mix");
     if (made === undefined) throw new Error("the group was not made");
     expect(made.origin).toBe("auto");
     await shell.evaluate((groupId) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "newTab", groupId }), made.id);
-    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === made.id)?.origin).toBe("manual");
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === made.id)?.tabIds.length).toBe(3);
+    expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === made.id)?.origin).toBe("auto");
     const grown = (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === made.id);
     expect(grown?.tabIds).toHaveLength(3);
 
@@ -339,15 +328,17 @@ test("a space made by hand is named from its tabs — unless the person names it
     return { app, shell };
   };
 
-  // ── 1. The model names it: the row says so, then wears the name. No field ever opens. ──
+  // ── 1. The model names it: its tile on the rail says so, then wears the name. No field ever opens (nor is the space
+  //       chosen for one: the card stays on Home). ──
   let running = await launch({ name: "Lisbon trip" });
   try {
     const { shell } = running;
-    const group = shell.getByTestId("sidebar-tab-list").getByTestId("tab-group");
+    const tile = shell.getByTestId("rail-space");
     await groupTwo(shell);
-    await expect(group.getByTestId("tab-group-title")).toHaveText("Naming…");
+    await expect(tile).toHaveAttribute("aria-label", "Naming…, 2 windows");
+    await expect(tile).toHaveAttribute("data-naming", "");
     await capture(shell, "14-naming.png");
-    await expect(group.getByTestId("tab-group-title")).toHaveText("Lisbon trip");
+    await expect(tile).toHaveAttribute("aria-label", "Lisbon trip, 2 windows");
     await expect(shell.getByTestId("tab-group-name-input")).toHaveCount(0);
     expect((await snapshot(shell)).tabGroups[0]).toMatchObject({ title: "Lisbon trip", origin: "manual", tabIds: ["tab-flights", "tab-hotels"] });
 
@@ -385,20 +376,21 @@ test("a space made by hand is named from its tabs — unless the person names it
     expect((await snapshot(shell)).tabGroups[0]?.naming).not.toBe(true);
     await shell.getByTestId("tab-group-name-input").fill("Typed by hand");
     await shell.getByTestId("tab-group-name-input").press("Enter");
-    await expect(shell.getByTestId("sidebar-tab-list").getByTestId("tab-group-title")).toHaveText("Typed by hand");
+    await expect(shell.getByTestId("space-name")).toHaveText("Typed by hand");
+    await expect(shell.getByTestId("rail-space")).toHaveAttribute("aria-label", "Typed by hand, 2 windows");
   } finally {
     await running.app.close();
   }
 });
 
 /**
- * A real pointer drag from a row to a height in the list, with an optional
- * look at the proposed layout before letting go. The pointer travels STRAIGHT
- * along the column: a row that drifts right past the column's edge is handed
- * to the native drag layer (it may be on its way to the page), and that layer
- * relays the machine's real cursor, which a spec does not control.
+ * A real pointer drag from a row to a point — in the list, or on the rail —
+ * with an optional look before letting go. The pointer never goes right past
+ * the column's edge: a row that does is handed to the native drag layer (it
+ * may be on its way to the page), and that layer relays the machine's real
+ * cursor, which a spec does not control.
  */
-async function dragTo(shell: Page, from: ReturnType<Page["locator"]>, to: { x: number; y: number }, beforeDrop?: () => Promise<void>): Promise<void> {
+async function dragTo(shell: Page, from: Locator, to: { x: number; y: number }, beforeDrop?: () => Promise<void>): Promise<void> {
   // Rows FLIP-slide after any relayout, and hit-testing follows the slide: let the column land first.
   await settled(shell.getByTestId("sidebar-tab-list"));
   const box = await from.boundingBox();
@@ -409,10 +401,23 @@ async function dragTo(shell: Page, from: ReturnType<Page["locator"]>, to: { x: n
   await shell.mouse.down();
   // Past the 5px threshold first, then to the target in steps so every row on the way sees a move.
   await shell.mouse.move(startX, startY + 8, { steps: 2 });
-  await shell.mouse.move(startX, to.y, { steps: 12 });
+  await shell.mouse.move(to.x, to.y, { steps: 12 });
   // The drop target follows the last move on the next frame.
   await nextFrames(shell);
   await beforeDrop?.();
+  await shell.mouse.up();
+}
+
+/** A press carried along the rail (a space's tile moved among the spaces), in steps, then let go. */
+async function carryAlongRail(shell: Page, from: Locator, to: { x: number; y: number }): Promise<void> {
+  const box = await from.boundingBox();
+  if (box === null) throw new Error("tile has no box");
+  const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await shell.mouse.move(start.x, start.y);
+  await shell.mouse.down();
+  await shell.mouse.move(start.x, start.y + 8, { steps: 2 });
+  await shell.mouse.move(to.x, to.y, { steps: 10 });
+  await nextFrames(shell);
   await shell.mouse.up();
 }
 
@@ -424,7 +429,7 @@ async function dragTo(shell: Page, from: ReturnType<Page["locator"]>, to: { x: n
 test.describe("dragging rows", () => {
   test.describe.configure({ retries: 2 });
 
-  test("tabs drag into a space, to a place within it, and out of it again", { tag: ["@tabs", "@sidebar"] }, async () => {
+  test("tabs drag onto a space's tile, to a place within it, and out of it onto Home; a tile moves its space along the rail", { tag: ["@tabs", "@sidebar"] }, async () => {
     let app: ElectronApplication | null = null;
     try {
       ({ app } = await launchSeeded());
@@ -432,62 +437,68 @@ test.describe("dragging rows", () => {
       const list = shell.getByTestId("sidebar-tab-list");
       await expect(list.getByTestId("human-tab")).toHaveCount(8);
       await api(shell, (pistachio) => pistachio.tabGroupCommand({ type: "create", id: "g-trip", title: "Trip", tabIds: ["tab-flights", "tab-hotels"] }));
-      const group = list.getByTestId("tab-group");
-      const header = group.getByTestId("tab-group-header");
-      const row = (tabId: string): ReturnType<Page["locator"]> => list.locator(`[data-tab-id="${tabId}"]`);
+      const tile = (groupId: string): Locator => shell.locator(`[data-testid="rail-space"][data-group-id="${groupId}"]`);
+      const row = (tabId: string): Locator => list.locator(`[data-tab-id="${tabId}"]`);
       const members = async (): Promise<string[]> => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "g-trip")?.tabIds ?? [];
-      const centre = async (target: ReturnType<Page["locator"]>, dy = 0): Promise<{ x: number; y: number }> => {
+      const centre = async (target: Locator, dy = 0): Promise<{ x: number; y: number }> => {
         const box = await target.boundingBox();
         if (box === null) throw new Error("drop target has no box");
         return { x: box.x + box.width / 2, y: box.y + box.height / 2 + dy };
       };
-      await expect(group.getByTestId("tab-group-count")).toHaveText("2");
+      await expect(tile("g-trip")).toHaveAttribute("aria-label", "Trip, 2 windows");
 
-      // ── 1. Onto a CLOSED group's header: it opens to take the tab, which joins at the end ──
-      await shell.mouse.move(900, 500);
-      await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
-      await dragTo(shell, row("tab-fresh"), await centre(header), async () => {
-        await expect(group).toHaveAttribute("data-receiving", "");
-        await expect(group.getByTestId("tab-group-members").getByTestId("human-tab")).toHaveCount(3);
-        await capture(shell, "10-drag-into-closed-group.png");
+      // ── 1. A Today row onto the space's tile: the tile says it takes it, and the tab joins at the end ──
+      // (Until 2026-10-13 onto a closed group's header in the one list, which opened to take it.)
+      await dragTo(shell, row("tab-fresh"), await centre(tile("g-trip")), async () => {
+        await expect(tile("g-trip")).toHaveAttribute("data-dropping", "");
+        await capture(shell, "10-drag-onto-space-tile.png");
       });
       await expect.poll(members).toEqual(["tab-flights", "tab-hotels", "tab-fresh"]);
-      // It was the person's hand, and it closes again once the pointer has gone.
-      await shell.mouse.move(900, 500);
-      await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
-      await expect(group.getByTestId("tab-group-count")).toHaveText("3");
+      await expect(tile("g-trip")).toHaveAttribute("aria-label", "Trip, 3 windows");
+      // And another, the food guide: at the end too.
+      await dragTo(shell, row("tab-food"), await centre(tile("g-trip")));
+      await expect.poll(members).toEqual(["tab-flights", "tab-hotels", "tab-fresh", "tab-food"]);
 
-      // ── 2. Into an OPEN group, between two of its tabs ──
-      await api(shell, (pistachio) => pistachio.tabGroupCommand({ type: "setOpen", groupId: "g-trip", open: true }));
-      await expect(group.getByTestId("tab-group-members").getByTestId("human-tab")).toHaveCount(3);
+      // ── 2. In the space's own view (its tile chosen): a row to a place between two of its tabs ──
+      await tile("g-trip").click();
+      await expect(shell.locator('[data-testid="space-view"][data-group-id="g-trip"]')).toHaveCount(1);
+      // (Its windows out, none still flying over the card.)
+      await expect(shell.locator('[data-testid="desk-window"][data-flight]')).toHaveCount(0);
+      await expect(shell.locator('[data-testid="space-tabs"] [data-testid="human-tab"]')).toHaveCount(4);
       // Just above the middle of "Hotels": the slot between Flights and Hotels.
       await dragTo(shell, row("tab-food"), await centre(row("tab-hotels"), -10), async () => {
         await capture(shell, "11-drag-between-members.png");
       });
       await expect.poll(members).toEqual(["tab-flights", "tab-food", "tab-hotels", "tab-fresh"]);
 
-      // ── 3. Within the group: the last tab to its head (just under the header) ──
+      // ── 3. Within the space: the last tab to its head ──
       await dragTo(shell, row("tab-fresh"), await centre(row("tab-flights"), -10));
       await expect.poll(members).toEqual(["tab-fresh", "tab-flights", "tab-food", "tab-hotels"]);
 
-      // ── 4. Out of the group, down among the day's rows ──
-      await dragTo(shell, row("tab-hotels"), await centre(row("tab-news"), 10));
+      // ── 4. Out of the space: a row let go on Home is a Home tab again, a loose one of its own ──
+      await dragTo(shell, row("tab-hotels"), await centre(shell.getByTestId("rail-home")), async () => {
+        await expect(shell.getByTestId("rail-home")).toHaveAttribute("data-dropping", "");
+      });
       await expect.poll(members).toEqual(["tab-fresh", "tab-flights", "tab-food"]);
-      const after = await snapshot(shell);
-      const order = after.tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id);
-      // Hotels is a loose tab again, right after the news story it was set down under.
-      expect(order.indexOf("tab-hotels")).toBe(order.indexOf("tab-news") + 1);
+      expect((await snapshot(shell)).looseGroups?.some((group) => group.tabIds.length === 1 && group.tabIds[0] === "tab-hotels")).toBe(true);
       await capture(shell, "12-after-drags.png");
 
-      // ── 5. The group itself still drags as one unit, to the top of the day's rows ──
-      await api(shell, (pistachio) => pistachio.tabGroupCommand({ type: "setOpen", groupId: "g-trip", open: false }));
-      await shell.mouse.move(900, 500);
-      await expect(group.getByTestId("tab-group-members")).toHaveCount(0);
-      await dragTo(shell, header, await centre(row("tab-active"), -10));
-      await expect
-        .poll(async () => (await snapshot(shell)).tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id).slice(0, 4))
-        .toEqual(["tab-fresh", "tab-flights", "tab-food", "tab-active"]);
-      expect(await members()).toEqual(["tab-fresh", "tab-flights", "tab-food"]);
+      // ── 5. A tile carried along the rail moves its space among the others (until 2026-10-13 the group's row, dragged
+      //       as one unit among the day's rows) ──
+      await api(shell, (pistachio) => pistachio.tabGroupCommand({ type: "create", id: "g-desks", title: "Desks", tabIds: ["tab-desk-a", "tab-desk-b"] }));
+      const railOrder = (): Promise<string[]> =>
+        shell.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="rail-space"]')].map((el) => el.dataset["groupId"] ?? ""));
+      await expect.poll(railOrder).toHaveLength(2);
+      const [upper, lower] = (await railOrder()) as [string, string];
+      const current = (await snapshot(shell)).currentGroupId;
+      await carryAlongRail(shell, tile(upper), await centre(tile(lower), 14));
+      await expect.poll(railOrder).toEqual([lower, upper]);
+      // The day's row agrees: the space carried down is after the other's tabs.
+      const day = (await snapshot(shell)).tabs.filter((tab) => tab.anchorId === null).map((tab) => tab.id);
+      const firstOf = async (groupId: string): Promise<number> => day.indexOf((await snapshot(shell)).tabGroups.find((group) => group.id === groupId)!.tabIds[0]!);
+      expect(await firstOf(upper)).toBeGreaterThan(await firstOf(lower));
+      // (Carried, not chosen: its click is the carry's.)
+      expect((await snapshot(shell)).currentGroupId).toBe(current);
     } finally {
       await app?.close();
     }

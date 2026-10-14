@@ -3,7 +3,14 @@
  * hears a window come out or leave (the engine's onLayoutMoment), or the
  * person ask (⌘⌥L, the More card), describes the desk to the layout model,
  * and — when the model's opinion and `decideDeskLayout` say so — lays the
- * windows out anew, with a notice to undo it.
+ * windows out anew. On its own it moves them quietly, and ⌃Z puts them back
+ * for a moment after (UNDO_KEY_MS); asked, a notice says what it did, with
+ * Undo (until 2026-10-13 every layout had the notice).
+ *
+ * ⌃Z is offered the same way after a named layout the person chose — the
+ * space view's layouts, Tile, Cascade (the engine's layOut, heard through
+ * onLaidOut) — with no notice: the windows moving is what they asked for.
+ * (Since 2026-10-13; until then Tile and Cascade had no way back.)
  *
  * Three rules keep it from fighting the person:
  *  - Only the latest question counts. A window coming or going while one is
@@ -48,12 +55,22 @@ import type { DeskLayoutMoment, DeskLayoutSnapshot, DeskLayoutView } from "./des
 export const CLOSE_SETTLE_MS = 180;
 /** The most windows the model is asked about (DESK_LAYOUT_LIMITS.windows). */
 const MOST_WINDOWS = 12;
+/** How long after the desk laid itself out ⌃Z puts it back. */
+export const UNDO_KEY_MS = 5_000;
 
 export interface SmartArrangeEngine {
   onLayoutMoment(listener: (moment: DeskLayoutMoment) => void): () => void;
   layoutView(): DeskLayoutView;
   applyLayout(layout: ReadonlyMap<string, Rect>): DeskLayoutSnapshot | null;
-  restoreLayout(snapshot: DeskLayoutSnapshot): void;
+  /** Whether it put the layout back (not with a window in hand). */
+  restoreLayout(snapshot: DeskLayoutSnapshot): boolean;
+  layoutSnapshot(): DeskLayoutSnapshot;
+  /** Every change to the desk's windows, however it came about. */
+  subscribe(listener: () => void): () => void;
+  /** ⌃Z is the desk's, wherever the keyboard is (DeskState.undoKey), or the page's again. */
+  setUndoKey(armed: boolean): void;
+  /** A named layout laid out at the person's word (layOut): where every window was going before. */
+  onLaidOut(listener: (undo: DeskLayoutSnapshot) => void): () => void;
 }
 
 /** What a window is, for the model: its latest title and site, kept after it has gone. */
@@ -74,7 +91,7 @@ export interface SmartArrangeHost {
   group(): string | null;
   /** A window's words, the latest known — a window just closed is no tab any more. */
   describe(id: string): WindowWords | null;
-  /** Say what the desk did, with a way back (null: nothing to undo). */
+  /** Say what the desk did when asked, with a way back (null: nothing to undo). */
   notify(message: string, undo: (() => void) | null): void;
   /** A timer (injectable for tests); returns its cancel. */
   later(run: () => void, ms: number): () => void;
@@ -87,16 +104,20 @@ export class SmartArranger {
   readonly #engine: SmartArrangeEngine;
   readonly #host: SmartArrangeHost;
   readonly #off: () => void;
+  readonly #offLaidOut: () => void;
   /** A close held for the next (CLOSE_SETTLE_MS), on the desk of `group`. */
   #held: { moment: Extract<Moment, { trigger: "closed" }>; group: string | null; cancel: () => void } | null = null;
   /** The question out now; a newer one makes an older one's answer worthless. */
   #serial = 0;
+  /** The latest layout, which ⌃Z puts back until UNDO_KEY_MS is up — on the desk of `group`. */
+  #undo: { snapshot: DeskLayoutSnapshot; group: string | null; stop: () => void } | null = null;
   #destroyed = false;
 
   constructor(engine: SmartArrangeEngine, host: SmartArrangeHost) {
     this.#engine = engine;
     this.#host = host;
     this.#off = engine.onLayoutMoment((moment) => this.#heard(moment));
+    this.#offLaidOut = engine.onLaidOut((undo) => this.#laidOut(undo));
   }
 
   destroy(): void {
@@ -104,7 +125,77 @@ export class SmartArranger {
     this.#serial += 1;
     this.#held?.cancel();
     this.#held = null;
+    this.#forgetUndo();
     this.#off();
+    this.#offLaidOut();
+  }
+
+  /**
+   * ⌃Z: the latest layout put back, while its moment lasts (UNDO_KEY_MS).
+   * Only on the desk it moved — the engine passes from group to group in
+   * place — and only once. Whether anything was put back.
+   */
+  undo(): boolean {
+    const offered = this.#undo;
+    if (offered === null || this.#destroyed) return false;
+    if (this.#host.group() !== offered.group || this.#othersOut(offered.snapshot)) {
+      this.#forgetUndo();
+      return false;
+    }
+    // A window in hand: nothing moves, and the layout waits to be put back once it is let go.
+    if (!this.#engine.restoreLayout(offered.snapshot)) return false;
+    this.#forgetUndo();
+    return true;
+  }
+
+  /** The desk passed to another group: the layout ⌃Z would put back is not this desk's, and the key is the page's again. */
+  passed(): void {
+    this.#forgetUndo();
+  }
+
+  #offerUndo(snapshot: DeskLayoutSnapshot, group: string | null): void {
+    this.#undo?.stop();
+    const timer = this.#host.later(() => this.#forgetUndo(), UNDO_KEY_MS);
+    // A window brought out or put away by any way — a tab dragged out, a Glance landing, which the smart layout never
+    // hears of — ends it as a layout moment does.
+    const off = this.#engine.subscribe(() => {
+      if (this.#undo?.snapshot === snapshot && this.#othersOut(snapshot)) this.#forgetUndo();
+    });
+    this.#undo = {
+      snapshot,
+      group,
+      stop: () => {
+        timer();
+        off();
+      },
+    };
+    this.#engine.setUndoKey(true);
+  }
+
+  /** Other windows out on the desk than the layout left: put back, it would send the ones it never had into the dock. */
+  #othersOut(snapshot: DeskLayoutSnapshot): boolean {
+    const now = this.#engine.layoutSnapshot().windows;
+    return now.length !== snapshot.windows.length || now.some((entry) => !snapshot.windows.some((then) => then.tabId === entry.tabId));
+  }
+
+  #forgetUndo(): void {
+    if (this.#undo === null) return;
+    this.#undo.stop();
+    this.#undo = null;
+    this.#engine.setUndoKey(false);
+  }
+
+  /**
+   * The person laid the desk out by name (layOut): ⌃Z puts it back for a
+   * moment, as after the desk's own layouts. Whatever was being asked, or
+   * held, is about a desk that is no more.
+   */
+  #laidOut(undo: DeskLayoutSnapshot): void {
+    if (this.#destroyed) return;
+    this.#serial += 1;
+    this.#held?.cancel();
+    this.#held = null;
+    this.#offerUndo(undo, this.#host.group());
   }
 
   /** The person asked (⌘⌥L, the More card): the desk laid out the way the model thinks best, whatever the Feel's Layout. */
@@ -117,6 +208,8 @@ export class SmartArranger {
   #heard(moment: DeskLayoutMoment): void {
     // Whatever was being asked is about a desk that is not this one any more.
     this.#serial += 1;
+    // Nor is the layout ⌃Z would put back: a window out since would go back into the dock.
+    this.#forgetUndo();
     if (!this.#host.auto() || this.#host.busy()) {
       this.#held?.cancel();
       this.#held = null;
@@ -173,7 +266,12 @@ export class SmartArranger {
     }
     const undo = this.#engine.applyLayout(layout);
     if (undo === null) return;
+    this.#offerUndo(undo, group);
+    // On its own the desk says nothing: the windows moving is news enough, and ⌃Z takes it back.
+    if (!asked) return;
     this.#host.notify(this.#say(decision, moment, built.fillers), () => {
+      // ⌃Z's, while it waits, is this same layout: spent with it, or the next ⌃Z would put it back again.
+      if (this.#undo?.snapshot === undo) this.#forgetUndo();
       // Clicked once the desk has passed to another group, it would lay this one out as that one was.
       if (this.#host.group() === group) this.#engine.restoreLayout(undo);
     });

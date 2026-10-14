@@ -31,9 +31,15 @@ async function enterAddress(shell: Page, url: string): Promise<void> {
 
 /** The demo page as the only tab, made a favorite: its tile is live, bound to this page. */
 async function favoriteAlone(shell: Page): Promise<string> {
-  // A favorite left by the test before is taken off first, so the grid starts empty.
+  // A favorite left by the test before is taken off first, so the grid starts empty. (The favorites are Home's in the
+  // double sidebar's card, docs/double-sidebar.md: Home chosen on the rail first when a space is — the favorite's page
+  // with a tab beside it is a space of the rail's.)
   const sidebar = shell.getByTestId("sidebar-chrome");
   await expect(sidebar).toBeVisible();
+  const home = shell.getByTestId("rail-home");
+  if ((await home.getAttribute("aria-current")) !== "true") await home.click();
+  await expect(home).toHaveAttribute("aria-current", "true");
+  await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
   const leftover = sidebar.getByTestId("favorite-tile");
   if ((await leftover.count()) > 0) {
     await pick(shell, leftover.first(), "Remove from favorites");

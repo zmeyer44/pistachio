@@ -173,6 +173,20 @@ export function listDropAt(measured: readonly MeasuredRow[], kind: ShelfDragKind
   return { zone: "pinned", folderId: null, index: topLevelBefore(i) };
 }
 
+/**
+ * A drop in a space's view of the double sidebar's card (docs/double-sidebar.md
+ * §1): the space's tabs are the list's only rows, `member` rows of `groupId`
+ * (a page's space's are no slots: its page's and the tabs under it are
+ * `entry` rows), so a drop is a place among them — the rows whose middle is
+ * above the pointer — and never leaves the space. Null with no row to drop
+ * among (a page's space).
+ */
+export function spaceDropAt(measured: readonly MeasuredRow[], y: number, groupId: string): ListDrop | null {
+  const members = measured.filter((row) => row.kind === "member" && row.groupId === groupId);
+  if (members.length === 0) return null;
+  return { zone: "group", groupId, index: members.filter((row) => row.top + row.height / 2 < y).length };
+}
+
 /** One measured favorite tile, in reading order, in the pointer's coordinate space. */
 export interface MeasuredTile {
   id: string;

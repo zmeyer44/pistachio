@@ -12,12 +12,9 @@
  *   (`hovered`): ⇧⌫ closes that tab, wherever the keyboard is.
  * - The desk says which tab its agent is working in (`agentTab`), for that
  *   row to wear the agent's ring, as the window does.
- * - On the rail, the row of the favorite whose desk is up stands under the
- *   favorites' folder (FavoritesGrid), and the tab list draws that desk's
- *   tabs and Stack under it (`favoriteEntry`, a place in the favorites).
- * - What the sidebar lays over the desk — the rail's favorites sheet, the
- *   hidden sidebar's column brought out — is a cover the desk's live pages
- *   give way to (useDeskCover).
+ * - What the sidebar lays over the desk — the hidden sidebar's column
+ *   brought out — is a cover the desk's live pages give way to
+ *   (useDeskCover).
  */
 
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
@@ -52,15 +49,12 @@ interface DeskChromeState {
   card: DeskCard | null;
   hovered: string | null;
   agentTab: string | null;
-  /** On the rail, the place under the row of the favorite whose desk is up (its anchor's id), for its desk's tabs and Stack. */
-  favoriteEntry: { anchorId: string; el: HTMLElement } | null;
   setMarks(marks: ReadonlyMap<string, DeskMark>): void;
   setBehind(behind: ReadonlySet<string>): void;
   openCard(card: DeskCard): void;
   closeCard(kind?: DeskCard["kind"]): void;
   setHovered(tabId: string | null): void;
   setAgentTab(tabId: string | null): void;
-  setFavoriteEntry(entry: { anchorId: string; el: HTMLElement } | null): void;
 }
 
 const NO_MARKS: ReadonlyMap<string, DeskMark> = new Map();
@@ -72,7 +66,6 @@ export const useDeskChrome = create<DeskChromeState>((set, get) => ({
   card: null,
   hovered: null,
   agentTab: null,
-  favoriteEntry: null,
   setMarks: (marks) => {
     const before = get().marks;
     if (before.size === marks.size && [...marks].every(([id, mark]) => before.get(id) === mark)) return;
@@ -93,11 +86,6 @@ export const useDeskChrome = create<DeskChromeState>((set, get) => ({
   },
   setAgentTab: (tabId) => {
     if (get().agentTab !== tabId) set({ agentTab: tabId });
-  },
-  setFavoriteEntry: (entry) => {
-    const before = get().favoriteEntry;
-    if (before?.anchorId === entry?.anchorId && before?.el === entry?.el) return;
-    set({ favoriteEntry: entry });
   },
 }));
 
@@ -162,9 +150,10 @@ export interface DeskCoverOptions {
 }
 
 /**
- * Something the sidebar draws over the desk while `active` — the rail's
- * favorites sheet, the hidden sidebar's column brought out (docs/spaces.md
- * §3) — is a cover there (DeskEngine.setCover, under `key`): the live pages
+ * Something the sidebar draws over the desk while `active` — the hidden
+ * sidebar's column brought out (docs/spaces.md §3); until 2026-10-13 the
+ * old rail's favorites sheet too — is a cover there (DeskEngine.setCover,
+ * under `key`): the live pages
  * under it are native views that would paint over it, so they give way to
  * their stills first, and this says when they have (true: it can be shown).
  * The box is measured against the desk's stage, and again whenever the
@@ -208,7 +197,7 @@ export function useDeskCover(key: string, ref: RefObject<HTMLElement | null>, ac
       watch.dispose();
     };
   }, [engine, key, active, ref]);
-  // Moved without a change of size (the favorites sheet kept inside the window): measured again as it renders.
+  // Moved without a change of size (the column's slot, under a pane as wide as ever): measured again as it renders.
   // (setCover takes the same box as no change.)
   useLayoutEffect(() => remeasure.current?.());
   return active && (engine === null || clear);

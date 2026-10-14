@@ -278,6 +278,12 @@ test("Force focus in a tab's context menu makes a background page believe it is 
     expect(backgrounded.events).toContain("visibility:hidden");
     expect((await measureRates(app, probeUrl)).frames).toBe(0);
     expect((await snapshot(app)).tabs.find((tab) => tab.id === first.id)?.forcedFocus).toBe(false);
+    // Its row in reach: the probe brought into the space in front, its window not out (a tab joining a space stays in
+    // its dock). On the desktop the card draws the current space's rows, and a Home tab's only while Home shows — which
+    // would bring it to the front (docs/double-sidebar.md).
+    await app.shell(`window.pistachio.tabGroupCommand({ type: "addTab", groupId: "elsewhere", tabId: ${JSON.stringify(first.id)} })`);
+    await expect.poll(() => app.shell<boolean>(`document.querySelector(${JSON.stringify(row)}) !== null`)).toBe(true);
+    expect((await probe(app, probeUrl)).visibilityState).toBe("hidden");
     await capture(app, "01-probe-in-background.png");
 
     // Right-click the background tab: the menu offers "Force focus", unchecked.

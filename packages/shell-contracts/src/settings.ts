@@ -74,8 +74,8 @@ export type HomePageBehavior = "pistachio" | "url";
 /**
  * How the sidebar — the browser chrome's column at the window's left edge —
  * stands (docs/spaces.md §3). "whole" keeps the column in the window's
- * layout; "rail" keeps only its icons there, a narrow column (desk only:
- * its favorites sheet, head buttons and now-playing need a desk); "hidden"
+ * layout; "rail" keeps only its rail there, a narrow column (desk only: the
+ * double sidebar's rail of spaces, docs/double-sidebar.md); "hidden"
  * puts it away, and the window controls with it, at a strip on the
  * window's left edge, bringing it out when the pointer reaches the edge.
  * Brought out, a hidden column is drawn in the layout: the page beside it

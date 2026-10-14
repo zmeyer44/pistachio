@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import { SURFACE_GUTTER } from "@pistachio/shell-contracts/chrome";
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import { isDeskUndoKey } from "@pistachio/shell-contracts/desk";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { tabGroupTitle, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
@@ -19,12 +20,13 @@ import { deskGroups, groupPageOf, passedEntry, useDeskStore, type DeskVariants }
 import { useAppStore } from "../../store";
 import { GlanceOverlay, type GlanceDesk } from "../GlanceOverlay";
 import { DeskBar } from "./DeskBar";
-import { DeskEngine, takesOnInPlace, WINDOW_INSETS, type DeskLayoutSnapshot } from "./desk-engine";
+import { DeskEngine, LAYOUT_PREVIEW_COVER, takesOnInPlace, WINDOW_INSETS, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDropZone } from "./DeskDropZone";
 import { DeskEmpty } from "./DeskEmpty";
 import { DeskSideCard } from "./DeskSideCard";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
+import { LayoutGhosts } from "./LayoutControl";
 import { SmartArranger, type WindowWords } from "./smart-arrange";
 import type { ShellWindowSubject } from "./window-kinds";
 
@@ -49,10 +51,15 @@ function tabsOf(snapshot: ShellSnapshot | null, tabIds: readonly string[]): read
 }
 
 /**
- * Where a window lives in the sidebar, the desk's dock (DeskHost.homeOf):
- * a tab's row — or, its group folded away or the row scrolled out of
- * sight, its group's — another group's row, or the Stack's (the group's
- * context row), for a document. Null where the sidebar shows none.
+ * Where a window lives in the sidebar, the desk's dock (DeskHost.homeOf).
+ * In the double sidebar (docs/double-sidebar.md, since 2026-10-13): a tab's
+ * row while the card draws it (in sight in its list) — or its favorite's
+ * tile — else its space's tile on the rail, or Home's button for a space of
+ * Home's (a loose tab's, a page's alone); a space's home is its tile; a
+ * document's the Stack's row while it is drawn, else its space's tile. So a
+ * window flies to and from the rail when the card shows another view. (The
+ * single sidebar's group rows are still looked for after those, for the
+ * web's list, which no desk draws beside.) Null where the sidebar shows none.
  *
  * A hidden sidebar's pane keeps its layout while it is away — translated
  * off the window's left edge, `visibility: hidden` — so its rows have boxes
@@ -65,23 +72,33 @@ function tabsOf(snapshot: ShellSnapshot | null, tabIds: readonly string[]): read
 function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string): HTMLElement | null {
   const pane = document.querySelector<HTMLElement>("[data-testid='sidebar-pane']");
   if (pane === null) return null;
+  const snapshot = useAppStore.getState().snapshot;
+  // (A view fading out is a picture without ids: the first list found is the card's live one.)
   const list = pane.querySelector<HTMLElement>("[data-testid='sidebar-tab-list']")?.getBoundingClientRect() ?? null;
-  const inSight = (el: HTMLElement | null): HTMLElement | null => {
-    if (el === null || list === null) return el;
+  const rail = pane.querySelector<HTMLElement>("[data-testid='space-rail-list']")?.getBoundingClientRect() ?? null;
+  const within = (el: HTMLElement | null, span: DOMRect | null): HTMLElement | null => {
+    if (el === null || span === null) return el;
     const box = el.getBoundingClientRect();
     const middle = box.top + box.height / 2;
-    return box.width > 0 && middle >= list.top && middle <= list.bottom ? el : null;
+    return box.width > 0 && middle >= span.top && middle <= span.bottom ? el : null;
   };
+  const inSight = (el: HTMLElement | null): HTMLElement | null => within(el, list);
   // (The favorites stand above the list: drawn is enough.)
   const shown = (el: HTMLElement | null): HTMLElement | null => (el !== null && el.getBoundingClientRect().width > 0 ? el : null);
   const tabRow = (tabId: string): HTMLElement | null =>
     inSight(pane.querySelector<HTMLElement>(`[role='tab'][data-tab-id='${CSS.escape(tabId)}']`)) ??
-    // A favorite's page: its tile, or on the rail its row under the folder.
+    // A favorite's page: its tile.
     shown(pane.querySelector<HTMLElement>(`[data-live-tab-id='${CSS.escape(tabId)}']`));
-  // A loose tab's group or a page's group has no group's row: its tab's own is its home (a page's, its favorite's tile
-  // or pin's row).
+  // A space's tile on the rail (in sight on the rail's list), or Home's own button for a space of Home's.
+  const tile = (gid: string): HTMLElement | null => {
+    const el = pane.querySelector<HTMLElement>(`[data-testid='rail-space'][data-group-id='${CSS.escape(gid)}']`);
+    if (el !== null) return within(el, rail);
+    const home = snapshot?.looseGroups?.some((group) => group.id === gid) === true || (snapshot?.anchorGroups?.find((group) => group.id === gid)?.tabIds.length ?? 2) < 2;
+    return home ? shown(pane.querySelector<HTMLElement>("[data-testid='rail-home']")) : null;
+  };
+  // The single sidebar's: a loose tab's group or a page's group has no group's row, its tab's own is its home (a page's,
+  // its favorite's tile or pin's row); a space's, its header.
   const groupRow = (gid: string): HTMLElement | null => {
-    const snapshot = useAppStore.getState().snapshot;
     const pageGroup = snapshot?.anchorGroups?.find((group) => group.id === gid);
     const lone =
       snapshot?.looseGroups?.find((group) => group.id === gid)?.tabIds[0] ??
@@ -89,9 +106,14 @@ function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string
     if (lone !== null) return tabRow(lone);
     return inSight(pane.querySelector<HTMLElement>(`[data-testid='tab-group'][data-group-id='${CSS.escape(gid)}'] [data-group-header]`));
   };
-  if (kind === "group") return groupRow(id);
-  if (kind === "file") return inSight(pane.querySelector<HTMLElement>("[data-testid='desk-stack']")) ?? groupRow(groupId);
-  return tabRow(id) ?? groupRow(groupId);
+  // The Stack's row: in the list under Home's row in use (in sight there), or pinned to a space's card foot (drawn).
+  const stack = (): HTMLElement | null => {
+    const el = pane.querySelector<HTMLElement>("[data-testid='desk-stack']");
+    return el !== null && el.closest("[data-testid='sidebar-tab-list']") !== null ? inSight(el) : shown(el);
+  };
+  if (kind === "group") return tile(id) ?? groupRow(id);
+  if (kind === "file") return stack() ?? tile(groupId) ?? groupRow(groupId);
+  return tabRow(id) ?? tile(groupId) ?? groupRow(groupId);
 }
 
 /**
@@ -330,6 +352,8 @@ export default function DeskSurface() {
   useLayoutEffect(() => {
     const from = shownGroup.current;
     if (engine === null || groupId === null || !groupKnown || from === groupId) return;
+    // A layout ⌃Z would put back is the last desk's.
+    arranger.current?.passed();
     const groupTabIds = latest.current.tabs.map((tab) => tab.id);
     const shellIds = latest.current.contextsLoaded ? documentWindowIds(latest.current.contexts.find((candidate) => candidate.groupId === groupId)) : null;
     const active = useAppStore.getState().snapshot?.activeTabId ?? null;
@@ -385,7 +409,22 @@ export default function DeskSurface() {
       },
     });
     arranger.current = created;
+    // ⌃Z a moment after the desk laid itself out, wherever the keyboard is: main takes it from a page while the engine
+    // says so; struck here it is heard here — unless a terminal has the keyboard, whose ⌃Z stops the job in front.
+    const offPage = api?.onDeskPageInput((input) => {
+      if (input === "undo") created.undo();
+    });
+    const onKey = (event: KeyboardEvent): void => {
+      if (!isDeskUndoKey({ type: "keyDown", key: event.key, shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey })) return;
+      if (event.target instanceof Element && event.target.closest(".terminal-page") !== null) return;
+      if (!created.undo()) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true);
     return () => {
+      offPage?.();
+      window.removeEventListener("keydown", onKey, true);
       created.destroy();
       arranger.current = null;
     };
@@ -398,10 +437,11 @@ export default function DeskSurface() {
     return () => lendDeskEngine(null);
   }, [engine]);
 
-  // The keyboard's Tile, Cascade and Arrange (chrome/actions.tsx) reach this desk's engine.
+  // The keyboard's Tile, Cascade and Arrange (chrome/actions.tsx) reach this desk's engine: Tile and Cascade are named
+  // layouts (layOut, ⌃Z putting them back a moment after), Arrange the layout model's.
   useEffect(() => {
     if (engine === null) return;
-    lendDeskArrange((kind) => (kind === "smart" ? void arranger.current?.ask() : engine.arrange(kind)));
+    lendDeskArrange((kind) => (kind === "smart" ? void arranger.current?.ask() : void engine.layOut(kind)));
     return () => lendDeskArrange(null);
   }, [engine]);
 
@@ -766,6 +806,9 @@ export default function DeskSurface() {
     deskGroup.tabIds.length === 0 &&
     !view.windows.some((window) => window.flight !== "away" && (tabIds.includes(window.tabId) || (!isTabWindow(window.tabId) && documentKey.split(" ").includes(window.tabId))));
 
+  // A layout looked at in the space view (DeskEngine.previewLayout): its ghosts, once no live page is under their cover.
+  const layoutGhosts = view !== null && view.preview !== null && view.clearCovers.has(LAYOUT_PREVIEW_COVER);
+
   return (
     <section
       data-testid="desk-surface"
@@ -783,6 +826,8 @@ export default function DeskSurface() {
         data-group-color={group?.color}
         data-glance={glance !== null && glanceStaged ? "" : undefined}
         data-glance-closing={glanceClosing ? "" : undefined}
+        // A layout looked at in the space view, its ghosts up (LayoutGhosts): the windows recede under them.
+        data-layout-preview={layoutGhosts ? "" : undefined}
         className="desk-stage no-drag tab-group-tone relative min-h-0 min-w-0 flex-1"
         // A press on the desk's own surface, between its windows (not on one, nor on anything drawn over it):
         // the window in use is left, as a click on the desktop leaves an app's window.
@@ -821,6 +866,7 @@ export default function DeskSurface() {
                 />
               );
             })}
+        {layoutGhosts && view !== null && view.preview !== null ? <LayoutGhosts preview={view.preview} tabsById={tabsById} contexts={contexts} /> : null}
         {empty && deskGroup !== null ? <DeskEmpty title={deskGroup.title} /> : null}
         {/* (The space not known for a moment: the More card, but no Stack, file drops or Bar.) */}
         {engine === null || view === null ? null : (

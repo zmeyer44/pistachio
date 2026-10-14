@@ -24,7 +24,7 @@ import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
 import { DeskEngine, takesOnInPlace, type DeskHost, MASK_INSETS, WINDOW_INSETS } from "../src/components/desk/desk-engine";
-import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, rescaleRect, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
+import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, rescaleRect, tileRects, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
 /**
@@ -187,7 +187,7 @@ describe("room kept for the chat's place", () => {
     desk.setReserve(400);
     settle();
     // Tiled while the room was kept (one window: the whole desk short of the room).
-    desk.arrange("tile", ["tab-0"]);
+    desk.arrange("tile");
     settle();
     const filled = rectOf(win);
     expect(filled.x + filled.w).toBeLessThanOrEqual(1200 + 1);
@@ -1583,7 +1583,7 @@ describe("a masked window", () => {
     const { desk, win } = await masked();
     const at = rectOf(win);
     desk.toggleMaximize("tab-0");
-    desk.arrange("tile", tabIds(2));
+    desk.arrange("tile");
     await flush();
     expectRect(rectOf(win), at);
     desk.add("tab-1", { focus: true });
@@ -2093,7 +2093,9 @@ describe("a gutter between windows", () => {
     const els = new Map(ids.map((tabId) => [tabId, element()]));
     for (const [tabId, el] of els) desk.attachWindow(tabId, el as unknown as HTMLElement);
     settle();
-    if (saved === null) desk.arrange("tile", ids);
+    // Tiled in the dock's order. (Tile itself puts the window in use in the first tile and the rest nearest them, since
+    // 2026-10-13: the tabs are set where these tests expect them.)
+    if (saved === null) desk.applyLayout(new Map(tileRects(count, usable).map((rect, index) => [ids[index]!, rect])));
     settle();
     const at = (tabId: string): Rect => rectOf(els.get(tabId)!);
     /** Press an edge at (x, y), drag it `by` a step at a time, hold still, and let go. */

@@ -200,7 +200,7 @@ const api: PistachioApi = {
   switchSpace: (spaceId) =>
     ipcRenderer.invoke(IPC.spaceSwitch, spaceId) as Promise<void>,
   forkSpace: (request) => ipcRenderer.invoke(IPC.spaceFork, request),
-  createTab: (url) => ipcRenderer.invoke(IPC.tabCreate, url) as Promise<void>,
+  createTab: (url, options) => ipcRenderer.invoke(IPC.tabCreate, url, options) as Promise<void>,
   closeTab: (tabId) => ipcRenderer.invoke(IPC.tabClose, tabId) as Promise<void>,
   selectTab: (tabId) =>
     ipcRenderer.invoke(IPC.tabSelect, tabId) as Promise<void>,

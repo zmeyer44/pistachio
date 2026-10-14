@@ -187,6 +187,15 @@ test.describe.serial("tabs across restarts", { tag: ["@tabs", "@desk", "@startup
     await settled(shell, app);
     const left: Record<string, Box> = { [first]: await box(shell, windowSelector(first)), [second]: await box(shell, windowSelector(second)) };
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.suspendTab(tabId), background);
+    // Asleep, brought into the space (its window not out): its row is the space's, in the card's view of it, where it
+    // says it sleeps. (A Home tab's row is drawn only while Home shows, and choosing Home would wake it:
+    // docs/double-sidebar.md.)
+    await shell.evaluate(
+      ({ groupId, tabId }) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "addTab", groupId, tabId }),
+      { groupId: space, tabId: background },
+    );
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === space)?.tabIds).toEqual([first, second, background]);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
     let state = await snapshot(shell);
     expect(state).toMatchObject({ activeTabId: second, currentGroupId: space, splitMode: "single" });
     expect(state.tabs.find((tab) => tab.id === background)?.lifecycle).toBe("suspended");
@@ -195,7 +204,7 @@ test.describe.serial("tabs across restarts", { tag: ["@tabs", "@desk", "@startup
     state = await snapshot(shell);
     expect(state.tabs.map((tab) => tab.id)).toEqual([first, second, background]);
     expect(state).toMatchObject({ activeTabId: second, currentGroupId: space });
-    expect(state.tabGroups.find((group) => group.id === space)?.tabIds).toEqual([first, second]);
+    expect(state.tabGroups.find((group) => group.id === space)?.tabIds).toEqual([first, second, background]);
     await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${space}"]`)).toHaveCount(1);
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
     await settled(shell, app);
@@ -207,6 +216,10 @@ test.describe.serial("tabs across restarts", { tag: ["@tabs", "@desk", "@startup
     expect((await snapshot(shell)).tabs.find((tab) => tab.id === second)?.lifecycle).toBe("live");
     expect((await snapshot(shell)).tabs.find((tab) => tab.id === background)?.lifecycle).toBe("suspended");
     await expect(shell.getByLabel("Sleeping")).toHaveCount(1);
+    // (Back to Home, a loose tab of its own as it was opened, still asleep: the next test chooses it there.)
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "removeTab", tabId }), background);
+    await expect.poll(async () => (await snapshot(shell)).looseGroups?.some((group) => group.tabIds.length === 1 && group.tabIds[0] === background) ?? false).toBe(true);
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === background)?.lifecycle).toBe("suspended");
   });
 
   test("after a restart a tab's back/forward stack is back, and its draft, by design, is not", async () => {

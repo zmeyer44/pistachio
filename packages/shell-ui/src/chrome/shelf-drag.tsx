@@ -9,7 +9,8 @@
  *
  * The grid and the list are separate manifest features rendered into
  * separate regions of the column (chrome/manifest.ts), so neither can own
- * the gesture: the column's host (components/SidebarChrome.tsx) mounts
+ * the gesture: the column's host (components/SidebarChrome.tsx, on the
+ * desktop components/space-rail/SpaceColumn.tsx) mounts
  * `ShelfDragProvider`, and each feature registers the box it draws into and
  * reads the drag through `useShelfDrag()`.
  *
@@ -38,8 +39,9 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
-import { favoriteDropAt, listDropAt, type ListDrop, type MeasuredRow, type MeasuredTile, type ShelfDragKind } from "../lib/sidebar-tree";
+import { favoriteDropAt, GROUP_END, listDropAt, spaceDropAt, type ListDrop, type MeasuredRow, type MeasuredTile, type ShelfDragKind } from "../lib/sidebar-tree";
 import { useAppStore } from "../store";
+import { fullUnitIndex, railTargetAt } from "../components/space-rail/rail-model";
 import { splitZoneAt, type PointerLike, type SplitZone } from "./drag-geometry";
 import { dayUnitsInHand, unitIndexAfter, type ChromeTab } from "./tabs";
 import { nativeApi } from "../api";
@@ -61,11 +63,25 @@ export interface ShelfItem {
   tabs: ChromeTab[];
   /** An organization preset: opened, never moved. */
   managed?: boolean;
-  /** Carried out over a desk, this tab's window (as a tab's row is): on the rail, a group of one tab's header. */
+  /** Carried out over a desk, this tab's window (as a tab's row is): a favorite's or a pin's open page. */
   deskTab?: ChromeTab;
 }
 
-export type ShelfDrop = ListDrop | { zone: "favorites"; index: number };
+/**
+ * A row let go on the double sidebar's rail (docs/double-sidebar.md §1): on a
+ * space's tile it joins that space (`space`, its id), on Home it leaves its
+ * space and is a Home tab, on New space it makes a space of its own. `null`:
+ * over the rail, but on nothing that would take it — let go there it goes
+ * nowhere, and meanwhile the row waits in its slot (TabList keeps it there,
+ * `measureFollow` holds it still) while the rail says where it would go.
+ */
+export interface RailDrop {
+  zone: "rail";
+  target: "home" | "new" | "space" | null;
+  groupId: string | null;
+}
+
+export type ShelfDrop = ListDrop | { zone: "favorites"; index: number } | RailDrop;
 
 /**
  * What the shelf LAYS OUT from while a drag is live. Everything here changes
@@ -105,6 +121,8 @@ interface ShelfDragHost {
   justDragged(): boolean;
   /** The favorites grid registers its box here (the tiles are its `[data-flip-id]` children). */
   gridRef: React.RefObject<HTMLDivElement | null>;
+  /** The double sidebar's rail registers its box here: its Home, its tiles and its New space (`[data-rail-drop]`) take drops. */
+  railRef: React.RefObject<HTMLElement | null>;
   /** The list registers its scroller (auto-scroll near the edges) … */
   scrollerRef: React.RefObject<HTMLDivElement | null>;
   /** … and the positioned block inside it that rows are laid out against. */
@@ -268,6 +286,8 @@ function measureTiles(grid: HTMLElement, item: ShelfItem): MeasuredTile[] {
 
 function sameDrop(a: ShelfDrop | null, b: ShelfDrop | null): boolean {
   if (a === null || b === null) return a === b;
+  if (a.zone === "rail") return b.zone === "rail" && a.target === b.target && a.groupId === b.groupId;
+  if (b.zone === "rail") return false;
   if (a.zone !== b.zone || a.index !== b.index) return false;
   if (a.zone === "group" && b.zone === "group") return a.groupId === b.groupId;
   return a.zone === "pinned" && b.zone === "pinned" ? a.folderId === b.folderId : true;
@@ -289,7 +309,12 @@ function sameShelfDrag(a: ShelfDrag, b: ShelfDrag): boolean {
 function layoutKeyOf(drag: ShelfDrag | null): string {
   if (drag === null) return "";
   const drop = drag.drop;
-  const at = drop === null ? "page" : `${drop.zone}:${drop.index}:${drop.zone === "pinned" ? (drop.folderId ?? "") : drop.zone === "group" ? drop.groupId : ""}`;
+  const at =
+    drop === null
+      ? "page"
+      : drop.zone === "rail"
+        ? `rail:${drop.target ?? ""}:${drop.groupId ?? ""}`
+        : `${drop.zone}:${drop.index}:${drop.zone === "pinned" ? (drop.folderId ?? "") : drop.zone === "group" ? drop.groupId : ""}`;
   return `${drag.item.flipId}|${at}|${drag.settling ? "settling" : "live"}`;
 }
 
@@ -311,10 +336,17 @@ interface LiveGesture {
   follow(current: ShelfDrag): void;
 }
 
-export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
+/**
+ * `className` places the provider's box, which is the column as far as the
+ * drag is concerned (past its trailing edge is the desk): the single
+ * sidebar's favorites and list, or the double sidebar's whole column, its
+ * rail and its card (components/space-rail/SpaceColumn.tsx).
+ */
+export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 flex-col" }: { children: React.ReactNode; className?: string }) {
   const [drag, setDrag] = useState<ShelfDrag | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const draggedRef = useRef(false);
@@ -383,6 +415,11 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
     const toDesk = deskTab !== undefined || (onDesk && (item.kind === "favorite" || item.kind === "pin"));
     const canSplit = splitAvailable() && item.kind !== "group" && item.tabs.length === 1 && (useAppStore.getState().snapshot?.visibleTabIds.length ?? 0) < 4;
     const origin = originDrop(item, listRef.current, gridRef.current);
+    /** Today's index among the rows it draws, as one among all the day's units (the double sidebar's Home: the spaces between are the rail's). */
+    const todayUnits = (index: number): number => {
+      const moving = new Set(item.tabs.map((tab) => tab.id));
+      return fullUnitIndex(dayUnitsInHand(useAppStore.getState().snapshot, moving), index, (unit) => unit.kind !== "group");
+    };
     // A tile moves freely; a row stays in its slot horizontally unless it
     // is being lifted RIGHT toward the page (see `follow`). The ghost the
     // layer draws is held the same way, so the two never disagree.
@@ -418,11 +455,14 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
      * are read as they will be once it has.
      */
     const dropFor = (ev: PointerLike, scrollBy: number): { drop: ShelfDrop | null; overContent: boolean; zone: SplitZone | null } => {
-      // The favorites first, wherever they are: on a desk's rail their grid is
-      // in the sheet out over the desk (RailFavorites), which a drop there is
-      // for, not the desk under it.
+      // The favorites first. (Until 2026-10-13 the old rail's favorites sheet
+      // put their grid out over the desk, which a drop there was for: the
+      // double sidebar's rail replaced it, and the grid is in the column.)
       const favorites = overFavorites(ev);
       if (favorites !== null) return { drop: favorites, overContent: false, zone: null };
+      // The double sidebar's rail, beside the card: its tiles take a row (and only its tiles: between them, nothing).
+      const rail = overRail(ev);
+      if (rail !== undefined) return { drop: rail, overContent: false, zone: null };
       if (overDesk(ev)) return { drop: null, overContent: true, zone: null };
       const area = boundsRef.current;
       if (canSplit && area !== null && ev.clientX >= area.x) {
@@ -431,8 +471,61 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       const list = listRef.current;
       if (list === null) return { drop: null, overContent: false, zone: null };
       const box = list.getBoundingClientRect();
-      const drop = listDropAt(rowsOf(list), item.kind, ev.clientY - (box.top - scrollBy), ev.clientX - box.left - LIST_PAD);
+      const y = ev.clientY - (box.top - scrollBy);
+      // A space's view (the double sidebar's card) is that space's rows alone: a drop there is a place among them.
+      if (list.dataset["view"] === "space") {
+        const space = list.dataset["spaceId"] ?? null;
+        const at = space === null || item.kind === "group" || item.kind === "folder" ? null : spaceDropAt(rowsOf(list), y, space);
+        return { drop: at, overContent: false, zone: null };
+      }
+      const drop = listDropAt(rowsOf(list), item.kind, y, ev.clientX - box.left - LIST_PAD);
+      // Today in the double sidebar's Home draws the day's loose rows alone: its index is turned into the day's units'.
+      if (drop.zone === "today" && list.dataset["view"] === "home") return { drop: { zone: "today", index: todayUnits(drop.index) }, overContent: false, zone: null };
       return { drop, overContent: false, zone: null };
+    };
+
+    /**
+     * The double sidebar's rail under the pointer: the drop its target there
+     * would take — undefined off the rail; on it, a rail drop, its target
+     * null over none of them (between them, a tile scrolled out of sight)
+     * or over one that cannot take it (a space the row is in already, Home
+     * for a tab that is Home's). A live row takes every target; a favorite or
+     * a pin only a space's, its page coming down into it.
+     */
+    const overRail = (ev: PointerLike): RailDrop | undefined => {
+      const rail = railRef.current;
+      if (rail === null) return undefined;
+      const box = rail.getBoundingClientRect();
+      if (ev.clientX < box.left || ev.clientX > box.right || ev.clientY < box.top || ev.clientY > box.bottom) return undefined;
+      const none: RailDrop = { zone: "rail", target: null, groupId: null };
+      const live = (item.kind === "tab" || item.kind === "split") && item.tabs.length > 0;
+      const entry = item.kind === "favorite" || item.kind === "pin";
+      if (!live && !entry) return none;
+      // (Each item's box, read as it stands; a space's tile only where its list shows it: railTargetAt.)
+      const list = rail.querySelector<HTMLElement>("[data-testid='space-rail-list']");
+      const span = list?.getBoundingClientRect() ?? null;
+      const targets = [...rail.querySelectorAll<HTMLElement>("[data-rail-drop]")].map((el) => {
+        const at = el.getBoundingClientRect();
+        return { el, top: at.top, bottom: at.bottom, listed: list?.contains(el) === true };
+      });
+      const over = railTargetAt(targets, ev.clientY, span === null ? null : { top: span.top, bottom: span.bottom })?.el ?? null;
+      if (over === null) return none;
+      const snapshot = useAppStore.getState().snapshot;
+      const tabIds = item.tabs.map((tab) => tab.id);
+      const target = over.dataset["railDrop"];
+      if (target === "space") {
+        const groupId = over.dataset["groupId"] ?? "";
+        const members = [...(snapshot?.tabGroups ?? []), ...(snapshot?.anchorGroups ?? [])].find((group) => group.id === groupId)?.tabIds ?? [];
+        if (live && tabIds.every((tabId) => members.includes(tabId))) return none;
+        return { zone: "rail", target: "space", groupId };
+      }
+      if (!live) return none;
+      if (target === "home") {
+        const loose = new Set((snapshot?.looseGroups ?? []).flatMap((group) => group.tabIds));
+        return tabIds.every((tabId) => loose.has(tabId)) ? none : { zone: "rail", target: "home", groupId: null };
+      }
+      if (target === "new") return { zone: "rail", target: "new", groupId: null };
+      return none;
     };
 
     /** The pointer is past the column's edge, over the desk, with a tab's row in hand. */
@@ -491,14 +584,18 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
           : 0;
       const py = pointer.clientY - grabY - layoutTop;
       const armed = current.zone !== null;
+      // Over the double sidebar's rail a row waits in its slot, dimmed, while the tile under the pointer says it would
+      // take it: carried up to Home or down to New space it would leave the list's box and be clipped away, and the
+      // layer's ghost would cover the tile. (Until 2026-10-13 it vanished there, nothing following the pointer.)
+      const waiting = !inGrid && current.drop?.zone === "rail";
       return {
         target,
         transformOrigin: `${grabX}px ${grabY}px`,
-        transform: `translate(${px}px, ${py}px) scale(${armed ? 0.9 : 1})`,
+        transform: waiting ? "" : `translate(${px}px, ${py}px) scale(${armed ? 0.9 : 1})`,
         // Once the item has left the column, the layer's ghost is the visible
         // copy. Keeping the source transparent preserves its layout/FLIP slot
         // without showing a clipped duplicate at the column edge.
-        opacity: current.lifted ? "0" : armed ? "0.9" : "",
+        opacity: current.lifted ? "0" : waiting ? "0.55" : armed ? "0.9" : "",
       };
     };
     const paintFollow = (placement: FollowPlacement | null): void => {
@@ -535,7 +632,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       // writes. Interleaving them would force a layout per read.
       // A row of the desk's group out over the desk becomes its window in
       // hand: the desk takes the gesture on from here, the button still down.
-      if (live && deskTab !== undefined && overDesk(ev) && overFavorites(ev) === null && deskEngine()?.hasGroupTab(deskTab.id) === true) {
+      if (live && deskTab !== undefined && overDesk(ev) && deskEngine()?.hasGroupTab(deskTab.id) === true) {
         finish(false);
         deskEngine()?.pullFromSidebar(deskTab.id, { x: ev.clientX, y: ev.clientY });
         return;
@@ -655,15 +752,14 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
       }
       store.setTabDragging(false);
       // Let go over the desk: the tab's window comes out there (joining the group, if it was not the group's; a
-      // favorite's or pin's page coming down into it) — unless it was over the favorites' sheet out over the desk
-      // (RailFavorites), which takes it.
-      if (overDesk(pointer) && overFavorites(pointer) === null) {
+      // favorite's or pin's page coming down into it).
+      if (overDesk(pointer) && overRail(pointer) === undefined) {
         setDrag(null);
         const at = { x: pointer.clientX, y: pointer.clientY };
         void (deskTab !== undefined ? dropTabOnDesk(deskTab.id, at) : dropEntryOnDesk(item.entityId, at));
         return;
       }
-      if (done.drop === null || sameDrop(done.drop, origin)) {
+      if (done.drop === null || (done.drop.zone === "rail" && done.drop.target === null) || sameDrop(done.drop, origin)) {
         setDrag(null);
         return;
       }
@@ -716,7 +812,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
   }, [drag]);
 
   const host = useMemo<ShelfDragHost>(
-    () => ({ drag, beginPress, justDragged: () => draggedRef.current, gridRef, scrollerRef, listRef }),
+    () => ({ drag, beginPress, justDragged: () => draggedRef.current, gridRef, railRef, scrollerRef, listRef }),
     // beginPress closes over refs only; a new identity per drag state is what consumers re-render on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [drag],
@@ -724,7 +820,7 @@ export function ShelfDragProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ShelfDragContext.Provider value={host}>
-      <div ref={rootRef} className="flex min-h-0 flex-1 flex-col">
+      <div ref={rootRef} className={className}>
         {children}
       </div>
     </ShelfDragContext.Provider>
@@ -754,6 +850,11 @@ function originDrop(item: ShelfItem, list: HTMLElement | null, grid: HTMLElement
     // …and everything else at its place among the day's UNITS, which a group's tabs are not.
     const divider = rows.findIndex((el) => el.dataset["rowKind"] === "divider");
     const units = before.slice(divider + 1).filter((el) => el.dataset["rowKind"] === "tab" || el.dataset["rowKind"] === "group");
+    // (The double sidebar's Home draws the loose rows alone: its place among them is one among all the day's units, as a drop's is.)
+    if (list.dataset["view"] === "home") {
+      const moving = new Set(item.tabs.map((tab) => tab.id));
+      return { zone: "today", index: fullUnitIndex(dayUnitsInHand(useAppStore.getState().snapshot, moving), units.length, (unit) => unit.kind !== "group") };
+    }
     return { zone: "today", index: units.length };
   }
   if (item.kind === "folder") {
@@ -772,6 +873,7 @@ function originDrop(item: ShelfItem, list: HTMLElement | null, grid: HTMLElement
 function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
   const store = useAppStore.getState();
   const send = (command: SidebarCommand): Promise<void> => store.sidebarCommand(command);
+  if (drop.zone === "rail") return railDrop(item, drop);
   switch (item.kind) {
     case "tab": {
       const tab = item.tabs[0];
@@ -813,6 +915,30 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
 }
 
 /**
+ * A row let go on the double sidebar's rail (docs/double-sidebar.md §1): on a
+ * space's tile its tabs join the space, at its end (a favorite's or pin's
+ * page coming down into it); on Home each leaves its space and is a Home tab
+ * (a loose one of its own: main's removeTab); on New space they make a
+ * space of their own, which main names (not chosen: the desk stays where it
+ * is).
+ */
+async function railDrop(item: ShelfItem, drop: RailDrop): Promise<void> {
+  const store = useAppStore.getState();
+  const tabIds = item.tabs.map((tab) => tab.id);
+  if (drop.target === null) return;
+  if (drop.target === "space" && drop.groupId !== null) {
+    if (item.kind === "favorite" || item.kind === "pin") return bringDownInto(item, drop.groupId, GROUP_END);
+    return joinGroup(tabIds, drop.groupId, GROUP_END);
+  }
+  if (tabIds.length === 0) return;
+  if (drop.target === "home") {
+    for (const tabId of tabIds) await store.tabGroupCommand({ type: "removeTab", tabId });
+    return;
+  }
+  if (drop.target === "new") await store.tabGroupCommand({ type: "create", id: crypto.randomUUID(), tabIds });
+}
+
+/**
  * A favorite's or pin's page set down inside a space (bringDown: its page's
  * group with it, the entry staying, closed). Let go on the header of a space
  * with no tabs that is the current one, its window comes out on the desk
@@ -849,7 +975,10 @@ function groupTabIndex(tabIds: readonly string[], groupId: string, index: number
   // tabs; main counts tabs. The rows are the group's tabs without the ones in
   // hand, a split being one row when all of it is there (chrome/tabs.ts).
   const moving = new Set(tabIds);
-  const members = (store.snapshot?.tabGroups.find((group) => group.id === groupId)?.tabIds ?? []).filter((tabId) => !moving.has(tabId));
+  // (A page's space too — a favorite's or pin's page with tabs beside it, a rail space since 2026-10-13: a row let go on
+  // its tile goes to its end, not before its page.)
+  const groups = [...(store.snapshot?.tabGroups ?? []), ...(store.snapshot?.anchorGroups ?? [])];
+  const members = (groups.find((group) => group.id === groupId)?.tabIds ?? []).filter((tabId) => !moving.has(tabId));
   const here = new Set(members);
   const seen = new Set<string>();
   let rows = 0;

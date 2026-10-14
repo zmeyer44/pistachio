@@ -1,31 +1,39 @@
 /**
  * Favorites and pins on the desk (docs/desk.md, "A page's group"): a
  * favorite's or pin's page chosen on a desk gets a page's group, so its desk
- * has all a group's does — ⌘T and a file dropped there stay on it, drawn
- * under the favorite while its desk is up and counted on its tile when not,
- * and it comes back as it was left. Dragged into the day's tabs it comes
- * down as a group like any other, the favorite staying, closed; let go over
- * another group's desk a favorite's or pin's page comes down into that
- * group, its window where it was let go; and Tidy's favorites reset brings
+ * has all a group's does — ⌘T and a file dropped there stay on it, and it
+ * comes back as it was left. Alone, the page is Home's, its desk's Stack
+ * under the favorites; with a tab beside it, it is a space of the double
+ * sidebar's rail (docs/double-sidebar.md), its rows the card's space view,
+ * its tile counting its windows while away. Made a space of its own (its
+ * menu) it comes down as a space like any other, the favorite staying,
+ * closed; let go on another space's tile a pin's page — or a favorite with
+ * none open — comes down into that space; and Tidy's favorites reset brings
  * a favorite's group down (docs/tab-tidy.md §3.7).
  */
 
-import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { IPC, type PistachioApi } from "@pistachio/shell-contracts/ipc";
+import { expect, test, type ElectronApplication, type Locator, type Page } from "@playwright/test";
+import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
 import {
   api,
   box,
   center,
+  chooseHome,
+  chooseSpace,
   createGroup,
+  groupSelector,
   INVOICES,
   launchDesk,
-  selectSpace,
   openTabs,
+  railSpace,
+  rowSelector,
   screenshots,
+  selectSpace,
   selectTab,
   settled,
   snapshot,
+  spaceView,
   VENDOR,
   windowSelector,
   type Box,
@@ -67,8 +75,8 @@ async function dropFileOnDesk(shell: Page, name: string, text: string, at: { x: 
   for (const type of ["dragenter", "dragover", "drop"]) await shell.dispatchEvent('[data-testid="desk-drop-zone"]', type, { dataTransfer: data, clientX: at.x, clientY: at.y });
 }
 
-/** A row or tile carried from where it is to `to`, slowly, the pointer still before it lets go: a placement. */
-async function carry(shell: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
+/** A row or tile carried onto a rail item, held there until the item says it takes it, then let go. */
+async function carryOnto(shell: Page, from: { x: number; y: number }, to: { x: number; y: number }, target: Locator): Promise<void> {
   await shell.mouse.move(from.x, from.y);
   await shell.mouse.down();
   await shell.mouse.move(from.x, from.y + 6, { steps: 2 });
@@ -76,7 +84,7 @@ async function carry(shell: Page, from: { x: number; y: number }, to: { x: numbe
     await shell.mouse.move(from.x + ((to.x - from.x) * step) / 14, from.y + 6 + ((to.y - from.y - 6) * step) / 14);
     await shell.waitForTimeout(16);
   }
-  await shell.waitForTimeout(200);
+  await expect(target).toHaveAttribute("data-dropping", "");
   await shell.mouse.up();
 }
 
@@ -115,7 +123,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await createGroup(shell, "desk-g", [g0, g1], "Ledger", "blue");
     await selectTab(shell, g0);
     await selectSpace(shell, "desk-g");
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
+    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="whole"]')).toHaveCount(1);
     await settled(shell, app);
   });
 
@@ -123,7 +131,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await app?.close();
   });
 
-  test("a favorite's desk is its page's space: ⌘T and a file dropped there stay on it, under the favorite, counted on it once away, and it comes back as left", async () => {
+  test("a favorite's desk is its page's space: ⌘T and a file dropped there stay on it, a space of the rail's then, counted on its tile once away, and it comes back as left", async () => {
     test.setTimeout(90_000);
     const stage = await box(shell, ".desk-stage");
 
@@ -140,13 +148,19 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await expect(under).toHaveCount(1);
     await expect(under.getByTestId("desk-stack")).toHaveCount(1);
 
-    // ── 2. ⌘T there: a new tab in the favorite's group, out on its desk, under the favorite — not among the day's tabs ─
+    // ── 2. ⌘T there: a new tab in the favorite's group, out on its desk — not a day's tab. A page with a tab beside it is
+    //       a space of the rail's: its tile (a page's), the card its view, the page's row first ─
     await strikeInShell(app, "t");
     await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(2);
     const fresh = (await pageGroupOf("fav-mail"))!.tabIds.find((tabId) => tabId !== page)!;
+    const spaceId = (await pageGroupOf("fav-mail"))!.id;
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
-    await expect(under.locator(`[data-tab-id="${fresh}"]`)).toHaveCount(1);
-    await expect(shell.locator(`#sidebar-section-live [data-tab-id="${fresh}"]`)).toHaveCount(0);
+    await expect(railSpace(shell, spaceId)).toHaveAttribute("data-page", "");
+    await expect(railSpace(shell, spaceId)).toHaveAttribute("aria-current", "true");
+    await expect(spaceView(shell, spaceId).locator('[role="tab"]')).toHaveCount(2);
+    await expect(spaceView(shell, spaceId).locator('[role="tab"]').first()).toHaveAttribute("data-tab-id", page);
+    await expect(shell.locator(rowSelector(fresh))).toHaveCount(1);
+    await expect(under).toHaveCount(0);
     expect((await pageGroupOf("fav-mail"))!.tabIds[0]).toBe(page);
     await settled(shell, app);
 
@@ -160,39 +174,40 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await settled(shell, app);
     await capture(app, shell, "01-favorite-desk-group.png");
 
-    // ── 4. Away to another group: its windows go home to the favorite, whose row on the rail counts the tab waiting there ─
+    // ── 4. Away to another space: its windows go home to its tile on the rail, which says how many it holds ─
     await selectTab(shell, g0);
     await expect(shell.locator(windowSelector(page))).toHaveCount(0);
-    await expect(under).toHaveCount(0);
-    const openRow = shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${page}"]`);
-    await expect(openRow.getByTestId("favorite-tab-count")).toHaveText("1");
+    await expect(railSpace(shell, spaceId)).not.toHaveAttribute("aria-current", "true");
+    await expect(railSpace(shell, spaceId)).toHaveAttribute("aria-label", /, 2 windows$/);
     await settled(shell, app);
     await capture(app, shell, "02-favorite-counted.png");
 
-    // ── 5. Back by its row: all of it comes out again, as it was left ─
-    await openRow.click();
+    // ── 5. Back by its tile: all of it comes out again, as it was left ─
+    await chooseSpace(shell, spaceId);
     await expect(shell.getByTestId("desk-window")).toHaveCount(3);
     await expect(shell.locator(windowSelector(fresh))).toHaveCount(1);
-    await expect(under).toHaveCount(1);
     await settled(shell, app);
   });
 
-  test("dragged into the day's tabs, a favorite's page brings its space down as a space like any other; the favorite stays, closed, and opens afresh", async () => {
+  test("made a space of its own, a favorite's page brings its space down as a space like any other; the favorite stays, closed, and opens afresh", async () => {
     test.setTimeout(90_000);
     const page = (await pageOf("fav-mail"))!;
     const group = (await pageGroupOf("fav-mail"))!;
     const stage = await box(shell, ".desk-stage");
 
-    // ── 1. Its page's row, under the favorites' folder, carried down the column into the day's tabs ─
-    const from = center(await box(shell, `[data-testid="rail-favorite-open"][data-live-tab-id="${page}"]`));
-    const live = await box(shell, "#sidebar-section-live");
-    await carry(shell, from, { x: from.x, y: live.y + live.height + 12 });
+    // ── 1. Its space's menu, in the card's head: Make it a space of its own. (Until 2026-10-13 its page's row was carried
+    //       down the column into the day's tabs: the card shows one space's rows, or Home's, never both.) ─
+    await spaceView(shell, group.id).getByTestId("space-more").click();
+    const menu = shell.getByTestId("context-menu");
+    await expect(menu).toBeVisible();
+    await menu.getByRole("menuitem", { name: "Make it a space of its own", exact: true }).click();
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === group.id)?.tabIds).toEqual(group.tabIds);
     expect(await pageGroupOf("fav-mail")).toBe(null);
     expect(await pageOf("fav-mail")).toBe(null);
     expect((await snapshot(shell)).sidebar.favorites.map((favorite) => favorite.id)).toEqual(["fav-mail", "fav-vendor"]);
-    // The desk is that group's still: drawn among the day's tabs now, its windows where they were.
-    await expect(shell.locator(`#sidebar-section-live [data-testid="tab-group"][data-group-id="${group.id}"]`)).toHaveCount(1);
+    // The desk is that space's still: a drawn space's tile on the rail now, no page's, its windows where they were.
+    await expect(railSpace(shell, group.id)).toHaveCount(1);
+    await expect(railSpace(shell, group.id)).not.toHaveAttribute("data-page", "");
     await expect(shell.getByTestId("desk-window")).toHaveCount(3);
     await settled(shell, app);
     // Its document with it, the group's context the same.
@@ -209,39 +224,33 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     expect(near(await box(shell, windowSelector(again)), stage)).toBe(true);
   });
 
-  test("let go over another space's desk, a pin's page — or a favorite with none open — comes down into that space, its window where it was let go; the entry stays", async () => {
+  test("let go on another space's tile on the rail, a pin's page — or a favorite with none open — comes down into that space, at its end; the entry stays", async () => {
     test.setTimeout(90_000);
-    const stage = await box(shell, ".desk-stage");
 
-    // ── 1. The pin's page open (its own desk for a moment), then back on the group's ─
+    // ── 1. The pin's page open: alone, it is Home's, its desk the page's own — Home's card shows Pinned ─
     await sidebarCommand(shell, { type: "open", anchorId: "pin-north" });
     await expect.poll(() => pageOf("pin-north")).not.toBe(null);
     const north = (await pageOf("pin-north"))!;
     await expect(shell.locator(windowSelector(north))).toHaveCount(1);
-    await selectTab(shell, g0);
-    await expect(shell.locator(windowSelector(north))).toHaveCount(0);
+    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
     await settled(shell, app);
 
-    // ── 2. Its row carried out over the desk and let go there ─
+    // ── 2. Its row carried onto the space's tile on the rail and let go there: its page comes down into the space, at its
+    //       end, and the pin stays. (Until 2026-10-13 it was let go over the space's desk, beside it in the one list.) ─
     const pinRow = center(await box(shell, '[data-testid="pinned-tab"][data-flip-id="pin-north"]'));
-    const there = { x: stage.x + stage.width * 0.6, y: stage.y + stage.height * 0.4 };
-    await carry(shell, pinRow, there);
-    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-g")?.tabIds.includes(north)).toBe(true);
-    await expect(shell.locator(windowSelector(north))).toHaveCount(1);
+    const ledger = center(await box(shell, groupSelector("desk-g")));
+    await carryOnto(shell, pinRow, ledger, railSpace(shell, "desk-g"));
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-g")?.tabIds.at(-1)).toBe(north);
     expect(await pageOf("pin-north")).toBe(null);
     expect((await snapshot(shell)).sidebar.entries.some((entry) => entry.id === "pin-north")).toBe(true);
+    await chooseSpace(shell, "desk-g");
+    await expect(shell.locator(rowSelector(north))).toHaveCount(1);
     await settled(shell, app);
-    // Where it was let go (kept inside the desk, so it may have risen to fit).
-    const landed = await box(shell, windowSelector(north));
-    expect(there.x > landed.x && there.x < landed.x + landed.width && there.y > landed.y && there.y < landed.y + landed.height).toBe(true);
 
-    // ── 3. In the whole sidebar, a favorite that is not open, its tile let go over the desk: a fresh page of it in the group ─
-    await shell.getByTestId("desk-rail-toggle").click();
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"]:not([data-rail])[data-desk]')).toHaveCount(1);
-    await settled(shell, app);
-    const wide = await box(shell, ".desk-stage");
+    // ── 3. A favorite that is not open, its tile (Home's) let go on the space's tile: a fresh page of it in the space ─
+    await chooseHome(shell);
     const tile = center(await box(shell, '[data-testid="favorite-tile"][aria-label="Vendor"]'));
-    await carry(shell, tile, { x: wide.x + wide.width * 0.3, y: wide.y + wide.height * 0.6 });
+    await carryOnto(shell, tile, center(await box(shell, groupSelector("desk-g"))), railSpace(shell, "desk-g"));
     await expect.poll(async () => {
       const now = await snapshot(shell);
       const members = now.tabGroups.find((candidate) => candidate.id === "desk-g")?.tabIds ?? [];
@@ -249,12 +258,9 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     }).toBe(1);
     expect(await pageOf("fav-vendor")).toBe(null);
     expect((await snapshot(shell)).sidebar.favorites.map((favorite) => favorite.id)).toEqual(["fav-mail", "fav-vendor"]);
-    await expect(shell.getByTestId("desk-window")).toHaveCount(3);
+    await chooseSpace(shell, "desk-g");
     await settled(shell, app);
-    await capture(app, shell, "04-entries-dropped-on-desk.png");
-    await shell.getByTestId("desk-rail-toggle").click();
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
-    await settled(shell, app);
+    await capture(app, shell, "04-entries-dropped-on-tile.png");
   });
 
   test("Tidy's favorites reset brings a favorite's space down into the day's tabs, the favorite closed", async () => {
@@ -281,98 +287,13 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === group.id)?.tabIds).toEqual(group.tabIds);
     expect(await pageOf("fav-mail")).toBe(null);
     expect((await snapshot(shell)).sidebar.favorites.map((favorite) => favorite.id)).toEqual(["fav-mail", "fav-vendor"]);
-    await expect(shell.locator(`#sidebar-section-live [data-testid="tab-group"][data-group-id="${group.id}"]`)).toHaveCount(1);
+    // A drawn space's tile on the rail now, not a page's.
+    await expect(railSpace(shell, group.id)).toHaveCount(1);
+    await expect(railSpace(shell, group.id)).not.toHaveAttribute("data-page", "");
   });
 
-  test("on the rail, the open favorites keep their order as the desk passes from one's to the other's, its tabs and Stack under the one up", async () => {
-    test.setTimeout(60_000);
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
-    for (const anchorId of ["fav-mail", "fav-vendor"]) {
-      await sidebarCommand(shell, { type: "open", anchorId });
-      await expect.poll(async () => (await pageGroupOf(anchorId))?.tabIds.length ?? 0).toBe(1);
-    }
-    const mail = (await pageOf("fav-mail"))!;
-    const vendor = (await pageOf("fav-vendor"))!;
-    const openRows = shell.getByTestId("rail-favorite-open");
-    const order = async (): Promise<string[]> => openRows.evaluateAll((rows) => rows.map((row) => row.getAttribute("data-live-tab-id") ?? ""));
-    /** The tab whose row the desk's tabs and Stack stand under (none: -1). */
-    const entryUnder = (): Promise<string | null> =>
-      shell.evaluate(() => document.querySelector('[data-testid="rail-favorite-entry"]')?.previousElementSibling?.getAttribute("data-live-tab-id") ?? null);
-    for (const [up, row] of [
-      [vendor, null],
-      [mail, mail],
-      [vendor, vendor],
-    ] as const) {
-      // Chosen by its row (the first time, it was just opened).
-      if (row !== null) await shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${row}"]`).click();
-      await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(up);
-      await expect(shell.locator(windowSelector(up))).toHaveCount(1);
-      // The favorites' order, whichever is up, and its Stack under its own row — not its page's row a second time.
-      await expect.poll(order).toEqual([mail, vendor]);
-      await expect.poll(entryUnder).toBe(up);
-      await expect(shell.locator('[data-testid="rail-favorite-entry"] [data-testid="desk-stack"]')).toHaveCount(1);
-      await expect(shell.locator(`[data-testid="entry-tabs"] [data-tab-id="${up}"]`)).toHaveCount(0);
-      // (Its desk up, its tabs are under it: none counted on its row.)
-      await expect(shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${up}"] [data-testid="favorite-tab-count"]`)).toHaveCount(0);
-    }
-    await settled(shell, app);
-    await capture(app, shell, "05-rail-favorites-in-order.png");
-
-    // ⇧⌫ with the pointer on that row closes its page, as on any tab's row on a desk.
-    await app.evaluate(({ ipcMain }, channel) => {
-      ipcMain.on(channel, (_event, state: { dockHover?: boolean } | null) => {
-        (globalThis as unknown as { deskDockHover: boolean }).deskDockHover = state?.dockHover === true;
-      });
-    }, IPC.deskSet);
-    await shell.locator(`[data-testid="rail-favorite-open"][data-live-tab-id="${vendor}"]`).hover();
-    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { deskDockHover?: boolean }).deskDockHover === true)).toBe(true);
-    await app.evaluate(({ BrowserWindow }) => {
-      const contents = BrowserWindow.getAllWindows()[0]!.webContents;
-      contents.sendInputEvent({ type: "keyDown", keyCode: "Backspace", modifiers: ["shift"] });
-      contents.sendInputEvent({ type: "keyUp", keyCode: "Backspace", modifiers: ["shift"] });
-    });
-    await expect.poll(() => pageOf("fav-vendor")).toBe(null);
-    expect((await snapshot(shell)).sidebar.favorites.map((favorite) => favorite.id)).toEqual(["fav-mail", "fav-vendor"]);
-  });
-
-  test("on the rail, a favorite's desk with more tabs than the column holds scrolls under its row, and leaves the tab list its room", async () => {
-    test.setTimeout(90_000);
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 560));
-    try {
-      await sidebarCommand(shell, { type: "open", anchorId: "fav-mail" });
-      await expect.poll(() => pageOf("fav-mail")).not.toBe(null);
-      // Tabs enough on its desk to run the column out.
-      for (let added = 0; added < 12; added += 1) {
-        const before = (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0;
-        await strikeInShell(app, "t");
-        await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(before + 1);
-      }
-      const stack = shell.locator('[data-testid="rail-favorite-entry"] [data-testid="desk-stack"]');
-      await expect(stack).toHaveCount(1);
-      await stack.scrollIntoViewIfNeeded();
-      const height = await shell.evaluate(() => window.innerHeight);
-      const reached = (await stack.boundingBox())!;
-      expect(reached.y + reached.height).toBeLessThanOrEqual(height);
-      // The day's tabs and groups still have their list.
-      expect((await box(shell, '[data-testid="sidebar-tab-list"]')).height).toBeGreaterThan(80);
-      await capture(app, shell, "06-rail-favorite-desk-scrolls.png");
-      // One of its rows carried, the rows scrolled: it stays under the pointer (its place read within the scrolled rows).
-      const last = shell.locator('[data-testid="rail-favorite-entry"] [data-row-kind="entry"]').last();
-      await last.scrollIntoViewIfNeeded();
-      expect(await shell.evaluate(() => document.querySelector('[data-testid="rail-favorites-open"]')!.scrollTop)).toBeGreaterThan(20);
-      const row = (await last.boundingBox())!;
-      const grab = { x: row.x + row.width / 2, y: row.y + row.height / 2 };
-      await shell.mouse.move(grab.x, grab.y);
-      await shell.mouse.down();
-      await shell.mouse.move(grab.x, grab.y + 6, { steps: 2 });
-      await shell.mouse.move(grab.x, grab.y + 14, { steps: 4 });
-      await shell.waitForTimeout(100);
-      const held = (await last.boundingBox())!;
-      expect(Math.abs(held.y + held.height / 2 - (grab.y + 14))).toBeLessThan(6);
-      await shell.mouse.up();
-    } finally {
-      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900));
-    }
-  });
+  // (Retired 2026-10-13: "on the rail, the open favorites keep their order …" and "on the rail, a favorite's desk with
+  // more tabs than the column holds scrolls under its row …" — the rail's favorites folder, its open favorites' rows and
+  // the desk's tabs under them (RailFavorites) are not drawn on the desktop since the double sidebar: a favorite's page
+  // with tabs beside it is a space on the rail, its rows the card's space view (docs/double-sidebar.md).)
 });

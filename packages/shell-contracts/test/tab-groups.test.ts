@@ -7,11 +7,14 @@ import {
   type ArchiveEntry,
 } from "../src/tab-archive.js";
 import {
+  asPersons,
   dayRowUnits,
   DEFAULT_TAB_GROUP_TITLE,
   groupedTabOrder,
   isPersonsGroup,
   isTabGroupCommand,
+  isTidysGroup,
+  looseInPlace,
   MAX_TAB_GROUPS_PER_SPACE,
   nextTabGroupColor,
   sanitizeTabGroups,
@@ -166,10 +169,21 @@ describe("withoutTabs", () => {
   it("dissolves an emptied group, and makes an auto group left with one tab that tab's loose space in place", () => {
     const groups = [group("mine", ["a", "b"]), group("made", ["c", "d"], "auto"), group("solo", ["e"])];
     // (Until 2026-10-09 the auto group dissolved, and its tab's loose group came afresh with a new id.)
+    // Its name is let go of: grown again, it is named afresh (until 2026-10-13 it kept the old one).
     expect(withoutTabs(groups, new Set(["a", "c", "e"]))).toEqual([
       group("mine", ["b"]),
-      { ...group("made", ["d"], "auto"), loose: true, color: "gray" },
+      { ...group("made", ["d"], "auto"), title: DEFAULT_TAB_GROUP_TITLE, loose: true, color: "gray" },
     ]);
+  });
+
+  it("lets a space grown from a Home tab go back to Home at one tab, as a Home tab, under no name", () => {
+    const grown: TabGroupInfo = { ...group("grown", ["h", "n"], "auto"), title: "Lisbon trip", color: "amber", grown: true, naming: true };
+    const [back] = withoutTabs([grown], new Set(["n"]));
+    expect(back).toEqual({ ...group("grown", ["h"], "auto"), title: DEFAULT_TAB_GROUP_TITLE, color: "gray", loose: true });
+    expect(back).not.toHaveProperty("grown");
+    expect(back).not.toHaveProperty("naming");
+    // Theirs (a Stack, a conversation): it stays a drawn space of one, grown and all.
+    expect(withoutTabs([grown], new Set(["n"]), () => true)).toEqual([{ ...grown, tabIds: ["h"] }]);
   });
 
   it("keeps the person's emptied spaces, and a kept auto group of one drawn", () => {
@@ -201,6 +215,57 @@ describe("withoutTabs", () => {
   it("leaves a manual group of one tab drawn, and never makes a page's group loose", () => {
     const page: TabGroupInfo = { ...group("page", ["p", "x"], "auto"), anchorId: "fav" };
     expect(withoutTabs([group("mine", ["a", "b"]), page], new Set(["a", "p"]))).toEqual([group("mine", ["b"]), { ...page, tabIds: ["x"] }]);
+  });
+});
+
+describe("a space grown from a Home tab", () => {
+  const grown: TabGroupInfo = { ...group("grown", ["h", "n"], "auto"), grown: true };
+
+  it("is not Tidy's to archive or unmake, though it is not the person's either", () => {
+    expect(isTidysGroup(group("made", ["a", "b"], "auto"))).toBe(true);
+    expect(isTidysGroup(grown)).toBe(false);
+    expect(isTidysGroup(group("mine", ["a", "b"]))).toBe(false);
+    expect(isTidysGroup({ ...group("loose", ["a"], "auto"), loose: true })).toBe(false);
+    expect(isTidysGroup({ ...group("page", ["p", "q"], "auto"), anchorId: "fav" })).toBe(false);
+    expect(isPersonsGroup(grown, { context: false, conversation: false, held: false })).toBe(false);
+  });
+
+  it("is the person's, and no longer grown, once their hand is on it", () => {
+    const mine = asPersons({ ...grown, title: "Trip" });
+    expect(mine).toEqual({ ...group("grown", ["h", "n"]), title: "Trip" });
+    expect(mine).not.toHaveProperty("grown");
+  });
+
+  it("goes back to Home in place: its id, grey, unnamed, standing where its tab does", () => {
+    const back = looseInPlace({ ...grown, tabIds: ["h"], title: "Trip", naming: true, beforeUnit: "x" });
+    expect(back).toEqual({ id: "grown", title: DEFAULT_TAB_GROUP_TITLE, color: "gray", tabIds: ["h"], origin: "auto", open: false, createdAt: 1, loose: true });
+  });
+
+  it("is read back grown from a file only as an auto drawn space", () => {
+    const read = sanitizeTabGroups(
+      [
+        { ...grown },
+        { ...group("mine", ["a", "b"]), grown: true },
+        { ...group("loose", ["c"], "auto"), loose: true, grown: true },
+        { ...group("other", ["d", "e"], "auto"), grown: "yes" },
+      ],
+      new Set(["h", "n", "a", "b", "c", "d", "e"]),
+    );
+    expect(read.map((candidate) => candidate.grown)).toEqual([true, undefined, undefined, undefined]);
+    // And through the session file, as the restore point carries it.
+    const session = sanitizeTabSession({
+      version: TAB_SESSION_VERSION,
+      spaces: {
+        work: {
+          tabs: ["h", "n"].map((id) => ({ id, spaceId: "work", title: id, url: `https://${id}.example/`, faviconUrl: null, anchorId: null, lastActiveAt: 1 })),
+          activeTabId: "h",
+          recentTabIds: [],
+          splitGroups: [],
+          tabGroups: [grown],
+        },
+      },
+    });
+    expect(session.spaces["work"]?.tabGroups?.[0]?.grown).toBe(true);
   });
 });
 

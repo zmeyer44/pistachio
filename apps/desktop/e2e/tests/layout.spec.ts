@@ -238,9 +238,9 @@ test.describe.serial("the sidebar layout", { tag: ["@sidebar", "@settings"] }, (
     }, tabsBefore);
     expect(made).not.toBeNull();
     await expect(shell.locator(`[data-testid="desk-window"][data-tab-id="${made!}"][data-focused]`)).toHaveCount(1);
-    expect(await shell.evaluate(async (id) => (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).tabs.find((tab) => tab.id === id)?.url, made!)).toBe(
-      "https://www.google.com/",
-    );
+    // (Without its query: Google may add its own, `?zx=…`, as the page loads.)
+    const madeUrl = await shell.evaluate(async (id) => (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).tabs.find((tab) => tab.id === id)?.url, made!);
+    expect(madeUrl?.split("?")[0]).toBe("https://www.google.com/");
     await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), made!);
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
     await expect.poll(() => visibleTabViews(app)).toBe(1);

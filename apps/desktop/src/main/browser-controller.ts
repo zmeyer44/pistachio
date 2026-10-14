@@ -65,6 +65,7 @@ import {
   DESK_DRAWER_TRIGGER,
   deskMaskKey,
   holdsDeskModifier,
+  isDeskUndoKey,
   isDockCloseKey,
   MAX_DESK_STILL_WIDTH,
   MAX_DESK_WINDOWS,
@@ -210,11 +211,14 @@ import {
 } from "@pistachio/shell-contracts/tab-session";
 import {
   anchorGroupTabIds,
+  asPersons,
   DEFAULT_TAB_GROUP_TITLE,
   dayRowUnits,
   groupedTabOrder,
   isPersonsGroup,
   isTabGroupId,
+  isTidysGroup,
+  looseInPlace,
   MAX_TAB_GROUPS_PER_SPACE,
   nextTabGroupColor,
   tabGroupOf,
@@ -1022,6 +1026,7 @@ export class BrowserController {
   readonly #onTabSwitcherInput: (
     event: Electron.Event,
     input: Electron.Input,
+    source?: Electron.WebContents,
   ) => boolean;
   #lifecycleTimer: NodeJS.Timeout | null = null;
   #activeTabId: string | null = null;
@@ -1206,6 +1211,7 @@ export class BrowserController {
     onTabSwitcherInput: (
       event: Electron.Event,
       input: Electron.Input,
+      source?: Electron.WebContents,
     ) => boolean = () => false,
     readAloud = new ReadAloudService(),
     onReadAloudChange: (jobs: ReadAloudStatus[]) => void = () => {},
@@ -3957,18 +3963,20 @@ export class BrowserController {
     const group = tabGroupOf([...this.#tabGroups.values()], beside);
     // (A loose tab's group, or a page's, takes it only while it is current or a desk turn holds it (#onDesk): elsewhere its
     // tab is drawn alone, or is its entry's, and a copy of it is a tab of its own — a loose space of its own.)
-    if (group !== null && ((group.loose !== true && group.anchorId === undefined) || this.#onDesk(beside))) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: true });
+    if (group !== null && ((group.loose !== true && group.anchorId === undefined) || this.#onDesk(beside))) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: false });
   }
 
   /**
    * A new tab into the space (tab group) createTab said (docs/spaces.md §2):
    * its Profile's current space, or one by id; `"loose"`, or a space that is
    * not there, leaves it to the reconcile, which gives it a loose space of
-   * its own. An entry's page is its page's space, whatever was said. Into
-   * a space with tabs it is the person's addition, as the desk's ⌘T always
-   * was (Tidy leaves the space be); into an empty space main made to have a
-   * current one it is not — that space becomes the tab's loose one
-   * (#reconcileTabGroups), as a fresh install's first tab is.
+   * its own. An entry's page is its page's space, whatever was said. A
+   * window opened in a space does not make it the person's (since
+   * 2026-10-13, docs/double-sidebar.md; until then it did, and Tidy left the
+   * space be): a loose tab's grows into a space made for them, an auto one
+   * stays auto, the person's stays theirs; and an empty space main made to
+   * have a current one becomes the tab's loose one (#reconcileTabGroups), as
+   * a fresh install's first tab is.
    */
   #joinGroup(tabId: string, group: "current" | "loose" | (string & {})): void {
     const info = this.#tabInfo(tabId);
@@ -3976,8 +3984,7 @@ export class BrowserController {
     const targetId = group === "current" ? this.currentGroupId(info.spaceId) : group;
     const target = targetId === null ? undefined : this.#tabGroups.get(targetId);
     if (target === undefined || this.#spaceOf(target.id) !== info.spaceId) return;
-    const placeholder = target.tabIds.length === 0 && target.origin === "auto";
-    this.addToTabGroup(target.id, [tabId], { byPerson: !placeholder });
+    this.addToTabGroup(target.id, [tabId], { byPerson: false });
   }
 
   async #createManagedTab(options: {
@@ -5919,7 +5926,7 @@ export class BrowserController {
     event: Electron.Event,
     input: Electron.Input,
   ): void {
-    if (this.#onTabSwitcherInput(event, input)) return;
+    if (this.#onTabSwitcherInput(event, input, tab.view.webContents)) return;
     if (input.type !== "keyDown") return;
     if (
       input.key === "Escape" &&
@@ -7237,7 +7244,8 @@ export class BrowserController {
    *    an `auto` one left with one tab is that tab's loose space in place;
    * 2. a page's space without its page lets go of it (#letGoOfPage);
    * 3. any `auto` space of one tab not the person's is its tab's loose space
-   *    in place (a first tab in main's fresh empty space);
+   *    in place, its name let go of (looseInPlace: a first tab in main's
+   *    fresh empty space; a space grown from a Home tab, closed down to one);
    * 4. every listed tab in no space gets one: a loose space, or its page's;
    * 5. each Profile's current space is settled (#settleCurrentGroups) — the
    *    tab in use's, else the one that stands, else a successor;
@@ -7264,11 +7272,10 @@ export class BrowserController {
       if (free !== null && free.loose !== true && free.tabIds.length > 0 && free.title === DEFAULT_TAB_GROUP_TITLE) named.push(free.id);
       return free === null ? [] : [free];
     });
-    // 3. An auto space of one, not the person's, is its tab's.
+    // 3. An auto space of one, not the person's, is its tab's — under no name: grown again, it is named afresh.
     groups = groups.map((group) => {
       if (group.loose === true || group.anchorId !== undefined || group.origin !== "auto" || group.tabIds.length !== 1 || this.#isPersons(group)) return group;
-      const { beforeUnit: _beforeUnit, ...rest } = group;
-      return { ...rest, loose: true, color: "gray" };
+      return looseInPlace(group);
     });
     // 4. Every listed tab a space.
     for (const space of this.#spaceStore.all()) {
@@ -7488,8 +7495,10 @@ export class BrowserController {
   /**
    * Put day tabs into a group at `index` among its tabs, counted WITHOUT the
    * tabs being put — so a tab already in the group is moved within it, the
-   * same act as bringing one in. `byPerson` makes the group theirs; Tidy's
-   * own additions do not. Returns the tabs that were not in it before.
+   * same act as bringing one in. `byPerson` makes the group theirs: a tab
+   * they brought to it (a drag, a menu's Add to). Tidy's own additions, the
+   * agent's, and a window opened in the space (⌘T, New tab, a link opened
+   * beside its page) do not. Returns the tabs that were not in it before.
    *
    * Into an EMPTY space (since 2026-10-09) the tabs go where the space
    * stands (its `beforeUnit`), not where they were — it does not jump — and
@@ -7525,15 +7534,25 @@ export class BrowserController {
     // The others lose what came from them (and an emptied one dissolves, unless it is the person's); the
     // target is rebuilt by hand, since it is never emptied by its own tabs.
     // A loose tab's group given a second tab is a group like any other: drawn, coloured beside its neighbours, and named from its tabs.
+    // Grown by a window opened in it (⌘T, its row's +, a link opened beside its page) it is made FOR the person, `auto`:
+    // down to one tab again it goes back to being a Home tab (#reconcileTabGroups, step 3) unless they have made it
+    // theirs since — named, coloured, given a Stack or a conversation. Grown by a tab they brought to it, it is theirs.
+    // (Until 2026-10-13 every grown space was `manual`, and stayed drawn at one tab: docs/double-sidebar.md.)
     const grown = target.loose === true && members.length > 1;
     // (Left out of the list, the target is counted all the same, as it will be: drawn, unless a page's or a loose tab's
     // still of one — else at the bound an emptied source of the person's was kept, and the Profile made fifty-one.)
     const targetDrawn = target.anchorId === undefined && (target.loose !== true || grown);
     const others = this.#withoutTabs([...this.#tabGroups.values()].filter((group) => group.id !== groupId), new Set(added), targetDrawn ? [spaceId] : []);
+    // (Made for them, it is `grown`: Tidy never archives nor unmakes it, as it may a space of its own — isTidysGroup.)
     const { loose: _loose, beforeUnit: _beforeUnit, ...drawn } = target;
+    const color = (): TabGroupInfo["color"] => nextTabGroupColor(others.filter((other) => this.#groupSpaceIds.get(other.id) === spaceId && other.loose !== true));
     const next: TabGroupInfo = grown
-      ? { ...drawn, tabIds: members, origin: "manual", color: nextTabGroupColor(others.filter((other) => this.#groupSpaceIds.get(other.id) === spaceId && other.loose !== true)) }
-      : { ...(first ? drawn : target), tabIds: members, origin: options.byPerson ? "manual" : target.origin };
+      ? options.byPerson
+        ? { ...asPersons(drawn), tabIds: members, color: color() }
+        : { ...drawn, tabIds: members, origin: "auto", grown: true, color: color() }
+      : options.byPerson
+        ? { ...asPersons(first ? drawn : target), tabIds: members }
+        : { ...(first ? drawn : target), tabIds: members };
     this.#setTabGroups([...others, next]);
     if (grown || (first && next.origin === "manual" && next.title === DEFAULT_TAB_GROUP_TITLE)) this.#nameTabGroup(next);
     return added;
@@ -7577,15 +7596,19 @@ export class BrowserController {
    * whatever it held, its Stack and conversation left behind.)
    *
    * Tidy's Undo (no `byPerson`): a space that is the person's by now —
-   * renamed, recoloured, given a tab, a Stack, a conversation — is left as
-   * it is; the others go.
+   * renamed, recoloured, a tab brought to it (a drag, Add to), a Stack, a
+   * conversation — is left as it is, and so is one that is no longer Tidy's
+   * own (isTidysGroup): gone back to Home since and grown again for the
+   * person by a window opened beside it, under the same id (`grown`). A
+   * window merely opened in it (⌘T) does not make it theirs (since
+   * 2026-10-13, docs/double-sidebar.md; until then it did). The others go.
    */
   dissolveTabGroups(groupIds: readonly string[], options: { byPerson?: boolean } = {}): void {
     for (const groupId of groupIds) {
       const group = this.#tabGroups.get(groupId);
       if (group === undefined) continue;
       if (options.byPerson !== true) {
-        if (!this.#isPersons(group)) this.#dropGroup(groupId);
+        if (!this.#isPersons(group) && group.grown !== true) this.#dropGroup(groupId);
         continue;
       }
       const holds = this.#holdsOf(groupId);
@@ -7738,8 +7761,8 @@ export class BrowserController {
         const group = this.#tabGroups.get(command.groupId);
         if (group === undefined) return;
         // Their name stands: one the model is still thinking of is no longer wanted (#nameTabGroup).
-        if (command.type === "rename") this.#tabGroups.set(group.id, { ...group, title: tabGroupTitle(command.title), origin: "manual", naming: false });
-        else if (command.type === "recolor") this.#tabGroups.set(group.id, { ...group, color: command.color, origin: "manual" });
+        if (command.type === "rename") this.#tabGroups.set(group.id, { ...asPersons(group), title: tabGroupTitle(command.title), naming: false });
+        else if (command.type === "recolor") this.#tabGroups.set(group.id, { ...asPersons(group), color: command.color });
         else this.#tabGroups.set(group.id, { ...group, open: command.open });
         break;
       }
@@ -7832,11 +7855,16 @@ export class BrowserController {
     this.#onChange();
   }
 
+  /** The latest ask for each space's name (#nameTabGroup): an older one's answer is for tabs it no longer holds. */
+  readonly #namingAsks = new Map<string, object>();
+
   /**
    * Ask for a name for a group made without one. The group is marked
    * `naming` while the model thinks — the row says so rather than showing a
-   * placeholder — and takes the name only if it is still waiting for it: a
-   * person who renamed it meanwhile, or closed it, has had the last word.
+   * placeholder — and takes the name only if it is still waiting for it, and
+   * for this ask: a person who renamed it meanwhile, or closed it, has had
+   * the last word, and a space gone back to Home and grown again since has
+   * asked afresh for the tabs it holds now (2026-10-13).
    */
   #nameTabGroup(group: TabGroupInfo): void {
     const tabs = group.tabIds.flatMap((tabId) => {
@@ -7846,11 +7874,17 @@ export class BrowserController {
     const spaceId = this.#spaceOf(group.id);
     const existing = this.tabGroups(spaceId ?? undefined).filter((other) => other.id !== group.id).map((other) => other.title);
     const asking = tabs.length === 0 ? null : (this.#hooks.nameTabGroup?.(tabs, existing) ?? null);
+    // (An older ask still out is for tabs it no longer holds, whether or not this one is made.)
+    this.#namingAsks.delete(group.id);
     if (asking === null) return;
+    const ask = {};
+    this.#namingAsks.set(group.id, ask);
     this.#tabGroups.set(group.id, { ...group, naming: true });
     void asking
       .catch(() => null)
       .then((name) => {
+        if (this.#namingAsks.get(group.id) !== ask) return;
+        this.#namingAsks.delete(group.id);
         const current = this.#tabGroups.get(group.id);
         if (current === undefined || current.naming !== true) return;
         this.#tabGroups.set(group.id, { ...current, naming: false, ...(name === null ? {} : { title: tabGroupTitle(name) }) });
@@ -7885,7 +7919,9 @@ export class BrowserController {
    * flickers through one of its tabs; then pages out of sight go first and
    * quietly, so the surface changes once. `persons`: it was the person's
    * (isPersonsGroup) as it closed — an empty one that was not (main's fresh
-   * space) is not worth an entry.
+   * space) is not worth an entry. A space grown from a Home tab for them
+   * (`grown`) is handed back as theirs (`manual`): filed so, it comes back
+   * from the archive theirs, not as one Tidy made and may archive.
    */
   async closeTabGroup(groupId: string): Promise<{ group: TabGroupInfo; spaceId: string; tabs: ArchivedTab[]; persons: boolean } | null> {
     const group = this.#tabGroups.get(groupId);
@@ -7903,7 +7939,7 @@ export class BrowserController {
     for (const tabId of members) if (!visible.has(tabId)) this.#discardTab(tabId);
     for (const tabId of members) if (visible.has(tabId)) await this.closeTab(tabId, { force: true });
     this.#onChange();
-    return { group, spaceId, tabs, persons };
+    return { group: group.grown === true ? asPersons(group) : group, spaceId, tabs, persons };
   }
 
   /* --------------------------------- tidy --------------------------------- */
@@ -7953,7 +7989,8 @@ export class BrowserController {
       // (The space in front takes no tab from Tidy: it is the person's to change while they are in it.)
       groups: groups.filter((group) => group.id !== current).map((group) => ({ id: group.id, title: group.title, tabCount: group.tabIds.length })),
       idleAutoGroupIds: groups
-        .filter((group) => group.origin === "auto" && group.tabIds.length > 0 && !reach.spareGroupIds.has(group.id) && group.tabIds.every((tabId) => {
+        // (Tidy's own: not a space grown from a Home tab, which was made for the person — isTidysGroup.)
+        .filter((group) => isTidysGroup(group) && group.tabIds.length > 0 && !reach.spareGroupIds.has(group.id) && group.tabIds.every((tabId) => {
           const info = this.#tabInfo(tabId);
           return info !== null && idle(info);
         }))
@@ -8139,7 +8176,7 @@ export class BrowserController {
     const info = this.#tabInfo(tabId);
     if (group === undefined || info === null || !group.tabIds.includes(tabId)) return;
     if (this.#spaceTabIds(info.spaceId).some((other) => this.#tabInfo(other)?.anchorId === anchorId)) return;
-    const { loose: _loose, ...rest } = group;
+    const { loose: _loose, grown: _grown, ...rest } = group;
     this.#tabGroups.set(groupId, { ...rest, title: DEFAULT_TAB_GROUP_TITLE, color: "gray", naming: false, anchorId });
     this.setAnchor(tabId, anchorId);
   }
@@ -8345,6 +8382,7 @@ export class BrowserController {
             ...(state.groupId === undefined ? {} : { groupId: state.groupId }),
             grab: state.grab,
             dockHover: state.dockHover === true,
+            undoKey: state.undoKey === true,
             masks: state.masks ?? [],
             zoomed: state.zoomed ?? [],
           };
@@ -8556,6 +8594,21 @@ export class BrowserController {
     if (this.#desk?.dockHover !== true || !isDockCloseKey(input)) return false;
     event.preventDefault();
     if (!input.isAutoRepeat) this.#hooks.onDeskPageInput?.("close");
+    return true;
+  }
+
+  /**
+   * ⌃Z a moment after the desk laid itself out (DeskState.undoKey), from a
+   * page or a utility view: that view never sees it, and the shell puts the
+   * layout back (DeskPageInput "undo"). Struck in the shell's own document
+   * it goes on there, which can tell a terminal's keyboard from the rest
+   * (DeskSurface): a terminal's ⌃Z stops the job in front (docs/terminal.md).
+   */
+  takeDeskUndoKey(event: Electron.Event, input: Electron.Input, source?: Electron.WebContents): boolean {
+    if (this.#desk?.undoKey !== true || !isDeskUndoKey(input)) return false;
+    if (source !== undefined && source.id === this.#window.webContents.id) return false;
+    event.preventDefault();
+    if (!input.isAutoRepeat) this.#hooks.onDeskPageInput?.("undo");
     return true;
   }
 

@@ -57,7 +57,6 @@ import { deskAvailable, showOnDesk, useDeskWindowKey } from "../lib/desk/open";
 import { useSidebarMode, useSidebarOnScreen } from "../lib/sidebar-mode";
 import { nativeApi } from "../api";
 import { useSurface } from "../surface";
-import { useSidebarRail } from "./sidebar-rail";
 
 /** How far the card's back / forward buttons move the playhead. */
 const SEEK_STEP_SECONDS = 15;
@@ -958,9 +957,7 @@ export function useBackgroundMedia(): {
 export function useMediaStackInset(): number {
   const { media, readAloud } = useBackgroundMedia();
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
-  // (A desk's rail draws no stack: its now playing has a slot of its own.)
-  const rail = useSidebarRail();
-  if (rail || (media.length === 0 && readAloud.length === 0)) return 0;
+  if (media.length === 0 && readAloud.length === 0) return 0;
   const toasts =
     readAloud.length * TOAST_H + Math.max(0, readAloud.length - 1) * STACK_GAP;
   const slot = media.length > 0 ? stackSlotHeight(media, sidebarWidth) : 0;

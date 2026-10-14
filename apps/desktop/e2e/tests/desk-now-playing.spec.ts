@@ -149,6 +149,16 @@ async function installAudioPlayer(page: Page): Promise<void> {
   });
 }
 
+/**
+ * The sidebar down to its rail (its button in the card's shoulder), where a video out of sight floats and audio is a
+ * button: the windows are brought out from their rows first, which only the whole sidebar's card draws
+ * (docs/double-sidebar.md; until 2026-10-13 the desk's specs started on the rail).
+ */
+async function toRail(shell: Page): Promise<void> {
+  await shell.getByTestId("desk-rail-toggle").click();
+  await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
+}
+
 test("a window playing something pops out: on the rail, a video floats over the desk with its controls on it, audio is a button in the rail moving with its sound; the whole sidebar takes them as cards", { tag: ["@desk", "@media"] }, async () => {
   test.setTimeout(120_000);
   const VIDEO_URL = `${ORIGIN}/invoices?video`;
@@ -174,15 +184,16 @@ test("a window playing something pops out: on the rail, a video floats over the 
     await audioPage.locator("#start-audio").click();
     await expect.poll(async () => (await mediaOf(shell, audio))?.playing ?? false).toBe(true);
 
-    // The group's desk, both windows out.
+    // The group's desk, both windows out (from their rows in the whole sidebar's card), and then the sidebar its rail:
+    // the double sidebar's rail has no rows (docs/double-sidebar.md).
     await selectSpace(shell, "media");
-    await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-rail]')).toHaveCount(1);
     await expect(shell.locator('.desk-stage[data-phase="open"]')).toHaveCount(1);
     const windowOf = (tabId: string) => shell.locator(`[data-testid="desk-window"][data-tab-id="${tabId}"]`);
     const rowOf = (tabId: string) => shell.locator(`[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`);
     if ((await windowOf(audio).count()) === 0) await rowOf(audio).click();
     if ((await windowOf(video).count()) === 0) await rowOf(video).click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await toRail(shell);
     await settled(shell, app);
 
     // ── 1. Each window playing something has Pop out on its frame ───────────
@@ -606,6 +617,8 @@ test("a window playing a video behind a window filling the desk: its video float
     if ((await windowOf(video).count()) === 0) await rowOf(video).click();
     if ((await windowOf(other).count()) === 0) await rowOf(other).click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    // On the rail, where a video out of sight floats (the whole sidebar's card takes it instead).
+    await toRail(shell);
     await settled(shell, app);
     const pip = shell.getByTestId("desk-pip");
     await expect(pip).toHaveCount(0);
@@ -670,6 +683,8 @@ test("a window closed while another's video floats leaves the floating player it
     await settled(shell, app);
     for (const tabId of [other, closing, video]) if ((await windowOf(tabId).count()) === 0) await rowOf(tabId).click();
     await expect(shell.getByTestId("desk-window")).toHaveCount(3);
+    // On the rail, where a video popped out floats.
+    await toRail(shell);
     await settled(shell, app);
 
     // The muted video popped out floats.

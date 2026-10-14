@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { expect, test, type JSHandle, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { docxFixture, xlsxFixture } from "../../../../packages/documents/test/fixtures";
-import { api, box, createGroup, INVOICES, launchDesk, selectSpace, openTabs, reachBar, screenshots, selectTab, settled, showFrame, snapshot, VENDOR, windowSelector } from "./desk-harness";
+import { api, box, createGroup, INVOICES, launchDesk, openTabs, reachBar, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, spaceRows, VENDOR, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-documents");
 
@@ -220,7 +220,7 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     await createGroup(shell, "desk-docs", [invoice, vendor], "Northstar", "blue");
     await selectTab(shell, invoice);
     await selectSpace(shell, "desk-docs");
-    await expect(shell.locator('[data-testid="tab-group"] [role="tab"]')).toHaveCount(2);
+    await expect(spaceRows(shell)).toHaveCount(2);
     await settled(shell, app);
     const stage = await box(shell, ".desk-stage");
     await shell.mouse.move(stage.x + stage.width * 0.6, stage.y + stage.height * 0.4);

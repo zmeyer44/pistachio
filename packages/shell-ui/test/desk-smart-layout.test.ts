@@ -1,8 +1,8 @@
 /**
  * The desk's smart layout (docs/desk-layout.md): the geometry each move
  * makes (lib/desk/smart-layout.ts), and the arranger that hears windows come
- * and go, asks the layout model, and lays the desk out with an Undo
- * (components/desk/smart-arrange.ts) — over a fake engine and a scripted
+ * and go, asks the layout model, and lays the desk out — ⌃Z putting it back
+ * for a moment after (components/desk/smart-arrange.ts) — over a fake engine and a scripted
  * model, so what is pinned is what the desk does with an opinion.
  */
 
@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { DeskLayoutEvaluation, DeskLayoutMove, DeskLayoutRequest } from "@pistachio/shell-contracts/desk-layout";
 import { DESK_GAP, splitRect, tileRects, zoneRect, type Rect } from "../src/lib/desk/geometry";
 import { FOCUS_SHARE, changesLayout, fillGap, focusLayout, offeredMoves, pairedLayout, placeWords, tiledLayout } from "../src/lib/desk/smart-layout";
-import { CLOSE_SETTLE_MS, SmartArranger, type SmartArrangeEngine, type WindowWords } from "../src/components/desk/smart-arrange";
+import { CLOSE_SETTLE_MS, SmartArranger, UNDO_KEY_MS, type SmartArrangeEngine, type WindowWords } from "../src/components/desk/smart-arrange";
 import type { DeskLayoutMoment, DeskLayoutSnapshot, DeskLayoutView } from "../src/components/desk/desk-engine";
 
 const desk: Rect = { x: 68, y: 0, w: 1372, h: 840 };
@@ -121,25 +121,60 @@ describe("laying the desk out", () => {
 function fakeEngine(initial: Array<[string, Rect]>) {
   const windows = new Map(initial);
   const listeners = new Set<(moment: DeskLayoutMoment) => void>();
+  const watchers = new Set<() => void>();
+  const laidOut = new Set<(undo: DeskLayoutSnapshot) => void>();
   let inUse: string | null = initial.at(-1)?.[0] ?? null;
   const stampOf = (): string => [...windows].map(([id, rect]) => `${id}:${rect.x},${rect.y},${rect.w},${rect.h}`).join("|");
-  const engine: SmartArrangeEngine & { windows: Map<string, Rect>; emit(moment: DeskLayoutMoment): void; use(id: string): void } = {
+  const engine: SmartArrangeEngine & {
+    windows: Map<string, Rect>;
+    undoKey: boolean;
+    /** A window in hand: nothing is laid out meanwhile. */
+    holding: boolean;
+    emit(moment: DeskLayoutMoment): void;
+    /** The desk changed (subscribe), as the engine says after every change to its windows. */
+    changed(): void;
+    use(id: string): void;
+    /** A named layout laid out at the person's word (the engine's layOut): the windows to their places, ⌃Z offered. */
+    layOut(layout: ReadonlyMap<string, Rect>): void;
+  } = {
     windows,
+    undoKey: false,
+    holding: false,
+    changed: () => watchers.forEach((watcher) => watcher()),
     emit: (moment) => listeners.forEach((listener) => listener(moment)),
     use: (id) => (inUse = id),
+    layOut(layout) {
+      const undo = engine.layoutSnapshot();
+      for (const [id, rect] of layout) windows.set(id, rect);
+      laidOut.forEach((listener) => listener(undo));
+    },
+    onLaidOut(listener) {
+      laidOut.add(listener);
+      return () => laidOut.delete(listener);
+    },
     onLayoutMoment(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     layoutView: (): DeskLayoutView => ({ bounds: desk, windows: new Map(windows), others: [], inUse, stamp: stampOf() }),
+    layoutSnapshot: (): DeskLayoutSnapshot => ({ windows: [...windows].map(([tabId, rect]) => ({ tabId, rect, mini: null })) }),
     applyLayout(layout) {
-      const undo: DeskLayoutSnapshot = { windows: [...windows].map(([tabId, rect]) => ({ tabId, rect, mini: null })) };
+      const undo = engine.layoutSnapshot();
       for (const [id, rect] of layout) windows.set(id, rect);
       return undo;
     },
     restoreLayout(snapshot) {
+      if (engine.holding) return false;
       windows.clear();
       for (const entry of snapshot.windows) windows.set(entry.tabId, entry.rect);
+      return true;
+    },
+    subscribe(watcher) {
+      watchers.add(watcher);
+      return () => watchers.delete(watcher);
+    },
+    setUndoKey(armed) {
+      engine.undoKey = armed;
     },
   };
   return engine;
@@ -204,7 +239,7 @@ function arranger(engine: ReturnType<typeof fakeEngine>, answer: ((request: Desk
 }
 
 describe("the arranger", () => {
-  it("sets a window just out beside the window it goes with, says so, and Undo puts it back", async () => {
+  it("sets a window just out beside the window it goes with, quietly, and ⌃Z puts it back", async () => {
     const before = new Map([
       ["inbox", zone("left")],
       ["invoice", zone("right")],
@@ -216,7 +251,7 @@ describe("the arranger", () => {
       ["invoice", zone("right")],
       ["vendor", halves[1]],
     ]);
-    const { asked, notices, flush } = arranger(engine, opinion("pair", { partner: "invoice" }));
+    const { arranged, asked, notices, flush } = arranger(engine, opinion("pair", { partner: "invoice" }));
     engine.emit({ trigger: "opened", id: "vendor", how: "split", before });
     await flush();
     expect(asked).toHaveLength(1);
@@ -226,10 +261,43 @@ describe("the arranger", () => {
     expectRect(engine.windows.get("inbox"), zone("left"));
     expectRect(engine.windows.get("invoice"), splitRect(zone("right"))![0]);
     expectRect(engine.windows.get("vendor"), splitRect(zone("right"))![1]);
-    expect(notices.map((notice) => notice.message)).toEqual(["Put “Atlas Medical Supply - Vendor r…” beside “Invoice #2048 - QuickBooks”"]);
-    notices[0]!.undo!();
+    expect(notices).toHaveLength(0);
+    expect(engine.undoKey).toBe(true);
+    expect(arranged.undo()).toBe(true);
     expectRect(engine.windows.get("inbox"), halves[0]);
     expectRect(engine.windows.get("vendor"), halves[1]);
+    // Once only: the key is the page's again.
+    expect(engine.undoKey).toBe(false);
+    expect(arranged.undo()).toBe(false);
+  });
+
+  it("offers ⌃Z after a layout the person chose by name, with no notice, and drops a question out about the desk before it", async () => {
+    const engine = fakeEngine([
+      ["pr", zone("left")],
+      ["ci", zone("right")],
+    ]);
+    const { arranged, asked, notices, tick, timers } = arranger(engine, opinion("fill"), { auto: true });
+    // A close held for the next…
+    engine.emit({ trigger: "closed", gone: [{ id: "inbox", rect: zone("bottom-right"), how: "closed" }] });
+    expect(timers.filter((timer) => !timer.cancelled)).toHaveLength(1);
+    // …and the person lays the desk out: Stacked.
+    engine.layOut(new Map([["pr", { ...desk, h: (desk.h - DESK_GAP) / 2 }], ["ci", { ...desk, y: desk.y + (desk.h + DESK_GAP) / 2, h: (desk.h - DESK_GAP) / 2 }]]));
+    expect(engine.undoKey).toBe(true);
+    expect(notices).toHaveLength(0);
+    // The held close was about the desk before: never asked.
+    expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.at)).toEqual([UNDO_KEY_MS]);
+    expect(arranged.undo()).toBe(true);
+    expectRect(engine.windows.get("pr"), zone("left"));
+    expectRect(engine.windows.get("ci"), zone("right"));
+    expect(engine.undoKey).toBe(false);
+    await tick();
+    expect(asked).toHaveLength(0);
+    // And its moment ends as the smart layout's does.
+    engine.layOut(new Map([["pr", desk]]));
+    expect(engine.undoKey).toBe(true);
+    await tick();
+    expect(engine.undoKey).toBe(false);
+    expect(arranged.undo()).toBe(false);
   });
 
   it("asks once about closes in a row, and closes the gaps up", async () => {
@@ -244,7 +312,32 @@ describe("the arranger", () => {
     expect(asked[0]!.gone.map((gone) => gone.title)).toEqual(["CI run #8812 - GitHub Actions", "Inbox (12) - Gmail"]);
     expect(asked[0]!.fillers).toEqual(["Pull request #412 - GitHub"]);
     expectRect(engine.windows.get("pr"), desk);
-    expect(notices[0]!.message).toBe("“Pull request #412 - GitHub” filled the gap");
+    expect(notices).toHaveLength(0);
+  });
+
+  it("keeps ⌃Z for the latest layout only until UNDO_KEY_MS is up, or a window comes or goes", async () => {
+    const engine = fakeEngine([["pr", zone("left")]]);
+    const { arranged, timers, tick } = arranger(engine, opinion("fill"));
+    engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
+    await tick();
+    expectRect(engine.windows.get("pr"), desk);
+    expect(engine.undoKey).toBe(true);
+    expect(timers.filter((timer) => !timer.cancelled).map((timer) => timer.at)).toEqual([UNDO_KEY_MS]);
+    // Its moment is up: ⌃Z is the page's again, and puts nothing back.
+    await tick();
+    expect(engine.undoKey).toBe(false);
+    expect(arranged.undo()).toBe(false);
+    expectRect(engine.windows.get("pr"), desk);
+    // Laid out again; then a window comes out before ⌃Z — putting the layout back would send it into the dock.
+    engine.windows.set("pr", zone("left"));
+    engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
+    await tick();
+    expect(engine.undoKey).toBe(true);
+    engine.windows.set("inbox", zone("right"));
+    engine.emit({ trigger: "opened", id: "inbox", how: "hole", before: new Map([["pr", desk]]) });
+    expect(engine.undoKey).toBe(false);
+    expect(arranged.undo()).toBe(false);
+    expect([...engine.windows.keys()]).toEqual(["pr", "inbox"]);
   });
 
   it("drops an answer about a desk that changed while the model thought, or that a newer question superseded", async () => {
@@ -304,31 +397,107 @@ describe("the arranger", () => {
     expect(notices[0]!.message).toBe("Gave “Invoice #2048 - QuickBooks” the main place");
   });
 
-  it("puts nothing back on another group's desk: Undo is for the desk it was offered on", async () => {
+  it("puts nothing back once a window came out or went by a way the smart layout does not hear of (dragged out, a Glance landing)", async () => {
     const engine = fakeEngine([["pr", zone("left")]]);
-    const { notices, tick, state } = arranger(engine, opinion("fill"));
+    const { arranged, tick } = arranger(engine, opinion("fill"));
+    engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
+    await tick();
+    expect(engine.undoKey).toBe(true);
+    // A tab dragged out onto the desk: the engine says the desk changed, and ⌃Z is the page's again.
+    engine.windows.set("inbox", zone("right"));
+    engine.changed();
+    expect(engine.undoKey).toBe(false);
+    expect(arranged.undo()).toBe(false);
+    expect([...engine.windows.keys()]).toEqual(["pr", "inbox"]);
+    // Laid out again; a window out unannounced is still never sent into the dock by ⌃Z.
+    engine.windows.delete("inbox");
+    engine.windows.set("pr", zone("left"));
+    engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
+    await tick();
+    expect(engine.undoKey).toBe(true);
+    engine.windows.set("vendor", zone("right"));
+    expect(arranged.undo()).toBe(false);
+    expect([...engine.windows.keys()]).toEqual(["pr", "vendor"]);
+    expect(engine.undoKey).toBe(false);
+  });
+
+  it("keeps ⌃Z's layout while a window is in hand, to put back once it is let go", async () => {
+    const engine = fakeEngine([["pr", zone("left")]]);
+    const { arranged, tick } = arranger(engine, opinion("fill"));
+    engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
+    await tick();
+    engine.holding = true;
+    expect(arranged.undo()).toBe(false);
+    expectRect(engine.windows.get("pr"), desk);
+    expect(engine.undoKey).toBe(true);
+    engine.holding = false;
+    expect(arranged.undo()).toBe(true);
+    expectRect(engine.windows.get("pr"), zone("left"));
+  });
+
+  it("gives ⌃Z back to the page once the desk passes to another group", async () => {
+    const engine = fakeEngine([["pr", zone("left")]]);
+    const { arranged, tick, state } = arranger(engine, opinion("fill"));
+    engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
+    await tick();
+    expect(engine.undoKey).toBe(true);
+    state.group = "b";
+    arranged.passed();
+    expect(engine.undoKey).toBe(false);
+    expect(arranged.undo()).toBe(false);
+  });
+
+  it("spends ⌃Z with the notice's Undo, so the next ⌃Z is the page's", async () => {
+    const engine = fakeEngine([
+      ["inbox", { x: 100, y: 100, w: 500, h: 400 }],
+      ["invoice", { x: 700, y: 200, w: 500, h: 400 }],
+    ]);
+    const { arranged, notices } = arranger(engine, null);
+    await arranged.ask();
+    expect(engine.undoKey).toBe(true);
+    notices[0]!.undo!();
+    expectRect(engine.windows.get("inbox"), { x: 100, y: 100, w: 500, h: 400 });
+    expect(engine.undoKey).toBe(false);
+    // Placed by hand since: ⌃Z leaves it there.
+    engine.windows.set("inbox", zone("left"));
+    expect(arranged.undo()).toBe(false);
+    expectRect(engine.windows.get("inbox"), zone("left"));
+  });
+
+  it("puts nothing back on another group's desk: ⌃Z and Undo are for the desk they were offered on", async () => {
+    const engine = fakeEngine([["pr", zone("left")]]);
+    const { arranged, notices, tick, state } = arranger(engine, opinion("fill"));
     engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
     await tick();
     expectRect(engine.windows.get("pr"), desk);
-    // The desk passes to another group, whose windows come out; Undo is clicked there.
+    // The desk passes to another group, whose windows come out; ⌃Z is struck there, and is spent.
     state.group = "b";
     engine.windows.clear();
     engine.windows.set("inbox", zone("left"));
     engine.windows.set("invoice", zone("right"));
-    notices[0]!.undo!();
+    expect(arranged.undo()).toBe(false);
     expect([...engine.windows.keys()]).toEqual(["inbox", "invoice"]);
     expectRect(engine.windows.get("inbox"), zone("left"));
-    // Back on the group it was offered on, it still works.
+    expect(engine.undoKey).toBe(false);
+    // Asked there, the notice's Undo is that desk's: clicked once the desk is back on the first group, it does nothing.
+    engine.windows.set("inbox", { x: 100, y: 100, w: 500, h: 400 });
+    engine.windows.set("invoice", { x: 700, y: 200, w: 500, h: 400 });
+    await arranged.ask();
+    expect(notices.map((notice) => notice.message)).toEqual(["Tiled the windows"]);
     state.group = "a";
     engine.windows.clear();
     engine.windows.set("pr", desk);
     notices[0]!.undo!();
-    expectRect(engine.windows.get("pr"), zone("left"));
+    expectRect(engine.windows.get("pr"), desk);
+    // Back on its own desk, it puts the windows back.
+    state.group = "b";
+    notices[0]!.undo!();
+    expectRect(engine.windows.get("inbox"), { x: 100, y: 100, w: 500, h: 400 });
   });
 
   it("forgets a close held when the desk passes to another group, rather than filling that desk's gaps", async () => {
     const engine = fakeEngine([["pr", zone("left")]]);
-    const { asked, notices, tick, state } = arranger(engine, opinion("fill"));
+    const { asked, tick, state } = arranger(engine, opinion("fill"));
     engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
     // Within the moment a close waits, the desk passes to a group with a window where the gap was not.
     state.group = "b";
@@ -346,7 +515,7 @@ describe("the arranger", () => {
     await tick();
     expect(asked).toHaveLength(1);
     expect(asked[0]!.gone.map((gone) => gone.title)).toEqual(["Invoice #2048 - QuickBooks"]);
-    expect(notices).toHaveLength(1);
+    expectRect(engine.windows.get("pr"), desk);
   });
 
   it("moves nothing on its own once Layout is By hand or the agent is at work, if that happens while it waits or the model thinks", async () => {

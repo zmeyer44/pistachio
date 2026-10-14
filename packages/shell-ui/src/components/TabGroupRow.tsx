@@ -34,13 +34,13 @@ export interface ClusterTab {
 }
 
 /**
- * A group's tabs as one mark, in the favorites folder's style (RailFavorites):
- * its first four tabs' icons in a 2×2 of small squares, each icon filling its
- * square, left to right and down; a tab with no icon is a square of the
- * group's colour. On the desk's rail, where the row says nothing else, the
- * mark is a tile of the group's colour and a badge says how many tabs it
- * holds, as the favorites folder's says how many favorites (the whole
- * sidebar's row says the count beside the title instead).
+ * A group's tabs as one mark: its first four tabs' icons in a 2×2 of small
+ * squares, each icon filling its square, left to right and down; a tab with
+ * no icon is a square of the group's colour. On the double sidebar's rail
+ * (SpaceRail's tile), where nothing else says it, the mark is a tile of the
+ * group's colour and a badge says how many tabs it holds (the sidebar's row
+ * says the count beside the title instead). (Until 2026-10-13 it was the old
+ * rail's favorites folder's style, and the old rail drew the tile.)
  *
  * With no tabs — an empty space, or an archived one filed without any — the
  * mark is a ring of the group's colour, and no count: there is nothing to
@@ -162,8 +162,6 @@ export function TabGroupRow({
   onClose,
   onPointerDown,
   onContextMenu,
-  mark,
-  onHeaderHover,
   children,
 }: {
   group: TabGroupInfo;
@@ -194,10 +192,6 @@ export function TabGroupRow({
   onClose: () => void;
   onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => void;
   onContextMenu: (e: React.MouseEvent) => void;
-  /** On the rail, where a group of one tab is that tab: its window's mark on the desk (DeskRowMark), at the header's edge. */
-  mark?: React.ReactNode;
-  /** The pointer onto the header and off it: on the rail a group of one tab's header is that tab's row (its desk's ⇧⌫). */
-  onHeaderHover?: (inside: boolean) => void;
   /** The member rows, drawn while the group is open. */
   children: React.ReactNode;
 }) {
@@ -256,8 +250,6 @@ export function TabGroupRow({
         }}
         onPointerDown={onPointerDown}
         onContextMenu={onContextMenu}
-        onPointerEnter={onHeaderHover === undefined ? undefined : () => onHeaderHover(true)}
-        onPointerLeave={onHeaderHover === undefined ? undefined : () => onHeaderHover(false)}
         style={{ height: ROW_H }}
         className={cn(
           "group/tg relative flex shrink-0 touch-none items-center gap-2 rounded-md bg-(--tg-tint) px-2 text-[12.5px] font-medium text-(--tg-text) outline-none transition-colors duration-150 hover:bg-(--tg-tint-strong) focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
@@ -318,7 +310,6 @@ export function TabGroupRow({
             />
           </HeaderButton>
         )}
-        {mark}
       </div>
       <GroupMembers open={expanded} snap={snapClose || dragging} label={`${group.title} tabs`}>
         {children}
@@ -362,8 +353,8 @@ function GroupMembers({ open: wanted, snap, label, children }: { open: boolean; 
         exiting ? "grid-rows-[0fr] opacity-0 duration-200" : "grid-rows-[1fr] opacity-100 duration-150",
       )}
     >
-      {/* Clipped only as it folds, top to bottom: across, a mark may stand past the rows' edge — on the rail, the
-          Stack's count on its pile's corner. No wider than the column for that: unclipped, it is no scroll container,
+      {/* Clipped only as it folds, top to bottom: across, a mark may stand past the rows' edge. No wider than the
+          column for that: unclipped, it is no scroll container,
           and would grow to its longest title (the rows past the sidebar's edge, their titles cut with no ellipsis). */}
       <div className="min-h-0 min-w-0 overflow-x-visible overflow-y-clip">
         <div role="tablist" aria-orientation="vertical" aria-label={label} data-testid="tab-group-members" className="tab-group-members relative mt-0.5 ml-[15px] flex flex-col gap-0.5 border-l-2 border-(--tg-tint-strong) pl-1.5">

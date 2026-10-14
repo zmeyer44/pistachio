@@ -134,6 +134,7 @@ import { EMPTY_NOTICE_STACK, isNoticeEvent, isNoticeFrame } from "@pistachio/she
 import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import {
   IPC,
+  isShellCreateTabGroup,
   type AccountState,
   type AppInfo,
   type BrowserLayout,
@@ -799,7 +800,8 @@ function relayChromeInput(
   return (
     relayDoubleShift(input) ||
     relayTabSwitcherInput(event, input, source) ||
-    browser?.takeDeskDockKey(event, input) === true
+    browser?.takeDeskDockKey(event, input) === true ||
+    browser?.takeDeskUndoKey(event, input, source) === true
   );
 }
 
@@ -2985,7 +2987,7 @@ function installIpc(): void {
     publish();
     return result;
   });
-  ipcMain.handle(IPC.tabCreate, (_event, url: unknown) => {
+  ipcMain.handle(IPC.tabCreate, (_event, url: unknown, options: unknown) => {
     // The reminders and bookmarks pages are chrome surfaces, not documents:
     // the address opens them in place rather than loading a tab.
     if (typeof url === "string" && (url === WATCHTOWER_URL || url === `${WATCHTOWER_URL}/`)) {
@@ -3001,9 +3003,12 @@ function installIpc(): void {
       return Promise.resolve();
     }
     // The shell's new tabs (⌘T, New tab, the palette, the home page's links) open where the person is: the current
-    // space (docs/spaces.md §1), said here since createTab's default became loose (2026-10-09).
+    // space (docs/spaces.md §1), said here since createTab's default became loose (2026-10-09). Or, asked (`group:
+    // "loose"`, since 2026-10-13), a Home tab of their own: the double sidebar's Home with none to go back to.
+    const asked = typeof options === "object" && options !== null ? (options as { group?: unknown }).group : undefined;
+    const group = isShellCreateTabGroup(asked) ? asked : "current";
     return requireBrowser()
-      .createTab(typeof url === "string" ? url : newTabUrl(), { group: "current" })
+      .createTab(typeof url === "string" ? url : newTabUrl(), { group })
       .then(() => undefined);
   });
   ipcMain.handle(IPC.tabClose, (_event, tabId: unknown) =>

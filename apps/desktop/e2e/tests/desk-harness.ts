@@ -109,9 +109,11 @@ export interface DeskLaunch {
  * The app at the desk's size (1440 × 900), off the real cursor, its chrome
  * and its desk up and — on a new profile — its first tab on `homeUrl` (the
  * demo's invoices unless said), seeded so the first tab is a page, its
- * sidebar the rail (unless `sidebar` says otherwise: the mode the desk's
- * specs were written for, which was the desk's own default until
- * 2026-10-09 and is a setting since, docs/spaces.md §3), and its desk
+ * sidebar whole (unless `sidebar` says otherwise: the double sidebar's rail
+ * and card, docs/double-sidebar.md — the rail alone has no rows to click
+ * since 2026-10-13, when the desk's specs moved off it; until then they were
+ * written for the rail, the desk's own default until 2026-10-09 and a
+ * setting since, docs/spaces.md §3), and its desk
  * windows' pages at `zoom`: Actual size unless said, as the specs were
  * written for (the default since 2026-10-10 is Fit, a page zoomed out as
  * its window takes less of the desk). (Until 2026-10-12 it also framed the
@@ -130,7 +132,7 @@ export async function launchDesk(
   const { app, userData } = await launchApp({
     size: { width: 1440, height: 900 },
     clearOfCursor: true,
-    ...(fresh ? { sidebar: "rail" as const } : {}),
+    ...(fresh ? { sidebar: "whole" as const } : {}),
     ...(fresh && Object.keys(feel).length > 0 ? { deskFeel: feel } : {}),
     ...launch,
     name: `desk-${launch.name ?? "spec"}`,
@@ -141,8 +143,52 @@ export async function launchDesk(
   return { app, shell, userData };
 }
 
-/** A space's (tab group's) row in the sidebar (its icon on the rail). */
-export const groupSelector = (groupId: string): string => `[data-testid="tab-group"][data-group-id="${groupId}"]`;
+/**
+ * A space's (tab group's) tile on the double sidebar's rail (docs/double-sidebar.md §1): every drawn space, and a
+ * page's with tabs beside it. (Until 2026-10-13 a space's row in the sidebar's list, its icon on the rail.)
+ */
+export const groupSelector = (groupId: string): string => `[data-testid="rail-space"][data-group-id="${groupId}"]`;
+
+/** A space's tile on the rail. */
+export const railSpace = (shell: Page, groupId: string): Locator => shell.locator(groupSelector(groupId));
+
+/** Home on the rail: the day's tabs, the favorites and Pinned in the card. */
+export const railHome = (shell: Page): Locator => shell.getByTestId("rail-home");
+
+/** The card's space view (of `groupId`, if said): its head, layouts, rows and Context. */
+export const spaceView = (shell: Page, groupId?: string): Locator =>
+  shell.locator(groupId === undefined ? '[data-testid="space-view"]' : `[data-testid="space-view"][data-group-id="${groupId}"]`);
+
+/** The rows of the space the card shows (TabList's "space" view): its tabs, the one in use and the rest. */
+export const spaceRows = (shell: Page): Locator => shell.locator('[data-testid="space-tabs"] [role="tab"]');
+
+/** The card's Home view: the favorites, Pinned and Today. */
+export const homeView = (shell: Page): Locator => shell.getByTestId("home-view");
+
+/** A layout on the space view's track (`fill`, `halves`, `stack`, `focus`, `tile`, `columns`, `cascade`), or `smart`: Arrange for me. */
+export const layoutOption = (shell: Page, kind: string): Locator =>
+  kind === "smart" ? shell.getByTestId("layout-arrange") : shell.locator(`[data-testid="layout-option"][data-kind="${kind}"]`);
+
+/**
+ * A space chosen as a person chooses it: its tile on the rail clicked, the card turned to its view and the desk passed
+ * to it (`.desk-stage[data-group-id]`), its windows at rest — the windows of the space it left fly home over the card,
+ * and a press there would be theirs. The card must be up (whole, or the hidden column out) for its view to show.
+ */
+export async function chooseSpace(shell: Page, groupId: string): Promise<void> {
+  await railSpace(shell, groupId).click();
+  await expect(railSpace(shell, groupId)).toHaveAttribute("aria-current", "true");
+  await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${groupId}"]`)).toHaveCount(1);
+  if ((await shell.getByTestId("space-card").count()) > 0) await expect(spaceView(shell, groupId)).toHaveCount(1);
+  await settled(shell);
+}
+
+/** Home chosen on the rail: the Home tab used last (or a new one), the card showing Home, the desk at rest (chooseSpace). */
+export async function chooseHome(shell: Page): Promise<void> {
+  await railHome(shell).click();
+  await expect(railHome(shell)).toHaveAttribute("aria-current", "true");
+  if ((await shell.getByTestId("space-card").count()) > 0) await expect(homeView(shell)).toHaveCount(1);
+  await settled(shell);
+}
 
 /**
  * Make the space current (main's `select`, as a press on its row does), and
@@ -160,7 +206,11 @@ export const windowSelector = (tabId: string): string => `[data-testid="desk-win
 
 /** The desk's window in use (the browser's active tab's, the person on it): where a page the shell draws — home, the brief — is the live one. */
 export const windowInUse = (shell: Page): Locator => shell.locator('[data-testid="desk-window"][data-focused]');
-/** A tab's row in the sidebar — the desk's dock — whether it is drawn whole or as the rail. */
+/**
+ * A tab's row in the sidebar's card — the desk's dock. Only the shown view's rows are drawn (docs/double-sidebar.md):
+ * a space's while it is the current one, Home's loose tabs while Home shows; another space's tab is found by choosing
+ * its space first (chooseSpace). (Until 2026-10-13 every row was drawn, whole or as the rail.)
+ */
 export const rowSelector = (tabId: string): string => `[data-testid="sidebar-tab-list"] [role="tab"][data-tab-id="${tabId}"]`;
 
 export async function box(page: Page, selector: string): Promise<Box> {
@@ -291,6 +341,51 @@ export async function openTray(shell: Page): Promise<void> {
   await shell.getByTestId("desk-bar-more").hover();
   await expect(shell.getByTestId("desk-bar-tray")).toHaveAttribute("data-open", "");
 }
+
+/**
+ * Where the OS's pointer is, in the window's content box, from now on: main's `screen.getCursorScreenPoint`, stubbed
+ * (launch with PISTACHIO_E2E_CURSOR=1, which lets main read it under Playwright) — what main's pointer watch reads to
+ * keep the hidden sidebar out, or put it away.
+ */
+export function pointerAt(app: ElectronApplication, x: number, y: number): Promise<void> {
+  return app.evaluate(
+    ({ BrowserWindow, screen }, at) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (window === undefined) throw new Error("Pistachio window is unavailable");
+      const state = globalThis as unknown as { __pointer?: { x: number; y: number } };
+      state.__pointer = at;
+      screen.getCursorScreenPoint = () => {
+        const content = window.getContentBounds();
+        return { x: content.x + state.__pointer!.x, y: content.y + state.__pointer!.y };
+      };
+    },
+    { x, y },
+  );
+}
+
+/**
+ * Every time main shows or hides the window's buttons (the traffic lights) from now on — and, first, as main has them
+ * now (Electron's own getter, the one its test suite reads). buttonsNow reads the last.
+ */
+export function recordButtons(app: ElectronApplication): Promise<void> {
+  return app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]!;
+    const record = globalThis as unknown as { buttons: boolean[]; buttonsHooked?: boolean };
+    const shown = (window as unknown as { _getWindowButtonVisibility?: () => boolean })._getWindowButtonVisibility?.call(window);
+    record.buttons = shown === undefined ? [] : [shown];
+    if (record.buttonsHooked === true) return;
+    record.buttonsHooked = true;
+    const set = window.setWindowButtonVisibility.bind(window);
+    window.setWindowButtonVisibility = (visible: boolean) => {
+      record.buttons.push(visible);
+      set(visible);
+    };
+  });
+}
+
+/** Whether main last showed the window's buttons (recordButtons). */
+export const buttonsNow = (app: ElectronApplication): Promise<boolean | undefined> =>
+  app.evaluate(() => (globalThis as unknown as { buttons: boolean[] }).buttons.at(-1));
 
 /** How long the desk's windows must hold still, watched from the call, to be at rest. */
 const QUIET_MS = 200;

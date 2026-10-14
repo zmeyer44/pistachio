@@ -22,6 +22,7 @@ import type {
   FeedbackOutcome,
   GlanceState,
   PaneStill,
+  ShellCreateTabOptions,
   ShellRunSnapshot,
   ShellSnapshot,
   ShellTabsSnapshot,
@@ -595,7 +596,8 @@ export interface AppState {
   promoteGlance(): Promise<void>;
   splitGlance(): Promise<void>;
   dismissRecent(host: string): void;
-  createTab(url?: string): Promise<void>;
+  /** A new tab, shown: in the current space, or — `{ group: "loose" }` — a Home tab of its own (ShellCreateTabOptions). */
+  createTab(url?: string, options?: ShellCreateTabOptions): Promise<void>;
   closeTab(tabId: string): Promise<void>;
   selectTab(tabId: string): Promise<void>;
   suspendTab(tabId: string): Promise<void>;
@@ -1643,9 +1645,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Picking or opening a tab is a request to see it: a full-window page
   // (settings, reminders, bookmarks) over the content hole steps aside
   // rather than waiting for its own close button.
-  createTab: (url) => {
+  createTab: (url, options) => {
     get().closePage();
-    return safeAction(() => shellApi().createTab(url), set);
+    return safeAction(() => (options === undefined ? shellApi().createTab(url) : shellApi().createTab(url, options)), set);
   },
   closeTab: (tabId) => {
     const state = get();

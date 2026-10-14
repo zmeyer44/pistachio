@@ -9,7 +9,9 @@
 
 import { useEffect, useState } from "react";
 import { SIDEBAR_EDGE_W, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
+import { spaceColumnWidth } from "../components/space-rail/rail-model";
 import { useAppStore } from "../store";
+import { deskAvailable } from "./desk/open";
 import { useSidebarMode } from "./sidebar-mode";
 
 /** The least content width a settings section lays out well in. */
@@ -33,7 +35,9 @@ export function useSettingsCoversConsole(): boolean {
   const sidebarWidth = useAppStore((state) => state.sidebarWidth);
   const windowWidth = useWindowWidth();
   if (!settingsOpen || !consoleOpen) return false;
-  // (Hidden, the sidebar is its edge's strip: brought out over the desk, or on the web for a moment, it is not the page's room.)
-  const chrome = mode === "whole" ? sidebarWidth : mode === "rail" ? SIDEBAR_RAIL_W : SIDEBAR_EDGE_W;
+  // (Hidden, the sidebar is its edge's strip: brought out over the desk, or on the web for a moment, it is not the page's room.
+  // On the desktop the column is the double sidebar's — the rail, the card and the gap to the desk — as SidebarColumn
+  // lays it out: docs/double-sidebar.md.)
+  const chrome = mode === "hidden" ? SIDEBAR_EDGE_W : deskAvailable() ? spaceColumnWidth(mode, sidebarWidth) : mode === "rail" ? SIDEBAR_RAIL_W : sidebarWidth;
   return windowWidth - chrome - consoleWidth < SETTINGS_MIN_CONTENT_W;
 }

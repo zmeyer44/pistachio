@@ -21,11 +21,13 @@ describe("chrome manifest", () => {
     // A screen share's card sits at the foot of the dock, under the media
     // stack, so the stack's fan-out never covers it.
     expect(featuresIn("media").map((feature) => feature.id)).toEqual(["media", "screenShare"]);
-    // The footer: the menu (the Space avatar) at its start, then the pills —
-    // the sync pill (empty unless sync is stuck or a cloud run is on), the
-    // downloads chip (empty until something is downloaded), then the update
-    // pill (empty until a release is available).
-    expect(featuresIn("footer").map((feature) => feature.id)).toEqual(["menu", "sync", "downloads", "update"]);
+    // The footer: the menu (the Profile's avatar) at its start — a region of
+    // its own, the double sidebar's rail foot — then the pills: the sync pill
+    // (empty unless sync is stuck or a cloud run is on), the downloads chip
+    // (empty until something is downloaded), then the update pill (empty
+    // until a release is available).
+    expect(featuresIn("profile").map((feature) => feature.id)).toEqual(["menu"]);
+    expect(featuresIn("footer").map((feature) => feature.id)).toEqual(["sync", "downloads", "update"]);
   });
 
   it("only references regions the sidebar has", () => {

@@ -33,7 +33,7 @@ export const AREAS = [
     paths: [
       `${UI}/components/desk/**`,
       `${UI}/lib/desk/**`,
-      `${UI}/components/{RailFavorites,PanePlaceholder}.tsx`,
+      `${UI}/components/PanePlaceholder.tsx`,
       `${UI}/{NotchApp,ShelfApp,PipApp,DragApp}.tsx`,
       `${UI}/lib/{dictation,recorder,pane-drag}.ts`,
       `${C}/desk*.ts`,
@@ -48,6 +48,8 @@ export const AREAS = [
       `${UI}/chrome/**`,
       `${UI}/components/{SidebarChrome,SidebarEdge,SidebarMenu,TabList,TabGroupRow,FavoritesGrid,ContextMenu,BrandTile}.tsx`,
       `${UI}/components/sidebar-rail.ts`,
+      // The double sidebar (docs/double-sidebar.md): the desktop's column, its rail of spaces and its card.
+      `${UI}/components/space-rail/**`,
       `${UI}/lib/{sidebar,sidebar-mode,sidebar-tree,tab-selection,chrome-tabs,chrome-status}.ts`,
       `${C}/{sidebar,sidebar-controller,chrome,page-context-menu}.ts`,
       `${M}/{sidebar-store,pointer-zone-watch,page-context-menu}.ts`,

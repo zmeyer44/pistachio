@@ -1,9 +1,9 @@
 /**
  * The sidebar's mode as this shell draws it (docs/spaces.md §3): the whole
- * sidebar, a rail of its icons, or hidden at the window's left edge until the
+ * sidebar, its rail alone, or hidden at the window's left edge until the
  * pointer comes — one setting, `layout.sidebar` (SidebarMode). The rail is
- * offered only where the desk is, the desktop (its favorites sheet, its head's
- * buttons and its now playing all need one): elsewhere a stored rail is drawn
+ * offered only where the desk is, the desktop (it is the double sidebar's
+ * rail of spaces, docs/double-sidebar.md): elsewhere a stored rail is drawn
  * whole, and never rewritten (effectiveSidebarMode). Hidden on the desk is an
  * OVERLAY — the column brought out over the desk's windows, a cover they give
  * way to, so no page is laid out anew — and on the web a reflow, the page
@@ -49,20 +49,35 @@ interface SidebarColumnState {
   out: boolean;
   /** A row of the column (a tab group's, a folder's) is being renamed: the hidden column stays out until it is done. */
   renaming: boolean;
+  /**
+   * A space's name is being edited in the double sidebar's card (components/space-rail's useSpaceRename): held out the
+   * same way. Its own flag, since the list's rows and the card's head are two writers.
+   */
+  renamingSpace: boolean;
   setOut(out: boolean): void;
   setRenaming(renaming: boolean): void;
+  setRenamingSpace(renaming: boolean): void;
 }
 
 export const useSidebarColumn = create<SidebarColumnState>((set, get) => ({
   out: false,
   renaming: false,
+  renamingSpace: false,
   setOut: (out) => {
     if (get().out !== out) set({ out });
   },
   setRenaming: (renaming) => {
     if (get().renaming !== renaming) set({ renaming });
   },
+  setRenamingSpace: (renamingSpace) => {
+    if (get().renamingSpace !== renamingSpace) set({ renamingSpace });
+  },
 }));
+
+/** Something in the column is being renamed — a row of the list, or a space in the card's head — which holds it out. */
+export function columnRenaming(state: Pick<SidebarColumnState, "renaming" | "renamingSpace">): boolean {
+  return state.renaming || state.renamingSpace;
+}
 
 /**
  * The column is ON SCREEN — what main hears as ShellState.sidebarRevealed,

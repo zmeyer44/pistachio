@@ -817,6 +817,23 @@ export interface AgentTurnOptions {
 }
 
 /**
+ * Where a tab the shell opens goes (ShellApi.createTab, docs/spaces.md §2):
+ * `"current"`, the current space — ⌘T, New tab, the palette, the home
+ * page's links, as they always have — or `"loose"`, a Home tab of its own:
+ * a loose space, made current with it (the double sidebar's Home with no
+ * Home tab to go back to, docs/double-sidebar.md §2; since 2026-10-13). A
+ * host with no spaces (the web's) opens it as any tab.
+ */
+export interface ShellCreateTabOptions {
+  group?: "current" | "loose";
+}
+
+/** Whether a value is a ShellCreateTabOptions' `group` (the IPC boundary's check: a renderer sends it, main believes nothing else). */
+export function isShellCreateTabGroup(value: unknown): value is NonNullable<ShellCreateTabOptions["group"]> {
+  return value === "current" || value === "loose";
+}
+
+/**
  * The shell's half of the surface: everything a host that does not own native
  * views can answer. The web app (docs/web-browser-design.md W6) implements
  * exactly this interface over one socket, and the shell UI calls it through
@@ -836,7 +853,8 @@ export interface ShellApi {
   rankAddressIntent(request: AddressIntentRequest): Promise<AddressIntentRanking | null>;
   switchSpace(spaceId: string): Promise<void>;
   forkSpace(request: ForkSpaceRequest): Promise<ForkSpaceResult>;
-  createTab(url?: string): Promise<void>;
+  /** A new tab at `url` (the new-tab page, unsaid), shown: in the current space, or — `group: "loose"` — a Home tab of its own. */
+  createTab(url?: string, options?: ShellCreateTabOptions): Promise<void>;
   closeTab(tabId: string): Promise<void>;
   selectTab(tabId: string): Promise<void>;
   /** Release an inactive human tab's page process while retaining its recoverable state. */

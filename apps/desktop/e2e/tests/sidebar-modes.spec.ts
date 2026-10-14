@@ -21,10 +21,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { SIDEBAR_DEFAULT_W, SIDEBAR_EDGE_W, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
+import { SIDEBAR_CARD_INSET, SIDEBAR_DEFAULT_W, SIDEBAR_EDGE_W, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
 import type { SidebarMode } from "@pistachio/shell-contracts/settings";
 import {
   box,
+  buttonsNow,
   center,
   createGroup,
   frameGrip,
@@ -33,6 +34,8 @@ import {
   selectSpace,
   openMore,
   openTabs,
+  pointerAt,
+  recordButtons,
   rowSelector,
   screenshots,
   selectTab,
@@ -44,44 +47,10 @@ import {
 } from "./desk-harness";
 
 const capture = screenshots("sidebar-modes");
+/** The whole column on the desktop: the double sidebar's rail, its card (the sidebar's width) and the gap to the desk (docs/double-sidebar.md). */
+const WHOLE_W = SIDEBAR_RAIL_W + SIDEBAR_DEFAULT_W + SIDEBAR_CARD_INSET;
 const SLOT = '[data-testid="sidebar-motion-slot"]';
 const PANE = '[data-testid="sidebar-pane"]';
-
-/** Where the OS's pointer is, in the window's content box, from now on. */
-function pointerAt(app: ElectronApplication, x: number, y: number): Promise<void> {
-  return app.evaluate(
-    ({ BrowserWindow, screen }, at) => {
-      const window = BrowserWindow.getAllWindows()[0];
-      if (window === undefined) throw new Error("Pistachio window is unavailable");
-      const state = globalThis as unknown as { __pointer?: { x: number; y: number } };
-      state.__pointer = at;
-      screen.getCursorScreenPoint = () => {
-        const content = window.getContentBounds();
-        return { x: content.x + state.__pointer!.x, y: content.y + state.__pointer!.y };
-      };
-    },
-    { x, y },
-  );
-}
-
-/** Every time main shows or hides the window's buttons from now on — and, first, as main has them now (Electron's own getter). */
-function recordButtons(app: ElectronApplication): Promise<void> {
-  return app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0]!;
-    const record = globalThis as unknown as { buttons: boolean[]; buttonsHooked?: boolean };
-    const shown = (window as unknown as { _getWindowButtonVisibility?: () => boolean })._getWindowButtonVisibility?.call(window);
-    record.buttons = shown === undefined ? [] : [shown];
-    if (record.buttonsHooked === true) return;
-    record.buttonsHooked = true;
-    const set = window.setWindowButtonVisibility.bind(window);
-    window.setWindowButtonVisibility = (visible: boolean) => {
-      record.buttons.push(visible);
-      set(visible);
-    };
-  });
-}
-
-const buttonsNow = (app: ElectronApplication): Promise<boolean | undefined> => app.evaluate(() => (globalThis as unknown as { buttons: boolean[] }).buttons.at(-1));
 
 async function storedMode(userData: string): Promise<SidebarMode | null> {
   try {
@@ -161,9 +130,9 @@ test.describe.serial("the sidebar's three modes on the desk", { tag: ["@desk", "
       await capture(app, shell, name);
     };
 
-    // Whole: the column in the layout, the window's buttons over its toolbar.
-    await step("whole", SIDEBAR_DEFAULT_W, true, "01-whole.png");
-    // Rail: its icons, its head where the buttons were.
+    // Whole: the column in the layout — the rail and the card — the window's buttons over the card's shoulder.
+    await step("whole", WHOLE_W, true, "01-whole.png");
+    // Rail: the rail alone, its head where the buttons were.
     await shell.keyboard.press("Meta+s");
     await step("rail", SIDEBAR_RAIL_W, false, "02-rail.png");
     // Hidden: the strip at the window's edge, its trigger in it; the column away, and the buttons with it.
@@ -173,7 +142,7 @@ test.describe.serial("the sidebar's three modes on the desk", { tag: ["@desk", "
     await expect(shell.locator(PANE)).toHaveAttribute("data-hidden", "");
     // And whole again.
     await shell.keyboard.press("Meta+s");
-    await step("whole", SIDEBAR_DEFAULT_W, true, "04-whole-again.png");
+    await step("whole", WHOLE_W, true, "04-whole-again.png");
     await expect(shell.getByTestId("sidebar-edge")).toHaveCount(0);
   });
 

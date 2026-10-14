@@ -116,7 +116,6 @@ import {
   seamsAt,
   seamTravel,
   alongSeam,
-  cascadeRects,
   thirdsCell,
   thirdsZone,
   tileRect,
@@ -139,6 +138,7 @@ import {
   type ThirdsCell,
   type TileZone,
 } from "../../lib/desk/geometry";
+import { holdsLayout, isLaidOutAs, layoutNow, layoutOf, layoutRects, type DeskLayoutKind, type LaidOutAs } from "../../lib/desk/layouts";
 import {
   BOUNCE_RESTITUTION,
   clamp,
@@ -438,6 +438,31 @@ export interface DeskView {
   gesture: "move" | "resize" | "spawn" | null;
   /** Coming out (passing to another group: switchGroup), or open. (The "leaving" phase went with leaving the desk, 2026-10-09.) */
   phase: "entering" | "open";
+  /**
+   * The named layout the desk is in (lib/desk/layouts.ts, layoutNow), read
+   * off where its windows are GOING — so it is the new one as soon as a
+   * layout is chosen — or null, the windows set down by hand. Of the
+   * windows a layout lays out (`layoutCount`). The layout the desk was laid
+   * out in holds while they stand where it put them, the desk resized or
+   * not (#laidAs).
+   */
+  layout: DeskLayoutKind | null;
+  /** How many windows a layout lays out: those out on the desk at their own size (masked and minimized ones stay put). */
+  layoutCount: number;
+  /** A layout being looked at (previewLayout): where each window would go, drawn as ghosts once the `layout-preview` cover is clear. */
+  preview: DeskLayoutPreview | null;
+}
+
+/** The cover over the whole stage while a layout is previewed (previewLayout): its ghosts are drawn once no live page is under it. */
+export const LAYOUT_PREVIEW_COVER = "layout-preview";
+
+/** How many spaces' named layouts the desk remembers (#laidAs): the ones it passed from longest ago go first. */
+const MAX_LAID_LAYOUTS = 64;
+
+/** Where each window would go for a layout looked at in the space view (previewLayout), in the stage's coordinates. */
+export interface DeskLayoutPreview {
+  kind: DeskLayoutKind;
+  ghosts: ReadonlyArray<{ id: string; rect: Rect }>;
 }
 
 /** The desk as the agent reads it (agentLayout): the windows out, bottom to top (documents among them), and the group's tabs in the dock. */
@@ -488,7 +513,19 @@ export interface DeskLayoutSnapshot {
     own?: Rect;
     ownSize?: Size;
     miniOwn?: Rect;
+    /**
+     * The box it lets go of the desk to (a filled window's: toggleMaximize), and that box with no room kept — put back
+     * with it, so a window filled before a layout un-fills to where it was after ⌃Z (2026-10-13; it was lost).
+     */
+    restore?: Rect | null;
+    restoreOwn?: Rect;
   }>;
+  /**
+   * The named layout the desk was in, as it was laid out (#laidAs), when the
+   * windows still stood where it put them: put back with them, so ⌃Z after
+   * another layout gives the desk its layout back, resized since or not.
+   */
+  laidAs?: LaidOutAs;
   /**
    * The desk the boxes are of (#usable then), and how much room was kept for
    * the chat's place in it: put back on a desk of another size, or with other
@@ -808,6 +845,24 @@ export class DeskEngine {
   #shift = false;
   /** A tab's row in the sidebar is under the pointer: main takes ⇧⌫ for it (setDockHover). */
   #dockHover = false;
+  /** The desk just laid itself out: main takes ⌃Z for it (setUndoKey). */
+  #undoKey = false;
+  /** The named layout being looked at in the space view (previewLayout): its ghosts are drawn under the LAYOUT_PREVIEW_COVER. */
+  #previewKind: DeskLayoutKind | null = null;
+  /** Who hears a named layout laid out (onLaidOut): the smart layout's runner, which offers ⌃Z for it. */
+  readonly #laidOutListeners = new Set<(undo: DeskLayoutSnapshot) => void>();
+  /**
+   * The named layout each space's desk was last laid out in, by space (a
+   * desk of no space under ""): its kind, the desk then, and the box it gave
+   * each window. The desk is in it while its windows stand in those boxes,
+   * carried over to the desk as it is now (layoutNow, holdsLayout) — so a
+   * cascade, or a tiled desk, is still one after ⌘S, a window resize or the
+   * chat's room, which geometry alone stopped reading (2026-10-13). Nothing
+   * clears it by hand: a window moved, resized, opened or closed no longer
+   * stands where it said, and the desk reads by geometry alone; a space
+   * passed from and back, its windows where they were, is in it again.
+   */
+  readonly #laidAs = new Map<string, LaidOutAs>();
   /** The window whose page is frozen for its mask to be chosen (startMask). */
   #selecting: string | null = null;
   /** A window masked a moment ago, and the window it was cut from, fading until `until`. */
@@ -874,6 +929,9 @@ export class DeskEngine {
       snapping: false,
       gesture: null,
       phase: "entering",
+      layout: null,
+      layoutCount: 0,
+      preview: null,
     };
   }
 
@@ -925,6 +983,7 @@ export class DeskEngine {
    */
   applyLayout(layout: ReadonlyMap<string, Rect>): DeskLayoutSnapshot | null {
     if (this.#phase !== "open" || this.#gesture !== null) return null;
+    this.#dropPreview();
     const undo = this.layoutSnapshot();
     const moving = [...layout].filter(([id]) => this.#laidOutByDesk(id));
     moving.forEach(([id, rect], index) => {
@@ -935,11 +994,161 @@ export class DeskEngine {
       // (A window still coming out turns toward its new place in the air.)
       win.delay = win.flight !== null ? 0 : this.#beat(index, moving.length, 0, 0.035);
     });
+    // (The smart layout's tile, or main and side, is that named layout: remembered as one, resized or not.)
+    this.#rememberLayout(null);
     this.#save();
     this.#emit();
     this.#render();
     this.#kick();
     return undo;
+  }
+
+  // ── Named layouts (docs/double-sidebar.md §1 "Layouts") ────────────────
+
+  /** A named layout laid out (layOut): where every window was going before, for ⌃Z (the smart layout's runner offers it). */
+  onLaidOut(listener: (undo: DeskLayoutSnapshot) => void): () => void {
+    this.#laidOutListeners.add(listener);
+    return () => this.#laidOutListeners.delete(listener);
+  }
+
+  /**
+   * The windows laid out as `kind` (lib/desk/layouts.ts): the space view's
+   * layouts, the More card's Tile and Cascade, ⌘⌥T and ⌘⌥C. The windows a
+   * layout lays out are Tile's as ever — out on the desk at their own size
+   * (#arrangeable): masked and minimized ones stay where they are — and
+   * they go on the desk's own motion, a beat apart, as an arrangement
+   * always has; a window in hand is let go first. A cascade stacks them as
+   * it steps them, the window in use in front. For five seconds after, ⌃Z
+   * puts them back (onLaidOut → the smart layout's runner), with no notice:
+   * the windows moving is what was asked for.
+   *
+   * Whether anything moved: not while the desk is not open, nor with no
+   * windows, nor when the layout is not one for so many (Fill for two,
+   * Main and side without room for its column), nor when the windows are
+   * laid out so already — Tile on a tiled desk leaves every window where it
+   * is, rather than swapping the window in use into the first tile.
+   */
+  layOut(kind: DeskLayoutKind): boolean {
+    const undo = this.#layOut(kind);
+    if (undo === null) return false;
+    for (const listener of [...this.#laidOutListeners]) listener(undo);
+    return true;
+  }
+
+  /** layOut without offering ⌃Z (the agent's arrangement keeps its own Undo layout: arrangeFor). */
+  #layOut(kind: DeskLayoutKind): DeskLayoutSnapshot | null {
+    if (this.#phase !== "open") return null;
+    this.#cancelGesture();
+    this.#dropPreview();
+    const windows = this.#layoutWindows();
+    const usable = this.#usable();
+    // In it already — its places, or where it put them on a desk since resized (#laidAs) — nothing moves.
+    const laid = this.#laidAs.get(this.#laidKey());
+    const holding = laid !== undefined && laid.kind === kind && holdsLayout(laid, windows, usable);
+    const already = windows.size > 0 && (holding || isLaidOutAs(kind, [...windows.values()], usable));
+    const layout = windows.size === 0 || already ? null : layoutRects(kind, windows, usable, this.#focused);
+    if (layout === null) {
+      // (In its places by hand, or by another layout's: it is this one from now on, resized or not.)
+      if (already && !holding) this.#rememberLayout(kind);
+      this.#render();
+      this.#kick();
+      return null;
+    }
+    const undo = this.layoutSnapshot();
+    [...layout].forEach(([id, rect], index) => {
+      const win = this.#wins.get(id)!;
+      win.target = { ...rect };
+      win.restore = null;
+      win.coasting = false;
+      // (A window still coming out turns toward its new place in the air.)
+      win.delay = win.flight !== null ? 0 : this.#beat(index, layout.size, 0, 0.035);
+    });
+    // A cascade reads back to front: its windows stacked in its order, over any it left where they were.
+    if (kind === "cascade") {
+      this.#order = [...this.#order.filter((id) => !layout.has(id)), ...layout.keys()];
+      this.#stackShelf();
+    }
+    this.#rememberLayout(kind);
+    this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
+    return undo;
+  }
+
+  /**
+   * A layout looked at in the space view (its segment hovered or focused):
+   * where each window would go is in the view (`preview`), for the surface
+   * to draw as ghosts over the windows — under a cover spanning the stage
+   * (LAYOUT_PREVIEW_COVER), so the live pages give way to their stills
+   * first and nothing is drawn over a live page. Null takes it away, and
+   * so do a window taken in hand, the desk passing to another space, and
+   * any layout applied.
+   */
+  previewLayout(kind: DeskLayoutKind | null): void {
+    const next = kind !== null && this.#phase === "open" && this.#gesture === null ? kind : null;
+    if (next === this.#previewKind) return;
+    this.#previewKind = next;
+    if (next === null) this.#covers.delete(LAYOUT_PREVIEW_COVER);
+    else this.#covers.set(LAYOUT_PREVIEW_COVER, this.#stageRect());
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /** The preview gone (a layout applied, a window in hand, the desk passing): its cover with it. The view says so with the next emit. */
+  #dropPreview(): void {
+    if (this.#previewKind === null) return;
+    this.#previewKind = null;
+    this.#covers.delete(LAYOUT_PREVIEW_COVER);
+    this.#dirtyView = true;
+  }
+
+  /** The whole stage, in its own coordinates. */
+  #stageRect(): Rect {
+    return { x: 0, y: 0, w: this.#stageBox.width, h: this.#stageBox.height };
+  }
+
+  /** The windows a named layout lays out (#arrangeable), bottom to top, each where it is going. */
+  #layoutWindows(): Map<string, Rect> {
+    const ids = new Set(this.#arrangeable(this.#groupTabIds));
+    const windows = new Map<string, Rect>();
+    for (const id of this.#order) {
+      if (!ids.has(id)) continue;
+      const win = this.#wins.get(id)!;
+      windows.set(id, { ...(win.target ?? win.rect) });
+    }
+    return windows;
+  }
+
+  /** The space #laidAs keeps the desk's named layout under. */
+  #laidKey(): string {
+    return this.#groupId ?? "";
+  }
+
+  /**
+   * The desk's space is in a named layout as its windows now stand (#laidAs):
+   * `kind`, as it was just laid out, or — none said (the smart layout's
+   * move) — the one their boxes read as; with none, the space's is
+   * forgotten.
+   */
+  #rememberLayout(kind: DeskLayoutKind | null): void {
+    const key = this.#laidKey();
+    const usable = this.#usable();
+    const windows = this.#layoutWindows();
+    const laid = kind ?? layoutOf([...windows.values()], usable);
+    this.#laidAs.delete(key);
+    if (laid === null || windows.size === 0) return;
+    this.#laidAs.set(key, { kind: laid, desk: usable, boxes: windows });
+    if (this.#laidAs.size <= MAX_LAID_LAYOUTS) return;
+    const oldest = this.#laidAs.keys().next();
+    if (oldest.done !== true) this.#laidAs.delete(oldest.value);
+  }
+
+  /** The named layout the desk's space was laid out in, while its windows still stand where it put them; else null. */
+  #laidNow(): LaidOutAs | null {
+    const laid = this.#laidAs.get(this.#laidKey());
+    return laid !== undefined && holdsLayout(laid, this.#layoutWindows(), this.#usable()) ? laid : null;
   }
 
   attachStage(el: HTMLElement | null): void {
@@ -1154,6 +1363,19 @@ export class DeskEngine {
   setDockHover(hovered: boolean): void {
     if (hovered === this.#dockHover) return;
     this.#dockHover = hovered;
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * The smart layout just moved the windows, or its moment to take that
+   * back is over: while it lasts, ⌃Z puts the layout back wherever the
+   * keyboard is — main takes the key (DeskState.undoKey), and the desk's
+   * arranger is told of it (smart-arrange.ts).
+   */
+  setUndoKey(armed: boolean): void {
+    if (armed === this.#undoKey) return;
+    this.#undoKey = armed;
     this.#render();
     this.#kick();
   }
@@ -1592,6 +1814,7 @@ export class DeskEngine {
     reveal?: boolean;
   }): void {
     this.#cancelGesture();
+    this.#dropPreview();
     this.#selecting = null;
     this.#editing = null;
     this.#save();
@@ -1667,6 +1890,7 @@ export class DeskEngine {
    * flew on into the row and was gone, its tab the desk's all the same.
    */
   regroup(tabIds: readonly string[], shellIds: readonly string[] | null, groupId: string | null = this.#groupId): void {
+    this.#dropPreview();
     this.#groupTabIds = tabIds;
     this.#shellIds = shellIds;
     this.#groupId = groupId;
@@ -2399,31 +2623,26 @@ export class DeskEngine {
     return null;
   }
 
-  /** Every window on the desk tiled, or fanned, in the inventory's order — each a beat after the last. */
-  arrange(kind: "tile" | "cascade", groupTabIds: readonly string[] = this.#groupTabIds): void {
-    if (this.#phase !== "open") return;
-    this.#cancelGesture();
-    const ids = this.#arrangeable(groupTabIds);
-    const usable = this.#usable();
-    const rects = kind === "tile" ? tileRects(ids.length, usable) : cascadeRects(ids.length, usable);
-    ids.forEach((tabId, index) => {
-      const win = this.#wins.get(tabId)!;
-      win.target = rects[index]!;
-      win.restore = null;
-      win.coasting = false;
-      win.delay = this.#beat(index, ids.length, 0, 0.035);
-    });
-    // A cascade reads front to back in the inventory's order.
-    if (kind === "cascade") this.#order = [...this.#order.filter((tabId) => !ids.includes(tabId)), ...ids];
-    this.#emit();
-    this.#kick();
+  /**
+   * Every window on the desk tiled, or fanned — the More card's Tile and
+   * Cascade, ⌘⌥T and ⌘⌥C: the named layouts of those names (layOut), ⌃Z
+   * putting them back for a moment after. (Until 2026-10-13 the tiles went
+   * in the dock's order, and nothing put them back.)
+   */
+  arrange(kind: "tile" | "cascade"): boolean {
+    return this.layOut(kind);
   }
 
   /** The windows an arrangement lays out: the tabs in the dock's order, then the documents out, bottom to top. */
   #arrangeable(groupTabIds: readonly string[]): string[] {
     // Masked windows are pictures: tiling would stretch them, so they stay where they are; minimized ones stay minimized.
+    // (Nor one of a space the desk has passed from, waiting for its still to fly home.)
     const arranged = (id: string): boolean =>
-      this.#wins.has(id) && this.#wins.get(id)!.flight !== "away" && this.#wins.get(id)!.mask === null && this.#wins.get(id)!.mini === null;
+      this.#wins.has(id) &&
+      this.#wins.get(id)!.flight !== "away" &&
+      this.#wins.get(id)!.mask === null &&
+      this.#wins.get(id)!.mini === null &&
+      !this.#departing.has(id);
     return [...groupTabIds.filter(arranged), ...this.#order.filter((id) => !isTabWindow(id) && arranged(id))];
   }
 
@@ -2629,12 +2848,14 @@ export class DeskEngine {
     if ((plan.place ?? []).some((entry) => entry.zone === undefined && entry.box === undefined)) return "each window placed needs a zone or a box";
     const placed = new Set((plan.place ?? []).map((entry) => entry.tabId));
     if ((plan.putAway ?? []).some((tabId) => placed.has(tabId))) return "a window cannot be placed and put away at once";
+    this.#dropPreview();
     for (const tabId of plan.bringOut ?? []) if (!placed.has(tabId)) this.#addQuiet(tabId);
     for (const tabId of plan.putAway ?? []) {
       const win = this.#wins.get(tabId);
       if (win !== undefined && win.flight !== "away") this.#sendAway(win, false);
     }
-    if (plan.layout !== undefined) this.arrange(plan.layout);
+    // (The agent's turn keeps its own Undo layout: no ⌃Z offered for its tile or cascade.)
+    if (plan.layout !== undefined) this.#layOut(plan.layout);
     const usable = this.#usable();
     const reach = this.#reach();
     (plan.place ?? []).forEach((entry, index) => {
@@ -2672,6 +2893,7 @@ export class DeskEngine {
 
   /** Where every window is going now: what Undo layout puts back. */
   layoutSnapshot(): DeskLayoutSnapshot {
+    const laidAs = this.#laidNow();
     return {
       windows: this.#staying().map((tabId) => {
         const win = this.#wins.get(tabId)!;
@@ -2680,8 +2902,12 @@ export class DeskEngine {
         const kept = this.#unreserved.get(tabId);
         const own = kept !== undefined && sameRect(rect, kept.set) ? { own: kept.base, ...(kept.size === undefined ? {} : { ownSize: kept.size }) } : {};
         const miniOwn = kept?.mini != null && win.mini !== null && sameRect(win.mini.restore, kept.mini.set) ? { miniOwn: kept.mini.base } : {};
-        return { tabId, rect, mini: win.mini === null ? null : { restore: { ...win.mini.restore }, parked: win.mini.parked }, mask: win.mask, ...own, ...miniOwn };
+        // (Filled, the box it lets go of the desk to: a layout drops it, and ⌃Z gives it back.)
+        const restore = win.restore === null ? {} : { restore: { ...win.restore } };
+        const restoreOwn = kept?.restore != null && win.restore !== null && sameRect(win.restore, kept.restore.set) ? { restoreOwn: kept.restore.base } : {};
+        return { tabId, rect, mini: win.mini === null ? null : { restore: { ...win.mini.restore }, parked: win.mini.parked }, mask: win.mask, ...own, ...miniOwn, ...restore, ...restoreOwn };
       }),
+      ...(laidAs === null ? {} : { laidAs }),
       desk: { usable: this.#usable(), reserve: this.#reserve },
     };
   }
@@ -2689,10 +2915,12 @@ export class DeskEngine {
   /**
    * Every window back where a snapshot had it: the ones it did not have go
    * into the dock (the window in use excepted), the ones it had come out,
-   * and the stack is its order again — the window in use on top.
+   * and the stack is its order again — the window in use on top. Whether it
+   * did: not while the desk is not open, or a window is in hand.
    */
-  restoreLayout(snapshot: DeskLayoutSnapshot): void {
-    if (this.#phase !== "open" || this.#gesture !== null) return;
+  restoreLayout(snapshot: DeskLayoutSnapshot): boolean {
+    if (this.#phase !== "open" || this.#gesture !== null) return false;
+    this.#dropPreview();
     const wanted = snapshot.windows.filter((entry) => this.#isMember(entry.tabId));
     const keep = new Set(wanted.map((entry) => entry.tabId));
     for (const tabId of this.#staying()) {
@@ -2730,11 +2958,14 @@ export class DeskEngine {
       const picture = entry.mask != null ? "mask" : entry.mini !== null ? "mini" : null;
       const rect = carried(entry.rect, entry.own, picture, entry.ownSize);
       const mini = entry.mini === null ? null : { restore: carried(entry.mini.restore, entry.miniOwn, null, undefined), parked: entry.mini.parked };
+      // A filled window's box to let go of the desk to, as it was (2026-10-13: until then ⌃Z after a layout lost it).
+      const restore = entry.restore == null || picture !== null ? null : carried(entry.restore, entry.restoreOwn, null, undefined);
       let win = this.#wins.get(entry.tabId);
       if (win === undefined) {
         this.#addQuiet(entry.tabId, rect);
         win = this.#wins.get(entry.tabId);
         if (win === undefined) continue;
+        win.restore = restore;
       } else {
         // Still on its way into the dock (put away a moment ago): it turns back, rather than being lost to it.
         // On its way to be closed, or to another group, it goes on: that was the person's doing.
@@ -2743,7 +2974,7 @@ export class DeskEngine {
         if (mini === null && win.mini !== null) this.#unminimize(win);
         else if (mini !== null) this.#setMinimized(win, mini);
         win.target = rect;
-        win.restore = null;
+        win.restore = restore;
         win.coasting = false;
         win.delay = 0;
       }
@@ -2751,11 +2982,22 @@ export class DeskEngine {
       else {
         const base = ownOf(entry.rect, entry.own, picture !== null);
         const miniBase = entry.mini === null ? null : ownOf(entry.mini.restore, entry.miniOwn, false);
+        const restoreBase = restore === null || entry.restore == null ? null : ownOf(entry.restore, entry.restoreOwn, false);
         const size = picture === null ? undefined : (entry.ownSize ?? { w: entry.rect.w, h: entry.rect.h });
-        if (base !== null) this.#unreserved.set(entry.tabId, { base, set: win.target ?? win.rect, ...(size === undefined ? {} : { size }), restore: null, mini: miniBase === null || mini === null ? null : { base: miniBase, set: mini.restore } });
+        if (base !== null)
+          this.#unreserved.set(entry.tabId, {
+            base,
+            set: win.target ?? win.rect,
+            ...(size === undefined ? {} : { size }),
+            restore: restoreBase === null || restore === null ? null : { base: restoreBase, set: restore },
+            mini: miniBase === null || mini === null ? null : { base: miniBase, set: mini.restore },
+          });
         else this.#unreserved.delete(entry.tabId);
       }
     }
+    // The named layout it was in, as it was laid out: the desk is in it again, resized since or not.
+    if (snapshot.laidAs === undefined) this.#laidAs.delete(this.#laidKey());
+    else this.#laidAs.set(this.#laidKey(), snapshot.laidAs);
     this.#layShelf();
     const order = wanted.map((entry) => entry.tabId).filter((tabId) => this.#wins.has(tabId));
     const rest = this.#order.filter((tabId) => !order.includes(tabId));
@@ -2766,6 +3008,7 @@ export class DeskEngine {
     this.#emit();
     this.#render();
     this.#kick();
+    return true;
   }
 
   /**
@@ -3630,6 +3873,9 @@ export class DeskEngine {
   #render(): void {
     if (this.#destroyed) return;
     const now = performance.now();
+    // A layout looked at: a window taken in hand puts it away; while it lasts, its cover is the whole stage, as that is now.
+    if (this.#previewKind !== null && this.#gesture !== null) this.#dropPreview();
+    if (this.#previewKind !== null) this.#covers.set(LAYOUT_PREVIEW_COVER, this.#stageRect());
     let drawersMoving = false;
     for (const win of this.#wins.values()) if (this.#stepDrawer(win, now)) drawersMoving = true;
     // A mask being edited: its page shown around the region, and its bar,
@@ -4425,6 +4671,7 @@ export class DeskEngine {
     }
     zoomed.splice(MAX_DESK_WINDOWS);
     const dockHover = this.#dockHover;
+    const undoKey = this.#undoKey;
     // Main hears of tabs' windows only: a document has no page of its own.
     const tabIds = leavingLast(this.#staying().filter(isTabWindow)).slice(0, MAX_DESK_WINDOWS);
     // The pages wanted awake (#liveWindows), among those; and the group they are of.
@@ -4436,10 +4683,11 @@ export class DeskEngine {
       ...(groupId === null ? {} : { groupId }),
       grab: grab === "off" ? null : grab,
       dockHover,
+      undoKey,
       masks,
       zoomed,
     };
-    const deskKey = `${groupId ?? ""}|${tabIds.join(" ")}|${live.join(" ")}|${desk.grab ?? ""}|${dockHover ? "hover" : ""}|${masks
+    const deskKey = `${groupId ?? ""}|${tabIds.join(" ")}|${live.join(" ")}|${desk.grab ?? ""}|${dockHover ? "hover" : ""}|${undoKey ? "undo" : ""}|${masks
       .map((page) => `${page.tabId}:${deskMaskKey(page.mask)}:${page.width}x${page.height}`)
       .join(" ")}|${zoomed.map((page) => `${page.tabId}:${page.width}x${page.height}@${page.zoom}`).join(" ")}`;
     if (deskKey !== this.#sentDesk) {
@@ -4528,6 +4776,10 @@ export class DeskEngine {
         if (!id.startsWith("\u0000cover:")) zs.set(id, index);
         else if (this.#stacked.get(id.slice("\u0000cover:".length))!.size > 0) coverZ.set(id.slice("\u0000cover:".length), index);
       });
+    // The named layout the desk is in, from where its windows are going; and the one looked at, if any, laid over them.
+    const laid = this.#layoutWindows();
+    const previewKind = this.#previewKind;
+    const ghosts = previewKind === null || laid.size === 0 ? null : layoutRects(previewKind, laid, usable, this.#focused);
     this.#view = {
       windows: this.#order.map((tabId, index) => {
         const win = this.#wins.get(tabId)!;
@@ -4576,6 +4828,9 @@ export class DeskEngine {
       snapping: gesture?.snapping ?? false,
       gesture: gesture?.kind ?? null,
       phase: this.#phase,
+      layout: layoutNow(laid, usable, this.#laidAs.get(this.#laidKey()) ?? null),
+      layoutCount: laid.size,
+      preview: previewKind === null ? null : { kind: previewKind, ghosts: ghosts === null ? [] : [...ghosts].map(([id, rect]) => ({ id, rect })) },
     };
     for (const listener of this.#listeners) listener();
   }

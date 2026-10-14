@@ -121,6 +121,9 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
       name: "page-zoom",
       homeUrl: urls[0],
       zoom: "fit",
+      // The rail alone, where a video out of sight floats (beside the whole sidebar's card its card takes it instead):
+      // the desk these were written on, and nothing here needs a row.
+      sidebar: "rail",
       // A window opened: the others stay where they are (the spec tiles them itself).
       env: { PISTACHIO_LAYOUT_SCRIPT: JSON.stringify({ opened: { move: "keep" }, closed: { move: "keep" }, asked: { move: "keep" } }) },
     }));

@@ -2,9 +2,9 @@
  * Spaces end to end (docs/spaces.md): every listed tab is in one, a space
  * may stand empty, and which is current is main's — the desk always shows it.
  * New space from the sidebar's slot is an empty space, current at once, its
- * name field open, and its desk the empty mark; a row let go on its header
- * joins it, its window out; its last tab closed, it stays (it is the
- * person's), empty where it stood. A loose space goes with its last tab and
+ * name field open, and its desk the empty mark; a row let go on its tile on
+ * the rail joins it, its window out once it is chosen; its last tab closed,
+ * it stays (it is the person's), empty where it stood. A loose space goes with its last tab and
  * the desk passes to the space of the tab used last. Files dropped on an
  * empty desk are its space's, and keep it; Close space files it in the
  * archive and Restore brings it back by its id, its Stack with it. Tidy
@@ -18,23 +18,27 @@
 import { expect, test, type ElectronApplication, type JSHandle, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { ArchiveEntryView } from "@pistachio/shell-contracts/tab-archive";
-import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { dayRowUnits, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { launchApp, newProfile } from "./app";
 import { nextFrames, settled as chromeSettled } from "./chrome-harness";
 import {
   api,
   box,
   center,
+  chooseHome,
+  chooseSpace,
   createGroup,
   groupSelector,
   INVOICES,
   launchDesk,
   openTabs,
+  railSpace,
   rowSelector,
   screenshots,
   selectTab,
   settled,
   snapshot,
+  spaceView,
   tabGroupCommand,
   VENDOR,
   windowSelector,
@@ -57,13 +61,16 @@ function closeTab(shell: Page, tabId: string): Promise<void> {
   return shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), tabId);
 }
 
-/** The day's row units as the sidebar draws them, top to bottom: a tab's row by its tab, a space's by its id. */
-function dayUnits(shell: Page): Promise<string[]> {
-  return shell.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('[data-testid="sidebar-tab-list"] [data-row-kind="tab"], [data-testid="sidebar-tab-list"] [data-row-kind="group"]')].map((row) =>
-      row.dataset["rowKind"] === "group" ? `group:${row.dataset["groupId"] ?? ""}` : `tab:${row.dataset["tabId"] ?? ""}`,
-    ),
-  );
+/**
+ * The day's row units, top to bottom, as main counts them (dayRowUnits): a tab's by its tab, a space's by its id. The
+ * double sidebar draws them apart — the spaces on the rail, in this order, the loose tabs in Today — so they are read
+ * from the snapshot. (Until 2026-10-13 from the sidebar's one list.)
+ */
+async function dayUnits(shell: Page): Promise<string[]> {
+  const now = await snapshot(shell);
+  const underEntries = new Set((now.anchorGroups ?? []).flatMap((group) => group.tabIds));
+  const day = now.tabs.filter((tab) => tab.anchorId === null && !underEntries.has(tab.id)).map((tab) => tab.id);
+  return dayRowUnits(day, now.splitGroups, now.tabGroups).filter((unit) => unit.kind !== "split").map((unit) => (unit.kind === "group" ? unit.id : `tab:${unit.id}`));
 }
 
 /**
@@ -153,11 +160,12 @@ test.describe.serial("a space of one's own: New space, a row let in, its last ta
     expect(made.loose).toBeUndefined();
     // Nothing is in use: the keyboard is the shell's.
     expect((await snapshot(shell)).activeTabId).toBeNull();
-    // Its row: the name field open on it, the row empty, the current one.
-    const row = shell.locator(groupSelector(lisbon));
-    await expect(row).toHaveAttribute("data-empty", "");
-    await expect(row).toHaveAttribute("data-current", "");
-    const name = row.getByTestId("tab-group-name-input");
+    // Its tile on the rail, the chosen one, an empty ring; the card its view, the name field open in its head.
+    const tile = railSpace(shell, lisbon);
+    await expect(tile).toHaveAttribute("aria-current", "true");
+    await expect(tile.getByTestId("space-empty-mark")).toHaveCount(1);
+    await expect(spaceView(shell, lisbon).getByTestId("space-empty-line")).toBeVisible();
+    const name = spaceView(shell, lisbon).getByTestId("tab-group-name-input");
     await expect(name).toBeFocused();
     // The desk: the space's, with nothing out — the empty mark, its name and what can be done.
     await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${lisbon}"][data-empty]`)).toHaveCount(1);
@@ -167,23 +175,27 @@ test.describe.serial("a space of one's own: New space, a row let in, its last ta
     await expect(shell.getByTestId("desk-empty-new-tab")).toBeVisible();
     await capture(app, shell, "01-new-space.png");
 
-    // ── 2. Named: the row and the desk say so ─
+    // ── 2. Named: the card and the desk say so ─
     await name.fill("Lisbon");
     await name.press("Enter");
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === lisbon)?.title).toBe("Lisbon");
     await expect(name).toHaveCount(0);
+    await expect(spaceView(shell, lisbon).getByTestId("space-name")).toHaveText("Lisbon");
     await expect(shell.getByTestId("desk-empty-title")).toHaveText("Lisbon");
     await capture(app, shell, "02-named.png");
   });
 
-  test("a row let go on the empty space's header joins it, and its window comes out on the space's desk", async () => {
-    // (Held over it until it says it takes the row.)
-    await dragRow(shell, rowSelector(vendor), `${groupSelector(lisbon)} [data-testid="tab-group-header"]`, async () => {
-      await expect(shell.locator(groupSelector(lisbon))).toHaveAttribute("data-receiving", "");
+  test("a row let go on the empty space's tile on the rail joins it, and its window comes out on the space's desk", async () => {
+    // The row is Home's, in Today: Home chosen first (the card shows the current space's rows, or Home's).
+    await chooseHome(shell);
+    // (Held over its tile until the tile says it takes the row.)
+    await dragRow(shell, rowSelector(vendor), groupSelector(lisbon), async () => {
+      await expect(railSpace(shell, lisbon)).toHaveAttribute("data-dropping", "");
     });
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === lisbon)?.tabIds).toEqual([vendor]);
-    // Its loose space is gone with it; the space it joined is current, its window out.
+    // Its loose space is gone with it; the space it joined, chosen, has its window out.
     await expect.poll(async () => (await snapshot(shell)).looseGroups?.some((group) => group.tabIds.includes(vendor)) ?? false).toBe(false);
+    await chooseSpace(shell, lisbon);
     expect((await snapshot(shell)).currentGroupId).toBe(lisbon);
     await expect(shell.locator(windowSelector(vendor))).toHaveCount(1);
     await expect(shell.getByTestId("desk-empty")).toHaveCount(0);
@@ -207,8 +219,8 @@ test.describe.serial("a space of one's own: New space, a row let in, its last ta
     expect((await snapshot(shell)).activeTabId).toBeNull();
     await expect(shell.getByTestId("desk-empty")).toBeVisible();
     await expect(shell.getByTestId("desk-empty-title")).toHaveText("Lisbon");
-    // Where it stood: the row has not jumped to the end (TabGroupInfo.beforeUnit).
-    await expect(shell.locator(groupSelector(lisbon))).toHaveAttribute("data-empty", "");
+    // Where it stood: the space has not jumped to the end (TabGroupInfo.beforeUnit); its tile the empty ring.
+    await expect(railSpace(shell, lisbon).getByTestId("space-empty-mark")).toHaveCount(1);
     await expect.poll(() => dayUnits(shell)).toEqual(units.filter((unit) => unit !== `tab:${vendor}`));
     await capture(app, shell, "04-last-tab-closed.png");
   });
@@ -230,7 +242,7 @@ test.describe.serial("a space of one's own: New space, a row let in, its last ta
     await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${now.currentGroupId!}"]`)).toHaveCount(1);
     await expect(shell.locator(windowSelector(north))).toHaveCount(1);
     // The person's empty space stays where it was, current no more.
-    await expect(shell.locator(groupSelector(lisbon))).not.toHaveAttribute("data-current", "");
+    await expect(railSpace(shell, lisbon)).not.toHaveAttribute("aria-current", "true");
     expect((await snapshot(shell)).tabGroups.find((group) => group.id === lisbon)?.tabIds).toEqual([]);
     await settled(shell, app);
     await capture(app, shell, "05-loose-gone-passed.png");
@@ -282,7 +294,7 @@ test.describe.serial("an empty space's Stack: kept, filed and restored whole, an
     await selectTab(shell, spare);
     await expect(shell.locator(`.desk-stage[data-phase="open"]:not([data-group-id="${kept}"])`)).toHaveCount(1);
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === kept)?.tabIds ?? null).toEqual([]);
-    await expect(shell.locator(groupSelector(kept))).toHaveAttribute("data-empty", "");
+    await expect(railSpace(shell, kept).getByTestId("space-empty-mark")).toHaveCount(1);
     await settled(shell, app);
     await capture(app, shell, "11-kept-by-its-stack.png");
 
@@ -294,8 +306,8 @@ test.describe.serial("an empty space's Stack: kept, filed and restored whole, an
   });
 
   test("Close space files an empty space whole, and Restore brings it back by its id, its Stack with it", async () => {
-    // Its menu, from its header.
-    await shell.locator(`${groupSelector(kept)} [data-testid="tab-group-header"]`).click({ button: "right" });
+    // Its menu, from its tile on the rail.
+    await railSpace(shell, kept).click({ button: "right" });
     const menu = shell.getByTestId("context-menu");
     await expect(menu).toBeVisible();
     await menu.getByRole("menuitem", { name: "Close space", exact: true }).click();
