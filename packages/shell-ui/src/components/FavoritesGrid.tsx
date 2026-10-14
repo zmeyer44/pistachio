@@ -8,7 +8,7 @@ import {
 import { useShelfDrag, type ShelfItem } from "../chrome/shelf-drag";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { cn } from "../lib/cn";
-import { showOnDesk, useCurrentSpace } from "../lib/desk/open";
+import { openEntry, useCurrentSpace } from "../lib/desk/open";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
@@ -16,6 +16,8 @@ import { useBrandColors } from "../lib/brand-colors";
 import { BrandWash, brandBorderStyle } from "./BrandTile";
 import { Favicon, TabMark } from "./Favicon";
 import { EntryTabCount } from "./EntryTabCount";
+import { useEntryLinks } from "./space-rail/entry-links";
+import { entryPageFor } from "./space-rail/rail-model";
 
 /**
  * The favorites grid under the address row — the `favorites` feature
@@ -31,7 +33,10 @@ import { EntryTabCount } from "./EntryTabCount";
  *
  * Like a pin, a favorite keeps its page: its live tab (bound by anchor) is
  * shown or, once closed, opened again on click. A tile with a live page
- * shows a dot; the active page's tile is the raised card.
+ * shows a dot; the active page's tile is the raised card. A favorite whose
+ * page the person brought into a space (linked: BrowserTabInfo.
+ * linkedAnchorId, since 2026-10-14) is open THERE: its dot is that space's
+ * colour, and a click goes to it — main passes the desk to that space.
  *
  * The active page's tile wears its brand: a hairline gradient border and a
  * faint wash in the site's own colours (lib/brand-colors.ts) rather than the
@@ -60,13 +65,14 @@ interface Tile {
 }
 
 /**
- * `columns`: three to a row in the single sidebar, four in the double
- * sidebar's card (Home, docs/double-sidebar.md §1), where the card is the
- * sidebar's width less the rail's. (Until 2026-10-13 the desk's rail drew the
- * favorites as one folder, its sheet holding this grid, and the open ones as
- * rows under it: the double sidebar's rail replaced it, and Home holds them.)
+ * Three to a row, in the single sidebar and in the double sidebar's card
+ * (Home, docs/double-sidebar.md §1; four there until 2026-10-14, when the
+ * card's default width came down to hold three). (Until 2026-10-13 the
+ * desk's rail drew the favorites as one folder, its sheet holding this grid,
+ * and the open ones as rows under it: the double sidebar's rail replaced it,
+ * and Home holds them.)
  */
-export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
+export function FavoritesGrid() {
   const presets = useAppStore((s) => s.settings.organization.presetLinks);
   const favorites = useAppStore(
     (s) => s.snapshot?.sidebar.favorites ?? DEFAULT_SIDEBAR_STATE.favorites,
@@ -92,6 +98,8 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
       if (tab.anchorId !== null) map.set(tab.anchorId, tab);
     return map;
   }, [tabs]);
+  // Pages brought into a space, still their favorite's: open there, in that space's colour (clicked, `open` goes there).
+  const links = useEntryLinks();
 
   // Only the drag's item and drop place a tile; its other fields (lifted, the
   // split zone) do not re-lay the grid out.
@@ -158,6 +166,9 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
 
   const itemFor = (tile: Tile): ShelfItem => {
     const live = liveByAnchor.get(tile.id);
+    // Its page's window to carry out over a desk: its own page's, or the one linked to it in a space (entryPageFor) —
+    // whose tab main reuses, so waiting for a new one to join would wait for nothing (2026-10-14).
+    const page = live ?? (tile.managed ? null : (entryPageFor(tabs, tile)?.tab ?? null));
     return {
       flipId: tile.id,
       kind: "favorite",
@@ -168,24 +179,26 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
       tabs: live === undefined ? [] : [live],
       managed: tile.managed,
       // Carried out over a desk, its page's window (chrome/shelf-drag.tsx).
-      ...(live === undefined ? {} : { deskTab: live }),
+      ...(page === null ? {} : { deskTab: page }),
     };
   };
 
   const tileMenu = (tile: Tile): MenuEntry[] => {
-    const live = liveByAnchor.get(tile.id) ?? null;
+    // Its page: its own, or brought into a space and still the favorite's (rail-model's entryPageFor) — open either way.
+    // (Until 2026-10-14 a linked page was "Open", with nothing to close it by.)
+    const page = entryPageFor(tabs, tile)?.tab ?? null;
     return [
       {
-        label: live === null ? "Open" : "Show",
-        onSelect: () =>
-          void sidebarCommand({ type: "open", anchorId: tile.id }),
+        label: page === null ? "Open" : "Show",
+        // (As a click does: its page anchored or linked, put away on the desk in front, comes out — openEntry.)
+        onSelect: () => void openEntry(tile.id),
       },
-      ...(live !== null
+      ...(page !== null
         ? [
             {
               label: "Close tab",
               icon: <X aria-hidden="true" />,
-              onSelect: () => void closeTab(live.id),
+              onSelect: () => void closeTab(page.id),
             },
             // Where the favorite has wandered to, kept as a live tab of its
             // own — focused, with the same back/forward stack — so the page
@@ -193,8 +206,8 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
             {
               label: "Duplicate as live tab",
               icon: <Copy aria-hidden="true" />,
-              disabled: live.kind !== "human",
-              onSelect: () => void duplicateTab(live.id),
+              disabled: page.kind !== "human",
+              onSelect: () => void duplicateTab(page.id),
             },
           ]
         : []),
@@ -231,6 +244,7 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
         : null;
     const label = tile.title || prettyUrl(tile.url);
     const waiting = tile.ghost || deskFavorite === tile.id ? 0 : (tabCounts.get(tile.id) ?? 0);
+    const linked = live === null && !tile.ghost ? (links.get(tile.id) ?? null) : null;
     return (
       <FavoriteTile
         key={tile.id}
@@ -250,17 +264,21 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
             data-live={live === null ? undefined : ""}
             // Its page's window on a desk goes home here (DeskSurface's sidebarHome).
             data-live-tab-id={live?.id}
+            // Its page in a space (linked): which one, in its colour.
+            data-linked-group={linked?.groupId ?? undefined}
             aria-label={label}
             aria-pressed={active}
-            title={`${label}\n${prettyUrl(tile.url)}${tile.managed ? "\nProvided by your organization" : ""}`}
+            title={`${label}\n${prettyUrl(tile.url)}${linked !== null && linked.title !== "" ? `\nOpen in ${linked.title}` : ""}${tile.managed ? "\nProvided by your organization" : ""}`}
             onClick={() => {
               if (justDragged()) return;
-              // On its own desk, its window is shown there: its tab may still be the one in use, the window put away.
-              if (live !== null && showOnDesk(live.id)) return;
-              void sidebarCommand({ type: "open", anchorId: tile.id });
+              // On its own desk, its window is shown there — its page, or the tab linked to it in a space: its tab may
+              // still be the one in use, the window put away (openEntry). Else main goes to it, or opens it.
+              void openEntry(tile.id);
             }}
             onAuxClick={(e) => {
-              if (e.button === 1 && live !== null) void closeTab(live.id);
+              // Its page closed, its own or the one linked to it in a space.
+              const page = live?.id ?? linked?.tabId ?? null;
+              if (e.button === 1 && page !== null) void closeTab(page);
             }}
             onPointerDown={(e) => beginPress(itemFor(tile), e)}
             onContextMenu={(e) => {
@@ -319,6 +337,14 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
                 className="absolute bottom-1 left-1/2 size-1 -translate-x-1/2 rounded-full bg-gray-700"
               />
             ) : null}
+            {linked !== null ? (
+              <span
+                aria-hidden="true"
+                data-testid="entry-linked-mark"
+                data-group-color={linked.color ?? undefined}
+                className="entry-linked-mark tab-group-tone absolute bottom-[3px] left-1/2 -translate-x-1/2"
+              />
+            ) : null}
             {live?.loading === true ? (
               <span
                 aria-hidden="true"
@@ -339,10 +365,8 @@ export function FavoritesGrid({ columns = 3 }: { columns?: 3 | 4 } = {}) {
         role="list"
         aria-label="Favorites"
         data-testid="favorites-grid"
-        data-columns={columns}
         className={cn(
-          "no-drag grid gap-1.5 rounded-md transition-[background-color,box-shadow] duration-150",
-          columns === 4 ? "grid-cols-4" : "grid-cols-3",
+          "no-drag grid grid-cols-3 gap-1.5 rounded-md transition-[background-color,box-shadow] duration-150",
           overlay
             ? "absolute inset-x-2 -top-10 z-20 h-10 bg-background-200/95"
             : "relative mx-2 mb-2",

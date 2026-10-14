@@ -3,7 +3,11 @@
  * tabs together. The two are coupled through anchors: pinning a tab writes a
  * pin and binds the tab to it; unpinning drops the pin and frees the tab;
  * opening a pin selects its tab or creates one bound to it. Only a host sees
- * both sides, so this is where each command lands.
+ * both sides, so this is where each command lands. Since 2026-10-14 they are
+ * coupled through links too (BrowserTabInfo.linkedAnchorId: an entry's page
+ * brought into a space, still its entry's): opening the entry goes there,
+ * and an entry made into another or removed takes the link with it or ends
+ * it.
  *
  * Nothing here publishes: the store's listener does, and a command that only
  * touched tabs goes through the host's tab controller, which does too.
@@ -20,6 +24,7 @@ import type { BrowserTabInfo } from "./ipc.js";
 import type { DesktopSettings } from "./settings.js";
 import {
   childrenOf,
+  entryPageOf,
   favoriteOf,
   folderEmoji,
   folderOf,
@@ -37,6 +42,13 @@ import {
   type SidebarPin,
   type SidebarState,
 } from "./sidebar.js";
+
+/**
+ * Where a bring-down sets an entry's page down (SidebarCommand `bringDown`): at `index` among the day's row units, into
+ * the space `groupId` (at `index` among its tabs), into a new space `newGroupId` — or, null, where it stands: its
+ * page's space, if it led one, a space like any other in place.
+ */
+export type BringDownPlace = { index: number } | { groupId: string; index?: number } | { newGroupId: string } | null;
 
 /**
  * The shelf as it is kept per Space. Desktop main's `SidebarStore` and the
@@ -68,6 +80,20 @@ export interface SidebarTabHost {
    * out, and the controller places the tab by counting the day's tabs, each one row.
    */
   placeDayTab?(tabId: string, place: { index: number } | { groupId: string; index?: number }): void;
+  /**
+   * Link a tab to a shelf entry (BrowserTabInfo.linkedAnchorId: the entry's page in a space), or end its link (null).
+   * One tab per entry: a prior holder's link ends; an anchored tab is never linked. A host without spaces leaves this
+   * out: nothing is ever linked there, and the controller never asks.
+   */
+  setLink?(tabId: string, anchorId: string | null): void;
+  /**
+   * An entry's page brought down (SidebarCommand `bringDown`) IN ONE STEP — one publish, no snapshot with the page in
+   * Home on its way, which setAnchor-then-placeDayTab gave (until 2026-10-14): `page` its tab (anchored, or linked), or
+   * the address (and the entry's title, the fresh tab's until its page names itself) to open one at, made where it
+   * goes. Where it lands decides the link (the host's rule: in a space, linked; in Home, a plain tab). Throws, changing
+   * nothing, when it would need a space the Profile has no room for. A host without it gets setAnchor and placeDayTab.
+   */
+  bringDownPage?(anchorId: string, page: { tabId: string } | { url: string; title: string }, place: BringDownPlace): Promise<void>;
   /**
    * Set by the controller: whether a tab pulled into a split view stops
    * following its shelf entry. A favorite becomes an independent tab; a pin
@@ -145,7 +171,8 @@ export class SidebarController {
       }
       case "returnToPinned": {
         const pin = pinOf(this.#state(), command.pinId);
-        const tab = pin === null ? null : this.#browser.tabForAnchor(pin.id);
+        // (Its page wherever it is: its own, or brought into a space and still the pin's.)
+        const tab = pin === null ? null : this.#pageOf(pin.id);
         if (pin === null || tab === null) return;
         await this.#browser.navigate(tab.id, pin.url);
         return;
@@ -184,10 +211,12 @@ export class SidebarController {
             ),
           });
           // Removing a saved pin never closes its open page; it becomes a
-          // regular day tab, matching the standalone Unpin action.
+          // regular day tab, matching the standalone Unpin action — and a page
+          // of it in a space simply stays there, its link ended.
           for (const pin of pins) {
             const live = this.#browser.tabForAnchor(pin.id);
             if (live !== null) this.#browser.setAnchor(live.id, null);
+            else this.#unlink(pin.id);
           }
           return;
         }
@@ -230,15 +259,16 @@ export class SidebarController {
         return;
       }
       case "bringDown":
-        return this.#bringDown(command.anchorId, command.index, command.groupId);
+        return this.#bringDown(command.anchorId, command.index, command.groupId, command.newGroupId);
       case "favoriteToPin": {
         const state = this.#state();
         const favorite = favoriteOf(state, command.favoriteId);
         if (favorite === null) return;
         const pin: SidebarPin = { kind: "pin", id: newId(), url: favorite.url, title: favorite.title, faviconUrl: favorite.faviconUrl, folderId: null };
-        // The live tab follows its page from the grid to the list.
+        // The live tab follows its page from the grid to the list — and a page of it in a space stays there, the pin's now.
         const tab = this.#browser.tabForAnchor(favorite.id);
         if (tab !== null) this.#browser.setAnchor(tab.id, pin.id);
+        else this.#relink(favorite.id, pin.id);
         this.#set({
           favorites: state.favorites.filter((f) => f.id !== favorite.id),
           entries: placeEntry(state.entries, pin, { folderId: command.folderId, index: command.index }),
@@ -257,8 +287,49 @@ export class SidebarController {
     return favoriteOf(state, anchorId)?.url ?? pinOf(state, anchorId)?.url ?? null;
   }
 
+  /** The title behind an anchor, wherever it lives: what a fresh page of it is called until it names itself. */
+  #titleOf(state: SidebarState, anchorId: string): string {
+    if (isPresetAnchorId(anchorId)) {
+      const url = anchorId.slice(PRESET_ANCHOR_PREFIX.length);
+      return this.#settings().organization.presetLinks.find((link) => link.url === url)?.title ?? "";
+    }
+    return favoriteOf(state, anchorId)?.title ?? pinOf(state, anchorId)?.title ?? "";
+  }
+
+  /**
+   * The tab an entry is open on, in the active Profile: its anchored page, else the tab its page went on as in a space
+   * (BrowserTabInfo.linkedAnchorId, since 2026-10-14) — sidebar.ts entryPageOf over the host's tabs.
+   */
+  #pageOf(anchorId: string): BrowserTabInfo | null {
+    return this.#browser.tabForAnchor(anchorId) ?? this.#linkedTab(anchorId);
+  }
+
+  /** The tab linked to an entry (its page in a space), if any: only a host with spaces links one (setLink). */
+  #linkedTab(anchorId: string): BrowserTabInfo | null {
+    if (this.#browser.setLink === undefined) return null;
+    const page = entryPageOf(this.#browser.tabs(), anchorId);
+    return page?.linked === true ? page.tab : null;
+  }
+
+  /** The entry's page in a space stays where it is, no longer its entry's (the entry is going). */
+  #unlink(anchorId: string): void {
+    const linked = this.#linkedTab(anchorId);
+    if (linked !== null) this.#browser.setLink?.(linked.id, null);
+  }
+
+  /** The entry's page in a space follows its entry to the one it is now (a favorite made a pin, a pin a favorite). */
+  #relink(from: string, to: string): void {
+    const linked = this.#linkedTab(from);
+    if (linked !== null) this.#browser.setLink?.(linked.id, to);
+  }
+
+  /**
+   * Show the page behind an entry: its live tab — its own page, or (since 2026-10-14) the tab it is open on in a space,
+   * which the desk passes to — else a new tab bound to it. (Until 2026-10-14 a page brought into a space had let go of
+   * its entry, and this opened a fresh one in Home.)
+   */
   async #open(anchorId: string): Promise<void> {
-    const live = this.#browser.tabForAnchor(anchorId);
+    const live = this.#pageOf(anchorId);
     if (live !== null) {
       await this.#browser.selectTab(live.id);
       return;
@@ -299,21 +370,41 @@ export class SidebarController {
       if (index !== undefined) this.#place(live.id, { index });
       return;
     }
+    // Its page in a space: a day tab of that space already, which stays where it is, its link ended.
+    const linked = this.#linkedTab(anchorId);
+    if (linked !== null) {
+      this.#browser.setLink?.(linked.id, null);
+      return;
+    }
     if (index === undefined) return;
     const tabId = await this.#browser.createTab(url, { activate: false });
     this.#place(tabId, { index });
   }
 
   /**
-   * An entry's page brought down into the day's tabs, or into a tab group:
-   * it lets go of its entry (its page's group, a group like any other now,
-   * comes with it), and the entry stays where it is, closed. Nothing open,
-   * a fresh tab opens there at the entry's address.
+   * An entry's page brought down into the day's tabs, into a tab group, or
+   * into a new one: it lets go of its entry's anchor (its page's group, a
+   * group like any other now, comes with it), and the entry stays where it
+   * is. Nothing open, a fresh tab opens there at the entry's address.
+   *
+   * A host with spaces does it all in one step (bringDownPage, since
+   * 2026-10-14) and keeps the page its entry's when it lands in a space
+   * (BrowserTabInfo.linkedAnchorId) — a page already linked so is the one it
+   * moves. Elsewhere (the cloud browser, the site's demo: no spaces, so no
+   * links and no new space) the entry is left closed, as every host left it
+   * until then.
    */
-  async #bringDown(anchorId: string, index: number | undefined, groupId: string | undefined): Promise<void> {
-    const live = this.#browser.tabForAnchor(anchorId);
-    const url = live === null ? this.#urlOf(this.#state(), anchorId) : null;
+  async #bringDown(anchorId: string, index: number | undefined, groupId: string | undefined, newGroupId: string | undefined): Promise<void> {
+    const state = this.#state();
+    const live = this.#pageOf(anchorId);
+    const url = live === null ? this.#urlOf(state, anchorId) : null;
     if (live === null && url === null) return;
+    if (this.#browser.bringDownPage !== undefined) {
+      const place: BringDownPlace =
+        newGroupId !== undefined ? { newGroupId } : groupId !== undefined ? { groupId, ...(index === undefined ? {} : { index }) } : index !== undefined ? { index } : null;
+      await this.#browser.bringDownPage(anchorId, live !== null ? { tabId: live.id } : { url: url!, title: this.#titleOf(state, anchorId) }, place);
+      return;
+    }
     const tabId = live?.id ?? (await this.#browser.createTab(url!, { activate: false }));
     if (live !== null) this.#browser.setAnchor(live.id, null);
     if (groupId !== undefined) this.#place(tabId, { groupId, index });
@@ -380,6 +471,8 @@ export class SidebarController {
       favorite.title = pin.title;
       favorite.faviconUrl = pin.faviconUrl;
       bind = this.#browser.tabForAnchor(pin.id);
+      // (A page of it in a space stays there, the favorite's now.)
+      if (bind === null) this.#relink(pin.id, favorite.id);
       entries = removeEntry(entries, pin.id);
     } else {
       favorite.url = source.url;

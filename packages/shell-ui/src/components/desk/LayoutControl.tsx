@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FocusEvent } from "react";
 import { Sparkles } from "lucide-react";
 import type { GroupContextView } from "@pistachio/shell-contracts/desk-agent";
+import { isDeskCycleKey } from "@pistachio/shell-contracts/desk";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import { fileOf } from "../../lib/desk/documents";
@@ -29,6 +30,12 @@ type Choice = DeskLayoutKind | "smart";
  * desk (the engine's previewLayout; DeskSurface draws them, LayoutGhosts below). A click lays the windows out
  * (layOut): a beat apart, ⌃Z putting them back for five seconds after.
  *
+ * With the pointer resting on a layout, Tab moves its windows round its places (⇧Tab back) — the ghosts showing where
+ * each now goes, the click laying them out so; on the layout the desk is in, Tab turns the windows where they stand
+ * (the engine's cycleLayout; since 2026-10-14). Wherever the keyboard is: main takes the key from a page
+ * (DeskState.cycleKey), and the shell's own document is heard here. The keyboard on the track keeps Tab for moving
+ * between its segments.
+ *
  * Only while its space is the one on the desk, and only with windows out: the engine is the current space's.
  */
 export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode {
@@ -39,6 +46,8 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
   const cascadeKey = useAppStore((state) => shortcutLabel(state.settings.shortcuts.cascadeDesk, PLATFORM));
   const arrangeKey = useAppStore((state) => shortcutLabel(state.settings.shortcuts.arrangeDesk, PLATFORM));
   const [hovered, setHovered] = useState<Choice | null>(null);
+  /** The pointer is what rests on `hovered` (not the keyboard's focus): Tab turns its windows round. */
+  const [pointed, setPointed] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLSpanElement>(null);
   /** The segments the thumb was last placed among: rebuilt (another number of windows), it jumps rather than slides. */
@@ -56,12 +65,26 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
   const layout = shown ? view.layout : null;
   const shortcutOf = (choice: Choice): string | null => (choice === "tile" ? tileKey : choice === "cascade" ? cascadeKey : choice === "smart" ? arrangeKey : null);
 
-  // A layout looked at is drawn on the desk — not the one it is in, nor Arrange for me (the model's choice is not known
-  // until it is asked) — and taken away as the pointer or the keyboard leaves the track.
-  const previewed = shown && hovered !== null && hovered !== "smart" && hovered !== layout ? hovered : null;
+  // A layout looked at is drawn on the desk — not Arrange for me (the model's choice is not known until it is asked);
+  // the one the desk is in draws nothing until Tab turns its windows (the engine says) — and taken away as the pointer
+  // or the keyboard leaves the track.
+  const previewed = shown && hovered !== null && hovered !== "smart" ? hovered : null;
+  const cycling = previewed !== null && pointed && count >= 2;
   useEffect(() => {
-    engine?.previewLayout(previewed);
-  }, [engine, previewed]);
+    engine?.previewLayout(previewed, { cycle: cycling });
+  }, [engine, previewed, cycling]);
+  // Tab struck in the shell's own document while the pointer rests on a layout (a page's is main's: DeskState.cycleKey).
+  useEffect(() => {
+    if (!cycling || engine === null) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (!isDeskCycleKey({ type: "keyDown", key: event.key, shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey })) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) engine.cycleLayout(event.shiftKey ? -1 : 1);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [cycling, engine]);
   useEffect(() => () => engine?.previewLayout(null), [engine]);
   // The segment hovered is gone (fewer windows), or the whole control (its space no longer on the desk): the hover goes
   // with it, so nothing is previewed when it is back.
@@ -108,7 +131,9 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
   // clicked keeps the focus, and is focused again when the app comes back to the front, which must not draw ghosts on
   // the desk out of nowhere. (Until 2026-10-13 any focus did.)
   const look = (event: FocusEvent<HTMLElement>, choice: Choice): void => {
-    if (keyboardFocus(event.currentTarget)) setHovered(choice);
+    if (!keyboardFocus(event.currentTarget)) return;
+    setHovered(choice);
+    setPointed(false);
   };
   const caption = captionOf(hovered, layout, count);
   const hint = hovered === null ? null : shortcutOf(hovered);
@@ -119,7 +144,10 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
         role="group"
         aria-label="Layouts"
         className="layout-track"
-        onPointerLeave={() => setHovered(null)}
+        onPointerLeave={() => {
+          setHovered(null);
+          setPointed(false);
+        }}
       >
         <span ref={thumbRef} className="layout-thumb" aria-hidden="true" />
         {kinds.map((kind) => {
@@ -133,11 +161,16 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
               aria-pressed={kind === layout}
               aria-label={key === null ? LAYOUT_WORDS[kind].label : `${LAYOUT_WORDS[kind].label} (${key})`}
               className="layout-option"
-              onPointerEnter={() => setHovered(kind)}
+              onPointerEnter={() => {
+                setHovered(kind);
+                setPointed(true);
+              }}
               onFocus={(event) => look(event, kind)}
               onBlur={leave}
               onClick={() => {
                 engine.layOut(kind);
+                // Still resting on it: Tab goes on turning its windows, from where they now are.
+                if (cycling) engine.previewLayout(kind, { cycle: true });
               }}
             >
               <LayoutGlyph kind={kind} count={count} />
@@ -153,7 +186,10 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
               data-kind="smart"
               aria-label={arrangeKey === null ? ARRANGE_WORDS.label : `${ARRANGE_WORDS.label} (${arrangeKey})`}
               className="layout-option"
-              onPointerEnter={() => setHovered("smart")}
+              onPointerEnter={() => {
+                setHovered("smart");
+                setPointed(true);
+              }}
               onFocus={(event) => look(event, "smart")}
               onBlur={leave}
               onClick={() => void arrangeDesk("smart")}
@@ -171,6 +207,11 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
             {hint}
           </Kbd>
         )}
+        {cycling ? (
+          <span data-testid="layout-caption-cycle" className="layout-caption-cycle">
+            <Kbd small>⇥</Kbd> {count === 2 ? "swaps them" : "moves them round"}
+          </span>
+        ) : null}
       </p>
     </div>
   );

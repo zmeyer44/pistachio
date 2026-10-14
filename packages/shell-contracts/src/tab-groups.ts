@@ -543,7 +543,30 @@ export type TabGroupCommand =
   /** Show the group's tabs side by side — up to four of them (§3.4). The web host's: the desktop's desk tiles windows instead. */
   | { type: "openAsSplit"; groupId: string }
   /** Move the whole group to `index` among the day's ROW UNITS (lone tabs, splits, groups), counted without it. */
-  | { type: "move"; groupId: string; index: number };
+  | { type: "move"; groupId: string; index: number }
+  /**
+   * One space dropped onto another on the rail (docs/spaces.md §1, "Merging spaces"; since 2026-10-14): every tab of
+   * `groupId` joins `into` at its end, in its order; what its Stack holds moves to `into`'s, and its conversation too
+   * when `into` has none of its own; then `groupId` is gone — not archived. `into` keeps its name and colour and is the
+   * person's (`manual`). `groupId` current, `into` is current after, on the tab in use. Refused (a no-op) unless
+   * canMergeSpaces says yes; refused with an error, nothing changed, when the two Stacks together would hold more than
+   * a Stack may (MAX_GROUP_CONTEXT_ITEMS).
+   */
+  | { type: "merge"; groupId: string; into: string };
+
+/**
+ * Whether the space `source` may be merged into `target` (TabGroupCommand `merge`): two different spaces, the one
+ * going a drawn space — never a loose tab's (a Home tab) nor a page's (a favorite's or pin's page is its entry's, and
+ * is not carried on the rail) — and the one taking it any space but a loose tab's: a drawn one, or a page's, whose
+ * page the newcomers join beside. Both in one Profile (Space) — main checks that, the snapshot holding only one's.
+ */
+export function canMergeSpaces(
+  source: Pick<TabGroupInfo, "id" | "loose" | "anchorId"> | null | undefined,
+  target: Pick<TabGroupInfo, "id" | "loose"> | null | undefined,
+): boolean {
+  if (source == null || target == null || source.id === target.id) return false;
+  return source.loose !== true && source.anchorId === undefined && target.loose !== true;
+}
 
 const COMMAND_TYPES: ReadonlySet<string> = new Set([
   "create",
@@ -558,6 +581,7 @@ const COMMAND_TYPES: ReadonlySet<string> = new Set([
   "close",
   "openAsSplit",
   "move",
+  "merge",
 ]);
 
 /** What `create`'s `url` may be: what was typed or pasted in the address bar — a pasted link can run long. */
@@ -607,6 +631,8 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
       return isTabId(raw["tabId"]);
     case "move":
       return isTabGroupId(raw["groupId"]) && isIndex(raw["index"]);
+    case "merge":
+      return isTabGroupId(raw["groupId"]) && isTabGroupId(raw["into"]) && raw["groupId"] !== raw["into"];
     default:
       return isTabGroupId(raw["groupId"]);
   }

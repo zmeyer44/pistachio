@@ -29,7 +29,12 @@
  *   back into it (the host finds the rows: DeskHost.homeOf), a row dragged
  *   out over the desk is its window in hand (pullFromSidebar). Its leading
  *   edge is the desk's like the others: a window carried there lights the
- *   left half as the right edge lights the right.
+ *   left half as the right edge lights the right. Carried on, over the
+ *   column itself (2026-10-14, lib/desk/dock-drop.ts), a tab's window
+ *   becomes what it would be dropped as — over the card, one of its rows;
+ *   over the rail, a space's tile — and let go there, its tab goes to that
+ *   space, a new space of its own or Home, or the window is put away into
+ *   its row (#dropOnDock).
  * - the desk can pass to ANOTHER GROUP in place (switchGroup): this group's
  *   windows go into its row in the sidebar — each once it has a still to
  *   fly as — while the other group's come out of that group's row, to
@@ -138,7 +143,9 @@ import {
   type ThirdsCell,
   type TileZone,
 } from "../../lib/desk/geometry";
-import { holdsLayout, isLaidOutAs, layoutNow, layoutOf, layoutRects, type DeskLayoutKind, type LaidOutAs } from "../../lib/desk/layouts";
+import { dockOverAt, dockShapeRect, sameDockDrop, type DockDrop, type DockItem, type DockOver, type DockShape, type DockTargets } from "../../lib/desk/dock-drop";
+import { cycledLayout, holdsLayout, isLaidOutAs, layoutNow, layoutOf, layoutRects, type DeskLayoutKind, type LaidOutAs } from "../../lib/desk/layouts";
+import { changesLayout } from "../../lib/desk/smart-layout";
 import {
   BOUNCE_RESTITUTION,
   clamp,
@@ -160,6 +167,19 @@ import {
   type SpringConfig,
 } from "../../lib/desk/motion";
 import { PAGE_ZOOM_STRENGTH, type DeskVariants, type SavedDeskWindow } from "../../lib/desk/store";
+import {
+  entranceMotion,
+  exitMotion,
+  isPosedExit,
+  poseAt,
+  REST_POSE,
+  returnMotion,
+  staggerOrder,
+  type Pose,
+  type PosedExit,
+  type SwitchMotion,
+} from "../../lib/desk/space-switch";
+import type { SpaceArrival, SpaceSwitchExit } from "@pistachio/shell-contracts/settings";
 import type { DeskArrangePlan, DeskPercentBox } from "@pistachio/shell-contracts/desk-agent";
 import { boxRect, deskZoneRect, percentBox } from "../../lib/desk/agent";
 import { isTabWindow, windowKind, type DeskWindowKind } from "../../lib/desk/windows";
@@ -383,11 +403,31 @@ export interface DeskWindowView {
   /** A tooltip under its frame's buttons can be seen: no live page is left under its cover (windowTipCover). */
   tipShown: boolean;
   /**
+   * Carried over the sidebar's column, it is drawn as what it would be
+   * dropped as there (lib/desk/dock-drop.ts): one of the card's rows, or a
+   * rail tile in `color` (a space's; null, the rail's own neutral) — and
+   * stays so on its way into it once let go. Null: a window.
+   */
+  dock: DeskWindowDock | null;
+  /**
    * Its page is wanted awake (DeskState.live): it is in use, or nothing
    * covers it, or the pointer is on it. A window not wanted whose tab is
    * asleep stays asleep, its placeholder saying nothing of waking.
    */
   live: boolean;
+}
+
+/** The shape a window carried over the column takes (DeskWindowView.dock). */
+export interface DeskWindowDock {
+  shape: DockShape;
+  color: string | null;
+}
+
+/** What a window carried over the column would be dropped on (DeskView.dockDrop): what it does, and the item lit for it. */
+export interface DeskDockDrop {
+  kind: DockDrop["kind"];
+  item: DockItem;
+  groupId: string | null;
 }
 
 /** The cover of the band under a window's frame buttons, where their tooltips appear (DeskWindow). */
@@ -436,6 +476,13 @@ export interface DeskView {
   /** Shift is held over a window in hand: every release lands in the tile the pointer is over. */
   snapping: boolean;
   gesture: "move" | "resize" | "spawn" | null;
+  /**
+   * A window in hand over the sidebar's column, and what a release there
+   * would do (lib/desk/dock-drop.ts): the rail item or the card it would go
+   * into, which the sidebar lights (lib/desk/chrome.ts's dockDrop). Null
+   * over the desk, or over nothing that takes it.
+   */
+  dockDrop: DeskDockDrop | null;
   /** Coming out (passing to another group: switchGroup), or open. (The "leaving" phase went with leaving the desk, 2026-10-09.) */
   phase: "entering" | "open";
   /**
@@ -549,6 +596,8 @@ export interface Minimized {
 
 export interface DeskHost {
   variants(): DeskVariants;
+  /** How the desk's windows go, and the chosen space's come, when the desk passes to another space (Settings → General). */
+  spaceSwitch(): { exit: SpaceSwitchExit; arrival: SpaceArrival };
   /** A native page can be on screen for this tab right now: awake, not shell-drawn. */
   hasLivePage(tabId: string): boolean;
   /** Make this tab the active one (it wakes if it sleeps). Called for every window raised; a document's is the host's to ignore. */
@@ -565,8 +614,38 @@ export interface DeskHost {
    * into that group. Were it the tab in use, `next` (a window left on the
    * desk, or null for none) takes over first, so the desk is never left on a
    * tab not its own.
+   *
+   * It may answer whether the tab left (false: main kept it — no room for
+   * another space, a Stack the target cannot take): its window, sent on its
+   * way already, then comes back (#sendTab). So may toHome and toNewSpace.
    */
-  moveTabToGroup(tabId: string, groupId: string, next: string | null): void;
+  moveTabToGroup(tabId: string, groupId: string, next: string | null): void | Promise<boolean>;
+  /**
+   * A tab's window let go on Home on the rail (#dropOnDock): the tab leaves
+   * the group, a Home tab of its own (main's removeTab). `next` as for
+   * moveTabToGroup.
+   */
+  toHome?(tabId: string, next: string | null): void | Promise<boolean>;
+  /**
+   * A tab's window let go on New space on the rail: a new space of that tab
+   * alone (main's create), not chosen — the desk stays where it is. `next` as
+   * for moveTabToGroup.
+   */
+  toNewSpace?(tabId: string, next: string | null): void | Promise<boolean>;
+  /**
+   * The sidebar's column as a window carried over it reads it (lib/desk/
+   * dock-drop.ts): the rail's items and the card, in the window's
+   * coordinates — or null where it takes nothing (hidden, or none). Read once
+   * a carry first reaches it.
+   */
+  dockTargets?(): DockTargets | null;
+  /** The rail item (a space's tile: `groupId`'s) or card a window went into: it gives a little bounce as it takes it. */
+  dockItem?(item: DockItem, groupId: string | null): HTMLElement | null;
+  /**
+   * The tab is Home's already, wherever its window stands: a favorite's or pin's page (its entry is in Home). Home on
+   * the rail is then its own tile — its window let go there collapses, as on its own space's (2026-10-14).
+   */
+  homeOwns?(tabId: string): boolean;
   /**
    * The sidebar's column beside the desk — its dock — in the window's
    * coordinates, or null where there is none. Hidden (docs/spaces.md §3),
@@ -668,11 +747,28 @@ interface Win {
   /** Closed from its frame (×): drawing in where it stands and fading, quicker than a flight's fade. */
   closing: boolean;
   /**
+   * Drawn as what it would be dropped as over the sidebar's column (a row of
+   * the card, a rail tile: DeskWindowView.dock) — in hand there, and on its
+   * way into it once let go. Null: a window.
+   */
+  dock: DeskWindowDock | null;
+  /**
    * Flying into a space's row (#departFor: its space passed from, or its tab
    * moved to that space): the box it left and that space — where it turns
    * back to should its tab be the desk's own space's after all (regroup).
    */
   passedFrom: { rect: Rect; groupId: string } | null;
+  /**
+   * A timed pose on its still where it stands (lib/desk/space-switch.ts):
+   * going as the desk passes from its space, coming in at its place as the
+   * desk passes to it ("matched"), or turned back from going. `start` is
+   * null while an entrance waits for the exit it follows to set out
+   * (#cueEntrances); `from`, the pose it sets out from (else its motion's
+   * first). Its box does not move for it.
+   */
+  pose: { motion: SwitchMotion; start: number | null; delay: number; from: Pose | null } | null;
+  /** The pose as of this frame (#step), which #write draws; null when there is none. */
+  posed: Pose | null;
   /**
    * Its drawer (the Drawer frame): how far out it is (`t`, 0 in, 1 out), the
    * timed ease taking it to `target`, when it was last wanted out (it
@@ -755,6 +851,23 @@ interface Gesture {
   unfill: { w: number; h: number } | null;
   /** The size a moved window is growing or shrinking to in hand (it let go of the desk), or null for its own. */
   size: { w: number; h: number } | null;
+  /**
+   * Over the sidebar's column: the drop a release would make there (lib/desk/
+   * dock-drop.ts), or null. Never while Shift snaps: the desk's tile has the
+   * window then.
+   */
+  dock: DockDrop | null;
+  /** Over the column, the shape it takes there (a row over the card, a tile over the rail, between its items too), or null. */
+  over: DockShape | null;
+  /** The column's targets, read once the pointer first reaches it (undefined until then; null, nothing there takes a window). */
+  targets?: DockTargets | null;
+  /**
+   * The window drawn as what it would be dropped as (`dock`), or growing back
+   * from that to the window in hand (`back`), its box on a spring of its own
+   * (`vel`) — and the size it is in hand (`own`), which it grows back to at
+   * the point the pointer holds it by. Null while it is the window in hand.
+   */
+  morph: { vel: Rect; own: Size; back: boolean } | null;
   end: (() => void) | null;
 }
 
@@ -849,6 +962,10 @@ export class DeskEngine {
   #undoKey = false;
   /** The named layout being looked at in the space view (previewLayout): its ghosts are drawn under the LAYOUT_PREVIEW_COVER. */
   #previewKind: DeskLayoutKind | null = null;
+  /** How many times Tab has moved the looked-at layout's windows round its places (cycledLayout); 0 as each layout is first looked at. */
+  #previewTurn = 0;
+  /** The layout is looked at with the pointer: main takes Tab for it (DeskState.cycleKey). */
+  #cycleKey = false;
   /** Who hears a named layout laid out (onLaidOut): the smart layout's runner, which offers ⌃Z for it. */
   readonly #laidOutListeners = new Set<(undo: DeskLayoutSnapshot) => void>();
   /**
@@ -880,10 +997,19 @@ export class DeskEngine {
   #live: ReadonlySet<string> = new Set();
   /**
    * The windows of a group the desk has passed from (switchGroup), each
-   * waiting for a still to fly into its group's row as: the group, and
-   * when it began waiting.
+   * waiting for a still to go as: the group, when it began waiting, and how
+   * it goes — into the group's row ("tile", as a tab moved to another
+   * group always does), or dismissed where it stands with the rest of its
+   * group once every one has its still (the Settings' Switching spaces).
+   * Let go over the sidebar's column (#dropOnDock), a window goes into the
+   * very item it was let go on (`into`, in the stage; the group's row when
+   * absent), the box it was taken from being the one it would turn back to
+   * (`from`), and that item bounces as it takes it (`bounce`; the group's
+   * row when absent). `groupId` "" is none: Home, or a space still to be.
    */
-  readonly #departing = new Map<string, { groupId: string; since: number }>();
+  readonly #departing = new Map<string, { groupId: string; since: number; exit: SpaceSwitchExit; into?: Rect; from?: Rect; bounce?: HTMLElement | null }>();
+  /** The chosen space's windows waiting to come in at their places ("matched") until the exit before them sets out. */
+  #awaitingCue: { tabIds: string[]; handoff: number } | null = null;
   /** How many windows are still flying into each group's row: it bounces as the last lands. */
   readonly #folding = new Map<string, number>();
   /** The Bar's nub, idle (setNotch): the box it may fill, in the desk's trailing foot corner. */
@@ -928,6 +1054,7 @@ export class DeskEngine {
       shelf: this.#shelf,
       snapping: false,
       gesture: null,
+      dockDrop: null,
       phase: "entering",
       layout: null,
       layoutCount: 0,
@@ -1029,24 +1156,27 @@ export class DeskEngine {
    * is, rather than swapping the window in use into the first tile.
    */
   layOut(kind: DeskLayoutKind): boolean {
-    const undo = this.#layOut(kind);
+    // (Looked at and turned with Tab, its windows go to the places the ghosts showed.)
+    const undo = this.#layOut(kind, kind === this.#previewKind ? this.#previewTurn : 0);
     if (undo === null) return false;
     for (const listener of [...this.#laidOutListeners]) listener(undo);
     return true;
   }
 
   /** layOut without offering ⌃Z (the agent's arrangement keeps its own Undo layout: arrangeFor). */
-  #layOut(kind: DeskLayoutKind): DeskLayoutSnapshot | null {
+  #layOut(kind: DeskLayoutKind, turn = 0): DeskLayoutSnapshot | null {
     if (this.#phase !== "open") return null;
     this.#cancelGesture();
     this.#dropPreview();
     const windows = this.#layoutWindows();
     const usable = this.#usable();
-    // In it already — its places, or where it put them on a desk since resized (#laidAs) — nothing moves.
+    // In it already — its places, or where it put them on a desk since resized (#laidAs) — nothing moves. (Its windows
+    // turned round its places, they move — unless each is in its turned place already.)
     const laid = this.#laidAs.get(this.#laidKey());
-    const holding = laid !== undefined && laid.kind === kind && holdsLayout(laid, windows, usable);
-    const already = windows.size > 0 && (holding || isLaidOutAs(kind, [...windows.values()], usable));
-    const layout = windows.size === 0 || already ? null : layoutRects(kind, windows, usable, this.#focused);
+    const holding = turn === 0 && laid !== undefined && laid.kind === kind && holdsLayout(laid, windows, usable);
+    const turned = turn === 0 ? null : this.#turnedLayout(kind, windows, usable, turn);
+    const already = windows.size > 0 && (turn === 0 ? holding || isLaidOutAs(kind, [...windows.values()], usable) : turned !== null && !changesLayout(windows, turned));
+    const layout = windows.size === 0 || already ? null : (turned ?? layoutRects(kind, windows, usable, this.#focused));
     if (layout === null) {
       // (In its places by hand, or by another layout's: it is this one from now on, resized or not.)
       if (already && !holding) this.#rememberLayout(kind);
@@ -1085,21 +1215,71 @@ export class DeskEngine {
    * so do a window taken in hand, the desk passing to another space, and
    * any layout applied.
    */
-  previewLayout(kind: DeskLayoutKind | null): void {
+  previewLayout(kind: DeskLayoutKind | null, options: { cycle?: boolean } = {}): void {
     const next = kind !== null && this.#phase === "open" && this.#gesture === null ? kind : null;
-    if (next === this.#previewKind) return;
+    const cycle = next !== null && options.cycle === true;
+    if (next === this.#previewKind && cycle === this.#cycleKey) return;
+    if (next !== this.#previewKind) this.#previewTurn = 0;
     this.#previewKind = next;
-    if (next === null) this.#covers.delete(LAYOUT_PREVIEW_COVER);
-    else this.#covers.set(LAYOUT_PREVIEW_COVER, this.#stageRect());
+    this.#cycleKey = cycle;
+    this.#coverPreview();
     this.#dirtyView = true;
     this.#render();
     this.#kick();
   }
 
-  /** The preview gone (a layout applied, a window in hand, the desk passing): its cover with it. The view says so with the next emit. */
+  /**
+   * Tab (or ⇧Tab: `step` -1) on the layout looked at (since 2026-10-14): its
+   * windows go round its places once more, as the ghosts show — a click
+   * then lays them out so. The layout the desk is in, looked at, shows
+   * nothing until its windows are turned. Whether there was a layout to turn.
+   */
+  cycleLayout(step: 1 | -1): boolean {
+    if (this.#previewKind === null) return false;
+    this.#previewTurn += step;
+    this.#coverPreview();
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+    return true;
+  }
+
+  /** The preview's cover: the whole stage while it draws ghosts — never for the layout the desk is in, unturned, which draws none. */
+  #coverPreview(): void {
+    if (this.#previewKind !== null && this.#previewDraws(this.#previewKind)) this.#covers.set(LAYOUT_PREVIEW_COVER, this.#stageRect());
+    else this.#covers.delete(LAYOUT_PREVIEW_COVER);
+  }
+
+  /** Whether the layout looked at moves anything: its windows turned round its places, or not yet in it. */
+  #previewDraws(kind: DeskLayoutKind): boolean {
+    const windows = this.#layoutWindows();
+    if (windows.size === 0) return false;
+    const usable = this.#usable();
+    if (this.#previewTurn !== 0) {
+      const turned = this.#turnedLayout(kind, windows, usable, this.#previewTurn);
+      return turned !== null && changesLayout(windows, turned);
+    }
+    const laid = this.#laidAs.get(this.#laidKey());
+    const holding = laid !== undefined && laid.kind === kind && holdsLayout(laid, windows, usable);
+    return !holding && !isLaidOutAs(kind, [...windows.values()], usable);
+  }
+
+  /**
+   * The layout's places with its windows turned round them (cycledLayout), from the order it gives them unturned — or,
+   * the desk in that layout already, the places they hold now, so the first turn moves each window on from where it is.
+   */
+  #turnedLayout(kind: DeskLayoutKind, windows: ReadonlyMap<string, Rect>, usable: Rect, turn: number): Map<string, Rect> | null {
+    const inIt = isLaidOutAs(kind, [...windows.values()], usable);
+    const base = inIt ? new Map(windows) : layoutRects(kind, windows, usable, this.#focused);
+    return base === null ? null : cycledLayout(base, turn);
+  }
+
+  /** The preview gone (a layout applied, a window in hand, the desk passing): its cover and its turn with it. The view says so with the next emit. */
   #dropPreview(): void {
     if (this.#previewKind === null) return;
     this.#previewKind = null;
+    this.#previewTurn = 0;
+    this.#cycleKey = false;
     this.#covers.delete(LAYOUT_PREVIEW_COVER);
     this.#dirtyView = true;
   }
@@ -1621,7 +1801,8 @@ export class DeskEngine {
       for (const win of this.#wins.values()) {
         // (One flying off the desk goes where it goes.)
         if (this.#gesture?.tabId === win.tabId || win.flight === "away") continue;
-        if (win.flight === "in") {
+        // (Coming in at its place — a matched entrance, only posed — it stands at its box: rescaled below as one at rest.)
+        if (win.flight === "in" && !(win.target === null && win.pose !== null)) {
           // Coming out — a passing, a tab out of its row — it lands in the desk as it is now: ⌘S or a window resize
           // during the flight would have it land at its box in the old stage, past the new one's edge (2026-10-09;
           // until then a window in flight kept its target). Where it is on its way is the spring's.
@@ -1786,11 +1967,14 @@ export class DeskEngine {
   /**
    * The desk passes to another of the Space's groups, in place. The group
    * left is saved as it was left (the host still saves under its id), and
-   * its windows fly into its icon in the dock — each once a still of it is
-   * up, so it flies as what it showed (#departFor). The other group's
-   * windows come out of the icon chosen (chooseGroup) to where they were
-   * last left — or, never on a desk, its tab used last comes out alone, in
-   * the middle — and that tab is chosen, and takes the keyboard.
+   * its windows go as the Settings' Switching spaces says: dismissed where
+   * they stand, together once every one has a still to go as (#dismiss), or
+   * — "tile", as every switch did until 2026-10-14 — each flying into its
+   * icon in the dock once its still is up (#departFor). The other group's
+   * windows come to where they were last left — or, never on a desk, its tab
+   * used last comes out alone, in the middle — with the exit's own entrance
+   * once it sets out ("matched": #comingIn, #cueEntrances), or out of the
+   * icon chosen (chooseGroup); and that tab is chosen, and takes the keyboard.
    */
   switchGroup(next: {
     /** The group the desk passes from: its windows go into its icon. */
@@ -1819,12 +2003,16 @@ export class DeskEngine {
     this.#editing = null;
     this.#save();
     const now = performance.now();
+    const { exit, arrival } = this.#host.spaceSwitch();
     for (const tabId of this.#order) {
       const win = this.#wins.get(tabId)!;
       if (win.flight === "away" || this.#departing.has(tabId)) continue;
       win.coasting = false;
-      this.#departing.set(tabId, { groupId: next.from, since: now });
+      this.#departing.set(tabId, { groupId: next.from, since: now, exit });
     }
+    // (The windows of a switch before this one still waiting to come in are on their way out now.)
+    this.#awaitingCue = null;
+    const entrance = isPosedExit(exit) && arrival === "matched" ? entranceMotion(exit, reducedMotion()) : null;
     if (this.#pendingFocus !== null && this.#departing.has(this.#pendingFocus)) this.#pendingFocus = null;
     // The shelf is the next group's: this one's parked windows wait where they are to fly home.
     this.#parked = [];
@@ -1840,6 +2028,7 @@ export class DeskEngine {
     // it was left, not made anew.)
     const reserve = next.reserve ?? 0;
     const { windows, entry } = this.#laidOut(next.saved, next.tabIds, next.entry, this.#shellIds, next.reveal === true, reserve);
+    const coming: Win[] = [];
     windows.forEach((window, index) => {
       const homing = this.#wins.get(window.tabId);
       if (homing !== undefined) {
@@ -1849,15 +2038,17 @@ export class DeskEngine {
         if (window.mini?.parked === true) this.#parked.push(window.tabId);
         return;
       }
-      const win = this.#flyingIn(window.tabId, window.rect, from);
+      const win = entrance === null ? this.#flyingIn(window.tabId, window.rect, from) : this.#comingIn(window.tabId, window.rect, entrance);
       win.mask = window.mask;
       win.mini = window.mini;
       this.#keepOwn(win, window, reserve);
       if (window.mini?.parked === true) this.#parked.push(window.tabId);
-      win.delay = this.#beat(index, windows.length, 0.03, 0.035);
+      if (entrance === null) win.delay = this.#beat(index, windows.length, 0.03, 0.035);
       this.#wins.set(window.tabId, win);
       this.#order.push(window.tabId);
+      coming.push(win);
     });
+    if (entrance !== null && coming.length > 0) this.#awaitEntrance(coming, entry, entrance, now);
     // (Saved with other room kept for the chat's place than is kept now: where each lands is where the room now leaves it.)
     if (reserve !== this.#reserve) this.#reroom(windows.filter((window) => window.fresh !== true).map((window) => this.#wins.get(window.tabId)!), reserve, this.#reserve, false);
     this.#stackShelf();
@@ -1942,6 +2133,8 @@ export class DeskEngine {
   #turnBack(win: Win): boolean {
     if (this.#departing.has(win.tabId)) {
       this.#departing.delete(win.tabId);
+      // (Still waiting to come in, it comes now.)
+      this.#unpose(win);
       if (win.mini?.parked === true && !this.#parked.includes(win.tabId)) {
         this.#parked.push(win.tabId);
         this.#layShelf();
@@ -1964,6 +2157,10 @@ export class DeskEngine {
   #takeBack(win: Win, rect: Rect): void {
     this.#departing.delete(win.tabId);
     win.passedFrom = null;
+    // (Gone as a row or a tile over the column, it comes back a window.)
+    this.#undock(win);
+    // Dismissed where it stood, or still waiting to come in: back from the pose it has.
+    this.#unpose(win);
     if (win.flight === "away") {
       win.flight = "in";
       win.onArrive = null;
@@ -2061,11 +2258,15 @@ export class DeskEngine {
     this.#unreserved.set(win.tabId, { base, set: from, ...(size === undefined ? {} : { size }), restore: null, mini });
   }
 
-  /** A window of the group the desk passed from, once it has its still (or has waited long enough): into its group's icon. */
-  #departFor(win: Win, groupId: string): void {
+  /**
+   * A window of the group the desk passed from, once it has its still (or has waited long enough): into its group's icon
+   * — or, let go on an item of the column (#dropOnDock), into that item, the box it was taken from the one it turns back to.
+   */
+  #departFor(win: Win, departing: { groupId: string; into?: Rect; from?: Rect; bounce?: HTMLElement | null }): void {
+    const groupId = departing.groupId;
     // (Minimized, it goes as a window, and would come back as one: at the size it grows back to.)
-    win.passedFrom = { rect: { ...(win.mini !== null ? win.mini.restore : (win.target ?? win.rect)) }, groupId };
-    this.#sendAway(win, false, this.#groupRect(groupId) ?? this.#sideMiddle());
+    win.passedFrom = { rect: { ...(departing.from ?? (win.mini !== null ? win.mini.restore : (win.target ?? win.rect))) }, groupId };
+    this.#sendAway(win, false, departing.into ?? this.#groupRect(groupId) ?? this.#sideMiddle());
     this.#folding.set(groupId, (this.#folding.get(groupId) ?? 0) + 1);
     const arrive = win.onArrive;
     win.onArrive = () => {
@@ -2076,9 +2277,119 @@ export class DeskEngine {
         return;
       }
       this.#folding.delete(groupId);
-      this.#bounce(this.#host.homeOf("group", groupId) ?? undefined);
+      this.#bounce(departing.bounce ?? this.#host.homeOf("group", groupId) ?? undefined);
     };
     this.#dirtyView = true;
+  }
+
+  /**
+   * The windows of a group the desk has passed from, every one with its
+   * still (or the wait up): dismissed where they stand, together, a beat
+   * apart in the exit's order (lib/desk/space-switch.ts) — their boxes kept,
+   * only their stills posed — and gone once their poses end. The chosen
+   * space's windows waiting to come in at their places are cued.
+   */
+  #dismiss(groupId: string, exit: PosedExit, tabIds: readonly string[], now: number): void {
+    const motion = exitMotion(exit, reducedMotion());
+    const going = this.#order.filter((tabId) => tabIds.includes(tabId)).map((tabId) => this.#wins.get(tabId)!);
+    for (const tabId of tabIds) this.#departing.delete(tabId);
+    const order = staggerOrder(
+      // (Bottom to top: the one on top was the window in use.)
+      going.map((win, index) => ({ id: win.tabId, rect: win.rect, inUse: index === going.length - 1 })),
+      motion.order,
+      { w: this.#stageBox.width, h: this.#stageBox.height },
+    );
+    order.forEach((tabId, index) => {
+      const win = this.#wins.get(tabId)!;
+      // (Minimized, it comes back as a window: at the size it grows back to.)
+      win.passedFrom = { rect: { ...(win.mini !== null ? win.mini.restore : (win.target ?? win.rect)) }, groupId };
+      // Lifted, or still on its way in, what is on screen is what goes: its scale folded into its box.
+      if (win.scale !== 1) {
+        const scale = win.scale;
+        win.rect = { x: win.rect.x + win.origin.x * (1 - scale), y: win.rect.y + win.origin.y * (1 - scale), w: win.rect.w * scale, h: win.rect.h * scale };
+        win.origin = { x: win.rect.w / 2, y: 16 };
+      }
+      win.scale = 1;
+      win.scaleV = 0;
+      win.tilt = 0;
+      win.tiltV = 0;
+      win.lift = { scale: 1, tilt: 0 };
+      // Minimized, it goes as it is; the shelf closes up behind it.
+      if (win.mini !== null) {
+        this.#unpark(win);
+        win.mini = null;
+      }
+      win.miniMotion = null;
+      win.flight = "away";
+      win.homeward = false;
+      win.coasting = false;
+      win.target = null;
+      win.tween = null;
+      win.delay = 0;
+      win.vel = { ...ZERO_RECT };
+      // From the pose it has, should it be one still coming in.
+      win.pose = { motion, start: now, delay: index * motion.stagger, from: win.posed };
+      win.posed = poseAt(motion, 0, win.posed);
+      win.written = "";
+      if (win.still !== null) this.#thumbs.set(win.tabId, win.still);
+      if (this.#editing === win.tabId) this.#editing = null;
+      if (this.#focused === win.tabId) this.#focused = null;
+      win.onArrive = () => {
+        this.#remove(win.tabId);
+        this.#save();
+        this.#emit();
+      };
+    });
+    this.#cueEntrances(now);
+    this.#dirtyView = true;
+  }
+
+  /** A window of the space the desk passes to, coming in at its place ("matched"): drawn, posed as its entrance sets out, until its cue. */
+  #comingIn(tabId: string, rect: Rect, motion: SwitchMotion): Win {
+    const win = this.#newWin(tabId, rect);
+    win.flight = "in";
+    win.pose = { motion, start: null, delay: 0, from: null };
+    win.posed = poseAt(motion, 0);
+    return win;
+  }
+
+  /**
+   * The chosen space's windows coming in at their places, in the entrance's
+   * order: once the exit before them sets out (#dismiss), and its handoff
+   * after — or at once, with nothing on its way out to follow.
+   */
+  #awaitEntrance(coming: readonly Win[], entry: string | null, motion: SwitchMotion, now: number): void {
+    const tabIds = staggerOrder(
+      coming.map((win) => ({ id: win.tabId, rect: win.rect, inUse: win.tabId === entry })),
+      motion.order,
+      { w: this.#stageBox.width, h: this.#stageBox.height },
+    );
+    this.#awaitingCue = { tabIds, handoff: motion.handoff };
+    const following = [...this.#departing.values()].some((departing) => isPosedExit(departing.exit));
+    if (!following) {
+      this.#awaitingCue.handoff = 0;
+      this.#cueEntrances(now);
+    }
+  }
+
+  #cueEntrances(now: number): void {
+    const cue = this.#awaitingCue;
+    if (cue === null) return;
+    this.#awaitingCue = null;
+    cue.tabIds.forEach((tabId, index) => {
+      const pose = this.#wins.get(tabId)?.pose;
+      if (pose === undefined || pose === null || pose.start !== null) return;
+      pose.start = now;
+      pose.delay = cue.handoff + index * pose.motion.stagger;
+    });
+    this.#kick();
+  }
+
+  /** A window posed (going, or waiting to come in) turned back to the desk: from the pose it has, back to rest. */
+  #unpose(win: Win): void {
+    if (win.pose === null && win.posed === null) return;
+    win.pose = { motion: returnMotion(win.pose?.motion.anchor ?? "own"), start: performance.now(), delay: 0, from: win.posed ?? REST_POSE };
+    win.written = "";
   }
 
   // ── What the rest of the browser did ───────────────────────────────────
@@ -3156,6 +3467,9 @@ export class DeskEngine {
       lag: null,
       unfill: null,
       size: null,
+      dock: null,
+      over: null,
+      morph: null,
       end: null,
     };
     // A masked window is drawn while it is resized (its still, stretched like the picture it is).
@@ -3236,6 +3550,9 @@ export class DeskEngine {
       // is really moving, it lets go of the span, so it can be carried about.
       unfill: win.mask === null && win.mini === null ? letGoSize(win.rect, win.restore, usable) : null,
       size: null,
+      dock: null,
+      over: null,
+      morph: null,
       end: null,
     };
     this.#gesture.tracker.push(origin.x, origin.y, performance.now());
@@ -3280,6 +3597,9 @@ export class DeskEngine {
       lag: null,
       unfill: null,
       size: null,
+      dock: null,
+      over: null,
+      morph: null,
       end: null,
     };
     this.#gesture = gesture;
@@ -3318,6 +3638,9 @@ export class DeskEngine {
     gesture.pinTop = pinTop;
     gesture.tracker.reset();
     gesture.tracker.push(point.x, point.y, performance.now());
+    // Still on its way into its row as a row or a tile (let go over the column a moment ago): taken anew, as a tab not out.
+    const going = this.#wins.get(gesture.tabId);
+    if (going !== undefined && going.dock !== null) this.#remove(going.tabId);
     const out = this.#wins.get(gesture.tabId);
     if (out !== undefined) {
       if (out.flight !== null) this.#land(out);
@@ -3408,6 +3731,14 @@ export class DeskEngine {
    * edge zone pushed into), magnets, the desk's edges. The leading edge is
    * the desk's like the others: pushed into, it lights the left half (its
    * quarters at the ends), as the right edge does the right.
+   *
+   * Carried on over the sidebar's column, onto something there that takes it
+   * (lib/desk/dock-drop.ts: a rail tile, Home, New space, the card showing
+   * the desk's own space), it is no longer placed here: it becomes what it
+   * would be dropped as — a row of the card, a rail tile — on a spring of its
+   * own (#stepMorph), and nothing on the desk is lit for it. Off it again, it
+   * grows back into the window in hand. Not while Shift snaps: Shift says
+   * the desk's tile is where it goes, and the column takes nothing then.
    */
   #placeCarried(win: Win, gesture: Gesture): void {
     const usable = this.#usable();
@@ -3422,12 +3753,37 @@ export class DeskEngine {
     const picture = win.mask !== null;
     const overShelf = this.#overShelf(win, point);
     const snapping = this.#shift && !picture && !overShelf;
+    // Over the column: the shape it takes there, and what a release there would do.
+    const over = snapping ? null : this.#dockOverAt(win, gesture);
+    const dock = over?.drop ?? null;
+    if (!sameDockDrop(dock, gesture.dock)) this.#dirtyView = true;
+    gesture.dock = dock;
+    gesture.over = over?.shape ?? null;
+    if (over !== null) this.#morphInto(win, gesture, over);
+    else if (gesture.morph !== null && !gesture.morph.back) this.#morphBack(win, gesture);
+    // On something there that takes it: nothing on the desk is lit for it.
+    if (gesture.morph !== null && dock !== null) {
+      if (gesture.zone !== null || gesture.snapping) this.#dirtyView = true;
+      gesture.zone = null;
+      gesture.cell = null;
+      gesture.snapping = false;
+      this.#showGuides([]);
+      this.#showZone(null, false);
+      return;
+    }
     gesture.cell = snapping ? thirdsCell(point, usable, gesture.cell, SNAP_HYSTERESIS) : null;
     const zone =
       gesture.cell !== null ? cellZone(gesture.cell) : picture || overShelf ? null : edgeZone(point, usable);
     if ((zone === null) !== (gesture.zone === null) || snapping !== gesture.snapping) this.#dirtyView = true;
     gesture.zone = zone;
     gesture.snapping = snapping;
+    // A tile between the rail's items (or growing back into the window): the desk's edge is lit for where a release
+    // lands it, as ever, but its box is the morph's (#stepMorph).
+    if (gesture.morph !== null) {
+      this.#showGuides([]);
+      this.#showZone(zone === null ? null : tileRect(zone, usable), snapping);
+      return;
+    }
     const hold = { x: gesture.grab.x * win.rect.w, y: gesture.pinTop ?? gesture.grab.y * win.rect.h };
     // Taken by its icon, a window is still on its way to the hand.
     const lag = gesture.lag ?? { x: 0, y: 0 };
@@ -3450,6 +3806,177 @@ export class DeskEngine {
     if (this.#host.variants().motion === "lifted") {
       win.lift = { ...win.lift, scale: LIFT_SCALE };
     }
+  }
+
+  /**
+   * What a window in hand is over in the sidebar's column (the shape it takes
+   * there, and the drop a release would make), or null: the column is left
+   * of the stage, and read once the pointer first comes over it (the drag
+   * layer holds the pointer, so nothing there moves while it is carried).
+   */
+  #dockOverAt(win: Win, gesture: Gesture): DockOver | null {
+    if (gesture.kind === "resize" || gesture.pointer.x >= 0) return null;
+    if (gesture.targets === undefined) {
+      const targets = this.#host.dockTargets?.() ?? null;
+      gesture.targets = targets !== null && !targets.homeSpace && this.#host.homeOwns?.(win.tabId) === true ? { ...targets, homeSpace: true } : targets;
+    }
+    const { left, top } = this.#stageBox;
+    return dockOverAt({ x: gesture.pointer.x + left, y: gesture.pointer.y + top }, gesture.targets, this.#groupId, isTabWindow(win.tabId) ? "tab" : "file");
+  }
+
+  /**
+   * Over the column where it changes shape: drawn as what it would be dropped as there (a tile of the space it would go
+   * to; between the rail's items, a neutral one), flat (no lift, no swing).
+   */
+  #morphInto(win: Win, gesture: Gesture, over: DockOver): void {
+    const shape: DeskWindowDock = { shape: over.shape, color: over.drop?.color ?? null };
+    if (win.dock === null || win.dock.shape !== shape.shape || win.dock.color !== shape.color) {
+      win.dock = shape;
+      this.#dirtyView = true;
+    }
+    if (gesture.morph === null) gesture.morph = { vel: { ...ZERO_RECT }, own: { w: win.rect.w, h: win.rect.h }, back: false };
+    else gesture.morph.back = false;
+    win.lift = { scale: 1, tilt: 0 };
+  }
+
+  /** Off the column's targets again: it grows back into the window in hand (#stepMorph lets go of it there). */
+  #morphBack(win: Win, gesture: Gesture): void {
+    gesture.morph!.back = true;
+    win.dock = null;
+    this.#dirtyView = true;
+  }
+
+  /**
+   * Where a morphing window is headed this frame: the row or tile it would be
+   * dropped as (dockShapeRect), or — growing back — the window in hand, at
+   * its own size, held where the pointer took it.
+   */
+  #morphTarget(gesture: Gesture, morph: NonNullable<Gesture["morph"]>): Rect {
+    const over = gesture.over;
+    const targets = gesture.targets ?? null;
+    if (!morph.back && over !== null && targets !== null) {
+      const { left, top } = this.#stageBox;
+      const shape = dockShapeRect(over, { x: gesture.pointer.x + left, y: gesture.pointer.y + top }, targets);
+      return { ...shape, x: shape.x - left, y: shape.y - top };
+    }
+    return this.#handRect(gesture, gesture.size ?? morph.own);
+  }
+
+  /** The window in hand at `size`, held where the pointer took it (its drawer's place, or its share of the window). */
+  #handRect(gesture: Gesture, size: Size): Rect {
+    const lag = gesture.lag ?? { x: 0, y: 0 };
+    return {
+      x: gesture.pointer.x - gesture.grab.x * size.w + lag.x,
+      y: gesture.pointer.y - (gesture.pinTop ?? gesture.grab.y * size.h) + lag.y,
+      w: size.w,
+      h: size.h,
+    };
+  }
+
+  /**
+   * A frame of a morph: the window's box on its spring toward the row or
+   * tile (or back to the window in hand) — the Feel's spring, critically
+   * damped when Eased; with reduced motion, there at once. Grown back, it is
+   * the window in hand again, placed as any is.
+   */
+  #stepMorph(win: Win, gesture: Gesture, morph: NonNullable<Gesture["morph"]>, dt: number): void {
+    // (Taken by its icon, it is still on its way to the hand meanwhile.)
+    const lag = gesture.lag;
+    if (lag !== null) {
+      const spring = reducedMotion() ? REDUCED_SPRING : this.#host.variants().spring === "eased" ? EASED_SPRING : CATCH_SPRING;
+      const x = stepSpring(lag.x, lag.vx, 0, spring, dt);
+      const y = stepSpring(lag.y, lag.vy, 0, spring, dt);
+      gesture.lag = springAtRest(x.x, x.v, 0) && springAtRest(y.x, y.v, 0) ? null : { x: x.x, y: y.x, vx: x.v, vy: y.v };
+    }
+    const to = this.#morphTarget(gesture, morph);
+    let arrived = true;
+    if (reducedMotion()) {
+      win.rect = { ...to };
+      morph.vel = { ...ZERO_RECT };
+    } else {
+      const spring = this.#spring();
+      const x = stepSpring(win.rect.x, morph.vel.x, to.x, spring, dt);
+      const y = stepSpring(win.rect.y, morph.vel.y, to.y, spring, dt);
+      const w = stepSpring(win.rect.w, morph.vel.w, to.w, spring, dt);
+      const h = stepSpring(win.rect.h, morph.vel.h, to.h, spring, dt);
+      win.rect = { x: x.x, y: y.x, w: Math.max(1, w.x), h: Math.max(1, h.x) };
+      morph.vel = { x: x.v, y: y.v, w: w.v, h: h.v };
+      arrived = springAtRest(x.x, x.v, to.x) && springAtRest(y.x, y.v, to.y) && springAtRest(w.x, w.v, to.w) && springAtRest(h.x, h.v, to.h);
+    }
+    if (!morph.back || !arrived) return;
+    gesture.morph = null;
+    win.rect = { ...to };
+    this.#dirtyView = true;
+    this.#placeCarried(win, gesture);
+  }
+
+  /**
+   * Let go over the sidebar's column, on something there that takes it
+   * (lib/desk/dock-drop.ts). Already the row or tile it is dropped as, it
+   * slips into the very item it was let go on:
+   * - "space": its tab joins that space (moveTabToGroup), the window into the
+   *   space's tile;
+   * - "new": a space of that tab alone (toNewSpace), into New space; the desk
+   *   stays on its own space;
+   * - "home": a Home tab (toHome), into Home;
+   * - "collapse": put away into its row in the card (a document's, the
+   *   Stack's), or into the desk's own tile on the rail — as its − does.
+   * The window in use leaving, another takes over as for any of those. Where
+   * it was taken up from is the place it leaves (the smart layout hears of
+   * it), and the box it would turn back to should its tab be the desk's
+   * again (regroup, a passing back).
+   */
+  #dropOnDock(win: Win, gesture: Gesture, drop: DockDrop): void {
+    const tabId = win.tabId;
+    const left = gesture.kind === "move" && this.#laidOutByDesk(tabId) ? { ...gesture.startRect } : null;
+    const own = gesture.morph === null ? null : this.#handRect(gesture, gesture.size ?? gesture.morph.own);
+    const from = gesture.kind === "move" ? { ...gesture.startRect } : (own ?? { ...win.rect });
+    const { left: stageX, top: stageY } = this.#stageBox;
+    const item: Rect = { x: drop.box.x - stageX, y: drop.box.y - stageY, w: drop.box.w, h: drop.box.h };
+    win.coasting = false;
+    win.target = null;
+    win.tween = null;
+    win.vel = { ...ZERO_RECT };
+    if (this.#pendingFocus === tabId) this.#pendingFocus = null;
+    if (this.#selecting === tabId) this.#selecting = null;
+    const bounce = drop.item === "card" ? null : (this.#host.dockItem?.(drop.item, drop.groupId) ?? null);
+    if (drop.kind === "collapse") {
+      // Into its row where the card shows it (else its icon, as − puts it), or into the tile it was let go on.
+      const into = drop.item === "card" ? this.#rowBox(tabId) : item;
+      this.#sendAway(win, true, into ?? undefined);
+      if (into !== null) {
+        win.homeward = true;
+        const arrive = win.onArrive;
+        win.onArrive = () => {
+          arrive?.();
+          if (bounce !== null) this.#bounce(bounce);
+          else this.#receive(tabId);
+        };
+      }
+    } else {
+      const way = { into: item, from, bounce };
+      this.#sendTab(tabId, drop.kind === "space" ? { kind: "space", groupId: drop.groupId ?? "" } : { kind: drop.kind }, way);
+    }
+    this.#emit();
+    this.#render();
+    this.#kick();
+    if (left !== null) this.#moment({ trigger: "closed", gone: [{ id: tabId, rect: left, how: "collapsed" }] });
+  }
+
+  /**
+   * A window's own row in the card, in the stage — the whole row, which a
+   * window dropped as a row slips into: a tab's row in sight in its list, or
+   * a document's Stack row. Null where the card does not show it (its home
+   * is then a tile, a favorite's tile, or the column is away).
+   */
+  #rowBox(tabId: string): Rect | null {
+    const el = this.#host.homeOf(isTabWindow(tabId) ? "tab" : "file", tabId);
+    if (el === null || !el.isConnected || this.#host.sidebarAway()) return null;
+    const row = typeof el.getAttribute === "function" && (el.getAttribute("role") === "tab" || el.getAttribute("data-testid") === "desk-stack");
+    if (!row) return null;
+    const box = el.getBoundingClientRect();
+    if (box.width < 1) return null;
+    return { x: box.left - this.#stageBox.left, y: box.top - this.#stageBox.top, w: box.width, h: box.height };
   }
 
   /** A reading of Shift from a press or a pointer sample (undefined: it did not say). */
@@ -3562,6 +4089,20 @@ export class DeskEngine {
       this.#kick();
       return;
     }
+    // Let go over the column, on something there that takes it: it goes there. Only the pointer's place counts: a
+    // throw toward the sidebar, let go over the desk, is a throw like any other.
+    if (gesture.dock !== null) {
+      this.#dropOnDock(win, gesture, gesture.dock);
+      return;
+    }
+    // Let go as a tile between the rail's items, or growing back from one: a window again. Into the lit tile (the
+    // desk's leading half, as ever over the column), it grows there from where it is; with none, it is the window in
+    // hand at once.
+    if (gesture.morph !== null) {
+      if (gesture.zone === null) win.rect = this.#handRect(gesture, gesture.size ?? gesture.morph.own);
+      win.dock = null;
+      this.#dirtyView = true;
+    }
     const velocity = gesture.tracker.velocity(performance.now());
     const usable = this.#usable();
     const variants = this.#host.variants();
@@ -3630,6 +4171,12 @@ export class DeskEngine {
     const win = this.#wins.get(gesture.tabId);
     if (win !== undefined) {
       win.lift = { scale: 1, tilt: 0 };
+      // Drawn as a row or a tile over the column: the window in hand again first.
+      if (gesture.morph !== null && gesture.kind !== "resize") win.rect = this.#handRect(gesture, gesture.size ?? gesture.morph.own);
+      if (win.dock !== null) {
+        win.dock = null;
+        this.#dirtyView = true;
+      }
       win.target = gesture.kind === "spawn" ? null : this.#rest(win, win.rect);
       if (gesture.kind === "spawn") this.#sendAway(win, true);
     }
@@ -3645,10 +4192,27 @@ export class DeskEngine {
    * under it takes over — without coming up over it on its way out.
    */
   #moveToGroup(tabId: string, groupId: string): void {
+    this.#sendTab(tabId, { kind: "space", groupId });
+  }
+
+  /**
+   * A tab of the group sent out of it: to another space (#moveToGroup), to
+   * Home or to a new space of its own (a window let go on them on the rail:
+   * #dropOnDock). Its window goes as #moveToGroup's does — into the group's
+   * row, or into the item it was let go on (`way.into`).
+   */
+  #sendTab(
+    tabId: string,
+    to: { kind: "space"; groupId: string } | { kind: "home" } | { kind: "new" },
+    way: { into?: Rect; from?: Rect; bounce?: HTMLElement | null } = {},
+  ): void {
     const win = this.#wins.get(tabId);
-    if (win !== undefined && win.flight !== "away" && !this.#departing.has(tabId)) {
+    const going = win !== undefined && win.flight !== "away" && !this.#departing.has(tabId);
+    // (The box it would come back to, should main keep its tab: where it was taken from, or where it stands.)
+    const from = going ? { ...(way.from ?? (win.mini !== null ? win.mini.restore : (win.target ?? win.rect))) } : null;
+    if (going) {
       win.coasting = false;
-      this.#departing.set(tabId, { groupId, since: performance.now() });
+      this.#departing.set(tabId, { groupId: to.kind === "space" ? to.groupId : "", since: performance.now(), exit: "tile", ...way });
     }
     if (this.#pendingFocus === tabId) this.#pendingFocus = null;
     let next: string | null = null;
@@ -3660,11 +4224,52 @@ export class DeskEngine {
         this.#host.select(next);
       }
     }
-    this.#host.moveTabToGroup(tabId, groupId, next);
+    const sent =
+      to.kind === "space" ? this.#host.moveTabToGroup(tabId, to.groupId, next) : to.kind === "home" ? this.#host.toHome?.(tabId, next) : this.#host.toNewSpace?.(tabId, next);
+    // Main may keep the tab — no room for another space (the Profile holds MAX_TAB_GROUPS_PER_SPACE), a Stack the target
+    // cannot take: its window, sent on its way already, comes back (#stayed). (Until 2026-10-14 it went all the same,
+    // and the window was gone while its tab stayed in the space's list.)
+    if (sent !== undefined && from !== null) {
+      void sent.then(
+        (moved) => {
+          if (!moved) this.#stayed(tabId, from);
+        },
+        () => this.#stayed(tabId, from),
+      );
+    }
     this.#save();
     this.#dirtyView = true;
     // A window whose still never comes flies all the same once the wait is up.
     if (win !== undefined) this.#renderIn(SWITCH_STILL_WAIT_MS + 20);
+  }
+
+  /**
+   * A tab sent out of the group that main kept (#sendTab): its window comes
+   * back to the box it was taken from (`from`), on top and in use — turned
+   * round on its way into the item it was let go on (or still waiting for
+   * its still to go), or, gone into it already, out of its row again, as a
+   * window chosen comes out. Its tab no longer the group's by then (closed,
+   * or moved some other way meanwhile), or its window out already, nothing.
+   */
+  #stayed(tabId: string, from: Rect): void {
+    if (this.#destroyed || !this.#groupTabIds.includes(tabId)) return;
+    const win = this.#wins.get(tabId);
+    if (win === undefined) {
+      this.add(tabId, { focus: true, rect: clampRect(from, this.#reach(), { w: MIN_WINDOW_W, h: MIN_WINDOW_H }) });
+      this.#save();
+      return;
+    }
+    if (this.#departing.has(tabId)) {
+      // (Still where it was let go, a row or a tile over the column: it grows back into the window as it goes.)
+      this.#takeBack(win, clampRect(from, this.#reach(), this.#minSize(win)));
+      win.lift = { scale: 1, tilt: 0 };
+    } else if (!this.#turnBack(win)) return;
+    this.#raise(tabId);
+    this.#pendingFocus = tabId;
+    this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
   }
 
   // ── The frame loop ─────────────────────────────────────────────────────
@@ -3700,7 +4305,8 @@ export class DeskEngine {
     // Lift and tilt ride their own spring, carried or not.
     const variants = this.#host.variants();
     let tiltTarget = win.lift.tilt;
-    if (gesture !== null && gesture.kind !== "resize" && variants.motion === "lifted" && !reducedMotion()) {
+    // (A row or a tile over the column does not swing.)
+    if (gesture !== null && gesture.kind !== "resize" && gesture.morph === null && variants.motion === "lifted" && !reducedMotion()) {
       const velocity = gesture.tracker.velocity(now);
       tiltTarget = clamp((velocity.x * (0.5 - gesture.grab.y) - velocity.y * (0.5 - gesture.grab.x)) * 2 * TILT_PER_SPEED, -MAX_TILT, MAX_TILT);
     }
@@ -3727,7 +4333,33 @@ export class DeskEngine {
       win.tiltV = 0;
     }
 
+    // A timed pose on its still (lib/desk/space-switch.ts): going where it stands, coming in at its place, or turned
+    // back. Taken in hand, it is put down at once. Done with nowhere to move to, it has arrived (gone, or live).
+    if (win.pose !== null && gesture !== null) {
+      win.pose = null;
+      win.posed = null;
+      win.written = "";
+    } else if (win.pose !== null) {
+      if (this.#stepPose(win, now)) moving = true;
+      else if (win.target === null) {
+        const arrive = win.onArrive;
+        win.onArrive = null;
+        if (win.flight === "in") {
+          win.flight = null;
+          this.#dirtyView = true;
+          if (this.#phase === "open") this.#save();
+        }
+        arrive?.();
+        return moving;
+      }
+    }
+
     if (gesture !== null) {
+      // Over the column: drawn as what it would be dropped as there, or growing back from that into the window in hand.
+      if (gesture.kind !== "resize" && gesture.morph !== null) {
+        this.#stepMorph(win, gesture, gesture.morph, dt);
+        return true;
+      }
       let moved = false;
       // In hand and changing size — letting go of the whole desk — about the point the pointer holds.
       const size = gesture.kind === "move" ? gesture.size : null;
@@ -3830,6 +4462,21 @@ export class DeskEngine {
     return moving;
   }
 
+  /** The pose this frame (#write draws it). True while it lasts, or waits for its cue; at its end it is gone. */
+  #stepPose(win: Win, now: number): boolean {
+    const pose = win.pose!;
+    if (pose.start === null) return true;
+    const t = pose.motion.ms <= 0 ? 1 : (now - pose.start - pose.delay) / pose.motion.ms;
+    if (t < 1) {
+      win.posed = poseAt(pose.motion, Math.max(0, t), pose.from);
+      return true;
+    }
+    win.pose = null;
+    win.posed = null;
+    win.written = "";
+    return false;
+  }
+
   /**
    * A thrown window: momentum that fades until it slows enough to settle.
    * Meeting an edge ends the coast — the window rests against that edge,
@@ -3875,7 +4522,8 @@ export class DeskEngine {
     const now = performance.now();
     // A layout looked at: a window taken in hand puts it away; while it lasts, its cover is the whole stage, as that is now.
     if (this.#previewKind !== null && this.#gesture !== null) this.#dropPreview();
-    if (this.#previewKind !== null) this.#covers.set(LAYOUT_PREVIEW_COVER, this.#stageRect());
+    // (Only while it draws ghosts: the layout the desk is in, unturned, keeps the pages live.)
+    if (this.#previewKind !== null) this.#coverPreview();
     let drawersMoving = false;
     for (const win of this.#wins.values()) if (this.#stepDrawer(win, now)) drawersMoving = true;
     // A mask being edited: its page shown around the region, and its bar,
@@ -3956,9 +4604,12 @@ export class DeskEngine {
       // So is a window growing back from its mask: live, its page would be shown at every size it passes through.
       // So is a window shrinking into minimized: its page is laid out at the size it ends at. (Growing back from it, it is live: growTo.)
       // So is a parked window while main's shelf view draws it over a live page (its still is what that view shows).
+      // So is one drawn as a row or a tile over the column (a page is no row), in hand or on its way into it.
       const forced =
         win.flight !== null ||
         (this.#gesture?.kind === "spawn" && this.#gesture.tabId === win.tabId) ||
+        win.dock !== null ||
+        (this.#gesture?.tabId === win.tabId && this.#gesture.morph !== null) ||
         this.#editing === win.tabId ||
         win.unmasking !== null ||
         win.miniMotion === "in" ||
@@ -3978,13 +4629,25 @@ export class DeskEngine {
       }
       this.#write(win);
     }
-    // Windows of a group the desk has passed from: each goes once its still stands in for it.
+    // Windows of a group the desk has passed from: each goes once its still stands in for it — into the group's row on
+    // its own, or, dismissed where they stand, with the rest of its group once every one of them is ready.
+    const dismissals = new Map<string, { groupId: string; exit: PosedExit; tabIds: string[]; ready: boolean }>();
     for (const [tabId, departing] of [...this.#departing]) {
       const win = this.#wins.get(tabId);
-      if (win !== undefined && !win.drawn && now - departing.since < SWITCH_STILL_WAIT_MS) continue;
+      const ready = win === undefined || win.drawn || now - departing.since >= SWITCH_STILL_WAIT_MS;
+      if (isPosedExit(departing.exit)) {
+        const key = `${departing.groupId}\u0000${departing.exit}`;
+        const group = dismissals.get(key) ?? { groupId: departing.groupId, exit: departing.exit, tabIds: [], ready: true };
+        group.tabIds.push(tabId);
+        group.ready &&= ready;
+        dismissals.set(key, group);
+        continue;
+      }
+      if (!ready) continue;
       this.#departing.delete(tabId);
-      if (win !== undefined) this.#departFor(win, departing.groupId);
+      if (win !== undefined) this.#departFor(win, departing);
     }
+    for (const group of dismissals.values()) if (group.ready) this.#dismiss(group.groupId, group.exit, group.tabIds, now);
     this.#checkCovers();
     this.#checkNotch();
     this.#checkShelf();
@@ -4363,6 +5026,8 @@ export class DeskEngine {
     // So does a window settling into a smaller box, let go: its page laid out at every size it passes through.
     if (carried === null && win.shrinkTo !== null) return false;
     if (carried?.kind === "spawn") return true;
+    // Drawn as a row or a tile over the column, or growing back from one: a still, in Live too.
+    if (win.dock !== null || (carried !== null && carried.morph !== null)) return true;
     // A picture being resized is its still, stretched.
     if (carried?.kind === "resize" && win.mask !== null) return true;
     if (this.#host.variants().motion === "live") return false;
@@ -4509,10 +5174,19 @@ export class DeskEngine {
     const { x, w, h } = win.rect;
     // (Pushed down by its drawer, the window is drawn there: its shadow, its clip and its page with it.)
     const y = win.rect.y + this.#drawerShift(win);
-    const transformed = win.drawn && (win.scale !== 1 || win.tilt !== 0);
-    const transform = transformed
-      ? `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0) rotate(${win.tilt.toFixed(3)}deg) scale(${win.scale.toFixed(4)})`
-      : `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
+    // Posed (going or coming as the desk passes: lib/desk/space-switch.ts), its still is drawn so, about its anchor.
+    const posed = win.posed;
+    const transformed = posed !== null || (win.drawn && (win.scale !== 1 || win.tilt !== 0));
+    // A row or a tile over the column, or growing back from one, is over the sidebar as it is: nothing of it is cut.
+    const morphed = win.dock !== null || (this.#gesture?.tabId === win.tabId && this.#gesture.morph !== null);
+    const origin = posed === null ? win.origin : this.#poseOrigin(win, x, y);
+    const transform =
+      posed !== null
+        ? this.#poseTransform(win, posed, x, y)
+        : transformed
+          ? `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0) rotate(${win.tilt.toFixed(3)}deg) scale(${win.scale.toFixed(4)})`
+          : `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
+    const poseKey = posed === null ? "" : `${posed.opacity.toFixed(3)}:${posed.blur.toFixed(2)}`;
     const reveal = win.unmasking === null ? null : this.#revealBox(win, win.unmasking);
     const revealKey = reveal === null ? "" : `${reveal.x.toFixed(1)},${reveal.y.toFixed(1)},${reveal.w.toFixed(1)},${reveal.h.toFixed(1)}`;
     // Nothing of a window falls past the desk's foot: its shadow there would darken the surface's gutter, which the
@@ -4524,7 +5198,7 @@ export class DeskEngine {
     const { width: stageW, height: stageH } = this.#stageBox;
     // (Pushed down by its drawer, it is cut at its own foot as well: it reaches over nothing below it.)
     const bottom = y > win.rect.y ? Math.min(stageH, win.rect.y + h) : stageH;
-    const foot = transformed || stageH <= 0 ? null : bottom - y;
+    const foot = transformed || morphed || stageH <= 0 ? null : bottom - y;
     const reach = (room: number): number => Math.min(CLIP_MARGIN, Math.max(0, room));
     const sides: ClipReach = { top: reach(y), left: reach(x), right: reach(stageW - x - w) };
     // Where the clip reaches one of the desk's corners, it is rounded as the desk is there: a window filling the desk
@@ -4542,7 +5216,7 @@ export class DeskEngine {
     const tight = drawer && this.#drawerRoom(win) < DRAWER_H;
     // (Whether it is out at all too: the last frame of its going in can round to the same thousandth as all the way in.)
     const drawerKey = drawer ? `${win.drawer.t.toFixed(3)}:${win.drawer.t > 0 ? "out" : "in"}:${tight ? "tight" : "roomy"}` : "";
-    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${win.origin.x.toFixed(0)},${win.origin.y.toFixed(0)}|${revealKey}|${clip}|${drawerKey}`;
+    const key = `${transform}|${w.toFixed(1)}|${h.toFixed(1)}|${origin.x.toFixed(0)},${origin.y.toFixed(0)}|${revealKey}|${clip}|${drawerKey}|${poseKey}`;
     if (key === win.written) return;
     win.written = key;
     if (drawer) {
@@ -4559,7 +5233,17 @@ export class DeskEngine {
     el.style.transform = transform;
     el.style.width = `${w.toFixed(1)}px`;
     el.style.height = `${h.toFixed(1)}px`;
-    el.style.transformOrigin = `${win.origin.x.toFixed(0)}px ${win.origin.y.toFixed(0)}px`;
+    el.style.transformOrigin = `${origin.x.toFixed(0)}px ${origin.y.toFixed(0)}px`;
+    // (Its opacity and blur are the pose's alone while it lasts: the stylesheet's own fades and transitions stand aside.)
+    if (posed !== null) {
+      el.dataset["switching"] = "";
+      el.style.opacity = posed.opacity.toFixed(3);
+      el.style.filter = posed.blur > 0.05 ? `blur(${posed.blur.toFixed(2)}px)` : "";
+    } else if (el.dataset["switching"] !== undefined) {
+      delete el.dataset["switching"];
+      el.style.removeProperty("opacity");
+      el.style.removeProperty("filter");
+    }
     if (reveal !== null) {
       el.style.setProperty("--reveal-x", `${reveal.x.toFixed(1)}px`);
       el.style.setProperty("--reveal-y", `${reveal.y.toFixed(1)}px`);
@@ -4569,6 +5253,23 @@ export class DeskEngine {
       for (const name of ["--reveal-x", "--reveal-y", "--reveal-w", "--reveal-h"]) el.style.removeProperty(name);
     }
     win.revealed = reveal !== null;
+  }
+
+  /** Where a posed window's scale and tilt are about, from its own corner: its centre, or the desk's centre, foot or top. */
+  #poseOrigin(win: Win, x: number, y: number): Point {
+    const anchor = win.pose?.motion.anchor ?? "own";
+    const { width, height } = this.#stageBox;
+    if (anchor === "own") return { x: win.rect.w / 2, y: win.rect.h / 2 };
+    return { x: width / 2 - x, y: anchor === "desk" ? height / 2 - y : anchor === "foot" ? height - y : -y };
+  }
+
+  /** A posed window's transform: drifted toward the desk's middle and dropped, then tipped back (in perspective) and scaled about its anchor. */
+  #poseTransform(win: Win, posed: Pose, x: number, y: number): string {
+    const { width, height } = this.#stageBox;
+    const dx = (width / 2 - (x + win.rect.w / 2)) * posed.toward;
+    const dy = (height / 2 - (y + win.rect.h / 2)) * posed.toward + posed.drop;
+    const tilt = Math.abs(posed.tilt) < 0.001 ? "" : ` perspective(1200px) rotateX(${posed.tilt.toFixed(3)}deg)`;
+    return `translate3d(${(x + dx).toFixed(2)}px, ${(y + dy).toFixed(2)}px, 0)${tilt} scale(${posed.scale.toFixed(4)})`;
   }
 
   /**
@@ -4672,6 +5373,7 @@ export class DeskEngine {
     zoomed.splice(MAX_DESK_WINDOWS);
     const dockHover = this.#dockHover;
     const undoKey = this.#undoKey;
+    const cycleKey = this.#cycleKey;
     // Main hears of tabs' windows only: a document has no page of its own.
     const tabIds = leavingLast(this.#staying().filter(isTabWindow)).slice(0, MAX_DESK_WINDOWS);
     // The pages wanted awake (#liveWindows), among those; and the group they are of.
@@ -4684,10 +5386,11 @@ export class DeskEngine {
       grab: grab === "off" ? null : grab,
       dockHover,
       undoKey,
+      cycleKey,
       masks,
       zoomed,
     };
-    const deskKey = `${groupId ?? ""}|${tabIds.join(" ")}|${live.join(" ")}|${desk.grab ?? ""}|${dockHover ? "hover" : ""}|${undoKey ? "undo" : ""}|${masks
+    const deskKey = `${groupId ?? ""}|${tabIds.join(" ")}|${live.join(" ")}|${desk.grab ?? ""}|${dockHover ? "hover" : ""}|${undoKey ? "undo" : ""}|${cycleKey ? "cycle" : ""}|${masks
       .map((page) => `${page.tabId}:${deskMaskKey(page.mask)}:${page.width}x${page.height}`)
       .join(" ")}|${zoomed.map((page) => `${page.tabId}:${page.width}x${page.height}@${page.zoom}`).join(" ")}`;
     if (deskKey !== this.#sentDesk) {
@@ -4779,7 +5482,12 @@ export class DeskEngine {
     // The named layout the desk is in, from where its windows are going; and the one looked at, if any, laid over them.
     const laid = this.#layoutWindows();
     const previewKind = this.#previewKind;
-    const ghosts = previewKind === null || laid.size === 0 ? null : layoutRects(previewKind, laid, usable, this.#focused);
+    const ghosts =
+      previewKind === null || laid.size === 0 || !this.#previewDraws(previewKind)
+        ? null
+        : this.#previewTurn !== 0
+          ? this.#turnedLayout(previewKind, laid, usable, this.#previewTurn)
+          : layoutRects(previewKind, laid, usable, this.#focused);
     this.#view = {
       windows: this.#order.map((tabId, index) => {
         const win = this.#wins.get(tabId)!;
@@ -4817,6 +5525,7 @@ export class DeskEngine {
                 }
               : null,
           tipShown: this.#clearCovers.has(windowTipCover(tabId)),
+          dock: win.dock,
           live: this.#live.has(tabId),
         };
       }),
@@ -4827,10 +5536,12 @@ export class DeskEngine {
       shelf: this.#shelf,
       snapping: gesture?.snapping ?? false,
       gesture: gesture?.kind ?? null,
+      dockDrop: gesture?.dock == null ? null : { kind: gesture.dock.kind, item: gesture.dock.item, groupId: gesture.dock.groupId },
       phase: this.#phase,
       layout: layoutNow(laid, usable, this.#laidAs.get(this.#laidKey()) ?? null),
       layoutCount: laid.size,
-      preview: previewKind === null ? null : { kind: previewKind, ghosts: ghosts === null ? [] : [...ghosts].map(([id, rect]) => ({ id, rect })) },
+      // (Nothing to draw — the layout the desk is in, unturned, or none for these windows — is no preview.)
+      preview: previewKind === null || ghosts === null ? null : { kind: previewKind, ghosts: [...ghosts].map(([id, rect]) => ({ id, rect })) },
     };
     for (const listener of this.#listeners) listener();
   }
@@ -4984,7 +5695,10 @@ export class DeskEngine {
       revealed: false,
       homeward: false,
       closing: false,
+      dock: null,
       passedFrom: null,
+      pose: null,
+      posed: null,
       drawer: { t: 0, target: 0, from: 0, start: 0, ms: 0, wantedAt: Number.NEGATIVE_INFINITY, waitingSince: null, holdUntil: 0, cursor: null, free: false },
     };
   }
@@ -5043,6 +5757,9 @@ export class DeskEngine {
     win.flight = "away";
     win.coasting = false;
     win.delay = 0;
+    // (Coming in at its place a moment ago, it flies as it is now.)
+    win.pose = null;
+    win.posed = null;
     // Minimized, it goes as it is; the shelf closes up behind it.
     if (win.mini !== null) {
       this.#unpark(win);
@@ -5082,6 +5799,7 @@ export class DeskEngine {
   #recall(win: Win): boolean {
     if (win.flight !== "away" || !win.homeward) return false;
     this.#makeRoom();
+    this.#undock(win);
     win.onArrive = null;
     win.flight = "in";
     win.homeward = false;
@@ -5089,6 +5807,14 @@ export class DeskEngine {
     win.written = "";
     this.#dirtyView = true;
     return true;
+  }
+
+  /** A window gone as a row or a tile over the column (#dropOnDock), turned back: a window again, its page shown. */
+  #undock(win: Win): void {
+    if (win.dock === null) return;
+    win.dock = null;
+    win.written = "";
+    this.#dirtyView = true;
   }
 
   /** The tab's row in the sidebar gives a little bounce: its window has just come back into it (a document's, the Stack's row). */

@@ -128,31 +128,40 @@ describe("sanitizeSettings", () => {
       .toEqual([{ title: "Portal", url: "https://portal.example" }]);
   });
 
-  it("starts with the sidebar whole", () => {
-    expect(DEFAULT_SETTINGS.layout).toEqual({ sidebar: "whole" });
-    expect(sanitizeSettings(null).layout).toEqual({ sidebar: "whole" });
+  it("starts with the sidebar whole, and a space switch blooming its windows away and the next ones in to match", () => {
+    expect(DEFAULT_SETTINGS.layout).toEqual({ sidebar: "whole", spaceExit: "bloom", spaceArrival: "matched" });
+    expect(sanitizeSettings(null).layout).toEqual(DEFAULT_SETTINGS.layout);
   });
 
   it("refuses an unknown sidebar mode", () => {
-    expect(sanitizeSettings({ layout: { sidebar: 3 } }).layout).toEqual({ sidebar: "whole" });
-    expect(sanitizeSettings({ layout: { sidebar: "floating" } }).layout).toEqual({ sidebar: "whole" });
+    expect(sanitizeSettings({ layout: { sidebar: 3 } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "whole" });
+    expect(sanitizeSettings({ layout: { sidebar: "floating" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "whole" });
     // Compared, never looked up: what Object.prototype holds is not a mode.
-    expect(sanitizeSettings({ layout: { sidebar: "constructor" } }).layout).toEqual({ sidebar: "whole" });
-    expect(sanitizeSettings({ layout: { sidebar: "toString" } }).layout).toEqual({ sidebar: "whole" });
+    expect(sanitizeSettings({ layout: { sidebar: "constructor" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "whole" });
+    expect(sanitizeSettings({ layout: { sidebar: "toString" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "whole" });
     expect(sanitizeSettings({ layout: "sidebar" }).layout).toEqual(DEFAULT_SETTINGS.layout);
   });
 
   it("keeps each of the three modes, and reads what builds before 2026-10-09 wrote as today's", () => {
-    expect(sanitizeSettings({ layout: { sidebar: "whole" } }).layout).toEqual({ sidebar: "whole" });
-    expect(sanitizeSettings({ layout: { sidebar: "rail" } }).layout).toEqual({ sidebar: "rail" });
-    expect(sanitizeSettings({ layout: { sidebar: "hidden" } }).layout).toEqual({ sidebar: "hidden" });
-    expect(sanitizeSettings({ layout: { sidebar: "pinned" } }).layout).toEqual({ sidebar: "whole" });
-    expect(sanitizeSettings({ layout: { sidebar: "compact" } }).layout).toEqual({ sidebar: "hidden" });
+    expect(sanitizeSettings({ layout: { sidebar: "whole" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "whole" });
+    expect(sanitizeSettings({ layout: { sidebar: "rail" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "rail" });
+    expect(sanitizeSettings({ layout: { sidebar: "hidden" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "hidden" });
+    expect(sanitizeSettings({ layout: { sidebar: "pinned" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "whole" });
+    expect(sanitizeSettings({ layout: { sidebar: "compact" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "hidden" });
+  });
+
+  it("keeps each way of switching spaces, and falls back to Bloom and to match for anything else", () => {
+    for (const spaceExit of ["bloom", "recede", "gather", "pop", "sink", "tile"] as const) {
+      expect(sanitizeSettings({ layout: { spaceExit } }).layout.spaceExit).toBe(spaceExit);
+    }
+    expect(sanitizeSettings({ layout: { spaceArrival: "tile" } }).layout.spaceArrival).toBe("tile");
+    expect(sanitizeSettings({ layout: { spaceExit: "genie", spaceArrival: "constructor" } }).layout).toMatchObject({ spaceExit: "bloom", spaceArrival: "matched" });
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { layout: { spaceExit: "sink" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, spaceExit: "sink" });
   });
 
   it("drops the layout mode an older version stored, keeping the sidebar's mode", () => {
     // The top-tabs layout is gone: a file that chose it opens in the sidebar.
-    expect(sanitizeSettings({ layout: { mode: "top", sidebar: "compact" } }).layout).toEqual({ sidebar: "hidden" });
+    expect(sanitizeSettings({ layout: { mode: "top", sidebar: "compact" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "hidden" });
   });
 
   it("cycles the sidebar whole, rail, hidden — and, without the rail, whole and hidden", () => {
@@ -270,16 +279,16 @@ describe("applySettingsPatch", () => {
 
   it("switches the sidebar's mode without disturbing other sections", () => {
     const next = applySettingsPatch(DEFAULT_SETTINGS, { layout: { sidebar: "rail" } });
-    expect(next.layout).toEqual({ sidebar: "rail" });
+    expect(next.layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "rail" });
     expect(next.general).toEqual(DEFAULT_SETTINGS.general);
     expect(next.delegation).toEqual(DEFAULT_SETTINGS.delegation);
     expect(next.privacy).toEqual(DEFAULT_SETTINGS.privacy);
   });
 
   it("maps a patch that still says pinned or compact (an older seed or script) as it maps a file", () => {
-    expect(applySettingsPatch(DEFAULT_SETTINGS, { layout: { sidebar: "compact" } }).layout).toEqual({ sidebar: "hidden" });
+    expect(applySettingsPatch(DEFAULT_SETTINGS, { layout: { sidebar: "compact" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "hidden" });
     const hidden = applySettingsPatch(DEFAULT_SETTINGS, { layout: { sidebar: "hidden" } });
-    expect(applySettingsPatch(hidden, { layout: { sidebar: "pinned" } }).layout).toEqual({ sidebar: "whole" });
+    expect(applySettingsPatch(hidden, { layout: { sidebar: "pinned" } }).layout).toEqual({ ...DEFAULT_SETTINGS.layout, sidebar: "whole" });
   });
 
   it("narrows the grant's methods when writes are off", () => {

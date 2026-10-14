@@ -15,10 +15,16 @@
  * - What the sidebar lays over the desk — the hidden sidebar's column
  *   brought out — is a cover the desk's live pages give way to
  *   (useDeskCover).
+ * - The desk says what a window carried over the column would be dropped on
+ *   (`dockDrop`: a rail tile, Home, New space, or the card; lib/desk/
+ *   dock-drop.ts), for that item to light as it does for a row carried
+ *   there — the drag layer holds the pointer, so the sidebar hears no hover
+ *   of its own (2026-10-14).
  */
 
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { create } from "zustand";
+import type { DockDropKind, DockItem } from "./dock-drop";
 import type { Rect } from "./geometry";
 import { useDeskEngine } from "./open";
 
@@ -31,6 +37,14 @@ export interface DeskAnchor {
 
 /** A tab's window on the desk, as its row in the sidebar marks it. */
 export type DeskMark = "out" | "focused";
+
+/** What a window carried over the column would be dropped on (DeskView.dockDrop): the item lit, and what the drop does. */
+export interface DeskDockLit {
+  kind: DockDropKind;
+  item: DockItem;
+  /** A space's tile: its id. */
+  groupId: string | null;
+}
 
 export interface DeskCard {
   kind: "more" | "stack";
@@ -49,12 +63,15 @@ interface DeskChromeState {
   card: DeskCard | null;
   hovered: string | null;
   agentTab: string | null;
+  /** A window carried over the column: what a release there would go into (null over nothing, or with none in hand). */
+  dockDrop: DeskDockLit | null;
   setMarks(marks: ReadonlyMap<string, DeskMark>): void;
   setBehind(behind: ReadonlySet<string>): void;
   openCard(card: DeskCard): void;
   closeCard(kind?: DeskCard["kind"]): void;
   setHovered(tabId: string | null): void;
   setAgentTab(tabId: string | null): void;
+  setDockDrop(drop: DeskDockLit | null): void;
 }
 
 const NO_MARKS: ReadonlyMap<string, DeskMark> = new Map();
@@ -66,6 +83,7 @@ export const useDeskChrome = create<DeskChromeState>((set, get) => ({
   card: null,
   hovered: null,
   agentTab: null,
+  dockDrop: null,
   setMarks: (marks) => {
     const before = get().marks;
     if (before.size === marks.size && [...marks].every(([id, mark]) => before.get(id) === mark)) return;
@@ -87,7 +105,17 @@ export const useDeskChrome = create<DeskChromeState>((set, get) => ({
   setAgentTab: (tabId) => {
     if (get().agentTab !== tabId) set({ agentTab: tabId });
   },
+  setDockDrop: (drop) => {
+    const before = get().dockDrop;
+    if (before === drop || (before !== null && drop !== null && before.kind === drop.kind && before.item === drop.item && before.groupId === drop.groupId)) return;
+    set({ dockDrop: drop });
+  },
 }));
+
+/** Whether the rail item or card `item` (a space's tile: `groupId`'s) is what a window carried over the column would be dropped on. */
+export function useDockLit(item: DockItem, groupId: string | null = null): boolean {
+  return useDeskChrome((state) => state.dockDrop !== null && state.dockDrop.item === item && (item !== "space" || state.dockDrop.groupId === groupId));
+}
 
 /** A tab's mark in the sidebar: its window out on the desk, or in use there; null without one (or without a desk). */
 export function useDeskMark(tabId: string): DeskMark | null {

@@ -72,6 +72,17 @@ describe("chromeTabsSharing", () => {
     expect(second[1]?.active).toBe(true);
   });
 
+  it("rebuilds a row whose tab lost a field: a link that ended is not kept (2026-10-14)", () => {
+    const a = tab("a");
+    const linked = tab("b", { linkedAnchorId: "fav" });
+    const first = chromeTabs(snapshot([a, linked]));
+    expect(first[1]?.linkedAnchorId).toBe("fav");
+    const second = chromeTabsSharing(snapshot([a, tab("b")]), first);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).not.toBe(first[1]);
+    expect(second[1]?.linkedAnchorId).toBeUndefined();
+  });
+
   it("rebuilds the list when a tab is added, removed, or reordered", () => {
     const a = tab("a");
     const b = tab("b");

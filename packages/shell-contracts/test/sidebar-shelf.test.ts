@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   childrenOf,
+  entryPageOf,
   folderEmoji,
   isSidebarCommand,
   placeEntry,
@@ -179,6 +180,11 @@ describe("isSidebarCommand", () => {
       { type: "removeFavorite", favoriteId: "x" },
       { type: "moveFavorite", favoriteId: "x", index: 2 },
       { type: "favoriteToPin", favoriteId: "x", folderId: null, index: 0 },
+      { type: "bringDown", anchorId: "x" },
+      { type: "bringDown", anchorId: "x", index: 2 },
+      { type: "bringDown", anchorId: "x", groupId: "g", index: 0 },
+      // Into a new space of its own (2026-10-14): a place of its own.
+      { type: "bringDown", anchorId: presetAnchorId("https://a.example/"), newGroupId: "space-1" },
     ];
     for (const command of ok) expect(isSidebarCommand(command), JSON.stringify(command)).toBe(true);
   });
@@ -201,8 +207,29 @@ describe("isSidebarCommand", () => {
       { type: "addFavorite", source: { url: "javascript:1", title: "A" } },
       { type: "addFavorite", source: {} },
       { type: "moveFavorite", favoriteId: "x" },
+      { type: "bringDown", anchorId: "x", newGroupId: "not an id" },
+      { type: "bringDown", anchorId: "x", newGroupId: "space-1", groupId: "g" },
+      { type: "bringDown", anchorId: "x", newGroupId: "space-1", index: 0 },
       { type: "nope" },
     ];
     for (const command of bad) expect(isSidebarCommand(command), JSON.stringify(command)).toBe(false);
+  });
+});
+
+describe("entryPageOf", () => {
+  const tab = (id: string, anchorId: string | null, linkedAnchorId?: string) => ({ id, anchorId, ...(linkedAnchorId === undefined ? {} : { linkedAnchorId }) });
+
+  it("finds an entry's page: its anchored tab, else the tab linked to it in a space, else none", () => {
+    const tabs = [tab("day", null), tab("own", "fav-a"), tab("in-space", null, "fav-b"), tab("pinned", "pin-c")];
+    expect(entryPageOf(tabs, "fav-a")).toEqual({ tab: tabs[1], linked: false });
+    expect(entryPageOf(tabs, "fav-b")).toEqual({ tab: tabs[2], linked: true });
+    expect(entryPageOf(tabs, "pin-c")?.linked).toBe(false);
+    expect(entryPageOf(tabs, "fav-closed")).toBe(null);
+  });
+
+  it("puts the anchored page first should a file hold both, and never reads a link off an anchored tab", () => {
+    const both = [tab("linked", null, "fav-a"), tab("own", "fav-a")];
+    expect(entryPageOf(both, "fav-a")).toEqual({ tab: both[1], linked: false });
+    expect(entryPageOf([tab("odd", "pin-x", "fav-a")], "fav-a")).toBe(null);
   });
 });

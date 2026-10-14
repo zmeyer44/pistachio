@@ -9,8 +9,11 @@
  * card turned to it, its desk two windows side by side; one of them closed,
  * it goes back to Home. The space view's layouts lay its windows out, the
  * ghosts drawn on the desk first, ⌃Z putting them back; the rail takes rows
- * let go on it; and ⌘S cycles the three ways to stand, the traffic lights
- * going with the card.
+ * let go on it — and (2026-10-14) favorites and pins, New space making a
+ * space of one, drawn over the rail as a space's tile meanwhile; a favorite
+ * brought into a space goes there when chosen, never back to Home; a tile
+ * carried onto another merges the two, between two it moves —; and ⌘S
+ * cycles the three ways to stand, the traffic lights going with the card.
  *
  * What only the real app has is proved here: the shell's DOM against main's
  * groups, the desk's windows, main's window buttons. The rules — which spaces
@@ -172,10 +175,11 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
       await expect(railSpace(shell, loose!.id)).toHaveCount(0);
     }
 
-    // ── 2. Home's card: the favorites four to a row (Mail's counting the tab beside its page), Pinned, Today ─
+    // ── 2. Home's card: the favorites three to a row (Mail's counting the tab beside its page), Pinned, Today ─
     const home = homeView(shell);
     await expect(home).toHaveCount(1);
-    await expect(home.getByTestId("favorites-grid")).toHaveAttribute("data-columns", "4");
+    const [grid, tile] = await Promise.all([box(shell, '[data-testid="home-view"] [data-testid="favorites-grid"]'), box(shell, '[data-testid="home-view"] [data-testid="favorite-tile"]')]);
+    expect(Math.round(grid.width / tile.width)).toBe(3);
     await expect(home.getByTestId("favorite-tile")).toHaveCount(2);
     await expect(home.locator('[data-testid="favorite-tile"][data-flip-id="fav-mail"] [data-testid="favorite-tab-count"]')).toHaveText("1");
     await expect(home.locator('[data-testid="pinned-tab"][data-flip-id="pin-north"]')).toHaveCount(1);
@@ -338,6 +342,39 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     await settled(shell, app);
     await expect.poll(async () => { const [a, b] = await pair(windowSelector); return near(a!, leftHalf) && near(b!, rightHalf); }).toBe(true);
     await expect(layoutOption(shell, "halves")).toHaveAttribute("aria-pressed", "true");
+
+    // ── 5. Tab with the pointer resting on a layout: its windows trade places, the ghosts showing it, a click following ─
+    // On the layout the desk is in, nothing is drawn until Tab turns the windows; the caption says what Tab does.
+    const westOf = async (tabId: string): Promise<number> => (await box(shell, windowSelector(tabId))).x;
+    const southLeft = (await westOf(south)) < (await westOf(east));
+    await layoutOption(shell, "halves").hover();
+    await expect(shell.getByTestId("layout-caption-cycle")).toContainText("swaps them");
+    await expect(shell.getByTestId("desk-layout-ghosts")).toHaveCount(0);
+    // Struck in a page (main takes it while the pointer rests there: DeskState.cycleKey).
+    await app.evaluate(({ webContents }, url) => {
+      const page = webContents.getAllWebContents().find((contents) => contents.getURL() === url)!;
+      page.focus();
+      page.sendInputEvent({ type: "keyDown", keyCode: "Tab" });
+      page.sendInputEvent({ type: "keyUp", keyCode: "Tab" });
+    }, SOUTH);
+    await expect(shell.locator('[data-testid="desk-layout-ghosts"][data-kind="halves"]')).toHaveCount(1);
+    await expect.poll(async () => near(await box(shell, ghostOf(south)), southLeft ? rightHalf : leftHalf)).toBe(true);
+    await expect.poll(async () => near(await box(shell, ghostOf(east)), southLeft ? leftHalf : rightHalf)).toBe(true);
+    await layoutOption(shell, "halves").click();
+    await awayFromColumn();
+    await settled(shell, app);
+    await expect.poll(async () => near(await box(shell, windowSelector(south)), southLeft ? rightHalf : leftHalf)).toBe(true);
+    await expect(layoutOption(shell, "halves")).toHaveAttribute("aria-pressed", "true");
+    // Struck in the shell's own document, on Stacked: its two places trade windows too.
+    await layoutOption(shell, "stack").hover();
+    await expect(shell.locator('[data-testid="desk-layout-ghosts"][data-kind="stack"]')).toHaveCount(1);
+    const topGhost = async (): Promise<string> => ((await box(shell, ghostOf(south))).y < (await box(shell, ghostOf(east))).y ? south : east);
+    await expect.poll(async () => Math.abs((await box(shell, ghostOf(south))).y - (await box(shell, ghostOf(east))).y) > 100).toBe(true);
+    const onTop = await topGhost();
+    await shell.keyboard.press("Tab");
+    await expect.poll(topGhost).toBe(onTop === south ? east : south);
+    await awayFromColumn();
+    await expect(shell.getByTestId("desk-layout-ghosts")).toHaveCount(0);
   });
 
   test("the rail takes rows: a Today row let go on a space's tile joins it, at its end; a space's row let go on Home leaves it", async () => {
@@ -359,6 +396,197 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === "ds-research")?.tabIds).toEqual([south, east]);
     expect((await snapshot(shell)).looseGroups?.some((group) => group.tabIds.length === 1 && group.tabIds[0] === late)).toBe(true);
     await expect(railSpace(shell, "ds-research")).toHaveAttribute("aria-label", "Research, 2 windows");
+  });
+});
+
+/**
+ * A row, a favorite or a pin carried from the card and held over a rail item: it is drawn there as a space's tile (the
+ * token, chrome/shelf-drag.tsx), the item lit to take it — then let go. As carryOnto, never right past the column.
+ */
+async function holdOver(shell: Page, from: Locator, onto: Locator): Promise<void> {
+  await chromeSettled(shell.getByTestId("sidebar-tab-list"));
+  const start = center((await from.boundingBox())!);
+  const end = center((await onto.boundingBox())!);
+  await shell.mouse.move(start.x, start.y);
+  await shell.mouse.down();
+  await shell.mouse.move(start.x, start.y + 8, { steps: 2 });
+  for (let step = 1; step <= 14; step += 1) {
+    await shell.mouse.move(start.x + ((end.x - start.x) * step) / 14, start.y + 8 + ((end.y - start.y - 8) * step) / 14);
+    await shell.waitForTimeout(16);
+  }
+  await expect(onto).toHaveAttribute("data-dropping", "");
+  // The token: a tile, up over the rail.
+  const face = shell.getByTestId("shelf-rail-token-face");
+  await expect(face).toHaveAttribute("data-shown", "");
+  await expect(face).toHaveAttribute("data-shape", "tile");
+}
+
+/** A space's tile carried along the rail to `to` and held there a beat (its gap opened, or the tile under it lit). */
+async function carryTile(shell: Page, tile: Locator, to: { x: number; y: number }): Promise<void> {
+  const start = center((await tile.boundingBox())!);
+  await shell.mouse.move(start.x, start.y);
+  await shell.mouse.down();
+  await shell.mouse.move(start.x, start.y + (to.y > start.y ? 8 : -8), { steps: 2 });
+  await shell.mouse.move(to.x, to.y, { steps: 10 });
+  await expect(tile).toHaveAttribute("data-moving", "");
+}
+
+test.describe.serial("the rail takes favorites, pins and spaces", { tag: ["@sidebar", "@desk"] }, () => {
+  let app: ElectronApplication;
+  let shell: Page;
+  let invoices: string, west: string, late: string;
+  /** The space the favorite was let go on New space into, and its page there. */
+  let vendorSpace: string;
+  let vendorTab: string;
+
+  test.beforeAll(async () => {
+    ({ app, shell } = await launchDesk({
+      name: "double-sidebar-drops",
+      files: {
+        "sidebar.json": {
+          version: 1,
+          spaces: {
+            work: {
+              favorites: [
+                { id: "fav-mail", url: MAIL, title: "Mail", faviconUrl: null },
+                { id: "fav-vendor", url: VENDOR, title: "Vendor", faviconUrl: null },
+              ],
+              entries: [{ kind: "pin", id: "pin-north", url: NORTH, title: "North", faviconUrl: null, folderId: null }],
+            },
+          },
+        },
+      },
+    }));
+    let south: string, east: string;
+    [invoices, south, east, west, late] = (await openTabs(shell, [INVOICES, SOUTH, EAST, WEST, LATE])) as [string, string, string, string, string];
+    await createGroup(shell, "dd-research", [south, east], "Research", "blue");
+    await createGroup(shell, "dd-errands", [west], "Errands", "green");
+    await selectTab(shell, invoices);
+    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
+    await settled(shell, app);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a Today row and a favorite let go on New space each make a space of their own, not chosen — the favorite open there, in its colour; held over the rail each is a space's tile", async () => {
+    test.setTimeout(60_000);
+    const before = new Set((await snapshot(shell)).tabGroups.map((group) => group.id));
+    const fresh = async (): Promise<string[]> => (await snapshot(shell)).tabGroups.filter((group) => !before.has(group.id)).map((group) => group.id);
+
+    // ── 1. The day's row: held over New space it is a tile, New space lit; let go, a space of its own, the desk staying ─
+    await holdOver(shell, shell.locator(rowSelector(late)), shell.getByTestId("rail-new-space"));
+    // (Its row waits in its slot, dimmed: the token is what is carried.)
+    await expect.poll(() => shell.locator(rowSelector(late)).evaluate((row) => Number(getComputedStyle(row).opacity))).toBeLessThan(0.6);
+    await capture(app, shell, "20-row-over-new-space.png");
+    await shell.mouse.up();
+    await expect.poll(fresh).toHaveLength(1);
+    const [lateSpace] = await fresh();
+    let now = await snapshot(shell);
+    expect(now.tabGroups.find((group) => group.id === lateSpace)?.tabIds).toEqual([late]);
+    expect(now.currentGroupId).not.toBe(lateSpace);
+    await expect(railSpace(shell, lateSpace!)).toHaveCount(1);
+    await expect(shell.locator(rowSelector(late))).toHaveCount(0);
+    await expect(shell.getByTestId("shelf-rail-token-face")).not.toHaveAttribute("data-shown", "");
+    before.add(lateSpace!);
+
+    // ── 2. A favorite not open, its tile let go on New space: a space of its page, opened there, still the favorite's ─
+    const vendorTile = homeView(shell).locator('[data-testid="favorite-tile"][data-flip-id="fav-vendor"]');
+    await holdOver(shell, vendorTile, shell.getByTestId("rail-new-space"));
+    await capture(app, shell, "21-favorite-over-new-space.png");
+    await shell.mouse.up();
+    await expect.poll(fresh).toHaveLength(1);
+    [vendorSpace] = (await fresh()) as [string];
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === vendorSpace)?.tabIds.length ?? 0).toBe(1);
+    now = await snapshot(shell);
+    const space = now.tabGroups.find((group) => group.id === vendorSpace)!;
+    vendorTab = space.tabIds[0]!;
+    expect(now.tabs.find((tab) => tab.id === vendorTab)).toMatchObject({ url: VENDOR, anchorId: null, linkedAnchorId: "fav-vendor" });
+    expect(space.origin).toBe("manual");
+    expect(now.currentGroupId).not.toBe(vendorSpace);
+    // The favorite stays, open in that space: its mark in that space's colour.
+    expect(now.sidebar.favorites.map((favorite) => favorite.id)).toEqual(["fav-mail", "fav-vendor"]);
+    await expect(vendorTile).toHaveAttribute("data-linked-group", vendorSpace);
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === vendorSpace)?.naming === true).toBe(false);
+    const color = (await snapshot(shell)).tabGroups.find((group) => group.id === vendorSpace)!.color;
+    await expect(vendorTile.getByTestId("entry-linked-mark")).toHaveAttribute("data-group-color", color);
+    before.add(vendorSpace);
+
+    // ── 3. The pin onto Home: it is Home's already — Home does not light, and nothing comes of it ─
+    const pinRow = shell.locator('[data-testid="pinned-tab"][data-flip-id="pin-north"]');
+    await chromeSettled(shell.getByTestId("sidebar-tab-list"));
+    const from = center((await pinRow.boundingBox())!);
+    const home = center(await box(shell, '[data-testid="rail-home"]'));
+    await shell.mouse.move(from.x, from.y);
+    await shell.mouse.down();
+    await shell.mouse.move(from.x, from.y + 8, { steps: 2 });
+    await shell.mouse.move(home.x, home.y, { steps: 12 });
+    await expect(shell.getByTestId("shelf-rail-token-face")).toHaveAttribute("data-shown", "");
+    await expect(railHome(shell)).not.toHaveAttribute("data-dropping", "");
+    await shell.mouse.up();
+    await expect.poll(fresh).toHaveLength(0);
+    expect((await snapshot(shell)).tabs.some((tab) => tab.url === NORTH)).toBe(false);
+  });
+
+  test("a favorite brought into a space goes there when chosen: the desk passes to it and the card turns to it, never back to Home (and no second page opens)", async () => {
+    test.setTimeout(60_000);
+    await chooseHome(shell);
+    // Every view the card shows from here, and every current space main names.
+    await shell.evaluate(() => {
+      const record: string[] = [];
+      (window as unknown as { __views: string[] }).__views = record;
+      const column = document.querySelector<HTMLElement>('[data-testid="sidebar-chrome"]')!;
+      new MutationObserver(() => record.push(column.dataset["view"] ?? "")).observe(column, { attributes: true, attributeFilter: ["data-view"] });
+    });
+    await homeView(shell).locator('[data-testid="favorite-tile"][data-flip-id="fav-vendor"]').click();
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(vendorSpace);
+    expect((await snapshot(shell)).activeTabId).toBe(vendorTab);
+    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="space"]')).toHaveCount(1);
+    await expect(spaceView(shell, vendorSpace)).toHaveCount(1);
+    await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${vendorSpace}"]`)).toHaveCount(1);
+    await settled(shell, app);
+    // A while after: still there. (The person's bug, until 2026-10-14: the favorite opened a fresh page in Home.)
+    for (let i = 0; i < 5; i += 1) {
+      await shell.waitForTimeout(200);
+      expect((await snapshot(shell)).currentGroupId).toBe(vendorSpace);
+    }
+    expect(await shell.evaluate(() => (window as unknown as { __views: string[] }).__views)).toEqual(["space"]);
+    expect((await snapshot(shell)).tabs.filter((tab) => tab.url === VENDOR)).toHaveLength(1);
+    await capture(app, shell, "22-favorite-chosen-in-its-space.png");
+  });
+
+  test("a space's tile carried onto another merges into it — every tab, at its end; the other keeps its name and colour — and carried between two, it moves", async () => {
+    test.setTimeout(60_000);
+    await chooseHome(shell);
+    const research = (await snapshot(shell)).tabGroups.find((group) => group.id === "dd-research")!;
+
+    // ── 1. Errands onto Research's middle: Research lights to take it, the carried tile shrinks; let go, one space ─
+    await carryTile(shell, railSpace(shell, "dd-errands"), center(await box(shell, groupSelector("dd-research"))));
+    await expect(railSpace(shell, "dd-research")).toHaveAttribute("data-merging", "");
+    await expect(railSpace(shell, "dd-research")).toHaveAttribute("data-dropping", "");
+    await capture(app, shell, "23-tile-over-tile.png");
+    await shell.mouse.up();
+    await expect(railSpace(shell, "dd-errands")).toHaveCount(0);
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === "dd-research")?.tabIds).toEqual([...research.tabIds, west]);
+    const merged = (await snapshot(shell)).tabGroups.find((group) => group.id === "dd-research")!;
+    expect(merged).toMatchObject({ title: "Research", color: "blue", origin: "manual" });
+    expect((await snapshot(shell)).tabGroups.some((group) => group.id === "dd-errands")).toBe(false);
+    await expect(railSpace(shell, "dd-research")).toHaveAttribute("aria-label", "Research, 3 windows");
+    await expect(railSpace(shell, "dd-research")).not.toHaveAttribute("data-merging", "");
+
+    // ── 2. The first tile carried into the gap below the second (over its foot): the gap opens, and it moves there ─
+    await expect.poll(async () => (await railOrder(shell)).length).toBeGreaterThanOrEqual(3);
+    const [first, second, ...rest] = await railOrder(shell);
+    const below = await box(shell, groupSelector(second!));
+    await carryTile(shell, railSpace(shell, first!), { x: below.x + below.width / 2, y: below.y + below.height + 4 });
+    // (The second steps up into the first's place.)
+    await expect.poll(() => railSpace(shell, second!).evaluate((tile) => getComputedStyle(tile).transform)).not.toBe("none");
+    await capture(app, shell, "24-tile-between.png");
+    await shell.mouse.up();
+    await expect.poll(() => railOrder(shell)).toEqual([second, first, ...rest]);
+    // (Carried, not chosen.)
+    await expect(railHome(shell)).toHaveAttribute("aria-current", "true");
   });
 });
 

@@ -94,6 +94,7 @@ function native(options: { stills?: boolean } = {}) {
 function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const created = new DeskEngine({
     variants: () => VARIANTS,
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,

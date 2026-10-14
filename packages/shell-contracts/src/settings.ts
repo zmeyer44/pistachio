@@ -127,6 +127,25 @@ export function effectiveSidebarMode(mode: SidebarMode, railOffered: boolean): S
 }
 
 /**
+ * How the desk's windows go when another space is chosen (docs/spaces.md §2,
+ * the Space Switch Lab): "tile" flies each into its space's tile on the rail,
+ * as every switch did until 2026-10-14; the rest dismiss them where they
+ * stand, as pictures of their pages — "bloom" swells and blurs them away,
+ * "recede" steps the desk back as one, "gather" draws them toward its
+ * middle, "pop" lifts each a touch before it drops, "sink" tips the desk back.
+ */
+export type SpaceSwitchExit = "bloom" | "recede" | "gather" | "pop" | "sink" | "tile";
+export const SPACE_SWITCH_EXITS: readonly SpaceSwitchExit[] = ["bloom", "recede", "gather", "pop", "sink", "tile"];
+
+/**
+ * How the chosen space's windows come: "matched", each exit's own entrance
+ * at their places (the windows going into the tile have none: they come out
+ * of theirs); "tile", out of the space's tile on the rail.
+ */
+export type SpaceArrival = "matched" | "tile";
+export const SPACE_ARRIVALS: readonly SpaceArrival[] = ["matched", "tile"];
+
+/**
  * A page the organization keeps in everyone's sidebar: the first tiles of
  * the favorites grid, ahead of the person's own, and not removable there.
  * Stored with the rest of the settings so a managed deployment can seed it
@@ -163,6 +182,10 @@ export interface DesktopSettings {
   };
   layout: {
     sidebar: SidebarMode;
+    /** How the desk's windows go when another space is chosen. */
+    spaceExit: SpaceSwitchExit;
+    /** How the chosen space's windows come. */
+    spaceArrival: SpaceArrival;
   };
   organization: {
     /** The organization's links, in the order the grid shows them. */
@@ -346,6 +369,8 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
   },
   layout: {
     sidebar: "whole",
+    spaceExit: "bloom",
+    spaceArrival: "matched",
   },
   organization: {
     presetLinks: [],
@@ -627,6 +652,8 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
     },
     layout: {
       sidebar: sidebarMode(layout["sidebar"], d.layout.sidebar),
+      spaceExit: oneOf(layout["spaceExit"], SPACE_SWITCH_EXITS, d.layout.spaceExit),
+      spaceArrival: oneOf(layout["spaceArrival"], SPACE_ARRIVALS, d.layout.spaceArrival),
     },
     organization: {
       presetLinks: presetLinks(organization["presetLinks"]),

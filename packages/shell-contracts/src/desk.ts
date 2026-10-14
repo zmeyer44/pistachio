@@ -239,6 +239,15 @@ export interface DeskState {
    * page's.
    */
   undoKey?: boolean;
+  /**
+   * A layout is looked at with the pointer in the space view (since
+   * 2026-10-14): Tab moves its windows round its places, ⇧Tab back
+   * (isDeskCycleKey), wherever the keyboard is — main takes the key from a
+   * page or a utility view and tells the shell (DeskPageInput "cycle",
+   * "cycleBack"); the shell's own document hears it itself. Absent or false
+   * the rest of the time, when Tab is the page's.
+   */
+  cycleKey?: boolean;
   /** The desk's masked pages (DeskMask); absent or empty when none is. */
   masks?: DeskMaskedPage[];
   /**
@@ -275,6 +284,7 @@ export function isDeskState(value: unknown): value is DeskState {
     (state["dock"] === undefined || state["dock"] === null || isDeskBox(state["dock"])) &&
     (state["dockHover"] === undefined || typeof state["dockHover"] === "boolean") &&
     (state["undoKey"] === undefined || typeof state["undoKey"] === "boolean") &&
+    (state["cycleKey"] === undefined || typeof state["cycleKey"] === "boolean") &&
     (state["masks"] === undefined ||
       (Array.isArray(state["masks"]) && state["masks"].length <= MAX_DESK_WINDOWS && state["masks"].every(isDeskMaskedPage))) &&
     (state["zoomed"] === undefined ||
@@ -329,14 +339,26 @@ export function isDeskGrab(value: unknown): value is DeskGrab {
  * the dock under the pointer (DeskState.dockHover): the shell closes that tab.
  * "undo": ⌃Z was struck in any of the window's views a moment after the desk
  * laid itself out (DeskState.undoKey): the shell puts the layout back.
+ * "cycle", "cycleBack": Tab, ⇧Tab, was struck in any of the window's views
+ * with a layout looked at with the pointer (DeskState.cycleKey): the shell
+ * moves its windows round its places, forward or back.
  * "fileDrag": files from outside the app were dragged over a desk page
  * (docs/desk-documents.md §1): the shell puts up the desk's drop targets,
  * and the page gives way to its still, so the drag comes to the shell.
  */
-export type DeskPageInput = "press" | "escape" | "dock" | "close" | "fileDrag" | "undo";
+export type DeskPageInput = "press" | "escape" | "dock" | "close" | "fileDrag" | "undo" | "cycle" | "cycleBack";
 
 export function isDeskPageInput(value: unknown): value is DeskPageInput {
-  return value === "press" || value === "escape" || value === "dock" || value === "close" || value === "fileDrag" || value === "undo";
+  return (
+    value === "press" ||
+    value === "escape" ||
+    value === "dock" ||
+    value === "close" ||
+    value === "fileDrag" ||
+    value === "undo" ||
+    value === "cycle" ||
+    value === "cycleBack"
+  );
 }
 
 /**
@@ -665,6 +687,11 @@ export function isDockCloseKey(input: DeskKeyInput): boolean {
 /** ⌃Z going down, no other modifier with it: a moment after the desk laid itself out, it puts the layout back (DeskState.undoKey). */
 export function isDeskUndoKey(input: DeskKeyInput): boolean {
   return input.type === "keyDown" && input.key.toLowerCase() === "z" && input.control && !input.shift && !input.alt && !input.meta;
+}
+
+/** Tab going down, or ⇧Tab, no other modifier: with a layout looked at with the pointer, its windows go round its places (DeskState.cycleKey). */
+export function isDeskCycleKey(input: DeskKeyInput): boolean {
+  return input.type === "keyDown" && input.key === "Tab" && !input.control && !input.alt && !input.meta;
 }
 
 /** Whether an input event's modifier list holds the desk's grab key. */

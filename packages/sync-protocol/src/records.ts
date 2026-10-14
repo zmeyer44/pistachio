@@ -507,6 +507,13 @@ export type ShellHomePageBehavior = "pistachio" | "url";
  * `sanitizeSettings` reads them as whole and hidden, so the record's version did not change for it.
  */
 export type ShellSidebarMode = "whole" | "rail" | "hidden";
+/**
+ * How the desk's windows go, and the chosen space's come, when another space is chosen (the shell's `SpaceSwitchExit`
+ * and `SpaceArrival`, Settings → General, since 2026-10-14). A record from before has neither: the shell reads it as
+ * Bloom and to match, so the record's version did not change for them.
+ */
+export type ShellSpaceSwitchExit = "bloom" | "recede" | "gather" | "pop" | "sink" | "tile";
+export type ShellSpaceArrival = "matched" | "tile";
 export type ShellWebSearchProvider = "google" | "duckduckgo" | "yahoo" | "bing";
 export type ShellAiSearchProvider = "chatgpt" | "gemini" | "claude" | "grok" | "perplexity";
 
@@ -567,6 +574,8 @@ export interface ShellSettingsValue {
   };
   layout: {
     sidebar: ShellSidebarMode;
+    spaceExit: ShellSpaceSwitchExit;
+    spaceArrival: ShellSpaceArrival;
   };
   organization: {
     presetLinks: ShellPresetLinkRecord[];

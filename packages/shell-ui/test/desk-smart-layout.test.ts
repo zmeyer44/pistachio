@@ -203,7 +203,7 @@ function arranger(engine: ReturnType<typeof fakeEngine>, answer: ((request: Desk
   /** The Feel's Layout, the agent, and the group whose desk this is — each may change while a question waits. */
   const state = { auto: options.auto ?? true, busy: options.busy ?? false, group: "a" };
   const asked: DeskLayoutRequest[] = [];
-  const notices: Array<{ message: string; undo: (() => void) | null }> = [];
+  const notices: Array<{ message: string }> = [];
   const timers: Array<{ run: () => void; at: number; cancelled: boolean }> = [];
   /** Answers held until released, so a test can change the desk while the model thinks. */
   const held: Array<() => void> = [];
@@ -221,7 +221,7 @@ function arranger(engine: ReturnType<typeof fakeEngine>, answer: ((request: Desk
             return holding ? new Promise((resolve) => held.push(() => resolve(result))) : Promise.resolve(result);
           },
     describe: (id) => WORDS[id] ?? null,
-    notify: (message, undo) => notices.push({ message, undo }),
+    notify: (message) => notices.push({ message }),
     later: (run, ms) => {
       const timer = { run, at: ms, cancelled: false };
       timers.push(timer);
@@ -366,11 +366,11 @@ describe("the arranger", () => {
       await arranged.ask();
       expect(asked).toHaveLength(1);
       expectRect(engine.windows.get("pr"), desk);
-      expect(notices[0]!.message).toBe("Tiled the windows");
+      expect(notices).toHaveLength(0);
     }
   });
 
-  it("asked with no model to ask, tiles; asked when the desk is laid out so already, says so", async () => {
+  it("asked with no model to ask, tiles, without a word; asked when the desk is laid out so already, says so", async () => {
     const engine = fakeEngine([
       ["inbox", { x: 100, y: 100, w: 500, h: 400 }],
       ["invoice", { x: 700, y: 200, w: 500, h: 400 }],
@@ -380,8 +380,7 @@ describe("the arranger", () => {
     expectRect(engine.windows.get("inbox"), zone("left"));
     expectRect(engine.windows.get("invoice"), zone("right"));
     await arranged.ask();
-    expect(notices.map((notice) => notice.message)).toEqual(["Tiled the windows", "The windows are laid out that way already"]);
-    expect(notices[1]!.undo).toBeNull();
+    expect(notices.map((notice) => notice.message)).toEqual(["The windows are laid out that way already"]);
   });
 
   it("gives the main window the main place when asked", async () => {
@@ -394,7 +393,7 @@ describe("the arranger", () => {
     expect(asked[0]!.moves).toEqual(["tile", "focus"]);
     expect(changesLayout(new Map([["invoice", zone("right")]]), engine.windows)).toBe(true);
     expect(engine.windows.get("invoice")!.x).toBe(desk.x);
-    expect(notices[0]!.message).toBe("Gave “Invoice #2048 - QuickBooks” the main place");
+    expect(notices).toHaveLength(0);
   });
 
   it("puts nothing back once a window came out or went by a way the smart layout does not hear of (dragged out, a Glance landing)", async () => {
@@ -447,15 +446,16 @@ describe("the arranger", () => {
     expect(arranged.undo()).toBe(false);
   });
 
-  it("spends ⌃Z with the notice's Undo, so the next ⌃Z is the page's", async () => {
+  it("asked (⌘⌥L), says nothing and offers ⌃Z, as after the desk's own layouts: once, so the next ⌃Z is the page's", async () => {
     const engine = fakeEngine([
       ["inbox", { x: 100, y: 100, w: 500, h: 400 }],
       ["invoice", { x: 700, y: 200, w: 500, h: 400 }],
     ]);
     const { arranged, notices } = arranger(engine, null);
     await arranged.ask();
+    expect(notices).toHaveLength(0);
     expect(engine.undoKey).toBe(true);
-    notices[0]!.undo!();
+    expect(arranged.undo()).toBe(true);
     expectRect(engine.windows.get("inbox"), { x: 100, y: 100, w: 500, h: 400 });
     expect(engine.undoKey).toBe(false);
     // Placed by hand since: ⌃Z leaves it there.
@@ -464,9 +464,9 @@ describe("the arranger", () => {
     expectRect(engine.windows.get("inbox"), zone("left"));
   });
 
-  it("puts nothing back on another group's desk: ⌃Z and Undo are for the desk they were offered on", async () => {
+  it("puts nothing back on another group's desk: ⌃Z is for the desk it was offered on", async () => {
     const engine = fakeEngine([["pr", zone("left")]]);
-    const { arranged, notices, tick, state } = arranger(engine, opinion("fill"));
+    const { arranged, tick, state } = arranger(engine, opinion("fill"));
     engine.emit({ trigger: "closed", gone: [{ id: "ci", rect: zone("right"), how: "closed" }] });
     await tick();
     expectRect(engine.windows.get("pr"), desk);
@@ -479,20 +479,17 @@ describe("the arranger", () => {
     expect([...engine.windows.keys()]).toEqual(["inbox", "invoice"]);
     expectRect(engine.windows.get("inbox"), zone("left"));
     expect(engine.undoKey).toBe(false);
-    // Asked there, the notice's Undo is that desk's: clicked once the desk is back on the first group, it does nothing.
+    // Asked there, its ⌃Z is that desk's: struck once the desk is back on the first group, it does nothing.
     engine.windows.set("inbox", { x: 100, y: 100, w: 500, h: 400 });
     engine.windows.set("invoice", { x: 700, y: 200, w: 500, h: 400 });
     await arranged.ask();
-    expect(notices.map((notice) => notice.message)).toEqual(["Tiled the windows"]);
+    expect(engine.undoKey).toBe(true);
     state.group = "a";
     engine.windows.clear();
     engine.windows.set("pr", desk);
-    notices[0]!.undo!();
+    expect(arranged.undo()).toBe(false);
     expectRect(engine.windows.get("pr"), desk);
-    // Back on its own desk, it puts the windows back.
-    state.group = "b";
-    notices[0]!.undo!();
-    expectRect(engine.windows.get("inbox"), { x: 100, y: 100, w: 500, h: 400 });
+    expect(engine.undoKey).toBe(false);
   });
 
   it("forgets a close held when the desk passes to another group, rather than filling that desk's gaps", async () => {

@@ -50,6 +50,7 @@ function engine(host: Partial<DeskHost> = {}): DeskEngine {
   setShellApi({ ...members, captureTabStills: () => Promise.resolve([]), focusTab: () => Promise.resolve() } as unknown as ShellApiBridge);
   const created = new DeskEngine({
     variants: () => DEFAULT_DESK_VARIANTS,
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: () => false,
     select: () => undefined,
     close: () => undefined,

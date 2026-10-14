@@ -122,6 +122,13 @@ export class GroupContextStore {
   /** Conversions made lately, by the bytes they were made from and what they were made into. */
   readonly #converted = new Map<string, Promise<Buffer>>();
   #contexts: GroupContext[];
+  /**
+   * Where a merged space's items went (moveAll): its id → the space it was merged into and each item's id there. A
+   * document open in a window of the space merged away still names that space and its item, and its pending autosave,
+   * or the flush as its window goes, would be refused as gone (2026-10-14, a review's P1): followed here, it lands on
+   * the file it has become. This session's only — an edit in flight is a matter of seconds.
+   */
+  readonly #merged = new Map<string, { groupId: string; items: Map<string, string> }>();
   #blobs: BlobMeta[];
 
   constructor(userDataDir: string, options: { now?: () => Date; convert?: DocumentConverter } = {}) {
@@ -226,7 +233,8 @@ export class GroupContextStore {
    * a .docx, a HEIC or TIFF picture as a PNG. Null when the bytes are not
    * on this Mac.
    */
-  async fileContent(groupId: string, itemId: string): Promise<GroupFileContent | null> {
+  async fileContent(asked: string, askedItem: string): Promise<GroupFileContent | null> {
+    const { groupId, itemId } = this.#follow(asked, askedItem);
     const item = this.items(groupId).find((candidate): candidate is GroupContextFile => candidate.id === itemId && candidate.kind === "file");
     if (item === undefined) return null;
     const bytes = this.#readBlob(item.blobId);
@@ -244,9 +252,14 @@ export class GroupContextStore {
    * edited as a .docx and written back as a .doc. The version it replaces
    * goes once nothing names it, here and on the person's other Macs.
    */
-  async writeFile(write: GroupFileWrite): Promise<GroupFileWriteResult> {
-    const find = (): GroupContextFile | undefined =>
-      this.#contexts.find((context) => context.groupId === write.groupId)?.items.find((candidate): candidate is GroupContextFile => candidate.id === write.itemId && candidate.kind === "file");
+  async writeFile(asked: GroupFileWrite): Promise<GroupFileWriteResult> {
+    // (Named by a space merged away since its window opened: the file it has become — followed at each look, as a
+    // merge may come while a .doc is converted.)
+    let write = { ...asked, ...this.#follow(asked.groupId, asked.itemId) };
+    const find = (): GroupContextFile | undefined => {
+      write = { ...asked, ...this.#follow(asked.groupId, asked.itemId) };
+      return this.#contexts.find((context) => context.groupId === write.groupId)?.items.find((candidate): candidate is GroupContextFile => candidate.id === write.itemId && candidate.kind === "file");
+    };
     const before = find();
     if (before === undefined) return { ok: false, reason: "gone", message: "That file is no longer in this space's context" };
     if (write.force !== true && before.blobId !== write.baseBlobId) return { ok: false, reason: "changed", message: `“${before.name}” was changed elsewhere since it was opened` };
@@ -451,6 +464,63 @@ export class GroupContextStore {
       this.#commit(["groupContext", groupId]);
     }
     return copied;
+  }
+
+  /**
+   * Every item of one group's context MOVED into another's (docs/spaces.md
+   * §1, "Merging spaces"; since 2026-10-14): the group going is merged into
+   * this one, so nothing may stay behind under an id no group has — unlike
+   * `adopt`, which copies and leaves the source as it was. The items keep
+   * their ids (a desk's file window names its item, `file:<id>`) unless this
+   * one has the id already, and come after this one's; a file this one holds
+   * already (the same bytes) is not added twice, only taken from the source.
+   * All or nothing: when this one could not take them all
+   * (MAX_GROUP_CONTEXT_ITEMS, which a read would cut to), it throws and
+   * nothing moves. The source's entry stays, empty, as a removed item's
+   * leaves it (an entry is never deleted). Returns how many came over.
+   */
+  moveAll(fromGroupId: string, groupId: string, title: string): number {
+    const from = this.#contexts.find((candidate) => candidate.groupId === fromGroupId);
+    if (from === undefined || fromGroupId === groupId || from.items.length === 0) return 0;
+    const existing = this.#contexts.find((candidate) => candidate.groupId === groupId);
+    const held = existing?.items ?? [];
+    const coming = from.items.filter((item) => item.kind !== "file" || !held.some((other) => other.kind === "file" && other.blobId === item.blobId));
+    if (held.length + coming.length > MAX_GROUP_CONTEXT_ITEMS)
+      throw new Error(`Together the two spaces' Context would hold more than ${String(MAX_GROUP_CONTEXT_ITEMS)} things: remove some first.`);
+    const context = this.#contextFor(groupId, title);
+    const ids = new Set(context.items.map((item) => item.id));
+    // Where each item goes: its own id, a new one where this space has that id, or — a file this one holds already —
+    // the one it holds (#merged, for a document still open under the space going).
+    const went = new Map<string, string>();
+    for (const item of from.items) {
+      if (!coming.includes(item)) {
+        const same = held.find((other) => other.kind === "file" && item.kind === "file" && other.blobId === item.blobId);
+        if (same !== undefined) went.set(item.id, same.id);
+        continue;
+      }
+      const moved = ids.has(item.id) ? { ...item, id: newItemId() } : item;
+      context.items.push(moved);
+      went.set(item.id, moved.id);
+    }
+    this.#merged.set(fromGroupId, { groupId, items: went });
+    from.items = [];
+    this.#touch(from);
+    this.#touch(context);
+    this.#commit(["groupContext", fromGroupId], ["groupContext", groupId]);
+    return coming.length;
+  }
+
+  /** A space and item as a window names them, followed through any merges since (#merged) to where the item is now. */
+  #follow(groupId: string, itemId: string): { groupId: string; itemId: string } {
+    let at = { groupId, itemId };
+    // (A chain: merged, then merged again — never a loop, a merged space being gone; bounded all the same.)
+    for (let hops = 0; hops < 8; hops += 1) {
+      const merged = this.#merged.get(at.groupId);
+      const item = merged?.items.get(at.itemId);
+      if (merged === undefined || item === undefined) break;
+      at = { groupId: merged.groupId, itemId: item };
+    }
+    return at;
   }
 
   onChange(listener: (contexts: GroupContextView[]) => void): () => void {

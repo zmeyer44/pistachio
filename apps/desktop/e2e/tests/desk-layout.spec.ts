@@ -1,10 +1,9 @@
 /**
  * The desk's smart layout end to end (docs/desk-layout.md): a window that
  * comes out, one that leaves, and ⌘⌥L each ask the layout model about the
- * desk, and the desk lays itself out as the model judged — quietly, ⌃Z
- * putting it back for a moment after, or, asked, with a notice — or, with
- * the Feel's Layout set to By hand, stays as it is (that is
- * desk-smart-layout.test's).
+ * desk, and the desk lays itself out as the model judged — quietly, asked
+ * or not, ⌃Z putting it back for a moment after — or, with the Feel's
+ * Layout set to By hand, stays as it is (that is desk-smart-layout.test's).
  *
  * The model is scripted (PISTACHIO_LAYOUT_SCRIPT, main/desk-layout.ts): the
  * real evaluator, IPC hop, policy and geometry run over it, and the answers
@@ -202,10 +201,12 @@ test("a window coming out, one leaving, and ⌘⌥L lay the desk out as the layo
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.webContents.send("pistachio:shell-command", { type: "runShortcut", id: "arrangeDesk" });
     });
-    await expect(notices.getByTestId("notice-card").filter({ hasText: "the main place" })).toHaveCount(1);
-    await settled(shell, app);
     const mainW = Math.round((width - GAP) * 0.62);
     await expect.poll(async () => near(await at(budget), { x: left, y: top, width: mainW, height })).toBe("there");
+    await settled(shell, app);
+    // Asked, it says nothing either: ⌃Z is the way back, as after the desk's own layouts.
+    await expect(notices.getByTestId("notice-card")).toHaveCount(0);
+    expect(await undoKey()).toBe(true);
     const column = { x: left + mainW + GAP, width: width - mainW - GAP };
     for (const tabId of [vendor, invoice]) {
       const placed = await at(tabId);

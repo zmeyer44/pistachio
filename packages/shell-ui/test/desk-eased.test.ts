@@ -106,6 +106,7 @@ function open(variants: DeskVariants = EASED, host: Partial<DeskHost> = {}) {
   } as unknown as ShellApiBridge);
   const desk = new DeskEngine({
     variants: () => variants,
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,

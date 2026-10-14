@@ -66,6 +66,7 @@ import {
   deskMaskKey,
   holdsDeskModifier,
   isDeskUndoKey,
+  isDeskCycleKey,
   isDockCloseKey,
   MAX_DESK_STILL_WIDTH,
   MAX_DESK_WINDOWS,
@@ -212,6 +213,7 @@ import {
 import {
   anchorGroupTabIds,
   asPersons,
+  canMergeSpaces,
   DEFAULT_TAB_GROUP_TITLE,
   dayRowUnits,
   groupedTabOrder,
@@ -231,6 +233,8 @@ import {
 } from "@pistachio/shell-contracts/tab-groups";
 import {
   chooseCurrentGroup,
+  claimIncomingEntries,
+  drawnSpacesBroughtDown,
   foldSplitGroups,
   keepWithRoom,
   mostRecentTab,
@@ -244,6 +248,7 @@ import {
   unitsInHand,
 } from "./spaces";
 import type { ArchivedTab } from "@pistachio/shell-contracts/tab-archive";
+import type { BringDownPlace } from "@pistachio/shell-contracts/sidebar-controller";
 import type { TidyGroupCandidate, TidyTabCandidate } from "@pistachio/shell-contracts/tidy";
 import { SessionGate } from "./session-gate";
 import type { ProxyCredential } from "./egress/egress-service";
@@ -551,6 +556,15 @@ export interface BrowserControllerHooks {
    * stays only if a person made it.
    */
   groupHolds?: (groupId: string) => { context: boolean; conversation: boolean };
+  /**
+   * A space (tab group) is going into another — merged (TabGroupCommand `merge`), or a page's space brought whole into
+   * one (bringDownPage) — and what it holds of the person's goes with its tabs (docs/spaces.md §1, "Merging spaces";
+   * since 2026-10-14): its Stack's items move to the other's (`title` is that space's, for its Stack's entry), its
+   * conversation too when the other has none of its own (./spaces moveSpaceHoldings). Throws, moving nothing, when
+   * the other's Stack cannot take them all; main then changes nothing. Called inside main's held publish: the Stack's
+   * own change (refreshSpaces) goes out with the move. Absent (the cloud host, a unit test), nothing moves.
+   */
+  moveGroupHoldings?: (fromGroupId: string, intoGroupId: string, title: string) => void;
   /**
    * The active Profile's (Space's) current space changed (docs/spaces.md §2,
    * currentGroupId): the agent's session follows it (RunController
@@ -886,6 +900,13 @@ function parseScroll(payload: string): { x: number; y: number } | null {
 export class BrowserController {
   readonly #window: BrowserWindow;
   readonly #onChange: () => void;
+  /**
+   * How many synchronous changes are holding the publish (#withPublishHeld), and whether one was asked for meanwhile.
+   * Since 2026-10-14: a bring-down and a merge each took several publishes, and the shell drew the steps between — an
+   * entry's page loose in Home on its way into a space; a Stack moved before its space's tabs.
+   */
+  #publishHeld = 0;
+  #publishOwed = false;
   /** Called after a tab view is added to the window, so overlays can re-raise. */
   readonly #onViewAdded: () => void;
   readonly #tabPreload: string;
@@ -1229,6 +1250,11 @@ export class BrowserController {
     // moved a tab — and the current space with them, which the agent hears
     // of before the snapshot goes out (#notifyCurrentGroup).
     this.#onChange = () => {
+      // (Held through a change made in several steps — a merge, a bring-down: it goes out once, whole, at the end.)
+      if (this.#publishHeld > 0) {
+        this.#publishOwed = true;
+        return;
+      }
       this.#reconcileTabGroups();
       onChange();
     };
@@ -1763,11 +1789,23 @@ export class BrowserController {
     const openUrls = new Set(
       this.#spaceTabIds(spaceId).map((tabId) => this.#tabInfo(tabId)?.url ?? ""),
     );
+    // (One page per entry, anchored or linked: an anchor or a link merged in for an entry open here already — or
+    // claimed by a tab merged in before it — is not taken, and that tab comes in as a plain one: ./spaces
+    // claimIncomingEntries. Until 2026-10-14 only links were checked here.)
+    const entriesOpen = new Set(
+      this.#spaceTabIds(spaceId).flatMap((tabId) => {
+        const info = this.#tabInfo(tabId);
+        return [info?.anchorId ?? null, info?.linkedAnchorId ?? null].filter((anchorId): anchorId is string => anchorId !== null);
+      }),
+    );
+    const incoming = claimIncomingEntries(
+      saved.tabs.filter((tab) => this.#tabInfo(tab.id) === null && !(mode === "merge" && openUrls.has(tab.url))),
+      entriesOpen,
+    );
     const added = new Set<string>();
-    for (const tab of saved.tabs) {
-      if (this.#tabInfo(tab.id) !== null) continue;
-      if (mode === "merge" && openUrls.has(tab.url)) continue;
+    for (const tab of incoming) {
       added.add(tab.id);
+      const linkedAnchorId = tab.linkedAnchorId;
       if (tab.resume) this.#pageResume.set(tab.id, tab.resume);
       this.#dormantTabs.set(tab.id, {
         info: {
@@ -1782,6 +1820,7 @@ export class BrowserController {
           kind: "human",
           runId: null,
           anchorId: tab.anchorId,
+          ...(linkedAnchorId === undefined ? {} : { linkedAnchorId }),
           lifecycle: "suspended",
           lastActiveAt: tab.lastActiveAt,
           unlisted: false,
@@ -1905,6 +1944,7 @@ export class BrowserController {
             url: info.url,
             faviconUrl: info.faviconUrl,
             anchorId: info.anchorId,
+            ...(info.linkedAnchorId === undefined ? {} : { linkedAnchorId: info.linkedAnchorId }),
             lastActiveAt: info.lastActiveAt,
             ...(history === null ? {} : { history }),
             ...(this.#pageResume.get(info.id)?.url === info.url ? { resume: this.#pageResume.get(info.id)! } : {}),
@@ -1965,6 +2005,7 @@ export class BrowserController {
           kind: "human",
           runId: null,
           anchorId: tab.anchorId,
+          ...(tab.linkedAnchorId === undefined ? {} : { linkedAnchorId: tab.linkedAnchorId }),
           lifecycle: "suspended",
           lastActiveAt: tab.lastActiveAt,
           unlisted: false,
@@ -2220,7 +2261,7 @@ export class BrowserController {
 
   #suspendIdleTabs(now = Date.now()): void {
     for (const tab of this.#tabs.values()) {
-      const { kind, lastActiveAt, spaceId, anchorId, forcedFocus } = tab.info;
+      const { kind, lastActiveAt, spaceId, anchorId, linkedAnchorId, forcedFocus } = tab.info;
       if (
         kind !== "human" ||
         // An agent's hidden tab closes with its conversation instead: it is never activated, so it would look idle while in use.
@@ -2228,7 +2269,9 @@ export class BrowserController {
         // Kept running in the background on purpose.
         forcedFocus === true ||
         now - lastActiveAt < TAB_IDLE_SUSPEND_MS ||
-        (anchorId !== null && this.#isFavoriteAnchor(spaceId, anchorId))
+        (anchorId !== null && this.#isFavoriteAnchor(spaceId, anchorId)) ||
+        // (A favorite's page brought into a space is still the favorite's: kept as awake as its own page would be.)
+        (linkedAnchorId !== undefined && this.#isFavoriteAnchor(spaceId, linkedAnchorId))
       )
         continue;
       void this.suspendTab(tab.info.id);
@@ -3360,22 +3403,31 @@ export class BrowserController {
 
   /** Bind a tab to a shelf entry (or free it with null). One tab per anchor: a prior holder is freed. */
   setAnchor(tabId: string, anchorId: string | null): void {
+    this.#setAnchor(tabId, anchorId);
+    this.#onChange();
+  }
+
+  /**
+   * setAnchor without the publish, for a change made in steps (bringDownPage). A tab bound to an entry is its own page:
+   * it lets go of any link it had, and so does any other tab linked to that entry (one page per entry —
+   * BrowserTabInfo.linkedAnchorId, since 2026-10-14).
+   */
+  #setAnchor(tabId: string, anchorId: string | null): void {
     const info = this.#tabInfo(tabId);
     if (info === null) return;
     const changed = new Set<ManagedTab>();
     if (anchorId !== null) {
       for (const otherId of this.#tabOrder) {
         const other = this.#tabInfo(otherId);
-        if (
-          other?.spaceId === info.spaceId &&
-          other.anchorId === anchorId &&
-          other.id !== tabId
-        ) {
+        if (other?.spaceId !== info.spaceId || other.id === tabId) continue;
+        if (other.linkedAnchorId === anchorId) delete other.linkedAnchorId;
+        if (other.anchorId === anchorId) {
           other.anchorId = null;
           const managed = this.#tabs.get(other.id);
           if (managed !== undefined) changed.add(managed);
         }
       }
+      delete info.linkedAnchorId;
     }
     // A page's group follows its page to the entry it is the page of now (a favorite made a pin); let go of its entry,
     // the page leaves its group a group like any other (#reconcileTabGroups).
@@ -3385,7 +3437,41 @@ export class BrowserController {
     const managed = this.#tabs.get(info.id);
     if (managed !== undefined) changed.add(managed);
     for (const tab of changed) this.#sendGlanceConfiguration(tab);
-    this.#onChange();
+  }
+
+  /**
+   * Link a tab to a shelf entry — the entry's page brought into a space, still its entry's (BrowserTabInfo
+   * .linkedAnchorId, docs/spaces.md §1, "A favorite in a space"; since 2026-10-14) — or end its link (null): the
+   * SidebarTabHost port's, for the shelf's own commands (a favorite made a pin takes its page in a space with it; an
+   * entry removed ends it).
+   */
+  setLink(tabId: string, anchorId: string | null): void {
+    if (this.#setLink(tabId, anchorId)) this.#onChange();
+  }
+
+  /**
+   * setLink without the publish; whether anything changed. One tab per entry: another tab linked to it lets go. Never
+   * an anchored tab (it is an entry's own page), nor while the entry has a page of its own anchored: one page per
+   * entry, and the anchored one is it.
+   */
+  #setLink(tabId: string, anchorId: string | null): boolean {
+    const info = this.#tabInfo(tabId);
+    if (info === null) return false;
+    if (anchorId === null) {
+      if (info.linkedAnchorId === undefined) return false;
+      delete info.linkedAnchorId;
+      return true;
+    }
+    if (info.anchorId !== null || info.kind !== "human" || info.unlisted) return false;
+    if (info.linkedAnchorId === anchorId) return false;
+    const others = this.#spaceTabIds(info.spaceId).flatMap((otherId) => {
+      const other = otherId === tabId ? null : this.#tabInfo(otherId);
+      return other === null ? [] : [other];
+    });
+    if (others.some((other) => other.anchorId === anchorId)) return false;
+    for (const other of others) if (other.linkedAnchorId === anchorId) delete other.linkedAnchorId;
+    info.linkedAnchorId = anchorId;
+    return true;
   }
 
   /**
@@ -4025,6 +4111,19 @@ export class BrowserController {
      * which is its page's.
      */
     group?: "current" | "loose" | (string & {});
+    /**
+     * Set down by the caller, in place of `group`, the moment it is a tab and
+     * before anything hears of it: a closed entry's fresh page brought down
+     * (bringDownPage) goes straight into its space, linked, never by Home.
+     */
+    place?: (tabId: string) => void;
+    /**
+     * Asked once the session is ready, before the tab is made, with nothing awaited between it and `place`: throwing
+     * makes no tab. A place chosen before the wait may be gone after it (a space closed, the last space slot taken).
+     */
+    ready?: () => void;
+    /** What a fresh tab is called until its page names itself (an entry's page: the entry's title), not "New tab". */
+    title?: string;
   }): Promise<string> {
     const id = options.restoredInfo?.id ?? randomUUID();
     // (A delegated session's own partition, guard and session hook went with createAgentTab on 2026-10-09: it had no caller.)
@@ -4039,6 +4138,7 @@ export class BrowserController {
       options.kind,
       partition,
     );
+    options.ready?.();
     const view = new WebContentsView({
       webPreferences: {
         partition,
@@ -4075,7 +4175,7 @@ export class BrowserController {
         ? {
             id,
             spaceId: options.spaceId,
-            title: options.kind === "agent" ? "Delegated session" : "New tab",
+            title: options.kind === "agent" ? "Delegated session" : options.title?.trim() || "New tab",
             url: normalizeNavigation(options.url, this.#settings().search.webProvider),
             faviconUrl: null,
             loading: true,
@@ -4121,6 +4221,7 @@ export class BrowserController {
     if (hidden) view.webContents.setAudioMuted(true);
     if (!hidden && !this.#tabOrder.includes(id)) this.#tabOrder.push(id);
     if (options.beside !== undefined) this.#setBeside(id, options.beside);
+    else if (!hidden && options.restoredInfo === undefined && options.place !== undefined) options.place(id);
     else if (!hidden && options.restoredInfo === undefined) this.#joinGroup(id, options.group ?? "loose");
     // Shown when asked — or when it came into the current space with nothing
     // in use there (a new tab in an empty space). Never otherwise: until
@@ -6686,9 +6787,11 @@ export class BrowserController {
     const orderIndex = this.#tabOrder.indexOf(tabId);
     if (orderIndex >= 0) this.#tabOrder.splice(orderIndex, 1);
     this.#tabOrder.push(tabId);
+    // (Its entry, anchored or linked, is the Profile left's shelf's: the page crosses as a tab of its own.)
+    const { linkedAnchorId: _linkedAnchorId, ...unlinked } = info;
     this.#dormantTabs.set(tabId, {
       info: {
-        ...info,
+        ...unlinked,
         spaceId: targetSpaceId,
         anchorId: null,
         loading: false,
@@ -6716,11 +6819,12 @@ export class BrowserController {
       this.#spaceStore.get(closed.spaceId) === null
         ? this.activeSpaceId()
         : closed.spaceId;
+    // (Its entry open by now — its own page, or one in a space linked to it — and it comes back a tab of its own.)
     const anchorInUse =
       closed.anchorId !== null &&
       this.allTabs().some(
         (tab) =>
-          tab.spaceId === targetSpaceId && tab.anchorId === closed.anchorId,
+          tab.spaceId === targetSpaceId && (tab.anchorId === closed.anchorId || tab.linkedAnchorId === closed.anchorId),
       );
     // The record is spent the moment the tab is being built — a second
     // ⌘⇧T while the page loads must reach the next record, not open
@@ -7422,6 +7526,24 @@ export class BrowserController {
     this.#onChange();
   }
 
+  /**
+   * Run a change made in several steps with every publish it asks for held back to one, at its end (reconciled then,
+   * as every publish is) — so the shell never draws a step between. Synchronous work only: a publish held across an
+   * await would hold every other change's with it. A throw publishes what was done before it, if anything asked.
+   */
+  #withPublishHeld<T>(work: () => T): T {
+    this.#publishHeld += 1;
+    try {
+      return work();
+    } finally {
+      this.#publishHeld -= 1;
+      if (this.#publishHeld === 0 && this.#publishOwed) {
+        this.#publishOwed = false;
+        this.#onChange();
+      }
+    }
+  }
+
   /* ---------------------------- making and moving ---------------------------- */
 
   /**
@@ -7796,6 +7918,12 @@ export class BrowserController {
         this.#placeAtDayUnit(spaceId, group.tabIds, command.index, tabGroupUnitId(group.id));
         break;
       }
+      case "merge": {
+        const moved = this.#mergeTabGroups(command.groupId, command.into);
+        // Into the empty space in front, the first of them comes out on its desk, in use.
+        await this.#enterIfIdle(command.into, moved);
+        break;
+      }
     }
     this.#onChange();
   }
@@ -7853,6 +7981,212 @@ export class BrowserController {
     }
     this.#reconcileTabGroups();
     this.#onChange();
+  }
+
+  /**
+   * An entry's page brought down (SidebarTabHost.bringDownPage, the shelf's
+   * `bringDown`; docs/spaces.md §1, "A favorite in a space") — in ONE step,
+   * published once. (Until 2026-10-14 the shelf let go of the anchor and then
+   * placed the page, and the publish between showed it loose in Home — the
+   * desk passed there for a frame when it was in use — and a closed entry's
+   * fresh page was made in Home and moved once its page had loaded.)
+   *
+   * - `page`: its tab — anchored to the entry, which lets go of it here, or
+   *   linked to it (brought into a space before), which is the tab moved:
+   *   never a second page — or, the entry closed, the address (and title) to
+   *   open a fresh page at, made where it goes before anything hears of it.
+   * - `place`: into a space (`groupId`, at `index` among its tabs) — its
+   *   page's space with it, if it led one, and that space's Stack and
+   *   conversation too, as it is emptied (#moveHoldings: a merge, in effect;
+   *   until 2026-10-14 it stayed behind, an empty space holding them); into a
+   *   new space (`newGroupId`: the person's, of the page alone — tabs beside
+   *   it stay in its page's space, which lets go of its page; the page's
+   *   space, of the page alone, hands its Stack on — named by the namer, not
+   *   chosen); among the day's row units (`index`); or where it stands (null).
+   * - The link (BrowserTabInfo.linkedAnchorId): where it lands decides. In a
+   *   space — anything but a loose tab's, which is Home's — the page stays its
+   *   entry's, and choosing the entry goes there; in Home it is a plain Home
+   *   tab and the entry is closed, as every bring-down left it before.
+   * - The bound: one that needs more drawn spaces than there is room left
+   *   for (MAX_TAB_GROUPS_PER_SPACE) — a new space; a page's space with
+   *   tabs beside it set down among the day's tabs or where it stands; BOTH,
+   *   a page whose space keeps two tabs or more behind going into a new one
+   *   (./spaces drawnSpacesBroughtDown) — throws, nothing changed, rather
+   *   than letting go of the entry with its space falling apart into Home
+   *   tabs as it did until 2026-10-14. So does one whose page's space holds
+   *   a Stack the target's cannot take.
+   */
+  async bringDownPage(anchorId: string, page: { tabId: string } | { url: string; title: string }, place: BringDownPlace): Promise<void> {
+    const spaceId = this.activeSpaceId();
+    const full = (): Error => new Error(`There's no room for another space: a Profile holds ${MAX_TAB_GROUPS_PER_SPACE}.`);
+    // (A place that names something gone is a stale drop: a no-op, as a group command's is.)
+    if (place !== null && "groupId" in place && this.#spaceOf(place.groupId) !== spaceId) return;
+    if (place !== null && "newGroupId" in place) {
+      if (!isTabGroupId(place.newGroupId) || this.#tabGroups.has(place.newGroupId)) return;
+      if (!this.hasRoomForSpace(spaceId)) throw full();
+    }
+    if ("url" in page) {
+      await this.#openEntryPage(anchorId, page, place, spaceId);
+      return;
+    }
+    const info = this.#tabInfo(page.tabId);
+    if (info === null || info.spaceId !== spaceId || info.kind !== "human" || info.unlisted) return;
+    const anchored = info.anchorId === anchorId;
+    if (!anchored && info.linkedAnchorId !== anchorId) return;
+    const tabId = info.id;
+    // The page's space, if it leads one: let go on that space itself, it is a space of its own in place.
+    const led = anchored ? [...this.#tabGroups.values()].find((group) => group.anchorId === anchorId && group.tabIds.includes(tabId)) : undefined;
+    const at: BringDownPlace = place !== null && "groupId" in place && place.groupId === led?.id ? null : place;
+    const intoSpace = at !== null && "groupId" in at ? at : null;
+    const intoNew = at !== null && "newGroupId" in at ? at.newGroupId : null;
+    const amongDay = at !== null && !("groupId" in at) && !("newGroupId" in at) ? at.index : null;
+    // Every drawn space it adds, counted together before anything changes (./spaces drawnSpacesBroughtDown): a new space,
+    // and its page's space staying a space as the page lets go — here, among the day's tabs, or left with two tabs or
+    // more as its page goes into the new one. (Until 2026-10-14 a new space was counted alone: made in the last slot, it
+    // left its page's space no room, and that space fell apart into Home tabs, its Stack and conversation orphaned.)
+    if (this.tabGroups(spaceId).length + drawnSpacesBroughtDown(at, led?.tabIds.length ?? null) > MAX_TAB_GROUPS_PER_SPACE) throw full();
+    // A page's space a desk turn is working in (holdGroup) stays while it works: brought whole into another space, or its
+    // lone page into a new one, it would be gone, and the turn's scope and what it saves with it (2026-10-14, as a merge).
+    if (led !== undefined && this.#heldGroups.has(led.id) && (intoSpace !== null || (intoNew !== null && led.tabIds.length === 1)))
+      throw new Error(`The agent is working in “${led.title.trim() || DEFAULT_TAB_GROUP_TITLE}”: bring it in once it's done.`);
+    this.#withPublishHeld(() => {
+      // What the page's space holds goes where all of it goes — first, so a Stack the target cannot take refuses the whole.
+      if (led !== undefined && intoSpace !== null) this.#moveHoldings(led.id, intoSpace.groupId);
+      if (led !== undefined && intoNew !== null && led.tabIds.length === 1) this.#moveHoldings(led.id, intoNew, DEFAULT_TAB_GROUP_TITLE);
+      if (anchored) this.#setAnchor(tabId, null);
+      if (intoSpace !== null) {
+        this.addToTabGroup(intoSpace.groupId, led?.tabIds ?? [tabId], { index: intoSpace.index, byPerson: true });
+        // (Emptied into it, its page's space is gone, what it held with the tabs: kept by a desk turn, it would stand
+        // empty under the entry's name.)
+        if (led !== undefined && this.#tabGroups.get(led.id)?.tabIds.length === 0) this.#dropGroup(led.id);
+      } else if (intoNew !== null) {
+        // (Room and the id were checked above, in this same step: it is made.)
+        const group = this.createTabGroup({ id: intoNew, tabIds: [tabId], origin: "manual", spaceId });
+        if (led !== undefined && this.#tabGroups.get(led.id)?.tabIds.length === 0) this.#dropGroup(led.id);
+        if (group !== null) this.#nameTabGroup(group);
+      } else if (amongDay !== null) {
+        // A page linked into a space comes out of it alone; one that led its page's space brings it, a space like any
+        // other now (the reconcile lets go of its page) — or, of the page alone, a Home tab.
+        // (Already a Home tab, it keeps its own loose space, and what that holds.)
+        if (!anchored && tabGroupOf([...this.#tabGroups.values()], tabId)?.loose !== true) this.removeFromTabGroups([tabId]);
+        this.#reconcileTabGroups();
+        const own = tabGroupOf([...this.#tabGroups.values()], tabId);
+        const whole = anchored && own !== null && own.loose !== true;
+        this.#placeAtDayUnit(spaceId, whole ? own.tabIds : [tabId], amongDay, whole ? tabGroupUnitId(own.id) : tabId);
+      }
+      this.#reconcileTabGroups();
+      this.#linkWhereItLands(tabId, anchorId);
+      this.#onChange();
+    });
+    // Into the empty space in front, its window comes out on the desk, in use (as a row let go on its header does).
+    if (intoSpace === null) return;
+    await this.#enterIfIdle(intoSpace.groupId, led?.tabIds ?? [tabId]);
+    this.#onChange();
+  }
+
+  /**
+   * A closed entry's fresh page brought down (bringDownPage): made where it
+   * goes — into its space, or its new one, or among the day's tabs — and
+   * linked there before anything hears of it, called by its entry until its
+   * page names itself; out on the desk if it joins the current space with
+   * nothing in use (#createManagedTab). Its new space is made around it, so
+   * none stands empty while the page is made.
+   */
+  async #openEntryPage(anchorId: string, page: { url: string; title: string }, place: BringDownPlace, spaceId: string): Promise<void> {
+    // Where it goes, looked at again once the session is ready (2026-10-14, a review's P2): a space closed meanwhile is a
+    // stale drop, a no-op, and the last space slot taken refuses it — never a page set down in Home instead, unlinked.
+    const gone = new Error("the place it was brought to is gone");
+    try {
+      await this.#createManagedTab({
+        url: page.url,
+        kind: "human",
+        runId: null,
+        spaceId,
+        activate: false,
+        title: page.title,
+        ready: () => {
+          if (place !== null && "groupId" in place && this.#spaceOf(place.groupId) !== spaceId) throw gone;
+          if (place !== null && "newGroupId" in place) {
+            if (this.#tabGroups.has(place.newGroupId)) throw gone;
+            if (!this.hasRoomForSpace(spaceId)) throw new Error(`There's no room for another space: a Profile holds ${MAX_TAB_GROUPS_PER_SPACE}.`);
+          }
+        },
+        place: (tabId) => {
+          if (place !== null && "newGroupId" in place) {
+            const group = this.createTabGroup({ id: place.newGroupId, tabIds: [tabId], origin: "manual", spaceId });
+            if (group !== null) this.#nameTabGroup(group);
+          } else if (place !== null && "groupId" in place) {
+            this.addToTabGroup(place.groupId, [tabId], { index: place.index, byPerson: true });
+          } else if (place !== null) {
+            this.#placeAtDayUnit(spaceId, [tabId], place.index, tabId);
+          }
+          this.#linkWhereItLands(tabId, anchorId);
+        },
+      });
+    } catch (error) {
+      if (error === gone) return;
+      throw error;
+    }
+    this.#onChange();
+  }
+
+  /** The rule a bring-down ends with: in a space (anything but Home's loose one), the page is linked to its entry; in Home, not. */
+  #linkWhereItLands(tabId: string, anchorId: string): void {
+    const group = tabGroupOf([...this.#tabGroups.values()], tabId);
+    this.#setLink(tabId, group !== null && group.loose !== true ? anchorId : null);
+  }
+
+  /**
+   * What a space going holds of the person's — its Stack's items, its
+   * conversation — moved into the space taking its tabs
+   * (BrowserControllerHooks.moveGroupHoldings, main/spaces moveSpaceHoldings):
+   * a merge, a page's space brought whole into another. Throws, moving
+   * nothing, when the target's Stack cannot take it. No hook (a unit test,
+   * the cloud host): nothing to move.
+   */
+  #moveHoldings(fromGroupId: string, intoGroupId: string, title = this.#tabGroups.get(intoGroupId)?.title ?? ""): void {
+    this.#hooks.moveGroupHoldings?.(fromGroupId, intoGroupId, title);
+  }
+
+  /**
+   * One space merged into another (TabGroupCommand `merge`; docs/spaces.md
+   * §1, "Merging spaces"; since 2026-10-14), in one publish: what it holds
+   * moves first (#moveHoldings: its Stack's items — refused whole, nothing
+   * changed, when the target's cannot take them — and its conversation if
+   * the target has none), then its tabs join the target at its end, in
+   * order, as tabs the person brought (`manual`: the target is theirs, its
+   * name and colour kept), and it is gone: dropped, not archived — nothing of
+   * it is left to restore. Current, the target is current after it, on the
+   * tab in use (which went with it; with none, the target's tab used last
+   * comes up, as a space chosen does). Refused (a no-op) for the same space,
+   * a loose tab's either side, a page's as the one going (canMergeSpaces),
+   * one gone or two Profiles. Into a page's space the tabs join beside its
+   * page, which stays its entry's; Tidy's favorites reset may take that space
+   * whole later (docs/tab-tidy.md §3.7) unless it holds a Stack or a
+   * conversation, as any page's space with tabs beside it. Returns the tabs
+   * that moved.
+   */
+  #mergeTabGroups(groupId: string, into: string): string[] {
+    const source = this.#tabGroups.get(groupId);
+    const target = this.#tabGroups.get(into);
+    const spaceId = this.#spaceOf(groupId);
+    if (source === undefined || target === undefined || !canMergeSpaces(source, target) || spaceId === null || this.#spaceOf(into) !== spaceId) return [];
+    // A space a desk turn is working in (holdGroup) stays while it works: its scope and what it saves name it (2026-10-14,
+    // a review's P2). Merging INTO it only adds tabs to it.
+    if (this.#heldGroups.has(groupId)) throw new Error(`The agent is working in “${source.title.trim() || DEFAULT_TAB_GROUP_TITLE}”: merge it once it's done.`);
+    const wasCurrent = this.currentGroupId(spaceId) === groupId;
+    return this.#withPublishHeld(() => {
+      this.#moveHoldings(groupId, into, target.title);
+      const moved = this.addToTabGroup(into, source.tabIds, { byPerson: true });
+      // (Nothing to bring — an empty space with only a Stack — the target is the person's all the same.)
+      const now = this.#tabGroups.get(into);
+      if (now !== undefined && moved.length === 0) this.#tabGroups.set(into, asPersons(now));
+      this.#namingAsks.delete(groupId);
+      this.#dropGroup(groupId);
+      if (wasCurrent) this.#setCurrentGroup(spaceId, into);
+      this.#onChange();
+      return moved;
+    });
   }
 
   /** The latest ask for each space's name (#nameTabGroup): an older one's answer is for tabs it no longer holds. */
@@ -8175,7 +8509,8 @@ export class BrowserController {
     const group = this.#tabGroups.get(groupId);
     const info = this.#tabInfo(tabId);
     if (group === undefined || info === null || !group.tabIds.includes(tabId)) return;
-    if (this.#spaceTabIds(info.spaceId).some((other) => this.#tabInfo(other)?.anchorId === anchorId)) return;
+    // (Another page of it by now — its own, or one brought into a space and linked to it.)
+    if (this.#spaceTabIds(info.spaceId).some((other) => this.#tabInfo(other)?.anchorId === anchorId || (other !== tabId && this.#tabInfo(other)?.linkedAnchorId === anchorId))) return;
     const { loose: _loose, grown: _grown, ...rest } = group;
     this.#tabGroups.set(groupId, { ...rest, title: DEFAULT_TAB_GROUP_TITLE, color: "gray", naming: false, anchorId });
     this.setAnchor(tabId, anchorId);
@@ -8383,6 +8718,7 @@ export class BrowserController {
             grab: state.grab,
             dockHover: state.dockHover === true,
             undoKey: state.undoKey === true,
+            cycleKey: state.cycleKey === true,
             masks: state.masks ?? [],
             zoomed: state.zoomed ?? [],
           };
@@ -8609,6 +8945,22 @@ export class BrowserController {
     if (source !== undefined && source.id === this.#window.webContents.id) return false;
     event.preventDefault();
     if (!input.isAutoRepeat) this.#hooks.onDeskPageInput?.("undo");
+    return true;
+  }
+
+  /**
+   * Tab or ⇧Tab with a layout looked at with the pointer in the space view
+   * (DeskState.cycleKey, since 2026-10-14), from a page or a utility view:
+   * that view never sees it, and the shell moves the layout's windows round
+   * its places (DeskPageInput "cycle", "cycleBack"). Struck in the shell's
+   * own document it goes on there (LayoutControl hears it). Held down, it
+   * goes round once.
+   */
+  takeDeskCycleKey(event: Electron.Event, input: Electron.Input, source?: Electron.WebContents): boolean {
+    if (this.#desk?.cycleKey !== true || !isDeskCycleKey(input)) return false;
+    if (source !== undefined && source.id === this.#window.webContents.id) return false;
+    event.preventDefault();
+    if (!input.isAutoRepeat) this.#hooks.onDeskPageInput?.(input.shift ? "cycleBack" : "cycle");
     return true;
   }
 

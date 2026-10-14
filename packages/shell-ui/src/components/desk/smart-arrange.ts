@@ -3,9 +3,10 @@
  * hears a window come out or leave (the engine's onLayoutMoment), or the
  * person ask (⌘⌥L, the More card), describes the desk to the layout model,
  * and — when the model's opinion and `decideDeskLayout` say so — lays the
- * windows out anew. On its own it moves them quietly, and ⌃Z puts them back
- * for a moment after (UNDO_KEY_MS); asked, a notice says what it did, with
- * Undo (until 2026-10-13 every layout had the notice).
+ * windows out anew, without a word, asked or not: ⌃Z puts them back for a
+ * moment after (UNDO_KEY_MS). Asked with nothing to do, a notice says so.
+ * (Until 2026-10-13 every layout had a notice saying what it did, with
+ * Undo; until 2026-10-14 one asked for still did.)
  *
  * ⌃Z is offered the same way after a named layout the person chose — the
  * space view's layouts, Tile, Cascade (the engine's layOut, heard through
@@ -91,8 +92,8 @@ export interface SmartArrangeHost {
   group(): string | null;
   /** A window's words, the latest known — a window just closed is no tab any more. */
   describe(id: string): WindowWords | null;
-  /** Say what the desk did when asked, with a way back (null: nothing to undo). */
-  notify(message: string, undo: (() => void) | null): void;
+  /** Say why the desk did nothing when asked. */
+  notify(message: string): void;
   /** A timer (injectable for tests); returns its cancel. */
   later(run: () => void, ms: number): () => void;
 }
@@ -248,37 +249,30 @@ export class SmartArranger {
     const view = this.#engine.layoutView();
     const asked = moment.trigger === "asked";
     if (view.windows.size === 0 || view.windows.size > MOST_WINDOWS) {
-      if (asked) this.#host.notify(view.windows.size === 0 ? "No windows to arrange" : "Too many windows to arrange", null);
+      if (asked) this.#host.notify(view.windows.size === 0 ? "No windows to arrange" : "Too many windows to arrange");
       return;
     }
-    const built = this.#request(moment, view);
-    if (built === null) return;
-    const evaluation = this.#host.judge === null ? null : await this.#host.judge(built.request).catch(() => null);
+    const request = this.#request(moment, view);
+    if (request === null) return;
+    const evaluation = this.#host.judge === null ? null : await this.#host.judge(request).catch(() => null);
     if (serial !== this.#serial || !this.#mayMove(moment, group)) return;
     const now = this.#engine.layoutView();
     // The desk changed while the model thought: its answer is about another desk.
     if (now.stamp !== view.stamp) return;
-    const decision = decideDeskLayout(built.request, evaluation);
+    const decision = decideDeskLayout(request, evaluation);
     const layout = this.#layout(decision, moment, now);
     if (layout === null || !changesLayout(now.windows, layout)) {
-      if (asked) this.#host.notify(decision.move === "keep" ? "The desk is laid out well already" : "The windows are laid out that way already", null);
+      if (asked) this.#host.notify(decision.move === "keep" ? "The desk is laid out well already" : "The windows are laid out that way already");
       return;
     }
     const undo = this.#engine.applyLayout(layout);
     if (undo === null) return;
+    // Asked or not, the desk says nothing: the windows moving is news enough, and ⌃Z takes it back.
     this.#offerUndo(undo, group);
-    // On its own the desk says nothing: the windows moving is news enough, and ⌃Z takes it back.
-    if (!asked) return;
-    this.#host.notify(this.#say(decision, moment, built.fillers), () => {
-      // ⌃Z's, while it waits, is this same layout: spent with it, or the next ⌃Z would put it back again.
-      if (this.#undo?.snapshot === undo) this.#forgetUndo();
-      // Clicked once the desk has passed to another group, it would lay this one out as that one was.
-      if (this.#host.group() === group) this.#engine.restoreLayout(undo);
-    });
   }
 
   /** The question, in the model's words: the windows, what happened, and the moves the desk can make. */
-  #request(moment: Moment, view: DeskLayoutView): { request: DeskLayoutRequest; fillers: string[] } | null {
+  #request(moment: Moment, view: DeskLayoutView): DeskLayoutRequest | null {
     const trigger: DeskLayoutTrigger = moment.trigger;
     const all = [...view.windows.values(), ...view.others];
     const opened = moment.trigger === "opened" ? moment.id : null;
@@ -323,7 +317,7 @@ export class SmartArranger {
       filled === null
         ? []
         : [...filled].filter(([id, rect]) => changesLayout(new Map([[id, view.windows.get(id)!]]), new Map([[id, rect]]))).map(([id]) => this.#host.describe(id)?.title ?? "");
-    return { request: { trigger, windows, gone, moves, fillers }, fillers };
+    return { trigger, windows, gone, moves, fillers };
   }
 
   /** Where every window goes for the decision, by the desk's own rules (lib/desk/smart-layout.ts). */
@@ -339,21 +333,6 @@ export class SmartArranger {
         return tiledLayout(view.windows, view.bounds, decision.main);
       case "focus":
         return decision.main === null ? null : focusLayout(view.windows, view.bounds, decision.main);
-    }
-  }
-
-  /** What the notice says the desk did. */
-  #say(decision: DeskLayoutDecision, moment: Moment, fillers: readonly string[]): string {
-    const title = (id: string | null): string => `“${short(id === null ? "" : (this.#host.describe(id)?.title ?? ""), 32) || "the window"}”`;
-    switch (decision.move) {
-      case "fill":
-        return fillers.length === 1 ? `${`“${short(fillers[0]!, 32)}”`} filled the gap` : "The windows beside it filled the gap";
-      case "pair":
-        return `Put ${title(moment.trigger === "opened" ? moment.id : null)} beside ${title(decision.partner)}`;
-      case "focus":
-        return `Gave ${title(decision.main)} the main place`;
-      default:
-        return "Tiled the windows";
     }
   }
 }

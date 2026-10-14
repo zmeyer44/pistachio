@@ -450,13 +450,15 @@ test.describe.serial("a space's desk, from its first window on", { tag: ["@desk"
     await expect(shell.locator(".desk-stage[data-snapping]")).toHaveCount(0);
     await expectLiveIn(app, shell, urls[0]!, ids[0]!);
 
-    // ── 8. The leading edge is the desk's like the others: carried out over the sidebar, a window lights the left
-    //      half and lands there, its tab kept — nothing over the sidebar takes it. Its frame's − puts it away ─
+    // ── 8. The leading edge is the desk's like the others: carried out past it, into the gap beside the card, a window
+    //      lights the left half and lands there, its tab kept — nothing there takes it. (On over the card, it would be
+    //      one of its rows and collapse into its row: desk-dock-drop.spec.ts, since 2026-10-14.) Its frame's − puts it
+    //      away ─
     const { at: grip4 } = await frameGrip(app, shell, ids[1]!);
     await shell.mouse.move(grip4.x, grip4.y);
     await shell.mouse.down();
     await shell.mouse.move(grip4.x + 6, grip4.y, { steps: 2 });
-    const overSidebar = { x: stage.x - 20, y: stage.y + stage.height * 0.5 };
+    const overSidebar = { x: stage.x - 4, y: stage.y + stage.height * 0.5 };
     for (let step = 1; step <= 12; step += 1) {
       await shell.mouse.move(grip4.x + (overSidebar.x - grip4.x) * (step / 12), grip4.y + (overSidebar.y - grip4.y) * (step / 12));
       await shell.waitForTimeout(16);
@@ -851,8 +853,9 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     const railStage = await box(shell, ".desk-stage");
     const railUsable = usableOf(railStage);
 
-    // ── 9. Carry a window to the desk's leading edge, and on out over the sidebar: the left half lights all the way,
-    //      as the right half does past the right edge, and the window lands there, its tab kept. Its × closes it ─
+    // ── 9. Carry a window to the desk's leading edge, and on out over the rail, between its items (where it is a tile
+    //      that nothing there takes: desk-dock-drop.spec.ts): the left half lights all the way, as the right half does
+    //      past the right edge, and the window lands there, its tab kept. Its × closes it ─
     // (The stranger's window, on top.)
     const { at: grip } = await frameGrip(app, shell, stranger);
     await shell.mouse.move(grip.x, grip.y);
@@ -872,6 +875,8 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
       await shell.waitForTimeout(16);
     }
     await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(1);
+    await expect(shell.locator(`${windowSelector(stranger)}[data-morph="tile"]`)).toHaveCount(1);
+    await expect(shell.locator("[data-rail-drop][data-dropping]")).toHaveCount(0);
     await capture(app, shell, "22-left-edge-over-sidebar.png");
     await shell.mouse.up();
     await settled(shell, app);

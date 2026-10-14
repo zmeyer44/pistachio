@@ -98,6 +98,7 @@ function open(zoom: DeskPageZoom = "fit", host: Partial<DeskHost> = {}) {
   const api = native();
   const desk = new DeskEngine({
     variants: () => ({ ...DEFAULT_DESK_VARIANTS, zoom }),
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,

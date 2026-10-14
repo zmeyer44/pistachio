@@ -8,6 +8,7 @@ import {
 } from "../src/tab-archive.js";
 import {
   asPersons,
+  canMergeSpaces,
   dayRowUnits,
   DEFAULT_TAB_GROUP_TITLE,
   groupedTabOrder,
@@ -412,6 +413,32 @@ describe("group helpers", () => {
     expect(isTabGroupCommand({ type: "move", groupId: "g", index: -1 })).toBe(false);
     expect(isTabGroupCommand({ type: "close", groupId: "g" })).toBe(true);
     expect(isTabGroupCommand({ type: "explode", groupId: "g" })).toBe(false);
+    // One space into another (2026-10-14): two ids, never the same one.
+    expect(isTabGroupCommand({ type: "merge", groupId: "g-1", into: "g-2" })).toBe(true);
+    expect(isTabGroupCommand({ type: "merge", groupId: "g-1", into: "g-1" })).toBe(false);
+    expect(isTabGroupCommand({ type: "merge", groupId: "g-1" })).toBe(false);
+    expect(isTabGroupCommand({ type: "merge", groupId: "g-1", into: "not an id" })).toBe(false);
+  });
+
+  it("merges a drawn space into any space but a loose tab's, and never a page's away (canMergeSpaces)", () => {
+    const drawn = group("trip", ["a", "b"]);
+    const other = group("work", ["c"]);
+    const empty = group("errands", []);
+    const loose = { ...group("loose-d", ["d"]), loose: true };
+    const page = { ...group("page-mail", ["mail", "e"]), anchorId: "fav-mail" };
+    expect(canMergeSpaces(drawn, other)).toBe(true);
+    // An empty space goes (its Stack with it), or takes the other's tabs.
+    expect(canMergeSpaces(empty, other)).toBe(true);
+    expect(canMergeSpaces(drawn, empty)).toBe(true);
+    // Into a favorite's page's space: its tabs join beside the page.
+    expect(canMergeSpaces(drawn, page)).toBe(true);
+    // A page's space is its entry's, not carried; a Home tab is no space on the rail, either way.
+    expect(canMergeSpaces(page, drawn)).toBe(false);
+    expect(canMergeSpaces(loose, drawn)).toBe(false);
+    expect(canMergeSpaces(drawn, loose)).toBe(false);
+    expect(canMergeSpaces(drawn, drawn)).toBe(false);
+    expect(canMergeSpaces(drawn, undefined)).toBe(false);
+    expect(canMergeSpaces(null, drawn)).toBe(false);
   });
 });
 

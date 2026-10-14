@@ -8,7 +8,7 @@ import { NEW_SPACE_EVENT } from "../../lib/desk/open";
 import { pinnedRows } from "../../lib/sidebar-tree";
 import { useAppStore } from "../../store";
 import { renameSpace, useHomeMemory, useSpaceRename } from "./column-state";
-import { SpaceFlights, type FlightSpace } from "./flights";
+import { isGrownByDrop, SpaceFlights, type FlightSpace } from "./flights";
 import { backingOutline, cardOutline, columnViewOf, grewInto, HOME_VIEW, homeTabIdsOf, HOUSE_EASE, railSpacesOf, type ColumnView } from "./rail-model";
 import { SpaceCard as SpaceCardView } from "./SpaceCard";
 import { SpaceRail as SpaceRailView } from "./SpaceRail";
@@ -129,7 +129,8 @@ export function SpaceColumn({ mode, cardWidth }: { mode: SidebarMode; cardWidth:
   if (seen.view !== view || seen.rail !== spaces || seen.homeTabIds !== homeTabIds) {
     // (Only a Home tab grown into a space waits for its flight: ⌘N's, New space's, a selection's space turns at once.
     // Until 2026-10-13 any new space chosen while Home showed did.)
-    const grew = grewInto(seen, view, spaces);
+    // (Nor one made by a drop on New space: what was let go went into New space, and there is no flight to wait for.)
+    const grew = grewInto(seen, view, spaces) && !isGrownByDrop(view);
     setSeen({ view, rail: spaces, homeTabIds });
     if (grew && card && !reduced) setGrowing(view);
     else if (growing !== null && growing !== view) setGrowing(null);

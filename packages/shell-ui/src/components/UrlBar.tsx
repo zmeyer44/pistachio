@@ -12,7 +12,7 @@ import { Favicon, TabMark } from "./Favicon";
 import { Kbd } from "./ui/kbd";
 import { useIntentOrder } from "../lib/use-address-intent";
 import { useFieldPreview } from "../lib/use-field-preview";
-import { deskAvailable, newSpaceAt } from "../lib/desk/open";
+import { deskAvailable, newSpaceAt, openEntry } from "../lib/desk/open";
 import { PALETTE_DETAIL_CLASS, PALETTE_FAVICON_CLASS, PALETTE_ROW_CLASS, PALETTE_TITLE_CLASS, PaletteResultRow, primaryItemFor, usePaletteInventory, useShelfRows, useTypedEntries, enterDestination, type Entry, type NewDestination } from "./address-palette";
 
 import { shellApi } from "../api";
@@ -120,7 +120,6 @@ function UrlBarDialog() {
   const recentSites = useAppStore((s) => s.recents);
   const dismissRecent = useAppStore((s) => s.dismissRecent);
   const shelf = useAppStore((s) => s.snapshot?.sidebar ?? DEFAULT_SIDEBAR_STATE);
-  const sidebarCommand = useAppStore((s) => s.sidebarCommand);
   /** Where a new tab's address opens when no modifier says otherwise: this space, or (⌘⇧L) a space of its own. */
   const newDestination: NewDestination = urlBarNew === "space" ? "space" : "tab";
   const openAt = useCallback(
@@ -335,7 +334,8 @@ function UrlBarDialog() {
     }
     if (entry.kind === "shelf") {
       close();
-      void sidebarCommand({ type: "open", anchorId: entry.anchorId });
+      // (As its tile's click does: a page anchored or linked, put away on the desk in front, comes out — openEntry.)
+      void openEntry(entry.anchorId);
       return;
     }
     commit(entry.url);

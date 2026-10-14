@@ -100,6 +100,61 @@ describe("a group's context", () => {
     // Brought in again, the same file is not taken twice.
     expect(store.adopt("g1", "Lisbon", "mac-b-group")).toBe(1);
   });
+
+  it("moves a merged space's context into another's whole, keeping the items' ids, and tells sync both (2026-10-14)", async () => {
+    const store = new GroupContextStore(scratch());
+    store.addText("trip", "Trip", { kind: "fact", text: "Hotel QX7F2L" }, "person");
+    const [pass] = store.addFiles("trip", "Trip", [{ name: "pass.pdf", mediaType: "application/pdf", bytes: PDF }], "person").added;
+    store.addFiles("lisbon", "Lisbon", [{ name: "same pass.pdf", mediaType: "application/pdf", bytes: PDF }], "person");
+    const fact = store.items("trip")[0]!;
+    const touched: string[] = [];
+    store.onRecordChange((kind, id) => touched.push(`${kind}:${id}`));
+
+    // The file Lisbon holds already is not taken twice; the fact comes over under its own id (a desk's file window names it).
+    expect(store.moveAll("trip", "lisbon", "Lisbon")).toBe(1);
+    expect(store.items("lisbon").map((item) => item.id)).toEqual([expect.any(String), fact.id]);
+    expect(store.items("lisbon").filter((item) => item.kind === "file")).toHaveLength(1);
+    // Nothing stays behind under an id no space has; the entry stays, empty, as a removed item leaves it.
+    expect(store.items("trip")).toEqual([]);
+    expect(store.get("trip")).not.toBeNull();
+    expect(store.hasItems("trip")).toBe(false);
+    expect(touched).toEqual(["groupContext:trip", "groupContext:lisbon"]);
+    // The pass's bytes are still named — by Lisbon's copy — and still there.
+    expect(pass).toBeDefined();
+    await expect(store.fileContent("lisbon", store.items("lisbon")[0]!.id)).resolves.not.toBeNull();
+    // Nothing to move is no change.
+    expect(store.moveAll("trip", "lisbon", "Lisbon")).toBe(0);
+    expect(store.moveAll("nowhere", "lisbon", "Lisbon")).toBe(0);
+    expect(touched).toHaveLength(2);
+  });
+
+  it("lands a document's edit made under the space merged away on the file it has become, and reads it there", async () => {
+    const store = new GroupContextStore(scratch());
+    const [notes] = store.addFiles("trip", "Trip", [{ name: "notes.md", mediaType: "text/markdown", bytes: Buffer.from("# Trip\n") }], "person").added;
+    // Lisbon has a Context of its own: the file joins it.
+    store.addText("lisbon", "Lisbon", { kind: "fact", text: "Tram 28" }, "person");
+    expect(store.moveAll("trip", "lisbon", "Lisbon")).toBe(1);
+    // The document's window still names Trip and its item: its autosave goes through, onto Lisbon's copy.
+    const edited = Buffer.from("# Trip\n\nAlfama on Tuesday\n");
+    const saved = await store.writeFile({ groupId: "trip", itemId: notes!.id, baseBlobId: notes!.blobId, bytes: new Uint8Array(edited) });
+    expect(saved).toMatchObject({ ok: true });
+    const moved = store.items("lisbon").find((item) => item.kind === "file")!;
+    expect(Buffer.from((await store.fileContent("lisbon", moved.id))!.bytes).toString()).toBe(edited.toString());
+    // Opened again under Trip's name, it is the same file.
+    expect(Buffer.from((await store.fileContent("trip", notes!.id))!.bytes).toString()).toBe(edited.toString());
+  });
+
+  it("refuses a move the other context cannot take whole, moving nothing", () => {
+    const store = new GroupContextStore(scratch());
+    for (let index = 0; index < 40; index += 1) store.addText("a", "A", { kind: "fact", text: `a ${String(index)}` }, "person");
+    for (let index = 0; index < 21; index += 1) store.addText("b", "B", { kind: "fact", text: `b ${String(index)}` }, "person");
+    expect(() => store.moveAll("b", "a", "A")).toThrow(/more than 60/);
+    expect(store.items("a")).toHaveLength(40);
+    expect(store.items("b")).toHaveLength(21);
+    store.remove("b", store.items("b")[0]!.id);
+    expect(store.moveAll("b", "a", "A")).toBe(20);
+    expect(store.items("a")).toHaveLength(60);
+  });
 });
 
 describe("a group's context in sync", () => {
@@ -265,6 +320,22 @@ describe("a group's documents (docs/desk-documents.md)", () => {
     expect(convert.docxToDoc).toHaveBeenCalledTimes(1);
     expect(saved).toMatchObject({ ok: true, item: { mediaType: "application/msword" } });
     expect(store.getBlob(saved.ok ? saved.item.blobId : "")?.data).toBe(Buffer.concat([Buffer.from("DOC:"), DOCX.subarray(0, 8)]).toString("base64"));
+  });
+
+  it("lands a .doc's edit on the file it has become when its space is merged away while the edit is converted", async () => {
+    const convert = converter();
+    let release: (bytes: Buffer<ArrayBuffer>) => void = () => undefined;
+    convert.docxToDoc.mockImplementationOnce(() => new Promise<Buffer<ArrayBuffer>>((resolve) => (release = resolve)));
+    const store = new GroupContextStore(scratch(), { convert });
+    const [doc] = store.addFiles("trip", "Trip", [{ name: "old.doc", mediaType: "", bytes: Buffer.from("doc bytes") }], "person").added;
+    const saving = store.writeFile({ groupId: "trip", itemId: doc!.id, baseBlobId: doc!.blobId, bytes: new Uint8Array(DOCX), as: "docx" });
+    // The merge comes while macOS converts the edit.
+    await vi.waitFor(() => expect(convert.docxToDoc).toHaveBeenCalledTimes(1));
+    expect(store.moveAll("trip", "lisbon", "Lisbon")).toBe(1);
+    release(Buffer.from("DOC: edited"));
+    expect(await saving).toMatchObject({ ok: true, item: { mediaType: "application/msword" } });
+    const moved = store.items("lisbon").find((item) => item.kind === "file")!;
+    expect(Buffer.from((await store.fileContent("lisbon", moved.id))!.bytes).toString()).toBe("DOC: edited");
   });
 
   it("reads Word documents, workbooks and pictures the model cannot look at as they are, for the agent and for a mention", async () => {

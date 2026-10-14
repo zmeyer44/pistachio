@@ -84,8 +84,11 @@ export const SIDEBAR_TRIGGER_W = 14;
  * instead (2026-10-09).
  */
 export const SIDEBAR_DESK_TRIGGER_W = 5;
-/** The sidebar's width bounds (px), whole or brought out from hidden. The renderer persists the choice per machine. */
-export const SIDEBAR_DEFAULT_W = 248;
+/**
+ * The sidebar's width bounds (px), whole or brought out from hidden. The renderer persists the choice per machine. The
+ * default is the double sidebar's card at the width that holds its favorites three to a row (248 until 2026-10-14).
+ */
+export const SIDEBAR_DEFAULT_W = 224;
 export const SIDEBAR_MIN_W = 200;
 export const SIDEBAR_MAX_W = 380;
 /**

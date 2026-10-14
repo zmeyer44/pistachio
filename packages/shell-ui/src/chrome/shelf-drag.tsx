@@ -34,14 +34,30 @@
  * edge — the column clips there and the tab views paint over anything past
  * it — and keeps it for the rest of the gesture, so a row lifted toward the
  * page is never cut off at the column while the pointer is still inside it.
+ *
+ * Over the double sidebar's rail (since 2026-10-14) what is carried is drawn
+ * as what it would be there: a space's tile — the rail's own 38px, its icon
+ * on the tint of the space it would go into, the same face a desk window
+ * carried over the rail wears (DeskWindow's DockFace, shell.css's
+ * `.desk-window-face`) — following the pointer above the rail, grown out of
+ * the row or tile it was and shrinking back into it over the card (the
+ * token: `RailToken`); its source waits in its slot, dimmed. Let go on an
+ * item, the token goes into it and the item bounces. (Until then a row
+ * waited in its slot with no token, and a favorite's tile, following the
+ * pointer, painted under the rail: "it doesn't look great".)
  */
 
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
-import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
+import { entryPageOf, type SidebarCommand } from "@pistachio/shell-contracts/sidebar";
 import { favoriteDropAt, GROUP_END, listDropAt, spaceDropAt, type ListDrop, type MeasuredRow, type MeasuredTile, type ShelfDragKind } from "../lib/sidebar-tree";
 import { useAppStore } from "../store";
-import { fullUnitIndex, railTargetAt } from "../components/space-rail/rail-model";
+import { Favicon } from "../components/Favicon";
+import { bounceRailItem } from "../components/space-rail/bounce";
+import { grownByDrop } from "../components/space-rail/flights";
+import { fullUnitIndex, railTargetAt, roomForSpace } from "../components/space-rail/rail-model";
+import { DOCK_TILE } from "../lib/desk/dock-drop";
+import { displayHost, prettyUrl } from "../lib/url";
 import { splitZoneAt, type PointerLike, type SplitZone } from "./drag-geometry";
 import { dayUnitsInHand, unitIndexAfter, type ChromeTab } from "./tabs";
 import { nativeApi } from "../api";
@@ -70,10 +86,12 @@ export interface ShelfItem {
 /**
  * A row let go on the double sidebar's rail (docs/double-sidebar.md §1): on a
  * space's tile it joins that space (`space`, its id), on Home it leaves its
- * space and is a Home tab, on New space it makes a space of its own. `null`:
- * over the rail, but on nothing that would take it — let go there it goes
- * nowhere, and meanwhile the row waits in its slot (TabList keeps it there,
- * `measureFollow` holds it still) while the rail says where it would go.
+ * space and is a Home tab, on New space it makes a space of its own — a
+ * favorite or a pin a space of its page (since 2026-10-14). `null`: over the
+ * rail, but on nothing that would take it — let go there it goes nowhere.
+ * Meanwhile the row waits in its slot, dimmed (TabList keeps it there,
+ * `measureFollow` holds it still), drawn over the rail as a space's tile
+ * (`RailToken`), while the rail says where it would go.
  */
 export interface RailDrop {
   zone: "rail";
@@ -151,7 +169,39 @@ const DESK_EDGE_PX = 2;
 /** Within this many px of the scroller's edge the list scrolls under the drag. */
 const AUTO_SCROLL_EDGE = 28;
 const AUTO_SCROLL_STEP = 8;
+/** What is carried, waiting in its slot while it is over the rail (drawn there as the token): dimmed, its place kept. */
+const WAIT_OPACITY = "0.4";
+/** The token going into the item it was let go on, and when that item bounces (as it takes it). */
+const TOKEN_LAND_MS = 200;
+const TOKEN_BOUNCE_AT_MS = 130;
+const HOUSE_EASING = "cubic-bezier(0.2, 0.8, 0.3, 1)";
 
+/** A box, px from the pointer: where the token's face is drawn. */
+interface FaceBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The token as a rail tile: the rail's 38px, centred on the pointer (lib/desk/dock-drop.ts's DOCK_TILE, a carried window's). */
+const TILE_FACE: FaceBox = { x: -DOCK_TILE / 2, y: -DOCK_TILE / 2, w: DOCK_TILE, h: DOCK_TILE };
+
+function reducedMotion(): boolean {
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
+}
+
+function writeFace(face: HTMLElement, box: FaceBox, shape: "row" | "tile"): void {
+  face.style.left = `${String(box.x)}px`;
+  face.style.top = `${String(box.y)}px`;
+  face.style.width = `${String(box.w)}px`;
+  face.style.height = `${String(box.h)}px`;
+  face.dataset["shape"] = shape;
+}
 interface FlipPosition {
   parent: Element | null;
   x: number;
@@ -328,6 +378,8 @@ interface FollowPlacement {
   transformOrigin: string;
   transform: string;
   opacity: string;
+  /** The box it is drawn in, viewport px (its slot, moved by `transform`, unscaled). */
+  box: { x: number; y: number; w: number; h: number };
 }
 
 /** The live gesture's hooks for the provider's commit-time effect. */
@@ -349,6 +401,8 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
   const railRef = useRef<HTMLElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const tokenRef = useRef<HTMLDivElement>(null);
+  const tokenFaceRef = useRef<HTMLDivElement>(null);
   const draggedRef = useRef(false);
   // The page's box, read per frame by the live gesture. Fed by subscription
   // rather than render: the surface reports it on every layout pass, and
@@ -425,6 +479,22 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
     // layer draws is held the same way, so the two never disagree.
     const startedInGrid = gridRef.current?.contains(el) === true;
     const clamp = startedInGrid ? undefined : { minLeft: rect.left };
+    /**
+     * Over the rail what is carried is drawn as a space's tile (`RailToken`), grown out of the row or tile it was and
+     * shrunk back into it on the way off — anything the rail could take (a folder waits in its slot, as it always did).
+     * `tokenUp`: it is drawn so now; `tokenFollows`: it has been this gesture, and follows the pointer as it fades.
+     */
+    const tokenFor = item.kind !== "folder" && item.kind !== "group";
+    const tokenShape = startedInGrid ? "tile" : "row";
+    let tokenUp = false;
+    let tokenFollows = false;
+    /** The layer's ghost's box (lifted: what is drawn of the item), viewport px. */
+    const ghostBox = (ev: PointerLike): FaceBox => ({
+      x: clamp === undefined ? ev.clientX - grabX : Math.max(clamp.minLeft, ev.clientX - grabX),
+      y: ev.clientY - grabY,
+      w: rect.width,
+      h: rect.height,
+    });
     /** What the shelf lays out from; `setDrag` sees it only when it changes. */
     let state: ShelfDrag | null = null;
     /** The latest pointer sample: the follow transform and the layer's ghost are drawn from it. */
@@ -490,7 +560,11 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
      * null over none of them (between them, a tile scrolled out of sight)
      * or over one that cannot take it (a space the row is in already, Home
      * for a tab that is Home's). A live row takes every target; a favorite or
-     * a pin only a space's, its page coming down into it.
+     * a pin a space's (its page coming down into it, still its entry's:
+     * @pistachio/shell-contracts/sidebar's bringDown) — not the space its
+     * page is in already — and New space (a space of its page; since
+     * 2026-10-14), never Home: it is Home's already. New space takes nothing
+     * while the Profile holds as many spaces as it may (roomForSpace).
      */
     const overRail = (ev: PointerLike): RailDrop | undefined => {
       const rail = railRef.current;
@@ -517,8 +591,14 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
         const groupId = over.dataset["groupId"] ?? "";
         const members = [...(snapshot?.tabGroups ?? []), ...(snapshot?.anchorGroups ?? [])].find((group) => group.id === groupId)?.tabIds ?? [];
         if (live && tabIds.every((tabId) => members.includes(tabId))) return none;
+        // (An entry's page — anchored, leading its page's space, or linked into a space — is there already.)
+        const page = entry ? entryPageOf(snapshot?.tabs ?? [], item.entityId) : null;
+        if (page !== null && members.includes(page.tab.id)) return none;
         return { zone: "rail", target: "space", groupId };
       }
+      // (New space makes none with the Profile full: rail-model's roomForSpace.)
+      if (target === "new" && !roomForSpace(snapshot)) return none;
+      if (entry) return target === "new" ? { zone: "rail", target: "new", groupId: null } : none;
       if (!live) return none;
       if (target === "home") {
         const loose = new Set((snapshot?.looseGroups ?? []).flatMap((group) => group.tabIds));
@@ -584,10 +664,12 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
           : 0;
       const py = pointer.clientY - grabY - layoutTop;
       const armed = current.zone !== null;
-      // Over the double sidebar's rail a row waits in its slot, dimmed, while the tile under the pointer says it would
-      // take it: carried up to Home or down to New space it would leave the list's box and be clipped away, and the
-      // layer's ghost would cover the tile. (Until 2026-10-13 it vanished there, nothing following the pointer.)
-      const waiting = !inGrid && current.drop?.zone === "rail";
+      // Over the double sidebar's rail a row — or a favorite's tile (2026-10-14) — waits in its slot, dimmed, drawn
+      // over the rail as a space's tile instead (RailToken), the item under the pointer saying it would take it:
+      // carried up to Home or down to New space a row would leave the list's box and be clipped away, and a tile
+      // would paint under the rail. (Until 2026-10-13 a row vanished there, nothing following the pointer; until
+      // 2026-10-14 it waited with no token, and a tile followed the pointer under the rail.)
+      const waiting = current.drop?.zone === "rail";
       return {
         target,
         transformOrigin: `${grabX}px ${grabY}px`,
@@ -595,14 +677,95 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
         // Once the item has left the column, the layer's ghost is the visible
         // copy. Keeping the source transparent preserves its layout/FLIP slot
         // without showing a clipped duplicate at the column edge.
-        opacity: current.lifted ? "0" : waiting ? "0.55" : armed ? "0.9" : "",
+        opacity: current.lifted ? "0" : waiting ? WAIT_OPACITY : armed ? "0.9" : "",
+        box: { x: layoutLeft + (waiting ? 0 : px), y: layoutTop + (waiting ? 0 : py), w: target.offsetWidth, h: target.offsetHeight },
       };
     };
     const paintFollow = (placement: FollowPlacement | null): void => {
       if (placement === null) return;
+      const from = placement.target.style.transform;
       placement.target.style.transformOrigin = placement.transformOrigin;
       placement.target.style.transform = placement.transform;
       placement.target.style.opacity = placement.opacity;
+      // Gone over the rail, it glides back into its slot to wait there (the token has its place at the pointer).
+      if (from !== "" && placement.transform === "" && !reducedMotion()) {
+        placement.target.animate([{ transform: from }, { transform: "none" }], { duration: 170, easing: SETTLE_EASING });
+      }
+    };
+
+    /**
+     * The token, this frame: it follows the pointer (its frame's place in the
+     * column); come over the rail it grows out of the item as drawn (`from`,
+     * viewport px) into a space's tile; gone off it, it shrinks back into the
+     * item as it is drawn from now on (`back`) as it fades, the item itself
+     * showing again under it. Its colour and icon are RailToken's (React's:
+     * they change with the drop).
+     */
+    const paintToken = (ev: PointerLike, root: DOMRect | null, over: boolean, from: FaceBox | null, back: FaceBox | null): void => {
+      const outer = tokenRef.current;
+      const face = tokenFaceRef.current;
+      if (outer === null || face === null || root === null || (!over && !tokenFollows)) return;
+      tokenFollows = true;
+      outer.style.transform = `translate(${String(ev.clientX - root.left)}px, ${String(ev.clientY - root.top)}px)`;
+      const near = (box: FaceBox): FaceBox => ({ x: box.x - ev.clientX, y: box.y - ev.clientY, w: box.w, h: box.h });
+      if (over && !tokenUp) {
+        tokenUp = true;
+        for (const animation of face.getAnimations()) animation.cancel();
+        face.style.transition = "none";
+        writeFace(face, near(from ?? ghostBox(ev)), tokenShape);
+        face.dataset["shown"] = "";
+        // (Laid out where it starts, so the change below is a transition from there.)
+        void face.offsetWidth;
+        face.style.transition = "";
+        writeFace(face, TILE_FACE, "tile");
+      } else if (!over && tokenUp) {
+        tokenUp = false;
+        writeFace(face, near(back ?? ghostBox(ev)), tokenShape);
+        delete face.dataset["shown"];
+      }
+    };
+    /** The gesture is over with the token up but let go on nothing: it fades where it is (the item is back in its slot). */
+    const dropToken = (): void => {
+      const face = tokenFaceRef.current;
+      if (!tokenUp || face === null) return;
+      tokenUp = false;
+      delete face.dataset["shown"];
+    };
+    /** Let go on a rail item that takes it: the token goes into that item, shrinking away, and the item bounces. */
+    const landToken = (drop: RailDrop): void => {
+      const outer = tokenRef.current;
+      const face = tokenFaceRef.current;
+      const rail = railRef.current;
+      const root = rootRef.current;
+      if (!tokenUp || outer === null || face === null || rail === null || root === null || drop.target === null) {
+        dropToken();
+        return;
+      }
+      tokenUp = false;
+      const into = rail.querySelector<HTMLElement>(
+        drop.target === "space" ? `[data-rail-drop="space"][data-group-id="${CSS.escape(drop.groupId ?? "")}"]` : `[data-rail-drop="${drop.target}"]`,
+      );
+      const hide = (): void => {
+        face.style.transition = "none";
+        delete face.dataset["shown"];
+        for (const animation of face.getAnimations()) animation.cancel();
+        void face.offsetWidth;
+        face.style.transition = "";
+      };
+      if (into === null || reducedMotion()) {
+        hide();
+        bounceRailItem(into);
+        return;
+      }
+      const at = root.getBoundingClientRect();
+      const box = into.getBoundingClientRect();
+      const from = outer.style.transform;
+      const to = `translate(${String(box.left + box.width / 2 - at.left)}px, ${String(box.top + box.height / 2 - at.top)}px)`;
+      outer.style.transform = to;
+      outer.animate([{ transform: from }, { transform: to }], { duration: TOKEN_LAND_MS, easing: HOUSE_EASING });
+      const shrink = face.animate([{ scale: "1", opacity: 1 }, { scale: "0.5", opacity: 0 }], { duration: TOKEN_LAND_MS, easing: "cubic-bezier(0.3, 0.7, 0.4, 1)", fill: "forwards" });
+      window.setTimeout(() => bounceRailItem(into), TOKEN_BOUNCE_AT_MS);
+      shrink.finished.then(hide, () => undefined);
     };
 
     /**
@@ -651,11 +814,20 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
       const lifted = (state?.lifted ?? false) || overContent || left + rect.width > columnRight;
       const next: ShelfDrag = { item, drop, settling: false, overContent, lifted, zone };
       const placement = measureFollow(next, scrollBy);
+      // Over the rail: the token, grown out of the item as drawn a moment ago (the layer's ghost, lifted), or — off the
+      // rail again — shrunk back into the item as it is drawn now.
+      const overRailNow = tokenFor && drop?.zone === "rail";
+      const rootBox = overRailNow || tokenFollows ? (rootRef.current?.getBoundingClientRect() ?? null) : null;
+      const sourceBox = overRailNow && !tokenUp && state?.lifted !== true ? elFor(item.flipId)?.getBoundingClientRect() : undefined;
+      const fromBox = overRailNow && !tokenUp ? (sourceBox === undefined ? ghostBox(ev) : { x: sourceBox.left, y: sourceBox.top, w: sourceBox.width, h: sourceBox.height }) : null;
+      const backBox = !overRailNow && tokenUp ? (lifted ? ghostBox(ev) : (placement?.box ?? null)) : null;
 
       if (scrollBy !== 0 && scrollerRef.current !== null) scrollerRef.current.scrollTop += scrollBy;
       paintFollow(placement);
+      paintToken(ev, rootBox, overRailNow, fromBox, backBox);
       useAppStore.getState().setSplitDropZone(zone);
-      if (lifted) {
+      // (Over the rail the token is what is drawn: the layer draws nothing there, lifted or not.)
+      if (lifted && !overRailNow) {
         const tab = item.tabs[0];
         nativeApi()?.setTabDragVisual({
           x: ev.clientX,
@@ -736,11 +908,13 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
         });
       }
       if (!commit) {
+        dropToken();
         setDrag(null);
         store.setTabDragging(false);
         return;
       }
       if (done.zone !== null && done.item.tabs.length === 1) {
+        dropToken();
         setDrag(null);
         const tab = done.item.tabs[0];
         if (tab !== undefined) {
@@ -754,15 +928,19 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
       // Let go over the desk: the tab's window comes out there (joining the group, if it was not the group's; a
       // favorite's or pin's page coming down into it).
       if (overDesk(pointer) && overRail(pointer) === undefined) {
+        dropToken();
         setDrag(null);
         const at = { x: pointer.clientX, y: pointer.clientY };
         void (deskTab !== undefined ? dropTabOnDesk(deskTab.id, at) : dropEntryOnDesk(item.entityId, at));
         return;
       }
       if (done.drop === null || (done.drop.zone === "rail" && done.drop.target === null) || sameDrop(done.drop, origin)) {
+        dropToken();
         setDrag(null);
         return;
       }
+      if (done.drop.zone === "rail") landToken(done.drop);
+      else dropToken();
       // The proposed layout stays up while the commit is in flight. Dropping
       // the drag here would draw the shelf's CURRENT order for a frame — every
       // row snapping back — and FLIP them forward again once main publishes
@@ -801,7 +979,17 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
   // commits are the gesture's own (`onMove`).
   useLayoutEffect(() => {
     layoutEpochRef.current += 1;
-    if (drag === null || drag.settling) return;
+    if (drag === null) return;
+    if (drag.settling) {
+      // Let go on the rail: it waits in its slot, dimmed, as it did over the rail, until main has moved it (a row) — or
+      // it stays (a favorite's tile, a pin's row: its page went) — rather than coming up whole for the moment between.
+      const waiting = drag.drop?.zone === "rail" ? queryFlip(rootRef.current, drag.item.flipId) : null;
+      if (waiting === null) return;
+      waiting.style.opacity = WAIT_OPACITY;
+      return () => {
+        waiting.style.opacity = "";
+      };
+    }
     gestureRef.current?.follow(drag);
     const el = queryFlip(rootRef.current, drag.item.flipId);
     return () => {
@@ -822,8 +1010,46 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
     <ShelfDragContext.Provider value={host}>
       <div ref={rootRef} className={className}>
         {children}
+        <RailToken drag={drag} outerRef={tokenRef} faceRef={tokenFaceRef} />
       </div>
     </ShelfDragContext.Provider>
+  );
+}
+
+/**
+ * What a card item carried over the rail is drawn as (docs/double-sidebar.md
+ * §1, "Dragging"; 2026-10-14): a space's tile — the face a desk window
+ * carried over the rail wears (DeskWindow's DockFace; shell.css's
+ * `.desk-window-face`, shared, not forked) — its icon on the tint of the
+ * space it would go into, the rail's own neutral over Home, New space or
+ * nothing. Above the rail and the card both (the column's own layer), never
+ * clipped by the list it came from. React draws what it shows (the icon, the
+ * colour: they change with the drop); the gesture places it and changes its
+ * shape every frame (`paintToken`, `landToken`). It keeps the last thing it
+ * carried while it fades or goes into an item.
+ */
+function RailToken({ drag, outerRef, faceRef }: { drag: ShelfDrag | null; outerRef: React.RefObject<HTMLDivElement | null>; faceRef: React.RefObject<HTMLDivElement | null> }) {
+  const last = useRef<{ item: ShelfItem; groupId: string | null } | null>(null);
+  if (drag !== null) last.current = { item: drag.item, groupId: drag.drop?.zone === "rail" && drag.drop.target === "space" ? drag.drop.groupId : null };
+  const shown = last.current;
+  const groupId = drag === null ? (shown?.groupId ?? null) : drag.drop?.zone === "rail" && drag.drop.target === "space" ? drag.drop.groupId : null;
+  const color = useAppStore((state) =>
+    groupId === null ? null : ([...(state.snapshot?.tabGroups ?? []), ...(state.snapshot?.anchorGroups ?? [])].find((group) => group.id === groupId)?.color ?? null),
+  );
+  const item = shown?.item ?? null;
+  const tab = item?.tabs[0];
+  const title = item?.title || tab?.title || "";
+  const url = item?.url || tab?.url || "";
+  return (
+    <div ref={outerRef} aria-hidden="true" className="shelf-rail-token" data-testid="shelf-rail-token">
+      <div ref={faceRef} className="desk-window-face shelf-rail-token-face tab-group-tone" data-testid="shelf-rail-token-face" data-group-color={color ?? undefined}>
+        {/* (Its icon as its row or tile draws it: a live tab's, else the entry's own.) */}
+        {item === null ? null : (
+          <Favicon src={tab?.faviconUrl ?? item.faviconUrl ?? null} seed={tab === undefined ? prettyUrl(url) : displayHost(tab.url) || tab.title} className="desk-window-face-icon" />
+        )}
+        <span className="desk-window-face-title">{title}</span>
+      </div>
+    </div>
   );
 }
 
@@ -919,23 +1145,32 @@ function commitDrop(item: ShelfItem, drop: ShelfDrop): Promise<void> {
  * space's tile its tabs join the space, at its end (a favorite's or pin's
  * page coming down into it); on Home each leaves its space and is a Home tab
  * (a loose one of its own: main's removeTab); on New space they make a
- * space of their own, which main names (not chosen: the desk stays where it
- * is).
+ * space of their own — a favorite or a pin a space of its page (bringDown's
+ * `newGroupId`, since 2026-10-14) — which main names (not chosen: the desk
+ * stays where it is).
  */
 async function railDrop(item: ShelfItem, drop: RailDrop): Promise<void> {
   const store = useAppStore.getState();
   const tabIds = item.tabs.map((tab) => tab.id);
+  const entry = item.kind === "favorite" || item.kind === "pin";
   if (drop.target === null) return;
   if (drop.target === "space" && drop.groupId !== null) {
-    if (item.kind === "favorite" || item.kind === "pin") return bringDownInto(item, drop.groupId, GROUP_END);
+    if (entry) return bringDownInto(item, drop.groupId, GROUP_END);
     return joinGroup(tabIds, drop.groupId, GROUP_END);
   }
-  if (tabIds.length === 0) return;
-  if (drop.target === "home") {
-    for (const tabId of tabIds) await store.tabGroupCommand({ type: "removeTab", tabId });
+  if (drop.target === "new") {
+    // (Its tile grows in on the rail where it stands: what was let go went into New space already, as the token did.)
+    const id = crypto.randomUUID();
+    grownByDrop(id);
+    // A favorite or pin: a space of its page — opened, closed as it was — still its entry's (2026-10-14).
+    if (entry) await store.sidebarCommand({ type: "bringDown", anchorId: item.entityId, newGroupId: id });
+    else if (tabIds.length > 0) await store.tabGroupCommand({ type: "create", id, tabIds });
     return;
   }
-  if (drop.target === "new") await store.tabGroupCommand({ type: "create", id: crypto.randomUUID(), tabIds });
+  if (tabIds.length === 0 || entry) return;
+  if (drop.target === "home") {
+    for (const tabId of tabIds) await store.tabGroupCommand({ type: "removeTab", tabId });
+  }
 }
 
 /**

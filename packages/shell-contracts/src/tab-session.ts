@@ -45,6 +45,12 @@ export interface DurableTab {
   url: string;
   faviconUrl: string | null;
   anchorId: string | null;
+  /**
+   * The entry this tab's page is still the page of in a space (BrowserTabInfo.linkedAnchorId, since 2026-10-14):
+   * absent on every other tab, and in files written before. Never beside an `anchorId`; one tab per entry, a tab
+   * anchored to it first (sanitizeTabSession). An older build reading the file drops it, and the entry is closed there.
+   */
+  linkedAnchorId?: string;
   lastActiveAt: number;
   /** Absent in files written before history was recorded. */
   history?: DurableTabHistory;
@@ -153,6 +159,17 @@ function sanitizeSpaceSession(value: unknown, spaceId: string): DurableSpaceSess
       if (tabs.length === MAX_RESTORED_TABS_PER_SPACE) break;
     }
   }
+  // One page per entry: a link to an entry some tab is the anchored page of, or that a tab before it links, is dropped.
+  const anchors = new Set(tabs.flatMap((tab) => (tab.anchorId === null ? [] : [tab.anchorId])));
+  for (const [index, tab] of tabs.entries()) {
+    if (tab.linkedAnchorId === undefined) continue;
+    if (!anchors.has(tab.linkedAnchorId)) {
+      anchors.add(tab.linkedAnchorId);
+      continue;
+    }
+    const { linkedAnchorId: _linkedAnchorId, ...plain } = tab;
+    tabs[index] = plain;
+  }
   const ids = new Set(tabs.map((tab) => tab.id));
   const activeTabId = typeof raw["activeTabId"] === "string" && ids.has(raw["activeTabId"]) ? raw["activeTabId"] : (tabs[0]?.id ?? null);
   const recentTabIds = Array.isArray(raw["recentTabIds"])
@@ -183,13 +200,18 @@ function sanitizeTab(value: unknown, spaceId: string): DurableTab | null {
   if (id === "" || !isAllowedNavigation(rawUrl)) return null;
   const url = normalizeRestorableTabUrl(rawUrl);
   const history = sanitizeTabHistory(raw["history"]);
+  const anchorId = typeof raw["anchorId"] === "string" && raw["anchorId"].length <= 2_048 ? raw["anchorId"] : null;
   return {
     id,
     spaceId,
     title: typeof raw["title"] === "string" ? raw["title"].trim().slice(0, 240) || "Restored tab" : "Restored tab",
     url,
     faviconUrl: sanitizeFavicon(raw["faviconUrl"]),
-    anchorId: typeof raw["anchorId"] === "string" && raw["anchorId"].length <= 2_048 ? raw["anchorId"] : null,
+    anchorId,
+    // (An anchored tab is its entry's own page: never linked to one as well.)
+    ...(anchorId === null && typeof raw["linkedAnchorId"] === "string" && raw["linkedAnchorId"].length > 0 && raw["linkedAnchorId"].length <= 2_048
+      ? { linkedAnchorId: raw["linkedAnchorId"] }
+      : {}),
     lastActiveAt: typeof raw["lastActiveAt"] === "number" && Number.isFinite(raw["lastActiveAt"]) && raw["lastActiveAt"] >= 0 ? raw["lastActiveAt"] : 0,
     ...(history === null ? {} : { history }),
     ...(sanitizePageResume(raw["resume"], url) ? { resume: sanitizePageResume(raw["resume"], url)! } : {}),

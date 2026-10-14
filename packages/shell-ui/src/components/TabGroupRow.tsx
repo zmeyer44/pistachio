@@ -38,8 +38,8 @@ export interface ClusterTab {
  * squares, each icon filling its square, left to right and down; a tab with
  * no icon is a square of the group's colour. On the double sidebar's rail
  * (SpaceRail's tile), where nothing else says it, the mark is a tile of the
- * group's colour and a badge says how many tabs it holds (the sidebar's row
- * says the count beside the title instead). (Until 2026-10-13 it was the old
+ * group's colour and, holding more tabs than its 2×2 shows, a badge says how
+ * many (the sidebar's row says the count beside the title instead). (Until 2026-10-13 it was the old
  * rail's favorites folder's style, and the old rail drew the tile.)
  *
  * With no tabs — an empty space, or an archived one filed without any — the
@@ -79,7 +79,8 @@ export function FaviconCluster({ tabs, stack = 0, className }: { tabs: readonly 
           />
         ))}
       </span>
-      <span className="tab-group-mosaic-count">{tabs.length}</span>
+      {/* Only where the 2×2 cannot show them all (since 2026-10-14; until then every tile had its count). */}
+      {tabs.length > shown.length ? <span className="tab-group-mosaic-count">{tabs.length}</span> : null}
     </span>
   );
 }

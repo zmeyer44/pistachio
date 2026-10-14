@@ -6,7 +6,7 @@ import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/i
 import { isDeskUndoKey } from "@pistachio/shell-contracts/desk";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import { tabGroupTitle, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
-import { nativeApi } from "../../api";
+import { nativeApi, shellApi } from "../../api";
 import { agentActivity } from "../../lib/desk/agent";
 import { useGroupContexts, useGroupContextsLoaded } from "../../lib/desk/group-context";
 import { useFileWindows } from "../../lib/desk/group-files";
@@ -16,6 +16,9 @@ import { fileItemOf, fileWindowId, isTabWindow } from "../../lib/desk/windows";
 import { displayHost } from "../../lib/url";
 import { lendDeskArrange, lendDeskAsk, lendDeskEngine, revealFor, takeSpaceChoice } from "../../lib/desk/open";
 import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
+import type { DockItem, DockRailItem, DockTargets } from "../../lib/desk/dock-drop";
+import type { Rect } from "../../lib/desk/geometry";
+import { isHomeSpace, roomForSpace } from "../space-rail/rail-model";
 import { deskGroups, groupPageOf, passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay, type GlanceDesk } from "../GlanceOverlay";
@@ -114,6 +117,94 @@ function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string
   if (kind === "group") return tile(id) ?? groupRow(id);
   if (kind === "file") return stack() ?? tile(groupId) ?? groupRow(groupId);
   return tabRow(id) ?? tile(groupId) ?? groupRow(groupId);
+}
+
+/**
+ * A tab of the desk's space sent out of it — to another space, to Home, to a
+ * new space of its own — by `send` (told the tab's entry, a favorite's or
+ * pin's page's, or null). The desk never stands on a tab that is not its
+ * space's: were it the tab in use, another of them is in use first — the
+ * window left on top (`next`), or with none, the tab used last, which comes
+ * out. (A document's window is no tab to choose.) With none at all, the desk
+ * goes where the tab goes, as main makes the space of the tab in use current.
+ *
+ * True once the tab has left the space it was in; false where main kept it
+ * there — no room for another space, a Stack the target cannot take — and
+ * the engine brings its window back (DeskHost.moveTabToGroup). Read off a
+ * snapshot asked for afresh where the store's does not show it gone yet:
+ * main's answer to the command can reach the shell before the snapshot it
+ * published for it does (seen 2026-10-14), and only a reply after the
+ * command's is surely main's word.
+ */
+async function sendOut(tabId: string, next: string | null, send: (store: ReturnType<typeof useAppStore.getState>, anchorId: string | null) => Promise<unknown>): Promise<boolean> {
+  const store = useAppStore.getState();
+  const anchorId = store.snapshot?.tabs.find((tab) => tab.id === tabId)?.anchorId ?? null;
+  const spaceOf = (snapshot: ShellSnapshot | null): string | null => deskGroups(snapshot).find((group) => group.tabIds.includes(tabId))?.id ?? null;
+  const from = spaceOf(store.snapshot);
+  if (store.snapshot?.activeTabId === tabId) {
+    const groupId = store.snapshot.currentGroupId;
+    const members = deskGroups(store.snapshot).find((group) => group.id === groupId)?.tabIds ?? [];
+    const others = store.snapshot.tabs.filter((tab) => tab.id !== tabId && members.includes(tab.id));
+    const other = (next !== null && isTabWindow(next) ? next : null) ?? [...others].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id ?? null;
+    if (other !== null) await store.selectTab(other);
+  }
+  await send(store, anchorId);
+  if (from === null || spaceOf(useAppStore.getState().snapshot) !== from) return true;
+  const fresh = await shellApi()
+    .getSnapshot()
+    .catch(() => null);
+  return fresh === null || spaceOf(fresh) !== from;
+}
+
+/**
+ * The sidebar's column as a desk window carried over it reads it (lib/desk/
+ * dock-drop.ts, DeskHost.dockTargets): the rail's items — Home, every space's
+ * tile, New space — and the card, with the space it shows (null for Home's)
+ * and its rows' list, in the window's coordinates. Null with the column
+ * hidden: it goes away as a window is taken in hand, and takes nothing.
+ */
+function dockTargetsOf(groupId: string | null): DockTargets | null {
+  const slot = document.querySelector<HTMLElement>("[data-testid='sidebar-motion-slot']");
+  if (slot === null || slot.dataset["mode"] === "hidden") return null;
+  const rectOf = (el: Element): Rect => {
+    const box = el.getBoundingClientRect();
+    return { x: box.left, y: box.top, w: box.width, h: box.height };
+  };
+  const railEl = slot.querySelector<HTMLElement>("[data-testid='space-rail']");
+  const listEl = railEl?.querySelector<HTMLElement>("[data-testid='space-rail-list']") ?? null;
+  const span = listEl?.getBoundingClientRect() ?? null;
+  const rail: DockTargets["rail"] =
+    railEl === null || railEl === undefined
+      ? null
+      : {
+          box: rectOf(railEl),
+          list: span === null ? null : { top: span.top, bottom: span.bottom },
+          items: [...railEl.querySelectorAll<HTMLElement>("[data-rail-drop]")].flatMap((el): DockRailItem[] => {
+            const item = el.dataset["railDrop"];
+            if (item !== "home" && item !== "new" && item !== "space") return [];
+            return [{ item, groupId: el.dataset["groupId"] ?? null, color: el.dataset["groupColor"] ?? null, box: rectOf(el), listed: listEl?.contains(el) === true }];
+          }),
+        };
+  const cardEl = slot.querySelector<HTMLElement>("[data-testid='space-card']");
+  // (The view going is a picture without ids: the space view found is the card's live one.)
+  const viewEl = cardEl?.querySelector<HTMLElement>("[data-testid='space-view']") ?? null;
+  const rowsEl = cardEl?.querySelector<HTMLElement>("[data-testid='sidebar-tab-list']") ?? null;
+  const card: DockTargets["card"] =
+    cardEl === null || cardEl === undefined
+      ? null
+      : { box: rectOf(cardEl), groupId: cardEl.dataset["view"] === "space" ? (viewEl?.dataset["groupId"] ?? null) : null, list: rowsEl === null ? null : rectOf(rowsEl) };
+  const snapshot = useAppStore.getState().snapshot;
+  return { rail, card, homeSpace: groupId !== null && isHomeSpace(groupId, snapshot), spacesFull: !roomForSpace(snapshot) };
+}
+
+/** The rail item (a space's tile: `groupId`'s) or the card a window carried over the column went into. */
+function dockItemOf(item: DockItem, groupId: string | null): HTMLElement | null {
+  const pane = document.querySelector<HTMLElement>("[data-testid='sidebar-pane']");
+  if (pane === null) return null;
+  if (item === "home") return pane.querySelector<HTMLElement>("[data-testid='rail-home']");
+  if (item === "new") return pane.querySelector<HTMLElement>("[data-testid='rail-new-space']");
+  if (item === "card") return pane.querySelector<HTMLElement>("[data-testid='space-card']");
+  return groupId === null ? null : pane.querySelector<HTMLElement>(`[data-testid='rail-space'][data-group-id='${CSS.escape(groupId)}']`);
 }
 
 /**
@@ -220,6 +311,10 @@ export default function DeskSurface() {
     if (!started || stage === null || startGroup === null) return;
     const created = new DeskEngine({
       variants: (): DeskVariants => latest.current.variants,
+      spaceSwitch: () => {
+        const { spaceExit, spaceArrival } = useAppStore.getState().settings.layout;
+        return { exit: spaceExit, arrival: spaceArrival };
+      },
       hasLivePage: (tabId) => {
         // A document is the shell's own, drawn always.
         if (!isTabWindow(tabId)) return false;
@@ -248,20 +343,27 @@ export default function DeskSurface() {
       save: (windows, reserve) => {
         if (shownGroup.current !== null) useDeskStore.getState().save(shownGroup.current, reserve > 0 ? { windows, reserve } : { windows });
       },
-      moveTabToGroup: (tabId, groupId, next) => {
-        void (async () => {
-          const store = useAppStore.getState();
-          // The desk never stands on a tab that is not its group's: another
-          // of them is in use first — the window left on top, or with none,
-          // the tab used last, which comes out.
-          if (store.snapshot?.activeTabId === tabId) {
-            const others = latest.current.tabs.filter((tab) => tab.id !== tabId);
-            const other = next ?? [...others].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id ?? null;
-            if (other !== null) await store.selectTab(other);
-          }
-          await store.tabGroupCommand({ type: "addTab", groupId, tabId });
-        })();
-      },
+      // (A favorite's or pin's page is no day tab for main's addTab or create: it is brought down, its entry kept linked
+      // to it — @pistachio/shell-contracts/sidebar's bringDown.)
+      moveTabToGroup: (tabId, groupId, next) =>
+        sendOut(tabId, next, (store, anchorId) =>
+          anchorId !== null ? store.sidebarCommand({ type: "bringDown", anchorId, groupId }) : store.tabGroupCommand({ type: "addTab", groupId, tabId }),
+        ),
+      // A window let go on Home on the rail: a Home tab of its own (main's removeTab); on New space, a space of its own,
+      // not chosen (main's create, as a row let go there makes one: chrome/shelf-drag.tsx) — the desk stays where it is.
+      // (A favorite's or pin's page is Home's already: its window collapses on Home instead, homeOwns.)
+      toHome: (tabId, next) => sendOut(tabId, next, (store, anchorId) => (anchorId !== null ? Promise.resolve() : store.tabGroupCommand({ type: "removeTab", tabId }))),
+      // (Not offered with the Profile full — dockTargetsOf's spacesFull — but main has the last word, and a refusal brings
+      // the window back.)
+      toNewSpace: (tabId, next) =>
+        sendOut(tabId, next, (store, anchorId) =>
+          anchorId !== null
+            ? store.sidebarCommand({ type: "bringDown", anchorId, newGroupId: crypto.randomUUID() })
+            : store.tabGroupCommand({ type: "create", id: crypto.randomUUID(), tabIds: [tabId] }),
+        ),
+      homeOwns: (tabId) => (useAppStore.getState().snapshot?.tabs.find((tab) => tab.id === tabId)?.anchorId ?? null) !== null,
+      dockTargets: () => dockTargetsOf(shownGroup.current),
+      dockItem: (item, gid) => dockItemOf(item, gid),
       sidebar: () => {
         const slot = document.querySelector<HTMLElement>("[data-testid='sidebar-motion-slot']");
         if (slot === null) return null;
@@ -402,7 +504,7 @@ export default function DeskSurface() {
         if (tab !== undefined) windowWords.current.set(id, { title: tab.title, site: displayHost(tab.url), kind: "page" });
         return windowWords.current.get(id) ?? (isTabWindow(id) ? null : { title: fileItemOf(id) ?? "", site: "", kind: "document" });
       },
-      notify: (message, undo) => useAppStore.getState().showNotice(message, undo === null ? {} : { action: { label: "Undo", run: undo } }),
+      notify: (message) => useAppStore.getState().showNotice(message),
       later: (run, ms) => {
         const timer = window.setTimeout(run, ms);
         return () => window.clearTimeout(timer);
@@ -413,6 +515,8 @@ export default function DeskSurface() {
     // says so; struck here it is heard here — unless a terminal has the keyboard, whose ⌃Z stops the job in front.
     const offPage = api?.onDeskPageInput((input) => {
       if (input === "undo") created.undo();
+      // Tab, ⇧Tab, from a page with a layout looked at with the pointer (DeskState.cycleKey): its windows go round its places.
+      else if (input === "cycle" || input === "cycleBack") engine.cycleLayout(input === "cycle" ? 1 : -1);
     });
     const onKey = (event: KeyboardEvent): void => {
       if (!isDeskUndoKey({ type: "keyDown", key: event.key, shift: event.shiftKey, control: event.ctrlKey, alt: event.altKey, meta: event.metaKey })) return;
@@ -540,6 +644,11 @@ export default function DeskSurface() {
     () => engine?.getView() ?? null,
   );
 
+  // A window carried over the column: the rail item or the card it would go into lights (lib/desk/chrome.ts's dockDrop).
+  const dockDrop = view?.dockDrop ?? null;
+  useEffect(() => {
+    useDeskChrome.getState().setDockDrop(dockDrop);
+  }, [dockDrop]);
   // The sidebar marks the tabs whose windows are out on the desk, and the one in use (lib/desk/chrome.ts).
   useEffect(() => {
     const marks = new Map<string, DeskMark>();
@@ -585,6 +694,7 @@ export default function DeskSurface() {
       chrome.closeCard();
       chrome.setHovered(null);
       chrome.setAgentTab(null);
+      chrome.setDockDrop(null);
     },
     [],
   );

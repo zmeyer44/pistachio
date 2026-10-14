@@ -187,6 +187,23 @@ export function layoutRects(kind: DeskLayoutKind, windows: ReadonlyMap<string, R
 }
 
 /**
+ * A layout with its windows moved round its places `turn` times (Tab on a
+ * layout looked at in the space view, since 2026-10-14): the places in
+ * reading order — top to bottom, left to right, so a cascade's run back to
+ * front — and each window in the place `turn` after its own, the last
+ * coming round to the first; a negative turn goes the other way. Two
+ * windows trade places at each turn; Main and side gives each in turn the
+ * main place. The order of the entries is the places' (a cascade's stacking).
+ */
+export function cycledLayout(layout: ReadonlyMap<string, Rect>, turn: number): Map<string, Rect> {
+  const places = [...layout].sort(([, a], [, b]) => a.y - b.y || a.x - b.x);
+  const count = places.length;
+  const shift = count === 0 ? 0 : ((Math.trunc(turn) % count) + count) % count;
+  if (shift === 0) return new Map(places);
+  return new Map(places.map(([, rect], index) => [places[(index - shift + count) % count]![0], rect]));
+}
+
+/**
  * Whether the windows' boxes are the places of `kind`: as sets — any window
  * in any place (Main and side's main place is whichever window holds it) —
  * each within `slack` px.

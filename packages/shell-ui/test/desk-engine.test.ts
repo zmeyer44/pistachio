@@ -23,7 +23,8 @@ import type { DragSample } from "@pistachio/shell-contracts/chrome";
 import { isDeskState, MAX_DESK_WINDOWS, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { DeskEngine, takesOnInPlace, type DeskHost, MASK_INSETS, WINDOW_INSETS } from "../src/components/desk/desk-engine";
+import { DeskEngine, takesOnInPlace, type DeskHost, type DeskLayoutMoment, MASK_INSETS, WINDOW_INSETS } from "../src/components/desk/desk-engine";
+import type { DockTargets } from "../src/lib/desk/dock-drop";
 import { carrySize, centeredRect, denormalizeRect, DESK_GAP, normalizeRect, rescaleRect, tileRects, windowSize, zoneRect, type Point, type Rect } from "../src/lib/desk/geometry";
 import { DEFAULT_DESK_VARIANTS, type SavedDeskWindow } from "../src/lib/desk/store";
 
@@ -93,6 +94,7 @@ const SIDEBAR: Rect = { x: -48, y: 0, w: 48, h: 1000 };
 function engine(host: Partial<DeskHost> = {}, stage = { left: 0, top: 0, width: 1600, height: 1000 }): DeskEngine {
   const created = new DeskEngine({
     variants: () => VARIANTS,
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: () => false,
     select: () => undefined,
     close: () => undefined,
@@ -973,7 +975,7 @@ describe("a window in hand", () => {
     desk.destroy();
   });
 
-  it("treats the leading edge as the right one: carried to it, or on out over the sidebar, a window lands in the left half, its tab kept", () => {
+  it("treats the leading edge as the right one: carried to it, or on out over the sidebar where nothing takes it, a window lands in the left half, its tab kept", () => {
     const close = vi.fn();
     const { desk, win, move, release } = open({ close });
     for (const [x, zone] of [
@@ -1211,6 +1213,300 @@ describe("the sidebar, the desk's dock", () => {
     for (let step = 1; step <= 6; step += 1) move(600 - step * 60, 300);
     release();
     expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+});
+
+/* ------------------- carried over the sidebar's column ------------------- */
+
+describe("a window carried over the sidebar's column (lib/desk/dock-drop.ts)", () => {
+  let restoreNow: () => void = () => undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+  });
+  afterEach(() => restoreNow());
+
+  /** The stage, 288px into the window: the column beside it (the 56px rail, the 224px card, the 8px gap). */
+  const STAGE = { left: 288, top: 0, width: 1312, height: 1000 };
+  /** The column as the host measures it, in the window's coordinates: Home, the desk's own space's tile, another's, New space; the card showing `shows`. */
+  const targets = (shows: string | null): DockTargets => ({
+    rail: {
+      box: { x: 0, y: 0, w: 56, h: 1000 },
+      list: { top: 110, bottom: 800 },
+      items: [
+        { item: "home", groupId: null, color: null, box: { x: 9, y: 62, w: 38, h: 38 }, listed: false },
+        { item: "space", groupId: "own", color: "blue", box: { x: 9, y: 115, w: 38, h: 38 }, listed: true },
+        { item: "space", groupId: "other", color: "green", box: { x: 9, y: 163, w: 38, h: 38 }, listed: true },
+        { item: "new", groupId: null, color: null, box: { x: 10, y: 900, w: 36, h: 36 }, listed: false },
+      ],
+    },
+    card: { box: { x: 56, y: 8, w: 224, h: 984 }, groupId: shows, list: { x: 56, y: 140, w: 224, h: 700 } },
+    homeSpace: false,
+  });
+  /** A tab's row in the card's list (or the Stack's row): its whole box is what a window dropped as a row slips into. */
+  const row = (top: number, role: "tab" | "stack" = "tab") => ({
+    isConnected: true,
+    dataset: {} as Record<string, string>,
+    getAttribute: (name: string) => (name === "role" && role === "tab" ? "tab" : name === "data-testid" && role === "stack" ? "desk-stack" : null),
+    getBoundingClientRect: () => ({ left: 64, top, width: 208, height: 32 }),
+  });
+
+  /** The desk of the space "own", its tabs' windows `out` (tab 0 alone unless said), the last one in use. */
+  function column(options: { tabs?: number; out?: number; shows?: string | null; host?: Partial<DeskHost> } = {}) {
+    const { drag } = native();
+    const count = options.tabs ?? 2;
+    const rows = new Map(tabIds(count).map((tabId, index) => [tabId, row(200 + index * 34)]));
+    const stack = row(940, "stack");
+    const items = new Map<string, { isConnected: boolean; dataset: Record<string, string> }>();
+    const host = { moveTabToGroup: vi.fn(), toHome: vi.fn(), toNewSpace: vi.fn(), close: vi.fn(), select: vi.fn() };
+    const desk = engine(
+      {
+        ...host,
+        homeOf: (kind, id) => ((kind === "tab" ? rows.get(id) : kind === "file" ? stack : undefined) as unknown as HTMLElement | undefined) ?? null,
+        dockTargets: () => targets(options.shows === undefined ? "own" : options.shows),
+        dockItem: (item, groupId) => {
+          const key = `${item}:${groupId ?? ""}`;
+          if (!items.has(key)) items.set(key, { isConnected: true, dataset: {} });
+          return items.get(key) as unknown as HTMLElement;
+        },
+        ...options.host,
+      },
+      STAGE,
+    );
+    const out = tabIds(options.out ?? 1);
+    const saved = out.map((tabId, index) => ({ tabId, rect: { x: 0.1 + index * 0.3, y: 0.1, w: 0.4, h: 0.6 } }));
+    desk.start(saved, out.at(-1)!, tabIds(count), null, "own");
+    const wins = new Map(out.map((tabId) => [tabId, element()]));
+    for (const [tabId, win] of wins) desk.attachWindow(tabId, win as unknown as HTMLElement);
+    settle();
+    const move = (x: number, y: number, shift?: boolean): void => {
+      drag.sample?.({ x, y, phase: "move", ...(shift === undefined ? {} : { shift }) });
+      run(1);
+    };
+    const release = (): void => {
+      drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+      settle();
+    };
+    /** Take a window 200px along its top, and carry it (in the window's coordinates) to `to`, staying a while there. */
+    const carry = (tabId: string, to: Point, shift?: boolean): Point => {
+      const start = rectOf(wins.get(tabId)!);
+      const at = { x: STAGE.left + start.x + 200, y: start.y + 10 };
+      desk.grab(tabId, at, shift);
+      for (let step = 1; step <= 10; step += 1) move(at.x + ((to.x - at.x) * step) / 10, at.y + ((to.y - at.y) * step) / 10, shift);
+      for (let frame = 0; frame < 40; frame += 1) move(to.x, to.y, shift);
+      return at;
+    };
+    const view = (tabId: string) => desk.getView().windows.find((window) => window.tabId === tabId)!;
+    return { desk, wins, rows, stack, items, host, drag, move, release, carry, view };
+  }
+
+  it("becomes one of the card's rows over the card showing its space, and let go there goes into its own row", () => {
+    const { desk, wins, rows, host, carry, release, view } = column();
+    const moments: DeskLayoutMoment[] = [];
+    desk.onLayoutMoment((moment) => moments.push(moment));
+    const before = rectOf(wins.get("tab-0")!);
+    carry("tab-0", { x: 150, y: 400 });
+    expect(desk.getView().dockDrop).toEqual({ kind: "collapse", item: "card", groupId: "own" });
+    expect(view("tab-0").dock).toEqual({ shape: "row", color: null });
+    expect(view("tab-0").drawn).toBe(true);
+    // The card's list's rows: 8px in from either side, a row's height, its middle at the pointer.
+    expectRect(rectOf(wins.get("tab-0")!), { x: 56 + 8 - STAGE.left, y: 400 - 16, w: 224 - 16, h: 32 });
+    release();
+    expect(desk.windowTabIds()).toEqual([]);
+    expect(rows.get("tab-0")!.dataset["received"]).toBe("");
+    expect(host.moveTabToGroup).not.toHaveBeenCalled();
+    expect(host.close).not.toHaveBeenCalled();
+    // The place it was taken from is the one it leaves.
+    expect(moments).toHaveLength(1);
+    const moment = moments[0]!;
+    expect(moment.trigger === "closed" ? moment.gone.map((gone) => [gone.id, gone.how]) : null).toEqual([["tab-0", "collapsed"]]);
+    if (moment.trigger === "closed") expectRect(moment.gone[0]!.rect, before);
+    desk.destroy();
+  });
+
+  it("takes nothing over the card while it shows another view: the desk's leading edge has it", () => {
+    const { desk, host, carry, release, view } = column({ shows: null });
+    carry("tab-0", { x: 150, y: 400 });
+    expect(desk.getView().dockDrop).toBeNull();
+    expect(view("tab-0").dock).toBeNull();
+    release();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    expect(host.moveTabToGroup).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  it("becomes a tile of another space's colour over its tile, and let go there its tab goes to that space, the window into the tile", () => {
+    const { desk, wins, items, host, carry, release, view } = column();
+    carry("tab-0", { x: 28, y: 182 });
+    expect(desk.getView().dockDrop).toEqual({ kind: "space", item: "space", groupId: "other" });
+    expect(view("tab-0").dock).toEqual({ shape: "tile", color: "green" });
+    expectRect(rectOf(wins.get("tab-0")!), { x: 28 - 19 - STAGE.left, y: 182 - 19, w: 38, h: 38 });
+    release();
+    expect(host.moveTabToGroup).toHaveBeenCalledWith("tab-0", "other", null);
+    expect(desk.windowTabIds()).toEqual([]);
+    // It slipped into the tile itself, which bounced as it took it.
+    expectRect(rectOf(wins.get("tab-0")!), { x: 9 - STAGE.left, y: 163, w: 38, h: 38 });
+    expect(items.get("space:other")!.dataset["received"]).toBe("");
+    desk.destroy();
+  });
+
+  it("makes a space of its tab alone on New space, and a Home tab on Home — the window left on top taking over", () => {
+    const { desk, host, carry, release } = column({ tabs: 3, out: 2 });
+    // tab-1 is in use, on top: let go on New space, tab-0 takes over.
+    carry("tab-1", { x: 28, y: 918 });
+    expect(desk.getView().dockDrop).toEqual({ kind: "new", item: "new", groupId: null });
+    release();
+    expect(host.toNewSpace).toHaveBeenCalledWith("tab-1", "tab-0");
+    expect(host.select).toHaveBeenLastCalledWith("tab-0");
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    expect(desk.focusedTabId()).toBe("tab-0");
+    carry("tab-0", { x: 28, y: 80 });
+    expect(desk.getView().dockDrop).toEqual({ kind: "home", item: "home", groupId: null });
+    release();
+    expect(host.toHome).toHaveBeenCalledWith("tab-0", null);
+    expect(desk.windowTabIds()).toEqual([]);
+    expect(host.moveTabToGroup).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  // (Until 2026-10-14 it went all the same: the window was gone while its tab stayed in the space's list.)
+  it("comes back where it was taken from, in use, when main keeps its tab — its answer in after the window went into New space", async () => {
+    let answer: (moved: boolean) => void = () => undefined;
+    const toNewSpace = vi.fn(() => new Promise<boolean>((resolve) => (answer = resolve)));
+    const { desk, wins, host, carry, release } = column({ tabs: 3, out: 2, host: { toNewSpace } });
+    const before = rectOf(wins.get("tab-1")!);
+    carry("tab-1", { x: 28, y: 918 });
+    release();
+    expect(toNewSpace).toHaveBeenCalledWith("tab-1", "tab-0");
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    // No room for another space: main kept the tab, and its window comes out of its row again.
+    answer(false);
+    await Promise.resolve();
+    desk.attachWindow("tab-1", wins.get("tab-1") as unknown as HTMLElement);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["tab-0", "tab-1"]);
+    expect(desk.focusedTabId()).toBe("tab-1");
+    expect(host.select).toHaveBeenLastCalledWith("tab-1");
+    expectRect(rectOf(wins.get("tab-1")!), before);
+    desk.destroy();
+  });
+
+  it("turns round on its way into the tile when main keeps its tab, and goes into it when main moved it", async () => {
+    const moveTabToGroup = vi.fn((tabId: string) => Promise.resolve(tabId !== "tab-1"));
+    const { desk, wins, drag, carry } = column({ tabs: 3, out: 2, host: { moveTabToGroup } });
+    const before = rectOf(wins.get("tab-1")!);
+    // Let go at the tile's corner: it has a way to fly into the tile.
+    carry("tab-1", { x: 44, y: 198 });
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    run(1);
+    expect(moveTabToGroup).toHaveBeenCalledWith("tab-1", "other", "tab-0");
+    expect(desk.getView().windows.find((window) => window.tabId === "tab-1")?.flight).toBe("away");
+    await Promise.resolve();
+    settle();
+    expect(desk.windowTabIds()).toEqual(["tab-0", "tab-1"]);
+    expect(desk.focusedTabId()).toBe("tab-1");
+    expectRect(rectOf(wins.get("tab-1")!), before);
+    // Moved, it goes into the tile as ever.
+    carry("tab-0", { x: 44, y: 198 });
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    run(1);
+    await Promise.resolve();
+    settle();
+    expect(desk.windowTabIds()).toEqual(["tab-1"]);
+    desk.destroy();
+  });
+
+  it("is put away on its own space's tile, into the tile", () => {
+    const { desk, items, host, carry, release, view } = column();
+    carry("tab-0", { x: 28, y: 134 });
+    expect(desk.getView().dockDrop).toEqual({ kind: "collapse", item: "space", groupId: "own" });
+    expect(view("tab-0").dock).toEqual({ shape: "tile", color: "blue" });
+    release();
+    expect(desk.windowTabIds()).toEqual([]);
+    expect(items.get("space:own")!.dataset["received"]).toBe("");
+    expect(host.moveTabToGroup).not.toHaveBeenCalled();
+    expect(host.toHome).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  it("is put away on Home, its own tile, when its tab is Home's already (a favorite's or pin's page)", () => {
+    const { desk, items, host, carry, release } = column({ host: { homeOwns: (tabId) => tabId === "tab-0" } });
+    carry("tab-0", { x: 28, y: 80 });
+    expect(desk.getView().dockDrop).toEqual({ kind: "collapse", item: "home", groupId: null });
+    release();
+    expect(desk.windowTabIds()).toEqual([]);
+    expect(items.get("home:")!.dataset["received"]).toBe("");
+    expect(host.toHome).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  it("grows back into the window in hand over the desk, held where it was taken, and lands as any window", () => {
+    const { desk, wins, host, carry, move, release, view } = column();
+    const before = rectOf(wins.get("tab-0")!);
+    carry("tab-0", { x: 150, y: 400 });
+    expect(view("tab-0").dock).not.toBeNull();
+    for (let frame = 0; frame < 40; frame += 1) move(900, 300);
+    expect(desk.getView().dockDrop).toBeNull();
+    expect(view("tab-0").dock).toBeNull();
+    // Its own size, 200px along it and 10px down still under the pointer.
+    expectRect(rectOf(wins.get("tab-0")!), { x: 900 - STAGE.left - 200, y: 300 - 10, w: before.w, h: before.h });
+    release();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    expect(host.moveTabToGroup).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  it("stays a tile between the rail's items, nothing there lit but the desk's leading half, where a release lands it", () => {
+    const { desk, wins, host, carry, release, view } = column();
+    carry("tab-0", { x: 28, y: 500 });
+    expect(desk.getView().dockDrop).toBeNull();
+    expect(view("tab-0").dock).toEqual({ shape: "tile", color: null });
+    expect(view("tab-0").aiming).toBe(true);
+    release();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    expect(view("tab-0").dock).toBeNull();
+    expectRect(rectOf(wins.get("tab-0")!), zoneRect("left", { x: 0, y: 0, w: STAGE.width, h: STAGE.height }));
+    expect(host.moveTabToGroup).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  it("is never a drop while Shift snaps: the desk's tile has it", () => {
+    const { desk, host, carry, release, view } = column();
+    carry("tab-0", { x: 28, y: 182 }, true);
+    expect(desk.getView().dockDrop).toBeNull();
+    expect(view("tab-0").dock).toBeNull();
+    expect(desk.getView().snapping).toBe(true);
+    release();
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    expect(host.moveTabToGroup).not.toHaveBeenCalled();
+    desk.destroy();
+  });
+
+  it("takes a document's window only over the card, into the Stack", () => {
+    const { drag } = native();
+    const stack = row(940, "stack");
+    const moveTabToGroup = vi.fn();
+    const desk = engine({ moveTabToGroup, homeOf: (kind) => (kind === "file" ? (stack as unknown as HTMLElement) : null), dockTargets: () => targets("own") }, STAGE);
+    desk.start([{ tabId: "file:a", rect: { x: 0.2, y: 0.1, w: 0.4, h: 0.6 } }], null, [], ["file:a"], "own");
+    const win = element();
+    desk.attachWindow("file:a", win as unknown as HTMLElement);
+    settle();
+    const move = (x: number, y: number): void => {
+      drag.sample?.({ x, y, phase: "move" });
+      run(1);
+    };
+    const start = rectOf(win);
+    desk.grab("file:a", { x: STAGE.left + start.x + 200, y: start.y + 10 });
+    for (let frame = 0; frame < 20; frame += 1) move(28, 182);
+    expect(desk.getView().dockDrop).toBeNull();
+    for (let frame = 0; frame < 20; frame += 1) move(150, 500);
+    expect(desk.getView().dockDrop).toEqual({ kind: "collapse", item: "card", groupId: "own" });
+    drag.sample?.({ x: 0, y: 0, phase: "cancel" });
+    settle();
+    expect(desk.windowTabIds()).toEqual([]);
+    expect(stack.dataset["received"]).toBe("");
+    expect(moveTabToGroup).not.toHaveBeenCalled();
     desk.destroy();
   });
 });
@@ -1924,7 +2220,11 @@ describe("passing the desk to another group", () => {
   it("moves a space's only tab to a space never on the desk: its window turns round, in use, rather than flying on into the row", () => {
     native();
     const moved: Array<[string, string, string | null]> = [];
-    const desk = engine({ moveTabToGroup: (tabId, groupId, next) => moved.push([tabId, groupId, next]) });
+    const desk = engine({
+      moveTabToGroup: (tabId, groupId, next) => {
+        moved.push([tabId, groupId, next]);
+      },
+    });
     desk.start([], "t", ["t"], null, "A");
     const win = element();
     desk.attachWindow("t", win as unknown as HTMLElement);
@@ -2021,6 +2321,131 @@ describe("passing the desk to another group", () => {
     settle();
     expect([...desk.windowTabIds()].sort()).toEqual(["tab-0", "tab-1"]);
     expectRect(rectOf(other), left);
+    desk.destroy();
+  });
+});
+
+describe("passing the desk to another space, its windows dismissed where they stand (Settings → Switching spaces)", () => {
+  // (The poses run on the engine's clock: the frames'.)
+  let restoreNow: () => void = () => undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+  });
+  afterEach(() => restoreNow());
+
+  const box = (x: number): Rect => ({ x, y: 0.1, w: 0.3, h: 0.5 });
+  const scaleOf = (el: ReturnType<typeof element>): number => Number(/scale\(([\d.]+)\)/.exec(el.style["transform"] ?? "")?.[1] ?? 1);
+
+  /** Space A's one window out, its element attached; then the desk passes to B, whose one window has its element too. */
+  function passing(exit: "bloom" | "recede", arrival: "matched" | "tile" = "matched") {
+    native();
+    const desk = engine({ spaceSwitch: () => ({ exit, arrival }) });
+    desk.start([{ tabId: "a-0", rect: box(0.1) }], "a-0", ["a-0"], null, "A");
+    const going = element();
+    desk.attachWindow("a-0", going as unknown as HTMLElement);
+    settle();
+    const left = rectOf(going);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [{ tabId: "b-0", rect: box(0.55) }], entry: "b-0" });
+    const coming = element();
+    desk.attachWindow("b-0", coming as unknown as HTMLElement);
+    return { desk, going, coming, left };
+  }
+
+  it("Bloom: the windows left swell and blur away where they stand; the chosen space's sharpen in at their places once they have set out", () => {
+    const { desk, going, coming, left } = passing("bloom");
+    // Coming in, it waits unseen until the windows before it set out (their stills are up at once here: no live pages).
+    expect(coming.style["opacity"]).toBe("0.000");
+    expect(coming.dataset["switching"]).toBe("");
+    step(6);
+    // A hundred-odd ms into its 260: swelling about its own centre, thinning, blurring — not moving toward any row.
+    expect(scaleOf(going)).toBeGreaterThan(1);
+    expect(Number(going.style["opacity"])).toBeGreaterThan(0);
+    expect(Number(going.style["opacity"])).toBeLessThan(1);
+    expect(going.style["filter"]).toMatch(/^blur\(/);
+    expect(going.style["transformOrigin"]).toBe(`${(left.w / 2).toFixed(0)}px ${(left.h / 2).toFixed(0)}px`);
+    expectRect(rectOf(going), left);
+    expect(desk.isStaying("a-0")).toBe(false);
+    // 90ms after the exit set out, the entrance has begun.
+    expect(Number(coming.style["opacity"])).toBeGreaterThan(0);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-0"]);
+    expect(desk.getView().windows.find((window) => window.tabId === "b-0")?.flight).toBeNull();
+    // At rest: its pose is gone, and the stylesheet's own opacity and filter are its again.
+    expect(coming.style["opacity"]).toBeUndefined();
+    expect(coming.style["filter"]).toBeUndefined();
+    expect(coming.dataset["switching"]).toBeUndefined();
+    expect(scaleOf(coming)).toBe(1);
+    desk.destroy();
+  });
+
+  it("Recede: the desk steps back as one sheet, every window about the desk's centre", () => {
+    const { desk, going, left } = passing("recede");
+    step(4);
+    expect(scaleOf(going)).toBeLessThan(1);
+    expect(going.style["transformOrigin"]).toBe(`${(800 - left.x).toFixed(0)}px ${(500 - left.y).toFixed(0)}px`);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-0"]);
+    desk.destroy();
+  });
+
+  it("Out of its icon: with a posed exit, the chosen space's windows still come out of its icon", () => {
+    const { desk, coming } = passing("bloom", "tile");
+    step(2);
+    expect(desk.getView().windows.find((window) => window.tabId === "b-0")?.flight).toBe("in");
+    expect(coming.dataset["switching"]).toBeUndefined();
+    expect(scaleOf(coming)).toBeLessThan(1);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-0"]);
+    desk.destroy();
+  });
+
+  it("an entrance under way when the desk changes size lands in the desk as it is now", () => {
+    native();
+    const stage = { left: 0, top: 0, width: 1600, height: 1000 };
+    const desk = engine({ spaceSwitch: () => ({ exit: "bloom", arrival: "matched" }) }, stage);
+    desk.start([{ tabId: "a-0", rect: box(0.1) }], "a-0", ["a-0"], null, "A");
+    desk.attachWindow("a-0", element() as unknown as HTMLElement);
+    settle();
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [{ tabId: "b-0", rect: box(0.55) }], entry: "b-0" });
+    const coming = element();
+    desk.attachWindow("b-0", coming as unknown as HTMLElement);
+    step(4);
+    // ⌘S, or the window made narrower, while it comes in: the desk is half as wide.
+    stage.width = 800;
+    desk.measure();
+    settle();
+    // Rescaled with the desk as one at rest is (down to the least width a window has), inside it — not 480px wide at x 880.
+    const landed = rectOf(coming);
+    expect(landed.x + landed.w).toBeLessThanOrEqual(800);
+    expect(landed.w).toBeLessThan(0.3 * 1600);
+    desk.destroy();
+  });
+
+  it("choosing the space left again before its windows are gone brings them back from the pose they had got to, and they stay", () => {
+    const saves: SavedDeskWindow[][] = [];
+    native();
+    const desk = engine({ spaceSwitch: () => ({ exit: "bloom", arrival: "matched" }), save: (windows) => saves.push(windows) });
+    desk.start([{ tabId: "a-0", rect: box(0.1) }], "a-0", ["a-0"], null, "A");
+    const going = element();
+    desk.attachWindow("a-0", going as unknown as HTMLElement);
+    settle();
+    const left = rectOf(going);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [], entry: "b-0" });
+    const leftA = saves.at(-1)!;
+    step(6);
+    const faded = Number(going.style["opacity"]);
+    expect(faded).toBeLessThan(1);
+    desk.switchGroup({ from: "B", groupId: "A", tabIds: ["a-0"], saved: leftA, entry: "a-0" });
+    step(1);
+    // From where it had got to, not from the start of anything.
+    expect(Math.abs(Number(going.style["opacity"]) - faded)).toBeLessThan(0.25);
+    settle();
+    expect(desk.windowTabIds()).toEqual(["a-0"]);
+    expect(desk.isStaying("a-0")).toBe(true);
+    expect(going.style["opacity"]).toBeUndefined();
+    expect(scaleOf(going)).toBe(1);
+    expectRect(rectOf(going), left);
     desk.destroy();
   });
 });
@@ -2297,6 +2722,7 @@ describe("a cold start (the shell's boot, a reload, a Profile switch: docs/space
     const box = { left: 0, top: 0, width: 1600, height: 1000 };
     const desk = new DeskEngine({
       variants: () => VARIANTS,
+      spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
       hasLivePage: () => false,
       select: () => undefined,
       close: () => undefined,

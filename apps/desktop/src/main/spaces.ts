@@ -26,7 +26,8 @@ import {
   type DayRowUnit,
   type TabGroupInfo,
 } from "@pistachio/shell-contracts/tab-groups";
-import type { DurableSpaceSession } from "@pistachio/shell-contracts/tab-session";
+import type { BringDownPlace } from "@pistachio/shell-contracts/sidebar-controller";
+import type { DurableSpaceSession, DurableTab } from "@pistachio/shell-contracts/tab-session";
 
 /* ------------------------------ saved splits ----------------------------- */
 
@@ -437,6 +438,74 @@ export function overCapEmptySpaces(
   return going;
 }
 
+/**
+ * The drawn spaces (tab groups) a favorite's or pin's page brought down adds
+ * to its Profile (BrowserController.bringDownPage; docs/spaces.md §1, "A
+ * favorite in a space") — ALL of which MAX_TAB_GROUPS_PER_SPACE must have
+ * room for before anything changes, or the bring-down is refused whole.
+ * `place` is where it goes, once a drop on its own page's space is read as
+ * where it stands; `led`, how many tabs its page's space holds, the page
+ * among them, when the page leads one (null: it leads none — linked into a
+ * space, or a closed entry's fresh page).
+ *
+ * - Into a space (`groupId`): none — its page's space, emptied into it, goes.
+ * - Into a new space (`newGroupId`): that space; and its page's space, left
+ *   with two tabs or more as its page goes, lets go of its page and is drawn
+ *   from then on — one more (left with one, that tab's loose space; with
+ *   none, gone). (Until 2026-10-14 only the new space was counted: with one
+ *   slot left the new space took it, and the page's space, finding no room
+ *   as it let go of its page, fell apart into Home tabs — its Stack and its
+ *   conversation left under an id nothing opens.)
+ * - Among the day's tabs, or where it stands (`index`, null): its page's
+ *   space with tabs beside it stays a space, drawn as it lets go of its
+ *   page — one; else none.
+ */
+export function drawnSpacesBroughtDown(place: BringDownPlace, led: number | null): number {
+  const stays = (left: number): number => (led !== null && left > 1 ? 1 : 0);
+  if (place !== null && "groupId" in place) return 0;
+  if (place !== null && "newGroupId" in place) return 1 + stays((led ?? 0) - 1);
+  return stays(led ?? 0);
+}
+
+/* ------------------------- a restore point merged in ------------------------- */
+
+/**
+ * The tabs a restore point brings into a Profile it is merged into
+ * (BrowserController.applyDurableSession's "merge"), each one's claim on an
+ * entry — a favorite or a pin — settled: one page per entry, anchored or
+ * linked, always. An incoming tab keeps its anchor (`anchorId`) or its link
+ * (`linkedAnchorId`) only for an entry no page here holds (`held`: the
+ * Profile's own pages, anchored or linked) and no incoming tab before it
+ * claims — anchors first, as sanitizeTabSession reads one file. One that
+ * loses its claim comes in as a plain tab: anchored, a Home tab (its page's
+ * space letting go of it, as the reconcile does for any page that lets go of
+ * its entry); linked, a tab of its space.
+ *
+ * (Until 2026-10-14 only incoming links were checked: an incoming anchored
+ * page of an entry linked here — at another address, so no duplicate by its
+ * URL — came in anchored, and the entry had two pages: choosing it went to
+ * the one, and closing that brought the other back.)
+ */
+export function claimIncomingEntries<T extends Pick<DurableTab, "anchorId" | "linkedAnchorId">>(incoming: readonly T[], held: Iterable<string>): T[] {
+  const claimed = new Set(held);
+  const anchored = incoming.map((tab): T => {
+    if (tab.anchorId === null) return tab;
+    if (claimed.has(tab.anchorId)) return { ...tab, anchorId: null };
+    claimed.add(tab.anchorId);
+    return tab;
+  });
+  return anchored.map((tab): T => {
+    if (tab.linkedAnchorId === undefined) return tab;
+    // (Never beside an anchor: a tab's own page is its entry's already.)
+    if (tab.anchorId === null && !claimed.has(tab.linkedAnchorId)) {
+      claimed.add(tab.linkedAnchorId);
+      return tab;
+    }
+    const { linkedAnchorId: _linkedAnchorId, ...plain } = tab;
+    return plain as T;
+  });
+}
+
 /* ------------------------------ what is theirs ---------------------------- */
 
 /**
@@ -461,4 +530,49 @@ export function spaceHolds(stores: {
       conversation: runId !== null && stores.threads?.has(runId) === true,
     };
   };
+}
+
+/**
+ * What a space (tab group) going into another holds of the person's, moved
+ * with its tabs (docs/spaces.md §1, "Merging spaces"; since 2026-10-14;
+ * BrowserControllerHooks.moveGroupHoldings — a merge, or a page's space
+ * brought whole into another):
+ *
+ * - its Stack's items move to the other's (`contexts.moveAll`, all or
+ *   nothing: it throws, nothing moved, when the other's could not take them
+ *   — and then nothing else moves either, so main changes nothing);
+ * - its conversation goes with it only when the other has none of its own
+ *   (a binding whose thread is kept: one pruned is none, as spaceHolds
+ *   reads it) — the other's own conversation stays its own, and the one
+ *   going is still in the list of conversations, simply bound to no space;
+ * - its own binding is let go of either way: no space is left to open it.
+ *
+ * Called before main moves the tabs, so the agent's session, following the
+ * space in front, finds the conversation already where it is going. True
+ * when the other space's conversation changed — the one going is its own
+ * now — which the session must hear when that space is the one in front
+ * (RunController.groupConversationChanged): the space in front does not
+ * change, so following it tells the session nothing.
+ */
+export function moveSpaceHoldings(
+  stores: {
+    contexts: { moveAll(fromGroupId: string, intoGroupId: string, title: string): number } | null;
+    conversations: { get(groupId: string): string | null; bind(groupId: string, runId: string): void; unbind(groupId: string): void } | null;
+    threads: { has(runId: string): boolean } | null;
+  },
+  fromGroupId: string,
+  intoGroupId: string,
+  title: string,
+): boolean {
+  if (fromGroupId === intoGroupId) return false;
+  stores.contexts?.moveAll(fromGroupId, intoGroupId, title);
+  const conversations = stores.conversations;
+  const going = conversations?.get(fromGroupId) ?? null;
+  if (conversations === null || going === null) return false;
+  const own = conversations.get(intoGroupId);
+  const kept = (runId: string | null): boolean => runId !== null && stores.threads?.has(runId) === true;
+  const taken = !kept(own) && kept(going);
+  if (taken) conversations.bind(intoGroupId, going);
+  conversations.unbind(fromGroupId);
+  return taken;
 }

@@ -9,7 +9,10 @@
  * its tab where it is asked for, below the traffic lights' shoulder. Since
  * the review of 2026-10-13: only a Home tab grown into a space waits for its
  * flight, a row let go on the rail lands only on an item that can be seen,
- * and a page's space has a menu of its own.
+ * and a page's space has a menu of its own. Since 2026-10-14: a tile carried
+ * over another's middle merges into it, between tiles it moves (the gap
+ * opened for it), far off nowhere; and a favorite or pin whose page was
+ * brought into a space is open there, in its colour.
  */
 
 import { describe, expect, it } from "vitest";
@@ -21,16 +24,23 @@ import {
   backingOutline,
   cardOutline,
   columnViewOf,
+  entryLinksOf,
+  entryPageFor,
   fullUnitIndex,
   grewInto,
   HOME_VIEW,
   homeTabIdsOf,
   isHomeSpace,
+  railCarryAt,
+  railCarryHome,
+  railCarryShifts,
+  railCarryTarget,
   railMoveIndex,
   railSpacesOf,
   railTargetAt,
   spaceColumnWidth,
   visibleUnitIndex,
+  type RailCarryTile,
   type RailSnapshot,
 } from "../src/components/space-rail/rail-model";
 import { SpaceHead } from "../src/components/space-rail/SpaceHead";
@@ -224,6 +234,113 @@ describe("a tile carried along the rail", () => {
     expect(railMoveIndex(units, "one", "two", true)).toBe(3);
     expect(railMoveIndex(units, "one", "missing", true)).toBeNull();
     expect(railMoveIndex(units, "page", "one", true)).toBeNull();
+  });
+});
+
+describe("a tile carried onto another, or between (2026-10-14)", () => {
+  // Three drawn tiles 38px tall, 10px apart, from 100; then a page's space's tile.
+  const tiles: RailCarryTile[] = [
+    { id: "one", top: 100, bottom: 138, page: false },
+    { id: "two", top: 148, bottom: 186, page: false },
+    { id: "three", top: 196, bottom: 234, page: false },
+    { id: "page", top: 244, bottom: 282, page: true },
+  ];
+
+  it("over another tile's middle merges into it — a page's space's too — never into itself", () => {
+    expect(railCarryAt(tiles, "one", 167)).toEqual({ kind: "merge", into: "two" });
+    // The middle share: 21px of 38 round the middle (167 ± 10.6).
+    expect(railCarryAt(tiles, "one", 157)).toEqual({ kind: "merge", into: "two" });
+    expect(railCarryAt(tiles, "three", 263)).toEqual({ kind: "merge", into: "page" });
+    expect(railCarryAt(tiles, "one", 119)?.kind).toBe("move");
+  });
+
+  it("between tiles, or over a tile's top or foot, it moves: to its slot among the others", () => {
+    // Over the gap between two and three, carrying one: after two.
+    expect(railCarryAt(tiles, "one", 191)).toEqual({ kind: "move", slot: 1 });
+    // Over three's foot (its middle + 14, as the tidy spec carries): after three.
+    expect(railCarryAt(tiles, "one", 229)).toEqual({ kind: "move", slot: 2 });
+    // Above the first: first.
+    expect(railCarryAt(tiles, "three", 96)).toEqual({ kind: "move", slot: 0 });
+    // Its own place is a slot too, a move that moves nothing.
+    expect(railCarryAt(tiles, "two", 143)).toEqual({ kind: "move", slot: 1 });
+    expect(railCarryHome(tiles, "two")).toBe(1);
+    expect(railCarryHome(tiles, "page")).toBe(-1);
+  });
+
+  it("goes nowhere far from the drawn tiles, nor among the pages' (until 2026-10-14: beside the nearest, however far)", () => {
+    expect(railCarryAt(tiles, "one", 40)).toBeNull();
+    expect(railCarryAt(tiles, "one", 290)).toBeNull();
+    expect(railCarryAt(tiles, "one", 400)).toBeNull();
+    // Just past the last drawn tile, before the page's middle: the end.
+    expect(railCarryAt(tiles, "one", 245)).toEqual({ kind: "move", slot: 2 });
+    // Alone among drawn tiles there is nowhere to move.
+    expect(railCarryAt([tiles[0]!, tiles[3]!], "one", 145)).toBeNull();
+  });
+
+  it("takes no tile scrolled out of the rail's sight", () => {
+    const list = { top: 120, bottom: 220 };
+    expect(railCarryAt(tiles, "one", 167, list)).toEqual({ kind: "merge", into: "two" });
+    expect(railCarryAt(tiles, "two", 263, list)?.kind).not.toBe("merge");
+    // A tile half in sight takes it where it is seen; the pointer above the list's edge is on no tile.
+    expect(railCarryAt(tiles, "two", 125, list)).toEqual({ kind: "merge", into: "one" });
+    expect(railCarryAt(tiles, "two", 119, list)).toBeNull();
+  });
+
+  it("names the tile a move goes beside, and opens the gap it would land in", () => {
+    expect(railCarryTarget(tiles, "one", 0)).toEqual({ targetId: "two", after: false });
+    expect(railCarryTarget(tiles, "one", 2)).toEqual({ targetId: "three", after: true });
+    expect(railCarryTarget(tiles, "three", 1)).toEqual({ targetId: "one", after: true });
+    // One carried below three: two and three step up a place, one settles in three's.
+    expect(Object.fromEntries(railCarryShifts(tiles, "one", { kind: "move", slot: 2 }))).toEqual({ two: -48, three: -48, one: 96 });
+    // Three carried to the top: the others step down.
+    expect(Object.fromEntries(railCarryShifts(tiles, "three", { kind: "move", slot: 0 }))).toEqual({ three: -96, one: 48, two: 48 });
+    expect(railCarryShifts(tiles, "one", { kind: "move", slot: 0 }).size).toBe(0);
+    expect(railCarryShifts(tiles, "one", { kind: "merge", into: "two" }).size).toBe(0);
+    expect(railCarryShifts(tiles, "one", null).size).toBe(0);
+  });
+});
+
+describe("an entry linked into a space (2026-10-14)", () => {
+  const groups = [group("trip", ["b", "linked"], { color: "green" }), group("fav-group", ["fav-page", "beside"], { anchorId: "fav" })];
+
+  it("is open on its linked tab, in that tab's space's colour and name", () => {
+    const links = entryLinksOf([{ id: "b", anchorId: null }, { id: "linked", anchorId: null, linkedAnchorId: "pin" }], groups);
+    expect(links.get("pin")).toEqual({ tabId: "linked", groupId: "trip", color: "green", title: "TRIP" });
+    expect(links.size).toBe(1);
+  });
+
+  it("is its anchored page's when it has one, and one tab's only", () => {
+    const links = entryLinksOf(
+      [
+        { id: "fav-page", anchorId: "fav" },
+        { id: "b", anchorId: null, linkedAnchorId: "fav" },
+        { id: "linked", anchorId: null, linkedAnchorId: "pin" },
+        { id: "beside", anchorId: null, linkedAnchorId: "pin" },
+      ],
+      groups,
+      () => "Mail",
+    );
+    expect(links.has("fav")).toBe(false);
+    expect(links.get("pin")?.tabId).toBe("linked");
+  });
+
+  it("names a page's space after its page, and has no colour where its space is not listed", () => {
+    expect(entryLinksOf([{ id: "beside", anchorId: null, linkedAnchorId: "pin" }], groups, () => "Mail").get("pin")).toMatchObject({ groupId: "fav-group", title: "Mail" });
+    expect(entryLinksOf([{ id: "lost", anchorId: null, linkedAnchorId: "pin" }], groups).get("pin")).toEqual({ tabId: "lost", groupId: null, color: null, title: "" });
+  });
+
+  // (Until 2026-10-14 the pin's row and menus looked at an anchored page alone: one linked and navigated on had no way back.)
+  it("is the page its tile, row and menus offer — open, and wandered from the entry's address once loaded elsewhere", () => {
+    const pin = { id: "pin", url: "https://mail.example/" };
+    const page = (url: string, loading = false) => ({ id: "linked", anchorId: null, linkedAnchorId: "pin", url, loading });
+    expect(entryPageFor([page("https://mail.example/inbox/42")], pin)).toMatchObject({ tab: { id: "linked" }, linked: true, wandered: true });
+    expect(entryPageFor([page("https://mail.example/")], pin)).toMatchObject({ linked: true, wandered: false });
+    // (Still loading its way there: not yet.)
+    expect(entryPageFor([page("https://mail.example/inbox/42", true)], pin)?.wandered).toBe(false);
+    // Its own page wins, as main's open and returnToPinned take it.
+    const own = { id: "own", anchorId: "pin", url: "https://mail.example/", loading: false };
+    expect(entryPageFor([page("https://mail.example/inbox/42"), own], pin)).toMatchObject({ tab: { id: "own" }, linked: false, wandered: false });
+    expect(entryPageFor([{ ...page("https://elsewhere.example/"), linkedAnchorId: "other" }], pin)).toBeNull();
   });
 });
 

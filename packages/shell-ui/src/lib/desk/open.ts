@@ -10,6 +10,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import type { ShortcutSurface } from "@pistachio/shell-contracts/shortcuts";
+import { entryPageOf } from "@pistachio/shell-contracts/sidebar";
 import type { DeskEngine, DeskView } from "../../components/desk/desk-engine";
 import { nativeApi } from "../../api";
 import { isPageOverlay, useAppStore, type Overlay } from "../../store";
@@ -275,6 +276,24 @@ export function showOnDesk(tabId: string): boolean {
   useAppStore.getState().closePage();
   engine.add(tabId, { focus: true });
   return true;
+}
+
+/**
+ * A favorite or pin chosen (the favorites grid's tile, a pin's row): its
+ * page's window shown on the desk when that page is the desk's space's
+ * (showOnDesk) — its anchored page, or, since 2026-10-14, the tab linked to
+ * it in a space (@pistachio/shell-contracts/sidebar entryPageOf, main's own
+ * choice for `open`): its tab may still be the one in use, the window put
+ * away, and selecting it again would change nothing — else main's `open`,
+ * which goes to its page wherever it is (the desk passes there) or opens a
+ * fresh one. (Until 2026-10-14 only an anchored page was looked for here: a
+ * linked page whose window was put away in the space in front stayed away.)
+ */
+export function openEntry(anchorId: string): Promise<void> {
+  const store = useAppStore.getState();
+  const page = entryPageOf(store.snapshot?.tabs ?? [], anchorId);
+  if (page !== null && showOnDesk(page.tab.id)) return Promise.resolve();
+  return store.sidebarCommand({ type: "open", anchorId });
 }
 
 /**

@@ -22,6 +22,12 @@
  *   Closing an anchored tab closes the page but keeps the entry — the row
  *   dims, and clicking it opens the page again. That is what makes a pin a
  *   pin rather than a tab that happens to sit at the top.
+ * - A LINK (since 2026-10-14) is what an entry's page keeps of its entry
+ *   once the person brings it into a space: the tab is a day tab of that
+ *   space, no longer anchored, and carries the entry as
+ *   BrowserTabInfo.linkedAnchorId — the entry is open on it, and choosing
+ *   the entry goes to it. An entry's page is its anchored tab, else its
+ *   linked one (`entryPageOf`).
  *
  * `entries` is ONE flat list in display order — folders and pins interleave
  * at the top level, and a pin inside a folder names it with `folderId`. The
@@ -32,7 +38,7 @@
  * Pure on purpose — no Electron, no DOM — so vitest pins it under node.
  */
 
-import { isTabGroupColor, type TabGroupColor } from "./tab-groups.js";
+import { isTabGroupColor, isTabGroupId, type TabGroupColor } from "./tab-groups.js";
 import { isAllowedNavigation } from "./url.js";
 
 export interface SidebarFavorite {
@@ -84,6 +90,26 @@ export function presetAnchorId(url: string): string {
 
 export function isPresetAnchorId(anchorId: string): boolean {
   return anchorId.startsWith(PRESET_ANCHOR_PREFIX);
+}
+
+/**
+ * The tab that is an entry's page, of `tabs` (one Profile's): the one
+ * anchored to it (`anchorId`: its page in Home, or leading its page's space),
+ * else the one linked to it (`linkedAnchorId`: its page brought into a space,
+ * since 2026-10-14) — `linked` says which — or null when the entry is
+ * closed. What `open` chooses, and what the shelf draws an entry by: open or
+ * not, and, linked, in which space (the tab's space, `tabGroupOf`, gives its
+ * colour). Main keeps at most one of each per entry, and never both; were a
+ * file to hold both, the anchored one wins.
+ */
+export function entryPageOf<T extends { anchorId: string | null; linkedAnchorId?: string }>(
+  tabs: readonly T[],
+  anchorId: string,
+): { tab: T; linked: boolean } | null {
+  const anchored = tabs.find((tab) => tab.anchorId === anchorId);
+  if (anchored !== undefined) return { tab: anchored, linked: false };
+  const linked = tabs.find((tab) => tab.anchorId === null && tab.linkedAnchorId === anchorId);
+  return linked === undefined ? null : { tab: linked, linked: true };
 }
 
 /* ------------------------------ limits --------------------------------- */
@@ -318,10 +344,20 @@ export type SidebarCommand =
   /**
    * The page behind a favorite, preset or pin comes down into the day's tabs — its page's group with it
    * (TabGroupInfo.anchorId), a group like any other from then on — at `index` among the day's row units, or into the
-   * tab group `groupId`, at `index` among its tabs. The entry stays, closed: opened again, it is a page of its own. With
-   * no page open, a fresh tab opens there at the entry's address.
+   * tab group `groupId`, at `index` among its tabs, or (`newGroupId`, alone, since 2026-10-14) into a new space of that
+   * id holding the page alone: the person's (`manual`), named from it by the namer as a space made on the rail's New
+   * space is, not chosen (the desk stays where it is). With no page open, a fresh tab opens there at the entry's
+   * address. In one step: no snapshot shows the page in Home on its way (until 2026-10-14 one did).
+   *
+   * Landing in a SPACE — a drawn one, a page's, a new one; anything but Home — the page stays its entry's
+   * (BrowserTabInfo.linkedAnchorId, since 2026-10-14): the entry is open on it, and choosing the entry goes there. Its
+   * page already in a space so (linked), a bring-down moves that tab — it never opens a second. Landing in Home (the
+   * day's tabs: its page alone, or with nothing beside it), it is a plain Home tab and the entry is closed: opened
+   * again, it is a page of its own (as every bring-down was until 2026-10-14). Main refuses one that would need a new
+   * drawn space past MAX_TAB_GROUPS_PER_SPACE (a new space; a page's space with tabs beside it set down among the day's
+   * tabs), with an error, changing nothing.
    */
-  | { type: "bringDown"; anchorId: string; index?: number; groupId?: string };
+  | { type: "bringDown"; anchorId: string; index?: number; groupId?: string; newGroupId?: string };
 
 function isIndex(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10_000;
@@ -393,7 +429,9 @@ export function isSidebarCommand(value: unknown): value is SidebarCommand {
         isId(c["anchorId"]) &&
         (c["anchorId"] as string).length <= MAX_URL + PRESET_ANCHOR_PREFIX.length &&
         isOptionalIndex(c["index"]) &&
-        (c["groupId"] === undefined || isId(c["groupId"]))
+        (c["groupId"] === undefined || isId(c["groupId"])) &&
+        // (A new space is a place of its own: neither among the day's tabs nor in another space.)
+        (c["newGroupId"] === undefined || (isTabGroupId(c["newGroupId"]) && c["groupId"] === undefined && c["index"] === undefined))
       );
     default:
       return false;

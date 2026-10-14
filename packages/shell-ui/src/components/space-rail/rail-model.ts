@@ -4,12 +4,15 @@
  * rail, which view the card shows (and when its turn is a Home tab grown into
  * a space), which rail item a row is let go on, where a drop among Today's
  * rows lands in the day's full row of units, where a tile dragged along the
- * rail puts its space, and the card's outline (docs/double-sidebar.md).
+ * rail puts its space — or which space it merges into (since 2026-10-14) —,
+ * which entries are open on a page linked into a space, and the card's
+ * outline (docs/double-sidebar.md).
  */
 
 import { SIDEBAR_CARD_INSET, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
 import type { SidebarMode } from "@pistachio/shell-contracts/settings";
-import { dayRowUnits, type DayRowUnit, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { entryPageOf } from "@pistachio/shell-contracts/sidebar";
+import { dayRowUnits, MAX_TAB_GROUPS_PER_SPACE, type DayRowUnit, type TabGroupColor, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 
 /** The card's view: Home's, or a space's (its id). */
 export type ColumnView = "home" | (string & {});
@@ -110,6 +113,17 @@ export function isHomeSpace(groupId: string, snapshot: RailSnapshot | null): boo
   return page !== undefined && page.tabIds.length < 2;
 }
 
+/**
+ * Whether New space can make one: the Profile holds fewer drawn spaces than
+ * it may (MAX_TAB_GROUPS_PER_SPACE; main's createTabGroup, which refuses the
+ * rest). Full, New space on the rail takes no drop — a row, a favorite or a
+ * pin (chrome/shelf-drag.tsx), a desk window (lib/desk/dock-drop.ts) —
+ * rather than taking one that comes to nothing (2026-10-14).
+ */
+export function roomForSpace(snapshot: Pick<RailSnapshot, "tabGroups"> | null): boolean {
+  return snapshot === null || snapshot.tabGroups.length < MAX_TAB_GROUPS_PER_SPACE;
+}
+
 /** The Home tabs: every loose tab, and every favorite's or pin's page alone (what Today and the favorites draw as tabs). */
 export function homeTabIdsOf(snapshot: Pick<RailSnapshot, "looseGroups" | "anchorGroups"> | null): Set<string> {
   if (snapshot === null) return new Set();
@@ -205,6 +219,160 @@ export function railMoveIndex(units: ReadonlyArray<{ id: string }>, movingId: st
   const at = rest.findIndex((unit) => unit.id === `group:${targetId}`);
   if (at < 0) return null;
   return after ? at + 1 : at;
+}
+
+/* ---------------------------- a tile carried ----------------------------- */
+
+/**
+ * A space's tile as a carry along the rail measures it (SpaceRail's
+ * useRailMove): its box at rest, viewport px — read as the carry begins, so
+ * no shift the carry gives it is in it — and whether it is a page's space,
+ * which has no place among the row's units to move to (and is never carried)
+ * but takes a space merged into it.
+ */
+export interface RailCarryTile {
+  id: string;
+  top: number;
+  bottom: number;
+  page: boolean;
+}
+
+/** The middle share of a tile's height that is the tile itself: a space carried there merges into it. Above and below it are the gaps between, where it moves. */
+export const RAIL_MERGE_SHARE = 0.56;
+/** How far past the first drawn tile's top or the last's bottom a carried tile still finds a place among them. */
+export const RAIL_MOVE_REACH = 30;
+
+/**
+ * What a space's tile carried to `y` would do let go there: merge into the
+ * tile under it (`into`) — the pointer over that tile's middle — or move to
+ * `slot` among the drawn tiles without it — the pointer between them, or
+ * over a tile's top or foot — or nothing: past the drawn tiles by more than
+ * RAIL_MOVE_REACH, among the page spaces' tiles (which take a merge only),
+ * or over a tile scrolled out of the rail's sight (`list`, the list's visible
+ * span). (Until 2026-10-14 a carry let go anywhere moved its space beside
+ * the drawn tile nearest the pointer, however far, and nothing merged.)
+ * Whether the merge is allowed is canMergeSpaces's (the caller's): the
+ * carried space is a drawn one; a page's space may take it.
+ */
+export type RailCarry = { kind: "merge"; into: string } | { kind: "move"; slot: number } | null;
+
+export function railCarryAt(tiles: readonly RailCarryTile[], movingId: string, y: number, list: { top: number; bottom: number } | null = null): RailCarry {
+  const seen = (tile: RailCarryTile): boolean => list === null || (tile.bottom > list.top && tile.top < list.bottom);
+  for (const tile of tiles) {
+    if (tile.id === movingId || !seen(tile)) continue;
+    const middle = (tile.top + tile.bottom) / 2;
+    const half = ((tile.bottom - tile.top) * RAIL_MERGE_SHARE) / 2;
+    if (Math.abs(y - middle) <= half) return list !== null && (y < list.top || y > list.bottom) ? null : { kind: "merge", into: tile.id };
+  }
+  const drawn = tiles.filter((tile) => !tile.page);
+  const others = drawn.filter((tile) => tile.id !== movingId);
+  const first = drawn[0];
+  const last = drawn[drawn.length - 1];
+  if (first === undefined || last === undefined || others.length === 0) return null;
+  if (y < first.top - RAIL_MOVE_REACH || y > last.bottom + RAIL_MOVE_REACH) return null;
+  return { kind: "move", slot: others.filter((tile) => (tile.top + tile.bottom) / 2 < y).length };
+}
+
+/** The carried tile's own slot among the drawn tiles: a move to it is no move. -1 for a tile that is not a drawn one. */
+export function railCarryHome(tiles: readonly RailCarryTile[], movingId: string): number {
+  return tiles.filter((tile) => !tile.page).findIndex((tile) => tile.id === movingId);
+}
+
+/** A move to `slot` (railCarryAt's) as the drawn tile it goes just before or after (railMoveIndex's terms), or null with none to go beside. */
+export function railCarryTarget(tiles: readonly RailCarryTile[], movingId: string, slot: number): { targetId: string; after: boolean } | null {
+  const others = tiles.filter((tile) => !tile.page && tile.id !== movingId);
+  if (others.length === 0) return null;
+  if (slot <= 0) return { targetId: others[0]!.id, after: false };
+  const before = others[Math.min(slot, others.length) - 1]!;
+  return { targetId: before.id, after: true };
+}
+
+/**
+ * How far each drawn tile is drawn from its place while a carry proposes a
+ * move to `slot` (the gap the carried tile would land in), px down: the
+ * drawn tiles in their new order, each in the place the tile at its new index
+ * had — so the rail's own spacing holds. The carried tile is in it too: where
+ * it settles, let go. Empty for anything but a move.
+ */
+export function railCarryShifts(tiles: readonly RailCarryTile[], movingId: string, carry: RailCarry): Map<string, number> {
+  const shifts = new Map<string, number>();
+  if (carry === null || carry.kind !== "move") return shifts;
+  const drawn = tiles.filter((tile) => !tile.page);
+  const moving = drawn.find((tile) => tile.id === movingId);
+  if (moving === undefined) return shifts;
+  const order = drawn.filter((tile) => tile.id !== movingId);
+  order.splice(Math.max(0, Math.min(carry.slot, order.length)), 0, moving);
+  order.forEach((tile, index) => {
+    const place = drawn[index]!;
+    if (place.top !== tile.top) shifts.set(tile.id, place.top - tile.top);
+  });
+  return shifts;
+}
+
+/* ------------------------- an entry linked into a space ------------------------- */
+
+/**
+ * A favorite's or pin's page brought into a space, still its entry's
+ * (BrowserTabInfo.linkedAnchorId, since 2026-10-14; docs/spaces.md §1): the
+ * tab it is on, the space it is in, and that space's colour and name — what
+ * the favorite's tile and the pin's row draw it by (open there, in that
+ * colour). `groupId` null: its space is not one the snapshot lists (none
+ * should be).
+ */
+export interface EntryLink {
+  tabId: string;
+  groupId: string | null;
+  color: TabGroupColor | null;
+  title: string;
+}
+
+/**
+ * Every entry open on a tab linked to it, by its anchor id: a tab with no
+ * anchor that carries `linkedAnchorId`, unless another tab is the entry's
+ * anchored page (which wins: @pistachio/shell-contracts/sidebar's
+ * entryPageOf) — and the first such tab only. `groups` are the spaces it may
+ * be in: the drawn ones and the pages' (a page's space is named after its
+ * page: `pageTitle`).
+ */
+export function entryLinksOf(
+  tabs: ReadonlyArray<{ id: string; anchorId: string | null; linkedAnchorId?: string }>,
+  groups: readonly TabGroupInfo[],
+  pageTitle: (group: TabGroupInfo) => string = (group) => group.title,
+): Map<string, EntryLink> {
+  const anchored = new Set(tabs.flatMap((tab) => (tab.anchorId === null ? [] : [tab.anchorId])));
+  const links = new Map<string, EntryLink>();
+  for (const tab of tabs) {
+    const anchorId = tab.linkedAnchorId;
+    if (tab.anchorId !== null || anchorId === undefined || anchored.has(anchorId) || links.has(anchorId)) continue;
+    const group = groups.find((candidate) => candidate.tabIds.includes(tab.id)) ?? null;
+    links.set(anchorId, {
+      tabId: tab.id,
+      groupId: group?.id ?? null,
+      color: group?.color ?? null,
+      title: group === null ? "" : group.anchorId !== undefined ? pageTitle(group) : group.title,
+    });
+  }
+  return links;
+}
+
+/**
+ * A favorite's or pin's page as its tile, its row and their menus offer it:
+ * the tab that is its page — anchored, else linked into a space
+ * (@pistachio/shell-contracts/sidebar's entryPageOf) — or null while the
+ * entry is closed; and whether that page has wandered from the entry's
+ * address (loaded at another one: a pin's Return to pinned page, which main's
+ * returnToPinned finds the same way). Open either way, the menu shows it
+ * ("Show", not "Open") and offers closing it. (Until 2026-10-14 the row and
+ * the menus looked at an anchored page alone: a pin's page brought into a
+ * space and navigated on had no way back to its address from either.)
+ */
+export function entryPageFor<T extends { anchorId: string | null; linkedAnchorId?: string; url: string; loading: boolean }>(
+  tabs: readonly T[],
+  entry: { id: string; url: string },
+): { tab: T; linked: boolean; wandered: boolean } | null {
+  const page = entryPageOf(tabs, entry.id);
+  if (page === null) return null;
+  return { ...page, wandered: !page.tab.loading && page.tab.url !== entry.url };
 }
 
 /* ------------------------------- the outline ------------------------------- */

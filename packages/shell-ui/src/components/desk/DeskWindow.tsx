@@ -40,7 +40,8 @@ import { BriefPage } from "../reports/BriefPage";
 import { DRAWER_H, MASK_CARD_TOP, MASK_INSETS, WINDOW_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
 import { DeskLivePicture } from "./DeskLivePicture";
 import { usePageEntries } from "./page-entries";
-import { shellWindowParts, type ShellWindowSubject } from "./window-kinds";
+import { FileGlyph } from "./files/FileGlyph";
+import { shellWindowParts, type DeskFileSubject, type ShellWindowSubject } from "./window-kinds";
 
 const NotesPage = lazy(() => import("../notes/NotesPage").then((m) => ({ default: m.NotesPage })));
 // xterm.js and its addons come with the first terminal opened (docs/terminal.md §2).
@@ -489,6 +490,8 @@ export const DeskWindow = memo(function DeskWindow({
       data-menu={menu.isOpen ? "" : undefined}
       data-framed={view.framed ? undefined : "off"}
       data-agent={working ? "" : undefined}
+      // Carried over the sidebar's column: drawn as the row or rail tile it would be dropped as there (DockFace).
+      data-morph={view.dock?.shape}
       className="desk-window"
       style={
         {
@@ -621,11 +624,59 @@ export const DeskWindow = memo(function DeskWindow({
           onPointerLeave={() => engine.hoverWindow(tabId, "strip", false)}
         />
       ) : null}
+      {view.carried || view.flight !== null || view.dock !== null ? (
+        <DockFace dock={view.dock} tab={tab} title={title} host={host} file={shell?.item ?? null} />
+      ) : null}
       {menu.menu}
       {siteInfoHere ? <SiteInfoFrom triggerRef={moreRef} align="end" /> : null}
     </div>
   );
 });
+
+/**
+ * What a window carried over the sidebar's column is drawn as there
+ * (desk-engine.ts's #morphInto, lib/desk/dock-drop.ts): over the card, one of
+ * its rows — its icon and title on a raised row; over the rail, a space's
+ * tile — its icon on the tint of the space it would go to (the rail's own
+ * neutral on Home and New space). The engine sizes the window to the row or
+ * tile; this face fades in over it as the page fades out (shell.css), and
+ * out again as it grows back into the window. Mounted while the window is in
+ * hand or on its way somewhere, keeping its last shape as it fades out.
+ */
+function DockFace({
+  dock,
+  tab,
+  title,
+  host,
+  file,
+}: {
+  dock: DeskWindowView["dock"];
+  tab: BrowserTabInfo | null;
+  title: string;
+  host: string;
+  file: DeskFileSubject["item"];
+}) {
+  const last = useRef(dock);
+  if (dock !== null) last.current = dock;
+  const shown = last.current;
+  return (
+    <div
+      aria-hidden="true"
+      className="desk-window-face tab-group-tone"
+      data-testid="desk-window-face"
+      data-shape={shown?.shape ?? "row"}
+      data-shown={dock !== null ? "" : undefined}
+      data-group-color={shown?.color ?? undefined}
+    >
+      {file !== null ? (
+        <FileGlyph mediaType={file.mediaType} className="desk-window-face-icon" />
+      ) : (
+        <Favicon src={tab?.faviconUrl ?? null} seed={host || title} className="desk-window-face-icon" />
+      )}
+      <span className="desk-window-face-title">{title}</span>
+    </div>
+  );
+}
 
 /** A minimized window's page the shell draws: laid out at its box over the zoom, and scaled down into it. */
 const ZOOMED_STYLE: CSSProperties = {

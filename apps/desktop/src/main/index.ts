@@ -75,7 +75,7 @@ import { scriptedGroupNamer, scriptedTidyJudge, TabTidy } from "./tab-tidy";
 import { judgeTidy, nameTabGroup } from "@pistachio/agent-runtime/tab-tidy";
 import { archiveEntryView, isTabArchiveRequest, type TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import { isTabGroupCommand, type TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
-import { spaceHolds } from "./spaces";
+import { moveSpaceHoldings, spaceHolds } from "./spaces";
 import { isTidyRequest, type TidyResponse } from "@pistachio/shell-contracts/tidy";
 import { AddressIntentRanker, scriptedIntentModel } from "./address-intent";
 import { DeskLayoutJudge, scriptedLayoutModel } from "./desk-layout";
@@ -801,7 +801,8 @@ function relayChromeInput(
     relayDoubleShift(input) ||
     relayTabSwitcherInput(event, input, source) ||
     browser?.takeDeskDockKey(event, input) === true ||
-    browser?.takeDeskUndoKey(event, input, source) === true
+    browser?.takeDeskUndoKey(event, input, source) === true ||
+    browser?.takeDeskCycleKey(event, input, source) === true
   );
 }
 
@@ -2352,6 +2353,13 @@ async function createWindow(): Promise<void> {
       // something in it (an entry may stand empty, never deleted), and a conversation bound to it whose thread is
       // still there (a binding outlives a thread the store pruned). Read from memory, on every reconcile.
       groupHolds: (groupId) => spaceHolds({ contexts: groupContexts, conversations: deskConversations, threads })(groupId),
+      // A space going into another (a merge on the rail, a page's space brought whole into one) takes what it holds with
+      // its tabs: its Stack's items, and its conversation when the other has none (docs/spaces.md §1, "Merging spaces").
+      // The other given a conversation may be the space in front, which stays in front: the session hears it, and opens it.
+      moveGroupHoldings: (fromGroupId, intoGroupId, title) => {
+        if (moveSpaceHoldings({ contexts: groupContexts, conversations: deskConversations, threads }, fromGroupId, intoGroupId, title))
+          runs?.groupConversationChanged(intoGroupId);
+      },
       // The agent's session follows the space in front (RunController.followGroup); there is no desk to enter or leave.
       onCurrentGroupChange: (_spaceId, groupId) => runs?.followGroup(groupId),
       // A page's space whose page let go of its entry is titled after the entry.

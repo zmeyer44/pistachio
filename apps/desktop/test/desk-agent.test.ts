@@ -23,6 +23,7 @@ import { DeskScope } from "../src/main/desk-scope";
 import { GroupContextStore } from "../src/main/group-context-store";
 import { RunController, type DeskAgentHost } from "../src/main/run-controller";
 import { scriptedAgentModel } from "../src/main/scripted-agent-model";
+import { moveSpaceHoldings } from "../src/main/spaces";
 import { ThreadStore } from "../src/main/thread-store";
 
 const dirs: string[] = [];
@@ -285,6 +286,7 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
   const context = new GroupContextStore(dir);
   context.addText("g1", "Lisbon", { kind: "fact", text: "Hotel confirmation QX7F2L" }, "person");
   const bindings = new DeskConversationStore(dir);
+  const threads = new ThreadStore(dir);
   const desk: DeskAgentHost = {
     bridge,
     bindings,
@@ -319,7 +321,7 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
     browser: browser as unknown as BrowserController,
     notifications: new NotificationRouter([]),
     onChange: () => undefined,
-    threads: new ThreadStore(dir),
+    threads,
     model: () => model,
     summarize: async () => "SUMMARY",
     limits: { stepsPerCall: 40, continuations: 5 },
@@ -335,7 +337,7 @@ function deskHarness(model: MockLanguageModelV4, events: string[] = []) {
     if (groupId !== null) shown = groupId;
     controller.followGroup(groupId);
   };
-  return { controller, bridge, requests, bindings, context, desk, browser, follow, show: (groupId: string) => (shown = groupId) };
+  return { controller, bridge, requests, bindings, threads, context, desk, browser, follow, show: (groupId: string) => (shown = groupId) };
 }
 
 describe("a turn at a desk", () => {
@@ -674,6 +676,35 @@ describe("a turn at a desk", () => {
     expect(bindings.get("g2")).toBeNull();
     // The group it came from keeps it.
     expect(bindings.get("g1")).toBe(lisbon);
+  });
+
+  it("opens the conversation a space merged into the one in front brings, and goes on in it (moveSpaceHoldings, groupConversationChanged)", async () => {
+    const model = scripted([answer("For Lisbon."), answer("Still Lisbon, at the groceries.")]);
+    const { controller, bindings, threads, context, follow } = deskHarness(model);
+    follow("g1");
+    await controller.message("Plan Lisbon", [], { page: false });
+    const lisbon = controller.snapshot()!.runId;
+
+    // The groceries in front, with no conversation of its own: an empty console.
+    follow("g2");
+    expect(controller.snapshot()).toBeNull();
+    // Lisbon merged into the groceries: its conversation is the groceries' now, and main says so (index.ts's
+    // moveGroupHoldings) — the space in front is the same, so following it would tell the session nothing.
+    expect(moveSpaceHoldings({ contexts: context, conversations: bindings, threads }, "g1", "g2", "Groceries")).toBe(true);
+    follow("g2");
+    expect(controller.snapshot()).toBeNull();
+    controller.groupConversationChanged("g2");
+    expect(controller.snapshot()?.runId).toBe(lisbon);
+
+    // The next message goes on in it — never a fresh thread bound over the one moved in.
+    await controller.message("And for the groceries?", [], { page: false });
+    expect(controller.snapshot()?.runId).toBe(lisbon);
+    expect(bindings.get("g2")).toBe(lisbon);
+    expect(bindings.get("g1")).toBeNull();
+    expect(userTexts(model.doGenerateCalls.at(-1)!.prompt).join("\n")).toContain("Desk: the space “Groceries”");
+
+    // A space with no conversation merged in changes none: there is nothing to tell the session.
+    expect(moveSpaceHoldings({ contexts: context, conversations: bindings, threads }, "g3", "g2", "Groceries")).toBe(false);
   });
 
   it("forgets a deleted conversation's groups", async () => {

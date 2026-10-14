@@ -49,6 +49,7 @@ const STAGE = { left: 0, top: 0, width: 1600, height: 1000 };
 function engine(host: Partial<DeskHost> = {}): DeskEngine {
   const created = new DeskEngine({
     variants: () => DEFAULT_DESK_VARIANTS,
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: (id) => isTabWindow(id),
     select: () => undefined,
     close: () => undefined,

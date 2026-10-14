@@ -3,7 +3,7 @@
 import { Globe } from "lucide-react";
 import { useState } from "react";
 import { AI_SEARCH_PROVIDERS, WEB_SEARCH_PROVIDERS, aiSearchLabel, webSearchLabel } from "@pistachio/shell-contracts/search";
-import { effectiveSidebarMode, PLAYBACK_RATE_OPTIONS, type SidebarMode } from "@pistachio/shell-contracts/settings";
+import { effectiveSidebarMode, PLAYBACK_RATE_OPTIONS, type SidebarMode, type SpaceArrival, type SpaceSwitchExit } from "@pistachio/shell-contracts/settings";
 import { isAllowedNavigation, withScheme as withSchemeForHost } from "@pistachio/shell-contracts/url";
 import { runShellCommand } from "../../../chrome/shell-host";
 import { briefTimeItems } from "../../../lib/reports";
@@ -33,6 +33,20 @@ const SIDEBAR_ITEMS: ReadonlyArray<{ value: SidebarMode; label: string }> = [
   { value: "hidden", label: "Hidden — reveal at the left edge" },
 ];
 const WEB_SIDEBAR_ITEMS = SIDEBAR_ITEMS.filter((item) => item.value !== "rail");
+
+/** How the desk's windows go when another space is chosen (lib/desk/space-switch.ts), and what each looks like. */
+const SPACE_EXIT_ITEMS: ReadonlyArray<{ value: SpaceSwitchExit; label: string; note: string }> = [
+  { value: "bloom", label: "Bloom", note: "The windows swell a touch and blur away." },
+  { value: "recede", label: "Recede", note: "The desk steps back as one and fades." },
+  { value: "gather", label: "Gather", note: "The windows drift toward the middle and shrink away, the farthest first." },
+  { value: "pop", label: "Pop", note: "Each window lifts a touch, then drops away, the one you were using first." },
+  { value: "sink", label: "Sink", note: "The desk tips back and sinks as it fades." },
+  { value: "tile", label: "Into its icon", note: "Each window flies into its space's icon in the sidebar." },
+];
+const SPACE_ARRIVAL_ITEMS: ReadonlyArray<{ value: SpaceArrival; label: string }> = [
+  { value: "matched", label: "To match" },
+  { value: "tile", label: "Out of its icon" },
+];
 
 const PLAYBACK_RATE_ITEMS = PLAYBACK_RATE_OPTIONS.map((rate) => ({
   value: rate as number,
@@ -171,6 +185,47 @@ function HomePageRow() {
   );
 }
 
+/** Switching spaces: how the desk's windows go when another space is chosen, and how the chosen space's come. */
+function SpaceSwitchRows() {
+  const exit = useAppStore((s) => s.settings.layout.spaceExit);
+  const arrival = useAppStore((s) => s.settings.layout.spaceArrival);
+  const updateSettings = useAppStore((s) => s.updateSettings);
+  const intoIcon = exit === "tile";
+  const exitNote = SPACE_EXIT_ITEMS.find((item) => item.value === exit)?.note ?? "";
+  return (
+    <>
+      <Row label="Switching spaces" note={`How the windows on the desk go when you choose another space. ${exitNote}`}>
+        <Select
+          aria-label="Switching spaces"
+          data-testid="space-switch-exit"
+          value={exit}
+          items={SPACE_EXIT_ITEMS}
+          onValueChange={(spaceExit) => void updateSettings({ layout: { spaceExit } })}
+          className="w-42"
+        />
+      </Row>
+      <Row
+        label="Arriving windows"
+        note={
+          intoIcon
+            ? "Windows that fly into their space's icon come out of the next space's icon the same way."
+            : "To match brings the next space's windows in with the entrance made for the way the last ones went. Out of its icon brings them out of the space's icon in the sidebar."
+        }
+      >
+        <Select
+          aria-label="Arriving windows"
+          data-testid="space-switch-arrival"
+          value={intoIcon ? "tile" : arrival}
+          items={SPACE_ARRIVAL_ITEMS}
+          disabled={intoIcon}
+          onValueChange={(spaceArrival) => void updateSettings({ layout: { spaceArrival } })}
+          className="w-42"
+        />
+      </Row>
+    </>
+  );
+}
+
 export function GeneralPage() {
   const native = useSurface().kind === "native";
   const stored = useAppStore((s) => s.settings.layout.sidebar);
@@ -204,6 +259,8 @@ export function GeneralPage() {
             className="w-55 @max-md:w-42"
           />
         </Row>
+        {/* The desk's alone: the web has no desk to pass between spaces. */}
+        {native ? <SpaceSwitchRows /> : null}
       </Group>
 
       {/* On the desktop too since 2026-10-10: whichever it is, a window in the current space (docs/spaces.md §1). */}

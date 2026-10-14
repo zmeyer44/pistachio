@@ -4,7 +4,7 @@ import { TabList } from "../TabList";
 
 /**
  * Home in the double sidebar's card (docs/double-sidebar.md §1): an ordinary
- * browser's sidebar, every row a full-desk tab. The favorites four to a row
+ * browser's sidebar, every row a full-desk tab. The favorites three to a row
  * (a favorite whose page has tabs beside it carries their count, and is a
  * space of the rail's), then TabList's "home" view: Pinned, the New tab row
  * (New folder and New space on its hover), and Today — the day's loose tabs,
@@ -14,7 +14,7 @@ import { TabList } from "../TabList";
 export function HomeView() {
   return (
     <div data-testid="home-view" className="home-view">
-      <FavoritesGrid columns={4} />
+      <FavoritesGrid />
       <div className="relative flex min-h-0 flex-1 flex-col">
         <TabList view="home" />
         <div className="sidebar-media-dock">

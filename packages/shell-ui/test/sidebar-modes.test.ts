@@ -60,10 +60,10 @@ afterEach(() => {
 describe("the mode as drawn", () => {
   it("keeps a rail on the desktop, and draws a stored one whole on the web without rewriting it", () => {
     desktop();
-    expect(sidebarModeOf({ layout: { sidebar: "rail" } })).toBe("rail");
+    expect(sidebarModeOf({ layout: { ...DEFAULT_SETTINGS.layout, sidebar: "rail" } })).toBe("rail");
     web();
-    expect(sidebarModeOf({ layout: { sidebar: "rail" } })).toBe("whole");
-    expect(sidebarModeOf({ layout: { sidebar: "hidden" } })).toBe("hidden");
+    expect(sidebarModeOf({ layout: { ...DEFAULT_SETTINGS.layout, sidebar: "rail" } })).toBe("whole");
+    expect(sidebarModeOf({ layout: { ...DEFAULT_SETTINGS.layout, sidebar: "hidden" } })).toBe("hidden");
   });
 });
 

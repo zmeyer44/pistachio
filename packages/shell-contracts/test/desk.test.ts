@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESK_PIP_OUTSET, deskMaskKey, deskPipSlot, holdsDeskModifier, inDeskBox, isDeskGrab, isDeskMask, isDeskNotchFrame, isDeskPageInput, isDeskPipInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
+import { DESK_PIP_OUTSET, deskMaskKey, deskPipSlot, holdsDeskModifier, inDeskBox, isDeskCycleKey, isDeskGrab, isDeskMask, isDeskNotchFrame, isDeskPageInput, isDeskPipInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
 import { isDragCursor, isDragSample } from "../src/chrome.js";
 
 describe("the desk's contract", () => {
@@ -100,11 +100,25 @@ describe("the desk's contract", () => {
     expect(isDockCloseKey({ ...key, key: "Delete" })).toBe(false);
   });
 
-  it("relays a desk page's press, Escape, the pointer coming to the dock, or ⇧⌫ on a dock icon, and nothing else", () => {
+  it("takes Tab and ⇧Tab, and nothing with another modifier, to turn a looked-at layout's windows round (DeskState.cycleKey)", () => {
+    const key = { type: "keyDown" as const, key: "Tab", shift: false, control: false, alt: false, meta: false };
+    expect(isDeskCycleKey(key)).toBe(true);
+    expect(isDeskCycleKey({ ...key, shift: true })).toBe(true);
+    expect(isDeskCycleKey({ ...key, type: "keyUp" })).toBe(false);
+    expect(isDeskCycleKey({ ...key, control: true })).toBe(false);
+    expect(isDeskCycleKey({ ...key, meta: true })).toBe(false);
+    expect(isDeskCycleKey({ ...key, key: "Enter" })).toBe(false);
+    expect(isDeskState({ tabIds: [], grab: null, cycleKey: true })).toBe(true);
+    expect(isDeskState({ tabIds: [], grab: null, cycleKey: "yes" })).toBe(false);
+  });
+
+  it("relays a desk page's press, Escape, the pointer coming to the dock, ⇧⌫ on a dock icon, or Tab on a layout looked at, and nothing else", () => {
     expect(isDeskPageInput("press")).toBe(true);
     expect(isDeskPageInput("escape")).toBe(true);
     expect(isDeskPageInput("dock")).toBe(true);
     expect(isDeskPageInput("close")).toBe(true);
+    expect(isDeskPageInput("cycle")).toBe(true);
+    expect(isDeskPageInput("cycleBack")).toBe(true);
     expect(isDeskPageInput("keyDown")).toBe(false);
     expect(isDeskPageInput(null)).toBe(false);
   });

@@ -60,7 +60,7 @@ import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useDeskChrome } from "../lib/desk/chrome";
 import { useGroupContexts } from "../lib/desk/group-context";
-import { deskAvailable, deskEngine, NEW_SPACE_EVENT, newSpace, selectSpace, showOnDesk, splitAvailable, useCurrentSpace } from "../lib/desk/open";
+import { deskAvailable, deskEngine, NEW_SPACE_EVENT, newSpace, openEntry, selectSpace, showOnDesk, splitAvailable, useCurrentSpace } from "../lib/desk/open";
 import { groupPageOf } from "../lib/desk/store";
 import { sidebarOverlays, useSidebarColumn, useSidebarMode } from "../lib/sidebar-mode";
 import { DeskContextRow, DeskRowMark, deskTabEntries, hoverDeskRow } from "./desk/DeskSidebarControls";
@@ -71,6 +71,8 @@ import { TabGroupRow } from "./TabGroupRow";
 import { useAgentWorkingIn } from "./useAgentTab";
 import { renameSpace } from "./space-rail/column-state";
 import { openBeside } from "./space-rail/actions";
+import { useEntryLinks } from "./space-rail/entry-links";
+import { entryPageFor, type EntryLink } from "./space-rail/rail-model";
 import { Kbd } from "./ui/kbd";
 
 /**
@@ -425,14 +427,19 @@ function RowButton({
 /**
  * A pinned page. Open, it is the row of its live tab — title, spinner, the
  * active card when it is the active tab. Closed, it dims: the page is kept,
- * not loaded, and a click loads it again. A pin whose live tab has wandered
+ * not loaded, and a click loads it again. A pin whose page has wandered
  * from the pinned address shows a "return" control on hover, saying the
- * pin is the ADDRESS, not the tab.
+ * pin is the ADDRESS, not the tab. Its page brought into a space (linked,
+ * since 2026-10-14) it is open THERE: not dimmed, a mark in that space's
+ * colour at its end, and a click goes to it (main passes the desk there) —
+ * and wandered there, it shows the "return" control all the same.
  */
 function PinRow({
   pin,
   depth,
   live,
+  linked = null,
+  wandered = false,
   tabCount = 0,
   selected = false,
   dragging = false,
@@ -443,6 +450,10 @@ function PinRow({
   pin: SidebarPin;
   depth: 0 | 1;
   live: ChromeTab | null;
+  /** Its page brought into a space, still the pin's (BrowserTabInfo.linkedAnchorId): open there. */
+  linked?: EntryLink | null;
+  /** Its page — its own, or linked into a space — is loaded at another address than the pin's (rail-model's entryPageFor). */
+  wandered?: boolean;
   /** The tabs of its page's group besides its page (TabGroupInfo.anchorId), waiting on its desk: said beside its title. */
   tabCount?: number;
   selected?: boolean;
@@ -456,7 +467,8 @@ function PinRow({
   const working = useAgentWorkingIn(live?.id ?? null);
   const active = live?.active === true;
   const title = live?.title || pin.title || prettyUrl(pin.url);
-  const wandered = live !== null && !live.loading && live.url !== pin.url;
+  // Its page, to close: its own, or the one linked to it in a space (until 2026-10-14 a linked page had no Close here).
+  const pageTabId = live?.id ?? linked?.tabId ?? null;
 
   return (
     <div
@@ -466,6 +478,7 @@ function PinRow({
       aria-label={selected ? `${title}, selected for bulk actions` : undefined}
       data-testid="pinned-tab"
       data-live={live === null ? undefined : ""}
+      data-linked-group={linked?.groupId ?? undefined}
       data-multi-selected={selected ? "" : undefined}
       onClick={onOpen}
       onKeyDown={(e) => {
@@ -477,9 +490,9 @@ function PinRow({
       onPointerDown={onPointerDown}
       onContextMenu={onContextMenu}
       onAuxClick={(e) => {
-        if (e.button === 1 && live !== null) void closeTab(live.id);
+        if (e.button === 1 && pageTabId !== null) void closeTab(pageTabId);
       }}
-      title={rowTitle(title, live?.url ?? pin.url)}
+      title={linked !== null && linked.title !== "" ? `${rowTitle(title, pin.url)}\nOpen in ${linked.title}` : rowTitle(title, live?.url ?? pin.url)}
       data-flip-id={pin.id}
       data-row-kind="pin"
       data-entity-id={pin.id}
@@ -492,7 +505,7 @@ function PinRow({
           ? "bg-background-100 text-gray-1000 shadow-small"
           : "hover:bg-alpha-200",
         !active &&
-          (live === null
+          (live === null && linked === null
             ? "text-gray-800 hover:text-gray-1000"
             : "text-gray-900 hover:text-gray-1000"),
         selected && "bg-green-100 text-green-1000 ring-1 ring-inset ring-green-400",
@@ -504,7 +517,7 @@ function PinRow({
         <Favicon
           src={pin.faviconUrl}
           seed={prettyUrl(pin.url)}
-          className="opacity-60"
+          className={linked === null ? "opacity-60" : undefined}
         />
       ) : (
         <TabMark tab={live} fallbackFaviconUrl={pin.faviconUrl} working={working} />
@@ -514,6 +527,9 @@ function PinRow({
         {live === null ? title : <TabTitle tab={live} />}
       </span>
       {tabCount > 0 ? <EntryTabCount count={tabCount} testId="pin-tab-count" /> : null}
+      {linked !== null ? (
+        <span aria-hidden="true" data-testid="entry-linked-mark" data-group-color={linked.color ?? undefined} className="entry-linked-mark tab-group-tone shrink-0" />
+      ) : null}
       <span className="-my-1 -mr-1 flex shrink-0 items-center">
         <span className="grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-hover:grid-cols-[1fr] group-hover:opacity-100 group-has-[:focus-visible]:grid-cols-[1fr] group-has-[:focus-visible]:opacity-100">
           <span className="flex min-w-0 items-center gap-0.5 overflow-hidden">
@@ -535,10 +551,10 @@ function PinRow({
             >
               <PinOff className="size-3" aria-hidden="true" />
             </RowButton>
-            {live === null ? null : (
+            {pageTabId === null ? null : (
               <RowButton
                 label={`Close ${title}`}
-                onClick={() => void closeTab(live.id)}
+                onClick={() => void closeTab(pageTabId)}
               >
                 <X className="size-3" aria-hidden="true" />
               </RowButton>
@@ -1062,6 +1078,8 @@ export function TabList({ view }: { view?: TabListView } = {}) {
       if (tab.anchorId !== null) map.set(tab.anchorId, tab);
     return map;
   }, [tabs]);
+  // Pins whose page the person brought into a space: open there (PinRow's `linked`; a click's `open` goes there).
+  const entryLinks = useEntryLinks();
   const dayItems = useMemo(
     () => rowItems(tabs.filter((tab) => tab.anchorId === null && !pageGroupTabIds.has(tab.id))),
     [tabs, pageGroupTabIds],
@@ -1391,7 +1409,8 @@ export function TabList({ view }: { view?: TabListView } = {}) {
           key: pinSelectionKey(row.pin.id),
           kind: "pin",
           pin: row.pin,
-          tab: liveByAnchor.get(row.pin.id) ?? null,
+          // Its page: its own, or the one linked to it in a space (rail-model's entryPageFor) — a bulk Close closes it too.
+          tab: liveByAnchor.get(row.pin.id) ?? entryPageFor(tabs, row.pin)?.tab ?? null,
         });
       }
     }
@@ -1497,10 +1516,9 @@ export function TabList({ view }: { view?: TabListView } = {}) {
   };
   const openPin = (pin: SidebarPin, event: TabSelectionEvent): void => {
     selectForBulk(pinSelectionKey(pin.id), event, () => {
-      // On its own desk, its window is shown there: its tab may still be the one in use, the window put away.
-      const live = liveByAnchor.get(pin.id);
-      if (live !== undefined && showOnDesk(live.id)) return;
-      void sidebarCommand({ type: "open", anchorId: pin.id });
+      // On its own desk, its window is shown there — its page, or the tab linked to it in a space: its tab may still be
+      // the one in use, the window put away (openEntry). Else main goes to it, or opens it.
+      void openEntry(pin.id);
     });
   };
   const newFolder = (index?: number): void => {
@@ -1764,13 +1782,15 @@ export function TabList({ view }: { view?: TabListView } = {}) {
   const entryTabCounts = useMemo(() => new Map(pageGroups.map((group) => [group.anchorId ?? "", Math.max(0, group.tabIds.length - 1)])), [pageGroups]);
 
   const pinMenu = (pin: SidebarPin): MenuEntry[] => {
-    const live = liveByAnchor.get(pin.id) ?? null;
+    // Its page, its own or linked into a space (rail-model's entryPageFor).
+    const page = entryPageFor(tabs, pin);
     return [
       {
-        label: live === null ? "Open" : "Show",
-        onSelect: () => void sidebarCommand({ type: "open", anchorId: pin.id }),
+        label: page === null ? "Open" : "Show",
+        // (As a click does: openEntry.)
+        onSelect: () => void openEntry(pin.id),
       },
-      ...(live !== null && live.url !== pin.url
+      ...(page?.wandered === true
         ? [
             {
               label: "Return to pinned page",
@@ -1823,17 +1843,17 @@ export function TabList({ view }: { view?: TabListView } = {}) {
           ]),
       { separator: true },
       {
-        label: live === null ? "Remove pin" : "Unpin",
+        label: page === null ? "Remove pin" : "Unpin",
         icon: <PinOff aria-hidden="true" />,
         onSelect: () => void sidebarCommand({ type: "unpin", pinId: pin.id }),
       },
-      ...(live !== null
+      ...(page !== null
         ? [
             {
               label: "Close tab",
               icon: <X aria-hidden="true" />,
               danger: true,
-              onSelect: () => void closeTab(live.id),
+              onSelect: () => void closeTab(page.tab.id),
             },
           ]
         : []),
@@ -2074,6 +2094,8 @@ export function TabList({ view }: { view?: TabListView } = {}) {
   };
   const pinItem = (pin: SidebarPin): ShelfItem => {
     const live = liveByAnchor.get(pin.id);
+    // Its page's window to carry out over a desk: its own, or the one linked to it in a space (as a favorite's: FavoritesGrid).
+    const page = live ?? entryPageFor(tabs, pin)?.tab ?? null;
     return {
       flipId: pin.id,
       kind: "pin",
@@ -2083,7 +2105,7 @@ export function TabList({ view }: { view?: TabListView } = {}) {
       faviconUrl: pin.faviconUrl,
       tabs: live === undefined ? [] : [live],
       // Carried out over a desk, its page's window (chrome/shelf-drag.tsx).
-      ...(live === undefined ? {} : { deskTab: live }),
+      ...(page === null ? {} : { deskTab: page }),
     };
   };
   const folderItem = (folder: SidebarFolder): ShelfItem => ({
@@ -2216,6 +2238,8 @@ export function TabList({ view }: { view?: TabListView } = {}) {
                           pin={row.pin}
                           depth={row.depth}
                           live={liveFor(row.pin)}
+                          linked={liveFor(row.pin) === null ? (entryLinks.get(row.pin.id) ?? null) : null}
+                          wandered={entryPageFor(tabs, row.pin)?.wandered === true}
                           tabCount={entryDesk?.anchorId === row.pin.id ? 0 : (entryTabCounts.get(row.pin.id) ?? 0)}
                           selected={isShownSelected(pinSelectionKey(row.pin.id))}
                           dragging={grabbedId === row.pin.id}

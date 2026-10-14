@@ -65,6 +65,26 @@ function boxIn(root: HTMLElement, el: Element): Box {
 
 const esc = (value: string): string => CSS.escape(value);
 
+/**
+ * New spaces made by a drop on the rail's New space (chrome/shelf-drag.tsx,
+ * since 2026-10-14): what was let go there was drawn as a tile going into
+ * New space already, so the space's tile grows in where it stands (its
+ * entrance) with no flight up from Today or a favorite's tile as well.
+ * Forgotten after a while: a space that never came is not waited for.
+ */
+const droppedOnNew = new Set<string>();
+const DROPPED_ON_NEW_MS = 3_000;
+
+export function grownByDrop(groupId: string): void {
+  droppedOnNew.add(groupId);
+  window.setTimeout(() => droppedOnNew.delete(groupId), DROPPED_ON_NEW_MS);
+}
+
+/** Whether `groupId` came by a drop on New space (grownByDrop): no flight to wait for, the card turns to it at once. */
+export function isGrownByDrop(groupId: string): boolean {
+  return droppedOnNew.has(groupId);
+}
+
 export class SpaceFlights extends Component<{ spaces: readonly FlightSpace[]; reduced: boolean; rootRef: RefObject<HTMLElement | null> }> {
   private readonly layer = createRef<HTMLDivElement>();
   private readonly running = new Set<{ ghost: HTMLElement; animation: Animation }>();
@@ -76,7 +96,7 @@ export class SpaceFlights extends Component<{ spaces: readonly FlightSpace[]; re
     const now = new Set(this.props.spaces.map((space) => space.id));
     const plan: Plan = { up: [], down: [] };
     for (const space of this.props.spaces) {
-      if (before.has(space.id)) continue;
+      if (before.has(space.id) || droppedOnNew.has(space.id)) continue;
       // Its row in Today (or its favorite's tile), as Home drew it a moment ago.
       for (const tabId of space.tabIds) {
         const row =
@@ -88,8 +108,12 @@ export class SpaceFlights extends Component<{ spaces: readonly FlightSpace[]; re
         break;
       }
     }
+    // Tabs a space on the rail holds now: a space gone whose tabs are there was merged into it (2026-10-14), and its tile
+    // settled into that one as it was let go (SpaceRail's carry) — it has no way back to Home to fly.
+    const onRail = new Set(this.props.spaces.flatMap((space) => space.tabIds));
     for (const space of previous.spaces) {
       if (now.has(space.id)) continue;
+      if (space.tabIds.length > 0 && space.tabIds.every((tabId) => onRail.has(tabId))) continue;
       const tile = root.querySelector<HTMLElement>(`[data-testid='rail-space'][data-group-id='${esc(space.id)}']`);
       if (tile === null || tile.getBoundingClientRect().width === 0) continue;
       plan.down.push({ id: space.id, from: boxIn(root, tile), picture: stillOf(tile), tabIds: space.tabIds });

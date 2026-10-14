@@ -8,7 +8,8 @@
  * `select`, naming the window that was on top when it was left. A row let
  * go beside an empty space is placed by the units as drawn (main's
  * `reorderTab(…, "units")`), and a favorite or pin let go on the current
- * empty space's header comes out on the desk.
+ * empty space's header comes out on the desk — as one chosen whose page (its
+ * own, or linked into the space) is on the desk in front does.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +23,7 @@ import { reorderDayTabs } from "../src/chrome/shelf-drag";
 import { dayUnits, dayUnitsInHand, type ChromeTab } from "../src/chrome/tabs";
 import { DeskEmpty } from "../src/components/desk/DeskEmpty";
 import { TabGroupRow } from "../src/components/TabGroupRow";
-import { bringOutJoined, deskAvailable, lendDeskEngine, newSpace, revealFor, selectSpace, shortcutSurface, splitAvailable, takeSpaceChoice } from "../src/lib/desk/open";
+import { bringOutJoined, deskAvailable, lendDeskEngine, newSpace, openEntry, revealFor, selectSpace, shortcutSurface, splitAvailable, takeSpaceChoice } from "../src/lib/desk/open";
 import type { DeskEngine } from "../src/components/desk/desk-engine";
 import { useDeskStore } from "../src/lib/desk/store";
 import { listDropAt, type MeasuredRow } from "../src/lib/sidebar-tree";
@@ -362,5 +363,44 @@ describe("a favorite or pin let go on the current empty space's header (bringOut
     // Another space's header: nothing comes out (the desk shows the current one).
     await bringOutJoined(null, "elsewhere");
     expect(added).toHaveLength(1);
+  });
+});
+
+describe("a favorite or pin chosen (openEntry: FavoritesGrid's tile, TabList's pin row)", () => {
+  afterEach(() => {
+    lendDeskEngine(null);
+    useAppStore.setState({ snapshot: null });
+  });
+
+  /** The desk up on space "g" (its tabs `onDesk`), main's tabs as given, and what reached the desk and main. */
+  function chosen(onDesk: readonly string[], tabs: ReadonlyArray<{ id: string; anchorId: string | null; linkedAnchorId?: string }>) {
+    const sidebarCommand = vi.fn(() => Promise.resolve());
+    desktop({ sidebarCommand });
+    const added: string[] = [];
+    lendDeskEngine({ hasGroupTab: (tabId: string) => onDesk.includes(tabId), add: (tabId: string) => added.push(tabId) } as unknown as DeskEngine);
+    useAppStore.setState({ snapshot: { currentGroupId: "g", tabs, tabGroups: [group("g", [...onDesk])], looseGroups: [], anchorGroups: [] } as unknown as ShellSnapshot });
+    return { sidebarCommand, added };
+  }
+
+  it("shows the window of its page linked into the space in front — the tab still in use, its window put away — and asks main nothing", async () => {
+    const { sidebarCommand, added } = chosen(["vendor"], [{ id: "vendor", anchorId: null, linkedAnchorId: "fav-vendor" }]);
+    await openEntry("fav-vendor");
+    expect(added).toEqual(["vendor"]);
+    expect(sidebarCommand).not.toHaveBeenCalled();
+  });
+
+  it("shows its anchored page's window on the desk the same way", async () => {
+    const { sidebarCommand, added } = chosen(["north"], [{ id: "north", anchorId: "pin-north" }]);
+    await openEntry("pin-north");
+    expect(added).toEqual(["north"]);
+    expect(sidebarCommand).not.toHaveBeenCalled();
+  });
+
+  it("asks main to open it when its page is in another space, or it has none: main goes there (the desk passes), or opens one", async () => {
+    const { sidebarCommand, added } = chosen(["other"], [{ id: "vendor", anchorId: null, linkedAnchorId: "fav-vendor" }]);
+    await openEntry("fav-vendor");
+    await openEntry("fav-closed");
+    expect(added).toEqual([]);
+    expect(sidebarCommand.mock.calls).toEqual([[{ type: "open", anchorId: "fav-vendor" }], [{ type: "open", anchorId: "fav-closed" }]]);
   });
 });

@@ -9,12 +9,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DragSample } from "@pistachio/shell-contracts/chrome";
+import type { DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
 import { DeskEngine, LAYOUT_PREVIEW_COVER } from "../src/components/desk/desk-engine";
 import { cascadeRects, columnRects, DESK_GAP, denormalizeRect, MIN_WINDOW_H, MIN_WINDOW_W, normalizeRect, rescaleRect, stackRects, tileRects, type Rect } from "../src/lib/desk/geometry";
 import {
   columnsFit,
+  cycledLayout,
   focusRects,
   holdsLayout,
   isLaidOutAs,
@@ -40,6 +42,11 @@ function expectRect(actual: Rect | undefined, expected: Rect): void {
 }
 
 /** `count` windows lying loose: overlapping, none in a layout's place. */
+/** The same box, within a pixel. */
+function sameBox(a: Rect, b: Rect): boolean {
+  return Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1 && Math.abs(a.w - b.w) < 1 && Math.abs(a.h - b.h) < 1;
+}
+
 function loose(count: number): Map<string, Rect> {
   return new Map(Array.from({ length: count }, (_, index) => [`w${String(index)}`, { x: 40 + index * 97, y: 30 + index * 61, w: 700, h: 520 }]));
 }
@@ -151,6 +158,44 @@ describe("where the windows go", () => {
   });
 });
 
+describe("a layout's windows turned round its places (Tab on a layout looked at)", () => {
+  const left: Rect = { x: 0, y: 0, w: 796, h: 1000 };
+  const right: Rect = { x: 804, y: 0, w: 796, h: 1000 };
+
+  it("trades two windows' places at each turn, and back with a turn the other way", () => {
+    const halves = new Map([
+      ["a", right],
+      ["b", left],
+    ]);
+    // In reading order the places are left then right: A, on the right, goes round to the left.
+    expect([...cycledLayout(halves, 1)]).toEqual([
+      ["a", left],
+      ["b", right],
+    ]);
+    expect(cycledLayout(halves, 2)).toEqual(new Map([["b", left], ["a", right]]));
+    expect(cycledLayout(halves, -1)).toEqual(cycledLayout(halves, 1));
+  });
+
+  it("moves each window to the next place in reading order, the last coming round to the first: each takes the main place in turn", () => {
+    const focused = layoutRects("focus", loose(3), desk, "w0")!;
+    const main = focusRects(3, desk)[0]!;
+    const holder = (layout: ReadonlyMap<string, Rect>): string => [...layout].find(([, rect]) => sameBox(rect, main))![0];
+    const holders = [0, 1, 2].map((turn) => holder(cycledLayout(focused, turn)));
+    expect(new Set(holders).size).toBe(3);
+    expect(holder(cycledLayout(focused, 3))).toBe(holders[0]);
+    // The places are the layout's own: only who holds which changes.
+    expect(isLaidOutAs("focus", [...cycledLayout(focused, 1).values()], desk)).toBe(true);
+  });
+
+  it("keeps a cascade's places back to front, so a turn restacks it", () => {
+    const cascade = layoutRects("cascade", loose(3), desk, "w0")!;
+    const turned = [...cycledLayout(cascade, 1)];
+    const ys = turned.map(([, rect]) => rect.y);
+    expect([...ys].sort((a, b) => a - b)).toEqual(ys);
+    expect(turned.map(([id]) => id)).not.toEqual([...cascade.keys()]);
+  });
+});
+
 describe("the layout the windows are in", () => {
   it("is recognised once laid out, for every layout each number of windows allows", () => {
     for (let count = 1; count <= 8; count += 1) {
@@ -254,8 +299,9 @@ function settle(): void {
   }
 }
 
-function native(): { drag: { sample: ((sample: DragSample) => void) | null } } {
+function native(): { drag: { sample: ((sample: DragSample) => void) | null }; desks: Array<DeskState | null> } {
   const drag: { sample: ((sample: DragSample) => void) | null } = { sample: null };
+  const desks: Array<DeskState | null> = [];
   const members = Object.fromEntries(Object.keys(NATIVE_SURFACE_MEMBERS).map((member) => [member, vi.fn()]));
   setShellApi({
     ...members,
@@ -263,7 +309,7 @@ function native(): { drag: { sample: ((sample: DragSample) => void) | null } } {
       throw new Error("no pointer");
     },
     setLayout: () => undefined,
-    setDesk: () => undefined,
+    setDesk: (state: DeskState | null) => desks.push(state),
     captureTabStills: () => Promise.resolve([]),
     focusTab: () => Promise.resolve(),
     onDragSample: (listener: (sample: DragSample) => void) => {
@@ -273,7 +319,7 @@ function native(): { drag: { sample: ((sample: DragSample) => void) | null } } {
       };
     },
   } as unknown as ShellApiBridge);
-  return { drag };
+  return { drag, desks };
 }
 
 /** Frames run, `count` of them (a gesture keeps asking for frames, so settle would run it out). */
@@ -288,9 +334,10 @@ function run(count: number): void {
 
 /** A desk of `count` shell-drawn windows over a 1600×1000 stage (`stage`, which a test may resize), laid loose (none in a layout), the last in use. */
 function open(count: number, stage = { width: 1600, height: 1000 }) {
-  const { drag } = native();
+  const { drag, desks } = native();
   const engine = new DeskEngine({
     variants: () => ({ ...DEFAULT_DESK_VARIANTS, zoom: "actual" as const }),
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: () => false,
     select: () => undefined,
     close: () => undefined,
@@ -308,7 +355,7 @@ function open(count: number, stage = { width: 1600, height: 1000 }) {
   settle();
   engine.restoreLayout({ windows: ids.map((tabId, index) => ({ tabId, rect: { x: 40 + index * 97, y: 30 + index * 61, w: 700, h: 520 }, mini: null })) });
   settle();
-  return { engine, drag, ids, stage };
+  return { engine, drag, desks, ids, stage };
 }
 
 describe("the engine's named layouts", () => {
@@ -390,6 +437,52 @@ describe("the engine's named layouts", () => {
     expect(engine.getView().clearCovers.has(LAYOUT_PREVIEW_COVER)).toBe(false);
     engine.destroy();
   });
+  it("turns a looked-at layout's windows round its places with Tab: the ghosts show it, a click lays them out so, and main takes Tab only while the pointer rests there", () => {
+    const { engine, desks } = open(2);
+    const ghostAt = (id: string): Rect => engine.getView().preview!.ghosts.find((ghost) => ghost.id === id)!.rect;
+    engine.previewLayout("halves", { cycle: true });
+    const first = { a: ghostAt("tab-0"), b: ghostAt("tab-1") };
+    expect(desks.at(-1)?.cycleKey).toBe(true);
+    expect(engine.cycleLayout(1)).toBe(true);
+    // The two trade places.
+    expectRect(ghostAt("tab-0"), first.b);
+    expectRect(ghostAt("tab-1"), first.a);
+    expect(engine.layOut("halves")).toBe(true);
+    settle();
+    expectRect(engine.layoutView().windows.get("tab-0"), first.b);
+    expectRect(engine.layoutView().windows.get("tab-1"), first.a);
+    // Laid out, the preview is gone, and Tab is the page's again.
+    expect(engine.getView().preview).toBeNull();
+    expect(desks.at(-1)?.cycleKey).toBe(false);
+    // The keyboard's look (no pointer) never takes Tab.
+    engine.previewLayout("stack");
+    expect(desks.at(-1)?.cycleKey).toBe(false);
+    engine.previewLayout(null);
+    engine.destroy();
+  });
+
+  it("draws nothing for the layout the desk is in until Tab turns its windows, then turns them where they stand", () => {
+    const { engine } = open(2);
+    engine.layOut("halves");
+    settle();
+    const before = { a: engine.layoutView().windows.get("tab-0")!, b: engine.layoutView().windows.get("tab-1")! };
+    engine.previewLayout("halves", { cycle: true });
+    expect(engine.getView().preview).toBeNull();
+    expect(engine.getView().clearCovers.has(LAYOUT_PREVIEW_COVER)).toBe(false);
+    engine.cycleLayout(1);
+    expect(engine.getView().preview?.kind).toBe("halves");
+    // A turn the other way and back is where they stand: nothing to draw again.
+    engine.cycleLayout(-1);
+    expect(engine.getView().preview).toBeNull();
+    engine.cycleLayout(-1);
+    expect(engine.layOut("halves")).toBe(true);
+    settle();
+    expectRect(engine.layoutView().windows.get("tab-0"), before.b);
+    expectRect(engine.layoutView().windows.get("tab-1"), before.a);
+    expect(engine.getView().layout).toBe("halves");
+    engine.destroy();
+  });
+
   it("is still in the layout it was laid out in once the desk is resized, or gives room to the chat, and not once a window is moved", () => {
     for (const kind of ["cascade", "tile", "focus"] as const) {
       const { engine, drag, ids, stage } = open(4);

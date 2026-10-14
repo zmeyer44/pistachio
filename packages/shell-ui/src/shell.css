@@ -2917,6 +2917,12 @@ body:not([data-chrome-view])::after {
 .desk-window[data-flight="away"][data-closing] {
   transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1);
 }
+/* Posed as the desk passes between spaces (Switching spaces: Bloom and the rest): the engine writes its opacity and blur
+   every frame, so neither a fade nor the coming-in animation above runs over them. */
+.desk-window[data-switching] {
+  transition: none;
+  animation: none;
+}
 /* A Glance over the desk: the windows recede as its card grows out of the clicked link, and come back as it goes, as
    .browser-pane-grid does (a filter, so a window's own opacity — thinning in hand, closing — is left as it is). */
 .desk-stage[data-glance] .desk-window {
@@ -2945,7 +2951,8 @@ body:not([data-chrome-view])::after {
     0 10px 28px -14px oklch(0 0 0 / 0.26);
   transition:
     box-shadow 240ms cubic-bezier(0.2, 0.8, 0.3, 1),
-    background-color 220ms ease;
+    background-color 220ms ease,
+    opacity 140ms ease;
 }
 .desk-window[data-focused] .desk-window-card {
   box-shadow:
@@ -3065,6 +3072,7 @@ body:not([data-chrome-view])::after {
   overflow: hidden;
   border-radius: var(--desk-window-radius) var(--desk-window-radius) 0 0;
   pointer-events: none;
+  transition: opacity 140ms ease;
 }
 .desk-window-drawer {
   position: absolute;
@@ -3169,6 +3177,98 @@ body:not([data-chrome-view])::after {
   box-shadow:
     0 2px 4px oklch(0 0 0 / 0.06),
     0 18px 40px -16px oklch(0 0 0 / 0.36);
+}
+
+/* Carried over the sidebar's column (2026-10-14; desk-engine.ts's #morphInto, lib/desk/dock-drop.ts): the window is
+   drawn as what it would be dropped as there — the engine sizes it to one of the card's rows or a rail tile, and its
+   page, drawer and handle fade out (with the card's shadow) as its face fades in: over the card, a raised row of its
+   icon and title; over the rail, a tile of the space it would go to (the rail's own neutral on Home and New space), its
+   icon on it. Grown back over the desk, the face fades out again. --duration-quick, as an icon swap. */
+.desk-window[data-morph] :is(.desk-window-card, .desk-window-drawer-clip, .desk-window-handle, .desk-window-marks-float) {
+  opacity: 0;
+}
+.desk-window-face {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-200),
+    0 8px 20px -8px oklch(0 0 0 / 0.32);
+  color: var(--color-gray-1000);
+  font-size: 12.5px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    border-radius 160ms ease,
+    background-color 160ms ease;
+}
+.desk-window-face[data-shown] {
+  opacity: 1;
+}
+.desk-window-face-icon {
+  flex-shrink: 0;
+}
+.desk-window-face-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A rail tile: 38px, rounded as the rail's, its icon in the middle on the space's tint over the rail's ground. */
+.desk-window-face[data-shape="tile"] {
+  justify-content: center;
+  padding: 0;
+  border-radius: 11px;
+  background: linear-gradient(var(--tg-tint-strong), var(--tg-tint-strong)), var(--color-background-200);
+  box-shadow:
+    0 0 0 2px var(--tg-solid),
+    0 10px 22px -8px oklch(0 0 0 / 0.36);
+}
+.desk-window-face[data-shape="tile"]:not([data-group-color]) {
+  background: var(--color-background-100);
+  box-shadow:
+    inset 0 0 0 1.5px var(--color-gray-700),
+    0 10px 22px -8px oklch(0 0 0 / 0.32);
+}
+.desk-window-face[data-shape="tile"] .desk-window-face-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+.desk-window-face[data-shape="tile"] .desk-window-face-title {
+  display: none;
+}
+:root[data-color-scheme="dark"] .desk-window-face {
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 10px 24px -8px oklch(0 0 0 / 0.7);
+}
+:root[data-color-scheme="dark"] .desk-window-face[data-shape="tile"] {
+  box-shadow:
+    0 0 0 2px var(--tg-solid),
+    0 10px 24px -8px oklch(0 0 0 / 0.7);
+}
+:root[data-color-scheme="dark"] .desk-window-face[data-shape="tile"]:not([data-group-color]) {
+  box-shadow:
+    inset 0 0 0 1.5px var(--color-gray-700),
+    0 10px 24px -8px oklch(0 0 0 / 0.7);
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-window-face,
+  .desk-window-card,
+  .desk-window-drawer-clip {
+    transition: none;
+  }
 }
 
 /* Masks (DeskWindow's MaskSelector; a masked window). Choosing, the page is
@@ -3916,11 +4016,13 @@ body:not([data-chrome-view])::after {
   box-shadow: inset 0 0 0 1.5px var(--color-gray-700);
   color: var(--color-gray-1000);
 }
+/* Home is a tile's beat from the first space, as the spaces are from each other: 4px, the rule, and the list's 5px
+   (until 2026-10-14, 26px). */
 .space-rail-rule {
   width: 18px;
   height: 1px;
   flex-shrink: 0;
-  margin: 15px 0 5px;
+  margin: 4px 0 0;
   background: var(--color-alpha-400);
 }
 /* The spaces scroll without a scrollbar when they outgrow the rail (5px at the top: the first tile's count). Its tiles'
@@ -3943,6 +4045,8 @@ body:not([data-chrome-view])::after {
 .space-rail-tile {
   transition:
     transform 240ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    translate 220ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    scale 200ms cubic-bezier(0.2, 0.8, 0.3, 1),
     opacity 200ms ease;
   animation: space-rail-tile-in 260ms cubic-bezier(0.2, 0.9, 0.25, 1.2);
 }
@@ -3953,7 +4057,7 @@ body:not([data-chrome-view])::after {
   }
 }
 /* The space's mark (TabGroupRow's FaviconCluster), a size up: its first four tabs' icons in a 2×2 on its colour, a
-   lone tab's filling it, an empty space's ring; its count on the corner. */
+   lone tab's filling it, an empty space's ring; past four tabs, its count on the corner. */
 .space-rail-tile .tab-group-mosaic {
   width: 38px;
   height: 38px;
@@ -4027,16 +4131,96 @@ body:not([data-chrome-view])::after {
     box-shadow: 0 0 0 2px var(--tg-tint-strong);
   }
 }
-/* A row carried onto it: it joins this space. */
+/* A row carried onto it: it joins this space. (A desk window carried onto it too, as its tile: lib/desk/chrome.ts.) */
 .space-rail-tile[data-dropping] .tab-group-mosaic {
   background: var(--tg-tint-strong);
   box-shadow: 0 0 0 2px var(--tg-solid);
 }
-/* Carried along the rail: it follows the pointer (SpaceRail's useRailMove), over the others. */
+/* A window gone into it — a tab moved to its space, a desk window let go on it — and it takes it with a little bounce
+   (the desk's #bounce, as a row's), Home's and New space's too. */
+.space-rail-tile[data-received] .tab-group-mosaic,
+:is(.space-rail-home, .space-rail-new)[data-received] > svg {
+  animation: desk-receive 520ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+/* A desk window carried over the card while it shows the desk's own space, to be put away into its row: the list washes
+   with the space's tint, a quiet cue under the row it is drawn as. */
+.space-card [data-testid="sidebar-tab-list"] {
+  transition: background-color 160ms ease;
+}
+.space-card[data-dropping] .space-view [data-testid="sidebar-tab-list"] {
+  border-radius: 10px;
+  background-color: color-mix(in oklab, var(--tg-tint) 60%, transparent);
+}
+/* A favorite or a pin whose page was brought into a space, still its (BrowserTabInfo.linkedAnchorId; 2026-10-14): open
+   there — a dot of that space's colour, where an open favorite's grey dot sits (a pin's at its row's end). */
+.entry-linked-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--tg-solid);
+  box-shadow: 0 0 0 1.5px var(--color-background-100);
+}
+/* A card item — a row, a favorite, a pin — carried over the rail (chrome/shelf-drag.tsx's RailToken; 2026-10-14): drawn
+   as a space's tile, the very face a desk window carried over the rail wears (.desk-window-face above: its tile shape,
+   its colours, dark mode), above the rail and the card, following the pointer (the token's frame is the pointer; its
+   face is placed round it). Its box eases between the row or tile it grew out of and the rail's 38px tile as it comes
+   onto the rail and leaves it; the item under it lights as for a row. */
+.shelf-rail-token {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.desk-window-face.shelf-rail-token-face {
+  inset: auto;
+  z-index: auto;
+  transition:
+    opacity 140ms ease,
+    left 200ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    top 200ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    width 200ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    height 200ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    border-radius 200ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .desk-window-face.shelf-rail-token-face {
+    transition: none;
+  }
+}
+/* Carried along the rail (SpaceRail's useRailMove): it follows the pointer, a hair larger, over the others — its
+   `translate` the pointer's, untimed; its `scale` eased, shrinking over a tile it would merge into. The tiles it passes
+   part to open the gap it would land in (their `transform`, eased as a row's FLIP). Let go, it glides into the gap
+   (data-settling="move") or shrinks away into the tile it merges into (="merge"). (2026-10-14; until then it moved
+   only, with no gap and no merge.) */
 .space-rail-tile[data-moving] {
   z-index: 2;
   cursor: grabbing;
-  transition: none;
+  transition: scale 160ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.space-rail-tile[data-moving] .tab-group-mosaic {
+  box-shadow: 0 8px 18px -8px oklch(0 0 0 / 0.4);
+}
+.space-rail-tile[data-settling] {
+  z-index: 2;
+  pointer-events: none;
+}
+.space-rail-tile[data-settling="merge"] {
+  transition:
+    translate 180ms cubic-bezier(0.3, 0.7, 0.4, 1),
+    scale 180ms cubic-bezier(0.3, 0.7, 0.4, 1),
+    opacity 160ms ease 40ms;
+}
+/* The tile a carried one would merge into: lit as for a row let go on it, and a ring a size out, standing for the space
+   it is taking in. */
+.space-rail-tile[data-merging] .tab-group-mosaic {
+  box-shadow:
+    0 0 0 2px var(--tg-solid),
+    0 0 0 5px var(--tg-tint-strong);
 }
 .space-rail-foot {
   display: flex;
@@ -4150,9 +4334,11 @@ body:not([data-chrome-view])::after {
 .space-view :is([role="tab"][aria-selected="true"], [data-split-group-id]:has([aria-selected="true"])) {
   background-color: var(--tg-tint);
 }
-/* A window's mark on the desk, inside the card's list padding (the list clips at its edge). */
+/* A window's mark on the desk, just inside its row: a dot 4px from the icon, the window in use's bar an accent at the
+   edge of its tint. (Until 2026-10-14 it stood out in the list's padding, 6px past the row — a wide gap to the icon on
+   a row with no tint behind it.) */
 .space-card .desk-row-mark {
-  left: -6px;
+  left: 1px;
 }
 /* A space's head: its name in its colour, its count, its ⋯. */
 .space-head {
@@ -4297,6 +4483,7 @@ body:not([data-chrome-view])::after {
 }
 @media (prefers-reduced-motion: reduce) {
   .space-rail-tile,
+  .space-rail-tile:is([data-moving], [data-settling]),
   .space-card-view,
   .space-card-wash {
     transition: none;
@@ -7999,12 +8186,14 @@ body[data-chrome-view="pip"] {
    below never jumps as it changes. Resting on a layout draws its ghosts on the
    desk: where each window would go, in the space's colour, over the windows
    (DeskWindow's 10 + z) and under the zone, the cards and the Bar. */
+/* In from the card's edges as the space's head and rule are: the track lines up with the rule, its caption with the name. */
 .layout-control {
   --layout-glyph-fill: transparent;
   display: flex;
   min-width: 0;
   flex-direction: column;
   align-items: flex-start;
+  margin: 0 10px;
 }
 .layout-track {
   position: relative;
@@ -8096,6 +8285,14 @@ body[data-chrome-view="pip"] {
 }
 .layout-caption-key {
   margin-left: 4px;
+  vertical-align: 1px;
+}
+/* With the pointer on a layout: Tab turns its windows round its places — said on a line of its own, quieter. */
+.layout-caption-cycle {
+  display: block;
+  color: var(--color-gray-800);
+}
+.layout-caption-cycle kbd {
   vertical-align: 1px;
 }
 

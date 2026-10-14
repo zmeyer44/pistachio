@@ -56,8 +56,19 @@ export function chromeTabsSharing(snapshot: ShellSnapshot | null, previous: read
   return same && next.length === previous.length ? (previous as ChromeTab[]) : next;
 }
 
+/** The keys a ChromeTab adds to its info. */
+const CHROME_KEYS = 3;
+
+/**
+ * The same info, key for key — and no key more: a field main stops sending
+ * (an optional one let go of, as a link that ends: `linkedAnchorId`) must not
+ * live on in the kept row. (Until 2026-10-14 only `b`'s keys were compared,
+ * and a row kept a field its tab had lost.)
+ */
 function sameInfo(a: ChromeTab, b: BrowserTabInfo): boolean {
-  for (const key of Object.keys(b) as Array<keyof BrowserTabInfo>) {
+  const keys = Object.keys(b) as Array<keyof BrowserTabInfo>;
+  if (Object.keys(a).length !== keys.length + CHROME_KEYS) return false;
+  for (const key of keys) {
     if (a[key] !== b[key]) return false;
   }
   return true;

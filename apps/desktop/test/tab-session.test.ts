@@ -72,6 +72,57 @@ describe("durable tab sessions", () => {
     expect(sanitizeTabSession(SESSION, new Set(["work"]))).toEqual(SESSION);
   });
 
+  it("keeps an entry's page linked in a space (2026-10-14): one tab per entry, never beside an anchor; a file without links reads as before", () => {
+    const tab = (id: string, anchorId: string | null, linkedAnchorId?: unknown) => ({
+      id,
+      spaceId: "work",
+      title: id,
+      url: `https://${id}.example/`,
+      faviconUrl: null,
+      anchorId,
+      lastActiveAt: 1,
+      ...(linkedAnchorId === undefined ? {} : { linkedAnchorId }),
+    });
+    const read = sanitizeTabSession(
+      {
+        version: TAB_SESSION_VERSION,
+        spaces: {
+          work: {
+            tabs: [
+              tab("a", null, "fav-1"),
+              // A second page of one entry: the first holds it.
+              tab("b", null, "fav-1"),
+              // An anchored tab is its entry's own page, and is linked to none.
+              tab("c", "pin-1", "fav-2"),
+              // An entry with a page of its own anchored, later in the file too: the link to it goes.
+              tab("d", null, "fav-3"),
+              tab("e", "fav-3"),
+              tab("f", null, ""),
+              tab("g", null, 42),
+            ],
+            activeTabId: "a",
+            recentTabIds: [],
+            splitGroups: [],
+          },
+        },
+      },
+      new Set(["work"]),
+    );
+    const tabs = read.spaces.work!.tabs;
+    expect(tabs.map((kept) => [kept.id, kept.anchorId, kept.linkedAnchorId ?? null])).toEqual([
+      ["a", null, "fav-1"],
+      ["b", null, null],
+      ["c", "pin-1", null],
+      ["d", null, null],
+      ["e", "fav-3", null],
+      ["f", null, null],
+      ["g", null, null],
+    ]);
+    // Absent, not undefined: the file a save writes back has no key for it.
+    expect(Object.keys(tabs[1]!)).not.toContain("linkedAnchorId");
+    expect(sanitizeTabSession(SESSION, new Set(["work"])).spaces.work!.tabs.every((kept) => !("linkedAnchorId" in kept))).toBe(true);
+  });
+
   it("restores four-pane grids and migrates legacy two-pane groups", () => {
     const extraTabs = ["tab-c", "tab-d"].map((id, index) => ({
       ...SESSION.spaces.work!.tabs[0]!,

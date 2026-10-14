@@ -258,7 +258,7 @@ test.describe.serial("the sidebar layout", { tag: ["@sidebar", "@settings"] }, (
     // without recreating it; hidden makes it inert after the retreat lands.
     await expect(shell.getByTestId("sidebar-chrome")).toBeHidden();
     await expect(shell.getByTestId("sidebar-edge")).toBeVisible();
-    await expect.poll(() => storedLayout(userData)).toEqual({ sidebar: "hidden" });
+    await expect.poll(() => storedLayout(userData)).toMatchObject({ sidebar: "hidden" });
     await expect.poll(() => windowState(app)).toMatchObject({ windowButtons: false, sidebarView: false });
     await expect.poll(async () => Math.round((await shell.getByTestId("sidebar-motion-slot").boundingBox())?.width ?? 0)).toBe(SIDEBAR_EDGE_W);
     const stage = await shell.locator(".desk-stage").boundingBox();
@@ -312,18 +312,18 @@ test.describe.serial("the sidebar layout", { tag: ["@sidebar", "@settings"] }, (
 
     // ⌘S goes on round the modes: whole, then a rail, then hidden again.
     await shell.keyboard.press("Meta+s");
-    await expect.poll(() => storedLayout(userData)).toEqual({ sidebar: "whole" });
+    await expect.poll(() => storedLayout(userData)).toMatchObject({ sidebar: "whole" });
     await expect(shell.getByTestId("sidebar-chrome")).toBeVisible();
     await expect(pane).not.toHaveAttribute("data-auto-hide", "");
     await expect(shell.getByTestId("sidebar-edge")).toHaveCount(0);
     await expect.poll(() => windowState(app)).toMatchObject({ windowButtons: true });
     await shell.keyboard.press("Meta+s");
-    await expect.poll(() => storedLayout(userData)).toEqual({ sidebar: "rail" });
+    await expect.poll(() => storedLayout(userData)).toMatchObject({ sidebar: "rail" });
     await expect(shell.locator('[data-testid="sidebar-motion-slot"][data-mode="rail"]')).toHaveCount(1);
     await expect(shell.getByRole("button", { name: "Show the whole sidebar" })).toBeVisible();
     await expect.poll(() => windowState(app)).toMatchObject({ windowButtons: false });
     await shell.keyboard.press("Meta+s");
-    await expect.poll(() => storedLayout(userData)).toEqual({ sidebar: "hidden" });
+    await expect.poll(() => storedLayout(userData)).toMatchObject({ sidebar: "hidden" });
     await expect(shell.getByTestId("sidebar-chrome")).toBeHidden();
     await expect(shell.getByTestId("sidebar-edge")).toBeVisible();
   });

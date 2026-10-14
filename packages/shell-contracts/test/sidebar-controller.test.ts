@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { SidebarController, type SidebarShelfStore, type SidebarTabHost } from "../src/sidebar-controller.js";
 import { DEFAULT_SIDEBAR_STATE, type SidebarState } from "../src/sidebar.js";
 import { DEFAULT_SETTINGS } from "../src/settings.js";
+import type { BrowserTabInfo } from "../src/ipc.js";
 
 function harness(options: { anchorLeavesOnSplit?: (anchorId: string, spaceId: string) => boolean } = {}): {
   controller: SidebarController;
@@ -129,5 +130,156 @@ describe("the shelf controller", () => {
     // An entry that is not there, open or not, is a no-op.
     await controller.run({ type: "bringDown", anchorId: "gone", index: 0 });
     expect(placed).toHaveLength(2);
+  });
+});
+
+/** A tab as the port hands it over; only what the shelf reads matters. */
+function tabInfo(id: string, anchorId: string | null, linkedAnchorId?: string): BrowserTabInfo {
+  return {
+    id,
+    spaceId: "work",
+    title: id,
+    url: `https://${id}.example/`,
+    faviconUrl: null,
+    loading: false,
+    canGoBack: false,
+    canGoForward: false,
+    kind: "human",
+    runId: null,
+    lifecycle: "live",
+    lastActiveAt: 1,
+    unlisted: false,
+    anchorId,
+    ...(linkedAnchorId === undefined ? {} : { linkedAnchorId }),
+  };
+}
+
+/**
+ * A host with spaces, as desktop main is (2026-10-14): it links an entry's page brought into a space (setLink) and
+ * brings a page down in one step of its own (bringDownPage); the controller only says which page and where.
+ */
+function spacesHarness(tabs: BrowserTabInfo[]) {
+  const made = harness();
+  const calls: unknown[][] = [];
+  const live = (): BrowserTabInfo[] => tabs;
+  made.browser.tabs = live;
+  made.browser.tab = (tabId) => live().find((tab) => tab.id === tabId) ?? null;
+  made.browser.tabForAnchor = (anchorId) => live().find((tab) => tab.anchorId === anchorId) ?? null;
+  made.browser.setAnchor = (tabId, anchorId) => void calls.push(["setAnchor", tabId, anchorId]);
+  made.browser.setLink = (tabId, anchorId) => {
+    calls.push(["setLink", tabId, anchorId]);
+    const tab = live().find((candidate) => candidate.id === tabId);
+    if (tab === undefined) return;
+    if (anchorId === null) delete tab.linkedAnchorId;
+    else tab.linkedAnchorId = anchorId;
+  };
+  made.browser.bringDownPage = async (anchorId, page, place) => void calls.push(["bringDownPage", anchorId, page, place]);
+  made.browser.selectTab = async (tabId) => void calls.push(["selectTab", tabId]);
+  made.browser.createTab = async (url, options) => {
+    calls.push(["createTab", url, options]);
+    return "fresh";
+  };
+  made.browser.placeDayTab = (tabId, place) => void calls.push(["placeDayTab", tabId, place]);
+  made.browser.navigate = async (tabId, url) => void calls.push(["navigate", tabId, url]);
+  return { ...made, calls };
+}
+
+describe("the shelf with spaces: an entry's page in a space stays its entry's (2026-10-14)", () => {
+  it("hands a bring-down to the host whole — its page, anchored or linked, or the entry's address and title — and where it goes", async () => {
+    const tabs = [tabInfo("own", null), tabInfo("linked", null)];
+    const { controller, state, calls } = spacesHarness(tabs);
+    await controller.run({ type: "addFavorite", source: { url: "https://mail.example/", title: "Mail" } });
+    await controller.run({ type: "addFavorite", source: { url: "https://docs.example/", title: "Docs" } });
+    const [mail, docs] = state().favorites as unknown as [{ id: string }, { id: string }];
+    tabs[0]!.anchorId = mail.id;
+    tabs[1]!.linkedAnchorId = docs.id;
+
+    await controller.run({ type: "bringDown", anchorId: mail.id, groupId: "trip", index: 1 });
+    await controller.run({ type: "bringDown", anchorId: mail.id, newGroupId: "space-new" });
+    await controller.run({ type: "bringDown", anchorId: mail.id, index: 3 });
+    await controller.run({ type: "bringDown", anchorId: mail.id });
+    // Its page already in a space: that tab is the one brought — never a second page.
+    await controller.run({ type: "bringDown", anchorId: docs.id, groupId: "work" });
+    tabs[0]!.anchorId = null;
+    // Closed: the address to open a fresh page at, called by the entry until it names itself.
+    await controller.run({ type: "bringDown", anchorId: mail.id, newGroupId: "space-2" });
+    expect(calls).toEqual([
+      ["bringDownPage", mail.id, { tabId: "own" }, { groupId: "trip", index: 1 }],
+      ["bringDownPage", mail.id, { tabId: "own" }, { newGroupId: "space-new" }],
+      ["bringDownPage", mail.id, { tabId: "own" }, { index: 3 }],
+      ["bringDownPage", mail.id, { tabId: "own" }, null],
+      ["bringDownPage", docs.id, { tabId: "linked" }, { groupId: "work" }],
+      ["bringDownPage", mail.id, { url: "https://mail.example/", title: "Mail" }, { newGroupId: "space-2" }],
+    ]);
+    // The controller itself lets go of nothing and places nothing: the host does it in one step.
+    expect(calls.some(([name]) => name === "setAnchor" || name === "placeDayTab" || name === "createTab")).toBe(false);
+    // An entry that is not there, open or not, is a no-op.
+    await controller.run({ type: "bringDown", anchorId: "gone", newGroupId: "space-3" });
+    expect(calls).toHaveLength(6);
+  });
+
+  it("opens an entry on its page: its own, else the tab linked to it in a space — never a fresh one beside it", async () => {
+    const tabs = [tabInfo("in-space", null, "fav-a"), tabInfo("own", "fav-b"), tabInfo("other", null, "fav-b")];
+    const { controller, calls } = spacesHarness(tabs);
+    await controller.run({ type: "open", anchorId: "fav-a" });
+    await controller.run({ type: "open", anchorId: "fav-b" });
+    expect(calls).toEqual([
+      ["selectTab", "in-space"],
+      ["selectTab", "own"],
+    ]);
+  });
+
+  it("carries the link with its entry made into another, and ends it — the page staying in its space — with the entry gone", async () => {
+    const tabs = [tabInfo("page", null)];
+    const { controller, state, calls } = spacesHarness(tabs);
+    await controller.run({ type: "addFavorite", source: { url: "https://mail.example/", title: "Mail" } });
+    const favorite = state().favorites[0]!;
+    tabs[0]!.linkedAnchorId = favorite.id;
+
+    // A favorite made a pin: its page in a space is the pin's now; and back.
+    await controller.run({ type: "favoriteToPin", favoriteId: favorite.id, folderId: null, index: 0 });
+    const pin = state().entries[0]!;
+    expect(tabs[0]!.linkedAnchorId).toBe(pin.id);
+    await controller.run({ type: "returnToPinned", pinId: pin.id });
+    expect(calls.at(-1)).toEqual(["navigate", "page", "https://mail.example/"]);
+    await controller.run({ type: "addFavorite", source: { pinId: pin.id } });
+    const again = state().favorites[0]!;
+    expect(tabs[0]!.linkedAnchorId).toBe(again.id);
+    expect(calls.filter(([name]) => name === "setAnchor")).toEqual([]);
+
+    // Removed — even dropped at a place among the day's tabs — the entry ends the link; the page is not moved or opened.
+    await controller.run({ type: "removeFavorite", favoriteId: again.id, index: 2 });
+    expect(tabs[0]!.linkedAnchorId).toBeUndefined();
+    expect(calls.some(([name]) => name === "placeDayTab" || name === "createTab")).toBe(false);
+
+    // A pin removed, and a folder deleted with its pins, do the same.
+    await controller.run({ type: "addFavorite", source: { url: "https://x.example/", title: "X" } });
+    await controller.run({ type: "favoriteToPin", favoriteId: state().favorites[0]!.id, folderId: null, index: 0 });
+    const second = state().entries[0]!;
+    tabs[0]!.linkedAnchorId = second.id;
+    await controller.run({ type: "unpin", pinId: second.id });
+    expect(tabs[0]!.linkedAnchorId).toBeUndefined();
+    await controller.run({ type: "createFolder", name: "Work", id: "folder" });
+    await controller.run({ type: "addFavorite", source: { url: "https://y.example/", title: "Y" } });
+    await controller.run({ type: "favoriteToPin", favoriteId: state().favorites[0]!.id, folderId: "folder", index: 0 });
+    const third = state().entries.find((entry) => entry.kind === "pin")!;
+    tabs[0]!.linkedAnchorId = third.id;
+    await controller.run({ type: "deleteFolder", folderId: "folder", includePins: true });
+    expect(tabs[0]!.linkedAnchorId).toBeUndefined();
+    expect(calls.some(([name]) => name === "placeDayTab" || name === "createTab")).toBe(false);
+  });
+
+  it("on a host without spaces, nothing is linked: a link is not a page there", async () => {
+    const { controller, browser, state } = harness();
+    const opened: string[] = [];
+    browser.tabs = () => [tabInfo("stray", null, "fav")];
+    browser.createTab = async (url) => {
+      opened.push(url);
+      return "fresh";
+    };
+    await controller.run({ type: "addFavorite", source: { url: "https://mail.example/", title: "Mail" } });
+    browser.tabs = () => [tabInfo("stray", null, state().favorites[0]!.id)];
+    await controller.run({ type: "open", anchorId: state().favorites[0]!.id });
+    expect(opened).toEqual(["https://mail.example/"]);
   });
 });

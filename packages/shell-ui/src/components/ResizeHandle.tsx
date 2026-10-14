@@ -30,6 +30,7 @@ export function ResizeHandle({
   defaultWidth,
   label,
   setWidth,
+  straddle = false,
 }: {
   /** The edge of the panel this handle sits on. */
   side: "left" | "right";
@@ -41,6 +42,11 @@ export function ResizeHandle({
   label: string;
   /** The store's setter — it clamps and persists, so the handle does neither. */
   setWidth(px: number): void;
+  /**
+   * Centred on the edge, its line drawn ON it, where nothing beside the panel is a window drag region it could lose to
+   * (the double sidebar's card: the column's own gap lies past it). Else as below.
+   */
+  straddle?: boolean;
 }) {
   const setPaneResizing = useAppStore((s) => s.setPaneResizing);
   const resizing = useAppStore((s) => s.paneResizing);
@@ -78,7 +84,7 @@ export function ResizeHandle({
   // declared LATER in the document, and Electron folds regions in document
   // order — the part of a no-drag handle that overlapped the gutter would be
   // added back as draggable and grab the window instead of the edge.
-  const offset = side === "left" ? -Math.round(HANDLE_W / 2) : 0;
+  const offset = straddle ? -HANDLE_W / 2 : side === "left" ? -Math.round(HANDLE_W / 2) : 0;
 
   return (
     <div

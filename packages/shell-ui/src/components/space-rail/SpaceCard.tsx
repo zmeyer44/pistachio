@@ -2,6 +2,7 @@ import { Component, createRef, type ReactNode } from "react";
 import { SIDEBAR_DEFAULT_W, SIDEBAR_MAX_W, SIDEBAR_MIN_W } from "@pistachio/shell-contracts/chrome";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { ChromeRegion } from "../../chrome/manifest-renderers";
+import { useDockLit } from "../../lib/desk/chrome";
 import { useAppStore } from "../../store";
 import { ResizeHandle } from "../ResizeHandle";
 import { HomeView } from "./HomeView";
@@ -34,8 +35,10 @@ export function SpaceCard({
   reduced: boolean;
 }) {
   const setSidebarWidth = useAppStore((state) => state.setSidebarWidth);
+  // A desk window carried over the card, to be put away into its row: a quiet cue on the card's list (lib/desk/chrome.ts).
+  const dropping = useDockLit("card");
   return (
-    <div data-testid="space-card" data-view={view === HOME_VIEW ? "home" : "space"} className="space-card" style={{ width }}>
+    <div data-testid="space-card" data-view={view === HOME_VIEW ? "home" : "space"} data-dropping={dropping ? "" : undefined} className="space-card" style={{ width }}>
       <div className="space-card-shoulder">
         <ChromeRegion region="toolbar" />
       </div>
@@ -57,6 +60,8 @@ export function SpaceCard({
         defaultWidth={SIDEBAR_DEFAULT_W}
         label="Resize sidebar"
         setWidth={setSidebarWidth}
+        // (Its line on the card's edge, not 3px in: the column's gap to the desk lies past it, no window drag region.)
+        straddle
       />
     </div>
   );

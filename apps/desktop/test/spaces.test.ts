@@ -18,6 +18,8 @@ import { DeskConversationStore } from "../src/main/desk-conversations";
 import { GroupContextStore } from "../src/main/group-context-store";
 import {
   chooseCurrentGroup,
+  claimIncomingEntries,
+  drawnSpacesBroughtDown,
   foldSplitGroups,
   keepWithRoom,
   mostRecentTab,
@@ -25,6 +27,7 @@ import {
   overCapEmptySpaces,
   roomForDrawn,
   placeAmongUnits,
+  moveSpaceHoldings,
   settleBeforeUnits,
   spaceHolds,
   tabsWithoutSpace,
@@ -475,6 +478,76 @@ describe("a tab moved into a space at the bound (BrowserController addToTabGroup
   });
 });
 
+describe("a favorite's page brought down at the bound (BrowserController bringDownPage: drawnSpacesBroughtDown)", () => {
+  /** Whether a Profile with `drawnNow` drawn spaces has room for the bring-down: what main checks before changing anything. */
+  const room = (drawnNow: number, place: Parameters<typeof drawnSpacesBroughtDown>[0], led: number | null): boolean =>
+    drawnNow + drawnSpacesBroughtDown(place, led) <= MAX_TAB_GROUPS_PER_SPACE;
+
+  it("into a new space with two tabs or more left behind in its page's space, needs two slots — the new space and the page's space let go of", () => {
+    expect(drawnSpacesBroughtDown({ newGroupId: "fresh" }, 3)).toBe(2);
+    // 49 drawn: the new space would take the last slot and leave the page's space none — refused whole.
+    expect(room(MAX_TAB_GROUPS_PER_SPACE - 1, { newGroupId: "fresh" }, 3)).toBe(false);
+    expect(room(MAX_TAB_GROUPS_PER_SPACE - 2, { newGroupId: "fresh" }, 3)).toBe(true);
+  });
+
+  it("into a new space otherwise needs one: alone, linked, or leaving one tab behind (that tab's loose space)", () => {
+    expect(drawnSpacesBroughtDown({ newGroupId: "fresh" }, null)).toBe(1);
+    expect(drawnSpacesBroughtDown({ newGroupId: "fresh" }, 1)).toBe(1);
+    expect(drawnSpacesBroughtDown({ newGroupId: "fresh" }, 2)).toBe(1);
+    expect(room(MAX_TAB_GROUPS_PER_SPACE - 1, { newGroupId: "fresh" }, 2)).toBe(true);
+    expect(room(MAX_TAB_GROUPS_PER_SPACE, { newGroupId: "fresh" }, null)).toBe(false);
+  });
+
+  it("among the day's tabs or where it stands, one only for a page's space with tabs beside it; into a space, none", () => {
+    expect(drawnSpacesBroughtDown({ index: 0 }, 2)).toBe(1);
+    expect(drawnSpacesBroughtDown(null, 3)).toBe(1);
+    expect(drawnSpacesBroughtDown({ index: 0 }, 1)).toBe(0);
+    expect(drawnSpacesBroughtDown(null, null)).toBe(0);
+    expect(drawnSpacesBroughtDown({ groupId: "dest" }, 5)).toBe(0);
+    expect(room(MAX_TAB_GROUPS_PER_SPACE, { groupId: "dest" }, 5)).toBe(true);
+  });
+});
+
+/* ------------------------- a restore point merged in ------------------------- */
+
+describe("a restore point merged in (BrowserController applyDurableSession: claimIncomingEntries)", () => {
+  const linked = (id: string, entry: string): DurableTab => ({ ...tab(id), linkedAnchorId: entry });
+  const claims = (tabs: readonly DurableTab[]) => tabs.map((each) => [each.id, each.anchorId, each.linkedAnchorId ?? null]);
+
+  // (Until 2026-10-14 only links were checked: an anchored page of an entry linked here came in anchored, two pages one entry.)
+  it("brings an anchored page of an entry open here — linked into a space, or anchored — in as a plain tab", () => {
+    const incoming = [tab("their-vendor", "fav-vendor"), tab("their-mail", "pin-mail"), tab("their-news", "pin-news")];
+    expect(claims(claimIncomingEntries(incoming, ["fav-vendor", "pin-mail"]))).toEqual([
+      ["their-vendor", null, null],
+      ["their-mail", null, null],
+      ["their-news", "pin-news", null],
+    ]);
+  });
+
+  it("brings a link to an entry open here in unlinked, and keeps one to an entry closed here", () => {
+    expect(claims(claimIncomingEntries([linked("a", "fav-vendor"), linked("b", "pin-docs")], ["fav-vendor"]))).toEqual([
+      ["a", null, null],
+      ["b", null, "pin-docs"],
+    ]);
+  });
+
+  it("gives an entry no two of the incoming: the first anchored page claims it before any link, then the first link", () => {
+    const incoming = [linked("link-first", "fav-x"), tab("page", "fav-x"), tab("page-again", "fav-x"), linked("one", "pin-y"), linked("two", "pin-y")];
+    expect(claims(claimIncomingEntries(incoming, []))).toEqual([
+      ["link-first", null, null],
+      ["page", "fav-x", null],
+      ["page-again", null, null],
+      ["one", null, "pin-y"],
+      ["two", null, null],
+    ]);
+  });
+
+  it("leaves everything else of a tab as it came", () => {
+    const [plain] = claimIncomingEntries([{ ...tab("t", "fav-vendor"), title: "Their vendor", lastActiveAt: 42 }], ["fav-vendor"]);
+    expect(plain).toEqual({ ...tab("t"), title: "Their vendor", lastActiveAt: 42 });
+  });
+});
+
 /* ------------------------------ what is theirs ---------------------------- */
 
 describe("spaceHolds", () => {
@@ -511,6 +584,58 @@ describe("spaceHolds", () => {
 
   it("holds nothing without the stores (a unit test's controller, the cloud host)", () => {
     expect(spaceHolds({ contexts: null, conversations: null, threads: null })("g1")).toEqual({ context: false, conversation: false });
+  });
+});
+
+describe("moveSpaceHoldings (a space merged into another, 2026-10-14)", () => {
+  it("moves the Stack and, to a space with no conversation of its own, the conversation; the space going holds nothing after", () => {
+    const contexts = new GroupContextStore(scratch());
+    const conversations = new DeskConversationStore(null);
+    const kept = new Set<string>(["run-trip", "run-lisbon"]);
+    const stores = { contexts, conversations, threads: { has: (runId: string) => kept.has(runId) } };
+    const holds = spaceHolds(stores);
+    contexts.addText("trip", "Trip", { kind: "fact", text: "Hotel QX7F2L" }, "person");
+    conversations.bind("trip", "run-trip");
+
+    // (True: the other space's conversation changed — the session must hear it when that space is in front.)
+    expect(moveSpaceHoldings(stores, "trip", "lisbon", "Lisbon")).toBe(true);
+    expect(contexts.items("lisbon").map((item) => item.kind === "fact" && item.text)).toEqual(["Hotel QX7F2L"]);
+    expect(contexts.get("lisbon")?.title).toBe("Lisbon");
+    expect(conversations.get("lisbon")).toBe("run-trip");
+    // Nothing is left to keep the space going, nor to open its conversation from.
+    expect(holds("trip")).toEqual({ context: false, conversation: false });
+    expect(conversations.get("trip")).toBe(null);
+  });
+
+  it("leaves the other space's own conversation its own: the one going is simply bound to no space (it stays in the list)", () => {
+    const conversations = new DeskConversationStore(null);
+    const kept = new Set<string>(["run-trip", "run-lisbon"]);
+    const stores = { contexts: null, conversations, threads: { has: (runId: string) => kept.has(runId) } };
+    conversations.bind("trip", "run-trip");
+    conversations.bind("lisbon", "run-lisbon");
+    expect(moveSpaceHoldings(stores, "trip", "lisbon", "Lisbon")).toBe(false);
+    expect(conversations.get("lisbon")).toBe("run-lisbon");
+    expect(conversations.get("trip")).toBe(null);
+    expect(conversations.groupsOf("run-trip")).toEqual([]);
+
+    // A binding whose thread was pruned is no conversation: the one coming takes its place.
+    conversations.bind("trip", "run-trip");
+    kept.delete("run-lisbon");
+    expect(moveSpaceHoldings(stores, "trip", "lisbon", "Lisbon")).toBe(true);
+    expect(conversations.get("lisbon")).toBe("run-trip");
+  });
+
+  it("moves nothing — conversation included — when the Stack cannot go whole", () => {
+    const contexts = new GroupContextStore(scratch());
+    const conversations = new DeskConversationStore(null);
+    const stores = { contexts, conversations, threads: { has: () => true } };
+    for (let index = 0; index < 60; index += 1) contexts.addText("lisbon", "Lisbon", { kind: "fact", text: `l ${String(index)}` }, "person");
+    contexts.addText("trip", "Trip", { kind: "fact", text: "one more" }, "person");
+    conversations.bind("trip", "run-trip");
+    expect(() => moveSpaceHoldings(stores, "trip", "lisbon", "Lisbon")).toThrow(/more than 60/);
+    expect(contexts.items("trip")).toHaveLength(1);
+    expect(conversations.get("trip")).toBe("run-trip");
+    expect(conversations.get("lisbon")).toBe(null);
   });
 });
 

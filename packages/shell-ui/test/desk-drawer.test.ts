@@ -128,6 +128,7 @@ async function open(options: { stills?: boolean } = {}) {
   const desk = new DeskEngine({
     // (Every page at its own size, as these were written for: Page zoom's Fit is desk-page-zoom.test.ts's.)
     variants: () => ({ ...DEFAULT_DESK_VARIANTS, zoom: "actual" as const }),
+    spaceSwitch: () => ({ exit: "tile", arrival: "tile" }),
     hasLivePage: () => true,
     select: () => undefined,
     close: () => undefined,

@@ -860,6 +860,25 @@ export class RunController {
   }
 
   /**
+   * The conversation bound to a space (tab group) changed outside the
+   * console — a space merged into it brought its own (main's
+   * moveGroupHoldings, ./spaces moveSpaceHoldings; docs/spaces.md §1,
+   * "Merging spaces"): when that space is the one in front, its
+   * conversation opens now, as followGroup would open it — which followGroup
+   * cannot do here, since the space in front did not change and it ignores
+   * the same space. Any other space opens it when it comes to the front.
+   * (Until 2026-10-14 the console stayed on the empty conversation it
+   * showed, and the next message started a fresh thread, bound over the
+   * one just moved in.)
+   */
+  groupConversationChanged(groupId: string): void {
+    const host = this.#deskHost;
+    if (host === null || this.#desk?.groupId !== groupId) return;
+    this.#openForDesk(host, groupId);
+    this.#onChange();
+  }
+
+  /**
    * A desk turn ended in a space no longer in front (the person moved on
    * while it ran): the console follows them now — the conversation of the
    * space they are in — rather than stay on the old thread, where the next

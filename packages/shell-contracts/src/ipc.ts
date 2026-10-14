@@ -147,9 +147,28 @@ export interface BrowserTabInfo {
    * The sidebar shelf entry this tab is the live page of — a pin's or a
    * favorite's id, or `preset:<url>` for an organization link — or null for
    * an ordinary day tab (@pistachio/shell-contracts/sidebar). Closing an anchored tab keeps
-   * the entry; opening the entry again binds a fresh tab to it.
+   * the entry; opening the entry again binds a fresh tab to it — unless a
+   * tab in a space is linked to it (`linkedAnchorId`), which it goes to.
    */
   anchorId: string | null;
+  /**
+   * The sidebar entry — a favorite's, a pin's or a preset's anchor — whose
+   * page this tab was when the person brought it into a space (docs/spaces.md
+   * §1, "A favorite in a space"; since 2026-10-14): the entry stays OPEN on
+   * this tab. Choosing the favorite or pin goes to it, in whatever space it
+   * is now (the desk passes there), and the shelf draws the entry as open
+   * there, in that space's colour (`entryPageOf`, sidebar.ts). Not an anchor:
+   * the tab is a day tab of its space like any other — grouped, moved,
+   * Tidied as one — and never leads a page's space. Only the tab's end ends
+   * it (closed, archived, moved to another Profile); moving it to another
+   * space or to Home keeps it, and a tab made an entry's own page (pinned,
+   * made a favorite) lets go of it. One tab per entry, and never beside a
+   * page anchored to the same entry. (Until 2026-10-14 a page brought into a
+   * space let go of its entry outright, and choosing the entry opened a fresh
+   * page in Home.) Absent on every other tab, and where the host has no
+   * spaces.
+   */
+  linkedAnchorId?: string;
   /**
    * Forced focus: the page is told it is the visible, focused tab even while
    * it sits in the background (apps/desktop/src/main/forced-focus.ts).
