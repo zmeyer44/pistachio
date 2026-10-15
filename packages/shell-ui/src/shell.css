@@ -4277,7 +4277,8 @@ body:not([data-chrome-view])::after {
   flex-shrink: 0;
   align-items: center;
   gap: 2px;
-  padding: 0 6px 0 30px;
+  /* (Past the shoulder's edge, SpaceColumn's SHOULDER_X, by the same 8px.) */
+  padding: 0 6px 0 36px;
 }
 .space-card-address {
   display: flex;

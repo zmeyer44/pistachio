@@ -495,7 +495,16 @@ export type ShellShortcutAction =
   | "newTabAddress"
   | "newSpaceAddress"
   | "newSpace"
-  | "newTerminal";
+  | "newTerminal"
+  | "goToHome"
+  | "goToSpace1"
+  | "goToSpace2"
+  | "goToSpace3"
+  | "goToSpace4"
+  | "goToSpace5"
+  | "goToSpace6"
+  | "goToSpace7"
+  | "goToSpace8";
 
 export type ShellShortcutsRecord = Record<ShellShortcutAction, string | null>;
 

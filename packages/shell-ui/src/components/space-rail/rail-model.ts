@@ -10,9 +10,10 @@
  */
 
 import { SIDEBAR_CARD_INSET, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
-import type { SidebarMode } from "@pistachio/shell-contracts/settings";
-import { entryPageOf } from "@pistachio/shell-contracts/sidebar";
+import type { PresetLink, SidebarMode } from "@pistachio/shell-contracts/settings";
+import { entryPageOf, presetAnchorId, type SidebarState } from "@pistachio/shell-contracts/sidebar";
 import { dayRowUnits, MAX_TAB_GROUPS_PER_SPACE, type DayRowUnit, type TabGroupColor, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { pinnedRows } from "../../lib/sidebar-tree";
 
 /** The card's view: Home's, or a space's (its id). */
 export type ColumnView = "home" | (string & {});
@@ -92,6 +93,11 @@ export function railSpacesOf(snapshot: RailSnapshot | null, entryOrder: readonly
   return [...drawn, ...pages];
 }
 
+/** The order of the entries whose pages' spaces the rail lists (railSpacesOf's `entryOrder`): the preset links', the favorites', then the pins'. */
+export function railEntryOrder(presets: readonly PresetLink[], sidebar: SidebarState): string[] {
+  return [...presets.map((link) => presetAnchorId(link.url)), ...sidebar.favorites.map((favorite) => favorite.id), ...pinnedRows(sidebar.entries).flatMap((row) => (row.kind === "pin" ? [row.pin.id] : []))];
+}
+
 /**
  * The card's view for the current space (docs/double-sidebar.md §2): Home's
  * while the space in use is one of Home's — a loose tab's, or a favorite's
@@ -111,6 +117,18 @@ export function isHomeSpace(groupId: string, snapshot: RailSnapshot | null): boo
   if (snapshot.looseGroups?.some((group) => group.id === groupId) === true) return true;
   const page = snapshot.anchorGroups?.find((group) => group.id === groupId);
   return page !== undefined && page.tabIds.length < 2;
+}
+
+/**
+ * Whether a tab is in one of Home's spaces (isHomeSpace) — or in none the snapshot lists — as main's `inHome` says:
+ * an entry's page there is the one choosing the entry shows; one in a space stays that space's, and the entry opens
+ * afresh in Home (docs/spaces.md §1, "A favorite in a space").
+ */
+export function tabInHome(tabId: string, snapshot: Pick<RailSnapshot, "tabGroups" | "anchorGroups"> | null): boolean {
+  if (snapshot === null) return true;
+  if (snapshot.tabGroups.some((group) => group.tabIds.includes(tabId))) return false;
+  const page = snapshot.anchorGroups?.find((group) => group.tabIds.includes(tabId));
+  return page === undefined || page.tabIds.length < 2;
 }
 
 /**
@@ -361,8 +379,9 @@ export function entryLinksOf(
  * (@pistachio/shell-contracts/sidebar's entryPageOf) — or null while the
  * entry is closed; and whether that page has wandered from the entry's
  * address (loaded at another one: a pin's Return to pinned page, which main's
- * returnToPinned finds the same way). Open either way, the menu shows it
- * ("Show", not "Open") and offers closing it. (Until 2026-10-14 the row and
+ * returnToPinned finds the same way). Open either way, the menu offers
+ * closing it — and shows it ("Show") when it is in Home (tabInHome), where
+ * choosing the entry goes to it. (Until 2026-10-14 the row and
  * the menus looked at an anchored page alone: a pin's page brought into a
  * space and navigated on had no way back to its address from either.)
  */

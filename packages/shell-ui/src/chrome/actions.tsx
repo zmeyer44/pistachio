@@ -67,6 +67,7 @@ import {
   type ShortcutPlatform,
 } from "@pistachio/shell-contracts/shortcuts";
 import { nativeApi } from "../api";
+import { chooseHome, chooseRailSpace } from "../components/space-rail/actions";
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
 import { arrangeDesk, newSpaceByKey, shortcutSurface, splitAvailable } from "../lib/desk/open";
@@ -603,6 +604,19 @@ export function runConfiguredShortcut(
     // An empty space, current at once, its name field open in the sidebar — unless a dialog is asking something (lib/desk/open.ts).
     case "newSpace":
       return newSpaceByKey();
+    // Slack's ⌘1–⌘9: Home, then the rail's spaces top to bottom (components/space-rail/actions.ts).
+    case "goToHome":
+      void chooseHome();
+      return true;
+    case "goToSpace1":
+    case "goToSpace2":
+    case "goToSpace3":
+    case "goToSpace4":
+    case "goToSpace5":
+    case "goToSpace6":
+    case "goToSpace7":
+    case "goToSpace8":
+      return chooseRailSpace(Number(id.slice("goToSpace".length)));
   }
 }
 

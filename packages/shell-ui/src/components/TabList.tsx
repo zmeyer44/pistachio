@@ -72,7 +72,7 @@ import { useAgentWorkingIn } from "./useAgentTab";
 import { renameSpace } from "./space-rail/column-state";
 import { openBeside } from "./space-rail/actions";
 import { useEntryLinks } from "./space-rail/entry-links";
-import { entryPageFor, type EntryLink } from "./space-rail/rail-model";
+import { entryPageFor, tabInHome, type EntryLink } from "./space-rail/rail-model";
 import { Kbd } from "./ui/kbd";
 
 /**
@@ -1517,7 +1517,7 @@ export function TabList({ view }: { view?: TabListView } = {}) {
   const openPin = (pin: SidebarPin, event: TabSelectionEvent): void => {
     selectForBulk(pinSelectionKey(pin.id), event, () => {
       // On its own desk, its window is shown there — its page, or the tab linked to it in a space: its tab may still be
-      // the one in use, the window put away (openEntry). Else main goes to it, or opens it.
+      // the one in use, the window put away (openEntry). Else main opens it in Home: its page there, or a fresh one.
       void openEntry(pin.id);
     });
   };
@@ -1786,7 +1786,8 @@ export function TabList({ view }: { view?: TabListView } = {}) {
     const page = entryPageFor(tabs, pin);
     return [
       {
-        label: page === null ? "Open" : "Show",
+        // (On the desktop, its page in a space stays that space's, and choosing the pin opens one in Home.)
+        label: page === null || (deskAvailable() && !tabInHome(page.tab.id, useAppStore.getState().snapshot)) ? "Open" : "Show",
         // (As a click does: openEntry.)
         onSelect: () => void openEntry(pin.id),
       },

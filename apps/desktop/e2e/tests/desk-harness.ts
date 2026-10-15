@@ -206,6 +206,22 @@ export const windowSelector = (tabId: string): string => `[data-testid="desk-win
 
 /** The desk's window in use (the browser's active tab's, the person on it): where a page the shell draws — home, the brief — is the live one. */
 export const windowInUse = (shell: Page): Locator => shell.locator('[data-testid="desk-window"][data-focused]');
+
+/** A text file dragged over the desk and let go on its workspace at a point: the drop zone comes up first, as for a person's drag. */
+export async function dropFileOnDesk(shell: Page, name: string, text: string, at: { x: number; y: number }): Promise<void> {
+  const data = await shell.evaluateHandle(
+    ({ name, text }) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([text], name, { type: "text/plain" }));
+      return transfer;
+    },
+    { name, text },
+  );
+  await shell.dispatchEvent(".desk-stage", "dragenter", { dataTransfer: data, clientX: at.x, clientY: at.y });
+  await expect(shell.locator('[data-testid="desk-drop-zone"][data-up]')).toHaveCount(1);
+  for (const type of ["dragenter", "dragover", "drop"]) await shell.dispatchEvent('[data-testid="desk-drop-zone"]', type, { dataTransfer: data, clientX: at.x, clientY: at.y });
+}
+
 /**
  * A tab's row in the sidebar's card — the desk's dock. Only the shown view's rows are drawn (docs/double-sidebar.md):
  * a space's while it is the current one, Home's loose tabs while Home shows; another space's tab is found by choosing

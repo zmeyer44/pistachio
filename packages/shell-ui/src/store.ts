@@ -593,7 +593,7 @@ export interface AppState {
   /** The console's feedback popover; the outcome is the popover's to show. */
   submitFeedback(input: FeedbackInput): Promise<FeedbackOutcome>;
   closeGlance(): Promise<void>;
-  promoteGlance(): Promise<void>;
+  promoteGlance(how?: "fill" | "tile"): Promise<void>;
   splitGlance(): Promise<void>;
   dismissRecent(host: string): void;
   /** A new tab, shown: in the current space, or — `{ group: "loose" }` — a Home tab of its own (ShellCreateTabOptions). */
@@ -1639,7 +1639,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }, set),
   submitFeedback: (input) => shellApi().submitFeedback(input),
   closeGlance: () => safeAction(() => shellApi().closeGlance(), set),
-  promoteGlance: () => safeAction(() => shellApi().promoteGlance(), set),
+  promoteGlance: (how) => safeAction(() => shellApi().promoteGlance(how), set),
   splitGlance: () => safeAction(() => shellApi().splitGlance(), set),
   dismissRecent: (host) => set((state) => ({ recents: dismissRecent(state.recents, host) })),
   // Picking or opening a tab is a request to see it: a full-window page

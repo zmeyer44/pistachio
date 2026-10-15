@@ -229,6 +229,45 @@ describe("the shelf with spaces: an entry's page in a space stays its entry's (2
     ]);
   });
 
+  it("on a host with Home, opens an entry there: its page in Home shown; its page in a space let go of, and a fresh one opened", async () => {
+    const tabs = [tabInfo("at-home", null), tabInfo("linked", null), tabInfo("leading", null)];
+    const { controller, browser, state, calls } = spacesHarness(tabs);
+    for (const name of ["a", "b", "c"]) await controller.run({ type: "addFavorite", source: { url: `https://${name}.example/`, title: name } });
+    const [a, b, c] = state().favorites as unknown as [{ id: string }, { id: string }, { id: string }];
+    tabs[0]!.anchorId = a.id;
+    tabs[1]!.linkedAnchorId = b.id;
+    // (Its page leading a space of its own tabs, which the rail draws: not Home's either.)
+    tabs[2]!.anchorId = c.id;
+    browser.inHome = (tabId) => tabId === "at-home";
+    let room = true;
+    browser.releaseEntryPage = (tabId) => {
+      calls.push(["releaseEntryPage", tabId]);
+      return room;
+    };
+    calls.length = 0;
+
+    await controller.run({ type: "open", anchorId: a.id });
+    await controller.run({ type: "open", anchorId: b.id });
+    await controller.run({ type: "open", anchorId: c.id });
+    expect(calls).toEqual([
+      ["selectTab", "at-home"],
+      // Let go of before the fresh page is made: a tab bound to the entry does not end a link by itself.
+      ["releaseEntryPage", "linked"],
+      ["createTab", "https://b.example/", { anchorId: b.id }],
+      ["releaseEntryPage", "leading"],
+      ["createTab", "https://c.example/", { anchorId: c.id }],
+    ]);
+
+    // Refused — no room for the space its page would leave behind — the entry goes to its page where it is, no second page made.
+    room = false;
+    calls.length = 0;
+    await controller.run({ type: "open", anchorId: c.id });
+    expect(calls).toEqual([
+      ["releaseEntryPage", "leading"],
+      ["selectTab", "leading"],
+    ]);
+  });
+
   it("carries the link with its entry made into another, and ends it — the page staying in its space — with the entry gone", async () => {
     const tabs = [tabInfo("page", null)];
     const { controller, state, calls } = spacesHarness(tabs);

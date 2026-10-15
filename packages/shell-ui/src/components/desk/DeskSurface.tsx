@@ -340,6 +340,16 @@ export default function DeskSurface() {
       editAddress: (tabId) => {
         if (isTabWindow(tabId)) useAppStore.getState().openUrlBar(tabId);
       },
+      // A Home tab's window taken off the whole desk — moved, resized, let go of, masked — is no browser's tab any more:
+      // its space is one of its own, on the rail (main's ownSpace: the same space, so the desk stays on it, the window
+      // where it was let go). Until 2026-10-14 it stayed a Home tab, its window wherever it was left.
+      brokeAway: (tabId) => {
+        const store = useAppStore.getState();
+        const groupId = shownGroup.current;
+        if (groupId === null || !isTabWindow(tabId) || !isHomeSpace(groupId, store.snapshot)) return;
+        if (!latest.current.tabs.some((tab) => tab.id === tabId)) return;
+        void store.tabGroupCommand({ type: "ownSpace", groupId });
+      },
       save: (windows, reserve) => {
         if (shownGroup.current !== null) useDeskStore.getState().save(shownGroup.current, reserve > 0 ? { windows, reserve } : { windows });
       },
@@ -467,6 +477,15 @@ export default function DeskSurface() {
       // (What it saves from here is the new desk's.)
       shownGroup.current = groupId;
       engine.regroup(groupTabIds, shellIds, groupId);
+      return;
+    }
+    // A Glance taken in filling the desk from a Home tab: a Home tab of its own (main's; a Home tab's space takes no tab,
+    // docs/double-sidebar.md §1), its window where the preview landed already — the desk takes its space on in place,
+    // the page it was opened from going home to its row, rather than passing to it (2026-10-14).
+    if (chosen !== null && desk.saved[groupId] === undefined && engine.awaitsLanding(chosen)) {
+      shownGroup.current = groupId;
+      engine.regroup(groupTabIds, shellIds, groupId);
+      engine.add(chosen, { focus: true });
       return;
     }
     const saved = desk.saved[groupId]?.windows ?? [];
@@ -898,6 +917,9 @@ export default function DeskSurface() {
         : {
             land: (how) => {
               const current = useAppStore.getState().glance;
+              // In Home, filling the desk it is a Home tab of its own (main's promotion; the desk takes its space on in
+              // place, its window where it lands here: the passing, above); as a tile beside the page in use, main grows
+              // the two into a space, as the row's + does — back to Home once one is closed (#setBeside's `grow`).
               const landing = current === null ? null : engine.receiveGlance(current.tab.id, how, current.ownerTabId);
               if (landing === null) return null;
               const bounds = ({ x, y, w, h }: { x: number; y: number; w: number; h: number }) => ({ x, y, width: w, height: h });

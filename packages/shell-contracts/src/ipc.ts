@@ -972,7 +972,12 @@ export interface ShellApi {
    */
   submitFeedback(input: FeedbackInput): Promise<FeedbackOutcome>;
   closeGlance(): Promise<void>;
-  promoteGlance(): Promise<void>;
+  /**
+   * The preview made a tab beside the page that opened it. On a desk it is taken in filling the desk or as a tile
+   * beside that page (`how`, "fill" when not said): a tile is a second window on the page's, so it grows a Home tab's
+   * space into a space of two, where one filling the desk is a Home tab of its own (docs/double-sidebar.md §1).
+   */
+  promoteGlance(how?: "fill" | "tile"): Promise<void>;
   splitGlance(): Promise<void>;
   /** Escape pressed inside a native page asks the shell to run the same close motion. */
   onGlanceDismissRequested(listener: (hasFocused: boolean) => void): () => void;
@@ -1632,6 +1637,10 @@ export const IPC = {
   tabPolicyBlocked: "pistachio:tab-policy-blocked",
   tabEmptyCopy: "pistachio:tab-empty-copy",
   tabPasskeySupportReport: "pistachio:tab-passkey-support-report",
+  /** Main → a tab's page (preload/tab.ts): the zoom its page is to have, set on its own frame so it is that tab's alone. */
+  tabZoom: "pistachio:tab-zoom",
+  /** A tab's page, as each document starts → main: the zoom it is to have. */
+  tabZoomGet: "pistachio:tab-zoom-get",
   findGet: "pistachio:find-get",
   findChanged: "pistachio:find-changed",
   findCommand: "pistachio:find-command",

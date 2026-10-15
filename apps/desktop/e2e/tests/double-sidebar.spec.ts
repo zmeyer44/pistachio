@@ -26,6 +26,7 @@ import { expect, test, type ElectronApplication, type Locator, type Page } from 
 import { SIDEBAR_CARD_INSET, SIDEBAR_DEFAULT_W, SIDEBAR_EDGE_W, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
+import { MAX_TAB_GROUPS_PER_SPACE } from "@pistachio/shell-contracts/tab-groups";
 import { settled as chromeSettled } from "./chrome-harness";
 import {
   box,
@@ -34,6 +35,7 @@ import {
   chooseHome,
   chooseSpace,
   createGroup,
+  dropFileOnDesk,
   groupSelector,
   homeView,
   INVOICES,
@@ -225,6 +227,34 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     await chooseHome(shell);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(invoices);
     await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
+
+    // ── 5. Down the rail by its keys, as Slack's: ⌘1 Home, ⌘2 on the spaces top to bottom (a page's space too) ─
+    await shell.keyboard.press("Meta+3");
+    await expect(railSpace(shell, "ds-errands")).toHaveAttribute("aria-current", "true");
+    await shell.keyboard.press("Meta+4");
+    await expect(railSpace(shell, mailSpace)).toHaveAttribute("aria-current", "true");
+    await shell.keyboard.press("Meta+2");
+    await expect(railSpace(shell, "ds-research")).toHaveAttribute("aria-current", "true");
+    await expect(spaceView(shell, "ds-research")).toHaveCount(1);
+    await settled(shell, app);
+    // A page holding the keyboard: main hands the key on to the shell.
+    await expect
+      .poll(() =>
+        app.evaluate(({ webContents }, address) => {
+          const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === address);
+          if (contents === undefined || contents.isLoading()) return false;
+          contents.sendInputEvent({ type: "keyDown", keyCode: "1", modifiers: ["meta"] });
+          contents.sendInputEvent({ type: "keyUp", keyCode: "1", modifiers: ["meta"] });
+          return true;
+        }, SOUTH),
+      )
+      .toBe(true);
+    await expect(railHome(shell)).toHaveAttribute("aria-current", "true");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(invoices);
+    await settled(shell, app);
+    // Past the last space: nothing.
+    await shell.keyboard.press("Meta+5");
+    await expect(railHome(shell)).toHaveAttribute("aria-current", "true");
   });
 
   test("a Today row's + grows its tab into a space: up on the rail, the card turned to it, its desk two windows side by side; one closed, it goes back to Home", async () => {
@@ -529,31 +559,72 @@ test.describe.serial("the rail takes favorites, pins and spaces", { tag: ["@side
     expect((await snapshot(shell)).tabs.some((tab) => tab.url === NORTH)).toBe(false);
   });
 
-  test("a favorite brought into a space goes there when chosen: the desk passes to it and the card turns to it, never back to Home (and no second page opens)", async () => {
+  test("a favorite chosen in Home opens there, a page of its own — never in a space made of its page: one brought into a space, or one with a tab beside it, stays that space's", async () => {
     test.setTimeout(60_000);
     await chooseHome(shell);
-    // Every view the card shows from here, and every current space main names.
+    // Every view the card shows from here.
     await shell.evaluate(() => {
       const record: string[] = [];
       (window as unknown as { __views: string[] }).__views = record;
       const column = document.querySelector<HTMLElement>('[data-testid="sidebar-chrome"]')!;
       new MutationObserver(() => record.push(column.dataset["view"] ?? "")).observe(column, { attributes: true, attributeFilter: ["data-view"] });
     });
-    await homeView(shell).locator('[data-testid="favorite-tile"][data-flip-id="fav-vendor"]').click();
-    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(vendorSpace);
-    expect((await snapshot(shell)).activeTabId).toBe(vendorTab);
-    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="space"]')).toHaveCount(1);
-    await expect(spaceView(shell, vendorSpace)).toHaveCount(1);
-    await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${vendorSpace}"]`)).toHaveCount(1);
+    const views = (): Promise<string[]> => shell.evaluate(() => (window as unknown as { __views: string[] }).__views);
+    const pageOf = async (anchorId: string): Promise<string | null> => (await snapshot(shell)).tabs.find((tab) => tab.anchorId === anchorId)?.id ?? null;
+
+    // ── 1. Its page brought into a space (the test before): chosen, a fresh page of it in Home, in use; the space keeps
+    //       its tab, no longer the favorite's. (Earlier on 2026-10-14 it went there, the desk passing to that space.) ─
+    const vendorTile = homeView(shell).locator('[data-testid="favorite-tile"][data-flip-id="fav-vendor"]');
+    await expect(vendorTile).toHaveAttribute("data-linked-group", vendorSpace);
+    await vendorTile.click();
+    await expect.poll(() => pageOf("fav-vendor")).not.toBe(null);
+    const vendorPage = (await pageOf("fav-vendor"))!;
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(vendorPage);
+    let now = await snapshot(shell);
+    expect(vendorPage).not.toBe(vendorTab);
+    expect(now.currentGroupId).not.toBe(vendorSpace);
+    expect(now.tabGroups.find((group) => group.id === vendorSpace)?.tabIds).toEqual([vendorTab]);
+    expect(now.tabs.find((tab) => tab.id === vendorTab)?.linkedAnchorId).toBeUndefined();
+    expect(now.tabs.filter((tab) => tab.url === VENDOR)).toHaveLength(2);
+    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
+    await expect(vendorTile).not.toHaveAttribute("data-linked-group");
+    await expect(shell.locator(windowSelector(vendorPage))).toHaveCount(1);
     await settled(shell, app);
-    // A while after: still there. (The person's bug, until 2026-10-14: the favorite opened a fresh page in Home.)
-    for (let i = 0; i < 5; i += 1) {
-      await shell.waitForTimeout(200);
-      expect((await snapshot(shell)).currentGroupId).toBe(vendorSpace);
-    }
-    expect(await shell.evaluate(() => (window as unknown as { __views: string[] }).__views)).toEqual(["space"]);
-    expect((await snapshot(shell)).tabs.filter((tab) => tab.url === VENDOR)).toHaveLength(1);
-    await capture(app, shell, "22-favorite-chosen-in-its-space.png");
+    expect(await views()).toEqual([]);
+    await capture(app, shell, "22-favorite-chosen-opens-in-home.png");
+
+    // ── 2. A favorite's page with a tab beside it — a page's space on the rail — then Home: chosen, a fresh page of it in
+    //       Home; its page's space is a space of its own, named after it, at the foot of the spaces ─
+    const mailTile = homeView(shell).locator('[data-testid="favorite-tile"][data-flip-id="fav-mail"]');
+    await mailTile.click();
+    await expect.poll(() => pageOf("fav-mail")).not.toBe(null);
+    const mailPage = (await pageOf("fav-mail"))!;
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(mailPage);
+    const pageSpace = (await snapshot(shell)).anchorGroups!.find((group) => group.anchorId === "fav-mail")!;
+    // (As ⌘T there does: a new tab in the space in front.)
+    await tabGroupCommand(shell, { type: "newTab", groupId: pageSpace.id });
+    await expect(railSpace(shell, pageSpace.id)).toHaveAttribute("data-page", "");
+    const beside = (await snapshot(shell)).anchorGroups!.find((group) => group.id === pageSpace.id)!.tabIds.find((tabId) => tabId !== mailPage)!;
+    await settled(shell, app);
+    await chooseHome(shell);
+    await shell.evaluate(() => (window as unknown as { __views: string[] }).__views.splice(0));
+    await mailTile.click();
+    await expect.poll(async () => ((await pageOf("fav-mail")) ?? mailPage) !== mailPage).toBe(true);
+    const fresh = (await pageOf("fav-mail"))!;
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(fresh);
+    now = await snapshot(shell);
+    // (Titled after the favorite, whose title follows its page's.)
+    const mailTitle = now.sidebar.favorites.find((favorite) => favorite.id === "fav-mail")!.title;
+    expect(now.tabGroups.find((group) => group.id === pageSpace.id)).toMatchObject({ title: mailTitle, origin: "manual", tabIds: [mailPage, beside] });
+    expect(now.anchorGroups?.find((group) => group.anchorId === "fav-mail")?.tabIds).toEqual([fresh]);
+    expect(now.tabs.find((tab) => tab.id === mailPage)).toMatchObject({ anchorId: null });
+    expect(now.tabs.find((tab) => tab.id === mailPage)?.linkedAnchorId).toBeUndefined();
+    await expect(railSpace(shell, pageSpace.id)).not.toHaveAttribute("data-page", "");
+    await expect.poll(async () => (await railOrder(shell)).at(-1)).toBe(pageSpace.id);
+    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
+    await expect(shell.locator(windowSelector(fresh))).toHaveCount(1);
+    await settled(shell, app);
+    expect(await views()).toEqual([]);
   });
 
   test("a space's tile carried onto another merges into it — every tab, at its end; the other keeps its name and colour — and carried between two, it moves", async () => {
@@ -702,5 +773,172 @@ test.describe.serial("the three ways to stand", { tag: ["@sidebar", "@desk"] }, 
     await expect.poll(() => buttonsNow(app)).toBe(true);
     await settled(shell, app);
     expect(Math.abs((await box(shell, ".desk-stage")).x - WHOLE_W)).toBeLessThan(2);
+  });
+});
+
+test.describe.serial("Home is a browser's tabs", { tag: ["@sidebar", "@desk"] }, () => {
+  let app: ElectronApplication;
+  let shell: Page;
+  let invoices: string, south: string;
+  let stage: Box;
+  /** The space a tab is in: a loose tab's (a Home tab's), a page's, or a drawn one. */
+  const spaceOf = async (tabId: string) => {
+    const now = await snapshot(shell);
+    return [...now.tabGroups, ...(now.looseGroups ?? []), ...(now.anchorGroups ?? [])].find((group) => group.tabIds.includes(tabId)) ?? null;
+  };
+  const homeShown = (): Locator => shell.locator('[data-testid="sidebar-chrome"][data-view="home"]');
+
+  test.beforeAll(async () => {
+    ({ app, shell } = await launchDesk({ name: "double-sidebar-home" }));
+    [invoices, south] = (await openTabs(shell, [INVOICES, SOUTH])) as [string, string];
+    await selectTab(shell, invoices);
+    await expect(homeShown()).toHaveCount(1);
+    await settled(shell, app);
+    stage = await box(shell, ".desk-stage");
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("a new tab made in Home is a Home tab of its own, the whole desk — ⌘T, a duplicate — never a second window on the one in use", async () => {
+    test.setTimeout(60_000);
+    const drawn = (await snapshot(shell)).tabGroups.length;
+
+    // ── 1. ⌘T on a Home tab: a Home tab of its own, in use, filling the desk; the one before it still a Home tab ─
+    await shell.keyboard.press("Meta+t");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).not.toBe(invoices);
+    const made = (await snapshot(shell)).activeTabId!;
+    expect((await spaceOf(made))).toMatchObject({ loose: true, tabIds: [made] });
+    expect((await spaceOf(invoices))).toMatchObject({ loose: true, tabIds: [invoices] });
+    expect((await snapshot(shell)).tabGroups).toHaveLength(drawn);
+    await expect(homeShown()).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await settled(shell, app);
+    expect(near(await box(shell, windowSelector(made)), stage)).toBe(true);
+    // Going between Home tabs: each the whole desk.
+    await selectTab(shell, invoices);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await settled(shell, app);
+    expect(near(await box(shell, windowSelector(invoices)), stage)).toBe(true);
+    await capture(app, shell, "40-home-new-tab.png");
+
+    // ── 2. A duplicate of a Home tab: a Home tab of its own, straight after it in Today, in use ─
+    const copy = await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.duplicateTab(id), invoices);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(copy);
+    expect((await spaceOf(copy))).toMatchObject({ loose: true, tabIds: [copy] });
+    expect((await spaceOf(invoices))?.tabIds).toEqual([invoices]);
+    const rows = await todayRows(shell).evaluateAll((list) => list.map((row) => (row as HTMLElement).dataset["tabId"] ?? ""));
+    expect(rows.slice(rows.indexOf(invoices), rows.indexOf(invoices) + 2)).toEqual([invoices, copy]);
+    expect((await snapshot(shell)).tabGroups).toHaveLength(drawn);
+    await expect(homeShown()).toHaveCount(1);
+    await settled(shell, app);
+    // (The copy closed: a page found by its address — frameGrip's — would be either.)
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), copy);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.id === copy)).toBe(false);
+  });
+
+  test("a Home tab's window carried off the whole desk and let go is a space of its own: the same space, on the rail, its window where it was let go", async () => {
+    test.setTimeout(60_000);
+    await selectTab(shell, invoices);
+    await settled(shell, app);
+    const home = (await spaceOf(invoices))!;
+    expect(home.loose).toBe(true);
+
+    // ── 1. Carried by its frame into the desk's middle, and let go ─
+    await showFrame(shell, windowSelector(invoices));
+    const drawer = `${windowSelector(invoices)} [data-testid="desk-window-drawer"]`;
+    const title = await box(shell, `${drawer} [data-testid="desk-window-address"]`);
+    const buttons = await box(shell, `${drawer} .desk-window-controls`);
+    const frame = await box(shell, drawer);
+    // (Between its title and its buttons: the frame's own, neither a button's nor the address's — frameGrip's point.)
+    const at = { x: (title.x + title.width + buttons.x) / 2, y: frame.y + frame.height / 2 };
+    await shell.mouse.move(at.x, at.y);
+    await shell.mouse.down();
+    const to = { x: stage.x + stage.width * 0.55, y: stage.y + stage.height * 0.45 };
+    for (let step = 1; step <= 14; step += 1) {
+      await shell.mouse.move(at.x + ((to.x - at.x) * step) / 14, at.y + ((to.y - at.y) * step) / 14);
+      await shell.waitForTimeout(16);
+    }
+    await shell.mouse.up();
+
+    // ── 2. Its space is one of its own: drawn, the person's, the same id — the desk stayed on it — on the rail, chosen ─
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === home.id)?.tabIds).toEqual([invoices]);
+    const space = (await snapshot(shell)).tabGroups.find((group) => group.id === home.id)!;
+    expect(space.origin).toBe("manual");
+    expect(space.loose).toBeUndefined();
+    expect((await snapshot(shell)).currentGroupId).toBe(home.id);
+    await expect(railSpace(shell, home.id)).toHaveAttribute("aria-current", "true");
+    await expect(spaceView(shell, home.id)).toHaveCount(1);
+    await expect(shell.locator(`.desk-stage[data-phase="open"][data-group-id="${home.id}"]`)).toHaveCount(1);
+    // Where it was let go: no longer the whole desk.
+    await shell.mouse.move(stage.x + stage.width * 0.9, stage.y + stage.height * 0.9);
+    await settled(shell, app);
+    expect(near(await box(shell, windowSelector(invoices)), stage)).toBe(false);
+    await capture(app, shell, "41-home-tab-broken-away.png");
+    // (Of one window it stays a space: it is the person's.)
+    await selectTab(shell, south);
+    await expect(homeShown()).toHaveCount(1);
+    await expect(railSpace(shell, home.id)).toHaveCount(1);
+  });
+
+  test("something dropped in a Home tab's Context makes it a space of its own, the file's window beside the page", async () => {
+    test.setTimeout(60_000);
+    await selectTab(shell, south);
+    await settled(shell, app);
+    const home = (await spaceOf(south))!;
+    expect(home.loose).toBe(true);
+    await dropFileOnDesk(shell, "notes.txt", "Bring the invoices\n", { x: stage.x + stage.width * 0.6, y: stage.y + stage.height * 0.5 });
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === home.id)?.origin).toBe("manual");
+    await expect(railSpace(shell, home.id)).toHaveCount(1);
+    await expect(spaceView(shell, home.id)).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
+    await settled(shell, app);
+
+    // Brought in from another space's Context (the Stack's Bring in, `adopt`): the same.
+    const [late] = (await openTabs(shell, [LATE])) as [string];
+    await selectTab(shell, late);
+    await settled(shell, app);
+    const lateHome = (await spaceOf(late))!;
+    expect(lateHome.loose).toBe(true);
+    await shell.evaluate(
+      ([groupId, fromGroupId]) => (window as unknown as { pistachio: PistachioApi }).pistachio.groupContext({ type: "adopt", groupId, title: "", fromGroupId }),
+      [lateHome.id, home.id] as const,
+    );
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === lateHome.id)?.origin).toBe("manual");
+    await expect(railSpace(shell, lateHome.id)).toHaveCount(1);
+    await settled(shell, app);
+  });
+
+  test("a favorite chosen with no room for another space goes to its page's space as it stands — it never falls apart into Home tabs", async () => {
+    test.setTimeout(60_000);
+    await sidebarCommand(shell, { type: "addFavorite", source: { url: MAIL, title: "Mail" } });
+    await expect.poll(async () => (await snapshot(shell)).sidebar.favorites.length).toBe(1);
+    const mail = (await snapshot(shell)).sidebar.favorites[0]!.id;
+    const pageOf = async (): Promise<string[]> => (await snapshot(shell)).tabs.filter((tab) => tab.anchorId === mail).map((tab) => tab.id);
+    await sidebarCommand(shell, { type: "open", anchorId: mail });
+    await expect.poll(pageOf).toHaveLength(1);
+    const [page] = (await pageOf()) as [string];
+    const pageSpace = (await spaceOf(page))!;
+    // A tab beside its page: a page's space, on the rail.
+    await tabGroupCommand(shell, { type: "newTab", groupId: pageSpace.id });
+    await expect(railSpace(shell, pageSpace.id)).toHaveAttribute("data-page", "");
+    await settled(shell, app);
+    // The Profile filled to the bound with empty spaces.
+    const drawn = (await snapshot(shell)).tabGroups.length;
+    for (let index = drawn; index < MAX_TAB_GROUPS_PER_SPACE; index += 1)
+      await tabGroupCommand(shell, { type: "create", id: `filler-${String(index)}`, tabIds: [], title: `Filler ${String(index)}` });
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.length).toBe(MAX_TAB_GROUPS_PER_SPACE);
+    await chooseHome(shell);
+
+    await sidebarCommand(shell, { type: "open", anchorId: mail });
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(pageSpace.id);
+    const now = await snapshot(shell);
+    expect(now.activeTabId).toBe(page);
+    expect(now.anchorGroups?.find((group) => group.id === pageSpace.id)).toMatchObject({ anchorId: mail });
+    expect(now.anchorGroups?.find((group) => group.id === pageSpace.id)?.tabIds).toHaveLength(2);
+    expect(await pageOf()).toEqual([page]);
+    expect(now.tabGroups).toHaveLength(MAX_TAB_GROUPS_PER_SPACE);
+    await settled(shell, app);
   });
 });

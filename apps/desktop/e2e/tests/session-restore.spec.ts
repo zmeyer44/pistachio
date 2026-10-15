@@ -170,12 +170,21 @@ test.describe.serial("tabs across restarts", { tag: ["@tabs", "@desk", "@startup
   });
 
   test("human tabs and their space restore durably — the current space, its windows where they were — while background tabs remain suspended", async () => {
-    // The reopened tab above is the first; a second joins its space (a new tab joins the current one, out on its desk),
-    // and a third, opened in the background, sleeps.
+    // The reopened tab above is the first; a second joins its space (a new tab named into it, out on its desk — a Home
+    // tab's own new tab would be a Home tab of its own, docs/double-sidebar.md §1), and a third, opened in the
+    // background, sleeps.
     const first = reopened;
-    await shell.evaluate((target) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(target), "pistachio://demo/vendors/atlas-medical");
+    // (The desk at rest first: the reopened tab's window has come in.)
+    await settled(shell, app!);
+    const firstSpace = (await snapshot(shell)).currentGroupId!;
+    await shell.evaluate(
+      ({ groupId, url }) => (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "newTab", groupId, url }),
+      { groupId: firstSpace, url: "pistachio://demo/vendors/atlas-medical" },
+    );
     await expect.poll(async () => (await snapshot(shell)).activeTabId).not.toBe(first);
     second = (await snapshot(shell)).activeTabId!;
+    // (Both out before the desk leaves the space: it comes back as it was left.)
+    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
     [background] = (await openTabs(shell, ["pistachio://demo/invoices?restored=background"])) as [string];
     const space = (await snapshot(shell)).currentGroupId!;
     expect((await snapshot(shell)).tabGroups.find((group) => group.id === space)?.tabIds).toEqual([first, second]);

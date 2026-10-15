@@ -95,6 +95,21 @@ export interface SidebarTabHost {
    */
   bringDownPage?(anchorId: string, page: { tabId: string } | { url: string; title: string }, place: BringDownPlace): Promise<void>;
   /**
+   * Whether an entry's page is one of Home's (a host with Home: the desktop's double sidebar, docs/double-sidebar.md
+   * §1) — alone, a Home tab — rather than in a space: linked there, or leading a space of its own tabs, which the rail
+   * draws. An entry chosen on such a host opens in Home (`open`, since 2026-10-14): its page there, or else a fresh one,
+   * the page in a space letting go of it (releaseEntryPage). A host without Home leaves both out: an entry chosen goes
+   * to its page wherever it is.
+   */
+  inHome?(tabId: string): boolean;
+  /**
+   * An entry's page in a space let go of its entry where it stands, in one step: linked, its link ended; leading a
+   * page's space, that space a space of its own (titled after the entry, at the foot of the spaces, as Make it a space
+   * of its own leaves it). It stays that space's tab, and the entry is closed. False, nothing changed, when the Profile
+   * has no room for the space it would leave behind: the entry stays its page's.
+   */
+  releaseEntryPage?(tabId: string): boolean;
+  /**
    * Set by the controller: whether a tab pulled into a split view stops
    * following its shelf entry. A favorite becomes an independent tab; a pin
    * paired with a day tab is still that pin.
@@ -324,17 +339,20 @@ export class SidebarController {
   }
 
   /**
-   * Show the page behind an entry: its live tab — its own page, or (since 2026-10-14) the tab it is open on in a space,
-   * which the desk passes to — else a new tab bound to it. (Until 2026-10-14 a page brought into a space had let go of
-   * its entry, and this opened a fresh one in Home.)
+   * Show the page behind an entry: its live tab — its own page, or the tab it is open on in a space — else a new tab
+   * bound to it. A host with Home (inHome) opens an entry there: its page in a space stays that space's tab, letting go
+   * of the entry, and a fresh page of it opens in Home — a favorite is Home's, and choosing it never takes the person
+   * into a space they made of its page. (Earlier on 2026-10-14 it went to that page in its space, the desk passing
+   * there; the person asked for Home.) With no room for the space its page would leave behind, it goes there still:
+   * a second page of the entry is never made beside the first, nor its space let fall apart into Home tabs.
    */
   async #open(anchorId: string): Promise<void> {
     const live = this.#pageOf(anchorId);
-    if (live !== null) {
+    const url = this.#urlOf(this.#state(), anchorId);
+    if (live !== null && (this.#browser.inHome?.(live.id) !== false || url === null || this.#browser.releaseEntryPage?.(live.id) === false)) {
       await this.#browser.selectTab(live.id);
       return;
     }
-    const url = this.#urlOf(this.#state(), anchorId);
     if (url === null) return;
     await this.#browser.createTab(url, { anchorId });
   }

@@ -5,6 +5,7 @@ import { expect, test, type ElectronApplication, type Page } from "@playwright/t
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { pageFirst, shellReady } from "./windows";
 import { launchApp } from "./app";
+import { settled } from "./desk-harness";
 import { captureShell as captureWindow, openSiteInfo, pageAt } from "./pages-harness";
 
 /** The prompt fades in; the still waits for it. */
@@ -179,6 +180,8 @@ test.describe.serial("app links", { tag: ["@glance", "@site"] }, () => {
     const ownerUrl = `http://localhost:${String(port)}/calendar`;
     const meetingUrl = `http://127.0.0.1:${String(port)}/meeting`;
     await shell.evaluate((url) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(url), ownerUrl);
+    // (A Home tab of its own, the desk passing to it — docs/double-sidebar.md §1: at rest before its page is pressed.)
+    await settled(shell, app);
     const owner = await pageAt(app, ownerUrl);
     await expect(owner.locator("#meeting")).toBeVisible();
     await stubSystem(app);

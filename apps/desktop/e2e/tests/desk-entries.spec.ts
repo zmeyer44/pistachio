@@ -22,6 +22,7 @@ import {
   chooseHome,
   chooseSpace,
   createGroup,
+  dropFileOnDesk,
   groupSelector,
   INVOICES,
   launchDesk,
@@ -62,21 +63,6 @@ function strikeInShell(app: ElectronApplication, keyCode: string): Promise<void>
     contents.sendInputEvent({ type: "keyUp", keyCode, modifiers: ["meta"] });
     contents.sendInputEvent({ type: "keyUp", keyCode: "Meta", modifiers: [] });
   }, keyCode);
-}
-
-/** A text file dragged over the desk and let go on its workspace at a point: the drop zone comes up first, as for a person's drag. */
-async function dropFileOnDesk(shell: Page, name: string, text: string, at: { x: number; y: number }): Promise<void> {
-  const data = await shell.evaluateHandle(
-    ({ name, text }) => {
-      const transfer = new DataTransfer();
-      transfer.items.add(new File([text], name, { type: "text/plain" }));
-      return transfer;
-    },
-    { name, text },
-  );
-  await shell.dispatchEvent(".desk-stage", "dragenter", { dataTransfer: data, clientX: at.x, clientY: at.y });
-  await expect(shell.locator('[data-testid="desk-drop-zone"][data-up]')).toHaveCount(1);
-  for (const type of ["dragenter", "dragover", "drop"]) await shell.dispatchEvent('[data-testid="desk-drop-zone"]', type, { dataTransfer: data, clientX: at.x, clientY: at.y });
 }
 
 /** A row or tile carried onto a rail item, held there until the item says it takes it, then let go. */
@@ -137,7 +123,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await app?.close();
   });
 
-  test("a favorite's desk is its page's space: ⌘T and a file dropped there stay on it, a space of the rail's then, counted on its tile once away, and it comes back as left", async () => {
+  test("a favorite's desk is its page's space: ⌘T there is a Home tab of its own; a tab opened in its space and a file dropped there stay on it, a space of the rail's then, counted on its tile once away, and it comes back as left", async () => {
     test.setTimeout(90_000);
     const stage = await box(shell, ".desk-stage");
 
@@ -154,9 +140,25 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await expect(under).toHaveCount(1);
     await expect(under.getByTestId("desk-stack")).toHaveCount(1);
 
-    // ── 2. ⌘T there: a new tab in the favorite's group, out on its desk — not a day's tab. A page with a tab beside it is
-    //       a space of the rail's: its tile (a page's), the card its view, the page's row first ─
+    // ── 2. ⌘T there: a Home tab of its own, the whole desk — Home is a browser's tabs (2026-10-14; until then ⌘T grew the
+    //       favorite's page into a space of two) ─
     await strikeInShell(app, "t");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).not.toBe(page);
+    const own = (await snapshot(shell)).activeTabId!;
+    expect((await snapshot(shell)).looseGroups?.find((group) => group.tabIds.includes(own))?.tabIds).toEqual([own]);
+    expect((await pageGroupOf("fav-mail"))?.tabIds).toEqual([page]);
+    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await settled(shell, app);
+    await closeTab(shell, own);
+    await sidebarCommand(shell, { type: "open", anchorId: "fav-mail" });
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(page);
+    await settled(shell, app);
+
+    // ── 2b. A new tab opened in its space by name (as a Today row's + opens one): in the favorite's group, out on its
+    //       desk. A page with a tab beside it is a space of the rail's: its tile (a page's), the card its view, the page's
+    //       row first ─
+    await tabGroupCommand(shell, { type: "newTab", groupId: (await pageGroupOf("fav-mail"))!.id });
     await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(2);
     const fresh = (await pageGroupOf("fav-mail"))!.tabIds.find((tabId) => tabId !== page)!;
     const spaceId = (await pageGroupOf("fav-mail"))!.id;
@@ -195,7 +197,7 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await settled(shell, app);
   });
 
-  test("made a space of its own, a favorite's page brings its space down as a space like any other; the favorite stays open on it there, and opens afresh once it is closed", async () => {
+  test("made a space of its own, a favorite's page brings its space down as a space like any other; the favorite stays open on it there until chosen, when it opens afresh in Home", async () => {
     test.setTimeout(90_000);
     const page = (await pageOf("fav-mail"))!;
     const group = (await pageGroupOf("fav-mail"))!;
@@ -222,30 +224,27 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await expect(shell.getByTestId("desk-window").filter({ hasText: "plan.txt" })).toHaveCount(1);
     await capture(app, shell, "03-favorite-brought-down.png");
 
-    // ── 2. Opened from elsewhere, the favorite goes to its page in that space — the desk passes there — and opens no
-    //       fresh page in Home beside it. (Until 2026-10-14 it had let go of the favorite, which opened afresh.) ─
+    // ── 2. Opened from elsewhere, the favorite opens in Home: a page of its own, on a desk of its own, filling it; the space
+    //       keeps its tab, no longer the favorite's. (Earlier on 2026-10-14 it went to its page in that space.) ─
     await selectTab(shell, g0);
     await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("desk-g");
     await settled(shell, app);
-    const tabsBefore = (await snapshot(shell)).tabs.length;
-    await sidebarCommand(shell, { type: "open", anchorId: "fav-mail" });
-    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(group.id);
-    expect((await snapshot(shell)).activeTabId).toBe(page);
-    expect((await snapshot(shell)).tabs.length).toBe(tabsBefore);
-    expect(await pageGroupOf("fav-mail")).toBe(null);
-    await expect(shell.locator(windowSelector(page))).toHaveCount(1);
-    await settled(shell, app);
-
-    // ── 3. Its page closed, the link ends: opened again, the favorite is a page of its own, on a desk of its own, filling it ─
-    await closeTab(shell, page);
-    await expect.poll(() => linkedOf("fav-mail")).toBe(null);
     await sidebarCommand(shell, { type: "open", anchorId: "fav-mail" });
     await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(1);
     const again = (await pageOf("fav-mail"))!;
     expect(again).not.toBe(page);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(again);
+    expect((await snapshot(shell)).currentGroupId).toBe((await pageGroupOf("fav-mail"))!.id);
+    expect(await linkedOf("fav-mail")).toBe(null);
+    expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === group.id)?.tabIds).toEqual(group.tabIds);
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
     await settled(shell, app);
     expect(near(await box(shell, windowSelector(again)), stage)).toBe(true);
+
+    // ── 3. The space's tab closed: the favorite's page in Home is none the worse ─
+    await closeTab(shell, page);
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((candidate) => candidate.id === group.id)?.tabIds.includes(page)).toBe(false);
+    expect(await pageOf("fav-mail")).toBe(again);
   });
 
   test("let go on another space's tile on the rail, a pin's page — or a favorite with none open — comes down into that space, at its end; the entry stays", async () => {
@@ -290,17 +289,22 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await settled(shell, app);
     await capture(app, shell, "04-entries-dropped-on-tile.png");
 
-    // ── 4. From Home, the pin goes to its page in the space — the desk passes there — and opens nothing in Home. (Until
-    //       2026-10-14 the page had let go of its pin, and choosing the pin opened a fresh page in Home.) ─
+    // ── 4. From Home, the pin opens in Home, a page of its own; the space keeps its tab, no longer the pin's. (Earlier on
+    //       2026-10-14 it went to its page in the space, the desk passing there.) ─
     await chooseHome(shell);
     await sidebarCommand(shell, { type: "open", anchorId: "pin-north" });
-    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("desk-g");
-    expect((await snapshot(shell)).activeTabId).toBe(north);
-    expect(await pageOf("pin-north")).toBe(null);
+    await expect.poll(() => pageOf("pin-north")).not.toBe(null);
+    const home = (await pageOf("pin-north"))!;
+    expect(home).not.toBe(north);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(home);
+    expect((await snapshot(shell)).currentGroupId).not.toBe("desk-g");
+    expect((await snapshot(shell)).tabGroups.find((candidate) => candidate.id === "desk-g")?.tabIds).toContain(north);
+    expect(await linkedOf("pin-north")).toBe(null);
+    await expect(shell.locator('[data-testid="sidebar-chrome"][data-view="home"]')).toHaveCount(1);
     await settled(shell, app);
   });
 
-  test("a favorite let go on New space makes a space of its one page, moved from where it was; a space merged into another takes its Stack and its tab in use along; the favorite follows its page throughout", async () => {
+  test("a favorite let go on New space makes a space of its one page, moved from where it was; a space merged into another takes its Stack and its tab in use along; the favorite follows its page throughout, until chosen in Home", async () => {
     test.setTimeout(60_000);
     const vendor = (await linkedOf("fav-vendor"))!;
     // (Another tab in use: the new space is not chosen, and the desk stays where it is.)
@@ -348,11 +352,14 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await settled(shell, app);
     await capture(app, shell, "05-favorite-merged.png");
 
-    // ── 3. From Home, the favorite goes to its page in the Ledger ─
+    // ── 3. From Home, the favorite opens in Home, a page of its own; the Ledger keeps its tab ─
     await chooseHome(shell);
     await sidebarCommand(shell, { type: "open", anchorId: "fav-vendor" });
-    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("desk-g");
-    expect((await snapshot(shell)).activeTabId).toBe(vendor);
+    await expect.poll(() => pageOf("fav-vendor")).not.toBe(null);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(await pageOf("fav-vendor"));
+    expect((await snapshot(shell)).currentGroupId).not.toBe("desk-g");
+    expect((await snapshot(shell)).tabGroups.find((group) => group.id === "desk-g")?.tabIds).toContain(vendor);
+    expect(await linkedOf("fav-vendor")).toBe(null);
     await settled(shell, app);
   });
 
@@ -363,10 +370,11 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     const page = (await pageOf("fav-mail"))!;
     await expect(shell.locator(windowSelector(page))).toHaveCount(1);
     await settled(shell, app);
-    await strikeInShell(app, "t");
+    // (Named: ⌘T there would be a Home tab of its own.)
+    await tabGroupCommand(shell, { type: "newTab", groupId: (await pageGroupOf("fav-mail"))!.id });
     await expect.poll(async () => (await pageGroupOf("fav-mail"))?.tabIds.length ?? 0).toBe(2);
     const group = (await pageGroupOf("fav-mail"))!;
-    // (The new tab in use first, as ⌘T leaves it: chosen away before that, main's own choice of it would come after.)
+    // (The new tab in use first, as newTab leaves it: chosen away before that, main's own choice of it would come after.)
     const fresh = group.tabIds.find((tabId) => tabId !== page)!;
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(fresh);
     // Out of view: the reset never takes a page in sight.

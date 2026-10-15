@@ -5,9 +5,10 @@
  * what the pane toolbar offers over a page off the desk — back, forward,
  * reload, reader view, bookmark, pin, and the site's information — from the
  * window's ⋯, a desk having no pane toolbar and its rail no back, forward or
- * reload. Which entries a page gets is the toolbar's rule; this proves they
- * reach the window's tab through the real app, and that the site's card hangs
- * from the ⋯.
+ * reload; and the tab's menu's Duplicate tab, the copy zoomed apart from the
+ * window it came from. Which entries a page gets is the toolbar's rule; this
+ * proves they reach the window's tab through the real app, and that the
+ * site's card hangs from the ⋯.
  */
 
 import { createServer, type Server } from "node:http";
@@ -259,5 +260,66 @@ test.describe.serial("a desk window's frame: its buttons' tooltips, and its page
     await expect(entry("desk-page-pin")).toHaveText("Unpin tab");
     await entry("desk-page-pin").click();
     await expect.poll(pins).toEqual([]);
+  });
+
+  test("duplicate: a copy of the window's tab beside it, out on the desk and in use — of a Home tab, a Home tab of its own", async () => {
+    const before = new Set((await snapshot(shell)).tabs.map((tab) => tab.id));
+    const url = await tabUrl();
+    await choose("desk-page-duplicate");
+    const copyId = async (): Promise<string | null> => (await snapshot(shell)).tabs.find((tab) => !before.has(tab.id))?.id ?? null;
+    await expect.poll(copyId).not.toBeNull();
+    const copy = (await copyId())!;
+    await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => tab.id === copy)?.url).toBe(url);
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(copy);
+    const after = await snapshot(shell);
+    // (Pinned and unpinned above, the tab is a Home tab now: its copy is a Home tab of its own, straight after it — Home
+    // is a browser's tabs, docs/double-sidebar.md §1. In a space, the copy would be that space's, beside it.)
+    const homeOf = (id: string) => after.looseGroups?.find((group) => group.tabIds.includes(id))?.tabIds;
+    expect(homeOf(copy)).toEqual([copy]);
+    expect(homeOf(tabId)).toEqual([tabId]);
+    const order = after.tabs.map((tab) => tab.id);
+    expect(order.indexOf(copy)).toBe(order.indexOf(tabId) + 1);
+    await expect(shell.locator(windowSelector(copy))).toHaveCount(1);
+    // The window it was copied from is its own Home tab's, off this desk.
+    await expect(win()).toHaveCount(0);
+  });
+
+  test("zoom: the window in use zoomed alone, the one it was copied from as it was, and its zoom its own on the next site", async () => {
+    const copy = (await snapshot(shell)).activeTabId!;
+    expect(copy).not.toBe(tabId);
+    const url = await tabUrl();
+    const urlOf = async (id: string): Promise<string> => (await snapshot(shell)).tabs.find((tab) => tab.id === id)?.url ?? "";
+    /** The pixel ratio of the page at `url`: the screen's times its zoom. */
+    const ratioAt = (at: string): Promise<number> =>
+      app.evaluate(async ({ webContents }, at) => {
+        const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === at);
+        return contents === undefined ? 0 : ((await contents.executeJavaScript("devicePixelRatio")) as number);
+      }, at);
+    const navigate = (id: string, to: string): Promise<void> =>
+      shell.evaluate(({ id, to }) => (window as unknown as { pistachio: PistachioApi }).pistachio.navigate(id, to), { id, to });
+    // The copy elsewhere on the same site, to be told apart from the window it was copied from.
+    await navigate(copy, first);
+    await expect.poll(() => urlOf(copy)).toBe(first);
+    const base = await ratioAt(url);
+    expect(base).toBeGreaterThan(0);
+    await expect.poll(() => ratioAt(first)).toBeCloseTo(base, 3);
+
+    // Chromium zooms by site: before 2026-10-14 the window copied from zoomed with it.
+    await api(shell, (pistachio) => pistachio.browserControl({ type: "zoomIn" }));
+    await api(shell, (pistachio) => pistachio.browserControl({ type: "zoomIn" }));
+    await expect.poll(() => ratioAt(first)).toBeCloseTo(base * 1.2, 3);
+    expect(await ratioAt(url)).toBeCloseTo(base, 3);
+    expect((await api(shell, (pistachio) => pistachio.getBrowserControls())).zoomPercent).toBe(120);
+
+    // Another site's document, in another renderer: the tab's zoom goes with it.
+    const elsewhere = first.replace("127.0.0.1", "localhost");
+    await navigate(copy, elsewhere);
+    await expect.poll(() => urlOf(copy)).toBe(elsewhere);
+    await expect.poll(() => ratioAt(elsewhere)).toBeCloseTo(base * 1.2, 3);
+    expect(await ratioAt(url)).toBeCloseTo(base, 3);
+
+    await api(shell, (pistachio) => pistachio.browserControl({ type: "zoomReset" }));
+    await expect.poll(() => ratioAt(elsewhere)).toBeCloseTo(base, 3);
+    expect((await api(shell, (pistachio) => pistachio.getBrowserControls())).zoomPercent).toBe(100);
   });
 });

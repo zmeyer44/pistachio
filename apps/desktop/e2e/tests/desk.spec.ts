@@ -1661,7 +1661,7 @@ test.describe.serial("passing the desk between a Profile's spaces", { tag: ["@de
   });
 
 
-  test("choosing a tab off the desk passes the desk to its own space: another drawn one's, or a loose tab's own — drawn as the tab alone, with all a space's desk has — which, given a Stack, a space taking the tab leaves standing empty, and ⌘T grows into a drawn space", async () => {
+  test("choosing a tab off the desk passes the desk to its own space: another drawn one's, or a loose tab's own — drawn as the tab alone, with all a space's desk has — which, given a Stack, is a space of its own a space taking the tab leaves standing empty; ⌘T on a loose tab is a loose tab of its own, and a tab named into its space grows it into a drawn one", async () => {
     test.setTimeout(120_000);
     const command = (body: TabGroupCommand): Promise<unknown> => tabGroupCommand(shell, body);
     await regroup([
@@ -1717,10 +1717,14 @@ test.describe.serial("passing the desk between a Profile's spaces", { tag: ["@de
       made.id,
     );
     await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "1");
+    // Something in its Context: a space of its own now, in place — drawn, the person's, a tile on the rail (2026-10-14).
+    await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === made.id)?.origin).toBe("manual");
+    await expect(shell.locator(groupSelector(made.id))).toHaveCount(1);
+    expect((await snapshot(shell)).currentGroupId).toBe(made.id);
     await capture(app, shell, "76-loose-tab-desk.png");
 
-    // ── 3. The loose tab put in Research (its row dragged into the space): it is Research's, and the desk passes to
-    //       Research on it. Its own space keeps standing, empty, drawn: it holds a Stack, so it is the person's ─
+    // ── 3. Its tab put in Research (its row dragged into the space): it is Research's, and the desk passes to Research
+    //       on it. Its own space keeps standing, empty, drawn: it holds a Stack, so it is the person's ─
     await command({ type: "addTab", groupId: "desk-a", tabId: loose });
     await expect.poll(async () => (await looseGroupOf(loose))?.id ?? null).toBe(null);
     expect((await snapshot(shell)).tabGroups.find((group) => group.id === "desk-a")?.tabIds).toContain(loose);
@@ -1732,8 +1736,9 @@ test.describe.serial("passing the desk between a Profile's spaces", { tag: ["@de
     await expect(shell.locator(windowSelector(a0))).toHaveCount(1);
     await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(loose);
 
-    // ── 4. Another loose tab's desk (its row in Today), and ⌘T there: its group is one of two now, drawn, coloured and
-    //       named as any group is, a tile on the rail ─
+    // ── 4. Another loose tab's desk (its row in Today). ⌘T there is a Home tab of its own, the whole desk (2026-10-14:
+    //       Home is a browser's tabs); a new tab named into its group (its row's +) makes it one of two, drawn, coloured
+    //       and named as any group is, a tile on the rail ─
     await chooseHome(shell);
     await shell.locator(rowSelector(second)).click();
     await awayFromDock();
@@ -1743,6 +1748,16 @@ test.describe.serial("passing the desk between a Profile's spaces", { tag: ["@de
     await settled(shell, app);
     await expectLiveIn(app, shell, urls[6]!, second);
     await strike(app, urls[6]!, "t");
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).not.toBe(second);
+    const own = (await snapshot(shell)).activeTabId!;
+    expect((await looseGroupOf(own))?.tabIds).toEqual([own]);
+    expect((await looseGroupOf(second))?.id).toBe(grown.id);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), own);
+    await selectTab(shell, second);
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(grown.id);
+    await settled(shell, app);
+    await command({ type: "newTab", groupId: grown.id });
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === grown.id)?.tabIds.length ?? 0).toBe(2);
     const drawn = (await snapshot(shell)).tabGroups.find((group) => group.id === grown.id)!;
     expect(drawn.loose).toBeUndefined();

@@ -39,6 +39,7 @@ import {
   railSpacesOf,
   railTargetAt,
   spaceColumnWidth,
+  tabInHome,
   visibleUnitIndex,
   type RailCarryTile,
   type RailSnapshot,
@@ -110,6 +111,13 @@ describe("the card's view", () => {
     expect(isHomeSpace("pin-group", snap)).toBe(true);
     expect(isHomeSpace("fav-group", snap)).toBe(false);
     expect(isHomeSpace("trip", snap)).toBe(false);
+  });
+
+  it("tells a tab in Home — where choosing its favorite or pin shows it — from one in a space (tabInHome, main's inHome)", () => {
+    const snap = snapshot();
+    expect(["a", "pin-page", "nowhere"].map((tabId) => tabInHome(tabId, snap))).toEqual([true, true, true]);
+    expect(["b", "fav-page", "beside"].map((tabId) => tabInHome(tabId, snap))).toEqual([false, false, false]);
+    expect(tabInHome("b", null)).toBe(true);
   });
 });
 

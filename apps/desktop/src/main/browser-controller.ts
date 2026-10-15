@@ -1875,6 +1875,7 @@ export class BrowserController {
   /** Drop a tab without remembering it or choosing a successor (applyDurableSession). */
   #discardTab(tabId: string): void {
     this.#pageResume.delete(tabId);
+    this.#tabZoom.delete(tabId);
     const tab = this.#tabs.get(tabId);
     const info = tab?.info ?? this.#dormantTabs.get(tabId)?.info;
     if (info === undefined) return;
@@ -2597,7 +2598,7 @@ export class BrowserController {
       tabKind: tab.info.kind,
       origin: browserOrigin(tab.info.url),
       secure: isSecureBrowserUrl(tab.info.url),
-      zoomPercent: Math.round(tab.view.webContents.getZoomFactor() * 100),
+      zoomPercent: Math.round(this.#zoomOf(tab) * 100),
       muted: tab.view.webContents.isAudioMuted(),
       permissions,
       externalAppSchemes:
@@ -2730,15 +2731,16 @@ export class BrowserController {
       command.type === "zoomOut" ||
       command.type === "zoomReset"
     ) {
-      const current = tab.view.webContents.getZoomFactor();
+      const current = this.#zoomOf(tab);
       const next =
         command.type === "zoomReset"
           ? 1
           : Math.min(
               3,
-              Math.max(0.5, current + (command.type === "zoomIn" ? 0.1 : -0.1)),
+              // (To the step: tenths added up drift, 1.2000000000000002.)
+              Math.max(0.5, Math.round((current + (command.type === "zoomIn" ? 0.1 : -0.1)) * 10) / 10),
             );
-      tab.view.webContents.setZoomFactor(next);
+      this.#setZoom(tab, next);
       this.#emitBrowserControls();
       return;
     }
@@ -3181,6 +3183,48 @@ export class BrowserController {
     if (tab.info.id === this.#activeTabId) this.#emitBrowserControls();
   }
 
+  /**
+   * Each tab's page zoom (⌘+, ⌘−, ⌘0, the site card's buttons) where it is
+   * not 100%. Chromium keeps zoom by site, so a zoom set from here
+   * (setZoomFactor) zooms every tab of the host with it — two windows of a
+   * site side by side on a desk, a tab and its duplicate. So a person's tab
+   * is zoomed by its own page instead (preload/tab.ts, IPC.tabZoom):
+   * Chromium keeps a zoom set by the page to that tab, and each document the
+   * tab loads asks for it again (IPC.tabZoomGet), the next site's too. Kept
+   * while the tab sleeps; not across a restart. (Until 2026-10-14 zoom was by
+   * site, as Chromium has it.)
+   */
+  readonly #tabZoom = new Map<string, number>();
+
+  /** Whether a tab's page runs the preload that zooms it (#tabZoom); any other is zoomed by site. */
+  #zoomsOwnPage(tab: ManagedTab): boolean {
+    return tab.info.kind === "human" && this.#tabPreload !== "";
+  }
+
+  /** The zoom a tab's page is at. (Not Chromium's word for a tab's own zoom, which it can lose across a navigation.) */
+  #zoomOf(tab: ManagedTab): number {
+    if (this.#zoomsOwnPage(tab)) return this.#tabZoom.get(tab.info.id) ?? 1;
+    return tab.view.webContents.isDestroyed() ? 1 : tab.view.webContents.getZoomFactor();
+  }
+
+  #setZoom(tab: ManagedTab, factor: number): void {
+    const contents = tab.view.webContents;
+    if (!this.#zoomsOwnPage(tab)) {
+      if (!contents.isDestroyed()) contents.setZoomFactor(factor);
+      return;
+    }
+    if (factor === 1) this.#tabZoom.delete(tab.info.id);
+    else this.#tabZoom.set(tab.info.id, factor);
+    // (A document still to start asks for it as it does.)
+    if (!contents.isDestroyed()) contents.send(IPC.tabZoom, factor);
+  }
+
+  /** The zoom the page of a tab (by its contents) is to have, as its document starts (IPC.tabZoomGet). */
+  tabZoomFor(contentsId: number): number {
+    const tab = this.#tabForWebContents(contentsId);
+    return tab === undefined ? 1 : this.#zoomOf(tab);
+  }
+
   async controlMedia(tabId: string, control: MediaControl): Promise<void> {
     const tab = this.#tabs.get(tabId);
     if (
@@ -3447,6 +3491,79 @@ export class BrowserController {
    */
   setLink(tabId: string, anchorId: string | null): void {
     if (this.#setLink(tabId, anchorId)) this.#onChange();
+  }
+
+  /**
+   * Whether a tab is one of Home's (SidebarTabHost.inHome, docs/spaces.md §1, "A favorite in a space"): a loose
+   * space's — a Home tab — or an entry's page alone in its page's space; not in a drawn space, nor leading a page's
+   * space with tabs beside it (the rail draws both: shell-ui's isHomeSpace).
+   */
+  inHome(tabId: string): boolean {
+    const group = tabGroupOf([...this.#tabGroups.values()], tabId);
+    return group === null || this.#isHomeSpace(group);
+  }
+
+  /** Whether a space is one of Home's (docs/double-sidebar.md §1): a loose tab's — a Home tab — or a page's alone. */
+  #isHomeSpace(group: TabGroupInfo): boolean {
+    return group.loose === true || (group.anchorId !== undefined && group.tabIds.length < 2);
+  }
+
+  /**
+   * A Home space made a space of its own where it stands (TabGroupCommand `ownSpace`; docs/double-sidebar.md §1,
+   * "Breaking away"): its window taken off the whole desk by the person, or something put in its Context. The same
+   * space — its id, so the desk stays on it, its window where it was let go, its Stack and conversation with it — drawn
+   * now, on the rail: the person's, coloured beside its neighbours, named by the namer. A page's lets go of its entry,
+   * linked to it (docs/spaces.md §1, "A favorite in a space"). False, nothing changed, for any other space — or with no
+   * room for another (MAX_TAB_GROUPS_PER_SPACE): it stays Home's.
+   */
+  ownSpace(groupId: string): boolean {
+    const group = this.#tabGroups.get(groupId);
+    const spaceId = this.#spaceOf(groupId);
+    if (group === undefined || spaceId === null || !this.#isHomeSpace(group) || group.tabIds.length !== 1) return false;
+    if (!this.hasRoomForSpace(spaceId)) return false;
+    const tabId = group.tabIds[0]!;
+    const entry = group.anchorId;
+    this.#withPublishHeld(() => {
+      const { loose: _loose, anchorId: _anchorId, beforeUnit: _beforeUnit, ...rest } = group;
+      const neighbours = [...this.#tabGroups.values()].filter((other) => other.id !== groupId && other.loose !== true && other.anchorId === undefined && this.#groupSpaceIds.get(other.id) === spaceId);
+      const next: TabGroupInfo = { ...asPersons(rest), color: nextTabGroupColor(neighbours) };
+      this.#tabGroups.set(groupId, next);
+      // (Its page let go of after its space is drawn: a page's space without its page would be let go of — of one tab, a
+      // Home tab again — by the reconcile.)
+      if (entry !== undefined) {
+        this.#setAnchor(tabId, null);
+        this.#setLink(tabId, entry);
+      }
+      this.#reconcileTabGroups();
+      this.#nameTabGroup(this.#tabGroups.get(groupId) ?? next);
+      this.#onChange();
+    });
+    return true;
+  }
+
+  /**
+   * An entry's page in a space let go of its entry where it stands (SidebarTabHost.releaseEntryPage: the entry chosen
+   * opens afresh in Home) — in one publish: linked, the link ends; leading its page's space, that space is a space of
+   * its own (#letGoOfPage), set down at the foot of the spaces, as Make it a space of its own leaves it. False, nothing
+   * changed, when that space would need room the Profile has not got (MAX_TAB_GROUPS_PER_SPACE): let go of past the
+   * bound, it would fall apart into Home tabs, its Stack and conversation orphaned — counted as bringDownPage counts it.
+   */
+  releaseEntryPage(tabId: string): boolean {
+    const info = this.#tabInfo(tabId);
+    if (info === null) return false;
+    const led = info.anchorId === null ? undefined : [...this.#tabGroups.values()].find((group) => group.anchorId === info.anchorId && group.tabIds.includes(tabId));
+    if (this.tabGroups(info.spaceId).length + drawnSpacesBroughtDown(null, led?.tabIds.length ?? null) > MAX_TAB_GROUPS_PER_SPACE) return false;
+    return this.#withPublishHeld(() => {
+      this.#setLink(tabId, null);
+      if (info.anchorId !== null) {
+        this.#setAnchor(tabId, null);
+        this.#reconcileTabGroups();
+        const own = tabGroupOf([...this.#tabGroups.values()], tabId);
+        if (own !== null && own.loose !== true) this.#placeAtDayUnit(info.spaceId, own.tabIds, Number.MAX_SAFE_INTEGER, tabGroupUnitId(own.id));
+      }
+      this.#onChange();
+      return true;
+    });
   }
 
   /**
@@ -4036,20 +4153,30 @@ export class BrowserController {
       history,
       beside: tabId,
     });
+    // At the zoom it was copied at, from then on its own (#tabZoom).
+    const zoom = this.#tabZoom.get(tabId);
+    const copy = this.#tabs.get(duplicateId);
+    if (zoom !== undefined && copy !== undefined) this.#setZoom(copy, zoom);
     this.#onChange();
     return duplicateId;
   }
 
-  /** A new tab set straight after `beside` in the row, and into its tab group, after it (#createManagedTab's `beside`). */
-  #setBeside(tabId: string, beside: string): void {
+  /**
+   * A new tab set straight after `beside` in the row, and into its tab group, after it (#createManagedTab's `beside`).
+   * `grow`: a second window on `beside`'s (a Glance taken in as a tile beside it), so a Home tab's space takes it too,
+   * grown into a space of two as its row's + grows it (addToTabGroup), back to Home once one is closed.
+   */
+  #setBeside(tabId: string, beside: string, grow = false): void {
     if (!this.#tabOrder.includes(beside)) return;
     const order = this.#tabOrder.filter((id) => id !== tabId);
     order.splice(order.indexOf(beside) + 1, 0, tabId);
     this.#tabOrder.splice(0, this.#tabOrder.length, ...order);
     const group = tabGroupOf([...this.#tabGroups.values()], beside);
-    // (A loose tab's group, or a page's, takes it only while it is current or a desk turn holds it (#onDesk): elsewhere its
-    // tab is drawn alone, or is its entry's, and a copy of it is a tab of its own — a loose space of its own.)
-    if (group !== null && ((group.loose !== true && group.anchorId === undefined) || this.#onDesk(beside))) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: false });
+    // (A page's space takes it only while it is current or a desk turn holds it (#onDesk): elsewhere its page is its
+    // entry's, and a copy of it is a tab of its own. A Home tab's never does (#isHomeSpace, since 2026-10-14): Home is a
+    // browser's tabs, each the whole desk, and a tab opened from one is a Home tab of its own — a loose space of its own —
+    // unless it is a second window on it, `grow`.)
+    if (group !== null && (grow || !this.#isHomeSpace(group)) && (group.anchorId === undefined || this.#onDesk(beside))) this.addToTabGroup(group.id, [tabId], { index: group.tabIds.indexOf(beside) + 1, byPerson: false });
   }
 
   /**
@@ -4062,7 +4189,11 @@ export class BrowserController {
    * space be): a loose tab's grows into a space made for them, an auto one
    * stays auto, the person's stays theirs; and an empty space main made to
    * have a current one becomes the tab's loose one (#reconcileTabGroups), as
-   * a fresh install's first tab is.
+   * a fresh install's first tab is. The current space one of Home's — a
+   * Home tab's, or a page's alone (#isHomeSpace) — it is a Home tab of its
+   * own (since 2026-10-14; until then ⌘T on a Home tab grew it into a space
+   * of two): Home is a browser's tabs, each the whole desk. Only a space
+   * named here takes it: a Today row's + (`newTab`) grows its tab into one.
    */
   #joinGroup(tabId: string, group: "current" | "loose" | (string & {})): void {
     const info = this.#tabInfo(tabId);
@@ -4070,6 +4201,7 @@ export class BrowserController {
     const targetId = group === "current" ? this.currentGroupId(info.spaceId) : group;
     const target = targetId === null ? undefined : this.#tabGroups.get(targetId);
     if (target === undefined || this.#spaceOf(target.id) !== info.spaceId) return;
+    if (group === "current" && this.#isHomeSpace(target)) return;
     this.addToTabGroup(target.id, [tabId], { byPerson: false });
   }
 
@@ -4267,6 +4399,10 @@ export class BrowserController {
     try {
       await loadTabHistory(view.webContents, options.history ?? null, info.url);
     } catch (error) {
+      // Closed while its page loaded (⌘T, then ⌘W): Electron's load rejects
+      // as the view goes, and that is no failure to tell anyone of — until
+      // 2026-10-14 the shell said "Error invoking remote method".
+      if (this.#tabs.get(id) !== tab) return id;
       if (restored === undefined) {
         // A load the network refused shows as the tab's error page
         // (did-fail-load → #showNavigationError): the tab is whole, and a
@@ -6391,8 +6527,11 @@ export class BrowserController {
     this.#discardGlance();
   }
 
-  /** Promote the exact live preview WebContentsView to a normal selected tab. */
-  promoteGlance(): void {
+  /**
+   * Promote the exact live preview WebContentsView to a normal selected tab: taken in on the desk filling it, or as a
+   * tile beside the page that opened it (ShellApi.promoteGlance's `how`).
+   */
+  promoteGlance(how: "fill" | "tile" = "fill"): void {
     const glance = this.#glance;
     if (glance === null) return;
     const { tab } = glance;
@@ -6404,8 +6543,9 @@ export class BrowserController {
     this.#glance = null;
     this.#insertTabAfter(glance.ownerTabId, tab);
     // Into its page's space, as a page it opens beside itself is (#setBeside) — on the desk, a window of the space in
-    // front (docs/spaces.md §1) — before it is shown, so the desk never passes to a loose space of its own.
-    this.#setBeside(tab.info.id, glance.ownerTabId);
+    // front (docs/spaces.md §1) — before it is shown, so the desk never passes to a loose space of its own. Beside a Home
+    // tab, only as a tile: filling the desk it is a Home tab of its own (docs/double-sidebar.md §1).
+    this.#setBeside(tab.info.id, glance.ownerTabId, how === "tile");
     this.#activateTab(tab.info.id);
     // Keep the live view visible across the metadata transition; the shell's
     // now-transparent Glance chrome unmounts underneath the same page.
@@ -6528,6 +6668,7 @@ export class BrowserController {
     const closingActiveTab = this.#activeTabId === tabId;
     // A working tab — the read-aloud player, the agent's hidden tab — was never the person's to reopen.
     if (info.kind === "human" && !info.unlisted) this.#rememberClosedTab(info, history);
+    this.#tabZoom.delete(tabId);
     if (tab !== undefined) {
       // Out of the window and the map first: what follows may lay the
       // window out (the Glance it owned, its video in the media preview, the
@@ -7903,7 +8044,7 @@ export class BrowserController {
         // (An empty space's too since 2026-10-09: its Profile is its own.)
         const spaceId = this.#spaceOf(command.groupId);
         if (spaceId === null) return;
-        const tabId = await this.createTab(this.#homeUrl(), { spaceId, activate: false, group: command.groupId });
+        const tabId = await this.createTab(command.url ?? this.#homeUrl(), { spaceId, activate: false, group: command.groupId });
         this.#reconcileTabGroups();
         await this.selectTab(tabId);
         return;
@@ -7918,6 +8059,9 @@ export class BrowserController {
         this.#placeAtDayUnit(spaceId, group.tabIds, command.index, tabGroupUnitId(group.id));
         break;
       }
+      case "ownSpace":
+        this.ownSpace(command.groupId);
+        return;
       case "merge": {
         const moved = this.#mergeTabGroups(command.groupId, command.into);
         // Into the empty space in front, the first of them comes out on its desk, in use.
@@ -9211,7 +9355,7 @@ export class BrowserController {
     const contents = tab.view.webContents;
     const target = (): MaskAim => {
       const size = maskViewSize(state);
-      const zoom = contents.isDestroyed() ? 1 : contents.getZoomFactor();
+      const zoom = contents.isDestroyed() ? 1 : this.#zoomOf(tab);
       return { ...size, x: state.mask.x + state.scroll.x * zoom, y: state.mask.y + state.scroll.y * zoom, key: state.key };
     };
     const current = state.applied;

@@ -20,7 +20,17 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, createTab, launchDesk, selectSpace, openMore, rowSelector, screenshots, selectTab, settled, showFrame, snapshot, windowSelector } from "./desk-harness";
+import { box, createGroup, launchDesk, selectSpace, openMore, rowSelector, screenshots, selectTab, settled, showFrame, snapshot, tabGroupCommand, windowSelector } from "./desk-harness";
+
+/**
+ * A second tab opened beside the first, in its space (a new tab named into it, as a Today row's + opens one): the
+ * first's window out, the second's beside it. (A plain new tab on a Home tab is a Home tab of its own since
+ * 2026-10-14, docs/double-sidebar.md §1.)
+ */
+async function openBesideFirst(shell: Page, url: string): Promise<void> {
+  const groupId = (await snapshot(shell)).currentGroupId!;
+  await tabGroupCommand(shell, { type: "newTab", groupId, url });
+}
 
 const capture = screenshots("desk-grow");
 
@@ -86,7 +96,7 @@ test.describe.serial("a desk window growing, and shrinking", { tag: ["@desk"] },
       // A window closed: the one beside it takes the space.
       env: { PISTACHIO_LAYOUT_SCRIPT: JSON.stringify({ opened: { move: "keep" }, closed: { move: "fill" }, asked: { move: "keep" } }) },
     }));
-    await createTab(shell, urls[1]);
+    await openBesideFirst(shell, urls[1]);
     await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => urls.includes(tab.url)).length).toBe(2);
     const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
     tabs = [byUrl.get(urls[0])!, byUrl.get(urls[1])!];
@@ -232,7 +242,7 @@ test("at 2×, a window grown under the More card is its page at its own scale, n
     env: { PISTACHIO_LAYOUT_SCRIPT: JSON.stringify({ opened: { move: "keep" }, closed: { move: "fill" }, asked: { move: "keep" } }) },
   });
   try {
-    await createTab(shell, urls[1]);
+    await openBesideFirst(shell, urls[1]);
     await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => (urls as readonly string[]).includes(tab.url)).length).toBe(2);
     const byUrl = new Map((await snapshot(shell)).tabs.map((tab) => [tab.url, tab.id]));
     const tabs = [byUrl.get(urls[0])!, byUrl.get(urls[1])!] as const;

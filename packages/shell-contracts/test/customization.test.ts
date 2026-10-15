@@ -162,6 +162,22 @@ describe("editable shortcuts", () => {
     expect(sanitizeShortcuts({ ...older, openNotes: "Mod+N" })).toMatchObject({ openNotes: "Mod+N", newSpace: null });
   });
 
+  it("goes down the rail on ⌘1–⌘9 as Slack does — Home, then each space — on the Mac alone, yielding a key to an older custom binding", () => {
+    const keys = ["goToHome", "goToSpace1", "goToSpace2", "goToSpace3", "goToSpace4", "goToSpace5", "goToSpace6", "goToSpace7", "goToSpace8"] as const;
+    keys.forEach((id, index) => {
+      const digit = String(index + 1);
+      expect(DEFAULT_SHORTCUTS[id]).toBe(`Mod+${digit}`);
+      expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: digit, code: `Digit${digit}`, meta: true }, "darwin", "native")).toBe(id);
+      // The web draws no rail: the key goes on to the page.
+      expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: digit, code: `Digit${digit}`, meta: true }, "darwin", "stream")).toBeNull();
+    });
+    expect(shortcutLabel(DEFAULT_SHORTCUTS.goToHome, "darwin")).toBe("⌘1");
+    // ⌘⇧1 and ⌘⇧2 stay the screenshots'.
+    expect(shortcutActionForEvent(DEFAULT_SHORTCUTS, { key: "!", code: "Digit1", meta: true, shift: true }, "darwin", "native")).toBe("screenshotView");
+    const { goToSpace2: _omitted, ...older } = DEFAULT_SHORTCUTS;
+    expect(sanitizeShortcuts({ ...older, openNotes: "Mod+3" })).toMatchObject({ openNotes: "Mod+3", goToSpace2: null, goToSpace3: "Mod+4" });
+  });
+
   it("leaves Option alone to type where the layout puts a character there", () => {
     // A German Mac types @ on ⌥L, and [ on ⌥5: those presses are text, never a binding.
     expect(shortcutFromEvent({ key: "@", code: "KeyL", alt: true }, "darwin")).toBeNull();

@@ -41,7 +41,16 @@ export type ShortcutActionId =
   | "newTabAddress"
   | "newSpaceAddress"
   | "newSpace"
-  | "newTerminal";
+  | "newTerminal"
+  | "goToHome"
+  | "goToSpace1"
+  | "goToSpace2"
+  | "goToSpace3"
+  | "goToSpace4"
+  | "goToSpace5"
+  | "goToSpace6"
+  | "goToSpace7"
+  | "goToSpace8";
 
 export type ShortcutSettings = Record<ShortcutActionId, string | null>;
 export type ShortcutPlatform = "darwin" | "other";
@@ -52,7 +61,7 @@ export type ShortcutSurface = "native" | "stream";
 
 export interface ShortcutDefinition {
   id: ShortcutActionId;
-  group: "Tabs" | "Page" | "Window" | "Agent";
+  group: "Tabs" | "Spaces" | "Page" | "Window" | "Agent";
   label: string;
   note?: string;
   /**
@@ -125,6 +134,17 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "newSpace", group: "Tabs", label: "New space", note: "An empty space, current at once, its name ready to type.", surfaces: ["native"] },
   // A shell on the Mac (docs/terminal.md): the web has none to run.
   { id: "newTerminal", group: "Tabs", label: "New terminal", note: "A shell on this Mac in a tab of its own, in the folder of the terminal in use.", surfaces: ["native"] },
+  // Slack's ⌘1–⌘9 (2026-10-14): the rail top to bottom, Home first (docs/double-sidebar.md §1) — the desktop's, whose
+  // rail it is. Last, so a key someone gave another action before these existed keeps it.
+  { id: "goToHome", group: "Spaces", label: "Go to Home", surfaces: ["native"] },
+  { id: "goToSpace1", group: "Spaces", label: "Go to space 1", note: "The first space on the rail, under Home; the keys after it, the spaces under that.", surfaces: ["native"] },
+  { id: "goToSpace2", group: "Spaces", label: "Go to space 2", surfaces: ["native"] },
+  { id: "goToSpace3", group: "Spaces", label: "Go to space 3", surfaces: ["native"] },
+  { id: "goToSpace4", group: "Spaces", label: "Go to space 4", surfaces: ["native"] },
+  { id: "goToSpace5", group: "Spaces", label: "Go to space 5", surfaces: ["native"] },
+  { id: "goToSpace6", group: "Spaces", label: "Go to space 6", surfaces: ["native"] },
+  { id: "goToSpace7", group: "Spaces", label: "Go to space 7", surfaces: ["native"] },
+  { id: "goToSpace8", group: "Spaces", label: "Go to space 8", surfaces: ["native"] },
 ];
 
 export const SHORTCUT_ACTION_IDS = SHORTCUT_DEFINITIONS.map((definition) => definition.id) as readonly ShortcutActionId[];
@@ -194,6 +214,16 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   newSpace: "Mod+N",
   // VS Code's key for its terminal panel; free in every browser on the Mac.
   newTerminal: "Mod+J",
+  // Slack's: ⌘1 the top of the rail, Home, and ⌘2–⌘9 the spaces under it.
+  goToHome: "Mod+1",
+  goToSpace1: "Mod+2",
+  goToSpace2: "Mod+3",
+  goToSpace3: "Mod+4",
+  goToSpace4: "Mod+5",
+  goToSpace5: "Mod+6",
+  goToSpace6: "Mod+7",
+  goToSpace7: "Mod+8",
+  goToSpace8: "Mod+9",
 };
 
 const NAMED_KEYS = new Set([

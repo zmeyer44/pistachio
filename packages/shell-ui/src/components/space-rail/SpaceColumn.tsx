@@ -1,15 +1,14 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SIDEBAR_CARD_INSET, SIDEBAR_RAIL_W } from "@pistachio/shell-contracts/chrome";
 import type { SidebarMode } from "@pistachio/shell-contracts/settings";
-import { DEFAULT_SIDEBAR_STATE, presetAnchorId } from "@pistachio/shell-contracts/sidebar";
+import { DEFAULT_SIDEBAR_STATE } from "@pistachio/shell-contracts/sidebar";
 import { ShelfDragProvider } from "../../chrome/shelf-drag";
 import { useNewGroupNaming } from "../../chrome/tab-group-menu";
 import { NEW_SPACE_EVENT } from "../../lib/desk/open";
-import { pinnedRows } from "../../lib/sidebar-tree";
 import { useAppStore } from "../../store";
 import { renameSpace, useHomeMemory, useSpaceRename } from "./column-state";
 import { isGrownByDrop, SpaceFlights, type FlightSpace } from "./flights";
-import { backingOutline, cardOutline, columnViewOf, grewInto, HOME_VIEW, homeTabIdsOf, HOUSE_EASE, railSpacesOf, type ColumnView } from "./rail-model";
+import { backingOutline, cardOutline, columnViewOf, grewInto, HOME_VIEW, homeTabIdsOf, HOUSE_EASE, railEntryOrder, railSpacesOf, type ColumnView } from "./rail-model";
 import { SpaceCard as SpaceCardView } from "./SpaceCard";
 import { SpaceRail as SpaceRailView } from "./SpaceRail";
 
@@ -18,8 +17,8 @@ const SpaceRail = memo(SpaceRailView);
 const SpaceCard = memo(SpaceCardView);
 
 /* The column's geometry, in its own coordinates (the window's: it starts at the window's left edge). */
-/** The traffic lights' pocket: the card's shoulder steps round x < 78, y < 36 (the lights stand at x 16–68, y 15–27). */
-const SHOULDER_X = 78;
+/** The traffic lights' pocket: the card's shoulder steps round x < 84, y < 36 (the lights stand at x 16–68, y 15–27; 78 until 2026-10-14). */
+const SHOULDER_X = 84;
 const SHOULDER_Y = 36;
 /** The tab's leading edge, out over the rail, and its margin round the chosen item. */
 const TAB_LEFT = 3;
@@ -98,10 +97,7 @@ export function SpaceColumn({ mode, cardWidth }: { mode: SidebarMode; cardWidth:
   const activeTabId = useAppStore((state) => state.snapshot?.activeTabId ?? null);
 
   // The rail's spaces, the same array for as long as they stand as they are (the flights compare it).
-  const entryOrder = useMemo(
-    () => [...presets.map((link) => presetAnchorId(link.url)), ...sidebar.favorites.map((favorite) => favorite.id), ...pinnedRows(sidebar.entries).flatMap((row) => (row.kind === "pin" ? [row.pin.id] : []))],
-    [presets, sidebar],
-  );
+  const entryOrder = useMemo(() => railEntryOrder(presets, sidebar), [presets, sidebar]);
   const computed = useMemo(
     () => {
       const tabs =

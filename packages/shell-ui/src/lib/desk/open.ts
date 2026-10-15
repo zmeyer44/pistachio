@@ -12,6 +12,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import type { ShortcutSurface } from "@pistachio/shell-contracts/shortcuts";
 import { entryPageOf } from "@pistachio/shell-contracts/sidebar";
 import type { DeskEngine, DeskView } from "../../components/desk/desk-engine";
+import { isHomeSpace } from "../../components/space-rail/rail-model";
 import { nativeApi } from "../../api";
 import { isPageOverlay, useAppStore, type Overlay } from "../../store";
 import { deskGroups, passedEntry, useDeskStore } from "./store";
@@ -282,12 +283,13 @@ export function showOnDesk(tabId: string): boolean {
  * A favorite or pin chosen (the favorites grid's tile, a pin's row): its
  * page's window shown on the desk when that page is the desk's space's
  * (showOnDesk) — its anchored page, or, since 2026-10-14, the tab linked to
- * it in a space (@pistachio/shell-contracts/sidebar entryPageOf, main's own
- * choice for `open`): its tab may still be the one in use, the window put
- * away, and selecting it again would change nothing — else main's `open`,
- * which goes to its page wherever it is (the desk passes there) or opens a
- * fresh one. (Until 2026-10-14 only an anchored page was looked for here: a
- * linked page whose window was put away in the space in front stayed away.)
+ * it in a space (@pistachio/shell-contracts/sidebar entryPageOf): its tab
+ * may still be the one in use, the window put away, and selecting it again
+ * would change nothing — else main's `open`, which opens it in Home: its
+ * page there, or a fresh one, a page of it in a space staying that space's
+ * (SidebarTabHost.inHome). (Until 2026-10-14 only an anchored page was
+ * looked for here: a linked page whose window was put away in the space in
+ * front stayed away.)
  */
 export function openEntry(anchorId: string): Promise<void> {
   const store = useAppStore.getState();
@@ -300,16 +302,19 @@ export function openEntry(anchorId: string): Promise<void> {
  * A new tab on the desk (⌘T, the sidebar's +): in the current space, on the
  * home page, brought out as the window in use (main's `newTab` in that
  * space; the window comes out as its tab joins and is in use: DeskSurface).
- * On a loose tab's space that makes it a space of two, drawn as any is from
- * then on (main). Before main has named a current space (the first frames),
- * a plain new tab, which main puts in the current space.
+ * In Home — the space in use a Home tab's, or a page's alone — a Home tab of
+ * its own, the whole desk, as a browser's new tab is (main's createTab into
+ * the current space, which Home's never takes: docs/double-sidebar.md §1;
+ * until 2026-10-14 it grew the Home tab in use into a space of two). Before
+ * main has named a current space (the first frames), a plain new tab, which
+ * main puts in the current space.
  */
 export async function newTabOnDesk(): Promise<void> {
   const store = useAppStore.getState();
   const groupId = currentSpace();
   store.closePage();
   // (With no current space named yet, a plain new tab: main's default for a tab the shell makes is the current space.)
-  if (groupId === null) await store.createTab(store.settings.general.homeUrl);
+  if (groupId === null || isHomeSpace(groupId, store.snapshot)) await store.createTab(store.settings.general.homeUrl);
   else await store.tabGroupCommand({ type: "newTab", groupId });
 }
 

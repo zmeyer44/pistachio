@@ -94,7 +94,7 @@ test.describe.serial("the address bar's destinations", { tag: ["@address", "@des
     await new Promise<void>((done) => server.close(() => done()));
   });
 
-  test("⌥L opens the address in a new tab of the current space, the page in use left as it was", async () => {
+  test("⌥L opens the address in a new tab — on a Home tab, a Home tab of its own — the page in use left as it was", async () => {
     const before = await snapshot(shell);
     const firstId = before.activeTabId!;
     const space = spaceOf(before, firstId);
@@ -117,14 +117,17 @@ test.describe.serial("the address bar's destinations", { tag: ["@address", "@des
         return {
           first: now.tabs.find((tab) => tab.id === firstId)?.url,
           inUse: made !== undefined && now.activeTabId === made.id,
-          sameSpace: made !== undefined && spaceOf(now, made.id) === spaceOf(now, firstId),
+          // (Home is a browser's tabs: a new tab there is a Home tab of its own, never a second window on the one in use —
+          // docs/double-sidebar.md §1, since 2026-10-14. In a space, it is that space's: desk-smoke's ⌘T.)
+          ownHomeTab: made !== undefined && (now.looseGroups ?? []).some((group) => group.id === spaceOf(now, made.id) && group.tabIds.length === 1),
           current: made !== undefined && now.currentGroupId === spaceOf(now, made.id),
         };
       })
-      .toEqual({ first: INVOICES, inUse: true, sameSpace: true, current: true });
+      .toEqual({ first: INVOICES, inUse: true, ownHomeTab: true, current: true });
     const made = (await snapshot(shell)).tabs.find((tab) => tab.url === address)!;
+    expect(spaceOf(await snapshot(shell), firstId)).toBe(space);
     await expect(shell.locator(windowSelector(made.id))).toBeVisible();
-    await expect(shell.locator(windowSelector(firstId))).toBeVisible();
+    await expect(shell.locator(windowSelector(firstId))).toHaveCount(0);
   });
 
   test("⌘⇧L struck in a page opens the address in a new space of its own, current with it in use", async () => {

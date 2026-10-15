@@ -8,7 +8,7 @@ import {
 import { useShelfDrag, type ShelfItem } from "../chrome/shelf-drag";
 import { useChromeTabs, type ChromeTab } from "../chrome/tabs";
 import { cn } from "../lib/cn";
-import { openEntry, useCurrentSpace } from "../lib/desk/open";
+import { deskAvailable, openEntry, useCurrentSpace } from "../lib/desk/open";
 import { prettyUrl } from "../lib/url";
 import { useAppStore } from "../store";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
@@ -17,7 +17,7 @@ import { BrandWash, brandBorderStyle } from "./BrandTile";
 import { Favicon, TabMark } from "./Favicon";
 import { EntryTabCount } from "./EntryTabCount";
 import { useEntryLinks } from "./space-rail/entry-links";
-import { entryPageFor } from "./space-rail/rail-model";
+import { entryPageFor, tabInHome } from "./space-rail/rail-model";
 
 /**
  * The favorites grid under the address row — the `favorites` feature
@@ -36,7 +36,8 @@ import { entryPageFor } from "./space-rail/rail-model";
  * shows a dot; the active page's tile is the raised card. A favorite whose
  * page the person brought into a space (linked: BrowserTabInfo.
  * linkedAnchorId, since 2026-10-14) is open THERE: its dot is that space's
- * colour, and a click goes to it — main passes the desk to that space.
+ * colour — and a click opens it in Home, a page of its own, the one in the
+ * space staying that space's (main's `inHome`: a favorite is Home's).
  *
  * The active page's tile wears its brand: a hairline gradient border and a
  * faint wash in the site's own colours (lib/brand-colors.ts) rather than the
@@ -189,7 +190,8 @@ export function FavoritesGrid() {
     const page = entryPageFor(tabs, tile)?.tab ?? null;
     return [
       {
-        label: page === null ? "Open" : "Show",
+        // (On the desktop, its page in a space stays that space's, and choosing the favorite opens one in Home.)
+        label: page === null || (deskAvailable() && !tabInHome(page.id, useAppStore.getState().snapshot)) ? "Open" : "Show",
         // (As a click does: its page anchored or linked, put away on the desk in front, comes out — openEntry.)
         onSelect: () => void openEntry(tile.id),
       },
@@ -272,7 +274,7 @@ export function FavoritesGrid() {
             onClick={() => {
               if (justDragged()) return;
               // On its own desk, its window is shown there — its page, or the tab linked to it in a space: its tab may
-              // still be the one in use, the window put away (openEntry). Else main goes to it, or opens it.
+              // still be the one in use, the window put away (openEntry). Else main opens it in Home: its page there, or a fresh one.
               void openEntry(tile.id);
             }}
             onAuxClick={(e) => {

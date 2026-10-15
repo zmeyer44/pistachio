@@ -500,7 +500,7 @@ const api: PistachioApi = {
   stageGlancePromotion: (bounds: ContentBounds) =>
     ipcRenderer.invoke(IPC.glancePromotionStage, bounds) as Promise<void>,
   closeGlance: () => ipcRenderer.invoke(IPC.glanceClose) as Promise<void>,
-  promoteGlance: () => ipcRenderer.invoke(IPC.glancePromote) as Promise<void>,
+  promoteGlance: (how) => ipcRenderer.invoke(IPC.glancePromote, how) as Promise<void>,
   splitGlance: () => ipcRenderer.invoke(IPC.glanceSplit) as Promise<void>,
   onGlanceDismissRequested(listener) {
     const handler = (

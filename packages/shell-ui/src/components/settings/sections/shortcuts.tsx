@@ -21,10 +21,11 @@ import { Note } from "../../ui/note";
 import { Group, Page } from "../parts";
 
 const PLATFORM: ShortcutPlatform = /Mac|iPhone|iPad/.test(navigator.platform) ? "darwin" : "other";
-const GROUPS = ["Tabs", "Page", "Window", "Agent"] as const;
+const GROUPS = ["Tabs", "Spaces", "Page", "Window", "Agent"] as const;
 
 const GROUP_NOTES: Record<(typeof GROUPS)[number], string> = {
   Tabs: "Opening, closing, and moving between tabs.",
+  Spaces: "Moving between Home and the spaces on the rail, top to bottom.",
   Page: "Acting on the page in the front tab.",
   Window: "The chrome around the page.",
   Agent: "Handing work to the agent and taking it back.",
@@ -49,7 +50,8 @@ export function ShortcutsPage() {
       GROUPS.map((group) => ({
         group,
         definitions: SHORTCUT_DEFINITIONS.filter((definition) => definition.group === group && shortcutOffered(definition, surface)),
-      })),
+        // (A group of the other surface's alone — Spaces, on the web — is not shown.)
+      })).filter(({ definitions }) => definitions.length > 0),
     [surface],
   );
 

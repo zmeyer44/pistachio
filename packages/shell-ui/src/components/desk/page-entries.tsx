@@ -4,14 +4,17 @@
  * (components/PaneToolbar.tsx) — a desk has no pane toolbar, and its rail no
  * back, forward or reload. By the toolbar's own rules: back and forward dim
  * with no history; reader view, bookmark and pin are a person's web page's;
- * the site's information is the active tab's (the window in use).
+ * the site's information is the active tab's (the window in use). And, as
+ * the tab's menu has it (chrome/tab-menu.tsx), a person's tab duplicated:
+ * the copy beside it in its space, out on the desk and in use (in Home, a
+ * Home tab of its own: docs/double-sidebar.md §1).
  *
  * Read as the menu opens, not as the window renders: the menu says what is
  * true when it comes up, and a window re-renders only when it changes.
  */
 
 import { useCallback } from "react";
-import { BookmarkCheck, BookmarkPlus, BookOpen, BookOpenText, ChevronLeft, ChevronRight, Pin, PinOff, RotateCw, SlidersHorizontal } from "lucide-react";
+import { BookmarkCheck, BookmarkPlus, BookOpen, BookOpenText, ChevronLeft, ChevronRight, Copy, Pin, PinOff, RotateCw, SlidersHorizontal } from "lucide-react";
 import { bookmarkUrlKey, isBookmarkableUrl } from "@pistachio/shell-contracts/bookmarks";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
@@ -63,6 +66,7 @@ export function usePageEntries(): (tab: BrowserTabInfo) => MenuEntry[] {
               ? store.sidebarCommand({ type: "unpin", pinId: tab.anchorId ?? "" })
               : store.sidebarCommand({ type: "pinTab", tabId: tab.id, folderId: null, index: 10_000 })),
         });
+      if (human) page.push({ label: "Duplicate tab", icon: <Copy aria-hidden="true" />, testId: "desk-page-duplicate", onSelect: () => void store.duplicateTab(tab.id) });
       // Hung from the window's ⋯ (DeskWindow's SiteInfoFrom), the window in use's alone: the controls describe the active tab.
       if (store.snapshot?.activeTabId === tab.id)
         page.push({ label: "Site information", icon: <SlidersHorizontal aria-hidden="true" />, testId: "desk-page-site-info", onSelect: () => store.openSiteInfo() });

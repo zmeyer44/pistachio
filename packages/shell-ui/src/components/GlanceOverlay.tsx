@@ -247,7 +247,7 @@ export function GlanceOverlay({
     const target = desk !== undefined ? desk.land(how) : surface === null ? null : glancePromotionTarget(surface);
     if (target === null) {
       setActionPending(true);
-      void promoteGlance();
+      void promoteGlance(how);
       return;
     }
     leavingRef.current = true;
@@ -269,7 +269,7 @@ export function GlanceOverlay({
     // samples. Promotion therefore inherits the exact final bounds.
     await nativeApi()?.stageGlancePromotion(target.window);
     if (!alive.current) return;
-    void promoteGlance();
+    void promoteGlance(how);
   };
   const split = () => {
     if (leaving || actionPending) return;

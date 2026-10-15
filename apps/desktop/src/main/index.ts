@@ -1397,13 +1397,18 @@ function requireGroupContexts(): GroupContextStore {
   return groupContexts;
 }
 
-/** One of the Stack's commands. The files arrive as base64 from the drop; a person's additions say so. */
+/**
+ * One of the Stack's commands. The files arrive as base64 from the drop; a person's additions say so. Something the
+ * person puts in a Home tab's Context — added, or brought in from another's — makes it a space of its own (BrowserController.ownSpace; docs/double-sidebar.md
+ * §1, "Breaking away"): a Home tab is a page and nothing else.
+ */
 async function handleGroupContextCommand(command: GroupContextCommand): Promise<GroupContextResult> {
   const store = requireGroupContexts();
   switch (command.type) {
     case "addFiles": {
       const files = command.files.map((file) => ({ name: file.name, mediaType: file.mediaType, bytes: Buffer.from(file.data, "base64") }));
       const result = store.addFiles(command.groupId, command.title, files, "person");
+      if (result.kept.length > 0) requireBrowser().ownSpace(command.groupId);
       return { rejected: result.rejected, added: result.kept.map((item) => ({ id: item.id, name: item.name })) };
     }
     case "addText":
@@ -1418,6 +1423,7 @@ async function handleGroupContextCommand(command: GroupContextCommand): Promise<
         },
         "person",
       );
+      requireBrowser().ownSpace(command.groupId);
       return { rejected: [] };
     case "remove":
       store.remove(command.groupId, command.itemId);
@@ -1430,7 +1436,7 @@ async function handleGroupContextCommand(command: GroupContextCommand): Promise<
       return { rejected: [] };
     }
     case "adopt":
-      store.adopt(command.groupId, command.title, command.fromGroupId);
+      if (store.adopt(command.groupId, command.title, command.fromGroupId) > 0) requireBrowser().ownSpace(command.groupId);
       return { rejected: [] };
   }
 }
@@ -3210,6 +3216,7 @@ function installIpc(): void {
   ipcMain.on(IPC.tabPasskeySupportReport, (event, report: unknown) => {
     requireBrowser().acceptPasskeySupport(event.sender.id, report);
   });
+  ipcMain.handle(IPC.tabZoomGet, (event) => requireBrowser().tabZoomFor(event.sender.id));
   ipcMain.handle(IPC.findGet, () => requireBrowser().findState());
   ipcMain.handle(IPC.findCommand, (event, command: unknown) => {
     if (
@@ -3408,8 +3415,8 @@ function installIpc(): void {
   ipcMain.handle(IPC.glanceClose, (event) => {
     if (isShell(event.sender)) requireBrowser().closeGlance();
   });
-  ipcMain.handle(IPC.glancePromote, (event) => {
-    if (isShell(event.sender)) requireBrowser().promoteGlance();
+  ipcMain.handle(IPC.glancePromote, (event, how: unknown) => {
+    if (isShell(event.sender)) requireBrowser().promoteGlance(how === "tile" ? "tile" : "fill");
   });
   ipcMain.handle(IPC.glanceSplit, (event) => {
     if (isShell(event.sender)) requireBrowser().splitGlance();

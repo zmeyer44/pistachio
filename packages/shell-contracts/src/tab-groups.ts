@@ -534,10 +534,21 @@ export type TabGroupCommand =
   | { type: "addTab"; groupId: string; tabId: string; index?: number }
   /** Take a tab out; it stays open, placed straight after the group. */
   | { type: "removeTab"; tabId: string }
-  /** A new tab that starts life in the group, and is shown. */
-  | { type: "newTab"; groupId: string }
+  /**
+   * A new tab that starts life in the group, and is shown: at the home page, or `url` (General › New tabs open's
+   * address). Named so, a Home tab's space takes it and grows into a space of two (a Today row's +); a new tab made in
+   * Home any other way is a Home tab of its own (docs/double-sidebar.md §1).
+   */
+  | { type: "newTab"; groupId: string; url?: string }
   /** Dissolve the group; its tabs stay where they are. */
   | { type: "ungroup"; groupId: string }
+  /**
+   * A Home space — a loose tab's, or a favorite's or pin's page alone — made a space of its own where it stands
+   * (docs/double-sidebar.md §1, "Breaking away"; since 2026-10-14): its window taken off the whole desk, or something
+   * put in its Context. The same id, so the desk stays on it; drawn, the person's, named by the namer. Any other space,
+   * or no room for another: a no-op.
+   */
+  | { type: "ownSpace"; groupId: string }
   /** Close every tab in the group and file it in the archive as one entry (docs/tab-tidy.md §3.5). */
   | { type: "close"; groupId: string }
   /** Show the group's tabs side by side — up to four of them (§3.4). The web host's: the desktop's desk tiles windows instead. */
@@ -578,6 +589,7 @@ const COMMAND_TYPES: ReadonlySet<string> = new Set([
   "removeTab",
   "newTab",
   "ungroup",
+  "ownSpace",
   "close",
   "openAsSplit",
   "move",
@@ -629,6 +641,8 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
       return isTabGroupId(raw["groupId"]) && isTabId(raw["tabId"]) && (raw["index"] === undefined || isIndex(raw["index"]));
     case "removeTab":
       return isTabId(raw["tabId"]);
+    case "newTab":
+      return isTabGroupId(raw["groupId"]) && (raw["url"] === undefined || (typeof raw["url"] === "string" && raw["url"].length > 0 && raw["url"].length <= MAX_CREATE_URL));
     case "move":
       return isTabGroupId(raw["groupId"]) && isIndex(raw["index"]);
     case "merge":

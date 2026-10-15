@@ -56,6 +56,8 @@ const FILE_DRAG_CHANNEL = "pistachio:tab-file-drag";
 const PASSKEY_SUPPORT_REPORT_CHANNEL = "pistachio:tab-passkey-support-report";
 const SCREEN_SHARE_REPORT_CHANNEL = "pistachio:screen-share-report";
 const SCREEN_SHARE_STOP_CHANNEL = "pistachio:screen-share-stop";
+const TAB_ZOOM_CHANNEL = "pistachio:tab-zoom";
+const TAB_ZOOM_GET_CHANNEL = "pistachio:tab-zoom-get";
 
 const DRAG_TOLERANCE = 4;
 /** Per kind (classes, ids, links) and page: past this, a page churning its DOM is asked about no more. */
@@ -278,6 +280,17 @@ startDefaultPlaybackRate();
 if (window === window.top) startPagePreload();
 
 function startPagePreload(): void {
+
+  // The tab's zoom, set here on its own frame: Chromium keeps a zoom the page
+  // sets to this tab, where one main set would be the site's, and every tab
+  // of the site's with it (BrowserController #tabZoom). Asked for again by
+  // each document the tab loads, as it starts.
+  const zoomTo = (factor: unknown): void => {
+    if (typeof factor !== "number" || !Number.isFinite(factor) || factor <= 0) return;
+    if (Math.abs(webFrame.getZoomFactor() - factor) > 0.001) webFrame.setZoomFactor(factor);
+  };
+  ipcRenderer.on(TAB_ZOOM_CHANNEL, (_event, factor: unknown) => zoomTo(factor));
+  void ipcRenderer.invoke(TAB_ZOOM_GET_CHANNEL).then(zoomTo, () => undefined);
 
   interface PressedLink {
     link: HTMLAnchorElement | HTMLAreaElement;

@@ -608,6 +608,12 @@ export interface DeskHost {
   close(tabId: string): void;
   /** Edit this tab's address: the address palette, over the desk (a click on a window's title). */
   editAddress(tabId: string): void;
+  /**
+   * A window the person took off the whole desk — moved and let go, resized, let go of it with ⤢, masked — and left
+   * short of it (#brokeAway): the host makes a Home tab's space one of its own (docs/double-sidebar.md §1, "Breaking
+   * away"). Any other space's, nothing.
+   */
+  brokeAway?(tabId: string): void;
   save(windows: SavedDeskWindow[], reserve: number): void;
   /**
    * A tab of the group sent to another group (its row's menu): the tab goes
@@ -1616,6 +1622,8 @@ export class DeskEngine {
     this.#pendingFocus = tabId;
     this.#render();
     this.#kick();
+    // (A part of a page is no browser's tab.)
+    this.#host.brokeAway?.(tabId);
   }
 
   /**
@@ -2107,6 +2115,13 @@ export class DeskEngine {
     this.#emit();
     this.#render();
     this.#kick();
+  }
+
+  /**
+   * A Glance taken in (receiveGlance) waits for this tab still: its window is to be where the preview landed (add).
+   */
+  awaitsLanding(tabId: string): boolean {
+    return this.#incoming?.tabId === tabId && performance.now() - this.#incoming.at < GLANCE_LANDING_MS;
   }
 
   /**
@@ -2706,6 +2721,7 @@ export class DeskEngine {
     this.#pendingFocus = tabId;
     this.#emit();
     this.#kick();
+    this.#brokeAway(win);
   }
 
   /**
@@ -4087,6 +4103,7 @@ export class DeskEngine {
       this.#emit();
       this.#render();
       this.#kick();
+      this.#brokeAway(win);
       return;
     }
     // Let go over the column, on something there that takes it: it goes there. Only the pointer's place counts: a
@@ -4159,6 +4176,19 @@ export class DeskEngine {
     this.#emit();
     this.#render();
     this.#kick();
+    // (A row pulled out of the sidebar is a tab brought to the desk, not one taken off it.)
+    if (gesture.kind === "move") this.#brokeAway(win);
+  }
+
+  /**
+   * A window the person let go of short of the whole desk (DeskHost.brokeAway): where it is headed — coasting, it has
+   * left the place it filled — is not the desk's usable box.
+   */
+  #brokeAway(win: Win): void {
+    if (win.mini !== null) return;
+    const rest = win.coasting ? null : (win.target ?? win.rect);
+    if (rest !== null && sameRect(rest, this.#usable(), 2)) return;
+    this.#host.brokeAway?.(win.tabId);
   }
 
   #cancelGesture(): void {

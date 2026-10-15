@@ -418,6 +418,14 @@ describe("group helpers", () => {
     expect(isTabGroupCommand({ type: "merge", groupId: "g-1", into: "g-1" })).toBe(false);
     expect(isTabGroupCommand({ type: "merge", groupId: "g-1" })).toBe(false);
     expect(isTabGroupCommand({ type: "merge", groupId: "g-1", into: "not an id" })).toBe(false);
+    // A Home tab made a space of its own where it stands, and a new tab named into a space — at an address, maybe (2026-10-14).
+    expect(isTabGroupCommand({ type: "ownSpace", groupId: "g-1" })).toBe(true);
+    expect(isTabGroupCommand({ type: "ownSpace" })).toBe(false);
+    expect(isTabGroupCommand({ type: "newTab", groupId: "g-1" })).toBe(true);
+    expect(isTabGroupCommand({ type: "newTab", groupId: "g-1", url: "https://example.com/" })).toBe(true);
+    expect(isTabGroupCommand({ type: "newTab", groupId: "g-1", url: "" })).toBe(false);
+    expect(isTabGroupCommand({ type: "newTab", groupId: "g-1", url: 7 })).toBe(false);
+    expect(isTabGroupCommand({ type: "newTab", groupId: "g-1", url: "x".repeat(16_385) })).toBe(false);
   });
 
   it("merges a drawn space into any space but a loose tab's, and never a page's away (canMergeSpaces)", () => {

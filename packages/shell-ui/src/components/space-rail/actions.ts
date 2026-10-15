@@ -5,11 +5,11 @@
  * `addTab`, `removeTab`, `create` — as the single sidebar's did.
  */
 
-import { currentSpace, newTabAsChosen, selectSpace } from "../../lib/desk/open";
+import { currentSpace, selectSpace } from "../../lib/desk/open";
 import { deskGroups } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { useHomeMemory } from "./column-state";
-import { isHomeSpace } from "./rail-model";
+import { isHomeSpace, railEntryOrder, railSpacesOf } from "./rail-model";
 
 /** How long a space chosen may take to become the current one before what follows gives up. */
 const SELECT_WAIT_MS = 1500;
@@ -30,9 +30,12 @@ function spaceOf(tabId: string): string | null {
 }
 
 /**
- * A Today row's + (*Open a window beside it*): its space chosen, then the
- * same new tab ⌘T makes there (newTabAsChosen) — which makes a Home tab a
- * space of two, and it goes up onto the rail (main's).
+ * A Today row's + (*Open a window beside it*): its space chosen, then a new
+ * tab IN it, named (main's `newTab`) — which makes a Home tab a space of two,
+ * and it goes up onto the rail (main's). As General › New tabs open says:
+ * at the address named there, or the home page — and for "the address bar",
+ * the home page with the bar open on it. (Until 2026-10-14 it was ⌘T's new
+ * tab, newTabAsChosen; ⌘T in Home makes a Home tab of its own since.)
  */
 export async function openBeside(tabId: string): Promise<void> {
   const groupId = spaceOf(tabId);
@@ -41,7 +44,28 @@ export async function openBeside(tabId: string): Promise<void> {
     selectSpace(groupId);
     if (!(await untilCurrent(groupId))) return;
   }
-  newTabAsChosen();
+  const store = useAppStore.getState();
+  const { newTab, newTabUrl } = store.settings.general;
+  store.closePage();
+  await store.tabGroupCommand(newTab === "url" && newTabUrl !== "" ? { type: "newTab", groupId, url: newTabUrl } : { type: "newTab", groupId });
+  if (newTab === "address") useAppStore.getState().openUrlBar();
+}
+
+/**
+ * ⌘2–⌘9 (Slack's keys, ⌘1 Home's; Settings › Keyboard › Spaces): the
+ * rail's `position`th space from the top, counted as the rail lists them
+ * (railSpacesOf, in SpaceColumn's entry order), chosen as its tile's click
+ * chooses it. False with fewer spaces than that.
+ */
+export function chooseRailSpace(position: number): boolean {
+  const store = useAppStore.getState();
+  const snapshot = store.snapshot;
+  if (snapshot === null) return false;
+  const spaces = railSpacesOf({ ...snapshot, splitGroups: snapshot.splitGroups ?? [] }, railEntryOrder(store.settings.organization.presetLinks, snapshot.sidebar));
+  const space = spaces[position - 1];
+  if (space === undefined) return false;
+  selectSpace(space.group.id);
+  return true;
 }
 
 /**

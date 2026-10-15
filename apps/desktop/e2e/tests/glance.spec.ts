@@ -281,6 +281,20 @@ test.describe.serial("Glance", { tag: ["@glance"] }, () => {
     expect(tiled.tabs.map(({ url }) => url)).toEqual([OWNER_URL, PREVIEW_URL]);
     await expect(shell.getByTestId("desk-window")).toHaveCount(2);
     await captureWindow(app, "05-taken-in-as-a-tile.png");
+    // A second window on a Home tab: the two grown into a space made for the person, as its row's + grows it — and
+    // back to Home with the preview closed (docs/double-sidebar.md §1, "And back").
+    const [ownerTab, tileTab] = tiled.tabs.map(({ id }) => id) as [string, string];
+    const spaceOfOwner = () =>
+      shell.evaluate(async (tabId) => {
+        const snapshot = await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot();
+        const group = snapshot.tabGroups.find((candidate) => candidate.tabIds.includes(tabId));
+        return group === undefined ? null : { origin: group.origin, grown: group.grown === true, tabIds: group.tabIds };
+      }, ownerTab);
+    await expect.poll(spaceOfOwner).toEqual({ origin: "auto", grown: true, tabIds: [ownerTab, tileTab] });
+    await shell.evaluate(async (tabId) => {
+      await (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(tabId);
+    }, tileTab);
+    await expect.poll(spaceOfOwner).toBe(null);
   });
 
   test("a new-tab link automatically Glances from a favorite tab only", async () => {

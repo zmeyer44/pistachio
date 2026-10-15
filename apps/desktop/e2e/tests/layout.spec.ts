@@ -225,25 +225,28 @@ test.describe.serial("the sidebar layout", { tag: ["@sidebar", "@settings"] }, (
     await expect(shell.getByTestId("secondary-pane")).toHaveCount(0);
     expect(await shell.evaluate(async () => (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).splitMode)).toBe("single");
 
-    // The list's "New tab" row does what ⌘T does on the desk: a new tab in
-    // the current space, on the home page (an address, here), out as the
-    // window in use.
+    // The list's "New tab" row does what ⌘T does on the desk: a new tab on
+    // the home page (an address, here), out as the window in use — on a Home
+    // tab, as here, a Home tab of its own, the whole desk (docs/double-sidebar.md §1).
     const tabsBefore = await shell.evaluate(async () => (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).tabs.map((tab) => tab.id));
     await sidebar.getByTestId("new-tab-button").click();
-    await expect(shell.getByTestId("desk-window")).toHaveCount(2);
     await expect(shell.getByTestId("url-bar")).toHaveCount(0);
-    const made = await shell.evaluate(async (before) => {
-      const snapshot = await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot();
-      return snapshot.tabs.find((tab) => !before.includes(tab.id) && tab.id === snapshot.activeTabId)?.id ?? null;
-    }, tabsBefore);
-    expect(made).not.toBeNull();
+    const madeNow = (): Promise<string | null> =>
+      shell.evaluate(async (before) => {
+        const snapshot = await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot();
+        return snapshot.tabs.find((tab) => !before.includes(tab.id) && tab.id === snapshot.activeTabId)?.id ?? null;
+      }, tabsBefore);
+    await expect.poll(madeNow).not.toBeNull();
+    const made = await madeNow();
     await expect(shell.locator(`[data-testid="desk-window"][data-tab-id="${made!}"][data-focused]`)).toHaveCount(1);
+    await expect(shell.getByTestId("desk-window")).toHaveCount(1);
     // (Without its query: Google may add its own, `?zx=…`, as the page loads.)
     const madeUrl = await shell.evaluate(async (id) => (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).tabs.find((tab) => tab.id === id)?.url, made!);
     expect(madeUrl?.split("?")[0]).toBe("https://www.google.com/");
     await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), made!);
     await expect(shell.getByTestId("desk-window")).toHaveCount(1);
-    await expect.poll(() => visibleTabViews(app)).toBe(1);
+    // (Back on the first Home tab, the desk passing to it: its page is live once its window has come in.)
+    await expect.poll(() => visibleTabViews(app), { timeout: 15_000 }).toBe(1);
     // Let the layout's re-arrangement and the page's fade-in settle first.
     await captureWindow(app, FOLDER, "01-sidebar-whole.png", 400);
 

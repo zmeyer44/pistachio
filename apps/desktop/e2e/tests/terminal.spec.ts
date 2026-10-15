@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { launchApp } from "./app";
-import { fromFrameMenu, launchDesk, settled, snapshot } from "./desk-harness";
+import { createGroup, fromFrameMenu, launchDesk, selectSpace, settled, snapshot } from "./desk-harness";
 import { captureShell, visibleTabViews } from "./pages-harness";
 import { shellReady } from "./windows";
 
@@ -463,6 +463,9 @@ test("a minimized terminal keeps its size: ⌘+ in another changes its type, not
   await writeFile(join(zdotdir, ".zshrc"), "bindkey -e\n");
   const { app, shell } = await launchDesk({ name: "terminal-frozen", env: { SHELL: "/bin/zsh", ZDOTDIR: zdotdir } });
   try {
+    // (In a space: on a Home tab each new terminal would be a Home tab of its own, the whole desk — docs/double-sidebar.md §1.)
+    await createGroup(shell, "terminals", [(await snapshot(shell)).activeTabId!], "Terminals", "green");
+    await selectSpace(shell, "terminals");
     const first = await newTerminal(shell);
     const second = await newTerminal(shell);
     const size = (id: string) =>
