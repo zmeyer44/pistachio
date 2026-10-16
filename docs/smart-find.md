@@ -225,13 +225,23 @@ export interface FindState {
     stale: boolean;
     excerpt: string;       // the active match's key sentence, ≤160 chars
   };
+  filled?: number;         // searches given their words from outside the bar (below)
 }
 
 export type FindCommand =
-  | { type: "search"; query: string; forward: boolean; mode?: FindMode; draft?: boolean }
+  | { type: "search"; query: string; forward: boolean; mode?: FindMode; draft?: boolean; fill?: boolean }
   | { type: "mode"; mode: FindMode }
   | { type: "close" };
 ```
+
+The bar's field is the person's: it takes the host's query only as the bar
+opens, since the echo of their own typing arrives a hop late and must not
+retype what they have typed since. A search whose words come from outside
+the bar — the desk Bar's `/find` (docs/desk-agent.md, *Commands*) — says so
+with `fill`; main counts those (`#findFills`, kept through a close, which
+resets the rest of the state) as `filled`, and the field takes the query
+whenever that count changes, so an open bar shows the words it now searches
+(2026-10-16).
 
 `mode` is optional on `search` so the existing callers and the cloud
 transport keep working unchanged; `isFindCommand` grows the two cases (an

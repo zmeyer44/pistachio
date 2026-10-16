@@ -22,6 +22,7 @@ import {
   shell,
   systemPreferences,
   type WebContents,
+  type WebContentsView,
 } from "electron";
 import {
   NotificationRouter,
@@ -105,6 +106,7 @@ import { spacesFileHasIdentitySpace } from "./egress/egress-state";
 import { featureHandlers, installFeatureHandlers } from "./feature-handlers";
 import { WorkspaceRecords } from "./sync/records";
 import { DeskBridge } from "./desk-bridge";
+import { DeskGlass } from "./desk-glass";
 import { DeskPipPress } from "./desk-pip-press";
 import { DeskConversationStore } from "./desk-conversations";
 import { GroupContextStore } from "./group-context-store";
@@ -225,7 +227,7 @@ import { isUpdateSnooze } from "@pistachio/shell-contracts/updates";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
 import { isScreenshotRequest } from "@pistachio/shell-contracts/screenshot";
-import { deskPipSlot, isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
+import { deskPipSlot, isDeskNotchFrame, isDeskNotchInput, isDeskNotchOutline, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
 import {
   isDeskConversationCommand,
   isGroupContextCommand,
@@ -368,6 +370,11 @@ let noticeLayer: NoticeLayer | null = null;
  */
 let notchLayer: ChromeOverlayView | null = null;
 let deskNotch: DeskNotchFrame | null = null;
+/** The window's own glass under the notch view (main/desk-glass.ts), and whether it lies there now. */
+let deskGlass: DeskGlass | null = null;
+let deskNotchGlass = false;
+/** Whether a view stacked over the notch view lies over it (notchCovered): the glass steps aside meanwhile. */
+let deskNotchCovered = false;
 /** The desk's parked windows over the live pages under them, the same way (the "shelf" view). */
 let shelfLayer: ChromeOverlayView | null = null;
 let deskShelf: DeskShelfFrame | null = null;
@@ -433,7 +440,46 @@ function applyDeskNotch(): void {
   layer.setVeiled(shellState.veiled);
   layer.setShown(deskNotch !== null);
   if (rising) raiseDeskLayer(layer);
-  if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskNotchChanged, deskNotch);
+  // The glass lies over every view's page (they are all one layer, under all their NSViews), so where a view stacked
+  // over this one lies over it — the drag layer as a drag goes, a toast — the glass would hide that view's page: it
+  // steps aside, and this view paints its stand-in under it, as the views are stacked (checkNotchCover).
+  deskNotchCovered = notchCovered();
+  deskNotchGlass = deskGlass?.sync(layer.bounds(), layer.onScreen, settings !== null && desktopGlassEnabled(settings.get()) && !deskNotchCovered) ?? false;
+  if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskNotchChanged, notchFrameForView());
+}
+
+/** Whether a view on screen stacked over the notch view lies over its box. */
+function notchCovered(): boolean {
+  const layer = notchLayer;
+  const window = shellWindow;
+  const box = layer?.bounds() ?? null;
+  if (layer === null || box === null || !layer.onScreen || window === null || window.isDestroyed()) return false;
+  const children = window.contentView.children;
+  const at = children.findIndex((child) => "webContents" in child && (child as WebContentsView).webContents.id === layer.webContents.id);
+  return (
+    at >= 0 &&
+    children.slice(at + 1).some((child) => {
+      if (!child.getVisible()) return false;
+      const over = child.getBounds();
+      return over.x < box.x + box.width && box.x < over.x + over.width && over.y < box.y + box.height && box.y < over.y + over.height;
+    })
+  );
+}
+
+let notchCoverCheck = false;
+/** A view was placed, shown, hidden or raised: whether one lies over the notch view now, once this turn is done (a raise of every view is one change). */
+function checkNotchCover(): void {
+  if (notchCoverCheck) return;
+  notchCoverCheck = true;
+  queueMicrotask(() => {
+    notchCoverCheck = false;
+    if (notchCovered() !== deskNotchCovered) applyDeskNotch();
+  });
+}
+
+/** The notch as the notch view is told it: with whether the window's glass lies under it. */
+function notchFrameForView(): DeskNotchFrame | null {
+  return deskNotch === null ? null : { ...deskNotch, nativeGlass: deskNotchGlass };
 }
 let bookmarkToastHeight = 104;
 const BOOKMARK_TOAST_WIDTH = 400;
@@ -2214,32 +2260,40 @@ async function createWindow(): Promise<void> {
   const dragView = new ChromeOverlayView(window, {
     id: "drag",
     preload,
+    placed: checkNotchCover,
   });
   const findView = new ChromeOverlayView(window, {
     id: "find",
     preload,
+    placed: checkNotchCover,
   });
   const bookmarkView = new ChromeOverlayView(window, {
     id: "bookmark",
     preload,
+    placed: checkNotchCover,
   });
   const noticeView = new ChromeOverlayView(window, {
     id: "notice",
     preload,
+    placed: checkNotchCover,
   });
   const notchView = new ChromeOverlayView(window, {
     id: "notch",
     preload,
+    placed: checkNotchCover,
   });
   notchLayer = notchView;
+  deskGlass = new DeskGlass(window, notchView.webContents);
   const shelfView = new ChromeOverlayView(window, {
     id: "shelf",
     preload,
+    placed: checkNotchCover,
   });
   shelfLayer = shelfView;
   const pipView = new ChromeOverlayView(window, {
     id: "pip",
     preload,
+    placed: checkNotchCover,
   });
   pipLayer = pipView;
   pipView.webContents.on("before-mouse-event", (_event, mouse) => deskPipPress.mouse(mouse));
@@ -2584,6 +2638,8 @@ async function createWindow(): Promise<void> {
     notchView.destroy();
     notchLayer = null;
     deskNotch = null;
+    deskGlass?.dispose();
+    deskGlass = null;
     shelfView.destroy();
     shelfLayer = null;
     deskShelf = null;
@@ -2663,6 +2719,8 @@ function applyWindowMaterial(
       desktopGlassEnabled(settings) ? DESKTOP_GLASS_MATERIAL : null,
     );
     window.invalidateShadow();
+    // The notch view's own glass with it (main/desk-glass.ts): taken out, or laid in afresh as the window's is now.
+    applyDeskNotch();
   }
 }
 
@@ -2872,7 +2930,8 @@ const deskLayout = new DeskLayoutJudge({
 /**
  * The window's screenshots (@pistachio/shell-contracts/screenshot): the
  * shell names the box, this lays the window's layers up into it. Pages are
- * cut to the corners main gave them; the notices are never in a picture.
+ * cut to the corners main gave them; the notices are never in a picture,
+ * nor the desk's nub.
  */
 const screenshots = new Screenshots({
   window: () => (shellWindow === null || shellWindow.isDestroyed() ? null : shellWindow),
@@ -2887,7 +2946,8 @@ const screenshots = new Screenshots({
       settleUtilityKeyboard();
     }
   },
-  leftOut: (contents) => chromeViewOf(contents) === "notice",
+  // (The notch view is the Bar's nub over a live page: no screenshot has the Bar in it — screenshot.ts takes it down.)
+  leftOut: (contents) => chromeViewOf(contents) === "notice" || chromeViewOf(contents) === "notch",
 });
 
 /** A utility view to have the keyboard back once it is on screen again (the screenshot selector veiled it), and until when. */
@@ -3120,8 +3180,10 @@ function installIpc(): void {
     if (auth?.enrolled() !== true || event.senderFrame !== event.sender.mainFrame) return;
     browser?.acceptPageResume(event.sender.id, value);
   });
+  // What a page sends one way has no caller to hear a throw: with no browser
+  // (the window has closed) it is dropped, not raised as a dialog per message.
   ipcMain.on(IPC.mediaReport, (event, report: unknown) => {
-    requireBrowser().acceptMediaReport(event.sender.id, report);
+    browser?.acceptMediaReport(event.sender.id, report);
   });
   // Any frame of a page, as its media starts (preload/tab.ts): the speed to
   // start at. Nothing private — the one number the person chose.
@@ -3129,7 +3191,7 @@ function installIpc(): void {
   // The top document's share; the tab preload runs nowhere else.
   ipcMain.on(IPC.screenShareReport, (event, report: unknown) => {
     if (event.senderFrame !== event.sender.mainFrame) return;
-    requireBrowser().acceptScreenShareReport(event.sender.id, report);
+    browser?.acceptScreenShareReport(event.sender.id, report);
   });
   ipcMain.handle(IPC.readAloudGet, (event) =>
     isShell(event.sender) ? requireBrowser().readAloudJobs() : [],
@@ -3179,7 +3241,7 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.mediaPreviewHoverReport, (event, hovered: unknown) => {
     if (typeof hovered !== "boolean") return;
-    requireBrowser().acceptMediaPreviewHover(event.sender.id, hovered);
+    browser?.acceptMediaPreviewHover(event.sender.id, hovered);
   });
   // The desk's rail shows how loud the media it lists is: their pages measure it while it is up.
   ipcMain.on(IPC.mediaMetersSet, (event, tabIds: unknown) => {
@@ -3188,7 +3250,7 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.mediaLevelReport, (event, level: unknown) => {
     if (!isMediaLevelReport(level)) return;
-    requireBrowser().acceptMediaLevel(event.sender.id, level);
+    browser?.acceptMediaLevel(event.sender.id, level);
   });
   ipcMain.handle(IPC.browserControlsGet, (event) => {
     if (!isShell(event.sender))
@@ -3205,16 +3267,16 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.tabPolicyBlocked, (event, action: unknown) => {
     if (isGuardedBrowserAction(action))
-      requireBrowser().acceptPolicyBlocked(event.sender.id, action);
+      browser?.acceptPolicyBlocked(event.sender.id, action);
   });
   ipcMain.on(IPC.tabEmptyCopy, (event) => {
-    requireBrowser().acceptEmptyCopy(event.sender.id);
+    browser?.acceptEmptyCopy(event.sender.id);
   });
   ipcMain.on(IPC.tabFileDrag, (event) => {
-    requireBrowser().acceptFileDrag(event.sender.id);
+    browser?.acceptFileDrag(event.sender.id);
   });
   ipcMain.on(IPC.tabPasskeySupportReport, (event, report: unknown) => {
-    requireBrowser().acceptPasskeySupport(event.sender.id, report);
+    browser?.acceptPasskeySupport(event.sender.id, report);
   });
   ipcMain.handle(IPC.tabZoomGet, (event) => requireBrowser().tabZoomFor(event.sender.id));
   ipcMain.handle(IPC.findGet, () => requireBrowser().findState());
@@ -3377,11 +3439,11 @@ function installIpc(): void {
   );
   ipcMain.on(IPC.glanceOpenRequest, (event, request: unknown) => {
     if (!isGlanceOpenRequest(request)) return;
-    void requireBrowser().openGlance(event.sender.id, request);
+    void browser?.openGlance(event.sender.id, request);
   });
   ipcMain.on(IPC.glanceIntent, (event, request: unknown) => {
     if (!isGlanceIntentRequest(request)) return;
-    requireBrowser().recordGlanceIntent(event.sender.id, request.source);
+    browser?.recordGlanceIntent(event.sender.id, request.source);
   });
   ipcMain.handle(IPC.glanceOpenFromShell, (event, request: unknown) => {
     if (!isShell(event.sender) || !isShellGlanceOpenRequest(request))
@@ -3389,7 +3451,7 @@ function installIpc(): void {
     return requireBrowser().openGlanceFromShell(request);
   });
   ipcMain.on(IPC.glanceDismissRequest, (event, hasFocused: unknown) => {
-    if (!requireBrowser().acceptsGlanceDismiss(event.sender.id)) return;
+    if (browser?.acceptsGlanceDismiss(event.sender.id) !== true) return;
     if (shellWindow !== null && !shellWindow.isDestroyed()) {
       shellWindow.webContents.send(
         IPC.glanceDismissRequested,
@@ -3715,7 +3777,11 @@ function installIpc(): void {
     deskNotch = frame;
     applyDeskNotch();
   });
-  ipcMain.handle(IPC.deskNotchGet, () => deskNotch);
+  ipcMain.handle(IPC.deskNotchGet, () => notchFrameForView());
+  ipcMain.on(IPC.deskNotchOutline, (event, points: unknown) => {
+    if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchOutline(points)) return;
+    deskGlass?.outline(points);
+  });
   ipcMain.on(IPC.deskNotchInput, (event, input: unknown) => {
     if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchInput(input)) return;
     if (shellWindow === null || shellWindow.isDestroyed()) return;

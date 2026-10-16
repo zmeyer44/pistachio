@@ -84,7 +84,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     const nub = shell.getByTestId("desk-nub");
     await expect(nub).toBeVisible();
     // The pill is the field and its buttons: it asks about the group by name.
-    await expect(shell.getByTestId("desk-bar-input")).toHaveAttribute("placeholder", "Ask about Northstar…");
+    await expect(shell.getByTestId("desk-bar-input")).toHaveAttribute("placeholder", "Ask about Northstar… (/ for commands)");
     // Idle, the pill is in the nub, which says what it is for (and the key that opens it) when the pointer rests on it.
     await expect(bar).toHaveAttribute("data-compact", "");
     await expect(nub).toHaveAttribute("aria-label", "Ask about Northstar");

@@ -1050,6 +1050,8 @@ export class BrowserController {
     source?: Electron.WebContents,
   ) => boolean;
   #lifecycleTimer: NodeJS.Timeout | null = null;
+  /** The window has closed (shutdown): its pages are gone and the session written is the last. */
+  #shutDown = false;
   #activeTabId: string | null = null;
   #layout: BrowserLayout = { views: [] };
   /** The live pages of a stacked layout, bottom to top, as last restacked (#restackViews). */
@@ -1193,6 +1195,8 @@ export class BrowserController {
   readonly #downloadItems = new Map<string, DownloadItem>();
   readonly #policyEvents: BrowserPolicyEvent[] = [];
   #findState: FindState = CLOSED_FIND;
+  /** Searches given their words from outside the bar (`FindState.filled`): kept through a close, which resets the rest. */
+  #findFills = 0;
   #findRequestId = 0;
   /** The last bare ⌘C a page let through, until its copy is accounted for (acceptEmptyCopy). */
   #copyKeystroke: { tabId: string; at: number } | null = null;
@@ -1347,6 +1351,21 @@ export class BrowserController {
     this.#gate.dispose();
     this.persistSession();
     this.#tabSessionStore.flush();
+    // The pages go with the window — the next one restores them from the
+    // session just written, which nothing after this may write over. A page
+    // left running would keep playing, and keep reporting to a controller
+    // main has already let go of. What is still queued for one finds it gone,
+    // as it does a closed tab's.
+    this.#shutDown = true;
+    for (const timer of this.#mediaRevealTimers.values()) clearTimeout(timer);
+    this.#mediaRevealTimers.clear();
+    for (const release of this.#deskReleases.values())
+      if (release.timer !== null) clearTimeout(release.timer);
+    const pages = [...this.#tabs.values()].map((tab) => tab.view.webContents);
+    if (this.#glance !== null) pages.push(this.#glance.tab.view.webContents);
+    this.#tabs.clear();
+    this.#glance = null;
+    for (const page of pages) if (!page.isDestroyed()) page.close();
   }
 
   /** Repaint native view properties that cannot be expressed by renderer CSS. */
@@ -1928,6 +1947,7 @@ export class BrowserController {
   }
 
   persistSession(): void {
+    if (this.#shutDown) return;
     for (const id of this.#pageResume.keys()) if (this.#tabInfo(id) === null) this.#pageResume.delete(id);
     const spaces: DurableTabSession["spaces"] = {};
     for (const space of this.#spaceStore.all()) {
@@ -2874,6 +2894,7 @@ export class BrowserController {
       // Signed out or switched off while the bar is open: it falls back to exact.
       mode: smartAvailable ? this.#findState.mode : "exact",
       smartAvailable,
+      filled: this.#findFills,
     };
   }
 
@@ -2929,6 +2950,7 @@ export class BrowserController {
       tab?.view.webContents.focus();
       return;
     }
+    if (command.type === "search" && command.fill === true) this.#findFills += 1;
     const mode: FindMode =
       (command.mode ?? this.#findState.mode) === "smart" && this.#smartFindAvailable()
         ? "smart"

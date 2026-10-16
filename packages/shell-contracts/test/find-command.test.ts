@@ -15,6 +15,7 @@ describe("isFindCommand", () => {
       { type: "search", query: "invoice", forward: false, mode: "exact" },
       { type: "search", query: "how do I get my money back", forward: true, mode: "smart" },
       { type: "search", query: "how do I", forward: true, mode: "smart", draft: true },
+      { type: "search", query: "refund policy", forward: true, mode: "smart", fill: true },
       { type: "mode", mode: "smart" },
       { type: "mode", mode: "exact" },
     ])
@@ -32,6 +33,7 @@ describe("isFindCommand", () => {
       { type: "search", query: "x" },
       { type: "search", query: "x", forward: true, mode: "fuzzy" },
       { type: "search", query: "x", forward: true, draft: "yes" },
+      { type: "search", query: "x", forward: true, fill: 1 },
     ])
       expect(isFindCommand(command), JSON.stringify(command)).toBe(false);
   });

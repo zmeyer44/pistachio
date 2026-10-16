@@ -45,12 +45,16 @@ export function FindApp() {
   const inputRef = useRef<HTMLInputElement>(null);
   const pause = useRef<number | undefined>(undefined);
   const wasOpen = useRef(false);
+  /** The words given from outside the bar (`FindState.filled`) last taken into the field. */
+  const filled = useRef(0);
 
   useEffect(() => {
     let active = true;
     const adopt = (next: FindState) => {
-      if (next.open !== wasOpen.current) {
+      // As it opens, or given words from outside it (the desk Bar's `/find`), the field takes the query.
+      if (next.open !== wasOpen.current || (next.filled ?? 0) !== filled.current) {
         wasOpen.current = next.open;
+        filled.current = next.filled ?? 0;
         setText(next.query);
         window.clearTimeout(pause.current);
       }

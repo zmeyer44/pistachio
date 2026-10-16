@@ -452,6 +452,25 @@ test.describe.serial("window screenshots", { tag: ["@screenshot", "@desk"] }, ()
     // And the Bar is back.
     await expect(shell.getByTestId("desk-bar-lane")).toBeVisible();
 
+    // An area over the nub: no screenshot has the Bar in it, the area's no more than the page's — where the nub was,
+    // its face and mark too, is the page under it.
+    await expect.poll(() => chromeViewShown(app, "#notch")).toBe(true);
+    await shell.keyboard.press("Meta+Shift+Digit2");
+    await expect(shell.locator("[data-testid='screenshot-overlay'][data-ready]")).toHaveCount(1);
+    const corner = { x: nub.x - 14, y: nub.y - 14 };
+    await shell.mouse.move(corner.x, corner.y);
+    await shell.mouse.down();
+    await shell.mouse.move(nub.x + nub.width, nub.y + nub.height, { steps: 4 });
+    await shell.mouse.up();
+    const onNub = [
+      { x: nub.x + nub.width * 0.7, y: nub.y + nub.height * 0.7 },
+      { x: nub.x + nub.width / 2, y: nub.y + nub.height / 2 },
+    ];
+    const corners = await readPng(app, await nextShot(), onNub.map((point) => ({ x: (point.x - corner.x) * scale, y: (point.y - corner.y) * scale })));
+    for (const [index, point] of onNub.entries())
+      expect(near(corners.colors[index]!, await pageColor(app, INVOICES, { x: point.x - view.x, y: point.y - view.y }))).toBe(true);
+    await expect.poll(() => chromeViewShown(app, "#notch")).toBe(true);
+
     // An area of the desk: its window gives way to its picture under the overlay, and is live again after.
     await shell.keyboard.press("Meta+Shift+Digit2");
     await expect(shell.locator("[data-testid='screenshot-overlay'][data-ready]")).toHaveCount(1);

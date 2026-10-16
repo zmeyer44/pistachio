@@ -235,7 +235,8 @@
   transform: rotate(180deg);
 }
 
-.agent-shimmer {
+.agent-shimmer,
+[data-slot="trace-line"][data-status="running"] > [data-slot="trace-title"] {
   background: linear-gradient(
     100deg,
     var(--color-gray-700) 20%,
@@ -283,6 +284,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .agent-shimmer,
+  [data-slot="trace-line"][data-status="running"] > [data-slot="trace-title"],
   .agent-thinking-dots i {
     animation: none;
   }
@@ -4985,6 +4987,23 @@ body:not([data-chrome-view])::after {
   right: 0;
 }
 
+/* ── The agent's side of a turn as Trace lines (chat/trace.tsx, ui/trace.tsx) ──
+
+   The desk's answer card. A running line's title shimmers as
+   .agent-shimmer does (above). While the model thinks, its reasoning is
+   the latest few lines, pinned to the foot of a window that fades out at
+   the top once there is more above. */
+.trace-reasoning-tail {
+  max-height: 100px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.trace-reasoning-tail[data-clipped] {
+  -webkit-mask-image: linear-gradient(transparent 0, black 28px, black 100%);
+  mask-image: linear-gradient(transparent 0, black 28px, black 100%);
+}
+
 /* ── A turn's steps (chat/parts.tsx WorkTrace, chat/StepMark.tsx) ──
 
    One line for the turn — its mark, the step in hand narrated by the
@@ -5614,6 +5633,17 @@ body[data-chrome-view="notch"] {
 }
 :root[data-desktop-glass="on"][data-color-scheme="dark"] .desk-notch-view {
   background-color: color-mix(in srgb, var(--color-background-200) 96%, var(--color-gray-500));
+}
+/* The window's own glass under the view (main/desk-glass.ts): no stand-in for it, only what the shell lays over it. */
+:root[data-desktop-glass="on"] .desk-notch-view[data-native-glass] {
+  background-color: transparent;
+}
+.desk-notch-view-outline {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 .desk-notch-view::after {
   content: "";
@@ -7703,6 +7733,17 @@ body[data-chrome-view="shelf"] {
   box-shadow: 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 22%, transparent);
   color: transparent;
 }
+/* A `/` command at the head of the field (lib/desk/slash-commands.ts): marked as a mention is, and what it takes
+   hinted after it, in the field's own type, until something is typed there. */
+.desk-bar-command {
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--tg-solid) 30%, transparent);
+  box-shadow: 0 0 0 1.5px color-mix(in oklch, var(--tg-solid) 30%, transparent);
+  color: transparent;
+}
+.desk-bar-hint {
+  color: var(--color-gray-600);
+}
 
 /* Dictation in the Bar: while the microphone listens, the field gives way
    to what it hears, scrolling in from the trailing end, and the clock. */
@@ -7819,6 +7860,23 @@ body[data-chrome-view="shelf"] {
 }
 .desk-mention[aria-selected="true"] {
   background: var(--color-alpha-200);
+}
+/* The commands a `/` offers: the @ list's glass and rows, wider, its list scrolling past a dozen rows. */
+.desk-commands {
+  width: min(420px, 100%);
+}
+.desk-commands-list {
+  max-height: min(372px, 52vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.desk-commands-list[data-more] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 36px), transparent);
+}
+.desk-command {
+  height: 32px;
 }
 .desk-sheet-colline {
   position: absolute;

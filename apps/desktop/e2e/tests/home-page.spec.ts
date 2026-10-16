@@ -6,7 +6,9 @@
  *
  * The address field's preview of the active row (shell-ui's
  * lib/use-field-preview.ts) is driven here too, in the home page's search
- * and the address modal alike, and the schedule's connected calendar last.
+ * and the address modal alike; then a new space's home page, whose search
+ * and address modal never take the person to another space; and the
+ * schedule's connected calendar last.
  */
 
 import { createServer, type Server } from "node:http";
@@ -16,6 +18,7 @@ import { HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
 import { IPC, type CalendarAgenda, type PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellReady } from "./windows";
 import { launchApp } from "./app";
+import { snapshot, tabGroupCommand } from "./desk-harness";
 import { captureShell as captureWindow, humanTabs as tabs, visibleTabViews } from "./pages-harness";
 
 /** The frame that shows a just-made change has to be painted before it can be captured. */
@@ -74,7 +77,7 @@ let origin: string;
 test.beforeAll(async () => {
   server = createServer((request, response) => {
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-    const title = path === "/one" ? "Fixture One" : path === "/two" ? "Fixture Two" : null;
+    const title = ({ "/one": "Fixture One", "/two": "Fixture Two", "/three": "Fixture Three", "/four": "Fixture Four" } as Record<string, string>)[path] ?? null;
     if (title === null) {
       response.writeHead(404);
       response.end();
@@ -92,7 +95,8 @@ test.afterAll(async () => {
 });
 
 // One window, in order: the home page from launch to an emptied window, the
-// field preview over what that left, then the schedule's calendar — whose
+// field preview over what that left, a new space's home page and address
+// modal choosing what Home holds, then the schedule's calendar — whose
 // answers are main's replaced handler and whose clock is moved on, so they
 // come last.
 test.describe.serial("the home page", { tag: ["@address", "@home", "@settings"] }, () => {
@@ -358,6 +362,108 @@ test.describe.serial("the home page", { tag: ["@address", "@home", "@settings"] 
     await expect(address).toHaveValue(homeTabText.slice(0, -1));
     await shell.keyboard.press("Escape");
     await expect(modal).toHaveCount(0);
+  });
+
+  test("a suggestion chosen on a new space's home page opens there: never a tab open in Home, nor a favorite opened in Home", async () => {
+    // Home holds Fixture One, the last test's tab, and the favorite Two, closed.
+    const fixtureUrl = `${origin}/one`;
+    const fixtureId = (await tabs(shell)).find((tab) => tab.url === fixtureUrl)!.id;
+    expect((await snapshot(shell)).looseGroups?.some((group) => group.tabIds.includes(fixtureId))).toBe(true);
+
+    // A new space, opening on a home window.
+    await tabGroupCommand(shell, { type: "create", id: "fresh-space", tabIds: [], url: HOME_PAGE_URL });
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("fresh-space");
+    const spaceTabId = (await snapshot(shell)).tabGroups.find((group) => group.id === "fresh-space")!.tabIds[0]!;
+    await expect.poll(() => activeTabId(shell)).toBe(spaceTabId);
+    const page = shell.locator(`[data-testid="home-page"][data-tab-id="${spaceTabId}"]`);
+    await page.getByTestId("home-search-input").click();
+    await shell.keyboard.type("Fixture One");
+    // The first suggestion — what ↵ takes — is the tab open in Home…
+    await expect(page.getByTestId("home-search-results").locator('[data-index="0"]')).toHaveAttribute("data-tab-id", fixtureId);
+    await captureShell(app, "08-space-home-suggests-home-tab.png");
+    await shell.keyboard.press("Enter");
+    // …and THIS tab goes to its page, in this space, as the address typed would: the desk stays where it is.
+    await expect.poll(async () => (await tabs(shell)).find((tab) => tab.id === spaceTabId)?.url).toBe(fixtureUrl);
+    const after = await snapshot(shell);
+    expect(after.currentGroupId).toBe("fresh-space");
+    expect(after.activeTabId).toBe(spaceTabId);
+    expect(after.tabGroups.find((group) => group.id === "fresh-space")?.tabIds).toEqual([spaceTabId]);
+    expect(after.tabs.find((tab) => tab.id === fixtureId)?.url).toBe(fixtureUrl);
+
+    // A favorite (its tile opens it in Home) chosen in the search opens here too.
+    await tabGroupCommand(shell, { type: "newTab", groupId: "fresh-space" });
+    await expect.poll(() => activeTabId(shell)).not.toBe(spaceTabId);
+    const secondId = (await activeTabId(shell))!;
+    const second = shell.locator(`[data-testid="home-page"][data-tab-id="${secondId}"]`);
+    await second.getByTestId("home-search-input").click();
+    await shell.keyboard.type("Two");
+    const secondResults = second.getByTestId("home-search-results");
+    await arrowTo(shell, secondResults, secondResults.locator('[data-result-kind="shelf"]'));
+    await shell.keyboard.press("Enter");
+    await expect.poll(async () => (await tabs(shell)).find((tab) => tab.id === secondId)?.url).toBe(`${origin}/two`);
+    const last = await snapshot(shell);
+    expect(last.currentGroupId).toBe("fresh-space");
+    expect(last.activeTabId).toBe(secondId);
+    expect(last.tabs.filter((tab) => tab.url === `${origin}/two`).map((tab) => tab.id)).toEqual([secondId]);
+
+    // Back to Home for what follows.
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), fixtureId);
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).not.toBe("fresh-space");
+  });
+
+  test("⌘L in a new space stays there too: a tab of the space is switched to, a tab open in Home opens in place", async () => {
+    // Fixture Three, a Home tab; a new space on Fixture Four, with a home window in use beside it.
+    const threeUrl = `${origin}/three`;
+    const fourUrl = `${origin}/four`;
+    await shell.evaluate((url) => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab(url), threeUrl);
+    await expect.poll(async () => (await tabs(shell)).find((tab) => tab.url === threeUrl)?.title).toBe("Fixture Three");
+    const threeId = (await tabs(shell)).find((tab) => tab.url === threeUrl)!.id;
+    const threeGroup = (await snapshot(shell)).looseGroups?.find((group) => group.tabIds.includes(threeId))?.id;
+    expect(threeGroup).toBeDefined();
+    await tabGroupCommand(shell, { type: "create", id: "fresh-bar", tabIds: [], url: fourUrl });
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("fresh-bar");
+    await expect.poll(async () => (await tabs(shell)).find((tab) => tab.url === fourUrl)?.title).toBe("Fixture Four");
+    const fourId = (await tabs(shell)).find((tab) => tab.url === fourUrl)!.id;
+    await tabGroupCommand(shell, { type: "newTab", groupId: "fresh-bar" });
+    await expect.poll(() => activeTabId(shell)).not.toBe(fourId);
+    const barHomeId = (await activeTabId(shell))!;
+    const barHome = shell.locator(`[data-testid="home-page"][data-tab-id="${barHomeId}"]`);
+    await expect(barHome).toBeVisible();
+    const modal = shell.getByTestId("url-bar");
+    const firstRow = modal.getByTestId("command-results").locator('[data-index="0"]');
+
+    // A tab of this space, chosen in ⌘L over the home window: switched to, as ever.
+    await barHome.getByTestId("home-greeting").click();
+    await shell.keyboard.press("Meta+L");
+    await expect(shell.getByTestId("address-input")).toBeFocused();
+    await shell.keyboard.type("Fixture Four");
+    await expect(firstRow).toHaveAttribute("data-tab-id", fourId);
+    await shell.keyboard.press("Enter");
+    await expect(modal).toHaveCount(0);
+    await expect.poll(() => activeTabId(shell)).toBe(fourId);
+    expect((await snapshot(shell)).currentGroupId).toBe("fresh-bar");
+
+    // Home's open tab, chosen there: the home window goes to its page, in this space — Home's tab as it was.
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), barHomeId);
+    await expect(barHome).toBeVisible();
+    await barHome.getByTestId("home-greeting").click();
+    await shell.keyboard.press("Meta+L");
+    await expect(shell.getByTestId("address-input")).toBeFocused();
+    await shell.keyboard.type("Fixture Three");
+    await expect(firstRow).toHaveAttribute("data-tab-id", threeId);
+    await captureShell(app, "09-space-address-bar-suggests-home-tab.png");
+    await shell.keyboard.press("Enter");
+    await expect.poll(async () => (await tabs(shell)).find((tab) => tab.id === barHomeId)?.url).toBe(threeUrl);
+    const after = await snapshot(shell);
+    expect(after.currentGroupId).toBe("fresh-bar");
+    expect(after.activeTabId).toBe(barHomeId);
+    expect(after.tabGroups.find((group) => group.id === "fresh-bar")?.tabIds.slice().sort()).toEqual([fourId, barHomeId].sort());
+    expect(after.tabs.find((tab) => tab.id === threeId)?.url).toBe(threeUrl);
+    expect(after.looseGroups?.find((group) => group.tabIds.includes(threeId))?.id).toBe(threeGroup);
+
+    // Back to Home for the schedule's tests.
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(id), threeId);
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe(threeGroup);
   });
 
   /**

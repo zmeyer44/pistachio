@@ -5,6 +5,8 @@ import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
 export interface ChromeOverlayViewOptions {
   id: ChromeViewId;
   preload: string;
+  /** Told once the view is placed, shown, hidden or raised: what lies over what may have changed (main's checkNotchCover). */
+  placed?: () => void;
 }
 
 /**
@@ -24,10 +26,12 @@ export class ChromeOverlayView {
   #slot: ContentBounds | null = null;
   #shown = false;
   #veiled = false;
+  readonly #placed: () => void;
 
   constructor(window: BrowserWindow, options: ChromeOverlayViewOptions) {
     this.id = options.id;
     this.#window = window;
+    this.#placed = options.placed ?? (() => undefined);
     this.#view = new WebContentsView({
       webPreferences: {
         preload: options.preload,
@@ -71,6 +75,7 @@ export class ChromeOverlayView {
   raise(): void {
     if (this.#window.isDestroyed()) return;
     this.#window.contentView.addChildView(this.#view);
+    this.#placed();
   }
 
   /** The window-relative box this view occupies while shown. */
@@ -115,5 +120,6 @@ export class ChromeOverlayView {
     const bounds = this.bounds();
     if (bounds !== null) this.#view.setBounds(bounds);
     this.#view.setVisible(bounds !== null && this.#shown && !this.#veiled);
+    this.#placed();
   }
 }

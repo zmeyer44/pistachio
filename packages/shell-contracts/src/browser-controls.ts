@@ -238,6 +238,13 @@ export interface FindState {
   /** Whether smart find can run at all; the bar hides its toggle when not. */
   smartAvailable: boolean;
   smart: SmartFindProgress;
+  /**
+   * How many searches were given their words from outside the bar (`fill`:
+   * the desk Bar's `/find`). The bar's field is the person's and takes the
+   * query only as it opens — save when this changes, when it takes the
+   * words it was just given. A host that never fills one leaves it out.
+   */
+  filled?: number;
 }
 
 export const IDLE_SMART_FIND: SmartFindProgress = {
@@ -276,7 +283,8 @@ export type FindCommand =
    * `draft` is smart mode's "the text changed but nothing is being asked
    * yet": the old matches come down, and nothing is sent anywhere.
    */
-  | { type: "search"; query: string; forward: boolean; mode?: FindMode; draft?: boolean }
+  /** `fill`: the words come from outside the bar (the desk Bar's `/find`), and its field shows them (`FindState.filled`). */
+  | { type: "search"; query: string; forward: boolean; mode?: FindMode; draft?: boolean; fill?: boolean }
   /** Open the bar in (or switch it to) a mode, keeping the typed text. */
   | { type: "mode"; mode: FindMode }
   | { type: "close" };
@@ -365,7 +373,8 @@ export function isFindCommand(value: unknown): value is FindCommand {
     typeof command["query"] === "string" &&
     typeof command["forward"] === "boolean" &&
     (mode === undefined || mode === "exact" || mode === "smart") &&
-    (command["draft"] === undefined || typeof command["draft"] === "boolean")
+    (command["draft"] === undefined || typeof command["draft"] === "boolean") &&
+    (command["fill"] === undefined || typeof command["fill"] === "boolean")
   );
 }
 

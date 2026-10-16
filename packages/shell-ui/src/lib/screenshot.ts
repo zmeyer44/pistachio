@@ -77,16 +77,21 @@ export function screenshotView(): boolean {
  * it (ScreenshotOverlay, which ends with finishAreaScreenshot) — so what is
  * dragged over is what is kept, though the pages go down under it. The
  * selector lies over whatever is up (a dialog, Settings, the palette), which
- * is as it was once the area is chosen.
+ * is as it was once the area is chosen. As in the pages' screenshot, the
+ * desk's Bar is out of the picture.
  */
 export function screenshotArea(): boolean {
   const api = nativeApi();
   if (api === null || busy || held) return false;
   busy = true;
   void (async () => {
+    let capturing = false;
     try {
       await overlaysDown();
       const size = { width: window.innerWidth, height: window.innerHeight };
+      capturing = true;
+      useDeskStore.getState().setCapturing(true);
+      await painted();
       const hold = await api.screenshot({ type: "hold", ground: windowGround() });
       if (hold === null) {
         announce(null);
@@ -100,6 +105,7 @@ export function screenshotArea(): boolean {
     } catch {
       announce(null);
     } finally {
+      if (capturing) useDeskStore.getState().setCapturing(false);
       busy = false;
     }
   })();

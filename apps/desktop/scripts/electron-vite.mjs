@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const appDirectory = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const macExecutable = "dist/Electron.app/Contents/MacOS/Electron";
@@ -26,6 +26,9 @@ if (executable === undefined) {
     "No complete Electron runtime is installed. Run pnpm install after freeing disk space, or set PISTACHIO_ELECTRON_PATH.",
   );
 }
+
+// The desktop's own native module (scripts/build-native.mjs: rebuilt only when its source changed).
+spawnSync(process.execPath, [join(appDirectory, "scripts/build-native.mjs")], { stdio: "inherit" });
 
 const cli = join(appDirectory, "node_modules/electron-vite/bin/electron-vite.js");
 // The child leads its own process group so the whole tree — electron-vite

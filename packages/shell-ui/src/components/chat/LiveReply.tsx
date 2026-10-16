@@ -8,6 +8,7 @@ import { AgentTabChip } from "./AgentTabChip";
 import { Markdown } from "./Markdown";
 import type { ChatDensity } from "./parts";
 import { ReasoningBlock } from "./ReasoningBlock";
+import { ReasoningTrace } from "./trace";
 import { ThinkingStatus } from "./ThinkingStatus";
 import { useSmoothText } from "./use-smooth-text";
 
@@ -31,6 +32,7 @@ export const LiveReply = memo(function LiveReply({
   links = "glance",
   trailing = null,
   tabChip = true,
+  trace = false,
   className,
 }: {
   run: RunSummary;
@@ -42,6 +44,8 @@ export const LiveReply = memo(function LiveReply({
   trailing?: React.ReactNode;
   /** Where the agent works, when off screen (AgentTabChip); a desk shows it on the window itself. */
   tabChip?: boolean;
+  /** What the model is thinking as a Trace line (chat/trace.tsx), as the desk's answer card draws it. */
+  trace?: boolean;
   className?: string;
 }) {
   const draft = run.draft ?? null;
@@ -54,10 +58,12 @@ export const LiveReply = memo(function LiveReply({
   const status = thinking ? "Thinking…" : workingText(run);
   return (
     <div data-testid="live-reply" className={cn("grid min-w-0 text-gray-1000", density === "page" ? "gap-2.5" : "gap-1.5", className)}>
-      {reasoningShown ? (
+      {!reasoningShown ? null : trace ? (
+        <ReasoningTrace reasoning={reasoning} thinking={thinking} startedAt={draft?.thinkingSince ?? null} thinkingMs={draft?.thinkingMs ?? null} />
+      ) : (
         <ReasoningBlock reasoning={reasoning} thinking={thinking} startedAt={draft?.thinkingSince ?? null} thinkingMs={draft?.thinkingMs ?? null} density={density} />
-      ) : null}
-      {/* While the reasoning ticker is live it already says "Thinking"; the status line waits for the work. */}
+      )}
+      {/* While the reasoning is live it already says "Thinking"; the status line waits for the work. */}
       {text === "" && reasoningShown && thinking ? (
         trailing === null ? null : <div className="flex items-center text-copy-13">{trailing}</div>
       ) : text === "" ? (

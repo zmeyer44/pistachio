@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { useAppStore } from "../../store";
+import { routeInSpace, type PageRoute, type PageRow } from "../address-palette";
 
 /** Where the home page's choices take the person. */
 export interface HomeNavigation {
@@ -18,6 +19,8 @@ export interface HomeNavigation {
    * reach an open tab would otherwise be left behind in the sidebar.
    */
   leaveFor(go: () => Promise<void>): void;
+  /** Where a search row naming an open tab or a kept page goes from this page, as the snapshot stands now (routeInSpace). */
+  routeOf(row: PageRow): PageRoute;
 }
 
 export function useHomeNavigation(tabId: string | null): HomeNavigation {
@@ -49,6 +52,7 @@ export function useHomeNavigation(tabId: string | null): HomeNavigation {
           if (launcher && useAppStore.getState().snapshot?.activeTabId !== current.id) void closeTab(current.id);
         });
       },
+      routeOf: (row) => routeInSpace(row, tabId, useAppStore.getState().snapshot),
     }),
     [tab, tabId, navigate, createTab, selectTab, closeTab, sidebarCommand],
   );

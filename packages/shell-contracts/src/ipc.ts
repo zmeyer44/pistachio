@@ -1279,6 +1279,8 @@ export interface NativeSurfaceApi {
   onDeskNotch(listener: (frame: DeskNotchFrame | null) => void): () => void;
   /** Notch view only: the pointer coming and going, and a press. */
   sendDeskNotchInput(input: DeskNotchInput): void;
+  /** Notch view only, with the window's glass under it (DeskNotchFrame.nativeGlass): the nub's outline as it draws it. */
+  sendDeskNotchOutline(points: readonly number[]): void;
   /** Shell only: those, relayed by main to the desk's Bar. */
   onDeskNotchInput(listener: (input: DeskNotchInput) => void): () => void;
   /** Shell → main: the desk's parked windows to draw over the live pages under them (the shelf view), or null. */
@@ -1489,6 +1491,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   getDeskNotch: "The native notch view's own read of the notch.",
   onDeskNotch: "The native notch view's own subscription to the notch.",
   sendDeskNotchInput: "Relays the pointer and presses out of the native notch view.",
+  sendDeskNotchOutline: "Cuts the window's native glass under the notch view to the nub's outline.",
   onDeskNotchInput: "Receives the native notch view's pointer and presses.",
   setDeskShelf: "Places the native shelf view over the live desk pages under the parked windows.",
   getDeskShelf: "The native shelf view's own read of the shelf.",
@@ -1664,6 +1667,7 @@ export const IPC = {
   deskNotchGet: "pistachio:desk-notch-get",
   deskNotchChanged: "pistachio:desk-notch-changed",
   deskNotchInput: "pistachio:desk-notch-input",
+  deskNotchOutline: "pistachio:desk-notch-outline",
   deskShelfSet: "pistachio:desk-shelf-set",
   deskShelfGet: "pistachio:desk-shelf-get",
   deskShelfChanged: "pistachio:desk-shelf-changed",

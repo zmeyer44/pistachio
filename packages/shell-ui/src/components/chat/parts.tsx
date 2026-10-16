@@ -28,6 +28,7 @@ import { Button } from "../ui/button";
 import { MessageText } from "../MessageText";
 import { Markdown } from "./Markdown";
 import { ReasoningBlock } from "./ReasoningBlock";
+import { ReasoningTrace } from "./trace";
 import { StepMark, type StepState } from "./StepMark";
 import { ThinkingStatus } from "./ThinkingStatus";
 
@@ -131,6 +132,7 @@ export const MessageRow = memo(function MessageRow({
   canRetry = false,
   density = "panel",
   links = "glance",
+  trace = false,
 }: {
   message: RunSummary["messages"][number];
   /** What the turn this reply finished made: shown as cards under its text. */
@@ -141,6 +143,8 @@ export const MessageRow = memo(function MessageRow({
   canRetry?: boolean;
   density?: ChatDensity;
   links?: "glance" | "tab";
+  /** What the model thought as a Trace line (chat/trace.tsx), as the desk's answer card draws it. */
+  trace?: boolean;
 }) {
   const attachments = message.attachments ?? [];
   const page = density === "page";
@@ -192,7 +196,9 @@ export const MessageRow = memo(function MessageRow({
   const reasoning = message.reasoning?.trim() ?? "";
   return (
     <div className={cn("grid min-w-0 text-gray-1000", page ? "gap-2.5" : "gap-1.5 text-copy-14 wrap-anywhere")} data-testid="assistant-message">
-      {reasoning === "" ? null : (
+      {reasoning === "" ? null : trace ? (
+        <ReasoningTrace reasoning={reasoning} thinking={false} thinkingMs={message.thinkingMs ?? 0} />
+      ) : (
         <ReasoningBlock reasoning={reasoning} thinking={false} thinkingMs={message.thinkingMs ?? 0} density={density} />
       )}
       {message.content === "" ? null : <Markdown text={message.content} sources={sources} links={links} density={density} />}

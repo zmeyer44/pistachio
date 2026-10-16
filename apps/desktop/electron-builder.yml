@@ -7,6 +7,8 @@ directories:
 files:
   - out/**
   - package.json
+  # The desktop's own native module (native/desk-glass, scripts/build-native.mjs).
+  - native/desk-glass/build/desk_glass.node
   - "!**/*.map"
   # Workspace dependency caches can change while checks run. Including them
   # can invalidate ASAR offsets between the file scan and archive write.
@@ -23,6 +25,8 @@ asar: true
 # Electron (npmRebuild stays off).
 asarUnpack:
   - "**/node_modules/node-pty/**"
+  # Ours too (main/desk-glass.ts): a native module loads from a real file.
+  - native/**
 npmRebuild: false
 mac:
   category: public.app-category.productivity

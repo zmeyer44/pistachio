@@ -1,29 +1,85 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MessageScroller } from "@shadcn/react/message-scroller";
-import { ArrowDown, ArrowDownToLine, ArrowUp, Check, ChevronDown, ChevronUp, FileText, History, Loader2, MessagesSquare, Mic, Paperclip, PictureInPicture2, Plus, Square, SquarePen, TextQuote, Undo2, X } from "lucide-react";
+import {
+  Archive,
+  ArrowDown,
+  ArrowDownToLine,
+  ArrowUp,
+  BookOpen,
+  Camera,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Columns2,
+  FileText,
+  Globe,
+  History,
+  Languages,
+  LayoutGrid,
+  Lightbulb,
+  Loader2,
+  MessagesSquare,
+  Mic,
+  Newspaper,
+  NotebookPen,
+  Paperclip,
+  PictureInPicture2,
+  Plus,
+  ScrollText,
+  Square,
+  SquarePen,
+  SquareTerminal,
+  Telescope,
+  TextQuote,
+  TextSearch,
+  Undo2,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import type { AgentAttachment, RunSummary, ThreadListItem } from "@pistachio/protocol";
 import { groupContextMediaTypeOf, type GroupContextFile, type GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
+import { webSearchUrl } from "@pistachio/shell-contracts/search";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
-import { nativeApi } from "../../api";
+import { nativeApi, shellApi } from "../../api";
 import { composerAccepts, formatAttachmentText, formatSelectionText, selectionChipLabel, toAgentAttachments } from "../../lib/chat-attachments";
 import { useDeskFileDrag } from "../../lib/desk/file-drag";
 import { addContextFiles } from "../../lib/desk/group-context";
 import { activeMention, insertMention, mentionCandidates, mentionQuery, mentionsIn } from "../../lib/desk/mentions";
+import {
+  BAR_COMMAND_GROUPS,
+  commandCandidates,
+  commandDescription,
+  commandPrompt,
+  commandQuery,
+  commandSpan,
+  commandWaiting,
+  insertCommand,
+  parseCommand,
+  type BarCommand,
+  type BarCommandId,
+  type CommandSettings,
+} from "../../lib/desk/slash-commands";
+import { arrangeDesk } from "../../lib/desk/open";
+import { screenshotView } from "../../lib/screenshot";
+import { isProbablyUrl } from "../../lib/url";
 import { agentActivity } from "../../lib/desk/agent";
 import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictation";
 import { DESK_GAP, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubDrops, nubExtent, type NotchShape, type Rect } from "../../lib/desk/geometry";
 import { readFloatSpot } from "../../lib/desk/answer-float";
+import { runFailure } from "../../lib/chat-trace";
 import { AnswerMotion, type AnswerEdge } from "./answer-motion";
 import { useDeskStore } from "../../lib/desk/store";
 import { agentIsActing, relativeTime, sortThreads } from "../../lib/run";
 import { useAppStore } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
-import { ApprovalCard, ClarificationCard, CompletionMeta, MessageRow, TERMINAL, WorkTrace } from "../chat/parts";
+import { ApprovalCard, ClarificationCard, CompletionMeta, MessageActions, MessageRow, TERMINAL } from "../chat/parts";
+import { FailureTrace, TurnTrace } from "../chat/trace";
 import { useThreadLayout } from "../chat/use-thread-layout";
 import { OutputCards } from "../OutputCard";
+import { SearchProviderLogo } from "../SearchProviderLogo";
 import { TakeoverCard } from "../TakeoverCard";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
@@ -36,13 +92,22 @@ import { nubTimeScale, type NubMotion, type PillParts, type PillSource, type Swe
 /** A file of the group's context the Bar can mention: its bytes are on this Mac. */
 type MentionFile = GroupContextFile & { here: boolean };
 
-/** The files a mention being typed offers (the menu above the Bar), which is lit, and how to choose one. */
-interface MentionMenuState {
-  candidates: readonly MentionFile[];
-  index: number;
-  pick(file: MentionFile): void;
-  point(index: number): void;
-}
+/**
+ * The menu over the field: the files a mention being typed offers, or the
+ * commands a `/` does (whole and in groups while nothing follows the slash);
+ * which is lit, and how to choose one.
+ */
+type FieldMenuState =
+  | { kind: "mentions"; candidates: readonly MentionFile[]; index: number; pick(file: MentionFile): void; point(index: number): void }
+  | {
+      kind: "commands";
+      candidates: readonly BarCommand[];
+      grouped: boolean;
+      index: number;
+      settings: CommandSettings;
+      pick(command: BarCommand): void;
+      point(index: number): void;
+    };
 
 /** At most this many files a message carries as files (pictures, PDFs) through its mentions and what was attached. */
 const MAX_MESSAGE_FILES = 6;
@@ -263,7 +328,7 @@ export const DeskBar = memo(function DeskBar({
   /** The side button pressed with no card out: the card goes to the side as soon as it is up. */
   const sideWanted = useRef(false);
   const pickerRef = useRef<HTMLDivElement>(null);
-  const mentionsRef = useRef<HTMLDivElement>(null);
+  const fieldMenuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** The composer's own: puts text at the caret (a mention of a file just taken into the context). */
   const insertRef = useRef<((text: string) => void) | null>(null);
@@ -287,7 +352,7 @@ export const DeskBar = memo(function DeskBar({
   }, []);
   const drop = useAttachmentDrop(focusInput, { divert });
   const fileDrag = useDeskFileDrag((state) => state.active);
-  const [mentionMenu, setMentionMenu] = useState<MentionMenuState | null>(null);
+  const [fieldMenu, setFieldMenu] = useState<FieldMenuState | null>(null);
   const [answerOpen, setAnswerOpen] = useState(false);
   const [whole, setWhole] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -479,15 +544,16 @@ export const DeskBar = memo(function DeskBar({
   // (A floating answer is no reason to: only one docked on it, or one in hand on its way home. Nor is anything while the
   // menu is out: the two are one or the other.)
   // (The answer floating, the message field is the card's: the pill stays in.)
-  const pillWanted = !inCard && !stowed && !menuOpen && (asked || !composerIdle || focusWithin || dockedAnswer || cardHeld || mentionMenu !== null || fileDrag || drop.dragging);
+  const pillWanted = !inCard && !stowed && !menuOpen && (asked || !composerIdle || focusWithin || dockedAnswer || cardHeld || fieldMenu !== null || fileDrag || drop.dragging);
   // Out, it is a cover (its whole footprint), from the pointer coming to the nub until it is back in.
   const pillOverdue = useOverdue(pillWanted, NOTCH_WAIT_MS);
   const pillOpen = pillWanted && (shownCover("pill") || pillOverdue);
   // (The @ list is the field's, shown while the pill is out — or in the card, over the field there: put away with what
   // was typed in it, the list goes too. A cover of its own in the card as well: a long list stands up past a short
   // card, over a window that would otherwise stay live and paint over it — 2026-10-10.)
-  const mentionsUp = mentionMenu !== null && (pillOpen || inCard);
-  useCover(engine, "mentions", mentionsRef, mentionsUp, undefined, inCard);
+  const fieldMenuUp = fieldMenu !== null && (pillOpen || inCard);
+  // (Read again as the list turns from the @ list to the commands, or back, too: each is an element of its own.)
+  useCover(engine, "field-menu", fieldMenuRef, fieldMenuUp, undefined, `${inCard ? "card" : "pill"}:${fieldMenu?.kind ?? ""}`);
   const compact = !pillOpen;
 
   // The nub: the pointer resting on it swells it.
@@ -1005,12 +1071,12 @@ export const DeskBar = memo(function DeskBar({
               dropping: inCard && drop.dragging,
               dropTarget: inCard && fileDrag && !drop.dragging,
               handlers: drop.handlers,
-              mentions: inCard && mentionsUp && mentionMenu !== null ? <MentionMenu ref={mentionsRef} menu={mentionMenu} shown={answerShown && shownCover("mentions")} /> : null,
+              menu: inCard && fieldMenuUp && fieldMenu !== null ? <FieldMenu ref={fieldMenuRef} menu={fieldMenu} shown={answerShown && shownCover("field-menu")} /> : null,
             }}
           />
         ) : null}
         <div ref={anchorRef} className="desk-bar-anchor">
-          {!inCard && mentionsUp && mentionMenu !== null ? <MentionMenu ref={mentionsRef} menu={mentionMenu} shown={shownCover("mentions")} /> : null}
+          {!inCard && fieldMenuUp && fieldMenu !== null ? <FieldMenu ref={fieldMenuRef} menu={fieldMenu} shown={shownCover("field-menu")} /> : null}
           {/* The pill: its box always where it rests; its glass and row what the nub's motion morphs. */}
           <div
             ref={barRef}
@@ -1047,7 +1113,7 @@ export const DeskBar = memo(function DeskBar({
                 dictateRef={dictateRef}
                 undictateRef={undictateRef}
                 fileDrag={fileDrag}
-                onMentionMenu={setMentionMenu}
+                onFieldMenu={setFieldMenu}
                 drop={drop}
                 answerOpen={cardShown}
                 floating={floatingOut}
@@ -1133,7 +1199,7 @@ function BarComposer({
   dictateRef,
   undictateRef,
   fileDrag,
-  onMentionMenu,
+  onFieldMenu,
   drop,
   answerOpen,
   floating,
@@ -1155,7 +1221,7 @@ function BarComposer({
   undictateRef: RefObject<(() => void) | null>;
   /** Files are being dragged over the desk: the Bar says it takes them. */
   fileDrag: boolean;
-  onMentionMenu: (menu: MentionMenuState | null) => void;
+  onFieldMenu: (menu: FieldMenuState | null) => void;
   drop: ReturnType<typeof useAttachmentDrop>;
   answerOpen: boolean;
   /** The answer floats, a window of its own: the button says so, and calls it out. */
@@ -1177,6 +1243,17 @@ function BarComposer({
   const [mentionIndex, setMentionIndex] = useState(0);
   /** A mention menu the person dismissed (Escape) stays away until the next `@`. */
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const [commandIndex, setCommandIndex] = useState(0);
+  /** A command menu the person dismissed (Escape) stays away until the field's `/` goes. */
+  const [commandsDismissed, setCommandsDismissed] = useState(false);
+  const webProvider = useAppStore((state) => state.settings.search.webProvider);
+  const commandSettings = useMemo<CommandSettings>(() => ({ webProvider }), [webProvider]);
+  // A list put away stays away only while what it was for is there: the field emptied, or its `/` gone, however
+  // that came about (sent, a command run, edited), the next `/` or `@` opens its list.
+  useEffect(() => {
+    if (!value.startsWith("/")) setCommandsDismissed(false);
+    if (value === "") setDismissedAt(null);
+  }, [value]);
   const fileRef = useRef<HTMLInputElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   /** Messages go out in the order they were sent, however long a mention takes to read. */
@@ -1271,7 +1348,15 @@ function BarComposer({
   const typing = activeMention(value, caret, names, dismissedAt);
   const typed = typing?.query ?? null;
   const candidates = useMemo(() => (typed === null ? [] : mentionCandidates(files, typed)), [files, typed]);
-  const menuOpen = !listening && typing !== null && candidates.length > 0;
+  // The commands a `/` at the head of the field offers, while the caret is in its word (lib/desk/slash-commands.ts).
+  const commandTyping = listening || commandsDismissed ? null : commandQuery(value, caret);
+  const commandTyped = commandTyping?.query ?? null;
+  const commands = useMemo(() => (commandTyped === null ? [] : commandCandidates(commandTyped)), [commandTyped]);
+  const commandsOpen = commands.length > 0;
+  const commandLit = Math.min(commandIndex, Math.max(0, commands.length - 1));
+  /** The command the field holds, marked in the mirror, its hint after it while nothing follows it. */
+  const command = listening ? null : commandSpan(value);
+  const mentionsOpen = !listening && !commandsOpen && typing !== null && candidates.length > 0;
   const lit = Math.min(mentionIndex, Math.max(0, candidates.length - 1));
 
   /** The field as tall as what is in it (up to its max-height). */
@@ -1337,18 +1422,127 @@ function BarComposer({
     [caret, inputRef, typing, value],
   );
 
-  // The menu is drawn beside the Bar, where the glass behind it is the desk's (DeskBar).
-  useEffect(() => {
-    onMentionMenu(menuOpen ? { candidates, index: lit, pick, point: setMentionIndex } : null);
-  }, [candidates, lit, menuOpen, onMentionMenu, pick]);
-  useEffect(() => () => onMentionMenu(null), [onMentionMenu]);
+  /** The field holds `text`, the caret at `at`, and the keyboard is in it. */
+  const fill = (text: string, at: number): void => {
+    const el = inputRef.current;
+    setValue(text);
+    setCaret(at);
+    requestAnimationFrame(() => {
+      el?.focus({ preventScroll: true });
+      el?.setSelectionRange(at, at);
+    });
+  };
 
-  const empty = value.trim() === "" && staged.length === 0;
+  /**
+   * A command chosen from the menu: Enter (or a click) runs one that needs
+   * nothing more, with whatever follows its word; Tab — or a command that
+   * waits for what it takes — puts it in the field, to go on typing after.
+   */
+  const chooseCommand = (chosen: BarCommand, how: "run" | "complete"): void => {
+    if (commandTyping === null) return;
+    setCommandIndex(0);
+    if (how === "run" && chosen.arg?.required !== true) {
+      runCommand(chosen, value.slice(commandTyping.end).trim());
+      return;
+    }
+    const next = insertCommand(value, commandTyping.end, chosen);
+    fill(next.text, next.caret);
+  };
+
+  /**
+   * A command sent: a request to Pistachio goes as the message it stands for
+   * (lib/desk/slash-commands.ts, `commandPrompt`); the rest the Bar does
+   * itself, and the field empties (files staged stay for the next message).
+   * One that waits for what it takes stays in the field, its hint saying what.
+   */
+  const runCommand = (chosen: BarCommand, args: string): void => {
+    if (chosen.arg?.required === true && args === "") {
+      const next = insertCommand(value, /^\/\S*/.exec(value)?.[0].length ?? value.length, chosen);
+      fill(next.text, next.caret);
+      return;
+    }
+    const prompt = commandPrompt(chosen.id, args);
+    if (prompt !== null) {
+      send(prompt);
+      return;
+    }
+    const store = useAppStore.getState();
+    if (chosen.id === "new" && acting) {
+      store.showNotice("Stop the agent first, then start a new conversation", { tone: "warning" });
+      return;
+    }
+    setValue("");
+    setCaret(0);
+    switch (chosen.id) {
+      case "search":
+        void store.createTab(webSearchUrl(args, webProvider));
+        break;
+      case "open":
+        void store.createTab(isProbablyUrl(args) ? args : webSearchUrl(args, webProvider));
+        break;
+      case "find":
+        // On the window in use, by meaning when smart find is on (else the words as typed); `fill`, so the Find bar
+        // shows these words even while it is open on others (its field is otherwise the person's).
+        void shellApi()
+          .find({ type: "search", query: args, forward: true, mode: "smart", fill: true })
+          .catch(() => store.showNotice("There's no page to find in", { tone: "warning" }));
+        break;
+      case "new":
+        startNewConversation();
+        break;
+      case "arrange":
+        if (!arrangeDesk("smart")) store.showNotice("The desk can't be arranged just now", { tone: "warning" });
+        break;
+      case "tidy":
+        void store.tidyTabs();
+        break;
+      case "remember":
+        nativeApi()
+          ?.groupContext({ type: "addText", groupId: group.id, title: group.title, kind: "fact", text: args })
+          .then(() => store.showNotice(`Saved to ${group.title}'s context`, { tone: "success" }))
+          .catch(() => store.showNotice("That fact could not be saved", { tone: "warning" }));
+        break;
+      case "screenshot":
+        if (!screenshotView()) store.showNotice("There's nothing on the desk to capture yet", { tone: "warning" });
+        break;
+      case "note":
+        void newNoteTitled(args);
+        break;
+      case "brief":
+        store.openBrief();
+        break;
+      case "terminal":
+        void store.newTerminal();
+        break;
+      default:
+        break;
+    }
+  };
+
+  // The menu is drawn beside the Bar, where the glass behind it is the desk's (DeskBar). What it is handed to choose
+  // with reads the composer as it is when chosen (`chooseRef`), so the menu reported changes only when it does.
+  const chooseRef = useRef({ mention: (_file: MentionFile): void => undefined, command: (_chosen: BarCommand): void => undefined });
+  chooseRef.current = { mention: (file) => pick(file), command: (chosen) => chooseCommand(chosen, "run") };
+  const pickMention = useCallback((file: MentionFile) => chooseRef.current.mention(file), []);
+  const pickCommand = useCallback((chosen: BarCommand) => chooseRef.current.command(chosen), []);
+  const grouped = commandTyped === "";
+  useEffect(() => {
+    onFieldMenu(
+      commandsOpen
+        ? { kind: "commands", candidates: commands, grouped, index: commandLit, settings: commandSettings, pick: pickCommand, point: setCommandIndex }
+        : mentionsOpen
+          ? { kind: "mentions", candidates, index: lit, pick: pickMention, point: setMentionIndex }
+          : null,
+    );
+  }, [candidates, commandLit, commandSettings, commands, commandsOpen, grouped, lit, mentionsOpen, onFieldMenu, pickCommand, pickMention]);
+  useEffect(() => () => onFieldMenu(null), [onFieldMenu]);
+
+  // The field waiting on what its command must have, there is nothing to send yet.
+  const empty = (value.trim() === "" && staged.length === 0) || commandWaiting(value);
   const idle = value === "" && staged.length === 0 && drop.rejection === null && !listening && !acting;
   useEffect(() => onIdle(idle), [idle, onIdle]);
-  const submit = (): void => {
-    if (empty) return;
-    const text = value.trim();
+  /** Send `text` as the person's message, with the files staged and those it @mentions. */
+  const send = (text: string): void => {
     const mentioned = [...new Set(mentionsIn(text, names).map((span) => span.name))].flatMap((name) => files.filter((file) => file.name === name).slice(0, 1));
     const textBlocks = staged.flatMap((file) => {
       if (file.kind === "text") return [formatAttachmentText(file.name, file.text ?? "")];
@@ -1361,7 +1555,7 @@ function BarComposer({
     setStaged([]);
     drop.dismissRejection();
     onSent();
-    const send = async (): Promise<void> => {
+    const go = async (): Promise<void> => {
       // Each file @mentioned rides with the message, as the agent would read it: its text, or the file itself.
       const mentionBlocks: string[] = [];
       const api = nativeApi();
@@ -1374,11 +1568,39 @@ function BarComposer({
       // The desk is the subject, not the page in view: the desk block tells the agent what is on it.
       await sendMessage([text, ...mentionBlocks, ...textBlocks].filter((block) => block !== "").join("\n\n"), attachments, { page: false });
     };
-    sending.current = sending.current.then(send, send).catch(() => undefined);
+    sending.current = sending.current.then(go, go).catch(() => undefined);
+  };
+  const submit = (): void => {
+    if (value.trim() === "" && staged.length === 0) return;
+    // A message that starts with a command's name is that command (any other `/word` is a message).
+    const parsed = parseCommand(value);
+    if (parsed === null) send(value.trim());
+    else runCommand(parsed.command, parsed.args);
   };
 
   const onFieldKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (menuOpen && !event.nativeEvent.isComposing) {
+    if (commandsOpen && !event.nativeEvent.isComposing) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setCommandIndex((commandLit + step + commands.length) % commands.length);
+        return;
+      }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+        event.preventDefault();
+        const chosen = commands[commandLit];
+        if (chosen !== undefined) chooseCommand(chosen, event.key === "Tab" ? "complete" : "run");
+        return;
+      }
+      if (event.key === "Escape") {
+        // The menu goes, and stays away while the field starts with this `/`; the answer card stays.
+        event.preventDefault();
+        event.stopPropagation();
+        setCommandsDismissed(true);
+        return;
+      }
+    }
+    if (mentionsOpen && !event.nativeEvent.isComposing) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         const step = event.key === "ArrowDown" ? 1 : -1;
@@ -1420,8 +1642,8 @@ function BarComposer({
       ? `${activity ?? "Working"}… type to steer`
       : run === null || TERMINAL.has(run.status) || run.messages.length === 0
         ? files.length > 0
-          ? `Ask about ${group.title}… (@ to mention a file)`
-          : `Ask about ${group.title}…`
+          ? `Ask about ${group.title}… (/ for commands, @ for files)`
+          : `Ask about ${group.title}… (/ for commands)`
         : "Ask a follow-up…";
   return (
     <div className="flex flex-col">
@@ -1499,22 +1721,23 @@ function BarComposer({
         <div className="desk-bar-field" hidden={listening}>
           {/* The mentions, lit behind the field's own text (which stays the field's, caret and all). */}
           <div ref={mirrorRef} aria-hidden="true" className="desk-bar-mirror text-copy-14 px-1 py-[7px] text-[15px] leading-[22px]">
-            {spans.length === 0 ? null : mirrorSegments(value, spans)}
+            {spans.length === 0 && command === null ? null : mirrorSegments(value, spans, command)}
           </div>
           <Textarea
             ref={inputRef}
             data-testid="desk-bar-input"
             aria-label={acting ? "Steer Pistachio" : "Ask Pistachio"}
             aria-autocomplete="list"
-            aria-expanded={menuOpen}
-            aria-controls={menuOpen ? "desk-mentions" : undefined}
-            aria-activedescendant={menuOpen ? `desk-mention-${String(lit)}` : undefined}
+            aria-expanded={commandsOpen || mentionsOpen}
+            aria-controls={commandsOpen ? "desk-commands" : mentionsOpen ? "desk-mentions" : undefined}
+            aria-activedescendant={commandsOpen ? `desk-command-${String(commandLit)}` : mentionsOpen ? `desk-mention-${String(lit)}` : undefined}
             placeholder={placeholder}
             value={value}
             onChange={(event) => {
               setValue(event.target.value);
               setCaret(event.target.selectionStart);
               setMentionIndex(0);
+              setCommandIndex(0);
               if (dismissedAt !== null && mentionQuery(event.target.value, event.target.selectionStart)?.start !== dismissedAt) setDismissedAt(null);
             }}
             onSelect={noteCaret}
@@ -1572,28 +1795,138 @@ function BarComposer({
   );
 }
 
-/** The field's text with its mentions marked, for the mirror behind it (a last line break kept, as the field lays it out). */
-function mirrorSegments(value: string, spans: ReadonlyArray<{ start: number; end: number }>): React.ReactNode[] {
+/** A new note, opened: titled with what followed `/note` (its first line; the rest its text), or blank as ⌘N's in Notes. */
+async function newNoteTitled(text: string): Promise<void> {
+  const store = useAppStore.getState();
+  if (text === "") return store.newNote();
+  // (The notes store is the editor chunk's, asked for when a note is wanted, as store.newNote does.)
+  const { useNotes } = await import("../notes/use-notes");
+  const [title = "", ...rest] = text.split("\n");
+  const body = rest.join("\n").trim();
+  const note = await useNotes.getState().create(body === "" ? { title: title.trim() } : { title: title.trim(), markdown: body });
+  if (note !== null) store.openNotes(note.id);
+}
+
+/**
+ * The field's text with its command and mentions marked, for the mirror
+ * behind it, and a command's hint after it while nothing follows it (a last
+ * line break kept, as the field lays it out).
+ */
+function mirrorSegments(value: string, spans: ReadonlyArray<{ start: number; end: number }>, command: { end: number; hint: string | null } | null): React.ReactNode[] {
+  const marks = [...(command === null ? [] : [{ start: 0, end: command.end, className: "desk-bar-command" }]), ...spans.map((span) => ({ ...span, className: "desk-bar-mention" }))];
   const out: React.ReactNode[] = [];
   let at = 0;
-  spans.forEach((span, index) => {
-    if (span.start > at) out.push(value.slice(at, span.start));
+  marks.forEach((mark, index) => {
+    if (mark.start > at) out.push(value.slice(at, mark.start));
     out.push(
-      <mark key={index} className="desk-bar-mention">
-        {value.slice(span.start, span.end)}
+      <mark key={index} className={mark.className}>
+        {value.slice(mark.start, mark.end)}
       </mark>,
     );
-    at = span.end;
+    at = mark.end;
   });
-  out.push(`${value.slice(at)}\u200b`);
+  out.push(value.slice(at));
+  if (command?.hint != null) {
+    out.push(
+      <span key="hint" className="desk-bar-hint" data-testid="desk-bar-command-hint">
+        {command.hint}
+      </span>,
+    );
+  }
+  out.push("\u200b");
   return out;
+}
+
+/** The menu over the field: the files an `@` offers, or the commands a `/` does. */
+function FieldMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; menu: FieldMenuState; shown: boolean }) {
+  return menu.kind === "commands" ? <CommandMenu ref={ref} menu={menu} shown={shown} /> : <MentionMenu ref={ref} menu={menu} shown={shown} />;
+}
+
+const COMMAND_ICONS: Record<Exclude<BarCommandId, "search">, LucideIcon> = {
+  open: Globe,
+  find: TextSearch,
+  summarize: ScrollText,
+  compare: Columns2,
+  explain: BookOpen,
+  translate: Languages,
+  research: Telescope,
+  new: SquarePen,
+  arrange: LayoutGrid,
+  tidy: Archive,
+  remember: Lightbulb,
+  screenshot: Camera,
+  note: NotebookPen,
+  brief: Newspaper,
+  terminal: SquareTerminal,
+};
+
+/**
+ * The commands a `/` offers, over the desk above the Bar's leading end, as
+ * the @ list is: a bare slash lists them all under their groups, typing
+ * narrows them to a list, best first. Each row is its mark, `/name` and what
+ * it does; the lit one is run by Enter (or put in the field by Tab), any by
+ * a click, and the list scrolls to keep the lit one in sight.
+ */
+function CommandMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; menu: Extract<FieldMenuState, { kind: "commands" }>; shown: boolean }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  /** Rows below the fold: the list's foot fades, so the groups past it are known to be there. */
+  const [more, setMore] = useState(false);
+  const measure = useCallback(() => {
+    const el = listRef.current;
+    if (el !== null) setMore(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  }, []);
+  useLayoutEffect(measure, [measure, menu.candidates]);
+  useEffect(() => {
+    listRef.current?.querySelector(`#desk-command-${String(menu.index)}`)?.scrollIntoView({ block: "nearest" });
+  }, [menu.index]);
+  const row = (entry: BarCommand, index: number): React.ReactNode => {
+    const Icon = entry.id === "search" ? null : COMMAND_ICONS[entry.id];
+    return (
+      <button
+        key={entry.id}
+        id={`desk-command-${String(index)}`}
+        type="button"
+        role="option"
+        aria-selected={index === menu.index}
+        data-testid="desk-command"
+        data-command={entry.name}
+        className="desk-mention desk-command"
+        onMouseDown={(event) => event.preventDefault()}
+        onPointerEnter={() => menu.point(index)}
+        onClick={() => menu.pick(entry)}
+      >
+        {Icon === null ? <SearchProviderLogo provider={menu.settings.webProvider} className="size-4" /> : <Icon className="size-4 shrink-0 text-gray-900" aria-hidden="true" />}
+        <span className="shrink-0 text-[13px] font-medium text-gray-1000">/{entry.name}</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-gray-700">{commandDescription(entry, menu.settings)}</span>
+      </button>
+    );
+  };
+  return (
+    <div ref={ref} id="desk-commands" role="listbox" aria-label="Commands" data-testid="desk-commands" data-shown={shown ? "" : undefined} className="desk-mentions desk-commands">
+      <div ref={listRef} className="desk-commands-list flex flex-col gap-px p-1.5" data-more={more ? "" : undefined} onScroll={measure}>
+        {menu.grouped
+          ? BAR_COMMAND_GROUPS.map((name) => {
+              const rows = menu.candidates.flatMap((entry, index) => (entry.group === name ? [row(entry, index)] : []));
+              return rows.length === 0 ? null : (
+                <div key={name} role="group" aria-label={name} className="flex flex-col gap-px">
+                  <div aria-hidden="true" className="px-2.5 pt-1.5 pb-1 text-[11px] font-medium text-gray-700">
+                    {name}
+                  </div>
+                  {rows}
+                </div>
+              );
+            })
+          : menu.candidates.map(row)}
+      </div>
+    </div>
+  );
 }
 
 /**
  * The files a mention offers, over the desk above the Bar's leading end:
  * each with its kind, the lit one chosen by Enter or Tab, any by a click.
  */
-function MentionMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; menu: MentionMenuState; shown: boolean }) {
+function MentionMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; menu: Extract<FieldMenuState, { kind: "mentions" }>; shown: boolean }) {
   return (
     <div ref={ref} id="desk-mentions" role="listbox" aria-label="Mention a file" data-testid="desk-mentions" data-shown={shown ? "" : undefined} className="desk-mentions">
       <div className="flex flex-col gap-px p-1.5">
@@ -1754,7 +2087,7 @@ interface CardField {
   dropping: boolean;
   dropTarget: boolean;
   handlers: ReturnType<typeof useAttachmentDrop>["handlers"];
-  mentions: React.ReactNode;
+  menu: React.ReactNode;
 }
 
 function AnswerCard({
@@ -1984,7 +2317,7 @@ function AnswerCard({
             >
               <div className="desk-bar-frame" aria-hidden="true" />
               {field.dropping ? <AttachmentDropVeil className="inset-1 rounded-[16px]" /> : null}
-              {field.mentions}
+              {field.menu}
               <div ref={footRef} className="desk-bar-body" />
             </div>
           </div>
@@ -2001,10 +2334,16 @@ function AnswerCard({
   );
 }
 
-/** The conversation in the card: the latest exchange (or every turn), scrolled to the end as it streams. */
+/**
+ * The conversation in the card: the latest exchange (or every turn), scrolled to the end as it streams. The agent's
+ * side of each turn — what it thought, its steps, why it stopped — is drawn as Trace lines (chat/trace.tsx).
+ */
 function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
   const layout = useThreadLayout(run);
   const { tracesAt, outputsAt, pendingOutputs, sourcesAt, pendingSources } = layout;
+  const failure = runFailure(run);
+  // The turn at work: the run's latest, its reply not begun — its steps' line stays running between two steps.
+  const working = run.status === "running" && (run.draft?.text ?? "") === "";
   return (
     <MessageScroller.Provider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={48}>
       <MessageScroller.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -2013,27 +2352,35 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
             <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
               {run.result === null ? "" : "Answer complete"}
             </span>
-            {run.messages.map((message, index) =>
-              index < from ? null : (
+            {run.messages.map((message, index) => {
+              if (index < from) return null;
+              const canRetry =
+                message.role === "assistant" &&
+                index === run.messages.length - 1 &&
+                !agentIsActing(run) &&
+                run.status !== "waiting_for_judgment" &&
+                run.status !== "waiting_for_approval" &&
+                run.status !== "human_control" &&
+                run.executor?.kind !== "cloud";
+              return (
                 <MessageScroller.Item key={message.id} messageId={message.id} scrollAnchor={message.role === "user"} className="mb-4 min-w-0">
-                  <MessageRow
-                    message={message}
-                    outputs={outputsAt.get(index)}
-                    sources={sourcesAt.get(index)}
-                    links="glance"
-                    canRetry={
-                      message.role === "assistant" &&
-                      index === run.messages.length - 1 &&
-                      !agentIsActing(run) &&
-                      run.status !== "waiting_for_judgment" &&
-                      run.status !== "waiting_for_approval" &&
-                      run.status !== "human_control" &&
-                      run.executor?.kind !== "cloud"
-                    }
-                  />
+                  {failure?.messageId === message.id ? (
+                    // (What the turn made before it stopped is shown under the line, as under a reply.)
+                    <FailureTrace failure={failure}>
+                      {outputsAt.has(index) ? <OutputCards outputs={outputsAt.get(index)!} /> : null}
+                      <MessageActions text={message.content} canRetry={canRetry} />
+                    </FailureTrace>
+                  ) : (
+                    <MessageRow message={message} outputs={outputsAt.get(index)} sources={sourcesAt.get(index)} links="glance" canRetry={canRetry} trace />
+                  )}
                   {(tracesAt.get(index) ?? []).map((turn) => (
                     <Fragment key={turn.turn}>
-                      <WorkTrace turn={turn} latest={turn.toolCalls.at(-1) === run.toolCalls.at(-1)} awaitingApproval={run.status === "waiting_for_approval"} />
+                      <TurnTrace
+                        turn={turn}
+                        live={working && turn.turn === run.turns}
+                        latest={turn.toolCalls.at(-1) === run.toolCalls.at(-1)}
+                        awaitingApproval={run.status === "waiting_for_approval"}
+                      />
                       {pendingOutputs.has(turn.turn) ? (
                         <div className="mt-3">
                           <OutputCards outputs={pendingOutputs.get(turn.turn)!} />
@@ -2042,8 +2389,8 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
                     </Fragment>
                   ))}
                 </MessageScroller.Item>
-              ),
-            )}
+              );
+            })}
             {run.pendingQuestion === null ? null : (
               <MessageScroller.Item messageId={run.pendingQuestion.id} className="mb-4 min-w-0">
                 <ClarificationCard run={run} />
@@ -2066,7 +2413,7 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
             )}
             {run.status === "running" ? (
               <MessageScroller.Item messageId={`working-${run.runId}`} className="mb-4 min-w-0">
-                <LiveReply run={run} sources={pendingSources} links="glance" tabChip={false} />
+                <LiveReply run={run} sources={pendingSources} links="glance" tabChip={false} trace />
               </MessageScroller.Item>
             ) : null}
           </MessageScroller.Content>

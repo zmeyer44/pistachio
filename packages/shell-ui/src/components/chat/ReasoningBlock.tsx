@@ -79,7 +79,7 @@ export const ReasoningBlock = memo(function ReasoningBlock({
 });
 
 /** A clock that ticks once a second from `startedAt`; null with nothing to time. */
-function useElapsedSeconds(startedAt: string | null): number | null {
+export function useElapsedSeconds(startedAt: string | null): number | null {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (startedAt === null) return;

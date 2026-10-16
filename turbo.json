@@ -48,6 +48,7 @@
     "PISTACHIO_TTS_MODEL",
     "PISTACHIO_TTS_VOICE",
     "PISTACHIO_ELECTRON_PATH",
+    "NODE_API_HEADERS",
     "PISTACHIO_ENTERPRISE_POLICY",
     "PISTACHIO_WEBAUTHN_ACCESS_GROUP",
     "PISTACHIO_USER_DATA",
@@ -131,7 +132,8 @@
         "!.next/cache/**",
         "!.next/dev/**",
         "dist/**",
-        "out/**"
+        "out/**",
+        "native/*/build/**"
       ]
     },
     "lint": {

@@ -4,9 +4,10 @@
  * runner, tools and controller, and only the model's choices are scripted.
  *
  * The script is a queue of steps, taken one per model call across the whole
- * session: a step calls tools, or answers (which ends the turn). A spec does
- * not know tab or item ids in advance, so a string in a tool's input may
- * name them by what the prompt shows: `{{tab:Flight}}` is the tab whose
+ * session: a step calls tools, answers (which ends the turn), or fails (the
+ * model call throws, as a provider's outage would, which fails the run). A
+ * spec does not know tab or item ids in advance, so a string in a tool's
+ * input may name them by what the prompt shows: `{{tab:Flight}}` is the tab whose
  * title or address contains "Flight" in the latest desk block or tab list
  * the model was sent, and `{{item:boarding}}` the context item whose name or
  * text contains "boarding".
@@ -19,6 +20,8 @@ interface ScriptStep {
   tools?: Array<{ name: string; input: Record<string, unknown> }>;
   /** The reply that ends the turn. */
   text?: string;
+  /** The model call fails with this message instead. */
+  error?: string;
   /** Wait this long first (a turn a spec watches while it works). */
   delayMs?: number;
 }
@@ -77,6 +80,7 @@ export function scriptedAgentModel(env: NodeJS.ProcessEnv = process.env): (() =>
     doGenerate: async ({ prompt }: GenerateOptions) => {
       const step = queue.shift() ?? { text: "The script has nothing more to say." };
       if (step.delayMs !== undefined && step.delayMs > 0) await new Promise((done) => setTimeout(done, step.delayMs));
+      if (step.error !== undefined) throw new Error(step.error);
       const names = namesIn(prompt);
       if (step.tools !== undefined && step.tools.length > 0) {
         return {

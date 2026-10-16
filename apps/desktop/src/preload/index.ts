@@ -367,6 +367,7 @@ const api: PistachioApi = {
     return () => ipcRenderer.removeListener(IPC.deskNotchChanged, handler);
   },
   sendDeskNotchInput: (input: DeskNotchInput) => ipcRenderer.send(IPC.deskNotchInput, input),
+  sendDeskNotchOutline: (points: readonly number[]) => ipcRenderer.send(IPC.deskNotchOutline, points),
   onDeskNotchInput(listener) {
     const handler = (_event: Electron.IpcRendererEvent, input: unknown): void => {
       if (isDeskNotchInput(input)) listener(input);

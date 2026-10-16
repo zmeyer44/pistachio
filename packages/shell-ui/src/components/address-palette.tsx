@@ -4,7 +4,9 @@
  * tabs, the kept pages, the chrome's actions and the settings sections,
  * fuzzy-ranked as one list behind a "go to" or "search" for the text itself,
  * and the row that draws each result. Each caller adds its own browse face
- * (what shows before anything is typed) and decides where a result goes.
+ * (what shows before anything is typed) and decides where a result goes —
+ * a result naming a page by one rule for both, never into another space
+ * (routeInSpace).
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -15,7 +17,7 @@ import { ADDRESS_INTENT_LIMITS, type AddressIntentPage } from "@pistachio/shell-
 import type { BrowserTabInfo, CommandPaletteSnapshot, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { NOTE_UNTITLED, searchNotes, type NoteSummary } from "@pistachio/shell-contracts/notes";
 import { SETTINGS_SECTIONS, type SettingsSection } from "@pistachio/shell-contracts/settings";
-import { DEFAULT_SIDEBAR_STATE, presetAnchorId } from "@pistachio/shell-contracts/sidebar";
+import { DEFAULT_SIDEBAR_STATE, entryPageOf, presetAnchorId } from "@pistachio/shell-contracts/sidebar";
 import { shortcutLabel, type ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import { actionSnapshotOf, CHROME_ACTIONS, shortcutOfferedHere, type ActionContext, type ChromeActionId } from "../chrome/actions";
 import { useShell } from "../chrome/shell-host";
@@ -35,6 +37,7 @@ import { Favicon, TabMark } from "./Favicon";
 import { PistachioMark } from "./PistachioMark";
 import { SearchProviderLogo } from "./SearchProviderLogo";
 import { isNavGroup, SETTINGS_NAV, type NavEntry } from "./settings/nav-config";
+import { columnViewOf, HOME_VIEW, type ColumnView, type RailSnapshot } from "./space-rail/rail-model";
 import { shellApi } from "../api";
 
 export { primaryItemFor, type UrlItem } from "../lib/search-suggestions";
@@ -87,6 +90,84 @@ export function enterDestination(
 }
 
 export type ShelfEntry = Extract<Entry, { kind: "shelf" }>;
+
+/** A result that names a page: an open tab, or a kept page by its anchor. */
+export type PageRow = { kind: "tab"; tabId: string; url: string } | { kind: "shelf"; anchorId: string; url: string };
+
+/**
+ * Where such a result goes (routeInSpace): to a tab of the space in use, to its entry (the shelf's own way of opening
+ * it, which on the desktop is in Home), or to its address, as the address typed would go.
+ */
+export type PageRoute = { go: "tab"; tabId: string } | { go: "entry"; anchorId: string } | { go: "address"; url: string };
+
+/** What routeInSpace reads of the snapshot: the Profile's tabs and spaces, and the current space. */
+export type PageRouteSnapshot = Omit<RailSnapshot, "tabs"> & {
+  tabs: ReadonlyArray<{ id: string; anchorId: string | null; linkedAnchorId?: string }>;
+  currentGroupId?: string | null;
+};
+
+/** The rail item a listed tab is under — Home, or a rail space (columnViewOf) — or null for one this Profile does not list. */
+function viewOfTab(tabId: string, snapshot: PageRouteSnapshot): ColumnView | null {
+  if (!snapshot.tabs.some((tab) => tab.id === tabId)) return null;
+  const group = [...snapshot.tabGroups, ...(snapshot.anchorGroups ?? [])].find((candidate) => candidate.tabIds.includes(tabId));
+  return group === undefined ? HOME_VIEW : columnViewOf(group.id, snapshot);
+}
+
+/**
+ * Where a result that names a page goes, from the address modal or the home page's search (docs/spaces.md §1): to
+ * the page's own tab only when that tab is in the space in use — Home's tabs being one space, a browser's — and else
+ * to the page's address, as typing it would. Neither ever takes the person to another space (the person's word,
+ * 2026-10-15: "never be sent to a different space" — "Hackernews" on a new space's home page had chosen Home's open
+ * Hacker News tab, and the desk passed to Home). A kept page chosen in Home is its entry's to open, which lands in
+ * Home (SidebarController's `open`); in a space, its page there is gone to, and any other is visited here. A tab of
+ * another Profile (one this Profile's tabs do not list) is still gone to: choosing it changes Profile, and with it the
+ * cookie jar, as it always has. `fromTabId` is the tab the choice is made over (the page edited, the home page); with
+ * none, the current space is the one compared. Where the host has no spaces (no `currentGroupId`: the web), a tab is
+ * gone to wherever it is, and a kept page is its entry's, as before.
+ */
+export function routeInSpace(row: PageRow, fromTabId: string | null, snapshot: PageRouteSnapshot | null): PageRoute {
+  const anywhere: PageRoute = row.kind === "tab" ? { go: "tab", tabId: row.tabId } : { go: "entry", anchorId: row.anchorId };
+  if (snapshot === null || snapshot.currentGroupId === undefined) return anywhere;
+  if (row.kind === "tab" && viewOfTab(row.tabId, snapshot) === null) return anywhere;
+  const here = spaceInUse(fromTabId, snapshot.currentGroupId, snapshot);
+  if (row.kind === "shelf" && here === HOME_VIEW) return anywhere;
+  const pageId = row.kind === "tab" ? row.tabId : (entryPageOf(snapshot.tabs, row.anchorId)?.tab.id ?? null);
+  if (pageId !== null && viewOfTab(pageId, snapshot) === here) return { go: "tab", tabId: pageId };
+  return { go: "address", url: row.url };
+}
+
+/** The space a choice is made in: the one of the tab it is made over, or with none, the current space (routeInSpace). */
+function spaceInUse(fromTabId: string | null, currentGroupId: string | null, snapshot: PageRouteSnapshot): ColumnView {
+  return (fromTabId === null ? null : viewOfTab(fromTabId, snapshot)) ?? columnViewOf(currentGroupId, snapshot);
+}
+
+/**
+ * The tabs of the space a choice is made in, as routeInSpace sees spaces (Home's tabs are one): the ones it goes to.
+ * None where the host has no spaces (the web).
+ */
+export function tabsInSpace(fromTabId: string | null, snapshot: PageRouteSnapshot | null): string[] {
+  if (snapshot === null || snapshot.currentGroupId === undefined) return [];
+  const here = spaceInUse(fromTabId, snapshot.currentGroupId, snapshot);
+  // (Each tab's space once: the first group listing it, as viewOfTab finds it.)
+  const views = new Map<string, ColumnView>();
+  for (const group of [...snapshot.tabGroups, ...(snapshot.anchorGroups ?? [])]) {
+    const view = columnViewOf(group.id, snapshot);
+    for (const tabId of group.tabIds) if (!views.has(tabId)) views.set(tabId, view);
+  }
+  return snapshot.tabs.filter((tab) => (views.get(tab.id) ?? HOME_VIEW) === here).map((tab) => tab.id);
+}
+
+/**
+ * How good a way to its page a result is, among the results that reach the same page (one row per page:
+ * collapseDestinations) — a tab of the space in use (`inSpace`: ↵ switches to it, nothing loads; routeInSpace), then
+ * another tab of this Profile (its page opens here), then the kept page, then a tab in another Profile (choosing it
+ * changes Profile, and with it the cookie jar), then history; an awake tab over a suspended one.
+ */
+export function wayThere(entry: Entry, activeSpaceId: string | null, inSpace: ReadonlySet<string>): number {
+  if (entry.kind === "tab")
+    return (inSpace.has(entry.tabId) ? 6 : entry.tab.spaceId === activeSpaceId ? 4 : 2) + (entry.tab.lifecycle === "suspended" ? 0 : 0.5);
+  return entry.kind === "shelf" ? 3 : 1;
+}
 
 const ACTION_KEYWORDS: Partial<Record<ChromeActionId, readonly string[]>> = {
   back: ["previous history"],
@@ -285,6 +366,8 @@ export function useTypedEntries({
   const activeTab = useAppStore(selectActiveTab);
   const spaces = useAppStore((s) => s.snapshot?.spaces ?? EMPTY_SPACES);
   const activeSpaceId = useAppStore((s) => s.snapshot?.activeSpaceId ?? null);
+  // The tabs of the space the choice is made in (routeInSpace's): of a page open here and elsewhere, this one's row.
+  const inSpaceTabIds = useAppStore(useShallow((s) => tabsInSpace(tab?.id ?? null, s.snapshot)));
   const hasRun = useAppStore((s) => s.snapshot?.run != null);
   const actionSnapshot = useAppStore(useShallow((s) => actionSnapshotOf(s.snapshot)));
   const settings = useAppStore((s) => s.settings);
@@ -545,21 +628,17 @@ export function useTypedEntries({
     const matches = rankFuzzy(q, candidates);
     // One row per PLACE (lib/destination.ts): a page that is open in a tab,
     // kept as a favorite and visited this morning is one result, not three.
-    // The best way there wins — a tab already open in this Space (↵ switches
-    // to it, nothing loads), then the kept page, then a tab in another Space
-    // (choosing it changes Space, and with it the cookie jar), then history.
+    // The best way there wins (wayThere) — first a tab of the space in use,
+    // which ↵ switches to: a page open here and in another space is this
+    // space's row, never the other's, whose page would load here again.
     const placeOf = (entry: Entry): string | null =>
       entry.kind === "tab" || entry.kind === "shelf" || entry.kind === "history" ? destinationKey(entry.url) : null;
-    const wayThere = (entry: Entry): number => {
-      if (entry.kind === "tab")
-        return (entry.tab.spaceId === activeSpaceId ? 4 : 2) + (entry.tab.lifecycle === "suspended" ? 0 : 0.5);
-      return entry.kind === "shelf" ? 3 : 1;
-    };
+    const inSpace = new Set(inSpaceTabIds);
     const places = collapseDestinations(
       matches.map((match) => match.item),
       candidates.map((candidate) => candidate.item),
       placeOf,
-      wayThere,
+      (entry) => wayThere(entry, activeSpaceId, inSpace),
     );
     const ranked = places.ranked;
     const matchedIds = ranked.map((entry) => entry.id);
@@ -583,7 +662,7 @@ export function useTypedEntries({
     // "where should these words go".
     const preferMatch = q.length >= 2 && topScore >= STRONG_FUZZY_SCORE;
     return face(preferMatch ? [...ranked, primary, ...searches] : [primary, ...searches, ...ranked]);
-  }, [actionSnapshot, activeSpaceId, activeTab, assistant, shelfRows, clearUnpinnedTabs, closeTab, currentUrl, hasRun, moveTabToSpace, noteSummaries, palette.recentlyClosedTabs, paletteTabs, primaryItem, q, recentSites, restoreClosedTab, settings, shell, spaces, switchSpace, tab, tabs]);
+  }, [actionSnapshot, activeSpaceId, activeTab, assistant, shelfRows, clearUnpinnedTabs, closeTab, currentUrl, hasRun, inSpaceTabIds, moveTabToSpace, noteSummaries, palette.recentlyClosedTabs, paletteTabs, primaryItem, q, recentSites, restoreClosedTab, settings, shell, spaces, switchSpace, tab, tabs]);
 
   // ── What the words most likely MEAN (docs/smart-suggestions.md) ──────
   // Everything below reorders `inventory.entries`; none of it can add a row.

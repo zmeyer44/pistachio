@@ -13,7 +13,7 @@ import { Kbd } from "./ui/kbd";
 import { useIntentOrder } from "../lib/use-address-intent";
 import { useFieldPreview } from "../lib/use-field-preview";
 import { deskAvailable, newSpaceAt, openEntry } from "../lib/desk/open";
-import { PALETTE_DETAIL_CLASS, PALETTE_FAVICON_CLASS, PALETTE_ROW_CLASS, PALETTE_TITLE_CLASS, PaletteResultRow, primaryItemFor, usePaletteInventory, useShelfRows, useTypedEntries, enterDestination, type Entry, type NewDestination } from "./address-palette";
+import { PALETTE_DETAIL_CLASS, PALETTE_FAVICON_CLASS, PALETTE_ROW_CLASS, PALETTE_TITLE_CLASS, PaletteResultRow, primaryItemFor, routeInSpace, usePaletteInventory, useShelfRows, useTypedEntries, enterDestination, type Entry, type NewDestination } from "./address-palette";
 
 import { shellApi } from "../api";
 import { useSurface } from "../surface";
@@ -327,15 +327,19 @@ function UrlBarDialog() {
       commit(entry.url, into);
       return;
     }
-    if (entry.kind === "tab") {
+    // An open tab or a kept page is gone to only where that keeps the person in
+    // the space in use; else ↵ goes to its address as if it had been typed
+    // (routeInSpace: since 2026-10-15 the bar never takes them to another space).
+    if (entry.kind === "tab" || entry.kind === "shelf") {
+      const route = routeInSpace(entry, tab.id, useAppStore.getState().snapshot);
+      if (route.go === "address") {
+        commit(route.url);
+        return;
+      }
       close();
-      void selectTab(entry.tabId);
-      return;
-    }
-    if (entry.kind === "shelf") {
-      close();
+      if (entry.kind === "tab") void selectTab(entry.tabId);
       // (As its tile's click does: a page anchored or linked, put away on the desk in front, comes out — openEntry.)
-      void openEntry(entry.anchorId);
+      else void openEntry(entry.anchorId);
       return;
     }
     commit(entry.url);

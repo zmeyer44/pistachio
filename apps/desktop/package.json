@@ -1,6 +1,6 @@
 {
   "name": "@pistachio/desktop",
-  "version": "0.0.44",
+  "version": "0.0.45",
   "productName": "Pistachio",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "node scripts/electron-vite.mjs dev",
-    "build": "electron-vite build",
+    "build": "node scripts/build-native.mjs && electron-vite build",
     "start": "node scripts/electron-vite.mjs preview",
     "check-types": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run --config vitest.config.ts",

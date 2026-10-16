@@ -10,7 +10,7 @@ export interface ScreenshotHost {
   window(): BrowserWindow | null;
   /** The corner radius main gave a native view (setBorderRadius has no getter): a page's, or 0. */
   radiusOf(contents: Electron.WebContents): number;
-  /** A view left out of every screenshot: the notices (one saying the last screenshot was taken, say). */
+  /** A view left out of every screenshot: the notices (one saying the last screenshot was taken, say), the desk's nub. */
   leftOut(contents: Electron.WebContents): boolean;
   /** Where a page in HTML fullscreen lies — over the layout the shell measured — or null. */
   fullscreenPage(): ScreenshotBox | null;

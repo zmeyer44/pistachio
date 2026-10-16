@@ -15,11 +15,16 @@
  * (PISTACHIO_E2E_CURSOR lets main read it under Playwright).
  */
 
+import { existsSync } from "node:fs";
 import { expect, test, type ElectronApplication } from "@playwright/test";
 import type { WebContentsView } from "electron";
+import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { createGroup, launchDesk, selectSpace, openTabs, settled, windowSelector } from "./desk-harness";
 
 const PAGE = "pistachio://demo/invoices";
+
+/** Whether native/desk-glass is built here (scripts/build-native.mjs skips it where it cannot be: the nub keeps its stand-in). */
+const NATIVE_GLASS = process.platform === "darwin" && existsSync(new URL("../../native/desk-glass/build/desk_glass.node", import.meta.url));
 
 /** The desk's notch view on screen, and its box in the window; null while it is not. */
 function notchView(app: ElectronApplication) {
@@ -147,6 +152,55 @@ test("the notch view's word that the pointer came is the OS pointer's to confirm
     await expect(faceTip).toHaveCount(0);
     await expect(win).not.toHaveAttribute("data-drawn", "");
     await expect.poll(() => notchView(app)).not.toBeNull();
+  } finally {
+    await app.close();
+  }
+});
+
+test("over a live page the nub is the window's own glass, not a stand-in grey — and with the desktop glass off, the surface's colour", { tag: ["@desk"] }, async () => {
+  const { app, shell } = await launchDesk({ name: "bar-glass" });
+  try {
+    const [tab] = (await openTabs(shell, [PAGE])) as [string];
+    await createGroup(shell, "glass", [tab], "Glass", "blue");
+    await selectSpace(shell, "glass");
+    await settled(shell, app);
+    await expect.poll(() => notchView(app)).not.toBeNull();
+    const view = app.windows().find((page) => page.url().endsWith("#notch"))!;
+    const ground = view.locator(".desk-notch-view");
+    const paint = (): Promise<string> => ground.evaluate((el) => getComputedStyle(el).backgroundColor);
+
+    // The glass laid under the view by main (main/desk-glass.ts): the view paints only what the shell lays over it.
+    // Without the module, no glass: the view paints its stand-in.
+    const glassOn = async (): Promise<void> => {
+      if (NATIVE_GLASS) {
+        await expect(ground).toHaveAttribute("data-native-glass", "");
+        await expect.poll(paint).toBe("rgba(0, 0, 0, 0)");
+      } else {
+        await expect(ground).not.toHaveAttribute("data-native-glass", "");
+        await expect.poll(paint).not.toBe("rgba(0, 0, 0, 0)");
+      }
+    };
+    await glassOn();
+
+    // A view stacked over the notch view lying over it — the drag layer, the whole window's, as a drag goes (a tab's
+    // ghost crossing the nub). The glass lies over every view's page (all in one layer under their NSViews), so it would
+    // hide theirs: it steps aside, the view painting its stand-in under them as they are stacked; back once it is gone.
+    const setDragCapture = (cursor: "grabbing" | null): Promise<void> =>
+      shell.evaluate((cursor) => (window as unknown as { pistachio: PistachioApi }).pistachio.setDragCapture(cursor), cursor);
+    await setDragCapture("grabbing");
+    await expect(ground).not.toHaveAttribute("data-native-glass", "");
+    await expect.poll(paint).not.toBe("rgba(0, 0, 0, 0)");
+    await setDragCapture(null);
+    await glassOn();
+
+    // Off, nothing to lay under it: the view paints the surface's own colour, as the shell does round the desk.
+    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.updateSettings({ appearance: { desktopGlass: false } }));
+    await expect(ground).not.toHaveAttribute("data-native-glass", "");
+    await expect.poll(paint).not.toBe("rgba(0, 0, 0, 0)");
+
+    // And on again, the glass with it.
+    await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.updateSettings({ appearance: { desktopGlass: true } }));
+    await glassOn();
   } finally {
     await app.close();
   }

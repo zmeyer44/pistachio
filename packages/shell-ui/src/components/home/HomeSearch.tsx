@@ -24,7 +24,10 @@ const BROWSE_ROWS = 6;
  * pill in the middle of the page; focused and typed into, it opens into the
  * same suggestions the address modal ranks (components/address-palette.tsx)
  * — a go-to or a web search for the text, recent pages, open tabs in every
- * Space, kept pages, actions and settings — and ↵ takes this tab there.
+ * Space, kept pages, actions and settings — and ↵ takes this tab there. An
+ * open tab is switched to only when it is in this page's space (Home's tabs
+ * are one), never another space's (since 2026-10-15): that page opens here
+ * instead, as its typed address would (address-palette.tsx routeInSpace).
  * Focused with nothing typed (a click, ↓), it offers the clipboard's address
  * and the recent pages. As in the modal, the field shows where the active row
  * goes once the person has steered to it (lib/use-field-preview.ts).
@@ -124,12 +127,13 @@ export function HomeSearch({
       entry.run();
       return;
     }
-    if (entry.kind === "tab") {
-      navigation.leaveFor(() => navigation.selectTab(entry.tabId));
-      return;
-    }
-    if (entry.kind === "shelf") {
-      navigation.leaveFor(() => navigation.openAnchor(entry.anchorId));
+    // An open tab or a kept page is gone to only where that keeps the person in
+    // this page's space; else this tab goes to its address (routeInSpace).
+    if (entry.kind === "tab" || entry.kind === "shelf") {
+      const route = navigation.routeOf(entry);
+      if (route.go === "tab") navigation.leaveFor(() => navigation.selectTab(route.tabId));
+      else if (route.go === "entry") navigation.leaveFor(() => navigation.openAnchor(route.anchorId));
+      else navigation.open(route.url);
       return;
     }
     navigation.open(entry.url);
