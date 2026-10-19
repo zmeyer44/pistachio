@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { useDeskChrome } from "../../lib/desk/chrome";
 import { arrangeDesk } from "../../lib/desk/open";
+import { LiveCard } from "../live/LiveCard";
 import { holdDeskMore, lingerDeskMore } from "./DeskSidebarControls";
 import type { DeskEngine, DeskView } from "./desk-engine";
 import { DeskMoreCard } from "./DeskMoreCard";
@@ -15,11 +16,14 @@ const CARD_GAP = 10;
 /**
  * The card a control in the sidebar opened (lib/desk/chrome.ts) — the
  * desk's (DeskMoreButton) or the Stack's (DeskContextRow) — drawn over the
- * desk beside it. It is a cover: the live pages under it give way to their
- * stills, and it shows once they have (`clearCovers`).
+ * desk beside it; or the live share's (components/live/LiveCard.tsx), which
+ * its entries and the Live pill open beside the shared space's tile. It is
+ * a cover: the live pages under it give way to their stills, and it shows
+ * once they have (`clearCovers`).
  *
- * It goes on a press anywhere else — on a live page too, which main relays —
- * or Escape, and when a window is taken in hand or a menu opens; the desk's
+ * It goes on a press anywhere else — on a live page too, which main relays;
+ * not on a menu it opened itself (the Live card's ⋯ on a guest) — or Escape,
+ * and when a window is taken in hand or a menu opens; the desk's
  * card also goes a moment after the pointer leaves both it and its button,
  * unless a click pinned it (or a press is held in it: a slider).
  */
@@ -73,14 +77,14 @@ export function DeskSideCard({
   // A press anywhere else (a live page's too), or Escape.
   useEffect(() => {
     if (kind === null) return;
-    const opener = kind === "more" ? "[data-testid='desk-more']" : "[data-testid='desk-stack']";
+    const opener = kind === "more" ? "[data-testid='desk-more']" : kind === "stack" ? "[data-testid='desk-stack']" : "[data-live-opener]";
     const offPage = nativeApi()?.onDeskPageInput((input) => {
       if (input === "press" || input === "escape") useDeskChrome.getState().closeCard();
     });
     const onDown = (event: PointerEvent): void => {
       const target = event.target instanceof Element ? event.target : null;
-      // Its opener toggles it itself.
-      if (target !== null && (cardRef.current?.contains(target) === true || target.closest(opener) !== null)) return;
+      // Its opener toggles it itself; a menu it opened is its own.
+      if (target !== null && (cardRef.current?.contains(target) === true || target.closest(opener) !== null || target.closest("[role='menu']") !== null)) return;
       useDeskChrome.getState().closeCard();
     };
     const onUp = (): void => {
@@ -102,10 +106,14 @@ export function DeskSideCard({
     };
   }, [kind]);
 
+  const closeLive = useCallback(() => useDeskChrome.getState().closeCard("live"), []);
   const stage = stageRef.current?.getBoundingClientRect() ?? null;
   if (card === null || stage === null) return null;
   const left = Math.max(CARD_GAP, card.anchor.x + card.anchor.w - stage.left + CARD_GAP);
   const shown = view.clearCovers.has("card");
+  if (card.kind === "live") {
+    return <LiveCard ref={cardRef} left={left} anchorTop={card.anchor.y - stage.top} stageHeight={stage.height} shown={shown} onClose={closeLive} />;
+  }
   if (card.kind === "stack") {
     if (group === null) return null;
     return (

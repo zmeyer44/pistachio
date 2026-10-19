@@ -7,7 +7,8 @@
  * the site's information is the active tab's (the window in use). And, as
  * the tab's menu has it (chrome/tab-menu.tsx), a person's tab duplicated:
  * the copy beside it in its space, out on the desk and in use (in Home, a
- * Home tab of its own: docs/double-sidebar.md §1).
+ * Home tab of its own: docs/double-sidebar.md §1). And, while its space is
+ * shared live, whether guests can use it (docs/live-share.md §1).
  *
  * Read as the menu opens, not as the window renders: the menu says what is
  * true when it comes up, and a window re-renders only when it changes.
@@ -21,6 +22,7 @@ import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
 import { useShell } from "../../chrome/shell-host";
 import { useAppStore } from "../../store";
 import type { MenuEntry } from "../ContextMenu";
+import { liveWindowEntries } from "../live/menu-entries";
 
 /** The entries for one window's page, ending in a separator from the window's own. */
 export function usePageEntries(): (tab: BrowserTabInfo) => MenuEntry[] {
@@ -70,7 +72,8 @@ export function usePageEntries(): (tab: BrowserTabInfo) => MenuEntry[] {
       // Hung from the window's ⋯ (DeskWindow's SiteInfoFrom), the window in use's alone: the controls describe the active tab.
       if (store.snapshot?.activeTabId === tab.id)
         page.push({ label: "Site information", icon: <SlidersHorizontal aria-hidden="true" />, testId: "desk-page-site-info", onSelect: () => store.openSiteInfo() });
-      return [...entries, ...(page.length > 0 ? [{ separator: true } as const, ...page] : []), { separator: true }];
+      const live = liveWindowEntries(tab);
+      return [...entries, ...(page.length > 0 ? [{ separator: true } as const, ...page] : []), ...(live.length > 0 ? [{ separator: true } as const, ...live] : []), { separator: true }];
     },
     [run],
   );

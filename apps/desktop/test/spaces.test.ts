@@ -387,6 +387,13 @@ describe("tidyReach", () => {
   it("keeps every window on the desk at its address, asleep or not, and only what is spared or there", () => {
     expect([...pageReach.keepAddressTabIds].sort()).toEqual(["p1", "p2", "r1", "r2", "t2"]);
   });
+
+  it("spares a space shared live as it does the current one: in front of its guests wherever the person is", () => {
+    const shared = tidyReach(groups, "current", () => false, [], "tidy-made");
+    expect([...shared.spareGroupIds].sort()).toEqual(["current", "tidy-made"]);
+    expect([...shared.spareTabIds].sort()).toEqual(["c1", "c2", "t1", "t2"]);
+    expect([...tidyReach(groups, "current", () => false).spareGroupIds]).toEqual(["current"]);
+  });
 });
 
 /* -------------------------------- the bound -------------------------------- */

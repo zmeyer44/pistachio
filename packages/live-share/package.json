@@ -1,0 +1,44 @@
+{
+  "name": "@pistachio/live-share",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Live share of a space: the room protocol, the desk geometry, ink, cursors, the LiveKit room and the React pieces the desktop host and the web guest both draw.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./room": "./src/room.ts",
+    "./effects": "./src/effects.ts",
+    "./assets": "./assets/index.mjs",
+    "./react": "./src/react/index.ts",
+    "./styles.css": "./src/styles.css"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src test assets --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@livekit/track-processors": "0.8.1",
+    "livekit-client": "2.22.3",
+    "lucide-react": "0.468.0",
+    "perfect-freehand": "1.2.3",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/dom-mediacapture-transform": "^0.1.11",
+    "@types/node": "^22.15.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "eslint": "^9.39.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

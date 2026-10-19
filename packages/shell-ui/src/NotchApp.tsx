@@ -18,10 +18,14 @@
  * under it, so the view paints that ground itself (shell.css .desk-notch-view):
  * the theme's gradient laid over the shell's ground box (`frame.ground`) as
  * the shell lays it, its grain tiled from the same corner, and cut to the
- * nub's outline. With the desktop glass on, the glass under that is the
- * window's own, laid under the view by main (`frame.nativeGlass`,
- * main/desk-glass.ts) and cut to the outline the view says as it draws it;
- * without it, a stand-in grey.
+ * nub's outline. With the desktop glass on, the glass under that is a
+ * stand-in grey — and over the view, where main can lay it (main/desk-glass.ts),
+ * the window's own glass, cut to the nub, with the nub drawn again on it. That
+ * nub is this same page painted offscreen (`picture`, main's "notch-picture"),
+ * at the display's rate: the nub with no stand-in, and below it its outline
+ * alone, opaque, which the glass is cut to — the nub and the glass's cut in one
+ * frame, so they move as one. The stand-in under them is what shows until the
+ * picture's first frame, and if the glass steps aside.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -33,27 +37,14 @@ import { nubBetween, nubFace, nubOutline } from "./lib/desk/geometry";
 
 /** The pointer moving on the view says it is there at most this often. */
 const ENTER_REPEAT_MS = 100;
-/** The points along the outline the window's glass is cut to (a 52px nub's is about 1px apart). */
-const OUTLINE_POINTS = 160;
 
-/** The outline's points, x and y in turn: `path` holds it (an SVG path in the view's coordinates). */
-function outlinePoints(path: SVGPathElement): number[] {
-  const length = path.getTotalLength();
-  const points: number[] = [];
-  for (let i = 0; i < OUTLINE_POINTS; i += 1) {
-    const at = path.getPointAtLength((length * i) / OUTLINE_POINTS);
-    points.push(Math.round(at.x * 100) / 100, Math.round(at.y * 100) / 100);
-  }
-  return points;
-}
-
-export function NotchApp() {
+export function NotchApp({ picture = false }: { picture?: boolean }) {
   const [frame, setFrame] = useState<DeskNotchFrame | null>(null);
   const saidEnter = useRef(Number.NEGATIVE_INFINITY);
   const rootRef = useRef<HTMLDivElement>(null);
   const faceRef = useRef<HTMLSpanElement>(null);
   const markRef = useRef<HTMLSpanElement>(null);
-  const outlineRef = useRef<SVGPathElement>(null);
+  const maskRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const api = nativeApi();
@@ -79,20 +70,17 @@ export function NotchApp() {
     const root = rootRef.current;
     const face = faceRef.current;
     const mark = markRef.current;
-    const outline = outlineRef.current;
-    if (frame === null || root === null || face === null || mark === null || outline === null) return;
+    if (frame === null || root === null || face === null || mark === null) return;
+    const mask = maskRef.current;
     const { bounds, swelling } = frame;
     let raf = 0;
     const draw = (): void => {
       const s = swellAt(swelling);
       const shape = nubBetween(frame.idle, frame.swell, s);
-      const path = nubOutline(shape, bounds.width, bounds.height, frame.corner, 0, 0);
-      root.style.clipPath = `path("${path}")`;
-      // The window's glass under the view, cut as the view is.
-      if (frame.nativeGlass === true) {
-        outline.setAttribute("d", path);
-        nativeApi()?.sendDeskNotchOutline(outlinePoints(outline));
-      }
+      const clip = `path("${nubOutline(shape, bounds.width, bounds.height, frame.corner, 0, 0)}")`;
+      root.style.clipPath = clip;
+      // (The picture's: the glass's cut, in the same frame as the nub.)
+      if (mask !== null) mask.style.clipPath = clip;
       const at = nubFace(shape);
       face.style.left = `${(bounds.width + at.x).toFixed(2)}px`;
       face.style.top = `${(bounds.height + at.y).toFixed(2)}px`;
@@ -117,12 +105,17 @@ export function NotchApp() {
   };
   const { bounds, ground } = frame;
   const px = (value: number): string => `${value.toFixed(1)}px`;
-  return (
+  const face = (
+    <span ref={faceRef} className="desk-notch-view-face">
+      <DeskNubMark ref={markRef} acting={frame.acting} floating={frame.floating} />
+    </span>
+  );
+  const nub = (
     <div
       ref={rootRef}
       className="desk-notch-view tab-group-tone"
       data-group-color={frame.color}
-      data-native-glass={frame.nativeGlass === true ? "" : undefined}
+      data-picture={picture ? "" : undefined}
       style={
         {
           // The shell's ground box, where it lies from this view's corner.
@@ -133,28 +126,34 @@ export function NotchApp() {
         } as React.CSSProperties
       }
     >
-      <button
-        type="button"
-        className="desk-notch-view-hit"
-        data-testid="desk-notch-view"
-        aria-label={frame.shortcut === null ? frame.label : `${frame.label} (${frame.shortcut})`}
-        onPointerEnter={enter}
-        onPointerMove={enter}
-        onPointerLeave={() => {
-          saidEnter.current = Number.NEGATIVE_INFINITY;
-          send("leave");
-        }}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={() => send("press")}
-      >
-        <span ref={faceRef} className="desk-notch-view-face">
-          <DeskNubMark ref={markRef} acting={frame.acting} floating={frame.floating} />
-        </span>
-      </button>
-      {/* (Where the outline is measured for the glass: never drawn.) */}
-      <svg className="desk-notch-view-outline" aria-hidden="true">
-        <path ref={outlineRef} />
-      </svg>
+      {picture ? (
+        <span className="desk-notch-view-hit">{face}</span>
+      ) : (
+        <button
+          type="button"
+          className="desk-notch-view-hit"
+          data-testid="desk-notch-view"
+          aria-label={frame.shortcut === null ? frame.label : `${frame.label} (${frame.shortcut})`}
+          onPointerEnter={enter}
+          onPointerMove={enter}
+          onPointerLeave={() => {
+            saidEnter.current = Number.NEGATIVE_INFINITY;
+            send("leave");
+          }}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => send("press")}
+        >
+          {face}
+        </button>
+      )}
+    </div>
+  );
+  if (!picture) return nub;
+  // Offscreen, twice the view's height: the nub over its outline (main/desk-glass.ts splits them).
+  return (
+    <div className="desk-notch-picture" style={{ "--desk-notch-w": px(bounds.width), "--desk-notch-h": px(bounds.height) } as React.CSSProperties}>
+      {nub}
+      <div ref={maskRef} className="desk-notch-view-mask" data-testid="desk-notch-picture-mask" />
     </div>
   );
 }

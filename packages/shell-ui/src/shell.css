@@ -4549,6 +4549,541 @@ body:not([data-chrome-view])::after {
   }
 }
 
+/* ── Live share (docs/live-share.md §1) ─────────────────────────────────────
+   The live mark (components/live/LiveMark.tsx): the shared space's dot, in
+   the red that means other people can see this (as a screen share's), with
+   a soft halo breathing out of it three times as it comes and as someone
+   comes or goes (LiveMark keys it), then still: nothing animates at rest
+   (§9). On a rail tile it sits on the corner opposite the count; in the
+   card's head, after the name. */
+.live-mark {
+  position: relative;
+  display: block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 999px;
+  background: var(--color-red-700);
+}
+.live-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-red-700);
+  opacity: 0;
+  animation: live-mark-halo 2s cubic-bezier(0.2, 0.6, 0.35, 1) 3;
+}
+@keyframes live-mark-halo {
+  0% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+.space-rail-tile > .live-mark,
+.space-rail-home > .live-mark {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  box-shadow: 0 0 0 2px var(--space-ground);
+}
+.space-rail-tile[aria-current] > .live-mark,
+.space-rail-home[aria-current] > .live-mark {
+  box-shadow: 0 0 0 2px var(--color-background-100);
+}
+.space-live {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  place-items: center;
+  margin-left: -2px;
+  border-radius: 999px;
+  cursor: pointer;
+  outline: none;
+}
+.space-live:hover {
+  background: var(--color-alpha-100);
+}
+.space-live:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+
+/* The Live card (components/live/LiveCard.tsx): a desk side card as the More card and the Stack's are — the same
+   ground, shadow and motion (.desk-dock-menu), 12px rows, small-caps section labels — its head pinned, its body
+   scrolling, Stop sharing at its foot. */
+.desk-dock-menu.live-card {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.live-card-head {
+  display: flex;
+  min-width: 0;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+}
+.live-card-badge {
+  display: inline-flex;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px 0 6px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--color-red-700) 12%, transparent);
+  color: var(--color-red-900);
+  font-size: 11px;
+  font-weight: 600;
+}
+.live-card-badge:not([data-status="live"]) {
+  background: var(--color-alpha-100);
+  color: var(--color-gray-800);
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.live-card-badge[data-reconnecting] {
+  background: var(--color-amber-100);
+  color: var(--color-amber-900);
+}
+.live-card-badge[data-status="live"] .live-dot {
+  background: var(--color-red-700);
+  animation: screen-share-live 1.8s ease-in-out 3;
+}
+.live-card-badge[data-reconnecting] .live-dot {
+  background: currentColor;
+}
+/* The space's name in its colour, as its head in the sidebar has it. */
+.live-card-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--tg-text);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-card-elapsed {
+  flex-shrink: 0;
+  color: var(--color-gray-700);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.live-card-tabs {
+  flex-shrink: 0;
+  padding: 0 12px 8px;
+}
+.live-card-tabs .desk-segmented > button {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.desk-segmented > button svg {
+  width: 13px;
+  height: 13px;
+}
+.live-unread {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--color-red-700);
+  color: white;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.live-card-body {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+}
+.live-card-foot {
+  flex-shrink: 0;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--color-alpha-300);
+}
+.live-card-waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 14px;
+  color: var(--color-gray-900);
+  font-size: 12px;
+}
+.live-card-waiting svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--color-gray-700);
+}
+.live-away {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 6px 8px;
+  padding: 6px 6px 6px 8px;
+  border-radius: 8px;
+  background: var(--color-alpha-100);
+  color: var(--color-gray-900);
+  font-size: 11.5px;
+  line-height: 15px;
+}
+.live-link-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0 6px 8px;
+}
+.live-link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.live-link {
+  display: flex;
+  height: 24px;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 7px;
+  background: var(--color-alpha-100);
+  color: var(--color-gray-1000);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  user-select: text;
+}
+.live-link svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--color-gray-700);
+}
+.live-link-note {
+  color: var(--color-gray-700);
+  font-size: 11px;
+  line-height: 15px;
+}
+.live-link-copied {
+  color: var(--color-green-900);
+  font-weight: 500;
+}
+.live-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-bottom: 4px;
+}
+.live-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 0 4px;
+  border-top: 1px solid var(--color-alpha-300);
+}
+.live-section-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 6px 4px;
+  color: var(--color-gray-700);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+.live-section-count {
+  font-variant-numeric: tabular-nums;
+}
+.live-section-aside {
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.live-row {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: var(--color-gray-1000);
+  font-size: 12px;
+}
+.live-row-label {
+  min-width: 0;
+  flex: 1;
+  color: var(--color-gray-700);
+}
+.live-row-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-row-note {
+  color: var(--color-gray-700);
+}
+/* Why a row's control is off (a window guests cannot use yet), on a line of its own under the name. */
+.live-row-why {
+  display: block;
+  overflow: hidden;
+  color: var(--color-gray-700);
+  font-size: 11px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+}
+.live-empty {
+  padding: 2px 6px 6px;
+  color: var(--color-gray-800);
+  font-size: 12px;
+  line-height: 17px;
+}
+.live-avatar {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-alpha-200);
+  color: var(--color-gray-900);
+  font-size: 10px;
+  font-weight: 600;
+}
+.live-avatar[data-guest] {
+  color: white;
+}
+/* Talking now: a ring in their colour, as their face wears over the desk. */
+.live-avatar[data-speaking] {
+  box-shadow:
+    0 0 0 1.5px var(--color-background-100),
+    0 0 0 3px var(--live-guest, var(--color-gray-700));
+}
+.live-media-state {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  place-items: center;
+  color: var(--color-gray-600);
+}
+.live-media-state[data-on] {
+  color: var(--color-gray-900);
+}
+.live-media-state svg,
+.live-icon-button svg {
+  width: 13px;
+  height: 13px;
+}
+.live-icon-button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--color-gray-800);
+  cursor: pointer;
+  outline: none;
+  transition: background-color 120ms ease;
+}
+.live-icon-button:hover {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.live-icon-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.live-media-row {
+  display: flex;
+  gap: 6px;
+  padding: 0 6px 6px;
+}
+.live-media-toggle {
+  flex: 1;
+}
+/* Off is the person's choice made plain: the slashed icon in the live red. */
+.live-media-toggle:not([data-on]) svg {
+  color: var(--color-red-900);
+}
+.live-backgrounds {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  padding: 0 6px 6px;
+}
+.live-background {
+  display: grid;
+  height: 34px;
+  place-items: center;
+  border-radius: 7px;
+  background-color: var(--color-alpha-100);
+  background-position: center;
+  background-size: cover;
+  color: var(--color-gray-800);
+  cursor: pointer;
+  outline: none;
+  transition: box-shadow 120ms ease;
+}
+.live-background svg {
+  width: 14px;
+  height: 14px;
+}
+.live-background:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--color-alpha-400);
+}
+.live-background:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.live-background[aria-checked="true"] {
+  box-shadow:
+    0 0 0 1.5px var(--color-background-100),
+    0 0 0 3px var(--color-gray-1000);
+}
+.live-background:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.live-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+.live-device-select {
+  width: 150px;
+}
+.live-draw-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 6px;
+}
+.live-ink-colors {
+  display: flex;
+  flex: 1;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.live-ink-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  outline: none;
+  transition: box-shadow 120ms ease;
+}
+.live-ink-color[aria-checked="true"] {
+  box-shadow:
+    0 0 0 2px var(--color-background-100),
+    0 0 0 3.5px var(--color-gray-1000);
+}
+.live-ink-color:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.live-chat {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+.live-chat-list {
+  display: flex;
+  min-height: 160px;
+  max-height: min(360px, 50vh);
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+}
+.live-chat-message {
+  padding-top: 6px;
+}
+.live-chat-message[data-run] {
+  padding-top: 1px;
+}
+.live-chat-from {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.live-chat-from time {
+  color: var(--color-gray-700);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.live-chat-text {
+  color: var(--color-gray-1000);
+  font-size: 12px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.live-chat-composer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px 2px;
+  border-top: 1px solid var(--color-alpha-300);
+}
+.live-chat-send {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--color-gray-1000);
+  color: var(--color-background-100);
+  cursor: pointer;
+  outline: none;
+  transition: opacity 120ms ease;
+}
+.live-chat-send:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.live-chat-send svg {
+  width: 14px;
+  height: 14px;
+}
+.live-chat-send:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-mark::after,
+  .live-card-badge[data-status="live"] .live-dot {
+    animation: none;
+  }
+}
+
 /* ── Chat: a reply's Markdown, its stream, its reasoning, its sources ─────
    Shared by the sidebar console (`.chat-markdown-panel`) and the home
    page's chat (`.chat-markdown-page`), components/chat. */
@@ -5615,7 +6150,8 @@ body[data-chrome-view="notch"] {
 }
 :root[data-desktop-glass="on"] .desk-notch-view {
   /* The window's glass itself is not under a page: a stand-in for it, the chrome's tint and the theme's gradient
-     over it, as over the glass. The stand-in is AppKit's under-window material as measured behind the gutter (it
+     over it, as over the glass (main lays the window's own glass over the view where it can, the nub drawn on it: the
+     picture, below — this is what shows until it has, and if the glass steps aside). The stand-in is AppKit's under-window material as measured behind the gutter (it
      follows what lies behind the window: in light, the gutter read 202 over black and 219 over white). A light
      desktop puts it at the white end, so the stand-in is a neutral grey there (oklch 0.862, at the dark end, read
      14 levels darker than the gutter over a light wallpaper); with something dark behind the window the nub
@@ -5634,16 +6170,29 @@ body[data-chrome-view="notch"] {
 :root[data-desktop-glass="on"][data-color-scheme="dark"] .desk-notch-view {
   background-color: color-mix(in srgb, var(--color-background-200) 96%, var(--color-gray-500));
 }
-/* The window's own glass under the view (main/desk-glass.ts): no stand-in for it, only what the shell lays over it. */
-:root[data-desktop-glass="on"] .desk-notch-view[data-native-glass] {
-  background-color: transparent;
+/* The nub painted offscreen for the window's own glass over the view (NotchApp's `picture`, main/desk-glass.ts): the
+   view's box twice over, the nub over its outline. The nub lies on the glass itself, so it paints only what the shell
+   lays over its glass round the desk (`.chrome-container`: the chrome's tint and the theme's gradient), and the grain —
+   no stand-in; its outline is opaque, the glass's cut. */
+body[data-chrome-view="notch-picture"] {
+  background: transparent;
 }
-.desk-notch-view-outline {
-  position: absolute;
-  width: 0;
-  height: 0;
-  overflow: hidden;
-  pointer-events: none;
+.desk-notch-view[data-picture] {
+  inset: 0 auto auto 0;
+  width: var(--desk-notch-w);
+  height: var(--desk-notch-h);
+}
+:root[data-desktop-glass="on"] .desk-notch-view[data-picture] {
+  background-color: color-mix(in srgb, var(--color-background-200) var(--theme-glass-tint-opacity-percent), transparent);
+  background-image: var(--theme-glass-gradient);
+}
+.desk-notch-view-mask {
+  position: fixed;
+  left: 0;
+  top: var(--desk-notch-h);
+  width: var(--desk-notch-w);
+  height: var(--desk-notch-h);
+  background: #000;
 }
 .desk-notch-view::after {
   content: "";
@@ -7105,7 +7654,7 @@ body[data-chrome-view="shelf"] {
     background-color 120ms ease,
     color 120ms ease;
 }
-.desk-segmented > button[aria-checked="true"] {
+.desk-segmented > button:is([aria-checked="true"], [aria-selected="true"]) {
   background: var(--color-background-100);
   color: var(--color-gray-1000);
   box-shadow:

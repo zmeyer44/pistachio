@@ -13,6 +13,7 @@ import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
 import { askDesk, deskAvailable, newTabAsChosen } from "../lib/desk/open";
+import { openLiveCard } from "../lib/live/actions";
 import {
   railOffered,
   sidebarModeOf,
@@ -244,6 +245,10 @@ export function runShellCommand(command: ShellCommand): void {
     }
     case "closeLiveView":
       void s.closeLiveView();
+      break;
+    case "openLiveCard":
+      // The Live pill over the desk was pressed (docs/live-share.md §1).
+      openLiveCard("live");
       break;
     case "openUrlBar":
       s.openUrlBar(command.tabId);

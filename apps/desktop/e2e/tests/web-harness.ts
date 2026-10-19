@@ -109,6 +109,11 @@ export interface WebStackOptions {
   serviceToken?: string;
   /** Extra env for the Next apps, e.g. a feature flag a spec turns on. */
   webEnv?: Record<string, string>;
+  /**
+   * A LiveKit server for control's live share routes (docs/live-share.md §5);
+   * without one they answer 503.
+   */
+  livekit?: { url: string; apiKey: string; apiSecret: string };
 }
 
 export interface WebStack {
@@ -173,6 +178,13 @@ export async function startWebStack(options: WebStackOptions): Promise<WebStack>
       CONTROL_ALLOWED_ORIGINS: `${urls.www},${urls.web}`,
       CONTROL_PUBLIC_URL: controlUrl,
       HUB_PUBLIC_URL: `${controlUrl.replace(/^http/u, "ws")}/v1/hub/ws`,
+      ...(options.livekit === undefined
+        ? {}
+        : {
+            LIVEKIT_URL: options.livekit.url,
+            LIVEKIT_API_KEY: options.livekit.apiKey,
+            LIVEKIT_API_SECRET: options.livekit.apiSecret,
+          }),
     },
     runner: {
       provision: (userId, nonce) => runnerClient.provision(userId, nonce),
@@ -261,8 +273,11 @@ export async function startWebStack(options: WebStackOptions): Promise<WebStack>
     const distDir = `.next-e2e-${randomUUID()}`;
     const dir = fileURLToPath(new URL(`../../../${app}/`, import.meta.url));
     const port = new URL(urls[app]).port;
+    // Not the worker's NODE_ENV: Next sets its own, and one a spec's Vite
+    // build left at "production" breaks `next dev`'s CSS (`@import` fails to parse).
+    const { NODE_ENV: _nodeEnv, ...inherited } = process.env;
     const env = {
-        ...process.env,
+        ...inherited,
         NEXT_PUBLIC_PISTACHIO_CONTROL_URL: controlUrl,
         NEXT_PUBLIC_PISTACHIO_BROWSER_URL: urls.web,
         NEXT_PUBLIC_PISTACHIO_WWW_URL: urls.www,
@@ -292,7 +307,14 @@ export async function startWebStack(options: WebStackOptions): Promise<WebStack>
     });
     started.push({ app, child, distDir, dir });
   }
-  for (const { app, child } of started) await waitForHttp(urls[app], child);
+  try {
+    for (const { app, child } of started) await waitForHttp(urls[app], child);
+  } catch (error) {
+    // No `close` is handed back to stop them: a Next left running outlives the worker.
+    for (const { child } of started) await stopProcess(child);
+    for (const { dir, distDir } of started) await rm(`${dir}${distDir}`, { recursive: true, force: true });
+    throw error;
+  }
 
   let runnerStopped = false;
   const stopCloudBrowser = async () => {

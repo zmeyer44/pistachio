@@ -7,7 +7,9 @@
  *   mark the tabs whose windows are out, and the one in use.
  * - The sidebar's desk button opens the desk's card, and its context row the
  *   Stack's (`card`): the desk draws them, over its own windows, beside the
- *   button that opened them (`anchor`, in the window's coordinates).
+ *   button that opened them (`anchor`, in the window's coordinates). The
+ *   live share's card is drawn the same way, opened by its entries and the
+ *   Live pill beside the shared space's tile (lib/live/actions.ts).
  * - The sidebar says which of the group's rows is under the pointer
  *   (`hovered`): ⇧⌫ closes that tab, wherever the keyboard is.
  * - The desk says which tab its agent is working in (`agentTab`), for that
@@ -47,7 +49,8 @@ export interface DeskDockLit {
 }
 
 export interface DeskCard {
-  kind: "more" | "stack";
+  /** The desk's (More), the Stack's, or the live share's (components/live/LiveCard.tsx: opened by its entries and the Live pill, not a sidebar button). */
+  kind: "more" | "stack" | "live";
   anchor: DeskAnchor;
   /** Opened by a click: it stays until a press elsewhere or Escape (the More card otherwise goes once the pointer leaves). */
   pinned: boolean;

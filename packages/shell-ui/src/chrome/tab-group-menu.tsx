@@ -3,6 +3,7 @@ import { Columns2, Pencil, Plus, Ungroup, X } from "lucide-react";
 import { DEFAULT_TAB_GROUP_TITLE, type TabGroupColor, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { shellApi } from "../api";
 import type { MenuEntry } from "../components/ContextMenu";
+import { liveSpaceEntries } from "../components/live/menu-entries";
 import { useAppStore } from "../store";
 import { deskAvailable, splitAvailable } from "../lib/desk/open";
 
@@ -104,6 +105,8 @@ export function useTabGroupMenu(options: {
       icon: <Plus aria-hidden="true" />,
       onSelect: () => void tabGroupCommand({ type: "newTab", groupId: group.id }),
     },
+    // Share live… (or, shared, its card and Stop sharing live): the desktop's (docs/live-share.md §1).
+    ...liveSpaceEntries(group.id),
     ...(splitAvailable()
       ? [
           {

@@ -1,0 +1,304 @@
+/*
+ * The live-host window's overlay (LiveHostOverlay.tsx, docs/live-share.md §1
+ * "On the desk while live"), over `@pistachio/live-share/styles.css`'s tokens
+ * and layers. The window is transparent and composites over the whole
+ * browser window, so nothing here paints where nothing is drawn: no ground,
+ * no full-window layer that repaints, nothing that animates for good, and
+ * the pointer passes through all of it but the pill and the faces (main lets
+ * the window take the pointer only over those, and while the host draws).
+ * Nor is there glass: behind this window's own pixels is nothing of its own
+ * to blur (the browser's is another window), so a backdrop filter shows no
+ * glass and costs a pass — its surfaces are a near-solid translucent fill.
+ */
+
+body[data-chrome-view="live-host"] {
+  overflow: hidden;
+}
+
+/* The scheme follows the browser's own theme (ThemeRuntime), not the system's. */
+.live-host {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  font-family: var(--lv-font);
+  color: var(--lv-text);
+}
+:root[data-color-scheme="dark"] .live-host {
+  color-scheme: dark;
+}
+:root[data-color-scheme="light"] .live-host {
+  color-scheme: light;
+}
+
+/* The shared desk's own marks: not drawn over another space. */
+.live-host-desk {
+  position: absolute;
+  inset: 0;
+}
+.live-host-desk[data-away] {
+  visibility: hidden;
+}
+.live-host-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+/* The windows' own marks, under the browser's surfaces over the desk: WindowMarks clips it to what they leave. */
+.live-host-marks {
+  position: absolute;
+  inset: 0;
+}
+
+/* A window guests may use: a thin line just outside its frame, the name of whoever used it last on its top edge. */
+.live-host-outline {
+  --live-outline-color: var(--lv-live);
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border-radius: calc(var(--radius-md, 8px) + 2px);
+  box-shadow:
+    0 0 0 1.5px var(--live-outline-color),
+    0 0 0 5px color-mix(in oklab, var(--live-outline-color) 16%, transparent);
+  will-change: transform;
+}
+.live-host-outline:not([data-used]) {
+  box-shadow: 0 0 0 1.5px color-mix(in oklab, var(--live-outline-color) 70%, transparent);
+}
+.live-host-outline-label {
+  position: absolute;
+  top: 0;
+  left: 14px;
+  max-width: 200px;
+  overflow: hidden;
+  padding: 2px 8px 2.5px;
+  border-radius: 7px 7px 0 0;
+  background: var(--live-outline-color);
+  color: #fff;
+  font: 600 11px/1.3 var(--lv-font);
+  letter-spacing: -0.005em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(-100%);
+}
+.live-host-outline[data-inside] .live-host-outline-label {
+  border-radius: 0 0 7px 7px;
+  transform: none;
+}
+.live-host-outline:not([data-used]) .live-host-outline-label {
+  background: color-mix(in oklab, var(--live-outline-color) 85%, black);
+  font-weight: 500;
+}
+
+/* The Live pill, at the top centre of the stage. */
+.live-host-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--lv-glass-strong);
+  box-shadow: var(--lv-shadow-pop);
+  pointer-events: auto;
+  user-select: none;
+  animation: live-host-in var(--lv-slow) var(--lv-ease) both;
+}
+.live-host-pill button {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lv-text);
+  cursor: pointer;
+  transition:
+    background-color var(--lv-fast) ease,
+    transform var(--lv-fast) var(--lv-ease);
+}
+.live-host-pill button:hover {
+  background: var(--lv-hover);
+}
+.live-host-pill button:active {
+  transform: scale(0.96);
+}
+.live-host-pill-open {
+  gap: 7px;
+  padding: 0 10px 0 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.live-host-pill-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lv-live);
+}
+/* Three rings as it comes (live, or someone came or went: LivePill keys it), then still. */
+.live-host-pill-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: var(--lv-live);
+  opacity: 0;
+  animation: live-host-beat 1.8s ease-in-out 3;
+}
+.live-host-pill:not([data-connection="connected"]) .live-host-pill-dot {
+  background: var(--lv-text-3);
+}
+.live-host-pill:not([data-connection="connected"]) .live-host-pill-dot::after {
+  animation: none;
+}
+.live-host-pill-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 8px;
+  margin-left: 1px;
+  border-left: 1px solid var(--lv-hairline);
+  color: var(--lv-text-2);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.live-host-pill-count svg {
+  width: 13px;
+  height: 13px;
+}
+.live-host-pill-stop {
+  justify-content: center;
+  width: 26px;
+  color: var(--lv-off) !important;
+}
+.live-host-pill-stop:hover {
+  background: var(--lv-off-face) !important;
+}
+.live-host-pill-stop svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* The shared pieces' glass (the faces' fold and names) as a fill here, as the pill's. */
+.live-host :is(.lv-faces-fold, .lv-face-name) {
+  background: var(--lv-glass-strong);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The faces: where they were let go, along the stage's edge. */
+.live-host-faces {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.live-host-faces:not([data-dragging]) {
+  transition: transform var(--lv-slow) var(--lv-ease);
+}
+.live-host-faces[data-dragging] {
+  cursor: grabbing;
+}
+.live-host-faces .lv-faces {
+  --lv-face-size: 52px;
+}
+.live-host-faces .lv-faces-list {
+  gap: 10px;
+}
+/* On the left edge the names hang to the right. */
+.live-host-faces[data-edge="left"] .lv-face-name {
+  right: auto;
+  left: calc(100% + 10px);
+  translate: -4px -50%;
+}
+.live-host-faces[data-edge="left"] .lv-face:hover .lv-face-name {
+  translate: 0 -50%;
+}
+.live-host-face-control {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: oklch(1 0 0 / 0.16);
+  color: #fff;
+  cursor: pointer;
+  transition: background-color var(--lv-fast) ease;
+}
+.live-host-face-control:hover {
+  background: oklch(1 0 0 / 0.3);
+}
+.live-host-face-control[data-danger]:hover {
+  background: var(--lv-danger);
+}
+.live-host-face-control svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* While the host draws: how to stop, under the pill. */
+.live-host-draw-hint {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--lv-glass-strong);
+  box-shadow:
+    inset 0 0 0 0.5px var(--lv-glass-edge),
+    var(--lv-shadow-float);
+  color: var(--lv-text-2);
+  font-size: 12px;
+  white-space: nowrap;
+  animation: live-host-in var(--lv-slow) var(--lv-ease) both;
+}
+.live-host-draw-hint kbd {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--lv-field);
+  color: var(--lv-text);
+  font: 500 11px/1.5 var(--lv-mono);
+}
+
+@keyframes live-host-in {
+  from {
+    opacity: 0;
+    scale: 0.94;
+  }
+}
+@keyframes live-host-beat {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(1.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-host-pill,
+  .live-host-draw-hint {
+    animation: none;
+  }
+  .live-host-pill-dot::after {
+    animation: none;
+  }
+  .live-host-faces:not([data-dragging]) {
+    transition: none;
+  }
+}

@@ -540,6 +540,8 @@ describe("the Drawer frame", () => {
     await flush();
     expect(out("tab-0")).toBe(1);
     expect(page("tab-0")).toEqual({ x: top.x, y: DRAWER_H, width: top.w, height: top.h - DRAWER_H });
+    // A live share is told the same: its page only as far down as it is shown, so its picture takes in nothing below it.
+    expect(desk.liveGeometry().windows.find((window) => window.id === "tab-0")!.page).toEqual({ x: top.x, y: DRAWER_H, w: top.w, h: top.h - DRAWER_H });
     // The window below it: live, never under the one above.
     expect(desk.getView().windows.find((window) => window.tabId === "tab-1")!.drawn).toBe(false);
     expect(page("tab-1")).toEqual({ x: below.x, y: below.y, width: below.w, height: below.h });

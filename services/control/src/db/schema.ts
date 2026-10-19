@@ -892,3 +892,90 @@ export const syncPolicyOverrides = pgTable(
   },
   (t) => [primaryKey({ columns: [t.userId, t.host] })],
 );
+
+/**
+ * Live share (docs/live-share.md §5): one space of a Mac's desk, shared with
+ * whoever holds the link. The link token is the capability, so only its
+ * SHA-256 is kept; a request's secret likewise. Media and data never come
+ * near control — these rows are the lobby (who knocked, who is in) and the
+ * share's life, nothing else.
+ */
+export type LiveAdmission = "ask" | "open";
+export type LiveShareStatus = "live" | "ended";
+/**
+ * A request's own status. "Ended" is not one of them: when the share ends,
+ * every request reads `ended` from the share, and the rows are left as they
+ * were.
+ */
+export type LiveRequestStatus = "pending" | "admitted" | "denied" | "removed" | "left";
+
+export const liveShares = pgTable(
+  "live_shares",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    deviceId: uuid("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    room: text("room").notNull(),
+    title: text("title").notNull(),
+    hostName: text("host_name"),
+    admission: text("admission").$type<LiveAdmission>().notNull(),
+    status: text("status").$type<LiveShareStatus>().notNull(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
+    /** The last heartbeat; the sweep ends a share that has been silent too long. */
+    hostSeenAt: timestamptz("host_seen_at").notNull(),
+    /** When the host's last LiveKit token runs out, so a heartbeat knows when to mint the next. */
+    hostTokenExpiresAt: timestamptz("host_token_expires_at").notNull(),
+    endedAt: timestamptz("ended_at"),
+    /**
+     * While the ended share's room is still to close, when control next asks
+     * LiveKit to close it: set as the share ends, put off by each try, and
+     * cleared only once LiveKit has deleted the room or says it has none
+     * (§5). Null on a live share and once the room is closed.
+     */
+    roomCloseDueAt: timestamptz("room_close_due_at"),
+    /** How many times control has asked LiveKit to close the room; each try waits longer for the next. */
+    roomCloseAttempts: integer("room_close_attempts").notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex("live_shares_token_hash_idx").on(t.tokenHash),
+    index("live_shares_user_status_idx").on(t.userId, t.status),
+    index("live_shares_room_close_idx")
+      .on(t.roomCloseDueAt)
+      .where(sql`${t.roomCloseDueAt} is not null`),
+    check("live_shares_admission_check", sql`${t.admission} in ('ask', 'open')`),
+    check("live_shares_status_check", sql`${t.status} in ('live', 'ended')`),
+  ],
+);
+
+/** One knock on a share's link, and what became of it. Its id is the guest's LiveKit identity (`g_<id>`). */
+export const liveRequests = pgTable(
+  "live_requests",
+  {
+    id: text("id").primaryKey(),
+    shareId: uuid("share_id")
+      .notNull()
+      .references(() => liveShares.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    secretHash: text("secret_hash").notNull(),
+    color: text("color").notNull(),
+    status: text("status").$type<LiveRequestStatus>().notNull(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    decidedAt: timestamptz("decided_at"),
+    /**
+     * An admitted guest the sweep found missing from the room, since when;
+     * null while they are in it or have taken a token since. Missing again a
+     * while on, they went without leaving and are `left` (§5).
+     */
+    absentSince: timestamptz("absent_since"),
+  },
+  (t) => [
+    index("live_requests_share_status_idx").on(t.shareId, t.status),
+    check("live_requests_status_check", sql`${t.status} in ('pending', 'admitted', 'denied', 'removed', 'left')`),
+  ],
+);

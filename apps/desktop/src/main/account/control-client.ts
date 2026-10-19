@@ -255,6 +255,36 @@ export interface ControlIMessageChallenge {
   expiresAt: string;
 }
 
+/** A live share as control answers it (docs/live-share.md §5). */
+export interface ControlLiveShare {
+  id: string;
+  title: string;
+  hostName: string | null;
+  admission: "ask" | "open";
+  status: "live" | "ended";
+  room: string;
+  createdAt: string;
+  endedAt: string | null;
+}
+
+/** The host's way into the share's LiveKit room. */
+export interface ControlLiveHostAccess {
+  url: string;
+  token: string;
+  room: string;
+  identity: string;
+}
+
+/** Someone who asked to join, as the share lists them: its pending knocks, and the guests it let in. */
+export interface ControlLiveKnock {
+  requestId: string;
+  identity: string;
+  name: string;
+  color: string;
+  status: string;
+  createdAt: string;
+}
+
 /** A non-2xx answer, with control's error code when it sent one. */
 export class ControlError extends Error {
   readonly status: number;
@@ -933,6 +963,40 @@ export class ControlClient {
 
   async deleteChannel(linkId: string): Promise<void> {
     await this.#request("DELETE", `/v1/channels/${encodeURIComponent(linkId)}`);
+  }
+
+  /* ------------------------------- live share ------------------------------- */
+  // docs/live-share.md §5. Host routes take a device token, an anonymous account's included.
+
+  /** A new live share of a space; this device's previous one ends with it. */
+  createLiveShare(input: { title: string; hostName?: string }): Promise<{ share: ControlLiveShare; link: string; livekit: ControlLiveHostAccess }> {
+    return this.#request("POST", "/v1/live/shares", input);
+  }
+
+  /** The share, the knocks waiting on it, and the guests let in (a control older than the list sends none). */
+  liveShare(shareId: string): Promise<{ share: ControlLiveShare; knocks: ControlLiveKnock[]; admitted?: ControlLiveKnock[] }> {
+    return this.#request("GET", `/v1/live/shares/${encodeURIComponent(shareId)}`);
+  }
+
+  updateLiveShare(shareId: string, patch: { admission?: "ask" | "open"; title?: string }): Promise<{ share: ControlLiveShare }> {
+    return this.#request("PATCH", `/v1/live/shares/${encodeURIComponent(shareId)}`, patch);
+  }
+
+  /** The share is still hosted; a fresh host token comes back when the old one is near its end, or when `ask` asks for one. */
+  liveShareHeartbeat(shareId: string, ask?: { refresh: boolean }): Promise<{ share: ControlLiveShare; livekit?: ControlLiveHostAccess }> {
+    return this.#request("POST", `/v1/live/shares/${encodeURIComponent(shareId)}/heartbeat`, ask);
+  }
+
+  async decideLiveRequest(shareId: string, requestId: string, decision: "admit" | "deny"): Promise<void> {
+    await this.#request("POST", `/v1/live/shares/${encodeURIComponent(shareId)}/requests/${encodeURIComponent(requestId)}`, { decision });
+  }
+
+  async removeLiveParticipant(shareId: string, identity: string): Promise<void> {
+    await this.#request("POST", `/v1/live/shares/${encodeURIComponent(shareId)}/participants/${encodeURIComponent(identity)}/remove`);
+  }
+
+  async endLiveShare(shareId: string): Promise<void> {
+    await this.#request("DELETE", `/v1/live/shares/${encodeURIComponent(shareId)}`);
   }
 
   /* ---------------------------------- cloud --------------------------------- */

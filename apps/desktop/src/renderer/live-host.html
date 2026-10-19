@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      The live share's room (main/live/live-host-window.ts), on the renderer's
+      own bundle (main.tsx mounts LiveHostApp for the #live-host hash). Its
+      policy is the shell's (index.html) with 'wasm-unsafe-eval' added: the
+      host camera's background runs MediaPipe's segmenter, which is
+      WebAssembly, served from this page's own origin. No other page of the
+      app may compile WebAssembly, so this page is its own document.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: data: https: http://127.0.0.1:*; connect-src 'self' https: wss: http://127.0.0.1:* ws://127.0.0.1:*"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pistachio Live</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

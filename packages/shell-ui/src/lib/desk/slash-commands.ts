@@ -24,6 +24,8 @@ export type BarCommandId =
   | "tidy"
   | "remember"
   | "screenshot"
+  | "share"
+  | "draw"
   | "note"
   | "brief"
   | "terminal";
@@ -177,6 +179,27 @@ export const BAR_COMMANDS: readonly BarCommand[] = [
     aliases: ["capture"],
     keywords: ["picture", "image", "snap", "clipboard", "grab"],
     description: "Take a screenshot of the desk",
+    group: "Desk",
+    arg: null,
+    kind: "action",
+  },
+  {
+    // (docs/live-share.md §1: shared already, it shows the Live card.)
+    id: "share",
+    name: "share",
+    aliases: ["live"],
+    keywords: ["invite", "guests", "call", "pair", "together", "collaborate"],
+    description: "Share this space live with a link",
+    group: "Desk",
+    arg: null,
+    kind: "action",
+  },
+  {
+    id: "draw",
+    name: "draw",
+    aliases: ["pen", "ink"],
+    keywords: ["annotate", "highlighter", "laser", "sketch", "mark up"],
+    description: "Draw over the desk while it's shared live",
     group: "Desk",
     arg: null,
     kind: "action",

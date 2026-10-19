@@ -100,6 +100,7 @@ export interface HarnessOptions {
   imessage?: CreateAppOptions["imessage"];
   sse?: CreateAppOptions["sse"];
   ai?: CreateAppOptions["ai"];
+  livekit?: CreateAppOptions["livekit"];
   /** Pass `null` to attach a real hub later instead of the fake. */
   hub?: FakeHub | null;
   db?: Db;
@@ -133,6 +134,7 @@ export async function makeHarness(options: HarnessOptions = {}): Promise<Harness
     ...(options.imessage === undefined ? {} : { imessage: options.imessage }),
     ...(options.sse === undefined ? {} : { sse: options.sse }),
     ...(options.ai === undefined ? {} : { ai: options.ai }),
+    ...(options.livekit === undefined ? {} : { livekit: options.livekit }),
   });
   return {
     db,

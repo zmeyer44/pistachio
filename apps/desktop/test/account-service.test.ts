@@ -248,6 +248,8 @@ function fakeControl(): FakeControl {
     if (method === "GET" && path === "/v1/me")
       return json({ userId: "user-1", email: "pat@example.com", hubUrl: "ws://hub.test/v1/hub/ws", cloudBrowserUrl: "http://cloud.test", egress: null, features: {} });
     if (method === "GET" && path === "/v1/devices") return json({ devices: [...state.devices, ...(state.cloudDevice === null ? [] : [state.cloudDevice])] });
+    const revokeMatch = /^\/v1\/devices\/([^/]+)\/revoke$/.exec(path);
+    if (method === "POST" && revokeMatch !== null) return json({ revoked: true, affectedOrigins: [] });
     if (method === "POST" && path === "/v1/cloud/enable") return json({ device: state.cloudDevice });
     if (method === "POST" && path === "/v1/cloud/disable") return new Response(null, { status: 204 });
     return json({ error: "not_found" }, 404);
@@ -299,6 +301,10 @@ interface Harness {
   control: FakeControl;
   states: Array<{ state: string; cloudDeviceChanged: unknown; revoked: boolean }>;
   events: string[];
+  /** Each time the account was about to leave the Mac, the token the client spoke with then… */
+  leaving: Array<string | null>;
+  /** …and how many requests had gone to control by then. */
+  leavingAt: number[];
 }
 
 async function harness(control = fakeControl(), options: { anonymousAccounts?: boolean; now?: () => number } = {}): Promise<Harness> {
@@ -307,7 +313,9 @@ async function harness(control = fakeControl(), options: { anonymousAccounts?: b
   const spaces = new SpaceStore(dir);
   const states: Harness["states"] = [];
   const events: string[] = [];
-  const auth = new AuthService({
+  const leaving: Array<string | null> = [];
+  const leavingAt: number[] = [];
+  const auth: InstanceType<typeof AuthService> = new AuthService({
     store,
     spaces,
     controlUrl: "http://control.test",
@@ -320,8 +328,12 @@ async function harness(control = fakeControl(), options: { anonymousAccounts?: b
       events.push(`signed-out:${reason}`);
     },
     onTokenChanged: () => events.push("token"),
+    beforeAccountChange: async () => {
+      leaving.push(auth.controlClient().token());
+      leavingAt.push(control.calls.length);
+    },
   });
-  return { auth, store, spaces, control, states, events };
+  return { auth, store, spaces, control, states, events, leaving, leavingAt };
 }
 
 describe("signIn", () => {
@@ -672,6 +684,33 @@ describe("signOut and revocation", () => {
     expect(auth.enrolled()).toBe(false);
   });
 
+  it("lets go of what the account holds in control before it signs out, while its token still speaks for it", async () => {
+    const { auth, store, leaving } = await harness();
+    await auth.signUp("pat@example.com", PASSWORD);
+    await auth.enroll();
+    const token = store.enrollment().token;
+    expect(leaving).toEqual([null]); // (the sign-up's: nobody's token was held)
+    await auth.signOut();
+    expect(leaving).toEqual([null, token]);
+  });
+
+  it("lets go of what the account holds in control before revoking this Mac, not before revoking another device", async () => {
+    const { auth, control, store, leaving, leavingAt } = await harness();
+    await auth.signUp("pat@example.com", PASSWORD);
+    await auth.enroll();
+    leaving.length = 0;
+    leavingAt.length = 0;
+    await auth.revokeDevice("another-device");
+    expect(leaving).toEqual([]);
+    const token = store.enrollment().token;
+    await auth.revokeDevice(store.deviceId);
+    expect(leaving).toEqual([token]);
+    // Before the revoke went out: once it is done, control refuses that token.
+    const revoke = control.calls.findIndex((call) => call.path === `/v1/devices/${store.deviceId}/revoke`);
+    expect(revoke).toBeGreaterThanOrEqual(0);
+    expect(leavingAt).toEqual([revoke]);
+  });
+
   it("lists devices with this Mac and the pinned cloud device marked", async () => {
     const control = fakeControl();
     control.cloudDevice = (await cloudDevice("cloud-1")).record;
@@ -870,12 +909,29 @@ describe("anonymous accounts", () => {
     expect(await auth.getModelToken()).toBe(token);
   });
 
-  it("enrolls afresh when the link is refused", async () => {
+  it("keeps what the anonymous account holds in control through a sign-up, a wrong password and a link: it stays this Mac's", async () => {
+    const upgraded = await harness(fakeControl(), { anonymousAccounts: true });
+    await upgraded.auth.ensureAnonymous();
+    await upgraded.auth.signUp("pat@example.com", PASSWORD);
+    expect(upgraded.leaving).toEqual([]);
+
+    const linked = await harness(fakeControl(), { anonymousAccounts: true });
+    await linked.auth.ensureAnonymous();
+    await expect(linked.auth.signIn("pat@example.com", "not-it")).rejects.toThrow();
+    await linked.auth.signIn("pat@example.com", PASSWORD);
+    expect(linked.leaving).toEqual([]);
+  });
+
+  it("enrolls afresh when the link is refused, letting go first of what the anonymous account holds, under its own token", async () => {
     const control = fakeControl();
     control.faults.push({ method: "POST", path: "/v1/account/link", times: 1, status: 409, body: { error: "not_anonymous" } });
-    const { auth, store } = await harness(control, { anonymousAccounts: true });
+    const { auth, store, leaving } = await harness(control, { anonymousAccounts: true });
     await auth.ensureAnonymous();
+    const anonymousToken = store.enrollment().token;
     await auth.signIn("pat@example.com", PASSWORD);
+    expect(leaving).toEqual([anonymousToken]);
+    // And the client speaks for the account signed in to again.
+    expect(auth.controlClient().token()).toBe(store.enrollment().bootstrapToken);
     expect(store.enrollment()).toMatchObject({ state: "signed-up", token: null });
     expect(store.enrollment().bootstrapToken).not.toBeNull();
     expect((await auth.enroll()).state.state).toBe("enrolled");

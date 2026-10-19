@@ -14,6 +14,7 @@ import {
   NOTICE_LIMIT,
   NOTICE_PEEK,
   noticeSpreadLift,
+  type NoticeAlign,
   type NoticeEdge,
   type NoticeItem,
   type NoticeTone,
@@ -200,4 +201,61 @@ function footPose(card: StackCard, spread: boolean, heights: readonly number[]):
       // The front card closes over the one coming forward; one further back closes under the rest.
       return closedPose(restingPose(card.depth, spread, heights), card.depth === 0 ? NOTICE_LIMIT + 1 : 0);
   }
+}
+
+/* -------------------------------- footprint ------------------------------ */
+
+/** A box in the stack's layer (the notice view's page), CSS px. */
+export interface NoticeBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * How long a move of the cards takes to come to rest: the open transition
+ * (shell.css --notice-open, 350 ms — longer than the close), and a frame.
+ */
+export const NOTICE_SETTLE_MS = 370;
+/** Room kept round the cards for their edge ring (the card's 1px shadow) and its antialiasing. */
+const FOOTPRINT_PAD = 2;
+
+/**
+ * Where the stack's cards are drawn in its layer, or null with none: the
+ * stack's own box (`stack`, as laid out, which stands every live card
+ * whether spread or not), as tall as its tallest card if that is taller (a
+ * leaving card stands in a box of the live ones, none when it was the
+ * last), and as wide as its widest, set to its side the way the cards are.
+ * While the cards move (`moving`) it reaches past that toward the stack's
+ * edge as far as a card comes and goes from (NOTICE_DISTANCE: closed is that
+ * far toward the edge), and away from it a peek more, where the card pushed
+ * off the back fades. Their transforms only ever shrink a card about a point
+ * of its own box, so no card is drawn past its layout box but by these.
+ */
+export function stackFootprint(
+  stack: NoticeBox,
+  cards: { widest: number; tallest: number },
+  edge: NoticeEdge,
+  align: NoticeAlign,
+  moving: boolean,
+): NoticeBox | null {
+  if (cards.widest <= 0 || cards.tallest <= 0) return null;
+  const w = Math.min(stack.w, cards.widest);
+  const x = align === "left" ? stack.x : align === "right" ? stack.x + stack.w - w : stack.x + (stack.w - w) / 2;
+  const h = Math.max(stack.h, cards.tallest);
+  // (The box at the edge it stands on: the foot for a stack at the foot, the top for one at the top.)
+  const y = edge === "bottom" ? stack.y + stack.h - h : stack.y;
+  const toward = moving ? NOTICE_DISTANCE : 0;
+  const away = moving ? NOTICE_PEEK : 0;
+  const top = edge === "bottom" ? y - away : y - toward;
+  const bottom = edge === "bottom" ? y + h + toward : y + h + away;
+  return { x: x - FOOTPRINT_PAD, y: top - FOOTPRINT_PAD, w: w + FOOTPRINT_PAD * 2, h: bottom - top + FOOTPRINT_PAD * 2 };
+}
+
+/** The least box holding both. */
+export function unionBox(a: NoticeBox, b: NoticeBox): NoticeBox {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
 }

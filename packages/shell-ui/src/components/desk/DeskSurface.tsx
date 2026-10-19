@@ -19,6 +19,8 @@ import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
 import type { DockItem, DockRailItem, DockTargets } from "../../lib/desk/dock-drop";
 import type { Rect } from "../../lib/desk/geometry";
 import { isHomeSpace, roomForSpace } from "../space-rail/rail-model";
+import { useLiveDeskReport } from "../live/useLiveDeskReport";
+import { useLiveShareHost } from "../live/useLiveShareHost";
 import { deskGroups, groupPageOf, passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import { GlanceOverlay, type GlanceDesk } from "../GlanceOverlay";
@@ -559,6 +561,11 @@ export default function DeskSurface() {
     lendDeskEngine(engine);
     return () => lendDeskEngine(null);
   }, [engine]);
+
+  // A live share (docs/live-share.md §6.4): its state and notices while the desk is up, and the shared space's desk
+  // reported to main from the engine — per frame, never through React.
+  useLiveShareHost();
+  useLiveDeskReport(engine, contexts);
 
   // The keyboard's Tile, Cascade and Arrange (chrome/actions.tsx) reach this desk's engine: Tile and Cascade are named
   // layouts (layOut, ⌃Z putting them back a moment after), Arrange the layout model's.

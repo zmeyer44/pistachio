@@ -60,7 +60,7 @@ describe("what the menu offers", () => {
   });
 
   it("puts names that start so first, then the names they go by", () => {
-    expect(names("s")).toEqual(["search", "summarize", "screenshot"]);
+    expect(names("s")).toEqual(["search", "summarize", "screenshot", "share"]);
     expect(names("goo")).toEqual(["search"]);
     expect(names("TL")[0]).toBe("summarize");
   });

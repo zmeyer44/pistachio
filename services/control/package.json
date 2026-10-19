@@ -25,6 +25,7 @@
     "better-auth": "1.7.1",
     "drizzle-orm": "^0.44.0",
     "hono": "^4.7.0",
+    "livekit-server-sdk": "2.19.1",
     "postgres": "^3.4.0",
     "ws": "^8.18.0",
     "zod": "^4.4.3"

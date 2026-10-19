@@ -7,9 +7,12 @@ import { useDeskChrome } from "../../lib/desk/chrome";
 import { useGroupContexts } from "../../lib/desk/group-context";
 import { NEW_SPACE_EVENT, newSpace, selectSpace } from "../../lib/desk/open";
 import { groupPageOf } from "../../lib/desk/store";
+import { sharedSpace } from "../../lib/live/entries";
+import { useLiveShare } from "../../lib/live/store";
 import { useAppStore } from "../../store";
 import { useContextMenu } from "../ContextMenu";
 import { RailNowPlaying } from "../desk/DeskNowPlaying";
+import { LiveMark, liveMarkLabel } from "../live/LiveMark";
 import { DeskMoreButton, DeskRailToggle } from "../desk/DeskSidebarControls";
 import { SidebarRailContext } from "../sidebar-rail";
 import { FaviconCluster, type ClusterTab } from "../TabGroupRow";
@@ -19,6 +22,7 @@ import { renameSpace } from "./column-state";
 import {
   dayUnitsOf,
   HOME_VIEW,
+  isHomeSpace,
   railCarryAt,
   railCarryHome,
   railCarryShifts,
@@ -79,6 +83,11 @@ export function SpaceRail({
   // layer holds the pointer then, and the rail hears no hover of its own).
   const deskDrop = useDeskChrome((state) => (state.dockDrop !== null && state.dockDrop.item !== "card" ? state.dockDrop : null));
   const moving = useRailMove(spaces.map((space) => space.group.id).join(" "));
+  // The space shared live wears the live mark (docs/live-share.md §1): its tile, or Home for a Home tab's.
+  const shared = useLiveShare(sharedSpace);
+  const guests = useLiveShare((state) => state.participants.length);
+  const homeShared = useAppStore((state) => shared !== null && isHomeSpace(shared, state.snapshot));
+  const liveNote = ` · ${liveMarkLabel(guests)}`;
   const mergingInto = moving.carry?.kind === "merge" ? moving.carry.into : null;
   /** A carried tile's own place: following the pointer (a hair larger, or shrunk over a tile it would merge into), or on its way where it was let go. */
   const carriedStyle = (): CSSProperties =>
@@ -124,14 +133,16 @@ export function SpaceRail({
         data-rail-key={HOME_VIEW}
         data-rail-drop="home"
         data-dropping={railDrop?.target === "home" || deskDrop?.item === "home" ? "" : undefined}
-        aria-label="Home"
+        aria-label={homeShared ? `Home${liveNote}` : "Home"}
         aria-current={view === HOME_VIEW ? "true" : undefined}
-        title="Home"
+        title={homeShared ? `Home${liveNote}` : "Home"}
+        data-live={homeShared ? "" : undefined}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => void chooseHome()}
         className="space-rail-home no-drag"
       >
         <House aria-hidden="true" />
+        {homeShared ? <LiveMark /> : null}
       </button>
       <span className="space-rail-rule" aria-hidden="true" />
       {/* (Out of the window's drag region, as the single sidebar's list was: a press between its tiles is the list's.) */}
@@ -142,6 +153,7 @@ export function SpaceRail({
           const count = members.length;
           const windows = count === 0 ? "No windows" : `${String(count)} ${count === 1 ? "window" : "windows"}`;
           const stack = count === 0 ? (contexts.find((context) => context.groupId === space.group.id)?.items.length ?? 0) : 0;
+          const live = shared === space.group.id;
           return (
             <button
               key={space.group.id}
@@ -163,9 +175,10 @@ export function SpaceRail({
               data-merging={mergingInto === space.group.id ? "" : undefined}
               data-moving={moving.id === space.group.id && moving.settling === null ? "" : undefined}
               data-settling={moving.id === space.group.id && moving.settling !== null ? moving.settling : undefined}
-              aria-label={`${name}, ${windows}`}
+              data-live={live ? "" : undefined}
+              aria-label={`${name}, ${windows}${live ? liveNote : ""}`}
               aria-current={view === space.group.id ? "true" : undefined}
-              title={`${name} · ${windows}`}
+              title={`${name} · ${windows}${live ? liveNote : ""}`}
               style={
                 moving.id === space.group.id
                   ? carriedStyle()
@@ -189,6 +202,7 @@ export function SpaceRail({
               className="space-rail-tile tab-group-tone no-drag"
             >
               <FaviconCluster tabs={members} stack={stack} />
+              {live ? <LiveMark /> : null}
             </button>
           );
         })}

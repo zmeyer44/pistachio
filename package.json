@@ -5,6 +5,7 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "dev:ready": "node scripts/dev-ready.mjs",
+    "dev:livekit": "node scripts/livekit-dev.mjs",
     "lint": "turbo run lint",
     "test": "turbo run test --concurrency=1",
     "test:e2e": "pnpm --filter @pistachio/desktop test:e2e",

@@ -8,7 +8,9 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import {
   app,
+  BaseWindow,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -22,7 +24,7 @@ import {
   shell,
   systemPreferences,
   type WebContents,
-  type WebContentsView,
+  WebContentsView,
 } from "electron";
 import {
   NotificationRouter,
@@ -42,7 +44,7 @@ import { NoteStore } from "./note-store";
 import { ThreadStore } from "./thread-store";
 import { VaultService } from "./account/vault-service";
 import { IntegrationService } from "./account/integration-service";
-import { ChromeOverlayView } from "./chrome-view";
+import { ChromeOverlayView, loadChromePage } from "./chrome-view";
 import { NoticeLayer } from "./notice-layer";
 import { PointerZoneWatch } from "./pointer-zone-watch";
 import { Screenshots } from "./screenshots";
@@ -108,6 +110,12 @@ import { WorkspaceRecords } from "./sync/records";
 import { DeskBridge } from "./desk-bridge";
 import { DeskGlass } from "./desk-glass";
 import { DeskPipPress } from "./desk-pip-press";
+import { liveBrowser } from "./live/live-browser";
+import { liveControl, LiveUnavailableError } from "./live/live-control";
+import { LiveHostWindow } from "./live/live-host-window";
+import { macHostName } from "./live/live-host-name";
+import { watchLivePresence } from "./live/live-presence";
+import { LiveShareService } from "./live/live-service";
 import { DeskConversationStore } from "./desk-conversations";
 import { GroupContextStore } from "./group-context-store";
 import { macDocumentConverter } from "./document-convert";
@@ -132,7 +140,7 @@ import {
   pointerHoldsSidebar,
   SIDEBAR_DESK_TRIGGER_W,
 } from "@pistachio/shell-contracts/chrome";
-import { EMPTY_NOTICE_STACK, isNoticeEvent, isNoticeFrame } from "@pistachio/shell-contracts/notice";
+import { EMPTY_NOTICE_STACK, isNoticeEvent, isNoticeFootprint, isNoticeFrame } from "@pistachio/shell-contracts/notice";
 import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import {
   IPC,
@@ -227,7 +235,8 @@ import { isUpdateSnooze } from "@pistachio/shell-contracts/updates";
 import { renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
 import { isScreenshotRequest } from "@pistachio/shell-contracts/screenshot";
-import { deskPipSlot, isDeskNotchFrame, isDeskNotchInput, isDeskNotchOutline, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
+import { idleLiveShare, isLiveCommand, isLiveDeskReport, isLiveHostReport } from "@pistachio/shell-contracts/live-share";
+import { deskPipSlot, isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
 import {
   isDeskConversationCommand,
   isGroupContextCommand,
@@ -370,9 +379,8 @@ let noticeLayer: NoticeLayer | null = null;
  */
 let notchLayer: ChromeOverlayView | null = null;
 let deskNotch: DeskNotchFrame | null = null;
-/** The window's own glass under the notch view (main/desk-glass.ts), and whether it lies there now. */
+/** The window's own glass under the notch view, the nub laid on it again (main/desk-glass.ts). */
 let deskGlass: DeskGlass | null = null;
-let deskNotchGlass = false;
 /** Whether a view stacked over the notch view lies over it (notchCovered): the glass steps aside meanwhile. */
 let deskNotchCovered = false;
 /** The desk's parked windows over the live pages under them, the same way (the "shelf" view). */
@@ -442,10 +450,21 @@ function applyDeskNotch(): void {
   if (rising) raiseDeskLayer(layer);
   // The glass lies over every view's page (they are all one layer, under all their NSViews), so where a view stacked
   // over this one lies over it — the drag layer as a drag goes, a toast — the glass would hide that view's page: it
-  // steps aside, and this view paints its stand-in under it, as the views are stacked (checkNotchCover).
+  // steps aside, and this view's stand-in shows meanwhile, as the views are stacked (checkNotchCover).
   deskNotchCovered = notchCovered();
-  deskNotchGlass = deskGlass?.sync(layer.bounds(), layer.onScreen, settings !== null && desktopGlassEnabled(settings.get()) && !deskNotchCovered) ?? false;
-  if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskNotchChanged, notchFrameForView());
+  deskGlass?.setFrame(deskNotch);
+  syncDeskGlass();
+  if (!layer.webContents.isDestroyed()) layer.webContents.send(IPC.deskNotchChanged, deskNotch);
+}
+
+/**
+ * The glass under the notch view as the view stands — and again as the window's display changes, with no word about
+ * the nub: the nub's picture paints at the display's scale and refresh rate (main/desk-glass.ts).
+ */
+function syncDeskGlass(): void {
+  const layer = notchLayer;
+  if (layer === null) return;
+  deskGlass?.sync(layer.bounds(), layer.onScreen, settings !== null && desktopGlassEnabled(settings.get()), deskNotchCovered);
 }
 
 /** Whether a view on screen stacked over the notch view lies over its box. */
@@ -477,10 +496,6 @@ function checkNotchCover(): void {
   });
 }
 
-/** The notch as the notch view is told it: with whether the window's glass lies under it. */
-function notchFrameForView(): DeskNotchFrame | null {
-  return deskNotch === null ? null : { ...deskNotch, nativeGlass: deskNotchGlass };
-}
 let bookmarkToastHeight = 104;
 const BOOKMARK_TOAST_WIDTH = 400;
 const BOOKMARK_TOAST_MARGIN = 4;
@@ -522,6 +537,10 @@ let watchtower: WatchtowerService | null = null;
 let terminals: TerminalService | null = null;
 /** Ad and tracker protection (docs/shields.md), made before the window so the first page is covered. */
 let shields: ShieldsService | null = null;
+/** This Mac's live share (docs/live-share.md §6.1): made with the browser's window, gone with it. */
+let liveShare: LiveShareService | null = null;
+/** The live share's host window, while a share is live. */
+let liveHost: LiveHostWindow | null = null;
 
 /**
  * Where an artifact link points. The web app renders an artifact out of the
@@ -1695,6 +1714,9 @@ async function initializeAccountServices(): Promise<void> {
       publishCloudStatus();
     },
     onSignedOut: async (reason) => {
+      // A live share ended as the account left (beforeAccountChange); a Mac control stopped honouring could tell control
+      // nothing, so its share stops here and control's sweep ends it (docs/live-share.md §5, §6.1).
+      void liveShare?.accountChanging();
       egressService.stop();
       // Await the drain: an apply already inside Electron's cookie API must
       // settle before the partition is wiped, or it recreates what we cleared.
@@ -1703,6 +1725,8 @@ async function initializeAccountServices(): Promise<void> {
       publishCloudStatus();
     },
     onTokenChanged: () => featureHandlers.lifecycle.onTokenChanged(),
+    // The share is the account's: it ends while the account's token still speaks for it (docs/live-share.md §6.1).
+    beforeAccountChange: () => liveShare?.accountChanging() ?? Promise.resolve(),
   });
   auth = authService;
   // Every model call the agent, memory, and read-aloud make goes to control
@@ -2015,6 +2039,8 @@ function flushPublish(): void {
   const runChanged = runPublishPending;
   // A terminal no tab names any more (its tab closed, or gone elsewhere) has its shell closed (docs/terminal.md §3).
   if (tabsChanged) terminals?.retain(browser.allTabs().flatMap((tab) => terminalUrlId(tab.url) ?? []));
+  // A live share ends with its space or its Profile, and follows its tabs (docs/live-share.md §6.1).
+  if (tabsChanged) liveShare?.refresh();
   tabsPublishPending = false;
   runPublishPending = false;
   if (!tabsChanged && !runChanged) return;
@@ -2257,6 +2283,8 @@ async function createWindow(): Promise<void> {
   shellWindow = window;
   const preload = join(currentDir, "../preload/index.cjs");
   const tabPreload = join(currentDir, "../preload/tab.cjs");
+  const rendererUrl = process.env["ELECTRON_RENDERER_URL"];
+  const rendererFile = join(currentDir, "../renderer/index.html");
   const dragView = new ChromeOverlayView(window, {
     id: "drag",
     preload,
@@ -2283,7 +2311,49 @@ async function createWindow(): Promise<void> {
     placed: checkNotchCover,
   });
   notchLayer = notchView;
-  deskGlass = new DeskGlass(window, notchView.webContents);
+  deskGlass = new DeskGlass(window, {
+    // The nub painted offscreen, as the notch view paints it, for the glass over that view.
+    picture: (scale) => {
+      // (A window of its own, never shown, which the page paints at the size of: a BaseWindow, so none of the code that
+      // takes the browser's windows — BrowserWindow.getAllWindows, newest first — ever takes it for the browser's.)
+      const host = new BaseWindow({ show: false, frame: false, transparent: true, focusable: false, skipTaskbar: true, width: 1, height: 1 });
+      host.excludedFromShownWindowsMenu = true;
+      const view = new WebContentsView({
+        webPreferences: {
+          offscreen: { deviceScaleFactor: scale },
+          preload,
+          contextIsolation: true,
+          nodeIntegration: false,
+          // Same trusted, app-owned CommonJS preload as the chrome views (chrome-view.ts).
+          sandbox: false,
+          backgroundThrottling: false,
+        },
+      });
+      view.setBackgroundColor("#00000000");
+      view.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      view.webContents.on("will-navigate", (event) => event.preventDefault());
+      host.contentView.addChildView(view);
+      void loadChromePage(view.webContents, "notch-picture", rendererUrl, rendererFile);
+      return {
+        webContents: view.webContents,
+        getContentSize: () => host.getContentSize(),
+        setContentSize: (width, height) => {
+          host.setContentSize(width, height);
+          view.setBounds({ x: 0, y: 0, width, height });
+        },
+        isDestroyed: () => host.isDestroyed(),
+        destroy: () => {
+          if (!view.webContents.isDestroyed()) view.webContents.close();
+          if (!host.isDestroyed()) host.destroy();
+        },
+      };
+    },
+    display: () => screen.getDisplayMatching(window.getBounds()),
+  });
+  // Moved to another display, or the display changed (its refresh rate, its scale): the picture follows it.
+  window.on("moved", syncDeskGlass);
+  screen.on("display-metrics-changed", syncDeskGlass);
+  screen.on("display-removed", syncDeskGlass);
   const shelfView = new ChromeOverlayView(window, {
     id: "shelf",
     preload,
@@ -2297,10 +2367,16 @@ async function createWindow(): Promise<void> {
   });
   pipLayer = pipView;
   pipView.webContents.on("before-mouse-event", (_event, mouse) => deskPipPress.mouse(mouse));
-  const notices = new NoticeLayer(noticeView, window, () => {
-    if (browser?.focusActivePage() === true) return;
-    if (!window.isDestroyed()) window.webContents.focus();
-  });
+  const notices = new NoticeLayer(
+    noticeView,
+    window,
+    () => {
+      if (browser?.focusActivePage() === true) return;
+      if (!window.isDestroyed()) window.webContents.focus();
+    },
+    // (A live share's outlines go under the cards: docs/live-share.md §6.3.)
+    (box) => liveShare?.setNoticeCover(box === null ? null : { x: box.x, y: box.y, w: box.width, h: box.height }),
+  );
   noticeLayer = notices;
   dragLayer = dragView;
   findLayer = findView;
@@ -2421,7 +2497,13 @@ async function createWindow(): Promise<void> {
           runs?.groupConversationChanged(intoGroupId);
       },
       // The agent's session follows the space in front (RunController.followGroup); there is no desk to enter or leave.
-      onCurrentGroupChange: (_spaceId, groupId) => runs?.followGroup(groupId),
+      onCurrentGroupChange: (_spaceId, groupId) => {
+        runs?.followGroup(groupId);
+        // (After the step that changed it: a share ending here closes a window mid-activation otherwise.)
+        queueMicrotask(() => liveShare?.refresh());
+      },
+      // A shared window's page woken or back from a crash: the live share captures it again.
+      onPageReplaced: (tabId) => liveShare?.pageReplaced(tabId),
       // A page's space whose page let go of its entry is titled after the entry.
       entryTitle: (spaceId, anchorId) => {
         if (isPresetAnchorId(anchorId)) return requireSettings().get().organization.presetLinks.find((link) => presetAnchorId(link.url) === anchorId)?.title ?? null;
@@ -2440,6 +2522,42 @@ async function createWindow(): Promise<void> {
     },
   );
   browser.onDownloadsChange = publishDownloads;
+  // The host at the shared desk as far as the window goes: up, the app not hidden, the Mac awake and unlocked; each change is
+  // looked at again, and guests hear the host away (docs/live-share.md §6.1, §10).
+  const livePresence = watchLivePresence({ window, power: powerMonitor, app }, () => liveShare?.refresh());
+  liveShare = new LiveShareService({
+    // Any device token hosts, an anonymous account's too (docs/live-share.md §5); under E2E there is none.
+    control: async () => {
+      if (auth === null) throw new LiveUnavailableError("Sign-in services are off.");
+      if (!auth.modelsAvailable() && !(await auth.ensureAnonymous())) throw new LiveUnavailableError("Pistachio couldn't reach your account. Try again in a moment.");
+      return liveControl(auth.controlClient());
+    },
+    browser: liveBrowser(browser, window, { contexts: () => groupContexts, shown: livePresence.shown, shortcuts: () => requireSettings().get().shortcuts }),
+    openHost: () => {
+      // (Its own preload: the room's members alone, never the shell's API — preload/live-host.ts.)
+      const host = new LiveHostWindow({ parent: window, preload: join(currentDir, "../preload/live-host.cjs"), rendererUrl, rendererFile, onGone: () => liveShare?.hostGone() });
+      liveHost = host;
+      return {
+        send: (event) => host.send(event),
+        setInteractive: (active) => host.setInteractive(active),
+        setDrawing: (drawing) => host.setDrawing(drawing),
+        close: () => {
+          host.destroy();
+          if (liveHost === host) liveHost = null;
+        },
+      };
+    },
+    writeClipboard: (text) => clipboard.writeText(text),
+    publish: (state) => {
+      if (!window.isDestroyed()) window.webContents.send(IPC.liveShareChanged, state);
+    },
+    publishRoster: (participants) => {
+      if (!window.isDestroyed()) window.webContents.send(IPC.liveRosterChanged, participants);
+    },
+    openCard: () => sendShellCommand({ type: "openLiveCard" }),
+    pointer: () => cursorPoint(window),
+    hostName: macHostName,
+  });
   // The drag layer covers the whole content box. Sizing it here — and on
   // every window resize — keeps it laid out BEFORE a gesture shows it: a
   // view resized while visible shows its last frame stretched until it
@@ -2531,6 +2649,8 @@ async function createWindow(): Promise<void> {
   window.webContents.on("did-start-loading", () => {
     deskBridge.cancelAll("the desk reloaded");
     screenshots.reset();
+    // Until the reloaded desk reports again, no shell-drawn window's picture is cut from what the page shows (docs/live-share.md §6.6).
+    liveShare?.shellLoading();
   });
   sidebarController = new SidebarController({
     store: requireSidebar(),
@@ -2547,6 +2667,7 @@ async function createWindow(): Promise<void> {
     // Every chrome view runs the theme (ThemeRuntime): each hears the appearance as it changes.
     for (const view of [dragView, findView, bookmarkView, noticeView, notchView, shelfView, pipView])
       if (!view.webContents.isDestroyed()) view.webContents.send(IPC.settingsChanged, next);
+    deskGlass?.picture?.send(IPC.settingsChanged, next);
     const nextPaneMaterialSignature = nativePaneMaterialSignature(next);
     if (nextPaneMaterialSignature !== paneMaterialSignature) {
       paneMaterialSignature = nextPaneMaterialSignature;
@@ -2584,8 +2705,6 @@ async function createWindow(): Promise<void> {
   bookmarkView.webContents.on("before-input-event", nativeChromeShortcut);
   noticeView.webContents.on("before-input-event", nativeChromeShortcut);
 
-  const rendererUrl = process.env["ELECTRON_RENDERER_URL"];
-  const rendererFile = join(currentDir, "../renderer/index.html");
   if (rendererUrl !== undefined) {
     await loadDevShell(window, rendererUrl);
   } else {
@@ -2617,6 +2736,9 @@ async function createWindow(): Promise<void> {
   void shelfView.load(rendererUrl, rendererFile).then(applyDeskShelf);
   void pipView.load(rendererUrl, rendererFile).then(applyDeskPip);
   window.on("closed", () => {
+    liveShare?.windowClosed();
+    liveShare = null;
+    livePresence.dispose();
     if (windowButtonHideTimer !== null) clearTimeout(windowButtonHideTimer);
     windowButtonHideTimer = null;
     offSettings();
@@ -2638,6 +2760,8 @@ async function createWindow(): Promise<void> {
     notchView.destroy();
     notchLayer = null;
     deskNotch = null;
+    screen.off("display-metrics-changed", syncDeskGlass);
+    screen.off("display-removed", syncDeskGlass);
     deskGlass?.dispose();
     deskGlass = null;
     shelfView.destroy();
@@ -3378,6 +3502,33 @@ function installIpc(): void {
     if (!isShell(event.sender) || typeof tabId !== "string") return null;
     return requireBrowser().deskLiveSource(tabId, event.sender);
   });
+  // ── Live share (docs/live-share.md §6.2): the shell's commands and desk, the live-host app's room ──
+  ipcMain.handle(IPC.liveShareCommand, async (event, command: unknown) => {
+    if (!isShell(event.sender) || !isLiveCommand(command)) return;
+    await liveShare?.command(command);
+  });
+  ipcMain.handle(IPC.liveShareGet, (event) => (isShell(event.sender) ? (liveShare?.state ?? idleLiveShare()) : idleLiveShare()));
+  ipcMain.on(IPC.liveDeskSet, (event, report: unknown) => {
+    if (!isShell(event.sender) || (report !== null && !isLiveDeskReport(report))) return;
+    liveShare?.setDesk(report);
+  });
+  ipcMain.handle(IPC.liveHostConfig, (event) => (isLiveHost(event.sender) ? (liveShare?.hostConfig() ?? null) : null));
+  // (The live-host window has no settings of its own: its theme's appearance, and nothing else of them.)
+  ipcMain.handle(IPC.liveHostAppearance, (event) => (isLiveHost(event.sender) ? requireSettings().get().appearance : null));
+  ipcMain.on(IPC.liveHostReport, (event, report: unknown) => {
+    if (isLiveHost(event.sender) && isLiveHostReport(report)) liveShare?.hostReport(report);
+  });
+  ipcMain.handle(IPC.liveHostSource, (event, tabId: unknown) => {
+    if (!isLiveHost(event.sender) || typeof tabId !== "string" || liveShare?.streams(tabId) !== true) return null;
+    return requireBrowser().liveTabSource(tabId, event.sender);
+  });
+  // The shell's own page, for the live-host app to cut the shared desk's shell-drawn windows from (docs/live-share.md
+  // §6.6): only while the host is on the shared space and such a window streams. The id is good for that window's
+  // renderer alone (the shell's session sets no permission handler, so Electron lets the capture start).
+  ipcMain.handle(IPC.liveHostShellSource, (event) => {
+    if (!isLiveHost(event.sender) || liveShare?.shellStreams() !== true || shellWindow === null || shellWindow.isDestroyed()) return null;
+    return shellWindow.webContents.getMediaSourceId(event.sender);
+  });
   ipcMain.handle(IPC.deskPageCorners, (event, tabId: unknown) => {
     if (!isShell(event.sender) || typeof tabId !== "string") return null;
     return requireBrowser().deskPageCorners(tabId);
@@ -3772,16 +3923,17 @@ function installIpc(): void {
     if (typeof height !== "number" || !Number.isFinite(height)) return;
     noticeLayer?.resize(height);
   });
+  ipcMain.on(IPC.noticeViewFootprint, (event, footprint: unknown) => {
+    if (chromeViewOf(event.sender) !== "notice" || (footprint !== null && !isNoticeFootprint(footprint))) return;
+    noticeLayer?.footprint(footprint);
+  });
   ipcMain.on(IPC.deskNotchSet, (event, frame: unknown) => {
     if (!isShell(event.sender) || (frame !== null && !isDeskNotchFrame(frame))) return;
     deskNotch = frame;
     applyDeskNotch();
   });
-  ipcMain.handle(IPC.deskNotchGet, () => notchFrameForView());
-  ipcMain.on(IPC.deskNotchOutline, (event, points: unknown) => {
-    if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchOutline(points)) return;
-    deskGlass?.outline(points);
-  });
+  // (The nub's picture reads the nub it paints, which it keeps while the view is away.)
+  ipcMain.handle(IPC.deskNotchGet, (event) => (deskGlass !== null && event.sender.id === deskGlass.picture?.id ? deskGlass.frame : deskNotch));
   ipcMain.on(IPC.deskNotchInput, (event, input: unknown) => {
     if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchInput(input)) return;
     if (shellWindow === null || shellWindow.isDestroyed()) return;
@@ -4462,6 +4614,11 @@ function isShell(sender: Electron.WebContents): boolean {
   return shellWindow !== null && sender.id === shellWindow.webContents.id;
 }
 
+/** The live share's host app (main/live/live-host-window.ts), while a share is live. */
+function isLiveHost(sender: Electron.WebContents): boolean {
+  return liveHost?.owns(sender) === true;
+}
+
 /**
  * The build, as the About box and a feedback report name it.
  *
@@ -4696,6 +4853,7 @@ if (featureEnabled) {
   // WebRTC never learns the real address either: only proxied UDP, which a
   // CONNECT proxy has none of.
   app.on("web-contents-created", (_event, contents) => {
+    // (The live share's room sets its own after this, as its window is made: docs/live-share.md §10.)
     contents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
   });
 }
@@ -5124,7 +5282,13 @@ app.on("window-all-closed", () => {
 });
 
 // The open thread's last changes are still coalescing; write them before the process goes.
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  // A live share ends first, its guests told it ended rather than left with a host who vanished; then the quit goes on.
+  if (liveShare?.active === true) {
+    event.preventDefault();
+    void liveShare.quit().finally(() => app.quit());
+    return;
+  }
   briefScheduler?.stop();
   watchtower?.close();
   terminals?.dispose();

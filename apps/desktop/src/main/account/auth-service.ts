@@ -91,6 +91,16 @@ export interface AuthServiceDeps {
   onEnrolled?(): void;
   /** The account is gone from this Mac (sign-out) or control stopped honouring it (revocation). */
   onSignedOut?(reason: "sign-out" | "revoked"): void | Promise<void>;
+  /**
+   * The account the client's token speaks for is about to leave this Mac: a
+   * sign-out, a sign-in or sign-up that puts another account's token in its
+   * place, this Mac revoking itself, an anonymous account a sign-in could not
+   * fold into its own. What this Mac holds in control under it (a live share,
+   * docs/live-share.md §6.1) is let go now, while the token still speaks for
+   * it: after, control answers for another account or none. Awaited; it bounds
+   * its own wait.
+   */
+  beforeAccountChange?(): Promise<void>;
   /** A silently refreshed device token: the hub socket must reconnect with it. */
   onTokenChanged?(): void;
   /** `PISTACHIO_HUB_URL`, pinning the hub over `/me` discovery. */
@@ -361,6 +371,8 @@ export class AuthService {
     const normalized = normalizeEmail(email);
     if (password.length < 8) throw new Error("Choose a password of at least 8 characters.");
     if (this.#anonymous()) return this.#upgrade(normalized, password);
+    // (An upgrade keeps the token, the account the same; this puts another account's in its place.)
+    await this.#deps.beforeAccountChange?.();
     const out = await this.#attempt(() => this.#client.signUp(normalized, password));
     this.#keylessSpaces.clear();
     this.#pendingPassword = password;
@@ -384,6 +396,9 @@ export class AuthService {
     // The anonymous account's own token, taken before the login replaces it:
     // it is the proof `/account/link` needs that this Mac may fold it in.
     const anonymousToken = this.#anonymous() ? await this.#client.getToken().catch(() => null) : null;
+    // No anonymous account to fold in: the login puts another account's token in place of the one held. (One folded in
+    // takes what it holds in control with it; a link that fails lets that go, #linkAnonymous.)
+    if (anonymousToken === null) await this.#deps.beforeAccountChange?.();
     const out = await this.#attempt(() => this.#client.passwordLogin(normalized, password));
     // From here the client speaks for the account signed in to; a 401 must
     // not be answered by re-proving the anonymous device.
@@ -514,6 +529,7 @@ export class AuthService {
 
   /** Forget the account here. Spaces and tabs stay; keys and tokens go; the device id stays (§10.1). */
   async signOut(): Promise<AccountState> {
+    await this.#deps.beforeAccountChange?.();
     this.#client.setReauth(null);
     this.#client.setToken(null);
     this.#client.dispose();
@@ -582,6 +598,8 @@ export class AuthService {
 
   async revokeDevice(deviceId: string): Promise<DeviceInfo[]> {
     this.#requireEnrolled();
+    // Control refuses this Mac's token once it is revoked: what the account holds here goes first.
+    if (deviceId === this.#deps.store.deviceId) await this.#deps.beforeAccountChange?.();
     await this.#attempt(() => this.#client.revokeDevice(deviceId));
     const pin = this.#deps.store.cloudDevicePin();
     if (pin !== null && pin.deviceId === deviceId) {
@@ -745,6 +763,9 @@ export class AuthService {
       return out.token;
     } catch (error) {
       console.error("[account] could not link the anonymous account; enrolling afresh instead", error);
+      // The anonymous account is left for the sweep, and with it what it holds in control: let go under its own token first.
+      this.#client.setToken(anonymousToken);
+      await this.#deps.beforeAccountChange?.();
       this.#client.setToken(bootstrapToken);
       return null;
     }

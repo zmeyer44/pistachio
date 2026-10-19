@@ -398,25 +398,6 @@ export interface DeskNotchFrame {
    * corner, so the nub reads as the ground it rises out of.
    */
   ground: { x: number; y: number; width: number; height: number };
-  /**
-   * Main's, never the shell's: the window's own glass lies under the view (main/desk-glass.ts, the desktop glass on),
-   * so the view paints over it only what the shell lays over that glass — no stand-in for it — and says its outline
-   * as it draws it (NativeSurfaceApi.sendDeskNotchOutline), for the glass to be cut to.
-   */
-  nativeGlass?: boolean;
-}
-
-/** The most points an outline the notch view sends may hold (x and y each). */
-export const MAX_DESK_NOTCH_OUTLINE = 512;
-
-/** The nub's outline as the notch view draws it (sendDeskNotchOutline): x and y in turn, in the view's coordinates. */
-export function isDeskNotchOutline(value: unknown): value is number[] {
-  return (
-    Array.isArray(value) &&
-    value.length % 2 === 0 &&
-    value.length <= MAX_DESK_NOTCH_OUTLINE &&
-    value.every((n) => typeof n === "number" && Number.isFinite(n) && n >= -1 && n <= 513)
-  );
 }
 
 export interface DeskNubShape {
@@ -474,8 +455,7 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
     finite(swelling.ms) &&
     swelling.ms >= 0 &&
     typeof frame.acting === "boolean" &&
-    typeof frame.floating === "boolean" &&
-    (frame.nativeGlass === undefined || typeof frame.nativeGlass === "boolean")
+    typeof frame.floating === "boolean"
   );
 }
 

@@ -289,6 +289,54 @@ describe("minimizing a window", () => {
     desk.destroy();
   });
 
+  it("keeps the notch view over a page given way only to what the view lies over (the nub's tooltip); anything else takes it away", async () => {
+    vi.stubGlobal("Image", class {
+      src = "";
+      decode(): Promise<void> {
+        return Promise.resolve();
+      }
+    });
+    const { desk, view } = open({}, { stills: true });
+    const flush = async (): Promise<void> => {
+      for (let round = 0; round < 4; round += 1) {
+        await Promise.resolve();
+        await new Promise((done) => setImmediate(done));
+        settle();
+      }
+    };
+    desk.setNotch({ w: 52, h: 52 });
+    desk.toggleMaximize("tab-2");
+    settle();
+    await flush();
+    expect(desk.getView().notchOver).toBe(true);
+    // The nub's tooltip, beside it: its band is a cover, the page under it a still — under the view all the same, which
+    // stays over that still with the pointer on it (going, and coming back as the page was live again, it changed the
+    // pointer's cursor and drew the nub afresh each way: the user's report, 2026-10-16).
+    const band = { x: STAGE.w - 300, y: STAGE.h - 120, w: 300, h: 120 };
+    desk.setCover("nub-tip", band, { underNotch: true });
+    await flush();
+    expect(view("tab-2").drawn).toBe(true);
+    expect(desk.getView().clearCovers.has("nub-tip")).toBe(true);
+    expect(desk.getView().notchOver).toBe(true);
+    // What opens out of the nub over it too (its menu, the shell's to draw): the view goes.
+    desk.setCover("bar", band);
+    await flush();
+    expect(desk.getView().notchOver).toBe(false);
+    desk.setCover("bar", null);
+    await flush();
+    expect(desk.getView().notchOver).toBe(true);
+    // The same band as any other cover: the view goes.
+    desk.setCover("nub-tip", band);
+    await flush();
+    expect(view("tab-2").drawn).toBe(true);
+    expect(desk.getView().notchOver).toBe(false);
+    desk.setCover("nub-tip", null);
+    await flush();
+    expect(view("tab-2").drawn).toBe(false);
+    expect(desk.getView().notchOver).toBe(true);
+    desk.destroy();
+  });
+
   it("stacks the next one to the right, overlapping it by half and over it; the shelf is over every other window", () => {
     const { desk, rect } = open();
     desk.minimize("tab-0");

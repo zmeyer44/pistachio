@@ -17,6 +17,9 @@
 # production
 /build
 
+# the camera backgrounds' segmenter, copied by next.config.js
+/public/live/mediapipe/
+
 # misc
 .DS_Store
 *.pem

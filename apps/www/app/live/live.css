@@ -1,0 +1,1541 @@
+/*
+ * The guest page (docs/live-share.md §7): the Pistachio desk in a browser
+ * tab. It stands on `@pistachio/live-share/styles.css` (the `.lv-theme`
+ * tokens and the shared pieces) and adds the page's own: the ground, the
+ * lobby, the room's well and windows, the toolbar, the banners. Everything
+ * is scoped under `.lvg-root`, which covers the viewport; the site's own
+ * stylesheet still loads first through the root layout.
+ */
+
+html:has(.lvg-root) {
+  color-scheme: light dark;
+  background: light-dark(oklch(0.962 0.003 264), oklch(0.172 0.005 264));
+  overscroll-behavior: none;
+}
+
+.lvg-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(1100px 520px at 50% -8%, light-dark(oklch(1 0 0 / 0.75), oklch(1 0 0 / 0.045)), transparent 72%),
+    var(--lv-ground);
+  color: var(--lv-text);
+  font-family: var(--lv-font);
+  font-size: 14px;
+  line-height: 1.4;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+/* A whisper of grain, so the dark ground reads as a surface, not a void. */
+.lvg-root::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.lvg-root em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--lv-text);
+}
+.lvg-root ::selection {
+  background: color-mix(in oklab, var(--lvg-me, oklch(0.6 0.15 260)) 35%, transparent);
+}
+
+/* ── Frame: the top bar, the mark ─────────────────────────────────────── */
+
+.lvg-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 20px;
+  pointer-events: none;
+}
+.lvg-topbar > * {
+  pointer-events: auto;
+}
+.lvg-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--lv-text);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.lvg-brand svg {
+  border-radius: 5px;
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.2);
+}
+.lvg-topbar-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--lv-hairline);
+}
+.lvg-space {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.lvg-space-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--lvg-space);
+  box-shadow: 0 0 0 2.5px color-mix(in oklab, var(--lvg-space) 22%, transparent);
+}
+.lvg-space-title {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lvg-space-host {
+  color: var(--lv-text-3);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.lvg-space-host::before {
+  content: "· ";
+}
+.lvg-live-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px 0 8px;
+  border-radius: 999px;
+  background: var(--lv-field);
+  box-shadow: inset 0 0 0 0.5px var(--lv-hairline);
+  color: var(--lv-text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.lvg-live-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--lv-live);
+}
+/* A few rings as the room goes live (and again when the connection comes back), then still: a
+   beat that never stops would keep the compositor drawing for the whole session. */
+.lvg-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--lv-live) 55%, transparent);
+  opacity: 0;
+  animation: lvg-live 2.2s ease-out 3;
+}
+.lvg-live-chip[data-state="reconnecting"] .lvg-live-dot {
+  background: var(--lv-text-3);
+}
+.lvg-live-chip[data-state="reconnecting"] .lvg-live-dot::after {
+  animation: none;
+}
+@keyframes lvg-live {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(3);
+  }
+}
+
+.lvg-center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 72px 24px 48px;
+}
+
+/* ── Buttons and fields ───────────────────────────────────────────────── */
+
+.lvg-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 12px;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition:
+    background-color var(--lv-fast) ease,
+    opacity var(--lv-fast) ease,
+    transform var(--lv-fast) var(--lv-ease),
+    box-shadow var(--lv-fast) ease;
+}
+.lvg-button:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.lvg-button[data-variant="primary"] {
+  background: var(--lv-primary);
+  color: var(--lv-primary-text);
+  box-shadow:
+    inset 0 1px 0 oklch(1 0 0 / 0.25),
+    0 1px 2px oklch(0 0 0 / 0.2),
+    0 8px 20px -10px oklch(0 0 0 / 0.5);
+}
+.lvg-button[data-variant="primary"]:hover:not(:disabled) {
+  background: var(--lv-primary-hover);
+}
+.lvg-button[data-variant="primary"]:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.lvg-button[data-variant="primary"][data-busy] {
+  opacity: 0.75;
+}
+.lvg-button[data-variant="secondary"] {
+  background: var(--lv-field);
+  color: var(--lv-text);
+  box-shadow: inset 0 0 0 0.5px var(--lv-hairline);
+}
+.lvg-button[data-variant="secondary"]:hover {
+  background: var(--lv-field-focus);
+}
+.lvg-button:focus-visible,
+.lvg-input:focus-visible {
+  outline: 2px solid var(--lv-ring);
+  outline-offset: 2px;
+}
+
+.lvg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.lvg-field-label {
+  color: var(--lv-text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.lvg-input {
+  height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 12px;
+  outline: 0;
+  background: var(--lv-field);
+  box-shadow: inset 0 0 0 0.5px var(--lv-hairline);
+  color: var(--lv-text);
+  font: 500 15px/1 var(--lv-font);
+  letter-spacing: -0.01em;
+  transition:
+    background-color var(--lv-fast) ease,
+    box-shadow var(--lv-fast) ease;
+}
+.lvg-input::placeholder {
+  color: var(--lv-text-3);
+  font-weight: 400;
+}
+.lvg-input:focus {
+  background: var(--lv-field-focus);
+  box-shadow: inset 0 0 0 1px var(--lv-ring);
+}
+.lvg-input:focus-visible {
+  outline: none;
+}
+.lvg-input[aria-invalid] {
+  box-shadow: inset 0 0 0 1px var(--lv-off);
+}
+
+/* ── The little desk ──────────────────────────────────────────────────── */
+
+.lvg-glyph {
+  position: relative;
+  width: 156px;
+  height: 98px;
+  flex: none;
+}
+.lvg-glyph-well {
+  position: absolute;
+  inset: 0;
+  border-radius: 13px;
+  background: var(--lv-well);
+  box-shadow:
+    inset 2px 2px 5px var(--lv-well-shade),
+    inset -2px -2px 5px var(--lv-well-light);
+}
+.lvg-glyph-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 7px;
+  border-radius: 5px;
+  background: var(--lv-card);
+  box-shadow:
+    0 0 0 0.5px var(--lv-hairline),
+    0 6px 14px -6px var(--lv-shade);
+  transition: opacity var(--lv-slow) ease;
+}
+.lvg-glyph-window i {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--lv-hairline);
+}
+.lvg-glyph-window i:first-child {
+  width: 45%;
+  background: color-mix(in oklab, var(--lv-text) 22%, transparent);
+}
+.lvg-glyph-window i:nth-child(2) {
+  width: 85%;
+}
+.lvg-glyph-window i:nth-child(3) {
+  width: 70%;
+}
+.lvg-glyph-window i:nth-child(4) {
+  width: 55%;
+}
+.lvg-glyph-window[data-n="1"] {
+  left: 9px;
+  top: 10px;
+  width: 66px;
+  height: 46px;
+}
+.lvg-glyph-window[data-n="2"] {
+  left: 92px;
+  top: 14px;
+  width: 54px;
+  height: 34px;
+}
+.lvg-glyph-window[data-n="3"] {
+  left: 50px;
+  top: 46px;
+  width: 78px;
+  height: 43px;
+}
+.lvg-glyph-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--lv-cursor-color);
+  animation: lvg-glyph-wander 9s var(--lv-ease-in-out) infinite;
+}
+.lvg-glyph-cursor svg {
+  display: block;
+  overflow: visible;
+  filter: drop-shadow(0 1px 2px oklch(0 0 0 / 0.35));
+}
+.lvg-glyph-cursor span {
+  position: absolute;
+  left: 10px;
+  top: 14px;
+  padding: 1.5px 5px 2px;
+  border-radius: 999px;
+  background: var(--lv-cursor-color);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px -2px oklch(0 0 0 / 0.5);
+}
+@keyframes lvg-glyph-wander {
+  0%,
+  8% {
+    transform: translate(44px, 30px);
+  }
+  30%,
+  38% {
+    transform: translate(112px, 28px);
+  }
+  58%,
+  66% {
+    transform: translate(92px, 66px);
+  }
+  86%,
+  100% {
+    transform: translate(44px, 30px);
+  }
+}
+.lvg-glyph[data-state="waiting"] .lvg-glyph-cursor {
+  animation-duration: 14s;
+}
+.lvg-glyph[data-state="over"] .lvg-glyph-window {
+  opacity: 0.45;
+}
+.lvg-glyph-guest {
+  position: absolute;
+  right: -9px;
+  bottom: -9px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--lv-raised);
+  box-shadow:
+    0 0 0 2.5px var(--lv-ground),
+    0 4px 10px -3px var(--lv-shade);
+  color: var(--lv-text);
+  font-size: 11px;
+  font-weight: 650;
+}
+.lvg-glyph-guest::before,
+.lvg-glyph-guest::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--lv-text-3);
+  animation: lvg-knock 2s ease-out infinite;
+}
+.lvg-glyph-guest::after {
+  animation-delay: 1s;
+}
+@keyframes lvg-knock {
+  from {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.2);
+  }
+}
+
+/* ── Loading and the ways out ─────────────────────────────────────────── */
+
+.lvg-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  animation: lvg-rise-in 400ms var(--lv-ease) 120ms both;
+}
+.lvg-loading .lvg-glyph-window {
+  animation: lvg-breathe 1.6s ease-in-out infinite;
+}
+.lvg-loading .lvg-glyph-window[data-n="2"] {
+  animation-delay: 0.2s;
+}
+.lvg-loading .lvg-glyph-window[data-n="3"] {
+  animation-delay: 0.4s;
+}
+@keyframes lvg-breathe {
+  50% {
+    opacity: 0.8;
+  }
+}
+.lvg-loading-text {
+  margin: 0;
+  color: var(--lv-text-3);
+  font-size: 13px;
+}
+
+.lvg-over {
+  display: flex;
+  max-width: 440px;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  animation: lvg-rise-in 360ms var(--lv-ease) both;
+}
+.lvg-over .lvg-glyph {
+  margin-bottom: 28px;
+}
+.lvg-over-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+.lvg-over-body {
+  margin: 10px 0 0;
+  color: var(--lv-text-2);
+  font-size: 14.5px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.lvg-over .lvg-button {
+  margin-top: 26px;
+  min-width: 140px;
+}
+@keyframes lvg-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* ── The lobby ────────────────────────────────────────────────────────── */
+
+.lvg-lobby {
+  position: absolute;
+  inset: 52px 0 0;
+  display: grid;
+  grid-template-columns: minmax(0, 660px) minmax(300px, 372px);
+  align-items: center;
+  justify-content: center;
+  gap: clamp(32px, 5vw, 72px);
+  padding: 16px clamp(24px, 4vw, 56px) 64px;
+  overflow-y: auto;
+}
+
+.lvg-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  animation: lvg-rise-in 420ms var(--lv-ease) both;
+}
+.lvg-preview {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border-radius: 22px;
+  box-shadow:
+    0 0 0 0.5px var(--lv-hairline),
+    0 30px 70px -30px var(--lv-shade),
+    0 10px 24px -12px var(--lv-shade-soft);
+}
+.lvg-preview-screen {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--lv-well);
+  box-shadow:
+    inset 3px 3px 9px var(--lv-well-shade),
+    inset -3px -3px 9px var(--lv-well-light);
+}
+.lvg-preview-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  animation: lvg-fade-in 300ms ease both;
+}
+.lvg-preview-off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding-bottom: 36px;
+}
+.lvg-preview-initial {
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, var(--lv-raised), color-mix(in oklab, var(--lv-raised) 70%, var(--lv-well)));
+  box-shadow:
+    0 0 0 0.5px var(--lv-hairline),
+    0 14px 30px -14px var(--lv-shade);
+  color: var(--lv-text);
+  font-size: 36px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.lvg-preview-off-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--lv-text-3);
+}
+.lvg-preview-off-text {
+  color: var(--lv-text-3);
+  font-size: 13px;
+}
+.lvg-preview-name {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  max-width: calc(100% - 28px);
+  overflow: hidden;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: oklch(0.12 0.005 264 / 0.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lvg-preview:not([data-camera]) .lvg-preview-name {
+  display: none;
+}
+.lvg-preview-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 16px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+.lvg-preview-note {
+  margin: 0 4px;
+  color: var(--lv-text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.lvg-lobby-panel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  animation: lvg-rise-in 420ms var(--lv-ease) 60ms both;
+}
+.lvg-lobby-panel .lvg-glyph {
+  margin-bottom: 28px;
+}
+.lvg-lobby-copy {
+  display: flex;
+  flex-direction: column;
+  animation: lvg-swap 260ms var(--lv-ease) both;
+}
+@keyframes lvg-swap {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.lvg-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  color: var(--lv-text-2);
+  font-size: 13px;
+  font-weight: 500;
+}
+.lvg-title {
+  margin: 0;
+  font-size: clamp(28px, 2.6vw, 36px);
+  font-weight: 650;
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.lvg-lede {
+  margin: 12px 0 0;
+  color: var(--lv-text-2);
+  font-size: 14.5px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.lvg-lobby-copy .lvg-field {
+  margin-top: 28px;
+}
+.lvg-lobby-copy .lvg-button {
+  margin-top: 14px;
+}
+.lvg-lobby-copy .lvg-button[data-variant="secondary"] {
+  align-self: flex-start;
+  margin-top: 24px;
+  min-width: 112px;
+}
+.lvg-error {
+  margin: 12px 0 0;
+  color: var(--lv-off);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.lvg-fine {
+  margin: 18px 0 0;
+  color: var(--lv-text-3);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.lvg-pulse {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lv-text-2);
+  animation: lvg-pulse 1.4s ease-in-out infinite;
+}
+@keyframes lvg-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (max-width: 960px) {
+  .lvg-lobby {
+    grid-template-columns: minmax(0, 560px);
+    align-content: start;
+    padding-top: 8px;
+  }
+  .lvg-lobby-panel .lvg-glyph {
+    display: none;
+  }
+}
+
+/* ── The room ─────────────────────────────────────────────────────────── */
+
+.lvg-room {
+  position: absolute;
+  inset: 0;
+}
+.lvg-stage-area {
+  position: absolute;
+  inset: 0;
+}
+
+/* The desk's well, as the Mac draws it: barely pressed in, soft shade at the top and leading edges. */
+.lvg-well {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-radius: 14px;
+  background: var(--lv-well);
+  box-shadow:
+    inset 3px 3px 8px var(--lv-well-shade),
+    inset -3px -3px 8px var(--lv-well-light),
+    0 0 0 0.5px var(--lv-hairline);
+  will-change: transform;
+}
+.lvg-stage-wait {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  translate: -50% -50%;
+  color: var(--lv-text-3);
+  font-size: 13px;
+}
+.lvg-stage-wait-spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--lv-hairline);
+  border-top-color: var(--lv-text-2);
+  border-radius: 50%;
+}
+
+.lvg-windows {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  isolation: isolate;
+  pointer-events: none;
+}
+.lvg-window {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: auto;
+  will-change: transform;
+  transition: opacity var(--lv-base) ease;
+}
+.lvg-window[data-away] {
+  opacity: 0;
+  pointer-events: none;
+}
+/* Faded out behind a filled window: out of layout too, so the room's adaptive stream sees its video
+   off screen and the host stops sending it (opacity alone leaves it "visible" to LiveKit). */
+.lvg-window[data-gone] {
+  display: none;
+}
+/* Back from behind it, a window fades in again (out of layout, it has no style to fade from). */
+@starting-style {
+  .lvg-room[data-settling] .lvg-window {
+    opacity: 0;
+  }
+}
+.lvg-window[data-filled] {
+  z-index: 100 !important;
+}
+/* A re-layout the guest caused glides; the host's own moves never do (they arrive at frame rate). */
+.lvg-room[data-settling] :is(.lvg-window, .lvg-well, .lvg-window-page) {
+  transition:
+    transform var(--lv-slow) var(--lv-ease),
+    width var(--lv-slow) var(--lv-ease),
+    height var(--lv-slow) var(--lv-ease),
+    opacity var(--lv-base) ease;
+}
+
+.lvg-window-card {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--lv-card);
+  box-shadow:
+    0 0 0 0.5px light-dark(oklch(0 0 0 / 0.07), oklch(1 0 0 / 0.09)),
+    0 12px 32px -12px var(--lv-shade);
+  transition: box-shadow var(--lv-slow) var(--lv-ease);
+}
+.lvg-window[data-focused] .lvg-window-card {
+  box-shadow:
+    0 0 0 0.5px light-dark(oklch(0 0 0 / 0.08), oklch(1 0 0 / 0.08)),
+    0 26px 60px -18px var(--lv-shade);
+}
+/* A window guests may use: a quiet hairline in the colour of whoever has it (mine, until someone else does). */
+.lvg-window[data-usable] .lvg-window-card {
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--lvg-ring) 42%, transparent),
+    0 26px 60px -18px var(--lv-shade);
+}
+.lvg-window[data-keyboard] .lvg-window-card {
+  box-shadow:
+    0 0 0 2px var(--lvg-ring),
+    0 0 0 6px color-mix(in oklab, var(--lvg-ring) 24%, transparent),
+    0 26px 60px -18px var(--lv-shade);
+}
+.lvg-window-page {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: hidden;
+  background: var(--lv-ground-2);
+}
+.lvg-window-video {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+}
+.lvg-window-keys {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  overflow: hidden;
+  opacity: 0;
+  resize: none;
+  caret-color: transparent;
+  pointer-events: none;
+}
+.lvg-window-loading {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, var(--lv-hover) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: lvg-shimmer 1.6s linear infinite;
+}
+@keyframes lvg-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+.lvg-window-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  color: var(--lv-text-3);
+  font-size: 12.5px;
+  text-align: center;
+  background-image: repeating-linear-gradient(-45deg, transparent 0 10px, var(--lv-hover) 10px 11px);
+}
+.lvg-window-note svg {
+  width: 18px;
+  height: 18px;
+}
+.lvg-window-paused {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 999px;
+  background: oklch(0.12 0.005 264 / 0.6);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.lvg-window-paused svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* The window's label, sitting just above its top-left corner, brighter on the window in use on the host. */
+.lvg-window-tab {
+  position: absolute;
+  left: -5px;
+  bottom: calc(100% + 3px);
+  display: flex;
+  max-width: calc(100% + 10px);
+  height: 22px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 5px;
+  border-radius: 7px;
+  color: var(--lv-text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  transition:
+    background-color var(--lv-fast) ease,
+    color var(--lv-fast) ease,
+    box-shadow var(--lv-fast) ease;
+}
+.lvg-window[data-focused] .lvg-window-tab {
+  color: var(--lv-text);
+}
+.lvg-window-tab:hover {
+  background: var(--lv-glass-strong);
+  -webkit-backdrop-filter: var(--lv-glass-blur);
+  backdrop-filter: var(--lv-glass-blur);
+  box-shadow:
+    inset 0 0 0 0.5px var(--lv-glass-edge),
+    var(--lv-shadow-float);
+  color: var(--lv-text);
+}
+.lvg-favicon {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 3.5px;
+  object-fit: contain;
+  opacity: 0.8;
+}
+.lvg-window[data-focused] .lvg-favicon,
+.lvg-window-tab:hover .lvg-favicon {
+  opacity: 1;
+}
+.lvg-favicon[data-letter] {
+  background: var(--lv-field);
+  color: var(--lv-text-2);
+  font-size: 9px;
+  font-weight: 700;
+}
+.lvg-window-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+.lvg-window-origin {
+  min-width: 0;
+  flex-shrink: 3;
+  overflow: hidden;
+  color: var(--lv-text-3);
+  font-family: var(--lv-mono);
+  font-size: 10.5px;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+}
+.lvg-window-user {
+  flex: none;
+  padding: 1.5px 6px 2px;
+  border-radius: 999px;
+  background: var(--lvg-user);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+/* The window in use on the host: a dot in the host's colour after its title. */
+.lvg-window-inuse {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--lvg-host);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--lvg-host) 25%, transparent);
+}
+.lvg-window-use {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  color: var(--lvg-ring);
+}
+.lvg-window-use svg {
+  width: 12px;
+  height: 12px;
+}
+.lvg-window-actions {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+}
+.lvg-window-tab:hover .lvg-window-actions,
+.lvg-window[data-filled] .lvg-window-actions {
+  display: inline-flex;
+}
+.lvg-window-ask {
+  height: 18px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--lv-primary);
+  color: var(--lv-primary-text);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lvg-window-ask:disabled {
+  background: var(--lv-field);
+  color: var(--lv-text-3);
+  cursor: default;
+}
+.lvg-window-fill {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lv-text-2);
+  cursor: pointer;
+}
+.lvg-window-fill:hover {
+  background: var(--lv-hover);
+  color: var(--lv-text);
+}
+.lvg-window-fill svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* Everything drawn over the stage, clipped to what is visible of it. */
+.lvg-overlays {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  overflow: hidden;
+  border-radius: 14px;
+  pointer-events: none;
+  will-change: transform;
+  transition: opacity 120ms ease;
+}
+.lvg-room[data-settling] .lvg-overlays {
+  opacity: 0;
+}
+.lvg-room[data-host-away] .lvg-well {
+  opacity: 0.85;
+}
+
+/* The faces, down the trailing edge; they step aside for the chat. */
+.lvg-faces {
+  position: absolute;
+  top: 50%;
+  right: 20px;
+  z-index: 15;
+  translate: 0 -50%;
+  transition: transform var(--lv-slow) var(--lv-ease);
+}
+.lvg-room[data-chat]:not([data-narrow]) .lvg-faces {
+  transform: translateX(-344px);
+}
+.lvg-room[data-chat][data-narrow] .lvg-faces {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.lvg-chat-panel {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  bottom: 88px;
+  z-index: 25;
+  width: 332px;
+  max-width: calc(100% - 24px);
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--lv-glass-strong);
+  -webkit-backdrop-filter: var(--lv-glass-blur);
+  backdrop-filter: var(--lv-glass-blur);
+  box-shadow:
+    inset 0 0.5px 0 var(--lv-glass-light),
+    var(--lv-shadow-pop);
+  opacity: 0;
+  transform: translateX(24px);
+  pointer-events: none;
+  transition:
+    opacity var(--lv-base) ease,
+    transform var(--lv-slow) var(--lv-ease);
+}
+.lvg-chat-panel[data-open] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* ── The toolbar ──────────────────────────────────────────────────────── */
+
+.lvg-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 7px;
+  border-radius: 19px;
+  background: var(--lv-glass);
+  -webkit-backdrop-filter: var(--lv-glass-blur);
+  backdrop-filter: var(--lv-glass-blur);
+  box-shadow:
+    inset 0 0.5px 0 var(--lv-glass-light),
+    0 0 0 0.5px var(--lv-glass-edge),
+    var(--lv-shadow-float);
+  translate: -50% 0;
+  animation: lvg-toolbar-in 420ms var(--lv-ease) 120ms both;
+}
+@keyframes lvg-toolbar-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+.lvg-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.lvg-toolbar-divider {
+  width: 1px;
+  height: 22px;
+  margin: 0 5px;
+  background: var(--lv-hairline);
+}
+.lvg-tool {
+  position: relative;
+  display: inline-grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--lv-text-2);
+  cursor: pointer;
+  transition:
+    background-color var(--lv-fast) ease,
+    color var(--lv-fast) ease,
+    transform var(--lv-fast) var(--lv-ease);
+}
+.lvg-tool:hover:not(:disabled) {
+  background: var(--lv-hover);
+  color: var(--lv-text);
+}
+.lvg-tool:active:not(:disabled) {
+  transform: scale(0.93);
+}
+.lvg-tool[aria-checked="true"],
+.lvg-tool[aria-pressed="true"],
+.lvg-tool[aria-expanded="true"] {
+  background: var(--lv-selected);
+  color: var(--lv-text);
+}
+.lvg-tool:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+.lvg-tool svg {
+  width: 18px;
+  height: 18px;
+}
+/* The ink in hand: a dot of its colour under the tool. */
+.lvg-tool[data-tool]:not([data-tool="pointer"])[aria-checked="true"]::after {
+  content: "";
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: var(--lvg-ink);
+  box-shadow: 0 0 0 1px var(--lv-hairline);
+}
+.lvg-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 0 0 1px oklch(1 0 0 / 0.22),
+    0 0 0 2.5px var(--lv-glass-strong),
+    0 0 0 3.5px var(--lv-hairline);
+}
+.lvg-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 28px);
+  gap: 8px;
+  padding: 6px;
+}
+.lvg-colors.lv-popover {
+  min-width: 0;
+}
+.lvg-swatch-choice {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lvg-swatch);
+  box-shadow: inset 0 0 0 1px light-dark(oklch(0 0 0 / 0.12), oklch(1 0 0 / 0.16));
+  cursor: pointer;
+  transition: transform var(--lv-fast) var(--lv-ease);
+}
+.lvg-swatch-choice:hover {
+  transform: scale(1.12);
+}
+.lvg-swatch-choice[aria-checked="true"] {
+  box-shadow:
+    inset 0 0 0 1px light-dark(oklch(0 0 0 / 0.12), oklch(1 0 0 / 0.16)),
+    0 0 0 2px var(--lv-glass-strong),
+    0 0 0 4px var(--lv-text);
+}
+.lvg-reactions.lv-popover {
+  min-width: 0;
+  padding: 5px;
+  border-radius: 999px;
+}
+.lvg-reaction-row {
+  display: flex;
+  gap: 2px;
+}
+.lvg-reaction-choice {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 23px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    transform var(--lv-fast) var(--lv-ease),
+    background-color var(--lv-fast) ease;
+}
+.lvg-reaction-choice:hover {
+  background: var(--lv-hover);
+  transform: scale(1.18) translateY(-2px);
+}
+.lvg-reaction-choice:active {
+  transform: scale(0.94);
+}
+.lvg-badge {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  display: grid;
+  min-width: 16px;
+  height: 16px;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--lvg-me);
+  box-shadow: 0 0 0 2px var(--lv-glass-strong);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  animation: lvg-pop 260ms var(--lv-ease) both;
+}
+@keyframes lvg-pop {
+  from {
+    transform: scale(0.4);
+  }
+}
+.lvg-people-button {
+  width: auto;
+  grid-auto-flow: column;
+  gap: 6px;
+  padding: 0 11px 0 10px;
+}
+.lvg-people-count {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.lvg-people.lv-popover {
+  min-width: 260px;
+}
+.lvg-people-list {
+  margin: 0;
+  padding: 0 0 2px;
+  list-style: none;
+}
+.lvg-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px 6px 8px;
+  border-radius: 8px;
+}
+.lvg-person-face {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--lvg-person);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.lvg-person-name {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.lvg-person-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--lv-field);
+  color: var(--lv-text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.lvg-person-media {
+  display: inline-flex;
+  gap: 6px;
+  color: var(--lv-text-3);
+}
+.lvg-person-media svg {
+  width: 14px;
+  height: 14px;
+}
+.lvg-leave {
+  display: inline-flex;
+  height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 15px 0 12px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--lv-off-face);
+  color: var(--lv-off);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--lv-fast) ease,
+    color var(--lv-fast) ease,
+    transform var(--lv-fast) var(--lv-ease);
+}
+.lvg-leave:hover {
+  background: var(--lv-danger);
+  color: #fff;
+}
+.lvg-leave:active {
+  transform: scale(0.96);
+}
+.lvg-leave svg {
+  width: 16px;
+  height: 16px;
+}
+@media (max-width: 760px) {
+  .lvg-leave span {
+    display: none;
+  }
+  .lvg-leave {
+    width: 40px;
+    justify-content: center;
+    padding: 0;
+  }
+  .lvg-space-host,
+  .lvg-topbar-sep,
+  .lvg-brand span {
+    display: none;
+  }
+}
+
+/* ── Banners ──────────────────────────────────────────────────────────── */
+
+.lvg-banners {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  translate: -50% 0;
+  pointer-events: none;
+}
+.lvg-banner {
+  display: inline-flex;
+  max-width: min(560px, calc(100vw - 32px));
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 5px 6px 5px 12px;
+  border-radius: 999px;
+  background: var(--lv-glass-strong);
+  -webkit-backdrop-filter: var(--lv-glass-blur);
+  backdrop-filter: var(--lv-glass-blur);
+  box-shadow:
+    inset 0 0.5px 0 var(--lv-glass-light),
+    var(--lv-shadow-pop);
+  color: var(--lv-text);
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: auto;
+  animation: lvg-banner-in var(--lv-slow) var(--lv-ease) both;
+}
+/* One line at a time, inside the top bar (it ends above where any window's label can be). Where the
+   bar has no room beside it, it sits in a row just under the bar that the stage starts below
+   (room.tsx BANNER_ROW_MAX_WIDTH): a banner never covers a label. */
+@media (max-width: 1100px) {
+  .lvg-banners {
+    top: 56px;
+  }
+}
+@keyframes lvg-banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.97);
+  }
+}
+.lvg-banner-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--lv-text-2);
+}
+.lvg-banner-icon svg {
+  width: 15px;
+  height: 15px;
+}
+.lvg-banner[data-icon="hand"] .lvg-banner-icon {
+  color: var(--lvg-me);
+}
+.lvg-banner-text {
+  min-width: 0;
+  overflow: hidden;
+  padding-right: 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lvg-banner-action {
+  height: 24px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lv-primary);
+  color: var(--lv-primary-text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lvg-banner-close {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--lv-text-3);
+  cursor: pointer;
+}
+.lvg-banner-close:hover {
+  background: var(--lv-hover);
+  color: var(--lv-text);
+}
+.lvg-banner-close svg {
+  width: 13px;
+  height: 13px;
+}
+
+@keyframes lvg-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .lvg-room[data-settling] :is(.lvg-window, .lvg-well, .lvg-window-page),
+  .lvg-faces,
+  .lvg-chat-panel,
+  .lvg-window,
+  .lvg-window-card {
+    transition: none;
+  }
+  .lvg-glyph-cursor,
+  .lvg-glyph-guest::before,
+  .lvg-glyph-guest::after,
+  .lvg-live-dot::after,
+  .lvg-pulse,
+  .lvg-window-loading,
+  .lvg-loading .lvg-glyph-window,
+  .lvg-toolbar,
+  .lvg-banner,
+  .lvg-over,
+  .lvg-loading,
+  .lvg-lobby-panel,
+  .lvg-lobby-copy,
+  .lvg-preview-wrap,
+  .lvg-badge {
+    animation: none;
+  }
+  .lvg-glyph-cursor {
+    transform: translate(112px, 28px);
+  }
+}

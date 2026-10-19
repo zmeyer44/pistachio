@@ -463,7 +463,9 @@ export interface DeskView {
   /**
    * A live page is under the Bar's idle nub, in the desk's trailing foot
    * corner: the nub is drawn over it by a view of main's (the "notch" chrome
-   * view), as nothing the shell draws can be (DeskBar says where).
+   * view), as nothing the shell draws can be (DeskBar says where). So is a
+   * page that has given way only to what that view lies over (setCover's
+   * `underNotch`: the nub's own tooltip) — the view stays over its still.
    */
   notchOver: boolean;
   /**
@@ -580,6 +582,43 @@ export interface DeskLayoutSnapshot {
    * layout with the chat at the side put the windows back under it).
    */
   desk?: { usable: Rect; reserve: number };
+}
+
+/**
+ * One window of the desk as a live share reports it (docs/live-share.md §6.4,
+ * lib/live/desk-report.ts): its frame and its page in the stage, whole pixels
+ * — the page rounded inward, and only as far down as the window is shown, so
+ * a picture cut at it takes in nothing beside it.
+ */
+export interface DeskLiveWindow {
+  id: string;
+  frame: Rect;
+  page: Rect;
+  focused: boolean;
+  minimized: boolean;
+  masked: boolean;
+  /** Drawn grown, turned or posed (carried lifted, the desk passing): its page is not where its box says. */
+  transformed: boolean;
+}
+
+/** The cover the rail's floating player is to a live share (DeskLiveGeometry.covers): its box, while it floats. */
+export const FLOAT_COVER = "float";
+
+/** The desk as it stands, for a live share: the space its windows are of, the stage's box in the window, and the windows staying on it, bottom to top. */
+export interface DeskLiveGeometry {
+  groupId: string | null;
+  stage: Rect;
+  windows: DeskLiveWindow[];
+  /**
+   * What the shell draws over the desk now, each where its owner says, in
+   * the stage's coordinates: every cover (setCover — a card, the Bar's menus
+   * and answer, a tooltip's band, a drop) and the rail's floating player
+   * (FLOAT_COVER). Which of them lie over which window is the live share's
+   * to judge (lib/live/desk-report.ts).
+   */
+  covers: Array<{ key: string; rect: Rect }>;
+  /** Windows of another space are on the stage, coming or going (the desk passing): nothing on it is this space's alone. */
+  passing: boolean;
 }
 
 /** A size in pixels. */
@@ -918,6 +957,9 @@ export class DeskEngine {
   #zoneEl: HTMLElement | null = null;
   /** What the shell draws over the desk (setCover): a card beside the sidebar, the Bar — in the stage's coordinates. */
   readonly #covers = new Map<string, Rect>();
+  /** The covers main's notch view lies over (setCover's `underNotch`), and the windows given way only to them (#checkNotch). */
+  readonly #notchCovers = new Set<string>();
+  readonly #underNotchView = new Set<string>();
   /** Covers that are windows of the shell's (stackCover), each with the windows brought in front of it since it was last in front of them all. */
   readonly #stacked = new Map<string, Set<string>>();
   #clearCovers: ReadonlySet<string> = new Set();
@@ -974,6 +1016,8 @@ export class DeskEngine {
   #cycleKey = false;
   /** Who hears a named layout laid out (onLaidOut): the smart layout's runner, which offers ⌃Z for it. */
   readonly #laidOutListeners = new Set<(undo: DeskLayoutSnapshot) => void>();
+  /** Who hears every render (onRendered): a live share's report of the desk, which reads liveGeometry then. */
+  readonly #renderedListeners = new Set<() => void>();
   /**
    * The named layout each space's desk was last laid out in, by space (a
    * desk of no space under ""): its kind, the desk then, and the box it gave
@@ -1385,15 +1429,22 @@ export class DeskEngine {
    * Bar's answer — or null to take it away. A live page is a native view and would
    * paint over it, so the windows under it give way to their stills; the
    * view's `clearCovers` says once none is left there, and it can be shown.
+   * `underNotch`: main's notch view lies over it (the nub's own tooltip,
+   * beside the nub): a page given way only to it is still under the view
+   * (`notchOver`), which stays.
    */
-  setCover(key: string, rect: Rect | null): void {
+  setCover(key: string, rect: Rect | null, options: { underNotch?: boolean } = {}): void {
     const before = this.#covers.get(key);
+    const underNotch = rect !== null && options.underNotch === true;
     if (rect === null) {
       if (before === undefined) return;
       this.#covers.delete(key);
+      this.#notchCovers.delete(key);
     } else {
-      if (before !== undefined && sameRect(before, rect, 0.5)) return;
+      if (before !== undefined && sameRect(before, rect, 0.5) && this.#notchCovers.has(key) === underNotch) return;
       this.#covers.set(key, { ...rect });
+      if (underNotch) this.#notchCovers.add(key);
+      else this.#notchCovers.delete(key);
     }
     this.#render();
     this.#kick();
@@ -1910,6 +1961,7 @@ export class DeskEngine {
     window.clearTimeout(this.#lowerTimer);
     nativeApi()?.setDesk(null);
     this.#listeners.clear();
+    this.#renderedListeners.clear();
   }
 
   // ── Starting, and passing ──────────────────────────────────────────────
@@ -2499,6 +2551,71 @@ export class DeskEngine {
 
   windowTabIds(): string[] {
     return [...this.#order];
+  }
+
+  // ── A live share's view of the desk (docs/live-share.md §6.4) ──────────
+
+  /** After every render — every frame while anything moves: a live share's report reads liveGeometry then. Keep it cheap. */
+  onRendered(listener: () => void): () => void {
+    this.#renderedListeners.add(listener);
+    return () => this.#renderedListeners.delete(listener);
+  }
+
+  /**
+   * The desk as it stands this frame: the space its windows are of, the
+   * stage's box in the window, and the windows staying on it, bottom to top —
+   * each window's frame where it is shown (its drawer may push it down) and
+   * its page inside it, as main is told to place the page (#report), in the
+   * stage. Not the windows leaving: another space's on their way out, one put
+   * away or closing. And what the shell draws over the stage (`covers`: each
+   * cover and the rail's floating player, where they are said to be) and
+   * whether a passing is under way: asked after the very render that put
+   * them there, so they are known before they are painted.
+   */
+  liveGeometry(): DeskLiveGeometry {
+    const { left, top, width, height } = this.#stageBox;
+    const windows: DeskLiveWindow[] = [];
+    for (const id of this.#order) {
+      const win = this.#wins.get(id)!;
+      if (win.flight === "away" || win.closing || this.#departing.has(id)) continue;
+      const shown = this.#shownRect(win);
+      windows.push({
+        id,
+        frame: wholeRect(shown),
+        page: innerRect(intersectRect(this.#pageBox(win), shown)),
+        focused: id === this.#focused && this.#blurred !== id,
+        minimized: win.mini !== null,
+        masked: win.mask !== null,
+        transformed: this.#transformed(win),
+      });
+    }
+    const covers = [...this.#covers].map(([key, rect]) => ({ key, rect: { ...rect } }));
+    if (this.#float !== null) covers.push({ key: FLOAT_COVER, rect: { ...this.#float.rect } });
+    const passing = this.#departing.size > 0 || this.#phase !== "open";
+    return { groupId: this.#groupId, stage: wholeRect({ x: left, y: top, w: width, h: height }), windows, covers, passing };
+  }
+
+  /**
+   * A space's saved arrangement laid out on this desk as it is now, as the
+   * desk would bring it out passing to it (#laidOut: its members only, masked
+   * ones as pictures, minimized ones parked), the window left on top in use:
+   * a live share's report of its space while another is in front.
+   */
+  savedGeometry(saved: readonly SavedDeskWindow[], tabIds: readonly string[], shellIds: readonly string[] | null, reserve = 0): DeskLiveWindow[] {
+    const { windows, entry } = this.#laidOut(saved, tabIds, null, shellIds, false, reserve);
+    return windows.map((window) => {
+      const insets = window.mask !== null ? MASK_INSETS : WINDOW_INSETS;
+      const page = { x: window.rect.x + insets.left, y: window.rect.y + insets.top, w: window.rect.w - insets.left - insets.right, h: window.rect.h - insets.top - insets.bottom };
+      return {
+        id: window.tabId,
+        frame: wholeRect(window.rect),
+        page: wholeRect(page),
+        focused: window.tabId === entry,
+        minimized: window.mini !== null,
+        masked: window.mask !== null,
+        transformed: false,
+      };
+    });
   }
 
   // ── Commands ───────────────────────────────────────────────────────────
@@ -4608,6 +4725,11 @@ export class DeskEngine {
       order.filter((id) => !lowered.has(id)),
       frames,
     );
+    // The same without the covers main's notch view lies over (the nub's tooltip): a window given way only to them is
+    // still under that view, which stays over its still rather than going from under the pointer (#checkNotch).
+    const notchCovers = [...covers.keys()].filter((key) => this.#notchCovers.has(key)).map((key) => `\u0000cover:${key}`);
+    const notchClear = notchCovers.length === 0 ? null : uncoveredWindows(order.filter((id) => !lowered.has(id) && !notchCovers.includes(id)), frames);
+    this.#underNotchView.clear();
     // (The shelf's own, against everything: it is the top of the stack, under only what the shell draws over the desk.)
     const shelfUncovered = uncoveredWindows(order, frames);
     for (const id of lowered) if (shelfUncovered.has(id)) uncovered.add(id);
@@ -4645,6 +4767,7 @@ export class DeskEngine {
         win.miniMotion === "in" ||
         (shelfOver && lowered.has(win.tabId));
       const drawn = !native || forced || (wants && this.#fresh(win));
+      if (drawn && native && !forced && notchClear?.has(win.tabId) === true && !this.#wantsStillForMotion(win)) this.#underNotchView.add(win.tabId);
       const grow = win.growTo;
       // Drawn growing, or grown: its still is of its page laid out at the box it grows to, or one is on its way.
       if (drawn && grow !== null && (win.still?.at ?? Number.NEGATIVE_INFINITY) < grow.since) this.#queueCapture(win.tabId, false);
@@ -4687,6 +4810,7 @@ export class DeskEngine {
     this.#flushCaptures();
     this.#focusPending();
     if (drawersMoving) this.#kick();
+    for (const listener of this.#renderedListeners) listener();
   }
 
   // ── The Drawer frame ───────────────────────────────────────────────────
@@ -4892,13 +5016,16 @@ export class DeskEngine {
     return progress < 1 || lingering || now < drawer.holdUntil || freeing;
   }
 
-  /** Whether a live page is under the Bar's idle nub (the view's `notchOver`): main's notch view draws it over the page then. */
+  /**
+   * Whether a live page is under the Bar's idle nub (the view's `notchOver`): main's notch view draws it over the page
+   * then — and over its still while it has given way only to what the view lies over.
+   */
   #checkNotch(): void {
     const notch = this.#notchRect();
     let over = false;
     if (notch !== null && this.#phase === "open") {
       for (const win of this.#wins.values()) {
-        if (win.drawn || !this.#host.hasLivePage(win.tabId)) continue;
+        if ((win.drawn && !this.#underNotchView.has(win.tabId)) || !this.#host.hasLivePage(win.tabId)) continue;
         const insets = this.#insets(win);
         if (rectsOverlap(this.#pageBox(win, insets), notch)) over = true;
       }
@@ -5206,7 +5333,7 @@ export class DeskEngine {
     const y = win.rect.y + this.#drawerShift(win);
     // Posed (going or coming as the desk passes: lib/desk/space-switch.ts), its still is drawn so, about its anchor.
     const posed = win.posed;
-    const transformed = posed !== null || (win.drawn && (win.scale !== 1 || win.tilt !== 0));
+    const transformed = this.#transformed(win);
     // A row or a tile over the column, or growing back from one, is over the sidebar as it is: nothing of it is cut.
     const morphed = win.dock !== null || (this.#gesture?.tabId === win.tabId && this.#gesture.morph !== null);
     const origin = posed === null ? win.origin : this.#poseOrigin(win, x, y);
@@ -5283,6 +5410,11 @@ export class DeskEngine {
       for (const name of ["--reveal-x", "--reveal-y", "--reveal-w", "--reveal-h"]) el.style.removeProperty(name);
     }
     win.revealed = reveal !== null;
+  }
+
+  /** Drawn other than as its box: posed as the desk passes, or a drawn window grown or turned (carried, lifted). */
+  #transformed(win: Win): boolean {
+    return win.posed !== null || (win.drawn && (win.scale !== 1 || win.tilt !== 0));
   }
 
   /** Where a posed window's scale and tilt are about, from its own corner: its centre, or the desk's centre, foot or top. */
@@ -6191,6 +6323,25 @@ function cornerRadiusOf(el: HTMLElement): number {
 
 function reducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** A box in whole pixels, as main places a view (#report): what a live share reports, so a still desk reads the same each frame. */
+function wholeRect(rect: Rect): Rect {
+  return { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.max(0, Math.round(rect.w)), h: Math.max(0, Math.round(rect.h)) };
+}
+
+/** The whole pixels wholly inside `rect`. */
+function innerRect(rect: Rect): Rect {
+  const x = Math.ceil(rect.x - 1e-6);
+  const y = Math.ceil(rect.y - 1e-6);
+  return { x, y, w: Math.max(0, Math.floor(rect.x + rect.w + 1e-6) - x), h: Math.max(0, Math.floor(rect.y + rect.h + 1e-6) - y) };
+}
+
+/** Where two boxes overlap (no size where they do not). */
+function intersectRect(a: Rect, b: Rect): Rect {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  return { x, y, w: Math.max(0, Math.min(a.x + a.w, b.x + b.w) - x), h: Math.max(0, Math.min(a.y + a.h, b.y + b.h) - y) };
 }
 
 function shrunk(rect: Rect): Rect {

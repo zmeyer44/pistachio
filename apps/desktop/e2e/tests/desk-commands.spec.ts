@@ -43,7 +43,7 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
     await expect(input).toHaveAttribute("placeholder", "Ask about Northstar… (/ for commands)");
     await input.fill("/");
     await expect(menu).toBeVisible();
-    await expect(rows).toHaveCount(16);
+    await expect(rows).toHaveCount(18);
     await expect(menu.getByRole("group")).toHaveCount(4);
     await expect(lit).toHaveAttribute("data-command", "search");
     await expect(lit).toContainText("Search DuckDuckGo in a new tab");
@@ -53,9 +53,9 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
 
     // ── 2. Typing narrows them; the arrows walk the list round; Escape puts it away, and the field keeps the words ─
     await input.pressSequentially("s");
-    await expect(rows.evaluateAll((all) => all.map((row) => row.getAttribute("data-command")))).resolves.toEqual(["search", "summarize", "screenshot"]);
+    await expect(rows.evaluateAll((all) => all.map((row) => row.getAttribute("data-command")))).resolves.toEqual(["search", "summarize", "screenshot", "share"]);
     await input.press("ArrowUp");
-    await expect(lit).toHaveAttribute("data-command", "screenshot");
+    await expect(lit).toHaveAttribute("data-command", "share");
     await input.press("ArrowDown");
     await expect(lit).toHaveAttribute("data-command", "search");
     await input.press("Escape");
@@ -140,7 +140,7 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
       field.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await expect(menu).toBeVisible();
-    await expect(rows).toHaveCount(16);
+    await expect(rows).toHaveCount(18);
     await expect.poll(upperLive).toBe(false);
     await input.fill("");
     await expect(shell.getByTestId("desk-commands")).toHaveCount(0);

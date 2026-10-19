@@ -1,5 +1,14 @@
 /* global process */
 
+import { fileURLToPath } from "node:url";
+import { copyEffectsAssets, EFFECTS_ASSET_DIR } from "@pistachio/live-share/assets";
+
+// The live share's camera backgrounds load their segmenter (MediaPipe's WASM
+// and model) from this site's own origin, never a CDN: copied under public/
+// (gitignored) here, where every way www starts passes — `next dev`, `next
+// build` on Vercel, the e2e harness's own `next` — before public/ is read.
+copyEffectsAssets(fileURLToPath(new URL(`./public/${EFFECTS_ASSET_DIR}`, import.meta.url)));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   devIndicators: false,
@@ -38,6 +47,7 @@ const nextConfig = {
   transpilePackages: [
     "@pistachio/agent-runtime",
     "@pistachio/evidence",
+    "@pistachio/live-share",
     "@pistachio/live-view",
     "@pistachio/notes",
     "@pistachio/protocol",

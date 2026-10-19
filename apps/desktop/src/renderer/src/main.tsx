@@ -1,13 +1,18 @@
 import React, { Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import { chromeViewFromHash, type ChromeViewId } from "@pistachio/shell-contracts/chrome";
+import type { LiveHostApi } from "@pistachio/shell-contracts/live-share";
 import { setShellApi, SurfaceProvider, ThemeRuntime } from "@pistachio/shell-ui";
+import { liveHostBridge } from "./live-host-bridge";
 import "./styles.css";
+
+const view = chromeViewFromHash(window.location.hash);
 
 // The desktop's entry (docs/web-browser-design.md §3.2): it names the bridge
 // and the surface, and the shell itself lives in @pistachio/shell-ui, where
-// the web app mounts the same tree over streamed panes.
-setShellApi(window.pistachio);
+// the web app mounts the same tree over streamed panes. The live share's
+// room window has a preload of its own, the room's members alone.
+setShellApi(view === "live-host" ? liveHostBridge(window.pistachio as unknown as LiveHostApi) : window.pistachio);
 
 // The same bundle serves the shell window and the utility chrome views above
 // its native tab views: drag capture, find-in-page, the bookmark card, the
@@ -43,8 +48,11 @@ const DragApp = React.lazy(() =>
 const FindApp = React.lazy(() =>
   import("@pistachio/shell-ui/FindApp.js").then((module) => ({ default: module.FindApp })),
 );
+// The live share's room, in a window of its own over the browser's (main/live/live-host-window.ts).
+const LiveHostApp = React.lazy(() =>
+  import("@pistachio/shell-ui/LiveHostApp.js").then((module) => ({ default: module.LiveHostApp })),
+);
 
-const view = chromeViewFromHash(window.location.hash);
 if (view !== null) document.body.dataset["chromeView"] = view;
 
 function Root({ view }: { view: ChromeViewId | null }) {
@@ -59,10 +67,14 @@ function Root({ view }: { view: ChromeViewId | null }) {
       return <NoticeApp />;
     case "notch":
       return <NotchApp />;
+    case "notch-picture":
+      return <NotchApp picture />;
     case "shelf":
       return <ShelfApp />;
     case "pip":
       return <PipApp />;
+    case "live-host":
+      return <LiveHostApp />;
     case null:
       return <App />;
   }

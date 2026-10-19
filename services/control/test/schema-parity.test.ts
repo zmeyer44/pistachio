@@ -65,6 +65,8 @@ describe("schema parity", () => {
         "ai_usage",
         "ai_budgets",
         "sync_policy_overrides",
+        "live_shares",
+        "live_requests",
       ].sort(),
     );
   });

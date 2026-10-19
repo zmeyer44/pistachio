@@ -1,0 +1,991 @@
+/*
+ * Live share's pieces (docs/live-share.md §8): the layers over the stage,
+ * the faces, the media switches and their menus, the chat. Plain CSS with
+ * `lv-` classes, no Tailwind, so the guest page and the desktop's live-host
+ * app both take it as it is.
+ *
+ * Tokens live on `.lv-theme`: designed dark first, as the desk reads in a
+ * dark room, and light where the system asks for it — or where the embedder
+ * says so with `data-lv-scheme` (the desktop follows its own theme, not the
+ * system's). Colour comes from the people in the room and nowhere else: a
+ * pointer, a stroke, a ring around whoever speaks. Everything else is
+ * neutral glass and ink, as the Pistachio desk is.
+ *
+ * Motion is transform and opacity only, 150–250 ms on the desk's curve, and
+ * stills under `prefers-reduced-motion`.
+ */
+
+/* ── Tokens ───────────────────────────────────────────────────────────── */
+
+/*
+ * Each colour is `light-dark(light, dark)`: `color-scheme` picks, so the
+ * system's choice applies unless the embedder pins one.
+ */
+.lv-theme {
+  color-scheme: light dark;
+  --lv-font: "Geist Variable", Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --lv-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --lv-ground: light-dark(oklch(0.962 0.003 264), oklch(0.172 0.005 264));
+  --lv-ground-2: light-dark(oklch(0.985 0.002 264), oklch(0.198 0.006 264));
+  --lv-well: light-dark(oklch(0.935 0.004 264), oklch(0.142 0.005 264));
+  --lv-well-shade: light-dark(oklch(0 0 0 / 0.13), oklch(0 0 0 / 0.55));
+  --lv-well-light: light-dark(oklch(1 0 0 / 0.85), oklch(1 0 0 / 0.045));
+  --lv-card: light-dark(oklch(1 0 0), oklch(0.232 0.006 264));
+  --lv-raised: light-dark(oklch(1 0 0), oklch(0.262 0.006 264));
+  --lv-field: light-dark(oklch(0 0 0 / 0.045), oklch(1 0 0 / 0.055));
+  --lv-field-focus: light-dark(oklch(0 0 0 / 0.065), oklch(1 0 0 / 0.085));
+
+  --lv-glass: light-dark(oklch(0.995 0.002 264 / 0.72), oklch(0.255 0.006 264 / 0.66));
+  --lv-glass-strong: light-dark(oklch(0.995 0.002 264 / 0.94), oklch(0.235 0.006 264 / 0.9));
+  --lv-glass-edge: light-dark(oklch(0 0 0 / 0.09), oklch(1 0 0 / 0.1));
+  --lv-glass-light: light-dark(oklch(1 0 0 / 0.9), oklch(1 0 0 / 0.07));
+  --lv-glass-blur: blur(22px) saturate(1.7);
+
+  --lv-text: light-dark(oklch(0.205 0.004 264), oklch(0.965 0.003 264));
+  --lv-text-2: light-dark(oklch(0.43 0.005 264), oklch(0.79 0.006 264));
+  --lv-text-3: light-dark(oklch(0.58 0.005 264), oklch(0.6 0.007 264));
+  --lv-hairline: light-dark(oklch(0 0 0 / 0.08), oklch(1 0 0 / 0.085));
+  --lv-hover: light-dark(oklch(0 0 0 / 0.05), oklch(1 0 0 / 0.07));
+  --lv-press: light-dark(oklch(0 0 0 / 0.085), oklch(1 0 0 / 0.11));
+  --lv-selected: light-dark(oklch(0 0 0 / 0.08), oklch(1 0 0 / 0.14));
+  --lv-ring: light-dark(oklch(0 0 0 / 0.45), oklch(1 0 0 / 0.55));
+
+  --lv-primary: light-dark(oklch(0.205 0.004 264), oklch(0.975 0.002 264));
+  --lv-primary-text: light-dark(oklch(0.99 0 0), oklch(0.18 0.005 264));
+  --lv-primary-hover: light-dark(oklch(0.32 0.004 264), oklch(0.9 0.003 264));
+
+  /* Live and active: the Pistachio green, kept to small marks. */
+  --lv-live: light-dark(oklch(0.62 0.16 150), oklch(0.76 0.16 150));
+  /* Off and danger: a status, never decoration. */
+  --lv-off: light-dark(oklch(0.56 0.19 25), oklch(0.73 0.15 25));
+  --lv-off-face: light-dark(oklch(0.62 0.19 25 / 0.12), oklch(0.62 0.17 25 / 0.17));
+  --lv-danger: oklch(0.64 0.2 25);
+  /* Something to know: amber, kept to small marks, read on an off face and over a camera alike. */
+  --lv-warn: oklch(0.82 0.16 78);
+
+  /* Shadows are composed from these, so they follow the scheme too. */
+  --lv-shade: light-dark(oklch(0 0 0 / 0.28), oklch(0 0 0 / 0.65));
+  --lv-shade-soft: light-dark(oklch(0 0 0 / 0.1), oklch(0 0 0 / 0.4));
+  --lv-shadow-pop: 0 0 0 0.5px var(--lv-glass-edge), 0 18px 46px -12px var(--lv-shade), 0 4px 12px -4px var(--lv-shade-soft);
+  --lv-shadow-float: 0 10px 30px -10px var(--lv-shade);
+
+  --lv-ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --lv-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --lv-fast: 150ms;
+  --lv-base: 200ms;
+  --lv-slow: 250ms;
+  --lv-radius: 12px;
+}
+.lv-theme[data-lv-scheme="dark"] {
+  color-scheme: dark;
+}
+.lv-theme[data-lv-scheme="light"] {
+  color-scheme: light;
+}
+
+/* ── Shared atoms ─────────────────────────────────────────────────────── */
+
+.lv-theme :where(button) {
+  font: inherit;
+  color: inherit;
+}
+
+.lv-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--lv-text-2);
+  cursor: pointer;
+  transition:
+    background-color var(--lv-fast) ease,
+    color var(--lv-fast) ease,
+    transform var(--lv-fast) var(--lv-ease);
+}
+.lv-icon-button:hover {
+  background: var(--lv-hover);
+  color: var(--lv-text);
+}
+.lv-icon-button:active {
+  transform: scale(0.94);
+}
+.lv-icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+.lv-theme :where(button):focus-visible {
+  outline: 2px solid var(--lv-ring);
+  outline-offset: 2px;
+}
+
+.lv-spin {
+  animation: lv-spin 0.9s linear infinite;
+}
+@keyframes lv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Layers over the stage ────────────────────────────────────────────── */
+
+.lv-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* One pixel at the tip, so the node has a box of its own (tests, hit-tests); the arrow and the pill hang off it. */
+.lv-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  color: var(--lv-cursor-color);
+  will-change: transform;
+  contain: layout style;
+}
+.lv-cursor-arrow {
+  position: absolute;
+  left: -1.5px;
+  top: -1.5px;
+  overflow: visible;
+  filter: drop-shadow(0 1px 1.5px oklch(0 0 0 / 0.35)) drop-shadow(0 3px 8px oklch(0 0 0 / 0.18));
+  transform-origin: 1.5px 1.5px;
+  transition: transform 120ms var(--lv-ease);
+}
+.lv-cursor[data-down] .lv-cursor-arrow {
+  transform: scale(0.88);
+}
+.lv-cursor-dot {
+  position: absolute;
+  left: -6px;
+  top: -6px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--lv-cursor-color);
+  box-shadow:
+    0 0 0 2px #fff,
+    0 2px 6px oklch(0 0 0 / 0.35);
+  display: none;
+}
+.lv-cursor[data-tool="highlighter"] .lv-cursor-dot {
+  left: -9px;
+  top: -9px;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--lv-cursor-color) 60%, transparent);
+}
+.lv-cursor[data-tool="laser"] .lv-cursor-dot {
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 6px color-mix(in oklab, var(--lv-cursor-color) 30%, transparent),
+    0 0 18px 4px color-mix(in oklab, var(--lv-cursor-color) 70%, transparent);
+}
+.lv-cursor:not([data-tool="pointer"]) .lv-cursor-arrow {
+  display: none;
+}
+.lv-cursor:not([data-tool="pointer"]) .lv-cursor-dot {
+  display: block;
+}
+.lv-cursor-name {
+  position: absolute;
+  left: 13px;
+  top: 19px;
+  padding: 3px 7px 3.5px;
+  border-radius: 999px;
+  background: var(--lv-cursor-color);
+  color: #fff;
+  font: 600 11.5px/1.2 var(--lv-font, sans-serif);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 0 0 0.5px oklch(1 0 0 / 0.22),
+    0 2px 8px -2px oklch(0 0 0 / 0.4);
+}
+.lv-cursor:not([data-tool="pointer"]) .lv-cursor-name {
+  left: 11px;
+  top: 9px;
+}
+
+/* Ink: the canvases fill the layer; the layer takes the pointer only with a pen in hand. */
+.lv-ink-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.lv-ink[data-drawing] {
+  pointer-events: auto;
+  touch-action: none;
+}
+
+/* Pings: two rings and a dot where someone pinged. */
+.lv-ping {
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--lv-ping-color);
+}
+.lv-ping-ring {
+  position: absolute;
+  left: -26px;
+  top: -26px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2.5px solid currentColor;
+  opacity: 0;
+  animation: lv-ping-ring 1s var(--lv-ease) both;
+}
+.lv-ping-ring + .lv-ping-ring {
+  animation-delay: 160ms;
+}
+.lv-ping-dot {
+  position: absolute;
+  left: -5px;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px #fff;
+  animation: lv-ping-dot 1.3s ease-out both;
+}
+@keyframes lv-ping-ring {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+@keyframes lv-ping-dot {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  15% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  30% {
+    transform: scale(1);
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Reactions rise from a face. */
+.lv-reactions {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 60;
+}
+.lv-reaction {
+  position: absolute;
+  font-size: 30px;
+  line-height: 1;
+  translate: -50% -50%;
+  filter: drop-shadow(0 4px 10px oklch(0 0 0 / 0.3));
+  animation: lv-rise 2.4s var(--lv-ease) both;
+}
+@keyframes lv-rise {
+  0% {
+    opacity: 0;
+    transform: translate(0, 6px) scale(0.4);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(0, -14px) scale(1.18);
+  }
+  24% {
+    transform: translate(calc(var(--lv-drift) * 0.2), -34px) scale(1) rotate(calc(var(--lv-tilt) * 0.3));
+  }
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--lv-drift), -180px) scale(0.92) rotate(var(--lv-tilt));
+  }
+}
+
+/* ── Faces ────────────────────────────────────────────────────────────── */
+
+.lv-faces {
+  --lv-face-size: 68px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--lv-font);
+}
+.lv-faces[data-direction="row"] {
+  flex-direction: row;
+}
+.lv-faces-list {
+  display: flex;
+  flex-direction: inherit;
+  align-items: center;
+  gap: 12px;
+}
+.lv-faces-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lv-glass);
+  -webkit-backdrop-filter: var(--lv-glass-blur);
+  backdrop-filter: var(--lv-glass-blur);
+  box-shadow:
+    inset 0 0 0 0.5px var(--lv-glass-edge),
+    var(--lv-shadow-float);
+  color: var(--lv-text-2);
+  cursor: pointer;
+  transition:
+    background-color var(--lv-fast) ease,
+    color var(--lv-fast) ease;
+}
+.lv-faces-fold:hover {
+  color: var(--lv-text);
+  background: var(--lv-glass-strong);
+}
+.lv-faces-chevron {
+  width: 14px;
+  height: 14px;
+}
+.lv-faces[data-collapsed] .lv-faces-fold {
+  height: 34px;
+  padding: 0 10px 0 5px;
+}
+.lv-faces-mini {
+  display: inline-flex;
+}
+.lv-faces-mini-face {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: var(--lv-face-color);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 0 0 2px var(--lv-ground);
+}
+.lv-faces-mini-face:first-child {
+  margin-left: 0;
+}
+.lv-faces-more {
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.lv-faces-fold[data-speaking] .lv-faces-mini-face:first-child {
+  box-shadow:
+    0 0 0 2px var(--lv-ground),
+    0 0 0 3.5px var(--lv-live);
+}
+
+.lv-face {
+  position: relative;
+  width: var(--lv-face-size);
+  height: var(--lv-face-size);
+  animation: lv-face-in var(--lv-slow) var(--lv-ease) both;
+}
+.lv-face-bubble {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 50%;
+  background: linear-gradient(160deg, color-mix(in oklab, var(--lv-face-color) 88%, #fff) 0%, var(--lv-face-color) 55%, color-mix(in oklab, var(--lv-face-color) 80%, #000) 100%);
+  box-shadow:
+    0 0 0 1px oklch(1 0 0 / 0.08),
+    0 12px 28px -12px oklch(0 0 0 / 0.65);
+  transition: box-shadow var(--lv-base) var(--lv-ease);
+}
+.lv-face[data-speaking] .lv-face-bubble {
+  box-shadow:
+    0 0 0 2.5px var(--lv-face-color),
+    0 0 0 5px color-mix(in oklab, var(--lv-face-color) 28%, transparent),
+    0 12px 28px -12px oklch(0 0 0 / 0.65);
+}
+.lv-face-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* Their connection dropped: still here, but faded until it comes back. */
+.lv-face[data-connection="lost"] .lv-face-bubble {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.lv-face[data-self] .lv-face-video {
+  transform: scaleX(-1);
+}
+.lv-face-initial {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: #fff;
+  font-size: calc(var(--lv-face-size) * 0.38);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 2px oklch(0 0 0 / 0.2);
+  user-select: none;
+}
+.lv-face-muted {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: oklch(0.2 0.005 264);
+  color: #fff;
+  box-shadow: 0 0 0 2px var(--lv-ground);
+}
+.lv-face-muted svg {
+  width: 12px;
+  height: 12px;
+}
+.lv-face-name {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 10px);
+  max-width: 180px;
+  overflow: hidden;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--lv-glass-strong);
+  -webkit-backdrop-filter: var(--lv-glass-blur);
+  backdrop-filter: var(--lv-glass-blur);
+  box-shadow:
+    inset 0 0 0 0.5px var(--lv-glass-edge),
+    var(--lv-shadow-float);
+  color: var(--lv-text);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  translate: 4px -50%;
+  pointer-events: none;
+  transition:
+    opacity var(--lv-fast) ease,
+    translate var(--lv-base) var(--lv-ease);
+}
+.lv-faces[data-direction="row"] .lv-face-name {
+  top: calc(100% + 8px);
+  right: auto;
+  left: 50%;
+  translate: -50% -4px;
+}
+.lv-face:hover .lv-face-name,
+.lv-face-name[data-shown] {
+  opacity: 1;
+  translate: 0 -50%;
+}
+.lv-faces[data-direction="row"] .lv-face:hover .lv-face-name,
+.lv-faces[data-direction="row"] .lv-face-name[data-shown] {
+  translate: -50% 0;
+}
+.lv-face-controls {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 50%;
+  background: oklch(0 0 0 / 0.45);
+  opacity: 0;
+  transition: opacity var(--lv-fast) ease;
+}
+.lv-face:hover .lv-face-controls,
+.lv-face:focus-within .lv-face-controls {
+  opacity: 1;
+}
+@keyframes lv-face-in {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+}
+
+/* ── Media switches ───────────────────────────────────────────────────── */
+
+.lv-media {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--lv-hover);
+  transition: background-color var(--lv-fast) ease;
+}
+.lv-media:not([data-on]) {
+  background: var(--lv-off-face);
+}
+.lv-media[data-variant="overlay"] {
+  background: oklch(0.12 0.005 264 / 0.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  box-shadow: inset 0 0 0 0.5px oklch(1 0 0 / 0.14);
+  color: #fff;
+}
+.lv-media[data-variant="overlay"]:not([data-on]) {
+  background: oklch(0.55 0.19 25 / 0.82);
+}
+.lv-media-toggle,
+.lv-media-more {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background-color var(--lv-fast) ease,
+    color var(--lv-fast) ease;
+}
+.lv-media-toggle {
+  width: 42px;
+  border-radius: 12px;
+}
+.lv-media-more {
+  width: 22px;
+  margin-left: -4px;
+  border-radius: 0 12px 12px 0;
+  color: var(--lv-text-3);
+}
+.lv-media[data-variant="overlay"] .lv-media-more {
+  color: oklch(1 0 0 / 0.75);
+}
+.lv-media:not([data-on]) .lv-media-toggle {
+  color: var(--lv-off);
+}
+.lv-media[data-variant="overlay"]:not([data-on]) .lv-media-toggle {
+  color: #fff;
+}
+.lv-media-toggle:hover,
+.lv-media-more:hover {
+  background: var(--lv-hover);
+}
+.lv-media-more:hover {
+  color: var(--lv-text);
+}
+.lv-media-toggle:active {
+  background: var(--lv-press);
+}
+.lv-media-toggle:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+/* Off because it could not come on: a mark, the why in its tooltip, and still a click from trying again. */
+.lv-media[data-problem] .lv-media-toggle::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lv-warn);
+  box-shadow: 0 0 0 1.5px oklch(0 0 0 / 0.28);
+}
+.lv-media-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+.lv-media-more svg {
+  width: 13px;
+  height: 13px;
+}
+.lv-media-level {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 16px;
+  height: 2px;
+  margin-left: -8px;
+  border-radius: 1px;
+  background: var(--lv-live);
+  transform: scaleX(var(--lv-level, 0));
+  transform-origin: left center;
+  opacity: calc(0.35 + var(--lv-level, 0));
+}
+
+/* ── Popovers and menus ───────────────────────────────────────────────── */
+
+.lv-popover-anchor {
+  position: relative;
+}
+.lv-popover {
+  position: absolute;
+  z-index: 40;
+  min-width: 248px;
+  max-width: min(340px, calc(100vw - 24px));
+  max-height: min(70vh, 520px);
+  overflow: auto;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--lv-glass-strong);
+  -webkit-backdrop-filter: var(--lv-glass-blur);
+  backdrop-filter: var(--lv-glass-blur);
+  box-shadow:
+    inset 0 0.5px 0 var(--lv-glass-light),
+    var(--lv-shadow-pop);
+  color: var(--lv-text);
+  font-family: var(--lv-font);
+  text-align: left;
+  animation: lv-pop-in var(--lv-base) var(--lv-ease) both;
+}
+.lv-popover[data-placement="top"] {
+  bottom: calc(100% + 12px);
+  transform-origin: bottom center;
+}
+.lv-popover[data-placement="bottom"] {
+  top: calc(100% + 10px);
+  transform-origin: top center;
+}
+.lv-popover[data-align="start"] {
+  left: -4px;
+}
+.lv-popover[data-align="end"] {
+  right: -4px;
+}
+.lv-popover[data-align="center"] {
+  left: 50%;
+  translate: -50% 0;
+}
+@keyframes lv-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+}
+.lv-popover[data-placement="bottom"] {
+  animation-name: lv-pop-down;
+}
+@keyframes lv-pop-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+}
+
+.lv-menu-section + .lv-menu-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--lv-hairline);
+}
+.lv-menu-title {
+  padding: 6px 10px 5px;
+  color: var(--lv-text-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.lv-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 10px 6px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--lv-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.lv-menu-item:hover {
+  background: var(--lv-hover);
+}
+.lv-menu-item:disabled {
+  color: var(--lv-text-3);
+  cursor: default;
+}
+.lv-menu-item:disabled:hover {
+  background: transparent;
+}
+.lv-menu-check {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  flex: none;
+  color: var(--lv-text);
+}
+.lv-menu-check svg {
+  width: 14px;
+  height: 14px;
+}
+.lv-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lv-menu-note {
+  margin: 6px 10px 4px;
+  color: var(--lv-text-3);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.lv-bg-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 2px 4px 4px;
+}
+.lv-bg-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 11;
+  border: 0;
+  border-radius: 8px;
+  background: var(--lv-field) center / cover no-repeat;
+  color: var(--lv-text-2);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 0.5px var(--lv-hairline);
+  transition:
+    box-shadow var(--lv-fast) ease,
+    transform var(--lv-fast) var(--lv-ease);
+}
+.lv-bg-tile[data-kind="blur"] {
+  background-image: radial-gradient(circle at 30% 40%, oklch(0.75 0.06 240 / 0.7), transparent 60%), radial-gradient(circle at 75% 70%, oklch(0.7 0.07 60 / 0.6), transparent 55%);
+  color: #fff;
+}
+.lv-bg-tile svg {
+  width: 16px;
+  height: 16px;
+}
+.lv-bg-tile:hover {
+  transform: scale(1.04);
+}
+.lv-bg-tile[aria-checked="true"] {
+  box-shadow:
+    0 0 0 2px var(--lv-glass-strong),
+    0 0 0 3.5px var(--lv-text);
+}
+.lv-bg-tile:disabled {
+  opacity: 0.4;
+  cursor: default;
+  transform: none;
+}
+
+/* ── Chat ─────────────────────────────────────────────────────────────── */
+
+.lv-chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-family: var(--lv-font);
+  color: var(--lv-text);
+}
+.lv-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 52px;
+  padding: 0 10px 0 18px;
+  flex: none;
+}
+.lv-chat-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.lv-chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 12px;
+  overscroll-behavior: contain;
+}
+.lv-chat-empty {
+  margin: 24px 24px 0;
+  color: var(--lv-text-3);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+.lv-chat-message {
+  padding: 1px 18px;
+  animation: lv-chat-in var(--lv-base) var(--lv-ease) both;
+}
+.lv-chat-message:not([data-grouped]) {
+  margin-top: 12px;
+}
+.lv-chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 2px;
+}
+.lv-chat-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  align-self: center;
+  border-radius: 50%;
+  background: var(--lv-chat-color);
+}
+.lv-chat-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.lv-chat-time {
+  color: var(--lv-text-3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.lv-chat-text {
+  margin: 0 0 0 14px;
+  color: var(--lv-text);
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.lv-chat-compose {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 8px 12px 12px;
+  padding: 7px 7px 7px 13px;
+  border-radius: 14px;
+  background: var(--lv-field);
+  box-shadow: inset 0 0 0 0.5px var(--lv-hairline);
+  transition:
+    background-color var(--lv-fast) ease,
+    box-shadow var(--lv-fast) ease;
+}
+.lv-chat-compose:focus-within {
+  background: var(--lv-field-focus);
+  box-shadow: inset 0 0 0 1px var(--lv-ring);
+}
+.lv-chat-input {
+  flex: 1;
+  min-width: 0;
+  max-height: 120px;
+  padding: 5px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--lv-text);
+  font: 13.5px/1.4 var(--lv-font);
+}
+.lv-chat-input::placeholder {
+  color: var(--lv-text-3);
+}
+.lv-chat-left {
+  align-self: center;
+  color: var(--lv-text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.lv-chat-send {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lv-primary);
+  color: var(--lv-primary-text);
+  cursor: pointer;
+  transition:
+    opacity var(--lv-fast) ease,
+    transform var(--lv-fast) var(--lv-ease);
+}
+.lv-chat-send:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.lv-chat-send:not(:disabled):active {
+  transform: scale(0.92);
+}
+.lv-chat-send svg {
+  width: 16px;
+  height: 16px;
+}
+@keyframes lv-chat-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .lv-cursor-arrow,
+  .lv-face-bubble,
+  .lv-face-name,
+  .lv-media,
+  .lv-bg-tile {
+    transition: none;
+  }
+  .lv-popover,
+  .lv-face,
+  .lv-chat-message {
+    animation: none;
+  }
+  .lv-ping-ring {
+    display: none;
+  }
+  .lv-ping-dot {
+    animation-name: lv-fade-out;
+    animation-timing-function: ease-in;
+  }
+  .lv-reaction {
+    animation-name: lv-fade-out;
+  }
+  @keyframes lv-fade-out {
+    0%,
+    70% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+}

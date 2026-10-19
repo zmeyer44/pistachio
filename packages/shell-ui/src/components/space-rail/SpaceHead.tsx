@@ -1,8 +1,10 @@
 import { Ellipsis } from "lucide-react";
 import { tabGroupTitle, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { openLiveCard } from "../../lib/live/actions";
 import { sidebarOverlays, useSidebarColumn, useSidebarMode } from "../../lib/sidebar-mode";
 import { useAppStore } from "../../store";
 import { useContextMenu } from "../ContextMenu";
+import { LiveMark, liveMarkLabel, useLiveMarkFor } from "../live/LiveMark";
 import { GroupTitleInput } from "../TabGroupRow";
 import { renameSpace, useSpaceRename } from "./column-state";
 import { useSpaceMenu } from "./space-menu";
@@ -14,6 +16,7 @@ import { useSpaceMenu } from "./space-menu";
  * menu (rename, colour, new tab in space, release the tabs, close space; a
  * page's space's own: space-menu.tsx).
  * A space being named by the host says so, shimmering, until its name comes.
+ * Shared live, it wears the live mark after its name, which opens the Live card.
  * A page's space goes by its page's title, and has no name of its own to edit.
  */
 export function SpaceHead({ group, page, count }: { group: TabGroupInfo; page: boolean; count: number }) {
@@ -28,6 +31,7 @@ export function SpaceHead({ group, page, count }: { group: TabGroupInfo; page: b
     return tabGroupTitle(own?.title ?? "");
   });
   const naming = group.naming === true;
+  const live = useLiveMarkFor(group.id);
   const title = pageTitle ?? group.title;
   const windows = count === 0 ? "" : `${String(count)} ${count === 1 ? "window" : "windows"}`;
   const finish = (value: string | null): void => {
@@ -54,6 +58,20 @@ export function SpaceHead({ group, page, count }: { group: TabGroupInfo; page: b
           {naming ? "Naming…" : title}
         </span>
       )}
+      {live.live ? (
+        <button
+          type="button"
+          data-live-opener=""
+          data-testid="space-live"
+          aria-label={`${liveMarkLabel(live.guests)}: show the Live card`}
+          title={liveMarkLabel(live.guests)}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => openLiveCard("live")}
+          className="space-live no-drag"
+        >
+          <LiveMark />
+        </button>
+      ) : null}
       {windows === "" ? null : (
         <span className="space-count" aria-label={windows} title={windows}>
           {count}

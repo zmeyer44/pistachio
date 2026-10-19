@@ -43,9 +43,13 @@ import type { TidySummary } from "./tidy.js";
  * The utility chrome views main hosts beside the shell window's page: the
  * drag layer, the find bar, the bookmark card that rises over the page
  * after a capture (renderer/src/BookmarkToastApp.tsx), and the notice stack
- * (./notice.ts, renderer/src/NoticeApp.tsx).
+ * (./notice.ts, renderer/src/NoticeApp.tsx). "notch-picture" is no view: the
+ * notch view's nub painted offscreen, for main to lay over the window's glass
+ * under that view (main/desk-glass.ts). Nor is "live-host": the live share's
+ * room, in a transparent child window of its own over the browser's window
+ * (main/live/live-host-window.ts, docs/live-share.md §6.1).
  */
-export type ChromeViewId = "drag" | "find" | "bookmark" | "notice" | "notch" | "shelf" | "pip";
+export type ChromeViewId = "drag" | "find" | "bookmark" | "notice" | "notch" | "notch-picture" | "shelf" | "pip" | "live-host";
 
 /** The URL hash each chrome view loads the renderer bundle with. */
 export const CHROME_VIEW_HASHES: Record<ChromeViewId, `#${ChromeViewId}`> = {
@@ -54,8 +58,10 @@ export const CHROME_VIEW_HASHES: Record<ChromeViewId, `#${ChromeViewId}`> = {
   bookmark: "#bookmark",
   notice: "#notice",
   notch: "#notch",
+  "notch-picture": "#notch-picture",
   shelf: "#shelf",
   pip: "#pip",
+  "live-host": "#live-host",
 };
 
 export function chromeViewFromHash(hash: string): ChromeViewId | null {
@@ -511,7 +517,9 @@ export type ShellCommand =
   /** Stage an image or selected words from a page in the console's composer. */
   | { type: "attachToChat"; insert: ChatInsert }
   /** The page's menu offered it, but the image could not be read. */
-  | { type: "attachToChatFailed"; reason: string };
+  | { type: "attachToChatFailed"; reason: string }
+  /** The live share's pill was pressed over the desk (docs/live-share.md §1): the Live card. */
+  | { type: "openLiveCard" };
 
 export function isShellCommand(value: unknown): value is ShellCommand {
   if (typeof value !== "object" || value === null) return false;
@@ -545,6 +553,7 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "toggleDownloads":
     case "closeLiveView":
     case "showUpdate":
+    case "openLiveCard":
       return true;
     case "openLiveView": {
       const runId = (value as { runId?: unknown }).runId;

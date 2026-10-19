@@ -1,0 +1,10 @@
+{
+  "extends": "@repo/typescript-config/react-library.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node", "dom-mediacapture-transform"],
+    "noEmit": true
+  },
+  "include": ["src", "test"]
+}

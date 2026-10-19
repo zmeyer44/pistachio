@@ -79,6 +79,18 @@ export interface NoticeFrame extends NoticeStackState {
   anchor: ContentBounds | null;
 }
 
+/**
+ * Where the notice view draws its cards (`box`, the view's own CSS px), and
+ * the size of the view it was measured in: main places it by the view's box
+ * in the window — what of the window a live share's outlines go under — and
+ * takes it only while the view is that size (one measured before main
+ * resized the view is said again after).
+ */
+export interface NoticeFootprint {
+  box: ContentBounds;
+  view: { width: number; height: number };
+}
+
 /** What the stack tells the shell: a click, or the pointer coming and going. */
 export type NoticeEvent =
   | { type: "dismiss"; id: number }
@@ -131,6 +143,15 @@ export function isNoticeFrame(value: unknown): value is NoticeFrame {
     isNoticePosition(frame["position"]) &&
     (frame["anchor"] === null || isAnchor(frame["anchor"]))
   );
+}
+
+export function isNoticeFootprint(value: unknown): value is NoticeFootprint {
+  if (typeof value !== "object" || value === null) return false;
+  const footprint = value as Record<string, unknown>;
+  const view = footprint["view"];
+  if (typeof view !== "object" || view === null) return false;
+  const size = view as Record<string, unknown>;
+  return isAnchor(footprint["box"]) && isFiniteNumber(size["width"]) && isFiniteNumber(size["height"]);
 }
 
 export function isNoticeEvent(value: unknown): value is NoticeEvent {

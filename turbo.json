@@ -104,6 +104,11 @@
     "RESEND_API_KEY",
     "EMAIL_FROM",
     "MAILER",
+    "LIVEKIT_URL",
+    "LIVEKIT_API_URL",
+    "LIVEKIT_API_KEY",
+    "LIVEKIT_API_SECRET",
+    "LIVE_MAX_GUESTS",
     "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH",
     "SIGNUPS_DIR",
     "PISTACHIO_AGENT_CONTEXT_TOKENS",
@@ -133,7 +138,8 @@
         "!.next/dev/**",
         "dist/**",
         "out/**",
-        "native/*/build/**"
+        "native/*/build/**",
+        "public/live/mediapipe/**"
       ]
     },
     "lint": {

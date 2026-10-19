@@ -212,6 +212,12 @@ const NATIVE_ONLY: Record<string, string> = {
   "lib/sync.ts": "the sync section and the pill's sync states are the desktop's",
   "lib/egress.ts": "the egress section and the egress plane are the desktop's",
   "lib/chrome-status.ts": "the three plane rows fold into one on a stream surface",
+  // Hosting a live share is the desktop's (docs/live-share.md §6.2: its
+  // members are NativeSurfaceApi's, which no tab has): the host's own camera
+  // controls and the live-host window's session.
+  "components/live/LiveYou.tsx": "the host's camera in the Live card; hosting is the desktop's",
+  "components/live-host/host-session.ts": "the live-host window's room; hosting is the desktop's",
+  "lib/live/notices.ts": "the host's share notices, from main's live state, which no tab has",
   // The module itself: the Mac's own wording is the point.
   "lib/surface-copy.ts": "the copy module",
 };

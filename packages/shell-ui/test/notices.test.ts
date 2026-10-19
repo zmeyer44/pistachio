@@ -9,6 +9,8 @@ import {
   pruneCard,
   pushNotice,
   reconcileCards,
+  stackFootprint,
+  unionBox,
   type ShellNotice,
   type StackCard,
 } from "../src/lib/notices";
@@ -168,5 +170,37 @@ describe("cardPose", () => {
     const pushed = reconcileCards(cards, [item(2), item(3), item(4)]).find((card) => card.item.id === 1)!;
     const pose = cardPose(pushed, false, heights);
     expect(pose).toMatchObject({ opacity: 0, z: 0, y: -3 * NOTICE_PEEK });
+  });
+});
+
+describe("stackFootprint", () => {
+  // The stack's box as the view lays it out: 356 wide, centred, its foot 24 px above the view's (a 404 × 96 view).
+  const stack = { x: 24, y: 26, w: 356, h: 46 };
+
+  it("is the cards' own box at rest: as wide as the widest, set as they are, as tall as the stack — and the edge ring", () => {
+    expect(stackFootprint(stack, { widest: 261, tallest: 46 }, "bottom", "center", false)).toEqual({ x: 24 + 47.5 - 2, y: 26 - 2, w: 261 + 4, h: 46 + 4 });
+    expect(stackFootprint(stack, { widest: 261, tallest: 46 }, "bottom", "left", false)).toMatchObject({ x: 24 - 2, w: 265 });
+    expect(stackFootprint(stack, { widest: 261, tallest: 46 }, "bottom", "right", false)).toMatchObject({ x: 24 + 356 - 261 - 2, w: 265 });
+    // A message as wide as the stack lets it be.
+    expect(stackFootprint(stack, { widest: 400, tallest: 46 }, "bottom", "center", false)).toMatchObject({ x: 22, w: 360 });
+  });
+
+  it("stands a card taller than the stack's box — the last, leaving — on the stack's edge", () => {
+    const empty = { ...stack, y: 72, h: 0 };
+    expect(stackFootprint(empty, { widest: 261, tallest: 46 }, "bottom", "center", false)).toMatchObject({ y: 72 - 46 - 2, h: 50 });
+    expect(stackFootprint({ ...empty, y: 24 }, { widest: 261, tallest: 46 }, "top", "center", false)).toMatchObject({ y: 24 - 2, h: 50 });
+  });
+
+  it("reaches, while the cards move, as far toward the edge as a card comes and goes from, and a peek away from it", () => {
+    expect(stackFootprint(stack, { widest: 261, tallest: 46 }, "bottom", "center", true)).toMatchObject({ y: 26 - NOTICE_PEEK - 2, h: 46 + NOTICE_PEEK + NOTICE_DISTANCE + 4 });
+    expect(stackFootprint(stack, { widest: 261, tallest: 46 }, "top", "center", true)).toMatchObject({ y: 26 - NOTICE_DISTANCE - 2, h: 46 + NOTICE_PEEK + NOTICE_DISTANCE + 4 });
+  });
+
+  it("is nothing with no card", () => {
+    expect(stackFootprint(stack, { widest: 0, tallest: 0 }, "bottom", "center", false)).toBeNull();
+  });
+
+  it("joins where the cards were and where they go", () => {
+    expect(unionBox({ x: 10, y: 50, w: 100, h: 20 }, { x: 30, y: 20, w: 120, h: 20 })).toEqual({ x: 10, y: 20, w: 140, h: 50 });
   });
 });

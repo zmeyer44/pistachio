@@ -93,6 +93,7 @@ import {
   imessagePendingQuestions,
   integrationConnections,
   keyWrappers,
+  liveShares,
   liveTickets,
   vaultEntries,
   noteShares,
@@ -116,6 +117,8 @@ import { createHubBinding, type HubBinding } from "./hub.js";
 import { CREDENTIAL_ISSUER, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, createIdp } from "./idp.js";
 import type { SigningKeys } from "./keys-provider.js";
 import { MAILER_DISABLED, type MailerOptions } from "./mailer.js";
+import { liveKitApiFromEnv, type LiveKitApi } from "./live/livekit.js";
+import { liveGuestRoute, registerLiveRoutes, scrubLivePath, type LiveSweepResult } from "./live/routes.js";
 import {
   BlueBubblesConnector,
   IMESSAGE_ONBOARDING_TTL_MS,
@@ -269,6 +272,12 @@ export interface CreateAppOptions {
   sse?: { pingMs?: number };
   /** The `/v1/ai/*` model proxy (ai-proxy.ts): an injectable fetch for tests. */
   ai?: { fetchImpl?: typeof fetch; timeoutMs?: number };
+  /**
+   * Live share's LiveKit server (docs/live-share.md §5). Absent: built from
+   * `env` (`LIVEKIT_*`, src/live/config.ts); null: live share is off and
+   * every `/v1/live` route answers 503.
+   */
+  livekit?: LiveKitApi | null;
 }
 
 export interface MaintenanceResult {
@@ -286,6 +295,12 @@ export interface MaintenanceResult {
   prunedAnonymousAccounts: number;
   /** Paused runs whose deadline passed, swept to a terminal state. */
   expiredPauses: number;
+  /** Live shares whose host went silent (docs/live-share.md §5). */
+  endedLiveShares: number;
+  /** Live guests gone from their room without leaving, their places freed (§5). */
+  releasedLiveGuests: number;
+  /** Ended live shares past retention, with their requests. */
+  prunedLiveShares: number;
   steersDelivered: number;
   notificationsDelivered: number;
 }
@@ -300,6 +315,12 @@ export interface ControlApp {
   runMaintenance(now?: number): Promise<MaintenanceResult>;
   /** Deliver due channel notifications now; resolves the count delivered. */
   dispatchNotifications(now?: number): Promise<number>;
+  /**
+   * The live-share half of maintenance alone (docs/live-share.md §5): a
+   * share silent for ten minutes has to end within minutes, not at the next
+   * hourly pass, so the server also runs this every minute.
+   */
+  sweepLiveShares(now?: number): Promise<LiveSweepResult>;
   /** Settle background work started by requests (tests). */
   idle(): Promise<void>;
 }
@@ -848,9 +869,11 @@ function publicCredentialCaptureRoute(method: string, path: string): boolean {
 }
 
 function requestLogPath(path: string): string {
-  return path
-    .replace(CREDENTIAL_CAPTURE_ID_IN_PATH_RE, "$1:captureId")
-    .replace(/(\/imessage\/onboarding\/)[A-Za-z0-9_-]{43}/u, "$1:token");
+  return scrubLivePath(
+    path
+      .replace(CREDENTIAL_CAPTURE_ID_IN_PATH_RE, "$1:captureId")
+      .replace(/(\/imessage\/onboarding\/)[A-Za-z0-9_-]{43}/u, "$1:token"),
+  );
 }
 
 function bootstrapAllowed(method: string, path: string): boolean {
@@ -1142,6 +1165,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
   const allowedOrigins = parseAllowedOrigins(env["CONTROL_ALLOWED_ORIGINS"]);
   const blueBubblesConfig = options.imessage === undefined ? blueBubblesOptionsFromEnv(env) : options.imessage;
   const imessage = blueBubblesConfig === null ? null : new BlueBubblesConnector(blueBubblesConfig);
+  const livekit = options.livekit === undefined ? liveKitApiFromEnv(env) : options.livekit;
 
   const app = new Hono<AppEnv>();
   const hub = createHubBinding({ db, signing, now, injected: options.hub, log: options.log });
@@ -1731,7 +1755,10 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
       (method === "GET" && PUBLIC_ARTIFACT_RE.test(path)) ||
       (method === "GET" && PUBLIC_NOTE_RE.test(path)) ||
       (method === "GET" && IMESSAGE_ONBOARDING_RE.test(path)) ||
-      publicCredentialCaptureRoute(method, path)
+      publicCredentialCaptureRoute(method, path) ||
+      // A live share's link and lobby: the token and the request secret are
+      // checked by the routes themselves (src/live/routes.ts).
+      liveGuestRoute(method, path)
     ) return next();
     if (path.startsWith("/v1/internal/")) return serviceAuth(c, next);
     if (GATEWAY_PATHS.has(path)) return gatewayAuth(c, next);
@@ -2134,10 +2161,12 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
    *
    * What moves is everything an anonymous account can have: its meter (so
    * the month's spend is still the person's, under their own cap), its
-   * audit trail, a recorded onboarding, and the device itself — re-parented
+   * audit trail, a recorded onboarding, the device itself — re-parented
    * rather than re-enrolled, so this Mac keeps its one id (D24) and the
-   * answer is its new token. The anonymous account's Spaces hold nothing
-   * (its allow-list never let it write one) and go with the row.
+   * answer is its new token — and its live shares, which go on under the new
+   * token (deleted with the row, a live one's room would be left open, its
+   * guests in it, with nobody to close it). The anonymous account's Spaces
+   * hold nothing (its allow-list never let it write one) and go with the row.
    */
   v1.post("/account/link", validate(accountLinkSchema), async (c) => {
     const userId = c.get("userId");
@@ -2163,6 +2192,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
         .returning({ id: aiUsage.id });
       await tx.update(auditEvents).set({ userId }).where(eq(auditEvents.userId, from.userId));
       await tx.update(devices).set({ userId, lastSeenAt: new Date(now()) }).where(eq(devices.id, fromDeviceId));
+      await tx.update(liveShares).set({ userId }).where(eq(liveShares.userId, from.userId));
       if (source.onboardingCompletedAt !== null) {
         await tx
           .update(users)
@@ -6747,6 +6777,17 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
     return c.json({ userId, throttled: false });
   });
 
+  const live = registerLiveRoutes(v1, {
+    db,
+    livekit,
+    env,
+    now,
+    log,
+    track,
+    clientAddress,
+    webOrigin: webPublicOrigin,
+  });
+
   app.route("/v1", v1);
 
   /* ---------------------------------------------------------------- *
@@ -6904,6 +6945,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
         db.select({ id: hostedRuns.id }).from(hostedRuns).where(ne(hostedRuns.status, "waiting_for_judgment")),
       ),
     );
+    const { endedLiveShares, releasedLiveGuests, prunedLiveShares } = await live.sweep(at);
     const steers = await outbox.flush();
     const notificationsDelivered = await dispatchNotifications(at);
     return {
@@ -6916,6 +6958,9 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
       prunedAiUsage,
       prunedAnonymousAccounts,
       expiredPauses,
+      endedLiveShares,
+      releasedLiveGuests,
+      prunedLiveShares,
       steersDelivered: steers.delivered,
       notificationsDelivered,
     };
@@ -6925,7 +6970,17 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
     while (background.size > 0) await Promise.all([...background]);
   };
 
-  return { app, hub, outbox, bus, dispatcher, runMaintenance, dispatchNotifications, idle };
+  return {
+    app,
+    hub,
+    outbox,
+    bus,
+    dispatcher,
+    runMaintenance,
+    dispatchNotifications,
+    sweepLiveShares: (at: number = now()) => live.sweep(at),
+    idle,
+  };
 }
 
 export type { SteerBody, HubBinding, HubHost };

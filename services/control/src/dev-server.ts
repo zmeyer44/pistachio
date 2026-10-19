@@ -78,6 +78,13 @@ process.env["EGRESS_STATIC_PORT"] ??= "8443";
 process.env["PISTACHIO_WEB_URL"] ??= "http://localhost:3000";
 process.env["PISTACHIO_BROWSER_URL"] ??= "http://localhost:3001";
 process.env["CONTROL_ALLOWED_ORIGINS"] ??= DEV_ALLOWED_ORIGINS;
+// Live share (docs/live-share.md §11): the local `livekit-server --dev` that
+// `pnpm dev:livekit` runs. Without it running the routes still answer, but
+// starting a share fails (control opens its room first), as does whatever
+// else control asks of the server.
+process.env["LIVEKIT_URL"] ??= "ws://127.0.0.1:7880";
+process.env["LIVEKIT_API_KEY"] ??= "devkey";
+process.env["LIVEKIT_API_SECRET"] ??= "secret";
 process.env["PORT"] ??= "8787";
 
 await import("./server.js");

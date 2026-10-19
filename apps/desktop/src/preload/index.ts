@@ -62,7 +62,7 @@ import type {
   TabDragVisual,
 } from "@pistachio/shell-contracts/chrome";
 import type { SidebarCommand } from "@pistachio/shell-contracts/sidebar";
-import type { NoticeEvent, NoticeFrame, NoticeStackState } from "@pistachio/shell-contracts/notice";
+import type { NoticeEvent, NoticeFootprint, NoticeFrame, NoticeStackState } from "@pistachio/shell-contracts/notice";
 import type {
   BrowserMediaInfo,
   MediaControl,
@@ -130,6 +130,7 @@ import type { ArtifactListing } from "@pistachio/shell-contracts/artifacts";
 import type { NoteResponse, NoteSnapshot } from "@pistachio/shell-contracts/notes";
 import type { ReportResponse } from "@pistachio/shell-contracts/reports";
 import type { TerminalEvent, TerminalRequest } from "@pistachio/shell-contracts/terminal";
+import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState } from "@pistachio/shell-contracts/live-share";
 
 /**
  * The shell's end of a port to the terminal host (docs/terminal.md §3).
@@ -367,7 +368,6 @@ const api: PistachioApi = {
     return () => ipcRenderer.removeListener(IPC.deskNotchChanged, handler);
   },
   sendDeskNotchInput: (input: DeskNotchInput) => ipcRenderer.send(IPC.deskNotchInput, input),
-  sendDeskNotchOutline: (points: readonly number[]) => ipcRenderer.send(IPC.deskNotchOutline, points),
   onDeskNotchInput(listener) {
     const handler = (_event: Electron.IpcRendererEvent, input: unknown): void => {
       if (isDeskNotchInput(input)) listener(input);
@@ -458,6 +458,36 @@ const api: PistachioApi = {
   onTerminalEvent(listener) {
     terminalListeners.add(listener);
     return () => terminalListeners.delete(listener);
+  },
+  // ── Live share (docs/live-share.md §6): the shell's members, then the live-host app's ──
+  liveShare: (command: LiveCommand) => ipcRenderer.invoke(IPC.liveShareCommand, command) as Promise<void>,
+  getLiveShare: () => ipcRenderer.invoke(IPC.liveShareGet) as Promise<LiveShareState>,
+  onLiveShare(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, state: LiveShareState): void => listener(state);
+    ipcRenderer.on(IPC.liveShareChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.liveShareChanged, handler);
+  },
+  onLiveRoster(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, participants: LiveGuest[]): void => listener(participants);
+    ipcRenderer.on(IPC.liveRosterChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.liveRosterChanged, handler);
+  },
+  setLiveDesk: (report: LiveDeskReport | null) => ipcRenderer.send(IPC.liveDeskSet, report),
+  liveHostConfig: () => ipcRenderer.invoke(IPC.liveHostConfig) as Promise<LiveHostConfig | null>,
+  onLiveHostEvent(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, event: LiveHostEvent): void => listener(event);
+    ipcRenderer.on(IPC.liveHostEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.liveHostEvent, handler);
+  },
+  sendLiveHostReport: (report: LiveHostReport) => ipcRenderer.send(IPC.liveHostReport, report),
+  liveHostSource: async (tabId: string) => {
+    const id: unknown = await ipcRenderer.invoke(IPC.liveHostSource, tabId);
+    return typeof id === "string" ? id : null;
+  },
+  // (The live-host window's alone, main answers nobody else; here for the native surface to be whole.)
+  liveHostShellSource: async () => {
+    const id: unknown = await ipcRenderer.invoke(IPC.liveHostShellSource);
+    return typeof id === "string" ? id : null;
   },
   getTabSwitcherPreviews: (limit) =>
     ipcRenderer.invoke(IPC.tabSwitcherPreviewsGet, limit) as Promise<
@@ -716,6 +746,8 @@ const api: PistachioApi = {
   },
   resizeNoticeView: (height: number) =>
     ipcRenderer.send(IPC.noticeViewResize, height),
+  setNoticeFootprint: (footprint: NoticeFootprint | null) =>
+    ipcRenderer.send(IPC.noticeViewFootprint, footprint),
   sendNoticeEvent: (event: NoticeEvent) =>
     ipcRenderer.send(IPC.noticeEvent, event),
   onNoticeEvent(listener) {

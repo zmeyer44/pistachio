@@ -252,6 +252,9 @@ import type { BringDownPlace } from "@pistachio/shell-contracts/sidebar-controll
 import type { TidyGroupCandidate, TidyTabCandidate } from "@pistachio/shell-contracts/tidy";
 import { SessionGate } from "./session-gate";
 import type { ProxyCredential } from "./egress/egress-service";
+import type { ElectronInputStep } from "@pistachio/live-share";
+import { wakeAndLayOut } from "./live/live-hold";
+import { PageCaptureGrants } from "./page-capture-grants";
 
 /** Ignore brief media starts such as notification pings; the card reveal waits them out. */
 const MEDIA_REVEAL_DELAY_MS = 900;
@@ -286,6 +289,10 @@ const RECENTLY_CLOSED_LIMIT = 25;
 const UNLOAD_ANSWER_TIMEOUT_MS = 10_000;
 /** How long a capture waits on a page to paint a style change before giving up. */
 const FRAME_SETTLE_TIMEOUT_MS = 120;
+/** How long a held page is drawn for at most, waiting for it to lay out at its size (#layOutHeldPage; it takes a round trip). */
+const LIVE_LAYOUT_WAIT_MS = 500;
+/** How long a held page's size is waited on when read (a renderer that does not answer is taken as not at it). */
+const LIVE_SIZE_READ_MS = 1_000;
 
 /** What the browser observed of a relying-party page while its popup was open. */
 interface AuthenticationOwnerWatch {
@@ -578,6 +585,13 @@ export interface BrowserControllerHooks {
    * page let go of its entry is titled after it (docs/spaces.md §1).
    */
   entryTitle?: (spaceId: string, anchorId: string) => string | null;
+  /**
+   * A tab's page has a new document after its view was made or its renderer
+   * went (a wake, a crash), or a live share's page was laid out afresh while
+   * hidden (holdLiveTabs): whatever captures the tab must capture it again
+   * (docs/live-share.md §6.1). A navigation within a page's life is not one.
+   */
+  onPageReplaced?: (tabId: string) => void;
 }
 
 /** How long a closed switcher's page waits to be laid out before it gives up on the keyboard. */
@@ -1066,8 +1080,8 @@ export class BrowserController {
    * shell drags it, so its own origin cannot be the reference.
    */
   #deskGrab: { tabId: string; offset: { x: number; y: number } | null } | null = null;
-  /** Captures of desk pages handed to the shell (deskLiveSource), by the captured page's contents: to whom, and until when. */
-  readonly #deskLiveGrants = new Map<number, { origin: string; until: number }>();
+  /** Captures of pages handed out (deskLiveSource to the shell, liveTabSource to the live share's window), by the captured page's contents. */
+  readonly #deskLiveGrants = new PageCaptureGrants(DESK_LIVE_GRANT_MS);
   /**
    * The grab key is down, as the keyboard last said. A mouse event reaching
    * `before-mouse-event` carries no modifiers, so the key is followed from
@@ -1100,6 +1114,19 @@ export class BrowserController {
   #deskMaskForwarding = false;
   /** A page shown again under the pointer is being told the pointer left it (#releaseRestingPointer). */
   #releasingPointer = false;
+  /** A live share guest's input is being sent to a page (sendLiveInput): it is the page's alone, not the host's. */
+  #liveInput = false;
+  /** The tabs a live share streams, with their pages' sizes on the shared desk: never put to sleep, woken if asleep, laid out (holdLiveTabs). */
+  #liveHeld: ReadonlyMap<string, { width: number; height: number }> = new Map();
+  /** The space a live share shares: Tidy leaves it be, as it does the space in front (holdLiveTabs). */
+  #liveGroupId: string | null = null;
+  #liveWaking = false;
+  /** Held again while a wake was under way: one more pass follows it. */
+  #liveHeldAgain = false;
+  /** The size a held page is laid out at, as #layOutHeldPage last drew or read it (a hidden page keeps its layout). */
+  readonly #liveDrawn = new WeakMap<WebContents, string>();
+  /** Held pages not laid out for want of a view to draw them under, and the one there was then (#liveCover). */
+  readonly #liveUnlaid = new Map<string, string>();
   /** The modifier keys down, as the keyboard last said: a mouse event reaching `before-mouse-event` carries none. */
   #deskModifiers: Array<"shift" | "control" | "alt" | "meta"> = [];
   /** The mouse buttons held on a masked page, so a re-sent move says it is a drag. */
@@ -2247,7 +2274,9 @@ export class BrowserController {
       // idle — nor is a window of one that is drawn for now (covered,
       // minimized, under an overlay), whose page is not in the layout.
       this.#layout.views.some((view) => view.tabId === tabId) ||
-      this.#desk?.tabIds.includes(tabId) === true
+      this.#desk?.tabIds.includes(tabId) === true ||
+      // Guests are watching it live (docs/live-share.md §6.1), whatever space is in front.
+      this.#liveHeld.has(tabId)
     )
       return;
     this.#cancelPermissionsForTab(tabId);
@@ -4500,7 +4529,17 @@ export class BrowserController {
       if (info.appIconUrl != null && hostOf(url) !== this.#appIconHosts.get(tab)) info.appIconUrl = null;
     });
     // (Before anything else hears of it: a desk zoom waiting for the page's document is applied on this navigation.)
-    view.webContents.prependListener("did-navigate", () => this.#committedPages.add(view.webContents));
+    view.webContents.prependListener("did-navigate", () => {
+      const fresh = !this.#committedPages.has(view.webContents);
+      this.#committedPages.add(view.webContents);
+      if (!fresh || this.#tabs.get(info.id) !== tab) return;
+      this.#hooks.onPageReplaced?.(info.id);
+      // A held page's first document, come after its wake was given up on (or its renderer's return): laid out afresh.
+      if (this.#liveHeld.has(info.id)) {
+        this.#liveDrawn.delete(view.webContents);
+        void this.#wakeLiveHeld();
+      }
+    });
     view.webContents.on("did-navigate", refresh);
     view.webContents.on("did-navigate-in-page", refresh);
     // A capture ends with its document, and only once the next one has
@@ -4551,6 +4590,7 @@ export class BrowserController {
     // — so this is the same teardown a navigation does, without the tab going.
     view.webContents.on("render-process-gone", () => {
       this.#committedPages.delete(view.webContents);
+      this.#liveDrawn.delete(view.webContents);
       if (this.#tabs.get(info.id) !== tab) return;
       this.#endWake(info.id);
       this.#releaseFullscreen(info.id);
@@ -4639,7 +4679,8 @@ export class BrowserController {
       this.#handleDeskMouse(tab, event, mouse),
     );
     view.webContents.on("input-event", (_event, input) => {
-      if (POINTER_INPUT_TYPES.has(input.type)) this.#hooks.onPointerInput?.();
+      // (A live share guest's pointer — heard inside sendLiveInput — is not the host's: it never cancels their ⌥⌘ hold.)
+      if (POINTER_INPUT_TYPES.has(input.type) && !this.#liveInput) this.#hooks.onPointerInput?.();
     });
     this.#installWindowOpenHandler(tab, view.webContents);
     // A page never makes itself a terminal (docs/terminal.md §5): a shell is started by the person, not by a link — nor by
@@ -6185,6 +6226,8 @@ export class BrowserController {
     event: Electron.Event,
     input: Electron.Input,
   ): void {
+    // A live share guest's key (sendLiveInput) is the page's alone: none of the app's bindings, the switcher's or the desk's.
+    if (this.#liveInput) return;
     if (this.#onTabSwitcherInput(event, input, tab.view.webContents)) return;
     if (input.type !== "keyDown") return;
     if (
@@ -8499,9 +8542,9 @@ export class BrowserController {
     };
   }
 
-  /** What Tidy may not touch in a Profile (Space): ./spaces tidyReach over its spaces, its current one, the person's and the desk's windows. */
+  /** What Tidy may not touch in a Profile (Space): ./spaces tidyReach over its spaces, its current one, the person's, the desk's windows and the space shared live. */
   #tidyReach(spaceId: string): ReturnType<typeof tidyReach> {
-    return tidyReach(this.#spaceTabGroups(spaceId), this.currentGroupId(spaceId), (group) => this.#isPersons(group), this.#desk?.tabIds ?? []);
+    return tidyReach(this.#spaceTabGroups(spaceId), this.currentGroupId(spaceId), (group) => this.#isPersons(group), this.#desk?.tabIds ?? [], this.#liveGroupId);
   }
 
   /**
@@ -8990,10 +9033,197 @@ export class BrowserController {
   deskLiveSource(tabId: string, requester: WebContents): string | null {
     const tab = this.#tabs.get(tabId);
     if (tab === undefined || tab.info.kind !== "human" || tab.view.webContents.isDestroyed() || requester.isDestroyed() || this.#desk?.tabIds.includes(tabId) !== true) return null;
-    const origin = schemeHost(requester.getURL());
-    if (origin === null) return null;
-    this.#deskLiveGrants.set(tab.view.webContents.id, { origin, until: Date.now() + DESK_LIVE_GRANT_MS });
+    if (!this.#grantPageCapture(tab.view.webContents, requester)) return null;
     return tab.view.webContents.getMediaSourceId(requester);
+  }
+
+  /** A capture of `captured` handed to `requester`, granted once, for ten seconds, to its origin (#takeDeskLiveGrant). */
+  #grantPageCapture(captured: WebContents, requester: WebContents): boolean {
+    const origin = schemeHost(requester.getURL());
+    if (origin === null) return false;
+    this.#deskLiveGrants.grant(captured.id, origin);
+    return true;
+  }
+
+  // ── Live share (docs/live-share.md §6.1) ─────────────────────────────────────
+
+  /** A space (tab group) by its id, whatever its kind (drawn, loose, a page's); null when there is none. */
+  tabGroup(groupId: string): TabGroupInfo | null {
+    const group = this.#tabGroups.get(groupId);
+    return group === undefined ? null : { ...group, tabIds: [...group.tabIds] };
+  }
+
+  /**
+   * A capture of a shared window's page for the live-host app to stream: a
+   * tab media source id for one getUserMedia within 10 s — of the page's
+   * picture alone, as no window's sound is shared (docs/live-share.md §3) —
+   * granted to that requester alone, as deskLiveSource's is. The live share
+   * decides which tabs it streams; here only a human tab with a page qualifies.
+   */
+  liveTabSource(tabId: string, requester: WebContents): string | null {
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || tab.info.kind !== "human" || tab.view.webContents.isDestroyed() || requester.isDestroyed() || isShellPageUrl(tab.info.url)) return null;
+    if (!this.#grantPageCapture(tab.view.webContents, requester)) return null;
+    return tab.view.webContents.getMediaSourceId(requester);
+  }
+
+  /**
+   * The space a live share shares (docs/live-share.md §6.1), which Tidy
+   * leaves alone as it does the space in front, and the tabs it streams to
+   * guests, each with its page's size on the shared desk (DIP): none of them
+   * is put to sleep while held, one asleep is woken — a few at a time, a page
+   * that never finishes loading holding up only its own place (live-hold.ts)
+   * — and one whose view is not shown is laid out at its size
+   * (#layOutHeldPage), so a covered window, or one of a space that is not in
+   * front, is live for the guests all the same.
+   */
+  holdLiveTabs(groupId: string | null, tabs: ReadonlyArray<{ tabId: string; width: number; height: number }>): void {
+    this.#liveGroupId = groupId;
+    this.#liveHeld = new Map(tabs.map(({ tabId, width, height }) => [tabId, { width: Math.round(width), height: Math.round(height) }]));
+    for (const tabId of [...this.#liveUnlaid.keys()]) if (!this.#liveHeld.has(tabId)) this.#liveUnlaid.delete(tabId);
+    if (this.#liveHeld.size > 0) void this.#wakeLiveHeld();
+  }
+
+  async #wakeLiveHeld(): Promise<void> {
+    if (this.#liveWaking) {
+      this.#liveHeldAgain = true;
+      return;
+    }
+    this.#liveWaking = true;
+    try {
+      do {
+        this.#liveHeldAgain = false;
+        await wakeAndLayOut([...this.#liveHeld.keys()], {
+          asleep: (tabId) => this.#dormantTabs.has(tabId),
+          wake: (tabId) => this.#ensureLiveTab(tabId, { awaitLoad: true }),
+          layOut: async (tabId) => {
+            const tab = this.#tabs.get(tabId);
+            const size = this.#liveHeld.get(tabId);
+            if (tab !== undefined && size !== undefined) await this.#layOutHeldPage(tab, size);
+          },
+        });
+      } while (this.#liveHeldAgain);
+    } finally {
+      this.#liveWaking = false;
+    }
+  }
+
+  /**
+   * A page whose view is not shown is laid out at the size its view was last
+   * drawn at — 0×0 if it never was (a covered window woken for the share),
+   * and the capture of such a page never starts — and new bounds given to a
+   * hidden view do not reach its page (probed, Electron 43). So a held page
+   * not at its size is drawn at it for a moment, directly beneath the view
+   * the person is looking at and inside its box, so nothing shows: only
+   * until the page has the size (it lays out at once), then hidden again,
+   * after which it keeps that size, and its pictures, while hidden. Its
+   * capture is then taken afresh (onPageReplaced). With no such view to draw
+   * it under, or one too small to hide it, it is left as it is.
+   *
+   * A hold comes with every change of any streamed window's size (each frame
+   * of a resize drag), so a page known to be at its size — drawn at it here,
+   * or read at it, since — is not read again. The size is read from the main
+   * frame, which answers while the page is still loading (the contents' own
+   * executeJavaScript waits for the load to end, and one that never ends
+   * would never answer), and a renderer that does not answer within a second
+   * is taken as not at it.
+   */
+  async #layOutHeldPage(tab: ManagedTab, size: { width: number; height: number }): Promise<void> {
+    const contents = tab.view.webContents;
+    if (contents.isDestroyed() || tab.view.getVisible() || size.width < 1 || size.height < 1) return;
+    const tabId = tab.info.id;
+    const drawnAt = `${String(size.width)}x${String(size.height)}`;
+    if (this.#liveDrawn.get(contents) === drawnAt) {
+      this.#liveUnlaid.delete(tabId);
+      return;
+    }
+    // A page zoomed for its window lays out at its zoom's box, whatever it was drawn at: it is drawn once at each size.
+    const zoom = this.#deskZooms.get(tabId);
+    const zoomed = zoom !== undefined && zoom.applied !== null && zoom.contents === contents;
+    const atSize = async (): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const reading = contents.mainFrame.executeJavaScript("[innerWidth, innerHeight]").catch(() => null);
+      const read: unknown = await Promise.race([reading, new Promise((resolve) => (timer = setTimeout(() => resolve(null), LIVE_SIZE_READ_MS)))]).finally(() => clearTimeout(timer));
+      return Array.isArray(read) && Math.abs(Number(read[0]) - size.width) <= 1 && Math.abs(Number(read[1]) - size.height) <= 1;
+    };
+    if (!zoomed && (await atSize())) {
+      this.#liveUnlaid.delete(tabId);
+      if (!contents.isDestroyed()) this.#liveDrawn.set(contents, drawnAt);
+      return;
+    }
+    const cover = this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
+    const box = cover?.view.getBounds();
+    const children = this.#window.contentView.children;
+    const at = cover === undefined ? -1 : children.indexOf(cover.view);
+    if (cover === undefined || box === undefined || cover === tab || !cover.view.getVisible() || this.#deskMasks.has(cover.info.id) || at < 0 || size.width > box.width || size.height > box.height) {
+      // (The windows under a cover of the shell's — a card, a menu — are stills, their views down: tried again once one is up.)
+      this.#liveUnlaid.set(tabId, this.#liveCover());
+      return;
+    }
+    if (tab.view.getVisible()) return;
+    // (Re-adding takes it out first: a view above the cover, or out of the window, lands in its slot, directly beneath it.)
+    const own = children.indexOf(tab.view);
+    if (own === -1 || own > at) this.#window.contentView.addChildView(tab.view, at);
+    settleViewBounds(tab.view, { x: box.x, y: box.y, width: size.width, height: size.height });
+    tab.view.setVisible(true);
+    try {
+      if (zoomed) await this.#settleFrame(tab);
+      else for (let waited = 0; waited < LIVE_LAYOUT_WAIT_MS && !contents.isDestroyed() && !(await atSize()); waited += 16) await new Promise((resolve) => setTimeout(resolve, 16));
+    } finally {
+      // The layout decides what is shown: the person may have raised this very window meanwhile.
+      this.#applyLayout();
+    }
+    if (contents.isDestroyed() || this.#tabs.get(tabId) !== tab) return;
+    this.#liveUnlaid.delete(tabId);
+    this.#liveDrawn.set(contents, drawnAt);
+    this.#hooks.onPageReplaced?.(tabId);
+  }
+
+  /** The view a held page would be drawn under now — the one the person is looking at, and its size — or "" when none is up. */
+  #liveCover(): string {
+    const cover = this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
+    if (cover === undefined || !cover.view.getVisible()) return "";
+    const { width, height } = cover.view.getBounds();
+    return `${cover.info.id}:${String(width)}x${String(height)}`;
+  }
+
+  /** After a layout: a held page left unlaid is tried again if there is another view to draw it under now. */
+  #retryLiveLayouts(): void {
+    if (this.#liveUnlaid.size === 0 || this.#liveWaking) return;
+    const cover = this.#liveCover();
+    if (cover !== "" && [...this.#liveUnlaid.values()].some((tried) => tried !== cover)) void this.#wakeLiveHeld();
+  }
+
+  /** A live tab's view size (DIP), the box a guest's input is mapped into; null when it has no page or no size. */
+  liveViewSize(tabId: string): { width: number; height: number } | null {
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || tab.view.webContents.isDestroyed()) return null;
+    const { width, height } = tab.view.getBounds();
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+
+  /**
+   * A live share guest's input on a tab's page (docs/live-share.md §6.1): sent
+   * as the page's own events, past main's hooks — a guest's ⌘W is not the
+   * host's, nor is a guest's press a grab of the window — and text inserted as
+   * a paste would be. sendInputEvent never reaches the app's menu, so no key
+   * of theirs touches the app or the host's clipboard. False without a page.
+   */
+  sendLiveInput(tabId: string, steps: readonly ElectronInputStep[]): boolean {
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || tab.info.kind !== "human" || tab.view.webContents.isDestroyed()) return false;
+    const contents = tab.view.webContents;
+    // (before-input-event and before-mouse-event hear a sent event at once, inside sendInputEvent.)
+    this.#liveInput = true;
+    try {
+      for (const step of steps) {
+        if (step.type === "insertText") void contents.insertText(step.text);
+        else contents.sendInputEvent(step);
+      }
+    } finally {
+      this.#liveInput = false;
+    }
+    return true;
   }
 
   /**
@@ -9012,15 +9242,14 @@ export class BrowserController {
     return pageCorners(read);
   }
 
-  /** The capture deskLiveSource handed out, asked for now: by the shell it went to, of the page alone (no camera, no microphone). */
+  /**
+   * A capture deskLiveSource (or liveTabSource) handed out, asked for now: by a renderer it went to, of the page's
+   * picture alone — no camera, no microphone, no sound.
+   */
   #takeDeskLiveGrant(contentsId: number, details: Electron.PermissionRequest | Electron.MediaAccessPermissionRequest | Electron.FilesystemPermissionRequest | Electron.OpenExternalPermissionRequest): boolean {
-    const grant = this.#deskLiveGrants.get(contentsId);
-    if (grant === undefined) return false;
     const mediaTypes = "mediaTypes" in details ? (details.mediaTypes ?? []) : [];
     const origin = "securityOrigin" in details && typeof details.securityOrigin === "string" ? schemeHost(details.securityOrigin) : null;
-    if (mediaTypes.length > 0 || origin !== grant.origin) return false;
-    this.#deskLiveGrants.delete(contentsId);
-    return Date.now() <= grant.until;
+    return this.#deskLiveGrants.take(contentsId, origin, mediaTypes);
   }
 
   /** A picture of the tab's page at its view's size, taken again a frame apart until it is (null if it never is). */
@@ -9145,8 +9374,9 @@ export class BrowserController {
    */
   #handleDeskMouse(tab: ManagedTab, event: Electron.Event, mouse: Electron.MouseInputEvent): void {
     // A masked page's own event, re-sent at its point on the page (#forwardMaskedMouse),
-    // or the leave a page shown under a resting pointer is told (#releaseRestingPointer).
-    if (this.#deskMaskForwarding || this.#releasingPointer) return;
+    // the leave a page shown under a resting pointer is told (#releaseRestingPointer),
+    // or a live share guest's (sendLiveInput), whose press grabs no window: it went where it was sent.
+    if (this.#deskMaskForwarding || this.#releasingPointer || this.#liveInput) return;
     const tabId = tab.info.id;
     const grab = this.#deskGrab;
     if (grab !== null && grab.tabId === tabId) {
@@ -9840,6 +10070,8 @@ export class BrowserController {
   }
 
   #applyLayout(): void {
+    // (Once this layout is in place: a held page may have a view to be drawn under now.)
+    if (this.#liveUnlaid.size > 0) queueMicrotask(() => this.#retryLiveLayouts());
     const layout = this.#layout;
     const fullscreen = this.#fullscreenTab();
     if (fullscreen !== null) {

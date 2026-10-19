@@ -23,6 +23,7 @@
     "@json-render/react": "0.21.0",
     "@pistachio/documents": "workspace:*",
     "@pistachio/evidence": "workspace:*",
+    "@pistachio/live-share": "workspace:*",
     "@pistachio/live-view": "workspace:*",
     "@pistachio/notes": "workspace:*",
     "@pistachio/protocol": "workspace:*",

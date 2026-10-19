@@ -1,6 +1,6 @@
 {
   "name": "@pistachio/desktop",
-  "version": "0.0.45",
+  "version": "0.0.46",
   "productName": "Pistachio",
   "private": true,
   "type": "module",
@@ -26,6 +26,7 @@
     "@pistachio/documents": "workspace:*",
     "@pistachio/egress-policy": "workspace:*",
     "@pistachio/evidence": "workspace:*",
+    "@pistachio/live-share": "workspace:*",
     "@pistachio/live-view": "workspace:*",
     "@pistachio/notes": "workspace:*",
     "@pistachio/notifications": "workspace:*",

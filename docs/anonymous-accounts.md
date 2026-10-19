@@ -46,6 +46,9 @@ added later is closed to anonymous accounts until someone decides otherwise:
 - `GET /v1/me` (now carries `anonymous: boolean`, and `email` may be null)
 - `POST /v1/me/onboarding/complete`
 - `POST /v1/account/upgrade` — the way out
+- `ALL /v1/live/shares*` — hosting a live share of a space (`docs/live-share.md`):
+  it keeps nothing of the person's on this plane past the share, only the
+  link's hash and the lobby
 
 Everything else answers `403 {error: "account_required"}`. The hub refuses its
 token at the upgrade, and `/internal/auth/introspect` (the cloud browser's
@@ -99,8 +102,11 @@ The limiters are in memory, per control process, like every other limiter in
   Both are proven: the bearer by a password login a moment ago, the anonymous
   account by its own device token. Moves `ai_usage` and `audit_events`,
   carries over a recorded onboarding (the real account's own wins),
-  **re-parents the device** so the Mac keeps its one id (D24), deletes the
-  anonymous user (its empty Profiles cascade). → `{linked, usageRows, device,
+  **re-parents the device** so the Mac keeps its one id (D24), moves its
+  `live_shares` with it (a live share goes on under the device's new token;
+  deleted with the user, its room would be left open with guests in it and
+  nobody to close it — `docs/live-share.md` §5), deletes the anonymous user
+  (its empty Profiles cascade). → `{linked, usageRows, device,
   token, exp}` with the device's token under the real account. Only an
   anonymous account can be the source: 409 `not_anonymous` otherwise.
 
@@ -143,7 +149,8 @@ layer asks the new `modelsAvailable()` / `getModelToken()`.
   token taken before the login. Same `signed-up`-with-token state, and
   `enroll()` finishes as a joined account (no new recovery code). If the link
   is refused or unreachable, the token is dropped and `enroll()` registers the
-  device afresh; the anonymous account is left for the sweep.
+  device afresh; the anonymous account is left for the sweep (a live share it
+  hosts is ended first, under its own token — `docs/live-share.md` §6.1).
 - A 401 on an anonymous token that re-proving the key cannot fix (the account
   was swept) resets to `unenrolled` and starts another — no "revoked" banner,
   no `onSignedOut`, and in particular no clearing of the Profiles' cookie jars.
@@ -170,10 +177,10 @@ changes, since the anonymous account can land a moment after the wizard opens.
 Everything local stays local either way — Profiles, tabs, memories, favorites,
 the watchtower archive; none of it ever lived in the anonymous account. On the
 server the anonymous account holds its meter, its audit trail, the onboarding
-timestamp and the device, and:
+timestamp, the device, and any live share it hosts, and:
 
-- **sign up** keeps all four by construction (same row);
-- **sign in** moves all four.
+- **sign up** keeps all five by construction (same row);
+- **sign in** moves all five.
 
 After either, local data starts syncing under the real account's keys exactly
 as it does today for a Mac that signs in after being used signed out.

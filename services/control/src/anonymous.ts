@@ -6,7 +6,8 @@
  * no email and `is_anonymous` set, and this Mac enrolled as its one device —
  * so its model calls have an owner to meter and to bound. What that account
  * may do is an ALLOW-list (`anonymousAllowed`): the models, its own usage,
- * and the two routes that turn it into a real account. Everything that keeps
+ * hosting a live share, and the two routes that turn it into a real
+ * account. Everything that keeps
  * a person's data on this plane (sync, the vault, integrations, the cloud
  * browser, channels) needs a credential that can get the data back, which an
  * anonymous account does not have.
@@ -59,10 +60,17 @@ export const ANONYMOUS_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 export const ACCOUNT_LINK_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 const AI_PATH_PREFIX = "/v1/ai/";
+/**
+ * Hosting a live share (docs/live-share.md §5). It keeps nothing of the
+ * person's on this plane — a link and a lobby, gone a week after the share
+ * ends — so a signed-out Mac may share a space like any other.
+ */
+const LIVE_SHARES_PATH = "/v1/live/shares";
 
 /** The whole surface an anonymous account's device may reach (§ "What it can do"). */
 export function anonymousAllowed(method: string, path: string): boolean {
   if (path.startsWith(AI_PATH_PREFIX)) return true;
+  if (path === LIVE_SHARES_PATH || path.startsWith(`${LIVE_SHARES_PATH}/`)) return true;
   if (method === "GET") return path === "/v1/me" || path === "/v1/ai-usage";
   if (method === "POST") return path === "/v1/me/onboarding/complete" || path === "/v1/account/upgrade";
   return false;

@@ -321,19 +321,22 @@ export function tabsWithoutSpace(
  * and every window on the desk (`deskTabIds`, the shell's last report),
  * asleep or not: since 2026-10-09 a covered or minimized window is dormant
  * (`DeskState.live`), and suspendTab's refusal no longer stands in front of
- * it.
+ * it. A space shared live (`sharedGroupId`, docs/live-share.md §6.1) is in
+ * front of its guests wherever the person is, so it is spared as the current
+ * one is.
  */
 export function tidyReach(
   groups: readonly TabGroupInfo[],
   currentGroupId: string | null,
   persons: (group: TabGroupInfo) => boolean,
   deskTabIds: Iterable<string> = [],
+  sharedGroupId: string | null = null,
 ): { spareGroupIds: Set<string>; spareTabIds: Set<string>; keepAddressTabIds: Set<string> } {
   const spareGroupIds = new Set<string>();
   const spareTabIds = new Set<string>();
   const keepAddressTabIds = new Set<string>(deskTabIds);
   for (const group of groups) {
-    const current = group.id === currentGroupId;
+    const current = group.id === currentGroupId || group.id === sharedGroupId;
     const theirs = persons(group);
     if (current || theirs) {
       spareGroupIds.add(group.id);

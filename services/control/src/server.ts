@@ -15,6 +15,8 @@ import { signingKeysFromEnv } from "./keys-provider.js";
 import { MailerConfigError, mailerFromEnv } from "./mailer.js";
 import { httpRunnerClient, startOutboxDrain } from "./outbox.js";
 import { blueBubblesOptionsFromEnv } from "./imessage.js";
+import { LiveKitConfigError, livekitFromEnv, type LiveKitConfig } from "./live/config.js";
+import { createLiveKitApi } from "./live/livekit.js";
 
 const env = process.env;
 
@@ -61,6 +63,13 @@ try {
   fatal(err instanceof Error ? err.message : String(err));
 }
 
+let livekit: LiveKitConfig | null;
+try {
+  livekit = livekitFromEnv(env);
+} catch (err) {
+  fatal(err instanceof LiveKitConfigError ? err.message : String(err));
+}
+
 const port = Number(env["PORT"] ?? 8787);
 const db = await createDbFromUrl(databaseUrl);
 await ensureSchema(db);
@@ -75,6 +84,7 @@ const control = createApp(db, {
   mailer,
   egress,
   imessage,
+  livekit: livekit === null ? null : createLiveKitApi(livekit),
   env,
   log: console.log,
   ...(runner === undefined ? {} : { runner }),
@@ -92,6 +102,18 @@ const maintenance = setInterval(() => {
 }, HOUR_MS);
 maintenance.unref();
 
+// A live share whose host went quiet ends ten minutes on (docs/live-share.md
+// §5), which the hourly pass alone would stretch to seventy.
+const liveSweep =
+  livekit === null
+    ? null
+    : setInterval(() => {
+        void control.sweepLiveShares().catch((err: unknown) => {
+          console.error("control: live share sweep failed:", err);
+        });
+      }, 60_000);
+liveSweep?.unref();
+
 console.log(
   [
     `@pistachio/control listening on :${port} (hub: /v1/hub/ws)`,
@@ -99,11 +121,13 @@ console.log(
     `egress: ${egress.provider === null ? "disabled (EGRESS_PROVIDER unset)" : egress.provider.kind}${egress.tokenSecretHex === null ? " (no EGRESS_TOKEN_SECRET — credentials disabled)" : ""}`,
     `mailer: ${env["MAILER"]}`,
     `iMessage: ${imessage === null ? "disabled (BlueBubbles configuration unset)" : "enabled"}`,
+    `live share: ${livekit === null ? "disabled (LIVEKIT_URL unset)" : livekit.url}`,
   ].join("\n"),
 );
 
 const shutdown = (): void => {
   clearInterval(maintenance);
+  if (liveSweep !== null) clearInterval(liveSweep);
   void control.hub.host?.close().finally(() => {
     server.close(() => process.exit(0));
   });

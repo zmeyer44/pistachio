@@ -8,6 +8,7 @@ import type { TabGroupCommand, TabGroupCommandResult, TabGroupInfo } from "./tab
 import type { TidyRequest, TidyResponse } from "./tidy.js";
 import type { TabSwitcherInput } from "./tab-switcher.js";
 import type { TerminalEvent, TerminalRequest } from "./terminal.js";
+import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState } from "./live-share.js";
 import type { LiveFrame, LiveInput, LiveTabInfo } from "@pistachio/live-view";
 import type { EvidenceEntry } from "@pistachio/evidence";
 import type {
@@ -37,7 +38,7 @@ import type {
   InstalledBrowser,
 } from "./browser-import.js";
 import type { OnboardingCompletion, OnboardingIntake } from "./onboarding.js";
-import type { NoticeEvent, NoticeFrame, NoticeStackState } from "./notice.js";
+import type { NoticeEvent, NoticeFootprint, NoticeFrame, NoticeStackState } from "./notice.js";
 import type {
   Bookmark,
   BookmarkInput,
@@ -1279,8 +1280,6 @@ export interface NativeSurfaceApi {
   onDeskNotch(listener: (frame: DeskNotchFrame | null) => void): () => void;
   /** Notch view only: the pointer coming and going, and a press. */
   sendDeskNotchInput(input: DeskNotchInput): void;
-  /** Notch view only, with the window's glass under it (DeskNotchFrame.nativeGlass): the nub's outline as it draws it. */
-  sendDeskNotchOutline(points: readonly number[]): void;
   /** Shell only: those, relayed by main to the desk's Bar. */
   onDeskNotchInput(listener: (input: DeskNotchInput) => void): () => void;
   /** Shell → main: the desk's parked windows to draw over the live pages under them (the shelf view), or null. */
@@ -1339,6 +1338,41 @@ export interface NativeSurfaceApi {
   terminalSend(request: TerminalRequest): void;
   /** What the terminal host says: a shell's output, its end; `hostGone` when the host stopped. */
   onTerminalEvent(listener: (event: TerminalEvent) => void): () => void;
+  // ── Live share (@pistachio/shell-contracts/live-share, docs/live-share.md §6) ───────
+  /** Shell only: start, stop or steer this Mac's live share; a failure lands in the state's `error`. */
+  liveShare(command: LiveCommand): Promise<void>;
+  /** Shell only: the share as it stands, for a shell that loaded after it changed. */
+  getLiveShare(): Promise<LiveShareState>;
+  /** Shell only: every change to the share. */
+  onLiveShare(listener: (state: LiveShareState) => void): () => void;
+  /**
+   * Shell only: the guests, when only who is speaking or how well they are
+   * connected changed — the rest of the share (its chat) is not sent again for
+   * that; take them as the state's `participants`.
+   */
+  onLiveRoster(listener: (participants: LiveGuest[]) => void): () => void;
+  /** Shell → main: the shared space's desk while a share is live (≤ every 33 ms in motion), or null. */
+  setLiveDesk(report: LiveDeskReport | null): void;
+  /** Live-host app only: the room and the share as they stand; null once the share has ended. Subscribe first. */
+  liveHostConfig(): Promise<LiveHostConfig | null>;
+  /** Live-host app only: main's events (desk frames, the host's pointer, state, tokens, the end). */
+  onLiveHostEvent(listener: (event: LiveHostEvent) => void): () => void;
+  /** Live-host app only: the room's news for main (roster, chat, guests' input, asks, knocks, the pointer's hold). */
+  sendLiveHostReport(report: LiveHostReport): void;
+  /**
+   * Live-host app only: a capture of a shared window's page — a tab media
+   * source id for one getUserMedia ({ chromeMediaSource: "tab" }, the picture
+   * alone: no window audio, §3) within 10 s; null when the tab is not a page
+   * window of the shared space.
+   */
+  liveHostSource(tabId: string): Promise<string | null>;
+  /**
+   * Live-host app only: a capture of the shell's own page, which the
+   * shell-drawn windows' pictures are cut from (docs/live-share.md §6.6) — a
+   * tab media source id for one getUserMedia; null unless a share is live,
+   * the host is on the shared space, and a shell-drawn window of it streams.
+   */
+  liveHostShellSource(): Promise<string | null>;
   /**
    * The owner's still is painted under its live view: main can now hide the
    * view without a blank frame, and the renderer starts the opening motion.
@@ -1422,6 +1456,8 @@ export interface NativeSurfaceApi {
   onNotices(listener: (state: NoticeStackState) => void): () => void;
   /** Notice view only: the height its stack needs, so main can size the view to it. */
   resizeNoticeView(height: number): void;
+  /** Notice view only: where its cards are drawn, or null with none — what of the window the stack covers. */
+  setNoticeFootprint(footprint: NoticeFootprint | null): void;
   /** Notice view only: a click on a card, or the pointer coming and going. */
   sendNoticeEvent(event: NoticeEvent): void;
   /** Shell only: those clicks, relayed by main to the store that owns the notices. */
@@ -1491,7 +1527,6 @@ export const NATIVE_SURFACE_MEMBERS = {
   getDeskNotch: "The native notch view's own read of the notch.",
   onDeskNotch: "The native notch view's own subscription to the notch.",
   sendDeskNotchInput: "Relays the pointer and presses out of the native notch view.",
-  sendDeskNotchOutline: "Cuts the window's native glass under the notch view to the nub's outline.",
   onDeskNotchInput: "Receives the native notch view's pointer and presses.",
   setDeskShelf: "Places the native shelf view over the live desk pages under the parked windows.",
   getDeskShelf: "The native shelf view's own read of the shelf.",
@@ -1517,6 +1552,16 @@ export const NATIVE_SURFACE_MEMBERS = {
   groupFileForMessage: "Reads a context file as the native desk's agent reads it, converted by main.",
   terminalSend: "Runs a shell on this Mac, in main's terminal host (node-pty).",
   onTerminalEvent: "A shell on this Mac speaks through main's terminal host.",
+  liveShare: "Hosting a live share is the desktop's: main captures the space's native page views.",
+  getLiveShare: "The live share is held by main beside the native views it captures.",
+  onLiveShare: "The live share is held by main beside the native views it captures.",
+  onLiveRoster: "The live share is held by main beside the native views it captures.",
+  setLiveDesk: "Tells main where the shared desk's native page views lie, for guests to rebuild it.",
+  liveHostConfig: "The live-host window is a native child window over the browser's window.",
+  onLiveHostEvent: "The live-host window is a native child window over the browser's window.",
+  sendLiveHostReport: "Relays the room out of the native live-host window, including guests' input for native views.",
+  liveHostSource: "Captures a native tab view for the live-host window, granted by main for that view's session.",
+  liveHostShellSource: "Captures the native browser window's own page for the live-host window, handed out by main.",
   recedeGlanceOwner: "Coordinates the owner tab's native view with the glance view.",
   setGlanceBounds: "Places the native glance preview view at the shell's frame.",
   prepareGlanceClose: "Captures the native glance view's last frame before it hides.",
@@ -1543,6 +1588,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   getNotices: "The native notice view's own read of the live notices.",
   onNotices: "The native notice view's own subscription to the live notices.",
   resizeNoticeView: "Sizes the native notice view to its rendered stack.",
+  setNoticeFootprint: "Tells main where the native notice view's cards lie, which a live share's outlines go under.",
   sendNoticeEvent: "Relays clicks out of the native notice view.",
   onNoticeEvent: "Receives the native notice view's clicks.",
   onUpdateState: "Electron auto-update progress; W12 declares updates unsupported.",
@@ -1667,7 +1713,6 @@ export const IPC = {
   deskNotchGet: "pistachio:desk-notch-get",
   deskNotchChanged: "pistachio:desk-notch-changed",
   deskNotchInput: "pistachio:desk-notch-input",
-  deskNotchOutline: "pistachio:desk-notch-outline",
   deskShelfSet: "pistachio:desk-shelf-set",
   deskShelfGet: "pistachio:desk-shelf-get",
   deskShelfChanged: "pistachio:desk-shelf-changed",
@@ -1696,6 +1741,24 @@ export const IPC = {
   terminalPort: "pistachio:terminal-port",
   /** Main → the shell: the terminal host stopped, and every shell with it. */
   terminalHostGone: "pistachio:terminal-host-gone",
+  /** The shell → main: a LiveCommand (docs/live-share.md §6.2). */
+  liveShareCommand: "pistachio:live-share-command",
+  liveShareGet: "pistachio:live-share-get",
+  /** Main → the shell: the share changed (coalesced, its own channel). */
+  liveShareChanged: "pistachio:live-changed",
+  /** Main → the shell: the guests alone, when only their speaking or connection changed. */
+  liveRosterChanged: "pistachio:live-roster-changed",
+  liveDeskSet: "pistachio:live-desk-set",
+  liveHostConfig: "pistachio:live-host-config",
+  /** Main → the live-host app: a LiveHostEvent. */
+  liveHostEvent: "pistachio:live-host-event",
+  /** The live-host app → main: a LiveHostReport. */
+  liveHostReport: "pistachio:live-host-report",
+  liveHostSource: "pistachio:live-host-source",
+  /** The live-host app → main: a capture of the shell's own page, for the shell-drawn windows (docs/live-share.md §6.6). */
+  liveHostShellSource: "pistachio:live-host-shell-source",
+  /** The live-host app → main: the appearance its theme follows (its preload has no settings of its own). */
+  liveHostAppearance: "pistachio:live-host-appearance",
   /** A tab's isolated preload → main: files from outside the app were dragged over its page (docs/desk-documents.md §1). */
   tabFileDrag: "pistachio:tab-file-drag",
   tabSwitcherPreviewsGet: "pistachio:tab-switcher-previews-get",
@@ -1786,6 +1849,7 @@ export const IPC = {
   noticesGet: "pistachio:notices-get",
   noticesChanged: "pistachio:notices-changed",
   noticeViewResize: "pistachio:notice-view-resize",
+  noticeViewFootprint: "pistachio:notice-view-footprint",
   noticeEvent: "pistachio:notice-event",
   bookmarksOpen: "pistachio:bookmarks-open",
   browsingDataClear: "pistachio:browsing-data-clear",

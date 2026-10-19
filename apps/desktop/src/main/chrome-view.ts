@@ -2,6 +2,13 @@ import { BrowserWindow, WebContentsView } from "electron";
 import { CHROME_VIEW_HASHES, type ChromeViewId } from "@pistachio/shell-contracts/chrome";
 import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
 
+/** The renderer bundle, as the chrome view `id` loads it (the hash names it): from the dev server, or the app's file. */
+export async function loadChromePage(contents: Electron.WebContents, id: ChromeViewId, rendererUrl: string | undefined, file: string): Promise<void> {
+  const hash = CHROME_VIEW_HASHES[id];
+  if (rendererUrl !== undefined) await contents.loadURL(`${rendererUrl}${hash}`);
+  else await contents.loadFile(file, { hash: hash.slice(1) });
+}
+
 export interface ChromeOverlayViewOptions {
   id: ChromeViewId;
   preload: string;
@@ -65,10 +72,8 @@ export class ChromeOverlayView {
     return this.#view.getVisible();
   }
 
-  async load(rendererUrl: string | undefined, file: string): Promise<void> {
-    const hash = CHROME_VIEW_HASHES[this.id];
-    if (rendererUrl !== undefined) await this.#view.webContents.loadURL(`${rendererUrl}${hash}`);
-    else await this.#view.webContents.loadFile(file, { hash: hash.slice(1) });
+  load(rendererUrl: string | undefined, file: string): Promise<void> {
+    return loadChromePage(this.#view.webContents, this.id, rendererUrl, file);
   }
 
   /** Re-add to the window: a child added later would otherwise stack above this view. */

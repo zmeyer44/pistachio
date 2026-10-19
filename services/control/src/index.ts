@@ -154,3 +154,22 @@ export {
   SPACE_OR_WORKSPACE_ID_RE,
   type ValidatedVariables,
 } from "./validate.js";
+export {
+  DEFAULT_LIVE_MAX_GUESTS,
+  LiveKitConfigError,
+  liveMaxGuests,
+  livekitFromEnv,
+  type LiveKitConfig,
+} from "./live/config.js";
+export {
+  GUEST_TOKEN_TTL_SECONDS,
+  HOST_TOKEN_TTL_SECONDS,
+  createLiveKitApi,
+  grantFor,
+  liveKitApiFromEnv,
+  type LiveKitApi,
+  type LiveRole,
+  type LiveRoomOptions,
+  type LiveRoomService,
+  type LiveTokenRequest,
+} from "./live/livekit.js";

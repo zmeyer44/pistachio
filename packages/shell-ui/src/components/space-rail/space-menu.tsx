@@ -4,6 +4,7 @@ import { useTabGroupMenu } from "../../chrome/tab-group-menu";
 import { groupPageOf } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import type { MenuEntry } from "../ContextMenu";
+import { liveSpaceEntries } from "../live/menu-entries";
 import { renameSpace } from "./column-state";
 import { dayUnitsOf, type RailSpace } from "./rail-model";
 
@@ -29,10 +30,12 @@ export interface PageSpaceActions {
  * Today (main's ungroup: the page stays its entry's); and closing them.
  * (Until 2026-10-13 it had the whole space menu.)
  */
-export function pageSpaceMenu(group: TabGroupInfo, pageTabId: string | null, act: PageSpaceActions): MenuEntry[] {
+export function pageSpaceMenu(group: TabGroupInfo, pageTabId: string | null, act: PageSpaceActions, live: readonly MenuEntry[] = []): MenuEntry[] {
   const beside = group.tabIds.filter((tabId) => tabId !== pageTabId);
   return [
     { label: "New tab in space", icon: <Plus aria-hidden="true" />, onSelect: act.newTab },
+    // (Share live…, or its card and Stop: liveSpaceEntries, as a drawn space's menu has them.)
+    ...live,
     { separator: true },
     { label: "Make it a space of its own", icon: <LayoutPanelLeft aria-hidden="true" />, disabled: pageTabId === null, onSelect: act.ownSpace },
     { label: "Release the tabs", icon: <Ungroup aria-hidden="true" />, disabled: beside.length === 0, onSelect: act.release },
@@ -50,7 +53,7 @@ export function pageSpaceMenu(group: TabGroupInfo, pageTabId: string | null, act
 /**
  * A rail space's menu, for its tile's right click and its head's ⋯: a drawn
  * space's own (chrome/tab-group-menu.tsx, renamed in the card's head), or a
- * page's space's (pageSpaceMenu).
+ * page's space's (pageSpaceMenu) — each with the live share's entries.
  */
 export function useSpaceMenu(): (space: RailSpace) => MenuEntry[] {
   const { menu: groupMenu } = useTabGroupMenu({ onRename: renameSpace });
@@ -60,7 +63,7 @@ export function useSpaceMenu(): (space: RailSpace) => MenuEntry[] {
     const { group } = space;
     const pageTabId = groupPageOf(group, store.snapshot?.tabs ?? []);
     const anchorId = group.anchorId;
-    return pageSpaceMenu(group, pageTabId, {
+    const act: PageSpaceActions = {
       newTab: () => void store.tabGroupCommand({ type: "newTab", groupId: group.id }),
       // (Set down after the day's last unit: its tile goes to the foot of the drawn spaces.)
       ownSpace: () => {
@@ -71,6 +74,7 @@ export function useSpaceMenu(): (space: RailSpace) => MenuEntry[] {
       closeBeside: (tabIds) => {
         for (const tabId of tabIds) void store.closeTab(tabId);
       },
-    });
+    };
+    return pageSpaceMenu(group, pageTabId, act, liveSpaceEntries(group.id));
   };
 }

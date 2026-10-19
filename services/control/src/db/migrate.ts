@@ -532,6 +532,47 @@ const STATEMENTS: ReadonlyArray<string> = [
     PRIMARY KEY (owner_user_id, note_id),
     CONSTRAINT shared_notes_note_id_check CHECK (note_id ~ '^[a-f0-9]{12}$')
   )`,
+  // Live share (docs/live-share.md §5): the link and the lobby.
+  `CREATE TABLE IF NOT EXISTS live_shares (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    token_hash text NOT NULL,
+    room text NOT NULL,
+    title text NOT NULL,
+    host_name text,
+    admission text NOT NULL,
+    status text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    host_seen_at timestamptz NOT NULL,
+    host_token_expires_at timestamptz NOT NULL,
+    ended_at timestamptz,
+    CONSTRAINT live_shares_admission_check CHECK (admission in ('ask', 'open')),
+    CONSTRAINT live_shares_status_check CHECK (status in ('live', 'ended'))
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS live_shares_token_hash_idx ON live_shares (token_hash)`,
+  `CREATE INDEX IF NOT EXISTS live_shares_user_status_idx ON live_shares (user_id, status)`,
+  `CREATE TABLE IF NOT EXISTS live_requests (
+    id text PRIMARY KEY,
+    share_id uuid NOT NULL REFERENCES live_shares(id) ON DELETE CASCADE,
+    name text NOT NULL,
+    secret_hash text NOT NULL,
+    color text NOT NULL,
+    status text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    decided_at timestamptz,
+    CONSTRAINT live_requests_status_check
+      CHECK (status in ('pending', 'admitted', 'denied', 'removed', 'left'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS live_requests_share_status_idx ON live_requests (share_id, status)`,
+  `ALTER TABLE live_requests ADD COLUMN IF NOT EXISTS absent_since timestamptz`,
+  // An ended share's room counts as closed once LiveKit says so; until then
+  // the sweep asks again (§5).
+  `ALTER TABLE live_shares ADD COLUMN IF NOT EXISTS room_close_due_at timestamptz`,
+  `ALTER TABLE live_shares ADD COLUMN IF NOT EXISTS room_close_attempts integer NOT NULL DEFAULT 0`,
+  `CREATE INDEX IF NOT EXISTS live_shares_room_close_idx ON live_shares (room_close_due_at)
+    WHERE room_close_due_at IS NOT NULL`,
 ];
 
 /**

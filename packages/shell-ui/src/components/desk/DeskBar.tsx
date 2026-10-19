@@ -24,8 +24,10 @@ import {
   Newspaper,
   NotebookPen,
   Paperclip,
+  PenLine,
   PictureInPicture2,
   Plus,
+  Radio,
   ScrollText,
   Square,
   SquarePen,
@@ -62,6 +64,7 @@ import {
   type CommandSettings,
 } from "../../lib/desk/slash-commands";
 import { arrangeDesk } from "../../lib/desk/open";
+import { shareSpace, toggleLiveDrawing } from "../../lib/live/actions";
 import { screenshotView } from "../../lib/screenshot";
 import { isProbablyUrl } from "../../lib/url";
 import { agentActivity } from "../../lib/desk/agent";
@@ -975,7 +978,10 @@ export const DeskBar = memo(function DeskBar({
   useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
 
   // A button's tooltip is open: the band it appears in — above the pill, or beside the nub — is a cover, and stays
-  // one a moment after it closes (the dock's rule).
+  // one a moment after it closes (the dock's rule). The nub's is main's notch view's to lie over (`underNotch`): over a
+  // live page the view stays, the nub swelled under the pointer, while the page under it is a still for the tooltip —
+  // going from under the pointer and coming back once the tooltip had gone, it changed the pointer's cursor and drew
+  // the nub afresh each way (2026-10-16).
   const [tip, setTip] = useState<{ label: string; where: "pill" | "nub" } | null>(null);
   const openTip = tip;
   useLayoutEffect(() => {
@@ -983,25 +989,35 @@ export const DeskBar = memo(function DeskBar({
     // pill's place — 2026-10-10.)
     const el = openTip === null ? null : openTip.where === "pill" ? (inCard ? footRef.current : barRef.current) : nubRef.current;
     if (openTip === null || el === null) {
-      const timer = window.setTimeout(() => engine.setCover("bar-tip", null), TIP_LINGER_MS);
+      const timer = window.setTimeout(() => {
+        engine.setCover("bar-tip", null);
+        engine.setCover("nub-tip", null);
+      }, TIP_LINGER_MS);
       return () => window.clearTimeout(timer);
     }
     const box = stageBox(el);
     if (box === null) return;
-    engine.setCover(
-      "bar-tip",
-      openTip.where === "pill"
-        ? { x: box.x - TIP_BAND_REACH, y: box.y - TIP_BAND_H, w: box.w + TIP_BAND_REACH * 2, h: TIP_BAND_H }
-        : { x: box.x - TIP_SIDE_W, y: box.y - TIP_BAND_H, w: TIP_SIDE_W + box.w, h: box.h + TIP_BAND_H },
-    );
+    if (openTip.where === "pill") {
+      engine.setCover("nub-tip", null);
+      engine.setCover("bar-tip", { x: box.x - TIP_BAND_REACH, y: box.y - TIP_BAND_H, w: box.w + TIP_BAND_REACH * 2, h: TIP_BAND_H });
+    } else {
+      engine.setCover("bar-tip", null);
+      engine.setCover("nub-tip", { x: box.x - TIP_SIDE_W, y: box.y - TIP_BAND_H, w: TIP_SIDE_W + box.w, h: box.h + TIP_BAND_H }, { underNotch: true });
+    }
   }, [engine, openTip, inCard]);
-  useEffect(() => () => engine.setCover("bar-tip", null), [engine]);
+  useEffect(
+    () => () => {
+      engine.setCover("bar-tip", null);
+      engine.setCover("nub-tip", null);
+    },
+    [engine],
+  );
   // A button that goes while its tooltip is open (the row changing for dictation) never says it closed.
   const closeTips = useCallback(() => setTip(null), []);
   // (By where it is as well as what it says: the pill's Dictate is not the nub's.)
   const someTip = (label: string, where: "pill" | "nub"): BarTip => ({
     open: openTip?.label === label && openTip.where === where,
-    shown: shownCover("bar-tip"),
+    shown: shownCover(where === "pill" ? "bar-tip" : "nub-tip"),
     onOpenChange: (open) => setTip((current) => (open ? { label, where } : current?.label === label && current.where === where ? null : current)),
   });
   const barTip = (label: string): BarTip => someTip(label, "pill");
@@ -1012,7 +1028,7 @@ export const DeskBar = memo(function DeskBar({
   if (menuOpen) faceTip.open = false;
   // Over a live page the pointer rests on the notch view, which Base UI never hears: the nub's tooltip opens for the
   // view's hover as for its own — its mark alone does not say what it is for. Its band given way (a cover), the page
-  // under it is a still and the view goes, the shell's nub under the pointer; the pointer gone, so is the tooltip.
+  // under it is a still, the view still over it with the pointer; the pointer gone, so is the tooltip.
   useEffect(() => {
     if (!viewHover || menuOpen) return;
     const timer = window.setTimeout(() => setTip({ label: faceLabel, where: "nub" }), TIP_DELAY_MS);
@@ -1505,6 +1521,13 @@ function BarComposer({
       case "screenshot":
         if (!screenshotView()) store.showNotice("There's nothing on the desk to capture yet", { tone: "warning" });
         break;
+      case "share":
+        // This space, live (shared already: its Live card).
+        void shareSpace(group.id);
+        break;
+      case "draw":
+        toggleLiveDrawing();
+        break;
       case "note":
         void newNoteTitled(args);
         break;
@@ -1855,6 +1878,8 @@ const COMMAND_ICONS: Record<Exclude<BarCommandId, "search">, LucideIcon> = {
   tidy: Archive,
   remember: Lightbulb,
   screenshot: Camera,
+  share: Radio,
+  draw: PenLine,
   note: NotebookPen,
   brief: Newspaper,
   terminal: SquareTerminal,

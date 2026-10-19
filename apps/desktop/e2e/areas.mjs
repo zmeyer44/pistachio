@@ -87,6 +87,24 @@ export const AREAS = [
     paths: [`${UI}/components/terminal/**`, `${UI}/lib/terminal/**`, `${UI}/terminal.css`, `${C}/terminal.ts`, `${M}/terminal/**`],
   },
   {
+    // Live share (docs/live-share.md): main's share, its host window and the room's own package; the shell's
+    // card and the live-host app's pieces.
+    tag: "@share",
+    paths: [
+      `${M}/live/**`,
+      "apps/desktop/src/preload/live-host.ts",
+      "apps/desktop/src/main/page-capture-grants.ts",
+      "apps/desktop/src/renderer/live-host.html",
+      "apps/desktop/src/renderer/src/live-host-bridge.ts",
+      `${C}/live-share.ts`,
+      "packages/live-share/**",
+      `${UI}/LiveHostApp.tsx`,
+      `${UI}/components/live/**`,
+      `${UI}/lib/live/**`,
+      `${UI}/components/live-host/**`,
+    ],
+  },
+  {
     tag: "@glance",
     paths: [`${UI}/components/{GlanceOverlay,ImagePreview}.tsx`, `${UI}/lib/glance.ts`],
   },
