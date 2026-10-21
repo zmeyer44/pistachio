@@ -1769,8 +1769,8 @@ export function TabList({ view }: { view?: TabListView } = {}) {
   // The desk is a loose tab's (TabGroupInfo.loose): its tab is drawn alone, and the Stack goes under its row.
   const deskLoose = useAppStore((s) => s.snapshot?.looseGroups?.find((group) => group.id === deskGroupId) ?? null);
   // The desk is a page's (TabGroupInfo.anchorId), a favorite's or pin's: the tabs of its group are drawn under its entry
-  // — a pin's under its row, a favorite's at the head of the list, under the favorites, its page's row first — and the
-  // Stack after them.
+  // — a pin's under its row, a favorite's at the head of the list, under the favorites (its page the tile there, lit) —
+  // and the Stack after them.
   const deskPage = pageGroups.find((group) => group.id === deskGroupId) ?? null;
   const deskPageTabId = deskPage === null ? null : groupPageOf(deskPage, tabs);
   const deskPageTab = deskPageTabId === null ? null : (tabs.find((tab) => tab.id === deskPageTabId) ?? null);
@@ -2059,14 +2059,19 @@ export function TabList({ view }: { view?: TabListView } = {}) {
   };
 
   /**
-   * The desk's page's group under its entry: its page's row (none under a
-   * pin, whose own row it is), the tabs beside it, and the Stack. Carried
-   * off, the page's row is its entry, as the tile or the pin's row is.
+   * The desk's page's group under its entry: its page's row (only a pin's
+   * whose row is folded away: a pin's row is its own, a favorite's tile in
+   * the grid is), the tabs beside it, and the Stack. Carried off, the page's
+   * row is its entry, as the tile or the pin's row is.
    */
   const entryTabs = (group: TabGroupInfo, withPage: boolean): React.ReactNode => {
     const anchorId = group.anchorId ?? "";
     const pin = shelf.entries.some((entry) => entry.kind === "pin" && entry.id === anchorId);
     const page = withPage ? deskPageTab : null;
+    // (Home draws no Stack under the tab in use: it moved the rows under it as the tab changed, and the tab's Context
+    // is the Bar's and the desk's to fill as ever. Since 2026-10-21.)
+    const stack = view !== "home";
+    if (page === null && deskPageRows.length === 0 && !stack) return null;
     return (
       <div data-testid="entry-tabs" data-anchor-id={anchorId} className="flex flex-col gap-0.5">
         {page === null
@@ -2076,7 +2081,7 @@ export function TabList({ view }: { view?: TabListView } = {}) {
               drag: { flipId: page.id, kind: pin ? "pin" : "favorite", entityId: anchorId, title: page.title, url: page.url, faviconUrl: page.faviconUrl, tabs: [page], deskTab: page, managed: isPresetAnchorId(anchorId) },
             })}
         <div className="flex flex-col gap-0.5 pl-[18px]">{deskPageRows.map((row) => renderRow(row, group.id, { underEntry: true }))}</div>
-        <DeskContextRow group={group} />
+        {stack ? <DeskContextRow group={group} /> : null}
       </div>
     );
   };
@@ -2181,9 +2186,13 @@ export function TabList({ view }: { view?: TabListView } = {}) {
             </>
           ) : (
             <>
-              {/* A favorite's desk (or a pin's whose row is folded away): its page and the tabs of its group, under the favorites. */}
+              {/* A favorite's desk (or a pin's whose row is folded away): the tabs of its group, under the favorites — a
+                  pin's page's row first; a favorite's page is its tile in the grid, lit, and has no row of its own. */}
               {entryDesk !== null && !(sectionOpen("pinned") && rows.some((row) => row.kind === "pin" && row.pin.id === entryDesk.anchorId))
-                ? entryTabs(entryDesk, true)
+                ? entryTabs(
+                    entryDesk,
+                    shelf.entries.some((entry) => entry.kind === "pin" && entry.id === entryDesk.anchorId),
+                  )
                 : null}
               {rows.length > 0 ? (
                 <SectionHeader
@@ -2310,8 +2319,9 @@ export function TabList({ view }: { view?: TabListView } = {}) {
                       return (
                         <Fragment key={unit.id}>
                           {renderRow(unit.row, null, view === "home" && unit.row.tabs.length === 1 ? { beside: () => void openBeside(unit.row.tabs[0]?.id ?? "") } : {})}
-                          {/* A loose tab's desk: its context — the Stack — under its row, as a group's is under its tabs. */}
-                          {deskLoose !== null && unit.row.tabs[0]?.id === deskLoose.tabIds[0] ? <DeskContextRow group={deskLoose} /> : null}
+                          {/* A loose tab's desk: its context — the Stack — under its row, as a group's is under its tabs.
+                              (Not in the double sidebar's Home: entryTabs.) */}
+                          {view !== "home" && deskLoose !== null && unit.row.tabs[0]?.id === deskLoose.tabIds[0] ? <DeskContextRow group={deskLoose} /> : null}
                         </Fragment>
                       );
                     const current = deskGroupId === unit.group.id;

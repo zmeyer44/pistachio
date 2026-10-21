@@ -8,6 +8,7 @@ import { AgentTabChip } from "./AgentTabChip";
 import { Markdown } from "./Markdown";
 import type { ChatDensity } from "./parts";
 import { ReasoningBlock } from "./ReasoningBlock";
+import { SmoothHeight, useReplyBegun } from "./SmoothHeight";
 import { ReasoningTrace } from "./trace";
 import { ThinkingStatus } from "./ThinkingStatus";
 import { useSmoothText } from "./use-smooth-text";
@@ -24,6 +25,13 @@ import { useSmoothText } from "./use-smooth-text";
  * Read from the run: `draft` is the stream (RunSummary.draft), the tool
  * calls say what is running (the chip looks up the tab they name). Shared by the console and the home
  * page's chat, at their own densities.
+ *
+ * It holds still while the turn works (2026-10-21; it used to fold and open
+ * with every step): the reasoning, once there is some, stays open on its
+ * latest lines through the steps between thoughts — its line saying what is
+ * in hand — until the reply has begun (useReplyBegun), and then folds once;
+ * the status line is drawn only while there is no reasoning to say it; and
+ * every change of height left is eased (SmoothHeight).
  */
 export const LiveReply = memo(function LiveReply({
   run,
@@ -56,15 +64,25 @@ export const LiveReply = memo(function LiveReply({
   const thinking = draft?.thinking === true;
   const reasoningShown = reasoning.trim() !== "";
   const status = thinking ? "Thinking…" : workingText(run);
+  const live = !useReplyBegun(run);
   return (
+    <SmoothHeight>
     <div data-testid="live-reply" className={cn("grid min-w-0 text-gray-1000", density === "page" ? "gap-2.5" : "gap-1.5", className)}>
       {!reasoningShown ? null : trace ? (
-        <ReasoningTrace reasoning={reasoning} thinking={thinking} startedAt={draft?.thinkingSince ?? null} thinkingMs={draft?.thinkingMs ?? null} />
+        <ReasoningTrace reasoning={reasoning} thinking={thinking} live={live} startedAt={draft?.thinkingSince ?? null} thinkingMs={draft?.thinkingMs ?? null} />
       ) : (
-        <ReasoningBlock reasoning={reasoning} thinking={thinking} startedAt={draft?.thinkingSince ?? null} thinkingMs={draft?.thinkingMs ?? null} density={density} />
+        <ReasoningBlock
+          reasoning={reasoning}
+          thinking={thinking}
+          live={live}
+          status={status}
+          startedAt={draft?.thinkingSince ?? null}
+          thinkingMs={draft?.thinkingMs ?? null}
+          density={density}
+        />
       )}
-      {/* While the reasoning is live it already says "Thinking"; the status line waits for the work. */}
-      {text === "" && reasoningShown && thinking ? (
+      {/* While there is reasoning it says what is in hand, open, its height held; the status line is for a turn without. */}
+      {text === "" && reasoningShown ? (
         trailing === null ? null : <div className="flex items-center text-copy-13">{trailing}</div>
       ) : text === "" ? (
         <div className={cn("flex items-center gap-2", density === "page" ? "text-[15px]" : "text-copy-13")}>
@@ -81,6 +99,7 @@ export const LiveReply = memo(function LiveReply({
       )}
       {tabChip ? <AgentTabChip run={run} density={density} /> : null}
     </div>
+    </SmoothHeight>
   );
 });
 

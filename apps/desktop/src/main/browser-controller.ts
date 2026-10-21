@@ -62,6 +62,7 @@ import type {
 import { IPC } from "@pistachio/shell-contracts/ipc";
 import type { DragSample, ShellCommand } from "@pistachio/shell-contracts/chrome";
 import {
+  DESK_DRAWER_KEEP,
   DESK_DRAWER_TRIGGER,
   deskMaskKey,
   holdsDeskModifier,
@@ -92,6 +93,7 @@ import type { Experimental_EvaluationModel } from "ai";
 import { smartFindPageFor } from "./smart-find";
 import { focusEmulationAttached, setFocusEmulation } from "./forced-focus";
 import { holdDebugger, releaseDebugger } from "./debugger-hold";
+import { CrashReloads, crashKind, DragWatch, pageSite, readPageDragReport, type PageDrag, type PageHealthEvent } from "./page-health";
 import { APP_ICON_SCRIPT, APP_ICON_WORLD, pickAppIcon } from "./app-icon";
 import { PAGE_CORNERS_WORLD, pageCorners, pageCornersScript } from "./page-corners";
 import { ReaderStore, type ReaderActions } from "./reader-store";
@@ -545,6 +547,8 @@ export interface BrowserControllerHooks {
   onDeskPageInput?: (input: DeskPageInput) => void;
   /** The pointer came onto a desk page, or went off it, or into or out of its top band (@pistachio/shell-contracts/desk DeskHover). */
   onDeskHover?: (hover: DeskHover) => void;
+  /** A page died, hung, or was let go of a drag it never heard the end of: for the profile's page-health log (page-health.ts). */
+  onPageHealth?: (event: PageHealthEvent) => void;
   /** A fresher capture of a card the open tab switcher shows. */
   onTabSwitcherThumbnail?: (thumbnail: TabSwitcherThumbnail) => void;
   /**
@@ -764,6 +768,15 @@ const DESK_MASK_WORLD = "pistachio-desk-mask";
  * long, as any window resized does.
  */
 const DESK_RELEASE_SETTLE_MS = 250;
+/** A page found deaf from a drag waits this long for an end already on its way before main ends the drag (#notePagePointer). */
+const STUCK_DRAG_SETTLE_MS = 250;
+/** Drags stay refused this long after a press main sent a page has come up (#guardSyntheticDrags). */
+const SYNTHETIC_DRAG_TAIL_MS = 1000;
+/** Who sends a page the presses whose drags are refused: a live share guest, or a masked window (#forwardMaskedMouse). */
+type SyntheticDragSource = "live-share" | "mask";
+/** debugger-hold.ts holders: the moment a stuck drag is ended, and a page taking input main sends it. */
+const DRAG_END_HOLDER = "drag-end";
+const SYNTHETIC_DRAG_HOLDER = "synthetic-drags";
 /** A still of a masked page is taken again, a frame apart, this many times until it comes at its view's size. */
 const DESK_STILL_SIZE_TRIES = 8;
 /** A capture of a desk page handed to the shell is granted if it is asked for this soon (Chromium's own ids last ten seconds). */
@@ -1047,6 +1060,30 @@ export class BrowserController {
    * so a desk of eight sleeping windows does not wake eight pages at once.
    */
   #deskWakeQueue: string[] = [];
+  /** Pages that died on screen and were reloaded for it, and when: one that dies again soon after is left for the person (page-health.ts). */
+  readonly #crashReloads = new CrashReloads();
+  /** Each page's drag, as its preload reports it, until it hears the drag end (page-health.ts DragWatch). */
+  readonly #pageDrags = new DragWatch();
+  /**
+   * Pages taking input main sends them — a live share guest's, a masked
+   * window's — whose debugger session refuses any drag they begin
+   * (#guardSyntheticDrags): whose presses are down there now, whose came
+   * last, and the timer that lets go once none has been down for a while.
+   */
+  readonly #syntheticDragGuards = new Map<
+    WebContents,
+    {
+      pressing: Set<SyntheticDragSource>;
+      source: SyntheticDragSource;
+      release: NodeJS.Timeout | null;
+      onMessage: (event: ElectronEvent, method: string) => void;
+      onGone: () => void;
+    }
+  >();
+  /** Pages found deaf from a drag, waiting out STUCK_DRAG_SETTLE_MS before main ends it. */
+  readonly #endingDrags = new Set<number>();
+  /** When each page last stopped answering (`unresponsive`), for the log's "answered again after". */
+  readonly #unresponsiveSince = new Map<WebContents, number>();
   /** The desk window being woken from the queue, until it has painted. */
   #deskWaking: string | null = null;
   readonly #recentlyClosedTabs: RecentlyClosedTabInfo[] = [];
@@ -1104,8 +1141,8 @@ export class BrowserController {
    * window's tab asleep: 0.0.28).
    */
   readonly #committedPages = new WeakSet<WebContents>();
-  /** The desk page the pointer is on, and whether in its top band, as main last told the shell (onDeskHover). */
-  #deskHovered: { tabId: string; top: boolean } | null = null;
+  /** The desk page the pointer is on, and whether in its top band or near its top, as main last told the shell (onDeskHover). */
+  #deskHovered: { tabId: string; top: boolean; near: boolean } | null = null;
   /** The latest work on a tab's mask (set up, re-aim, clear): a still of the tab waits for it. */
   readonly #deskMaskWork = new Map<string, Promise<void>>();
   /** Pages whose masks came off, laying out at their own box until shown there (DeskMaskRelease), by tab. */
@@ -2289,8 +2326,10 @@ export class BrowserController {
     this.#removeMedia(tabId);
     this.#readAloudTabGone(tabId, "suspended");
     this.#releaseFullscreen(tabId);
+    // (A crashed page's tab sleeps as any other: it wakes with a new page.)
+    const { crashed: _crashed, ...kept } = tab.info;
     const info: BrowserTabInfo = {
-      ...tab.info,
+      ...kept,
       loading: false,
       canGoBack: false,
       canGoForward: false,
@@ -3088,6 +3127,7 @@ export class BrowserController {
     if (
       this.#overlayActive ||
       this.#waking.has(tab.info.id) ||
+      tab.info.crashed !== undefined ||
       !this.#layout.views.some((placement) => placement.tabId === tab.info.id)
     )
       return;
@@ -4546,6 +4586,8 @@ export class BrowserController {
     // committed: a navigation that never does (a download, a cancelled
     // unload) leaves the share running, so its start is too early to say.
     view.webContents.on("did-navigate", () => this.#endScreenShare(info.id));
+    // A new document is a new page to drag from: a drag the last one never heard the end of went with it.
+    view.webContents.on("did-navigate", () => this.#pageDrags.forget(view.webContents.id));
     // Preloads are ready at dom-ready. Send the anchor-dependent behavior
     // before a slow image or subresource can hold did-finish-load open.
     view.webContents.on("dom-ready", () => {
@@ -4586,13 +4628,23 @@ export class BrowserController {
     // A dead renderer leaves nothing behind that can clean up after itself:
     // its fullscreen page can no longer exit (and would strand the window in
     // native fullscreen), its injected stylesheet went with the process, and
-    // its media is not playing any more. The view stays — Electron reloads it
-    // — so this is the same teardown a navigation does, without the tab going.
-    view.webContents.on("render-process-gone", () => {
+    // its media is not playing any more. The view stays, blank — Electron
+    // reloads nothing — so this is the same teardown a navigation does,
+    // without the tab going, and the page is brought back (#pageCrashed).
+    view.webContents.on("render-process-gone", (_event, details) => {
       this.#committedPages.delete(view.webContents);
       this.#liveDrawn.delete(view.webContents);
+      this.#pageDrags.forget(view.webContents.id);
+      this.#unresponsiveSince.delete(view.webContents);
       if (this.#tabs.get(info.id) !== tab) return;
-      this.#endWake(info.id);
+      // Down at once, inside this event: AppKit goes on sending a drag over
+      // this view to it, and Chromium 150 dereferences the dead page's
+      // missing RenderWidgetHostView there (-[WebDragDest draggingUpdated:])
+      // — the whole app went down with a page that ran out of memory under a
+      // drag (2026-10-20; reproduced, and gone with the view hidden here).
+      this.#settleViewVisible(tab.view, false);
+      this.#forgetWake(info.id);
+      this.#pageCrashed(tab, details);
       this.#releaseFullscreen(info.id);
       this.#glow.delete(info.id);
       this.#removeMedia(info.id);
@@ -4601,8 +4653,32 @@ export class BrowserController {
       this.#passkeySupport.delete(info.id);
       this.#capturingTabs.delete(info.id);
       this.#endScreenShare(info.id);
+      this.#applyLayout();
+      this.#onChange();
+    });
+    // A page that stops answering input for a while (Chromium's hang watch), and answers again: for the log alone.
+    view.webContents.on("unresponsive", () => {
+      if (this.#unresponsiveSince.has(view.webContents)) return;
+      this.#unresponsiveSince.set(view.webContents, Date.now());
+      this.#hooks.onPageHealth?.({ event: "unresponsive", site: pageSite(info.url) });
+    });
+    view.webContents.on("responsive", () => {
+      const since = this.#unresponsiveSince.get(view.webContents);
+      if (since === undefined) return;
+      this.#unresponsiveSince.delete(view.webContents);
+      this.#hooks.onPageHealth?.({ event: "responsive", site: pageSite(info.url), afterMs: Date.now() - since });
     });
     view.webContents.on("did-start-navigation", (details) => {
+      // A crashed page loading anything — its reload, from the window's
+      // Reload or anywhere else, Back, an address — has a renderer again:
+      // the window's Reload gives way, and the view stays down behind the
+      // tab's mark until the new document has painted, as a woken tab's does.
+      if (details.isMainFrame && !details.isSameDocument && info.crashed !== undefined && this.#tabs.get(info.id) === tab) {
+        delete info.crashed;
+        this.#beginWake(info.id);
+        this.#applyLayout();
+        this.#onChange();
+      }
       if (
         details.isMainFrame &&
         !details.isSameDocument &&
@@ -4675,9 +4751,10 @@ export class BrowserController {
     view.webContents.on("before-input-event", (event, input) =>
       this.#handleTabShortcut(tab, event, input),
     );
-    view.webContents.on("before-mouse-event", (event, mouse) =>
-      this.#handleDeskMouse(tab, event, mouse),
-    );
+    view.webContents.on("before-mouse-event", (event, mouse) => {
+      this.#notePagePointer(tab, mouse);
+      this.#handleDeskMouse(tab, event, mouse);
+    });
     view.webContents.on("input-event", (_event, input) => {
       // (A live share guest's pointer — heard inside sendLiveInput — is not the host's: it never cancels their ⌥⌘ hold.)
       if (POINTER_INPUT_TYPES.has(input.type) && !this.#liveInput) this.#hooks.onPointerInput?.();
@@ -5758,6 +5835,176 @@ export class BrowserController {
     const desk = this.#desk;
     if (tab === undefined || desk === null || !desk.tabIds.includes(tab.info.id)) return;
     this.#hooks.onDeskPageInput?.("fileDrag");
+  }
+
+  /**
+   * A tab's page began a drag, or heard it end (its preload: a dragstart the
+   * page did not cancel, a dragend). Kept until the end comes — or until the
+   * pointer's own events reaching the page say it never will
+   * (#notePagePointer).
+   */
+  acceptPageDrag(senderId: number, report: unknown): void {
+    const read = readPageDragReport(report);
+    if (read === null || this.#tabForWebContents(senderId) === undefined) return;
+    if (read.dragging) this.#pageDrags.started(senderId, read.point, Date.now());
+    else this.#pageDrags.ended(senderId);
+  }
+
+  /**
+   * The OS pointer's own event on a tab's page (input main sent it is
+   * passed over: it never went through the OS). A page whose drag is still
+   * on by its preload's word, though the pointer reaches it — a press, or
+   * moves well after the drag began, which no page hears while the OS runs
+   * a drag — drops all input until it is told the drag ended: it is told
+   * now, after a moment's wait for an end already on its way. Logged.
+   */
+  #notePagePointer(tab: ManagedTab, mouse: Electron.MouseInputEvent): void {
+    if (this.#deskMaskForwarding || this.#releasingPointer || this.#liveInput) return;
+    const contents = tab.view.webContents;
+    const drag = this.#pageDrags.stuck(contents.id, mouse.type, Date.now());
+    if (drag === null || this.#endingDrags.has(contents.id)) return;
+    this.#endingDrags.add(contents.id);
+    const trigger = mouse.type === "mouseDown" ? "press" : "hover";
+    setTimeout(() => {
+      this.#endingDrags.delete(contents.id);
+      if (contents.isDestroyed() || this.#pageDrags.drag(contents.id)?.since !== drag.since) return;
+      this.#pageDrags.forget(contents.id);
+      // Named now: the page may close while its drag is being ended.
+      const site = pageSite(contents.getURL());
+      void this.#endPageDrag(contents, drag).then((released) => {
+        this.#hooks.onPageHealth?.({ event: "drag-released", site, trigger, draggingMs: Date.now() - drag.since, released });
+      });
+    }, STUCK_DRAG_SETTLE_MS);
+  }
+
+  /**
+   * End the drag a page began, nothing dropped (CDP Input.dispatchDragEvent
+   * "dragCancel": the widget under the point is told the drag ended). The
+   * point is where the drag began, in the page's main frame, so the widget
+   * found there is the one that began it; its top left if that misses. True
+   * once Chromium took it. Nothing when another debugger (DevTools) has the page.
+   */
+  async #endPageDrag(contents: WebContents, drag: PageDrag | null): Promise<boolean> {
+    if (contents.isDestroyed()) return false;
+    try {
+      holdDebugger(contents, DRAG_END_HOLDER);
+    } catch {
+      return false;
+    }
+    try {
+      for (const at of drag === null ? [{ x: 1, y: 1 }] : [drag.point, { x: 1, y: 1 }]) {
+        if (contents.isDestroyed()) return false;
+        const sent = await contents.debugger
+          .sendCommand("Input.dispatchDragEvent", { type: "dragCancel", x: at.x, y: at.y, data: { items: [], dragOperationsMask: 1 } })
+          .then(
+            () => true,
+            () => false,
+          );
+        if (sent) return true;
+      }
+      return false;
+    } finally {
+      if (!contents.isDestroyed()) releaseDebugger(contents, DRAG_END_HOLDER);
+    }
+  }
+
+  /**
+   * A press main is about to send a page — a live share guest's, a masked
+   * window's: until it has long come up, any drag the page begins is
+   * refused, intercepted before the OS is asked for one (CDP
+   * Input.setInterceptDrags) and ended at once (#endPageDrag). Chromium 150
+   * never ends a drag begun by input sent this way: the page dropped all
+   * input until it was reloaded, and AppKit was left holding a drag session
+   * (probed 2026-10-20). The host's own drag on that page in the same
+   * moment is refused with it. Each sender's press holds the refusal until
+   * it comes up, or until that sender has given the page up
+   * (#unguardSyntheticDragsSoon).
+   */
+  #guardSyntheticDrags(contents: WebContents, source: SyntheticDragSource): void {
+    if (contents.isDestroyed()) return;
+    const held = this.#syntheticDragGuards.get(contents);
+    if (held !== undefined) {
+      held.pressing.add(source);
+      held.source = source;
+      if (held.release !== null) clearTimeout(held.release);
+      held.release = null;
+      return;
+    }
+    try {
+      holdDebugger(contents, SYNTHETIC_DRAG_HOLDER);
+    } catch {
+      return;
+    }
+    const onMessage = (_event: ElectronEvent, method: string): void => {
+      if (method !== "Input.dragIntercepted" || contents.isDestroyed()) return;
+      const drag = this.#pageDrags.drag(contents.id);
+      this.#pageDrags.forget(contents.id);
+      const site = pageSite(contents.getURL());
+      const from = this.#syntheticDragGuards.get(contents)?.source ?? source;
+      void this.#endPageDrag(contents, drag).then((released) => {
+        this.#hooks.onPageHealth?.({ event: "drag-refused", site, source: from, released });
+      });
+    };
+    const onGone = (): void => this.#unguardSyntheticDrags(contents);
+    contents.debugger.on("message", onMessage);
+    contents.once("destroyed", onGone);
+    this.#syntheticDragGuards.set(contents, { pressing: new Set([source]), source, release: null, onMessage, onGone });
+    void contents.debugger.sendCommand("Input.setInterceptDrags", { enabled: true }).catch(() => undefined);
+  }
+
+  /**
+   * The sender's press has come up, or it sends the page no more (a mask
+   * taken off or suspended): once no sender's press is down, the guard goes
+   * a moment later, unless another press comes first.
+   */
+  #unguardSyntheticDragsSoon(contents: WebContents, source: SyntheticDragSource): void {
+    const held = this.#syntheticDragGuards.get(contents);
+    if (held === undefined) return;
+    held.pressing.delete(source);
+    if (held.pressing.size > 0) return;
+    if (held.release !== null) clearTimeout(held.release);
+    held.release = setTimeout(() => this.#unguardSyntheticDrags(contents), SYNTHETIC_DRAG_TAIL_MS);
+    held.release.unref?.();
+  }
+
+  #unguardSyntheticDrags(contents: WebContents): void {
+    const held = this.#syntheticDragGuards.get(contents);
+    if (held === undefined) return;
+    this.#syntheticDragGuards.delete(contents);
+    if (held.release !== null) clearTimeout(held.release);
+    if (contents.isDestroyed()) return;
+    contents.removeListener("destroyed", held.onGone);
+    contents.debugger.removeListener("message", held.onMessage);
+    if (contents.debugger.isAttached()) void contents.debugger.sendCommand("Input.setInterceptDrags", { enabled: false }).catch(() => undefined);
+    releaseDebugger(contents, SYNTHETIC_DRAG_HOLDER);
+  }
+
+  /**
+   * A tab's renderer died (its view already down). A page on screen is
+   * reloaded at once, the tab's mark shown until the new page has painted,
+   * as a woken tab's is — unless it was reloaded for a crash a moment ago:
+   * one that runs out of memory may only do it again, so it is left
+   * `crashed`, its view down and its window saying what happened with
+   * Reload (DeskWindow), as a page off screen is until something loads in
+   * it. Logged. The caller lays the window out once its teardown is done.
+   */
+  #pageCrashed(tab: ManagedTab, details: Electron.RenderProcessGoneDetails): void {
+    const { info } = tab;
+    const contents = tab.view.webContents;
+    this.#unguardSyntheticDrags(contents);
+    const shown = this.#layout.views.some((placement) => placement.tabId === info.id);
+    const reloaded = shown && this.#crashReloads.take(info.id, Date.now());
+    this.#hooks.onPageHealth?.({ event: "crashed", site: pageSite(info.url), reason: details.reason, exitCode: details.exitCode, shown, reloaded });
+    if (!reloaded) {
+      info.crashed = crashKind(details.reason);
+      return;
+    }
+    delete info.crashed;
+    this.#beginWake(info.id);
+    // (Not from inside the event: the dead page's teardown is still under way.)
+    setImmediate(() => {
+      if (this.#tabs.get(info.id) === tab && !contents.isDestroyed()) contents.reload();
+    });
   }
 
   acceptEmptyCopy(senderId: number): void {
@@ -8980,6 +9227,7 @@ export class BrowserController {
         tab.info.spaceId !== this.activeSpaceId() ||
         tab.view.webContents.isDestroyed() ||
         this.#waking.has(tabId) ||
+        tab.info.crashed !== undefined ||
         // The shell draws these pages itself.
         isShellPageUrl(tab.info.url)
       )
@@ -9217,8 +9465,14 @@ export class BrowserController {
     this.#liveInput = true;
     try {
       for (const step of steps) {
-        if (step.type === "insertText") void contents.insertText(step.text);
-        else contents.sendInputEvent(step);
+        if (step.type === "insertText") {
+          void contents.insertText(step.text);
+          continue;
+        }
+        // A guest's press never begins a drag on the host's Mac (#guardSyntheticDrags).
+        if (step.type === "mouseDown") this.#guardSyntheticDrags(contents, "live-share");
+        contents.sendInputEvent(step);
+        if (step.type === "mouseUp") this.#unguardSyntheticDragsSoon(contents, "live-share");
       }
     } finally {
       this.#liveInput = false;
@@ -9406,7 +9660,7 @@ export class BrowserController {
       case "mouseMove":
       case "mouseEnter":
         this.#setDeskCursor(tab, armed ? "grab" : null);
-        this.#noteDeskHover(tabId, true, mouse.y < DESK_DRAWER_TRIGGER);
+        this.#noteDeskHover(tabId, true, mouse.y < DESK_DRAWER_TRIGGER, mouse.y < DESK_DRAWER_KEEP);
         this.#forwardMaskedMouse(tab, event, mouse);
         return;
       case "mouseLeave":
@@ -9451,7 +9705,11 @@ export class BrowserController {
     if (aim === null || tab.view.webContents.isDestroyed()) return;
     const scale = aim.width / state.mask.width;
     const button = mouse.button ?? "left";
-    if (mouse.type === "mouseDown") this.#deskMaskButtons.add(button);
+    if (mouse.type === "mouseDown") {
+      this.#deskMaskButtons.add(button);
+      // Nor does a press forwarded to a masked page (#guardSyntheticDrags).
+      this.#guardSyntheticDrags(tab.view.webContents, "mask");
+    }
     if (mouse.type === "mouseUp") this.#deskMaskButtons.delete(button);
     const held = [...this.#deskMaskButtons].map((pressed) => `${pressed}buttondown` as const);
     const forwarded: Electron.MouseInputEvent = {
@@ -9468,6 +9726,7 @@ export class BrowserController {
     } finally {
       this.#deskMaskForwarding = false;
     }
+    if (mouse.type === "mouseUp") this.#unguardSyntheticDragsSoon(tab.view.webContents, "mask");
   }
 
   /** A press on a desk page becomes its window's move: the page hears none of it, the shell runs it. */
@@ -9489,7 +9748,9 @@ export class BrowserController {
     for (const [tabId, state] of [...this.#deskMasks]) {
       if (this.#tabs.get(tabId)?.view.webContents === state.contents) continue;
       this.#deskMasks.delete(tabId);
-      if (!state.contents.isDestroyed()) state.contents.debugger.removeListener("message", state.onMessage);
+      if (state.contents.isDestroyed()) continue;
+      state.contents.debugger.removeListener("message", state.onMessage);
+      this.#unguardSyntheticDragsSoon(state.contents, "mask");
     }
     for (const [tabId, release] of [...this.#deskReleases]) {
       if (this.#tabs.get(tabId)?.view.webContents === release.contents) continue;
@@ -9678,8 +9939,10 @@ export class BrowserController {
     if (state.suspended) return;
     state.suspended = true;
     state.applied = null;
-    this.#deskMaskButtons.clear();
     const contents = tab.view.webContents;
+    // Input goes to the page as it is now: no press of the mask's is down there any more.
+    this.#deskMaskButtons.clear();
+    this.#unguardSyntheticDragsSoon(contents, "mask");
     void this.#deskMaskStep(tab.info.id, async () => {
       if (contents.isDestroyed() || !contents.debugger.isAttached() || !state.suspended) return;
       await contents.debugger.sendCommand("Emulation.clearDeviceMetricsOverride");
@@ -9701,7 +9964,9 @@ export class BrowserController {
     if (tab === undefined || tab.view.webContents.isDestroyed()) return;
     const contents = tab.view.webContents;
     contents.debugger.removeListener("message", state.onMessage);
+    // Nor any press the mask forwarded and never saw come up: the page's drags are the person's own again.
     this.#deskMaskButtons.clear();
+    this.#unguardSyntheticDragsSoon(contents, "mask");
     const width = Math.round(state.mask.pageWidth);
     const height = Math.round(state.mask.pageHeight);
     // Down, at its box: a still taken meanwhile is of the whole page as it will be.
@@ -9874,22 +10139,23 @@ export class BrowserController {
 
   /**
    * The pointer came onto a desk page, or went off it, or into or out of
-   * its top band: a minimized window peeking from the desk's foot rises
-   * while it is on it, and a window's drawer comes out — and over a live
-   * page the shell hears no pointer (onDeskHover). Told once each change.
+   * its top band, or of the band near its top that keeps a drawer out: a
+   * minimized window peeking from the desk's foot rises while it is on it,
+   * and a window's drawer comes out and stays out — and over a live page the
+   * shell hears no pointer (onDeskHover). Told once each change.
    */
-  #noteDeskHover(tabId: string, over: boolean, top = false): void {
+  #noteDeskHover(tabId: string, over: boolean, top = false, near = top): void {
     const hovered = this.#deskHovered;
     if (over) {
-      if (hovered?.tabId === tabId && hovered.top === top) return;
-      if (hovered !== null && hovered.tabId !== tabId) this.#hooks.onDeskHover?.({ tabId: hovered.tabId, over: false, top: false });
-      this.#deskHovered = { tabId, top };
-      this.#hooks.onDeskHover?.({ tabId, over: true, top });
+      if (hovered?.tabId === tabId && hovered.top === top && hovered.near === near) return;
+      if (hovered !== null && hovered.tabId !== tabId) this.#hooks.onDeskHover?.({ tabId: hovered.tabId, over: false, top: false, near: false });
+      this.#deskHovered = { tabId, top, near };
+      this.#hooks.onDeskHover?.({ tabId, over: true, top, near });
       return;
     }
     if (hovered?.tabId !== tabId) return;
     this.#deskHovered = null;
-    this.#hooks.onDeskHover?.({ tabId, over: false, top: false });
+    this.#hooks.onDeskHover?.({ tabId, over: false, top: false, near: false });
   }
 
   /** An event of the grabbed press, in the window's content box. */
@@ -10152,7 +10418,7 @@ export class BrowserController {
       if (masked !== undefined && panePlacement !== undefined) {
         masked.want = {
           bounds,
-          shown: !this.#waking.has(tabId) && !this.#overlayActive && this.#glance?.ownerRecessed !== true && visible.has(tabId),
+          shown: !this.#waking.has(tabId) && tab.info.crashed === undefined && !this.#overlayActive && this.#glance?.ownerRecessed !== true && visible.has(tabId),
         };
         if (masked.want.shown && tab.offscreenViewport) this.#releaseOffscreenViewport(tab);
         this.#placeMaskedView(tab, masked);
@@ -10172,6 +10438,8 @@ export class BrowserController {
       const shown =
         !isShellPageUrl(tab.info.url) &&
         !this.#waking.has(tabId) &&
+        // A dead page's view stays down: the window says so and offers Reload.
+        tab.info.crashed === undefined &&
         (panePlacement !== undefined
           ? !this.#overlayActive &&
             this.#glance?.ownerRecessed !== true &&

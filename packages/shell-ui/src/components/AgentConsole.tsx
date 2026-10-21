@@ -64,6 +64,7 @@ import { cloudReadiness, isCloudRun } from "../lib/cloud";
 import { selectActiveTab, useAppStore } from "../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "./chat/attachment-drop";
 import { LiveReply } from "./chat/LiveReply";
+import { useReplyBegun } from "./chat/SmoothHeight";
 import { useThreadLayout } from "./chat/use-thread-layout";
 import {
   ApprovalCard,
@@ -384,6 +385,8 @@ function Conversation({
   activeTab: BrowserTabInfo | null;
 }) {
   const { tracesAt, outputsAt, pendingOutputs, sourcesAt, pendingSources } = useThreadLayout(run);
+  // The turn at work: the run's latest, its reply not begun — its steps stay open between two steps (WorkTrace `live`).
+  const replyBegun = useReplyBegun(run);
   return (
     <MessageScroller.Provider
       autoScroll
@@ -464,6 +467,7 @@ function Conversation({
                       <Fragment key={turn.turn}>
                         <WorkTrace
                           turn={turn}
+                          live={run.status === "running" && !replyBegun && turn.turn === run.turns}
                           latest={turn.toolCalls.at(-1) === run.toolCalls.at(-1)}
                           awaitingApproval={run.status === "waiting_for_approval"}
                         />

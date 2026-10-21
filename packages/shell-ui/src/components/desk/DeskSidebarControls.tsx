@@ -87,9 +87,10 @@ export function DeskRailToggle({ className }: { className?: string }) {
 }
 
 /**
- * The desk's card: the arrangements and the variants (Feel). The pointer on
- * it brings the card up beside it; a click pins it up until a press
- * anywhere else or Escape.
+ * The desk's card: the space in use's own controls (none in Home), the
+ * arrangements and the variants (Feel, folded away). The pointer on it
+ * brings the card up beside it; a click pins it up until a press anywhere
+ * else or Escape.
  */
 export function DeskMoreButton({ className }: { className?: string }) {
   const up = useDeskUp();
@@ -108,8 +109,8 @@ export function DeskMoreButton({ className }: { className?: string }) {
     <button
       ref={ref}
       type="button"
-      aria-label="Windows: arrange, feel"
-      title="Windows: arrange, feel"
+      aria-label="More: the space, its windows, feel"
+      title="More: the space, its windows, feel"
       aria-expanded={open}
       aria-pressed={open}
       data-testid="desk-more"

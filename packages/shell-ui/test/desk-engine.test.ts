@@ -1992,6 +1992,34 @@ describe("passing the desk to another group", () => {
     desk.destroy();
   });
 
+  it("draws a space's desk small as passing to it would bring it out — the same boxes — and the desk in use as it stands (the rail's card)", () => {
+    native();
+    const desk = engine();
+    desk.start([], "tab-0", tabIds(2), null, "A");
+    settle();
+    desk.add("tab-1", { focus: false });
+    settle();
+    const space = { groupId: "B", tabIds: ["b-0", "b-1", "b-2"], saved: [{ tabId: "b-0", rect: rect(0.05) }, { tabId: "b-1", rect: rect(0.5) }], reserve: 0, entry: null };
+    const before = desk.sketchSpace(space);
+    expect(before).toMatchObject({ width: 1600, height: 1000 });
+    // Its windows where they were left, bottom to top, the top one the one it would come up on.
+    expect(before.windows.map((window) => [window.tabId, window.focused])).toEqual([
+      ["b-0", false],
+      ["b-1", true],
+    ]);
+    // The desk in use, as it stands: both its windows, the one in use marked.
+    const here = desk.sketchSpace({ groupId: "A", tabIds: tabIds(2), saved: [], reserve: 0, entry: null });
+    expect(new Set(here.windows.map((window) => window.tabId))).toEqual(new Set(["tab-0", "tab-1"]));
+    expect(here.windows.filter((window) => window.focused).map((window) => window.tabId)).toEqual([desk.focusedTabId()]);
+    // Passed to: its windows land where the sketch drew them.
+    desk.switchGroup({ from: "A", ...space });
+    settle();
+    const after = desk.sketchSpace(space);
+    expect(after.windows.map((window) => window.tabId)).toEqual(["b-0", "b-1"]);
+    for (const window of before.windows) expectRect(after.windows.find((candidate) => candidate.tabId === window.tabId)!.rect, window.rect);
+    desk.destroy();
+  });
+
   it("brings a group never on a desk out as its tab used last, alone", () => {
     native();
     const desk = engine();

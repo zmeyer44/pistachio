@@ -65,8 +65,8 @@ function answerOf(json: Json): LiveRequestAnswer {
 const bearer = (request: LiveGuestRequest): HeadersInit => ({ authorization: `Bearer ${request.secret}` });
 
 /** The share a link names. */
-export async function joinInfo(token: string): Promise<LiveJoinInfo> {
-  const json = await call(path(token));
+export async function joinInfo(token: string, signal?: AbortSignal): Promise<LiveJoinInfo> {
+  const json = await call(path(token), signal === undefined ? {} : { signal });
   const { title, hostName, admission, status } = json;
   if (typeof title !== "string" || (admission !== "ask" && admission !== "open") || (status !== "live" && status !== "ended")) throw malformed();
   return { title, hostName: typeof hostName === "string" && hostName.trim() !== "" ? hostName : null, admission, status };

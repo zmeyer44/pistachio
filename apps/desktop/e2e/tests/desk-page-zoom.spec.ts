@@ -18,7 +18,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { CHROME_VIEW_HASHES } from "@pistachio/shell-contracts/chrome";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { box, createGroup, createTab, fromFrameMenu, launchDesk, openMore, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, windowSelector } from "./desk-harness";
+import { box, createGroup, createTab, fromFrameMenu, launchDesk, openFeel, openMore, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, windowSelector } from "./desk-harness";
 
 const capture = screenshots("desk-page-zoom");
 
@@ -365,7 +365,7 @@ test.describe.serial("Page zoom: a page zoomed out for its window's share of the
     const row = shell.getByTestId("desk-variant-zoom");
     /** The slider set to a strength's stop, the card left, and the desk settled. */
     const strength = async (step: number, id: string, label: string): Promise<void> => {
-      await openMore(shell);
+      await openFeel(shell);
       await row.locator('input[type="range"]').fill(String(step));
       await expect(row).toHaveAttribute("data-value", id);
       await expect(row).toContainText(label);

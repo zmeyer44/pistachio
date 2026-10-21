@@ -3,7 +3,7 @@ import { House, Plus } from "lucide-react";
 import { canMergeSpaces, tabGroupTitle } from "@pistachio/shell-contracts/tab-groups";
 import { ChromeRegion } from "../../chrome/manifest-renderers";
 import { useShelfDrag } from "../../chrome/shelf-drag";
-import { useDeskChrome } from "../../lib/desk/chrome";
+import { anchorOf, useDeskChrome, type DeskAnchor } from "../../lib/desk/chrome";
 import { useGroupContexts } from "../../lib/desk/group-context";
 import { NEW_SPACE_EVENT, newSpace, selectSpace } from "../../lib/desk/open";
 import { groupPageOf } from "../../lib/desk/store";
@@ -33,10 +33,16 @@ import {
   type RailCarryTile,
   type RailSpace,
 } from "./rail-model";
+import { RAIL_CARD_DELAY_MS, RailSpaceCard } from "./RailSpaceCard";
 import { useSpaceMenu } from "./space-menu";
 
 /** A press this far along the rail is a tile carried, not a click. */
 const MOVE_START_PX = 5;
+
+/** A space's window count, as its tile and its card say it. */
+function windowsLabel(count: number): string {
+  return count === 0 ? "No windows" : `${String(count)} ${count === 1 ? "window" : "windows"}`;
+}
 
 /**
  * The double sidebar's rail (docs/double-sidebar.md §1): 56px on the
@@ -97,6 +103,31 @@ export function SpaceRail({
         ? { translate: `0 ${String(moving.settleDy)}px` }
         : { translate: `0 ${String(moving.dy)}px`, scale: mergingInto !== null ? "0.72" : "1.06" };
 
+  // The tile the pointer rests on: its card (RailSpaceCard) comes up beside it a moment later, and goes as the pointer
+  // leaves, presses or opens its menu. (It took the place of the tile's tooltip, 2026-10-21.)
+  const [card, setCard] = useState<{ groupId: string; anchor: DeskAnchor } | null>(null);
+  const cardTimer = useRef<number | null>(null);
+  const restOn = (groupId: string, el: HTMLElement): void => {
+    if (cardTimer.current !== null) window.clearTimeout(cardTimer.current);
+    cardTimer.current = window.setTimeout(() => {
+      cardTimer.current = null;
+      setCard({ groupId, anchor: anchorOf(el) });
+    }, RAIL_CARD_DELAY_MS);
+  };
+  const leaveCard = (): void => {
+    if (cardTimer.current !== null) window.clearTimeout(cardTimer.current);
+    cardTimer.current = null;
+    setCard(null);
+  };
+  useEffect(
+    () => () => {
+      if (cardTimer.current !== null) window.clearTimeout(cardTimer.current);
+    },
+    [],
+  );
+  // (None while a tile is carried, or anything is dragged over the rail.)
+  const cardSpace = card === null || moving.id !== null || drag !== null ? null : (spaces.find((space) => space.group.id === card.groupId) ?? null);
+
   const tabsOf = (space: RailSpace): ClusterTab[] => {
     const all = space.group.tabIds.flatMap((tabId) => tabsById.get(tabId) ?? []);
     if (!space.page) return all;
@@ -151,7 +182,7 @@ export function SpaceRail({
           const members = tabsOf(space);
           const name = nameOf(space, members);
           const count = members.length;
-          const windows = count === 0 ? "No windows" : `${String(count)} ${count === 1 ? "window" : "windows"}`;
+          const windows = windowsLabel(count);
           const stack = count === 0 ? (contexts.find((context) => context.groupId === space.group.id)?.items.length ?? 0) : 0;
           const live = shared === space.group.id;
           return (
@@ -178,7 +209,6 @@ export function SpaceRail({
               data-live={live ? "" : undefined}
               aria-label={`${name}, ${windows}${live ? liveNote : ""}`}
               aria-current={view === space.group.id ? "true" : undefined}
-              title={`${name} · ${windows}${live ? liveNote : ""}`}
               style={
                 moving.id === space.group.id
                   ? carriedStyle()
@@ -187,7 +217,12 @@ export function SpaceRail({
                     : undefined
               }
               onMouseDown={(event) => event.preventDefault()}
+              onPointerEnter={(event) => {
+                if (event.buttons === 0) restOn(space.group.id, event.currentTarget);
+              }}
+              onPointerLeave={leaveCard}
               onPointerDown={(event) => {
+                leaveCard();
                 if (!space.page) moving.press(space.group.id, event);
               }}
               onClick={() => {
@@ -197,6 +232,7 @@ export function SpaceRail({
               onDoubleClick={() => renameSpace(space.group.id)}
               onContextMenu={(event) => {
                 event.preventDefault();
+                leaveCard();
                 menu.open(event, spaceMenu(space));
               }}
               className="space-rail-tile tab-group-tone no-drag"
@@ -238,6 +274,15 @@ export function SpaceRail({
         </SidebarRailContext.Provider>
       </div>
       {menu.menu}
+      {cardSpace !== null && card !== null ? (
+        <RailSpaceCard
+          key={cardSpace.group.id}
+          group={cardSpace.group}
+          name={nameOf(cardSpace, tabsOf(cardSpace))}
+          windows={windowsLabel(tabsOf(cardSpace).length)}
+          anchor={card.anchor}
+        />
+      ) : null}
     </nav>
   );
 }

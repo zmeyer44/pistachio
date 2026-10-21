@@ -176,6 +176,13 @@ export interface BrowserTabInfo {
    * Absent where the host cannot do this — the chrome then offers no toggle.
    */
   forcedFocus?: boolean;
+  /**
+   * The page's renderer died — it ran out of memory (`memory`), or anything
+   * else — and nothing has loaded in it since: its view is down and its
+   * window says so and offers Reload (apps/desktop/src/main/page-health.ts).
+   * Absent on every other tab.
+   */
+  crashed?: "memory" | "crashed";
 }
 
 /** Recoverable metadata for the most recently closed human tab. */
@@ -1761,6 +1768,8 @@ export const IPC = {
   liveHostAppearance: "pistachio:live-host-appearance",
   /** A tab's isolated preload → main: files from outside the app were dragged over its page (docs/desk-documents.md §1). */
   tabFileDrag: "pistachio:tab-file-drag",
+  /** A tab's isolated preload → main: its page began a drag (`{ dragging: true, x, y }`, CSS px), or the drag ended (apps/desktop/src/main/page-health.ts). */
+  tabPageDrag: "pistachio:tab-page-drag",
   tabSwitcherPreviewsGet: "pistachio:tab-switcher-previews-get",
   tabSwitcherInput: "pistachio:tab-switcher-input",
   tabSwitcherThumbnail: "pistachio:tab-switcher-thumbnail",

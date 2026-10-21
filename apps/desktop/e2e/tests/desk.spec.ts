@@ -37,6 +37,7 @@ import {
   INVOICES,
   launchDesk,
   liveViews,
+  openFeel,
   openMore,
   openTabs,
   railSpace,
@@ -658,7 +659,7 @@ test.describe.serial("a space's desk, from its first window on", { tag: ["@desk"
     await capture(app, shell, "62-desk-tile-key.png");
 
     // ── 4. Glide's deceleration, on the card under the throw: kept on this device, and idle under another throw ─
-    await openMore(shell);
+    await openFeel(shell);
     const deceleration = shell.getByTestId("desk-variant-deceleration");
     await expect(deceleration).toHaveAttribute("data-value", "28");
     await deceleration.locator('input[type="range"]').fill("50");
@@ -1377,6 +1378,15 @@ test.describe.serial("a mask: a region of a page as the whole window", { tag: ["
     expect(Math.abs(kept.width - edited.width)).toBeLessThan(2);
     expect(await inPage<string[]>("window.__sizes")).toEqual([]);
 
+    // A press into the masked page that it never hears come up before the mask comes off:
+    // main refuses the page's drags only while a press it forwarded is down (#guardSyntheticDrags).
+    const pagePoint = { x: 12, y: 200 };
+    await app.evaluate(({ webContents }, { url, point }) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!;
+      contents.sendInputEvent({ type: "mouseMove", ...point });
+      contents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
+    }, { url: urls[0]!, point: pagePoint });
+
     // ── 6. Unmask: the whole page back around the region — and the page, laid out at its
     //      own box all along, never sees its size change, not for a frame of the way back ─
     await shell.locator(`${win()} [data-testid="desk-unmask"]`).click();
@@ -1391,6 +1401,14 @@ test.describe.serial("a mask: a region of a page as the whole window", { tag: ["
     const whole = await box(shell, `${win()} [data-testid="desk-window-page"]`);
     expect(Math.abs(whole.width - pageWidth)).toBeLessThan(2);
     expect(Math.abs(whole.height - pageHeight)).toBeLessThan(2);
+    // The press's refusal went with the mask: the page's drags are the person's own again, and
+    // its debugger session — the mask's and the refusal's — is let go of.
+    const attached = (): Promise<boolean> =>
+      app.evaluate(({ webContents }, url) => webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!.debugger.isAttached(), urls[0]!);
+    await expect.poll(attached, { timeout: 5000 }).toBe(false);
+    await app.evaluate(({ webContents }, { url, point }) => {
+      webContents.getAllWebContents().find((candidate) => candidate.getURL() === url)!.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
+    }, { url: urls[0]!, point: pagePoint });
     await capture(app, shell, "39d-unmasked.png");
   });
 
@@ -1707,20 +1725,22 @@ test.describe.serial("passing the desk between a Profile's spaces", { tag: ["@de
     const alone = await box(shell, windowSelector(loose));
     const desk = await box(shell, ".desk-stage");
     for (const key of ["x", "y", "width", "height"] as const) expect(Math.abs(alone[key] - desk[key])).toBeLessThan(2);
-    // No tile on the rail: the tab's own row in Today, with the Stack under it; the Bar, asking about the tab.
+    // No tile on the rail: the tab's own row in Today — no Stack under it (Home draws none under the tab in use,
+    // 2026-10-21); the Bar, asking about the tab.
     await expect(shell.locator(groupSelector(made.id))).toHaveCount(0);
     await expect(shell.locator(rowSelector(loose))).toHaveCount(1);
-    await expect(shell.getByTestId("desk-stack")).toHaveCount(1);
+    await expect(shell.getByTestId("desk-stack")).toHaveCount(0);
     await expect(shell.getByTestId("desk-bar")).toHaveCount(1);
     await shell.evaluate(
       (groupId) => (window as unknown as { pistachio: PistachioApi }).pistachio.groupContext({ type: "addText", groupId, title: "Loose", kind: "fact", text: "Net 30 terms" }),
       made.id,
     );
-    await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "1");
-    // Something in its Context: a space of its own now, in place — drawn, the person's, a tile on the rail (2026-10-14).
+    // Something in its Context: a space of its own now, in place — drawn, the person's, a tile on the rail (2026-10-14) —
+    // its view in the card, its Stack at the foot holding what went in.
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.id === made.id)?.origin).toBe("manual");
     await expect(shell.locator(groupSelector(made.id))).toHaveCount(1);
     expect((await snapshot(shell)).currentGroupId).toBe(made.id);
+    await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "1");
     await capture(app, shell, "76-loose-tab-desk.png");
 
     // ── 3. Its tab put in Research (its row dragged into the space): it is Research's, and the desk passes to Research

@@ -95,15 +95,21 @@ test.describe.serial("the sidebar shelf", { tag: ["@sidebar"] }, () => {
     await atRest(app, shell, "01-shelf.png");
 
     // A preset opens as its own tab, bound to the tile: the tile lights up, and
-    // its page's space is the desk's, its tab under the grid, not among the
-    // day's. Clicking it again shows that tab, not another.
+    // its page's space is the desk's — the lit tile its only mark, no row of
+    // its own under the grid, nor among the day's. Clicking it again shows
+    // that tab, not another.
     await preset.click();
     await expect(preset).toHaveAttribute("data-live", "");
     await expect(preset).toHaveAttribute("aria-pressed", "true");
     await expect(dayTabs).toHaveCount(1);
-    await expect(sidebar.getByTestId("human-tab")).toHaveCount(2);
+    await expect(sidebar.getByTestId("human-tab")).toHaveCount(1);
+    const tabCount = (): Promise<number> =>
+      shell.evaluate(async () => (await (window as unknown as { pistachio: { getSnapshot(): Promise<{ tabs: unknown[] }> } }).pistachio.getSnapshot()).tabs.length);
+    const opened = await tabCount();
     await preset.click();
-    await expect(sidebar.getByTestId("human-tab")).toHaveCount(2);
+    await expect(preset).toHaveAttribute("aria-pressed", "true");
+    expect(await tabCount()).toBe(opened);
+    await expect(sidebar.getByTestId("human-tab")).toHaveCount(1);
     // Closing the page keeps the tile. (⌘W is main's before-input-event,
     // which a synthetic key press never reaches; the menu is the same close.)
     await pick(shell, preset, "Close tab");
@@ -395,10 +401,9 @@ test("rows and tiles drag between the day's tabs, the pinned tree, its folders, 
     await expect(pin).toHaveAttribute("data-live", "");
     await expect(list.getByTestId("human-tab")).toHaveCount(0);
 
-    // A pin dropped on a folder's header goes inside it. (New folder shows on the "New tab" row's hover: first the pin's
-    // Context row comes in under it — its page alone is Home's, its desk up — moving the "New tab" row down, from
-    // under a pointer that rested there.)
-    await expect(sidebar.getByTestId("pinned-section").getByTestId("desk-stack")).toHaveCount(1);
+    // A pin dropped on a folder's header goes inside it. (New folder shows on the "New tab" row's hover. The pin's page
+    // alone is Home's, its desk up — and Home draws no Context row under it, 2026-10-21.)
+    await expect(sidebar.getByTestId("pinned-section").getByTestId("desk-stack")).toHaveCount(0);
     await settled(sidebar);
     await sidebar.getByTestId("new-tab-button").hover();
     await sidebar.getByTestId("new-folder-button").click();

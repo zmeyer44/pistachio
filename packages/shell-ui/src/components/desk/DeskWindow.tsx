@@ -35,6 +35,7 @@ import { Favicon } from "../Favicon";
 import { PanePlaceholder } from "../PanePlaceholder";
 import { SiteInfoFrom } from "../SiteInfoPopover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
+import { Button } from "../ui/button";
 import { HomePage } from "../home/HomePage";
 import { BriefPage } from "../reports/BriefPage";
 import { DRAWER_H, MASK_CARD_TOP, MASK_INSETS, WINDOW_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
@@ -718,6 +719,8 @@ function WindowPage({
 }) {
   const kind = pageKind(tab.url);
   if (kind !== null) return <ShellPageView tab={tab} kind={kind} active={focused} frozen={frozen} />;
+  // Its page died, and main keeps the view down: never a picture of what it was.
+  if (tab.crashed !== undefined) return <CrashedPage tab={tab} />;
   if (still !== null && unmasking !== null) {
     // Growing back from a mask: the whole page where it stands now (the
     // engine moves the box each frame), or the region, where it is in it.
@@ -745,6 +748,29 @@ function WindowPage({
             asleep on purpose (DeskState.live), its placeholder its favicon and title alone. */}
         {waking ? <span className="text-[11px] text-gray-700">Waking…</span> : null}
       </PanePlaceholder>
+    </div>
+  );
+}
+
+/**
+ * A page whose renderer died and was not brought back (BrowserTabInfo.crashed:
+ * one off screen, or one that died again soon after main reloaded it): what
+ * happened, and Reload — which shows the tab's mark until the page has painted.
+ */
+function CrashedPage({ tab }: { tab: BrowserTabInfo }) {
+  return (
+    <div className="grid size-full place-items-center" data-testid="desk-window-crashed" data-crashed={tab.crashed}>
+      <div className="flex max-w-72 flex-col items-center gap-3 px-6 text-center">
+        <Favicon src={tab.faviconUrl} seed={displayHost(tab.url) || tab.title || "•"} className="size-16 rounded-2xl text-[28px] shadow-menu" />
+        <div className="flex flex-col items-center gap-1">
+          <span className="text-[13px] font-medium text-gray-1000">{tab.crashed === "memory" ? "This page ran out of memory" : "This page crashed"}</span>
+          <span className="max-w-60 truncate text-[12px] text-gray-700">{tab.title || displayHost(tab.url)}</span>
+        </div>
+        <Button variant="secondary" size="xs" data-testid="desk-window-crash-reload" onClick={() => void useAppStore.getState().reload(tab.id)}>
+          <RotateCw aria-hidden="true" />
+          Reload
+        </Button>
+      </div>
     </div>
   );
 }

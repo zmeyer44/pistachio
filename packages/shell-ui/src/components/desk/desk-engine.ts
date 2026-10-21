@@ -81,7 +81,7 @@
 
 import type { DragCursor } from "@pistachio/shell-contracts/chrome";
 import {
-  DESK_DRAWER_TRIGGER,
+  DESK_DRAWER_KEEP,
   DESK_MINI_ZOOM,
   deskMaskKey,
   MAX_DESK_STILL_WIDTH,
@@ -218,16 +218,20 @@ const DRAWER_CLEAR_WAIT_MS = 400;
 /** A page its drawer pushed past the desk's foot stays held at its own size this long once the window is back up, until its view is whole again. */
 const DRAWER_HOLD_MS = 120;
 
-/** Where the pointer is on a window, for its drawer: the shell's word (on any of it, on its drawer or top strip, its menu up) and main's (on its live page, in the page's top band). */
+/**
+ * Where the pointer is on a window, for its drawer: the shell's word (on any of it, on its drawer or top strip, its
+ * menu up) and main's (on its live page, in the page's top band, or near enough its top to keep a drawer out).
+ */
 interface DrawerHover {
   window: boolean;
   strip: boolean;
   menu: boolean;
   page: boolean;
   top: boolean;
+  near: boolean;
 }
 
-const NO_HOVER: DrawerHover = { window: false, strip: false, menu: false, page: false, top: false };
+const NO_HOVER: DrawerHover = { window: false, strip: false, menu: false, page: false, top: false, near: false };
 
 /** A masked window's frame is a handle riding above its region: nothing beside or below it. */
 export const MASK_INSETS: Insets = { top: 18, right: 0, bottom: 0, left: 0 };
@@ -450,6 +454,21 @@ export function windowTipCover(tabId: string): string {
  */
 export function takesOnInPlace(engine: Pick<DeskEngine, "isStaying">, chosen: string | null, saved: boolean): boolean {
   return chosen !== null && !saved && engine.isStaying(chosen);
+}
+
+/** A window of a space's desk drawn small (sketchSpace): its box in the stage, the latest picture of its page, and whether it is the one in use. */
+export interface DeskSketchWindow {
+  tabId: string;
+  rect: Rect;
+  still: string | null;
+  focused: boolean;
+}
+
+/** A space's desk drawn small (sketchSpace): the stage's size, and its windows out on it, bottom to top. */
+export interface DeskSketch {
+  width: number;
+  height: number;
+  windows: DeskSketchWindow[];
 }
 
 export interface DeskView {
@@ -2298,6 +2317,32 @@ export class DeskEngine {
   }
 
   /**
+   * A space's desk drawn small, for its tile's card on the rail
+   * (RailSpaceCard): the desk in use as it stands, or another space's as it
+   * would come out were the desk to pass to it now (#laidOut, as
+   * switchGroup lays it out) — the stage's size, and the windows out on it
+   * bottom to top, each with the latest picture of its page (null: none
+   * yet). Minimized windows are left out: they are not on the desk.
+   */
+  sketchSpace(space: { groupId: string; tabIds: readonly string[]; saved: readonly SavedDeskWindow[]; reserve: number; entry: string | null }): DeskSketch {
+    const still = (tabId: string): string | null => (this.#wins.get(tabId)?.still ?? this.#thumbs.get(tabId) ?? null)?.src ?? null;
+    const size = { width: this.#stageBox.width, height: this.#stageBox.height };
+    if (space.groupId === this.#groupId) {
+      const windows = this.#order.flatMap((tabId): DeskSketchWindow[] => {
+        const win = this.#wins.get(tabId);
+        if (win === undefined || win.mini !== null || win.flight === "away" || this.#departing.has(tabId)) return [];
+        return [{ tabId, rect: { ...(win.target ?? win.rect) }, still: still(tabId), focused: tabId === this.#focused }];
+      });
+      return { ...size, windows };
+    }
+    const { windows, entry } = this.#laidOut(space.saved, space.tabIds, space.entry, null, false, space.reserve);
+    return {
+      ...size,
+      windows: windows.filter((window) => window.mini === null).map((window) => ({ tabId: window.tabId, rect: window.rect, still: still(window.tabId), focused: window.tabId === entry })),
+    };
+  }
+
+  /**
    * A saved window's boxes with no room kept for the chat's place (`own`),
    * remembered while the room is kept (#unreserved) as if the room had been
    * kept here, so the room gone gives them back exactly after a relaunch or
@@ -2954,10 +2999,10 @@ export class DeskEngine {
     this.#noteDrawerHover(tabId, { [part]: over });
   }
 
-  /** Main's word on a window's live page (DeskHover): the pointer on it, and in its top band. */
-  hoverPage(tabId: string, over: boolean, top: boolean): void {
+  /** Main's word on a window's live page (DeskHover): the pointer on it, in its top band, and near its top. */
+  hoverPage(tabId: string, over: boolean, top: boolean, near = top): void {
     this.hoverMini(tabId, "page", over);
-    this.#noteDrawerHover(tabId, { page: over, top: over && top });
+    this.#noteDrawerHover(tabId, { page: over, top: over && top, near: over && near });
   }
 
   #noteDrawerHover(tabId: string, change: Partial<DrawerHover>): void {
@@ -4778,7 +4823,7 @@ export class DeskEngine {
         this.#dirtyView = true;
         // Its page down, main hears the pointer leave it no more: the shell's own word on it stands.
         const hover = this.#drawerHover.get(win.tabId);
-        if (drawn && hover !== undefined && (hover.page || hover.top)) this.#noteDrawerHover(win.tabId, { page: false, top: false });
+        if (drawn && hover !== undefined && (hover.page || hover.top || hover.near)) this.#noteDrawerHover(win.tabId, { page: false, top: false, near: false });
       }
       this.#write(win);
     }
@@ -4911,7 +4956,9 @@ export class DeskEngine {
    * while the pointer is anywhere on the window, or it is in use. With less
    * (it would push the window down): only for the pointer at the window's
    * top — its page's top band, or the strip there — or on the drawer
-   * itself. Its menu up keeps it out, and in hand it stays as it was.
+   * itself; and once out, for the pointer anywhere near the page's top
+   * (DESK_DRAWER_KEEP), where what the drawer pushed down now is. Its menu
+   * up keeps it out, and in hand it stays as it was.
    */
   #drawerWanted(win: Win): boolean {
     if (!this.#hasDrawer(win)) return false;
@@ -4924,7 +4971,7 @@ export class DeskEngine {
     if (roomy && this.#attended(win.tabId) && !win.drawer.free) return true;
     // (Anything in hand has the pointer: what it was on before says nothing now.)
     if (this.#gesture !== null) return false;
-    return hover.strip || (roomy ? hover.window || hover.page : hover.top);
+    return hover.strip || (roomy ? hover.window || hover.page : hover.top || (hover.near && win.drawer.target === 1));
   }
 
   /**
@@ -4933,8 +4980,9 @@ export class DeskEngine {
    * toolbar. The window slid its page out from under a resting pointer, so
    * main heard the pointer leave the page, and the shell hears it on the
    * drawer only once it moves. Main reads the OS's pointer: on the drawer, or
-   * the top of the page, the drawer stays out (asked again a linger later);
-   * anywhere else, or unknown (Playwright), it goes back in.
+   * near the top of the page (DESK_DRAWER_KEEP), the drawer stays out (asked
+   * again a linger later); anywhere else, or unknown (Playwright), it goes
+   * back in.
    */
   async #askCursor(win: Win): Promise<void> {
     let point: { x: number; y: number } | null = null;
@@ -4945,7 +4993,7 @@ export class DeskEngine {
     }
     if (this.#destroyed || win.drawer.cursor !== "asking") return;
     const slot = this.#drawerSlot(win);
-    const holds = point !== null && containsPoint({ x: slot.x, y: slot.y, w: slot.w, h: DRAWER_H + DESK_DRAWER_TRIGGER }, this.#toStage(point));
+    const holds = point !== null && containsPoint({ x: slot.x, y: slot.y, w: slot.w, h: DRAWER_H + DESK_DRAWER_KEEP }, this.#toStage(point));
     if (holds) win.drawer.wantedAt = performance.now();
     win.drawer.cursor = holds ? null : "gone";
     this.#kick();

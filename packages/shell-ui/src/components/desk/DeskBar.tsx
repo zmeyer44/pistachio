@@ -79,6 +79,7 @@ import { useAppStore } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
 import { ApprovalCard, ClarificationCard, CompletionMeta, MessageActions, MessageRow, TERMINAL } from "../chat/parts";
+import { useReplyBegun } from "../chat/SmoothHeight";
 import { FailureTrace, TurnTrace } from "../chat/trace";
 import { useThreadLayout } from "../chat/use-thread-layout";
 import { OutputCards } from "../OutputCard";
@@ -2367,8 +2368,10 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
   const layout = useThreadLayout(run);
   const { tracesAt, outputsAt, pendingOutputs, sourcesAt, pendingSources } = layout;
   const failure = runFailure(run);
-  // The turn at work: the run's latest, its reply not begun — its steps' line stays running between two steps.
-  const working = run.status === "running" && (run.draft?.text ?? "") === "";
+  // The turn at work: the run's latest, its reply not begun (its words held a moment: useReplyBegun) — its steps' line
+  // stays running between two steps.
+  const replyBegun = useReplyBegun(run);
+  const working = run.status === "running" && !replyBegun;
   return (
     <MessageScroller.Provider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={48}>
       <MessageScroller.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">

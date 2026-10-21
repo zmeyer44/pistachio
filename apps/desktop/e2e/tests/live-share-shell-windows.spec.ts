@@ -5,7 +5,7 @@ import { chromium, expect, test, type Browser, type ElectronApplication, type Pa
 import type { LiveHostReport, LiveShareState } from "@pistachio/shell-contracts/live-share";
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { captureEnabled } from "./app";
-import { createGroup, launchDesk, openMore, railSpace, selectSpace, settled, showFrame, snapshot, tabGroupCommand, windowSelector } from "./desk-harness";
+import { createGroup, launchDesk, openFeel, openMore, railSpace, selectSpace, settled, showFrame, snapshot, tabGroupCommand, windowSelector } from "./desk-harness";
 import { knock, linkToken, serveFakeGuest, startLiveControl, type GuestSite, type LiveControl } from "./live-host-harness";
 import { startLiveKit, type LiveKitServer } from "./livekit-harness";
 
@@ -897,7 +897,7 @@ test.describe.serial("live share: windows the shell draws, live for guests", { t
       // Lifted (the desk's own Feel): carried, the window is drawn grown and turned with the throw. (Taken out of the
       // desk's trailing foot first: under the Bar's nub a window is drawn with the nub's hole in its corner — main's
       // glass fills it on the Mac, the desk's ground in the shell's picture.)
-      await openMore(shell);
+      await openFeel(shell);
       await expect(shell.getByTestId("desk-variant-motion")).toHaveAttribute("data-value", "lifted");
       const stage = (await shell.locator(".desk-stage").boundingBox())!;
       await shell.mouse.move(stage.x + stage.width / 2, stage.y + stage.height / 2);
@@ -906,7 +906,7 @@ test.describe.serial("live share: windows the shell draws, live for guests", { t
       const lifted = await seen("carried lifted", await carry({ x: -120, y: 100 }, 45), homeRect);
 
       // Carried as it is (Feel: Live): the window moves under the pointer, nothing else of it changes.
-      await openMore(shell);
+      await openFeel(shell);
       await shell.getByTestId("desk-variant-motion").click();
       await expect(shell.getByTestId("desk-variant-motion")).toHaveAttribute("data-value", "live");
       await shell.mouse.move(stage.x + stage.width / 2, stage.y + stage.height / 2);

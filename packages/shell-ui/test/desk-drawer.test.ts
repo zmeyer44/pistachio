@@ -17,7 +17,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DragSample } from "@pistachio/shell-contracts/chrome";
-import type { DeskState } from "@pistachio/shell-contracts/desk";
+import { DESK_DRAWER_KEEP, type DeskState } from "@pistachio/shell-contracts/desk";
 import { NATIVE_SURFACE_MEMBERS, type BrowserLayout, type CursorPoint } from "@pistachio/shell-contracts/ipc";
 import { setShellApi, type ShellApiBridge } from "../src/api";
 import { DeskEngine, DRAWER_H } from "../src/components/desk/desk-engine";
@@ -345,6 +345,31 @@ describe("the Drawer frame", () => {
     desk.destroy();
   });
 
+  it("out over a window it pushed down, stays out for the pointer anywhere near the page's top, not only at the edge that brought it out", async () => {
+    const { desk, els, out } = await open();
+    desk.toggleMaximize("tab-0");
+    await settle();
+    // Near the page's top, but not at it: nothing brings the drawer out.
+    desk.hoverPage("tab-0", true, false, true);
+    await pass(300);
+    expect(out("tab-0")).toBe(0);
+    // At the top: out, the window pushed down.
+    desk.hoverPage("tab-0", true, true);
+    await settle();
+    expect(out("tab-0")).toBe(1);
+    // Down onto what was at the page's top, pushed down with it: the drawer stays out, so it stays where it is.
+    desk.hoverPage("tab-0", true, false, true);
+    await pass(1_000);
+    expect(out("tab-0")).toBe(1);
+    expect(shownTop(els.get("tab-0")!)).toBeCloseTo(DRAWER_H, 0);
+    // Further down the page: in.
+    desk.hoverPage("tab-0", true, false, false);
+    await pass(500);
+    expect(out("tab-0")).toBe(0);
+    expect(shownTop(els.get("tab-0")!)).toBeCloseTo(0, 0);
+    desk.destroy();
+  });
+
   it("asks main where the pointer is before a drawer that pushed its window down goes back in", async () => {
     const { desk, cursor, out } = await open();
     desk.toggleMaximize("tab-0");
@@ -356,6 +381,10 @@ describe("the Drawer frame", () => {
     desk.hoverPage("tab-0", false, false);
     // The OS pointer is on the drawer: it stays out, however long the pointer rests there.
     cursor.point = { x: 400, y: DRAWER_H / 2 };
+    await pass(1_000);
+    expect(out("tab-0")).toBe(1);
+    // On the page just under it, near its top: still out.
+    cursor.point = { x: 400, y: DRAWER_H + DESK_DRAWER_KEEP - 10 };
     await pass(1_000);
     expect(out("tab-0")).toBe(1);
     // Off it, down the page: in.

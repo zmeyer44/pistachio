@@ -47,7 +47,10 @@ const TARGET = `<!doctype html>
   window.__downs = [];
   window.__ups = 0;
   window.__keyups = [];
+  window.__drags = [];
   addEventListener("mousedown", (event) => window.__downs.push({ x: event.clientX, y: event.clientY }));
+  addEventListener("dragstart", () => window.__drags.push("start"));
+  addEventListener("dragend", () => window.__drags.push("end"));
   addEventListener("mouseup", () => (window.__ups += 1));
   addEventListener("keyup", (event) => window.__keyups.push(event.key));
   let frame = 0;
@@ -681,6 +684,20 @@ test.describe.serial("live share: hosting a space in a real room", { tag: ["@sha
     await expect.poll(async () => (await landed()).includes("mid-page")).toBe(true);
     expect(await opened()).toEqual(unopened);
     expect(await landed()).toEqual(["mid-page"]);
+    expect(await inPage<string>(app, url, "location.pathname")).toBe("/");
+
+    // A guest dragging the link: the page begins a drag, which Chromium would hand the host's Mac — and a drag begun by
+    // input main sent is never told it ended, so the page dropped every event until reloaded and AppKit held the drag
+    // (2026-10-20). It is refused and ended at once: nothing opens, and the guest's next click lands.
+    const dragDowns = (await downs()).length;
+    await input({ type: "mouseDown", ...link, button: "left", buttons: 1, clickCount: 1, modifiers: [] });
+    for (let step = 1; step <= 8; step += 1)
+      await input({ type: "mouseMove", x: link.x - step * 0.04, y: link.y - step * 0.04, button: "left", buttons: 1, clickCount: 0, modifiers: [] });
+    await input({ type: "mouseUp", x: link.x - 0.32, y: link.y - 0.32, button: "left", buttons: 0, clickCount: 1, modifiers: [] });
+    await expect.poll(() => inPage<string[]>(app, url, "window.__drags")).toEqual(["start", "end"]);
+    await press(0.5, 0.5);
+    await expect.poll(async () => (await downs()).length).toBe(dragDowns + 2);
+    expect(await opened()).toEqual(unopened);
     expect(await inPage<string>(app, url, "location.pathname")).toBe("/");
 
     // A drag and a key under way as the host takes the window back: the page is let go of both, not left holding them.

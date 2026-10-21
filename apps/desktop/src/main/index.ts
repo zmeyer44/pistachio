@@ -89,6 +89,7 @@ import { ReminderStore } from "./reminder-store";
 import { BookmarkStore } from "./bookmark-store";
 import { BookmarkService } from "./bookmarks";
 import { SettingsStore } from "./settings-store";
+import { PageHealthLog } from "./page-health";
 import { BrowserPolicyStore } from "./browser-policy-store";
 import { SidebarController } from "@pistachio/shell-contracts/sidebar-controller";
 import { SidebarStore } from "./sidebar-store";
@@ -119,7 +120,7 @@ import { LiveShareService } from "./live/live-service";
 import { DeskConversationStore } from "./desk-conversations";
 import { GroupContextStore } from "./group-context-store";
 import { macDocumentConverter } from "./document-convert";
-import { scriptedAgentModel } from "./scripted-agent-model";
+import { scriptedAgentModel, scriptedAgentStreams } from "./scripted-agent-model";
 import { SyncService } from "./sync/service";
 import { CloudRunService } from "./cloud/cloud-run-service";
 import { LiveViewClient } from "./cloud/live-view-client";
@@ -2480,6 +2481,7 @@ async function createWindow(): Promise<void> {
       onDeskHover: (hover) => {
         if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskHover, hover);
       },
+      onPageHealth: (event) => void pageHealthLog.record(event),
       onTabSwitcherThumbnail: (thumbnail) => {
         if (shellWindow === null || shellWindow.isDestroyed()) return;
         shellWindow.webContents.send(IPC.tabSwitcherThumbnail, thumbnail);
@@ -2592,7 +2594,7 @@ async function createWindow(): Promise<void> {
     // Read per run: a connection made in Settings applies to the next turn.
     integrations: { hostsFor: (spaceId) => integrationService?.hostsFor(spaceId) ?? Promise.resolve([]) },
     // Under E2E, a spec may script the model (docs/desk-agent.md §4).
-    ...(scriptedAgentModel() === null ? {} : { model: scriptedAgentModel()! }),
+    ...(scriptedAgentModel() === null ? {} : { model: scriptedAgentModel()!, stream: scriptedAgentStreams() }),
     desk: {
       bridge: deskBridge,
       bindings: deskConversations ?? new DeskConversationStore(null),
@@ -3398,6 +3400,9 @@ function installIpc(): void {
   });
   ipcMain.on(IPC.tabFileDrag, (event) => {
     browser?.acceptFileDrag(event.sender.id);
+  });
+  ipcMain.on(IPC.tabPageDrag, (event, report: unknown) => {
+    browser?.acceptPageDrag(event.sender.id, report);
   });
   ipcMain.on(IPC.tabPasskeySupportReport, (event, report: unknown) => {
     browser?.acceptPasskeySupport(event.sender.id, report);
@@ -4834,6 +4839,9 @@ if (!app.isPackaged)
 const userDataOverride = process.env["PISTACHIO_USER_DATA"];
 if (userDataOverride !== undefined && userDataOverride !== "")
   app.setPath("userData", userDataOverride);
+
+/** Pages that died, hung, or were let go of a drag they never heard the end of (page-health.ts). */
+const pageHealthLog = new PageHealthLog(join(app.getPath("userData"), "logs"));
 
 // Two Chromium processes must never mutate the same persistent Space session.
 const hasSingleInstanceLock = app.requestSingleInstanceLock();

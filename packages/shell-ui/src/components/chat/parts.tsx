@@ -28,6 +28,7 @@ import { Button } from "../ui/button";
 import { MessageText } from "../MessageText";
 import { Markdown } from "./Markdown";
 import { ReasoningBlock } from "./ReasoningBlock";
+import { SmoothHeight } from "./SmoothHeight";
 import { ReasoningTrace } from "./trace";
 import { StepMark, type StepState } from "./StepMark";
 import { ThinkingStatus } from "./ThinkingStatus";
@@ -397,29 +398,43 @@ function lastStep(steps: readonly Step[], state: StepState): Step | undefined {
  * headline once nothing runs, the spinner morphing into a check. Open
  * while the turn works; a finished one folds to that one line.
  *
- * Memoized on the turn and two facts about the run, rather than the run
+ * Memoized on the turn and three facts about the run, rather than the run
  * itself: the run object changes on every publish, the turn only when one of
  * its tool calls does.
+ *
+ * `live` is the turn still at work (the run's latest, its reply not begun:
+ * useReplyBegun): it stays open and spinning through the moments between
+ * steps, so it grows as steps come and folds once, its height eased
+ * (SmoothHeight), as the desk's TurnTrace does. (Until 2026-10-21 it shut
+ * whenever no step was running, and opened again with the next.)
  */
 export const WorkTrace = memo(function WorkTrace({
   turn,
   latest,
   awaitingApproval,
+  live = false,
 }: {
   turn: TraceTurn;
   latest: boolean;
   awaitingApproval: boolean;
+  live?: boolean;
 }) {
   const steps = traceSteps(turn);
-  const state = turnState(steps);
+  const settled = turnState(steps);
+  const state: StepState = live && settled !== "paused" ? "running" : settled;
   // The step to name: the newest call running, over a specialist working
-  // in the background through several of them; else the one held for the person.
+  // in the background through several of them; else the one held for the
+  // person; between steps of a live turn, the last one taken.
   const tools = turn.toolCalls.length;
   const active =
-    lastStep(steps.slice(0, tools), "running") ?? lastStep(steps.slice(tools), "running") ?? lastStep(steps, "paused");
+    lastStep(steps.slice(0, tools), "running") ??
+    lastStep(steps.slice(tools), "running") ??
+    lastStep(steps, "paused") ??
+    (live ? steps.at(-1) : undefined);
   return (
+    <SmoothHeight className="mt-3">
     <details
-      className="agent-steps mt-3 min-w-0"
+      className="agent-steps min-w-0"
       data-testid="work-trace"
       data-turn={turn.turn}
       data-state={state}
@@ -445,6 +460,7 @@ export const WorkTrace = memo(function WorkTrace({
         ))}
       </ol>
     </details>
+    </SmoothHeight>
   );
 });
 

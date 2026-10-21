@@ -25,13 +25,19 @@ const TICKER_LINES = 2;
  *
  * `thinking` is whether reasoning is still arriving; `startedAt` is when
  * it began, for the live clock; `thinkingMs` is the settled duration a
- * finished reply carries.
+ * finished reply carries. `live` (LiveReply) keeps the ticker up through
+ * the steps between thoughts, still on the last lines and its line saying
+ * what is in hand (`status`), until the reply has begun: the block holds
+ * its height while the turn works rather than folding and opening with
+ * every step. (Until 2026-10-21 it folded the moment a thought ended.)
  */
 export const ReasoningBlock = memo(function ReasoningBlock({
   reasoning,
   thinking,
   startedAt = null,
   thinkingMs = null,
+  live = thinking,
+  status = null,
   density = "page",
   className,
 }: {
@@ -39,21 +45,29 @@ export const ReasoningBlock = memo(function ReasoningBlock({
   thinking: boolean;
   startedAt?: string | null;
   thinkingMs?: number | null;
+  /** The turn still works (its reply not begun): open on the ticker, thinking or not. */
+  live?: boolean;
+  /** What is in hand between thoughts, for the line while `live`. */
+  status?: string | null;
   density?: "page" | "panel";
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const elapsed = useElapsedSeconds(thinking ? startedAt : null);
+  const working = thinking || live;
   const label = thinking
     ? elapsed === null || elapsed < 1
       ? "Thinking…"
       : `Thinking · ${String(elapsed)}s`
-    : thinkingLabel(thinkingMs ?? 0);
-  const expanded = open || (thinking && reasoning.trim() !== "");
+    : live && status !== null
+      ? status
+      : thinkingLabel(thinkingMs ?? 0);
+  const expanded = open || (working && reasoning.trim() !== "");
   return (
     <div
       data-testid="reasoning-block"
       data-thinking={thinking ? "" : undefined}
+      data-live={working ? "" : undefined}
       data-open={expanded ? "" : undefined}
       className={cn("chat-reasoning", density === "panel" && "chat-reasoning-panel", className)}
     >
@@ -64,11 +78,11 @@ export const ReasoningBlock = memo(function ReasoningBlock({
         onClick={() => setOpen((current) => !current)}
         data-testid="reasoning-toggle"
       >
-        <span className={cn("chat-reasoning-label", thinking && "agent-shimmer")}>{label}</span>
+        <span className={cn("chat-reasoning-label", working && "agent-shimmer")}>{label}</span>
         <ChevronRight className={cn("size-3.5 shrink-0 text-gray-700 transition-transform duration-200", open && "rotate-90")} aria-hidden="true" />
       </button>
-      {thinking && !open ? (
-        <ReasoningTicker text={reasoning} />
+      {working && !open ? (
+        <ReasoningTicker text={reasoning} idle={!thinking} />
       ) : open ? (
         <div className="chat-reasoning-body" data-testid="reasoning-text">
           <Markdown text={reasoning} density="panel" />
@@ -96,9 +110,10 @@ export function useElapsedSeconds(startedAt: string | null): number | null {
  * The tail of the live reasoning in a two-line window. The text is laid
  * out at full height and translated up so its last lines sit in the
  * window; the translate is transitioned, so each new line steps the
- * transcript up rather than snapping it.
+ * transcript up rather than snapping it. `idle` (between thoughts, the
+ * turn still working) rests it on the last lines, dimmed.
  */
-function ReasoningTicker({ text }: { text: string }) {
+function ReasoningTicker({ text, idle }: { text: string; idle: boolean }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -109,7 +124,14 @@ function ReasoningTicker({ text }: { text: string }) {
     scroll.style.transform = `translateY(${String(-offset)}px)`;
   }, [text]);
   return (
-    <div ref={viewportRef} className="chat-reasoning-ticker" style={{ "--ticker-lines": TICKER_LINES } as React.CSSProperties} data-testid="reasoning-ticker" aria-hidden="true">
+    <div
+      ref={viewportRef}
+      className="chat-reasoning-ticker"
+      style={{ "--ticker-lines": TICKER_LINES } as React.CSSProperties}
+      data-testid="reasoning-ticker"
+      data-idle={idle ? "" : undefined}
+      aria-hidden="true"
+    >
       <div ref={scrollRef} className="chat-reasoning-scroll">
         {text.trim() === "" ? "…" : text}
       </div>

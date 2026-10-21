@@ -36,7 +36,8 @@ type Choice = DeskLayoutKind | "smart";
  * (DeskState.cycleKey), and the shell's own document is heard here. The keyboard on the track keeps Tab for moving
  * between its segments.
  *
- * Only while its space is the one on the desk, and only with windows out: the engine is the current space's.
+ * Only while its space is the one on the desk, and only with two windows out or more: the engine is the current space's,
+ * and one window alone has nothing to be laid out with. (Until 2026-10-21 one window had Fill and Arrange for me.)
  */
 export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode {
   const engine = useDeskEngine();
@@ -53,7 +54,7 @@ export function LayoutControl({ groupId }: { groupId: string }): React.ReactNode
   /** The segments the thumb was last placed among: rebuilt (another number of windows), it jumps rather than slides. */
   const placedFor = useRef("");
 
-  const shown = engine !== null && view !== null && current === groupId && view.layoutCount > 0;
+  const shown = engine !== null && view !== null && current === groupId && view.layoutCount > 1;
   const count = shown ? view.layoutCount : 0;
   // (Main and side only while its column holds the rest, Columns and Stacked only while each window keeps its least
   // size: the room on the desk as it is now, layoutsOn.)

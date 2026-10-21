@@ -214,37 +214,7 @@ function ContextMenu({ state, ready, onClose }: { state: MenuState; ready: boole
             </div>
           );
         }
-        if ("swatches" in item) {
-          return (
-            <div key={i} role="group" aria-label="Colour" className="flex items-center justify-between px-2 py-1.5">
-              {item.swatches.map((swatch) => (
-                <button
-                  key={swatch.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={swatch.id === item.selected}
-                  aria-label={swatch.label}
-                  title={swatch.label}
-                  data-group-color={swatch.clear === true ? undefined : swatch.id}
-                  data-testid={`group-color-${swatch.id}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onClose();
-                    item.onPick(swatch.id);
-                  }}
-                  className={cn(
-                    "size-4 cursor-pointer rounded-full outline-none transition-transform duration-150 hover:scale-110 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
-                    swatch.clear === true ? "border border-gray-700" : "tab-group-tone bg-(--tg-solid)",
-                    swatch.id === item.selected &&
-                      (swatch.clear === true
-                        ? "ring-2 ring-gray-700 ring-offset-2 ring-offset-background-100"
-                        : "ring-2 ring-(--tg-solid) ring-offset-2 ring-offset-background-100"),
-                  )}
-                />
-              ))}
-            </div>
-          );
-        }
+        if ("swatches" in item) return <SwatchRow key={i} entry={item} onPicked={onClose} />;
         if ("emoji" in item) {
           const { choices, selected, reset, parse, onPick } = item.emoji;
           const pick = (emoji: string | null): void => {
@@ -341,6 +311,43 @@ function ContextMenu({ state, ready, onClose }: { state: MenuState; ready: boole
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * A `swatches` entry's row of round colours: the menu's, and any card that
+ * lays a menu's entries out (the desk's More card, DeskMoreCard). `onPicked`
+ * runs before the pick (the menu closes first).
+ */
+export function SwatchRow({ entry, onPicked }: { entry: Extract<MenuEntry, { swatches: unknown }>; onPicked?: () => void }) {
+  return (
+    <div role="group" aria-label="Colour" className="flex items-center justify-between px-2 py-1.5">
+      {entry.swatches.map((swatch) => (
+        <button
+          key={swatch.id}
+          type="button"
+          role="menuitemradio"
+          aria-checked={swatch.id === entry.selected}
+          aria-label={swatch.label}
+          title={swatch.label}
+          data-group-color={swatch.clear === true ? undefined : swatch.id}
+          data-testid={`group-color-${swatch.id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onPicked?.();
+            entry.onPick(swatch.id);
+          }}
+          className={cn(
+            "size-4 cursor-pointer rounded-full outline-none transition-transform duration-150 hover:scale-110 focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
+            swatch.clear === true ? "border border-gray-700" : "tab-group-tone bg-(--tg-solid)",
+            swatch.id === entry.selected &&
+              (swatch.clear === true
+                ? "ring-2 ring-gray-700 ring-offset-2 ring-offset-background-100"
+                : "ring-2 ring-(--tg-solid) ring-offset-2 ring-offset-background-100"),
+          )}
+        />
+      ))}
     </div>
   );
 }

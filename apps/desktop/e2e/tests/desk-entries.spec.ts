@@ -136,9 +136,12 @@ test.describe.serial("favorites and pins on the desk", { tag: ["@desk", "@sideba
     await settled(shell, app);
     expect(near(await box(shell, windowSelector(page)), stage)).toBe(true);
     await expect(shell.getByTestId("desk-bar")).toHaveCount(1);
+    // Its page is the favorite's tile, lit in the grid above: no row of its own under it, nor Home's Stack (Home draws
+    // none under the tab in use).
     const under = shell.locator('[data-testid="entry-tabs"][data-anchor-id="fav-mail"]');
-    await expect(under).toHaveCount(1);
-    await expect(under.getByTestId("desk-stack")).toHaveCount(1);
+    await expect(shell.locator(rowSelector(page))).toHaveCount(0);
+    await expect(under).toHaveCount(0);
+    await expect(shell.locator('[data-testid="sidebar-tab-list"] [data-testid="desk-stack"]')).toHaveCount(0);
 
     // ── 2. ⌘T there: a Home tab of its own, the whole desk — Home is a browser's tabs (2026-10-14; until then ⌘T grew the
     //       favorite's page into a space of two) ─

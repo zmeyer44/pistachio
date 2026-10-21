@@ -28,7 +28,7 @@ export const PAD = 56;
  * subsets, so a glyph that is not in this string falls back to Satori's
  * default face — add to it before adding copy with new punctuation.
  */
-const GLYPHS =
+export const GLYPHS =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" +
   " .,'’“”—–·&/%:;()-+_@";
 
@@ -38,10 +38,10 @@ const GLYPHS =
  * browser `User-Agent` (which is what Node sends) gets TrueType back rather
  * than woff2, which Satori cannot parse.
  */
-async function googleFont(weight: number) {
+async function googleFont(weight: number, family = "Inter", glyphs = GLYPHS) {
   const url =
-    `https://fonts.googleapis.com/css2?family=Inter:wght@${weight}` +
-    `&text=${encodeURIComponent(GLYPHS)}`;
+    `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family)}:wght@${weight}` +
+    `&text=${encodeURIComponent(glyphs)}`;
 
   const css = await fetch(url).then((response) => {
     if (!response.ok) throw new Error(`${url} → ${response.status}`);
@@ -51,7 +51,7 @@ async function googleFont(weight: number) {
   const src = /src: url\((?<url>[^)]+)\) format\('(?:truetype|opentype)'\)/.exec(
     css,
   )?.groups?.url;
-  if (!src) throw new Error(`no TrueType source for Inter ${weight}`);
+  if (!src) throw new Error(`no TrueType source for ${family} ${weight}`);
 
   return fetch(src).then((response) => {
     if (!response.ok) throw new Error(`${src} → ${response.status}`);
@@ -79,6 +79,23 @@ export async function loadFonts() {
     ].map((font) => ({ ...font, style: "normal" as const }));
   } catch (error) {
     console.error("opengraph-image: falling back to the default face —", error);
+    return undefined;
+  }
+}
+
+/**
+ * Another of Google's faces at the weights asked for, cut to `glyphs` — for a
+ * card whose words are only known as it is drawn (a live share's: a space's
+ * name, its host's). A glyph the face lacks (CJK, emoji) is left to Satori's
+ * own fallbacks. Fails as `loadFonts` does: to the default face.
+ */
+export async function loadFace(family: string, weights: readonly (400 | 500 | 600)[], glyphs: string) {
+  const unique = [...new Set(glyphs)].join("");
+  try {
+    const faces = await Promise.all(weights.map((weight) => googleFont(weight, family, unique)));
+    return faces.map((data, index) => ({ name: family, data, weight: weights[index] ?? 400, style: "normal" as const }));
+  } catch (error) {
+    console.error(`opengraph-image: ${family} unavailable, falling back to the default face —`, error);
     return undefined;
   }
 }

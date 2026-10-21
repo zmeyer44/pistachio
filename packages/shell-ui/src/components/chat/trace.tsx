@@ -43,6 +43,7 @@ import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton } fr
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle, type TraceStatus } from "../ui/trace";
 import { Markdown } from "./Markdown";
 import { useElapsedSeconds } from "./ReasoningBlock";
+import { SmoothHeight } from "./SmoothHeight";
 
 /**
  * The agent's side of a turn as Trace lines (AI Elements' Reasoning, Chain
@@ -121,16 +122,20 @@ function Spinner() {
  * beside it, then "Thought" and how long. While it thinks the line is open
  * on the latest of it, the text pinned to its foot in a few lines' window
  * and faded at the top; once done it shuts, and opens on a click to the
- * whole of it, drawn.
+ * whole of it, drawn. `live` (LiveReply: the turn still works, its reply
+ * not begun) keeps it open on the latest lines through the steps between
+ * thoughts, so it shuts once rather than with every step.
  */
 export const ReasoningTrace = memo(function ReasoningTrace({
   reasoning,
   thinking,
+  live = thinking,
   startedAt = null,
   thinkingMs = null,
 }: {
   reasoning: string;
   thinking: boolean;
+  live?: boolean;
   startedAt?: string | null;
   thinkingMs?: number | null;
 }) {
@@ -149,10 +154,10 @@ export const ReasoningTrace = memo(function ReasoningTrace({
       {reasoning.trim() === "" ? (
         line
       ) : (
-        <TraceCollapsible open={open ?? thinking} onOpenChange={setOpen}>
+        <TraceCollapsible open={open ?? (thinking || live)} onOpenChange={setOpen}>
           <TraceCollapsibleTrigger data-testid="reasoning-toggle">{line}</TraceCollapsibleTrigger>
           <TraceCollapsibleContent data-testid="reasoning-text">
-            {thinking ? <ReasoningTail text={reasoning} /> : <Markdown text={reasoning} density="panel" />}
+            {thinking || live ? <ReasoningTail text={reasoning} /> : <Markdown text={reasoning} density="panel" />}
           </TraceCollapsibleContent>
         </TraceCollapsible>
       )}
@@ -194,8 +199,10 @@ export const TurnTrace = memo(function TurnTrace({ turn, live, latest, awaitingA
   const steps = traceSteps(turn);
   const summary = traceSummary(turn, steps, live);
   const running = summary.state === "running";
+  // (Its height eased as steps come and it shuts: SmoothHeight.)
   return (
-    <Trace className="mt-3" data-testid="work-trace" data-turn={turn.turn} data-state={summary.state}>
+    <SmoothHeight className="mt-3">
+    <Trace data-testid="work-trace" data-turn={turn.turn} data-state={summary.state}>
       <TraceCollapsible open={open ?? (running || (latest && awaitingApproval))} onOpenChange={setOpen}>
         <TraceCollapsibleTrigger>
           <TraceLine status={LINE_STATUS[summary.state]}>
@@ -215,6 +222,7 @@ export const TurnTrace = memo(function TurnTrace({ turn, live, latest, awaitingA
         </TraceCollapsibleContent>
       </TraceCollapsible>
     </Trace>
+    </SmoothHeight>
   );
 });
 
@@ -223,7 +231,7 @@ const StepLine = memo(
   function StepLine({ step }: { step: TraceStep }) {
     const Icon = toolIcon(step.tool);
     const line = (
-      <TraceLine status={LINE_STATUS[step.state]} data-testid="trace-step" data-state={step.state}>
+      <TraceLine status={LINE_STATUS[step.state]} data-testid="trace-step" data-state={step.state} className="chat-step-in">
         <TraceIcon>{step.state === "running" ? <Spinner /> : <Icon />}</TraceIcon>
         <TraceTitle>{step.title}</TraceTitle>
         {step.state === "paused" ? <TraceDescription>Waiting for you</TraceDescription> : null}

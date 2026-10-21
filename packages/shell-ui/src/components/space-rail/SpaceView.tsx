@@ -12,7 +12,7 @@ import { SpaceHead } from "./SpaceHead";
  * hairline, its tabs as rows (TabList's "space" view: the one in use a card
  * of its colour, the desk's window marks) and its New tab, and at the
  * card's foot its Context row, the Stack. An empty space says so quietly; its
- * layouts are there while its desk has windows (documents) to lay out. The wash of its colour at the card's top is the column's
+ * layouts are there while its desk has two windows (tabs, documents) or more to lay out. The wash of its colour at the card's top is the column's
  * (painted on the card's own outline: SpaceColumn).
  */
 export function SpaceView({ group, page }: { group: TabGroupInfo; page: boolean }) {
@@ -20,8 +20,8 @@ export function SpaceView({ group, page }: { group: TabGroupInfo; page: boolean 
   return (
     <div data-testid="space-view" data-group-id={group.id} data-group-color={group.color} className="space-view tab-group-tone">
       <SpaceHead group={group} page={page} count={count} />
-      {/* (Whatever the space holds: the control hides itself with nothing on the desk to lay out — an empty space's
-          documents are windows it can lay out. Until 2026-10-13 it waited for a tab.) */}
+      {/* (Whatever the space holds: the control hides itself with fewer than two windows on the desk to lay out — an
+          empty space's documents are windows it can lay out. Until 2026-10-13 it waited for a tab.) */}
       <LayoutControl groupId={group.id} />
       <span className="space-view-rule" aria-hidden="true" />
       <div className="relative flex min-h-0 flex-1 flex-col">

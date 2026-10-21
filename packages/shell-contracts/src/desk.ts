@@ -170,9 +170,18 @@ function isDeskZoomedPage(value: unknown): value is DeskZoomedPage {
 export const DESK_DRAWER_TRIGGER = 10;
 
 /**
+ * How far down its page the pointer keeps such a drawer out once it is out.
+ * The drawer pushed the page down: what was at the page's top — a site's
+ * header, its buttons — is the pointer's to reach without the drawer going
+ * back in and the page jumping up from under it.
+ */
+export const DESK_DRAWER_KEEP = 120;
+
+/**
  * Main → shell: the pointer came onto a desk page (`over`), or went off it,
- * or moved into or out of the page's top band (`top`, DESK_DRAWER_TRIGGER).
- * Over a live page the shell hears no pointer of its own: a minimized window
+ * or moved into or out of the page's top band (`top`, DESK_DRAWER_TRIGGER)
+ * or the band a drawer out stays out for (`near`, DESK_DRAWER_KEEP). Over a
+ * live page the shell hears no pointer of its own: a minimized window
  * peeking from the desk's foot rises into view while the pointer is on it,
  * and a window's drawer comes out.
  */
@@ -180,12 +189,19 @@ export interface DeskHover {
   tabId: string;
   over: boolean;
   top: boolean;
+  near: boolean;
 }
 
 export function isDeskHover(value: unknown): value is DeskHover {
   if (typeof value !== "object" || value === null) return false;
   const hover = value as Record<string, unknown>;
-  return typeof hover["tabId"] === "string" && hover["tabId"].length > 0 && typeof hover["over"] === "boolean" && typeof hover["top"] === "boolean";
+  return (
+    typeof hover["tabId"] === "string" &&
+    hover["tabId"].length > 0 &&
+    typeof hover["over"] === "boolean" &&
+    typeof hover["top"] === "boolean" &&
+    typeof hover["near"] === "boolean"
+  );
 }
 
 /** Shell → main: the desk that is up, or null when none is. */

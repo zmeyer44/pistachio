@@ -50,6 +50,16 @@ const shots = join(process.cwd(), "e2e/screenshots/live-share");
 const liveShare = (shell: Page): Promise<LiveShareState> => shell.evaluate(() => (window as unknown as Bridge).pistachio.getLiveShare());
 const command = (shell: Page, body: Parameters<PistachioApi["liveShare"]>[0]): Promise<void> => shell.evaluate((input) => (window as unknown as Bridge).pistachio.liveShare(input), body);
 
+/** What a chat's bot reads off a link (docs/live-share.md §7 Link preview): the Open Graph tags in its `<head>`. */
+async function unfurl(url: string): Promise<Record<string, string>> {
+  const html = await (await fetch(url, { headers: { "user-agent": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)" } })).text();
+  const tags: Record<string, string> = {};
+  for (const [, key, value] of (html.split("</head>")[0] ?? "").matchAll(/<meta property="(og:[a-z_:]+)" content="([^"]*)"/gu)) {
+    tags[key!] = value!.replace(/&quot;/gu, '"').replace(/&#x27;/gu, "'").replace(/&lt;/gu, "<").replace(/&gt;/gu, ">").replace(/&amp;/gu, "&");
+  }
+  return tags;
+}
+
 /** Run in a tab's page, found by its address. */
 function inPage<T>(app: ElectronApplication, url: string, script: string): Promise<T> {
   return app.evaluate(
@@ -366,6 +376,21 @@ test.describe.serial("live share end to end: the Mac hosts a space, a browser jo
     await expect(host.getByTestId("live-host-pill")).toBeVisible();
     // (Put away: a knock is a notice only while the card does not show it.)
     await closeCard();
+  });
+
+  test("the link unfurls with whose share it is and the space's name, beside its card", async () => {
+    test.setTimeout(300_000);
+    // Read as a chat's bot reads it. The first visit compiles the route in Next's dev server.
+    const tags = await unfurl(link);
+    expect(tags["og:title"]).toBe(`${hostName} is sharing “${SPACE_TITLE}”`);
+    expect(tags["og:site_name"]).toBe("Pistachio");
+    // The card, from this stack's www whatever origin the tag names.
+    const image = new URL(tags["og:image"]!);
+    const picture = await fetch(new URL(`${image.pathname}${image.search}`, stack!.urls.www));
+    expect(picture.status).toBe(200);
+    expect(picture.headers.get("content-type")).toBe("image/png");
+    const png = Buffer.from(await picture.arrayBuffer());
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
   });
 
   test("the guest opens the link, knocks from the lobby, and the host admits them from the Live card", async () => {

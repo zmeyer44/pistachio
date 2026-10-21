@@ -53,6 +53,7 @@ const DATA_POLICY_CHANNEL = "pistachio:tab-data-policy";
 const POLICY_BLOCKED_CHANNEL = "pistachio:tab-policy-blocked";
 const EMPTY_COPY_CHANNEL = "pistachio:tab-empty-copy";
 const FILE_DRAG_CHANNEL = "pistachio:tab-file-drag";
+const PAGE_DRAG_CHANNEL = "pistachio:tab-page-drag";
 const PASSKEY_SUPPORT_REPORT_CHANNEL = "pistachio:tab-passkey-support-report";
 const SCREEN_SHARE_REPORT_CHANNEL = "pistachio:screen-share-report";
 const SCREEN_SHARE_STOP_CHANNEL = "pistachio:screen-share-stop";
@@ -382,11 +383,22 @@ function startPagePreload(): void {
   // its own, say) is the page's; so is anything a script dispatched.
   let fileDragReportedAt = 0;
   let dragStartedHere = false;
-  window.addEventListener("dragstart", () => {
+  // Main hears of every drag the page begins and of its end (main/page-health.ts): a page
+  // drops all input until it is told its drag ended, and when the pointer reaches it
+  // again with no end heard, main ends the drag itself. Reported before the page's own
+  // handlers run (the drag may begin the moment they are done), and taken back if one
+  // of them cancelled it.
+  window.addEventListener("dragstart", (event) => {
     dragStartedHere = true;
+    if (!event.isTrusted) return;
+    ipcRenderer.send(PAGE_DRAG_CHANNEL, { dragging: true, x: event.clientX, y: event.clientY });
+    setTimeout(() => {
+      if (event.defaultPrevented) ipcRenderer.send(PAGE_DRAG_CHANNEL, { dragging: false });
+    }, 0);
   }, true);
-  window.addEventListener("dragend", () => {
+  window.addEventListener("dragend", (event) => {
     dragStartedHere = false;
+    if (event.isTrusted) ipcRenderer.send(PAGE_DRAG_CHANNEL, { dragging: false });
   }, true);
   window.addEventListener(
     "dragenter",

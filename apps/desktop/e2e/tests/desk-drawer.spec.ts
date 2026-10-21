@@ -170,6 +170,14 @@ test("the Drawer frame: out above the window in use; filled, out for the pointer
     }
     await capture(app, shell, "03-filled-drawer-out.png");
 
+    // ── 2b. Down off the drawer onto what it pushed down, near the page's top: it stays out, the page where it is ─
+    await away();
+    await pageMouse(app, url, "mouseMove", 240, 60);
+    // (Staying out is what is tested: past the drawer's linger, and main's look at the OS pointer were it going in.)
+    await shell.waitForTimeout(600);
+    await expect(win).toHaveAttribute("data-drawer-out", "");
+    expect(await liveViews(app).then((views) => views.find((view) => view.url === url)?.bounds)).toEqual({ ...whole, y: whole.y + DRAWER_H, height: whole.height - DRAWER_H });
+
     // ── 3. Further down the page: back in, the window back up, its page never laid out at the cut box ─
     await away();
     await pageMouse(app, url, "mouseMove", 240, 300);

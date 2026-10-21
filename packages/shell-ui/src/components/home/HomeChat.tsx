@@ -8,6 +8,7 @@ import { agentIsActing } from "../../lib/run";
 import { useAppStore, type HomeChat as HomeChatState } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
+import { useReplyBegun } from "../chat/SmoothHeight";
 import { ApprovalCard, ClarificationCard, CompletionMeta, MessageRow, TERMINAL, TaskNotes, WorkTrace } from "../chat/parts";
 import { useThreadLayout } from "../chat/use-thread-layout";
 import { OutputCards } from "../OutputCard";
@@ -155,6 +156,8 @@ export function HomeChat({
  * scrolls up to read.
  */
 function Thread({ chat, run, layout }: { chat: HomeChatState; run: RunSummary | null; layout: ReturnType<typeof useThreadLayout> }) {
+  // The turn at work: the run's latest, its reply not begun — its steps stay open between two steps (WorkTrace `live`).
+  const replyBegun = useReplyBegun(run);
   const { tracesAt, outputsAt, pendingOutputs, sourcesAt, pendingSources } = layout;
   return (
     <MessageScroller.Provider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={64}>
@@ -209,7 +212,12 @@ function Thread({ chat, run, layout }: { chat: HomeChatState; run: RunSummary | 
                     />
                     {(tracesAt.get(index) ?? []).map((turn) => (
                       <Fragment key={turn.turn}>
-                        <WorkTrace turn={turn} latest={turn.toolCalls.at(-1) === run.toolCalls.at(-1)} awaitingApproval={run.status === "waiting_for_approval"} />
+                        <WorkTrace
+                          turn={turn}
+                          live={run.status === "running" && !replyBegun && turn.turn === run.turns}
+                          latest={turn.toolCalls.at(-1) === run.toolCalls.at(-1)}
+                          awaitingApproval={run.status === "waiting_for_approval"}
+                        />
                         {pendingOutputs.has(turn.turn) ? (
                           <div className="mt-3">
                             <OutputCards outputs={pendingOutputs.get(turn.turn)!} />

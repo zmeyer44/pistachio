@@ -324,6 +324,14 @@ export async function openMore(shell: Page): Promise<void> {
   await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
 }
 
+/** The desk's card up, its Feel let out (folded away until the person opens it, and left as they leave it). */
+export async function openFeel(shell: Page): Promise<void> {
+  await openMore(shell);
+  const toggle = shell.getByTestId("desk-feel-toggle");
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+}
+
 /** The nub's menu let out, as a click on the nub lets it out: its droplets (the prompt, the microphone, past chats), drawn once the pages under them have given way. */
 export async function openNubMenu(shell: Page): Promise<void> {
   const nub = shell.getByTestId("desk-nub");

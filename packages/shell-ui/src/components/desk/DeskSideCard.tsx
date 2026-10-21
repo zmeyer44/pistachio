@@ -153,6 +153,7 @@ export function DeskSideCard({
       onPointerDown={() => {
         pressed.current = true;
       }}
+      onClose={() => useDeskChrome.getState().closeCard("more")}
       onTile={fromAction(() => engine.arrange("tile"))}
       onCascade={fromAction(() => engine.arrange("cascade"))}
       onArrange={fromAction(() => void arrangeDesk("smart"))}

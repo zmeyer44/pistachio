@@ -421,7 +421,7 @@ export default function DeskSurface() {
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKey);
     // The pointer on a window's live page, which the shell never hears: main's word (a parked one rises into view, a drawer comes out).
-    const offHover = nativeApi()?.onDeskHover((hover) => created.hoverPage(hover.tabId, hover.over, hover.top));
+    const offHover = nativeApi()?.onDeskHover((hover) => created.hoverPage(hover.tabId, hover.over, hover.top, hover.near));
     const offPage = nativeApi()?.onDeskPageInput((input) => {
       // A press on a live page while a document was in use: that page is in use now. (Pressed, a page
       // the browser had not selected is selected, and comes up that way; the one it had, only here.)

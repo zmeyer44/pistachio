@@ -41,6 +41,7 @@ import {
   INVOICES,
   launchDesk,
   layoutOption,
+  openMore,
   openTabs,
   pointerAt,
   railHome,
@@ -182,6 +183,9 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     await expect(home).toHaveCount(1);
     const [grid, tile] = await Promise.all([box(shell, '[data-testid="home-view"] [data-testid="favorites-grid"]'), box(shell, '[data-testid="home-view"] [data-testid="favorite-tile"]')]);
     expect(Math.round(grid.width / tile.width)).toBe(3);
+    // The address as far under the sheet's edge left of the shoulder (SpaceColumn's SHOULDER_Y, y 36) as over the favorites.
+    const address = await box(shell, '[data-testid="space-card"] [data-testid="sidebar-address"]');
+    expect(Math.round(address.y - 36)).toBe(Math.round(grid.y - (address.y + address.height)));
     await expect(home.getByTestId("favorite-tile")).toHaveCount(2);
     await expect(home.locator('[data-testid="favorite-tile"][data-flip-id="fav-mail"] [data-testid="favorite-tab-count"]')).toHaveText("1");
     await expect(home.locator('[data-testid="pinned-tab"][data-flip-id="pin-north"]')).toHaveCount(1);
@@ -191,6 +195,8 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     for (const tabId of [invoices, west]) await expect(shell.locator(rowSelector(tabId))).toHaveCount(1);
     for (const tabId of [south, east, mailPage]) await expect(shell.locator(rowSelector(tabId))).toHaveCount(0);
     await expect(shell.locator(rowSelector(invoices))).toHaveAttribute("aria-selected", "true");
+    // No Stack under the tab in use: Home's rows stay where they are as the tab changes.
+    await expect(home.getByTestId("desk-stack")).toHaveCount(0);
     await awayFromColumn();
     await capture(app, shell, "01-home.png");
   });
@@ -203,7 +209,11 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     await expect(view.getByTestId("space-name")).toHaveText("Research");
     await expect(view.getByLabel("2 windows")).toHaveCount(1);
     await expect(spaceRows(shell)).toHaveCount(2);
-    await expect(view.getByTestId("layout-control")).toBeVisible();
+    // (One of its two windows out on its desk, the other put away in its row: nothing to lay out, so no layouts — the
+    // space view's layouts with windows out to lay out are a test of their own, below.)
+    await settled(shell, app);
+    await expect(shell.locator('.desk-stage[data-group-id="ds-research"] [data-testid="desk-window"]')).toHaveCount(1);
+    await expect(view.getByTestId("layout-control")).toHaveCount(0);
     await expect(view.getByTestId("desk-stack")).toHaveCount(1);
     await expect(shell.locator('.desk-stage[data-group-id="ds-research"]')).toHaveAttribute("data-group-color", "blue");
     // Home's rows are not drawn while a space shows.
@@ -255,6 +265,70 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     // Past the last space: nothing.
     await shell.keyboard.press("Meta+5");
     await expect(railHome(shell)).toHaveAttribute("aria-current", "true");
+  });
+
+  test("the ⋯ card: a space's own controls, as its tile's menu has them — none in Home — then the arrangements, and Feel folded away", async () => {
+    const card = shell.getByTestId("desk-more-card");
+    const errandsColor = async (): Promise<string | undefined> => (await snapshot(shell)).tabGroups.find((group) => group.id === "ds-errands")?.color;
+
+    // ── 1. Home: none of a space's controls; Feel folded away under its heading until opened ─
+    await chooseHome(shell);
+    await openMore(shell);
+    await expect(card.getByTestId("desk-more-space")).toHaveCount(0);
+    await expect(card.getByTestId("desk-tile")).toBeVisible();
+    const feel = card.getByTestId("desk-feel-toggle");
+    await expect(feel).toHaveAttribute("aria-expanded", "false");
+    await expect(card.getByTestId("desk-variant-physics")).toHaveCount(0);
+    await feel.click();
+    await expect(feel).toHaveAttribute("aria-expanded", "true");
+    await expect(card.getByTestId("desk-variant-physics")).toBeVisible();
+    await feel.click();
+    await expect(card.getByTestId("desk-variant-physics")).toHaveCount(0);
+    await awayFromColumn();
+    await expect(card).toHaveCount(0);
+
+    // ── 2. A space: its tile's menu on the card, above the arrangements ─
+    await chooseSpace(shell, "ds-errands");
+    await openMore(shell);
+    const space = card.getByTestId("desk-more-space");
+    for (const name of ["Rename", "New tab in space", "Share live…", "Release the tabs", "Close space"]) await expect(space.getByRole("button", { name })).toHaveCount(1);
+    await expect(space.getByRole("button", { name: "Release the tabs" })).toBeDisabled();
+    await expect(space.getByTestId("group-color-green")).toHaveAttribute("aria-checked", "true");
+    await capture(app, shell, "04b-more-space.png");
+    // A colour: the space's at once, the card left up, its ring on the colour now.
+    await space.getByTestId("group-color-purple").click();
+    await expect.poll(errandsColor).toBe("purple");
+    await expect(space.getByTestId("group-color-purple")).toHaveAttribute("aria-checked", "true");
+    await expect(shell.locator('[data-testid="desk-more-card"][data-shown]')).toHaveCount(1);
+    await space.getByTestId("group-color-green").click();
+    await expect.poll(errandsColor).toBe("green");
+    // Rename: the card away, the space's name open in the card's head.
+    await space.getByRole("button", { name: "Rename" }).click();
+    await expect(card).toHaveCount(0);
+    const field = spaceView(shell, "ds-errands").locator(".space-name-field input");
+    await expect(field).toBeFocused();
+    await field.press("Escape");
+    await expect(spaceView(shell, "ds-errands").getByTestId("space-name")).toHaveText("Errands");
+    await chooseHome(shell);
+  });
+
+  test("a space's tile rested on brings up its card a moment later — its desk drawn small, its name and count — and leaving the tile takes it away", async () => {
+    await chooseHome(shell);
+    await settled(shell, app);
+    const card = shell.locator('[data-testid="rail-space-card"][data-group-id="ds-research"]');
+    await railSpace(shell, "ds-research").hover();
+    // Not at once: only for the pointer that stays.
+    await shell.waitForTimeout(400);
+    await expect(card).toHaveCount(0);
+    await expect(card).toHaveAttribute("data-shown", "", { timeout: 5_000 });
+    await expect(card).toContainText("Research");
+    await expect(card).toContainText("2 windows");
+    // Its desk as it would come out: the windows left on it, the one it would come up on ringed.
+    await expect(card.getByTestId("rail-space-card-window").first()).toBeVisible();
+    await expect(card.locator('[data-testid="rail-space-card-window"][data-focused]')).toHaveCount(1);
+    await capture(app, shell, "04c-rail-card.png");
+    await awayFromColumn();
+    await expect(card).toHaveCount(0);
   });
 
   test("a Today row's + grows its tab into a space: up on the rail, the card turned to it, its desk two windows side by side; one closed, it goes back to Home", async () => {
@@ -629,6 +703,11 @@ test.describe.serial("the rail takes favorites, pins and spaces", { tag: ["@side
 
   test("a space's tile carried onto another merges into it — every tab, at its end; the other keeps its name and colour — and carried between two, it moves", async () => {
     test.setTimeout(60_000);
+    // ── 0. Errands, one window: nothing to lay out, so no layouts in its view ─
+    await chooseSpace(shell, "dd-errands");
+    await expect(spaceRows(shell)).toHaveCount(1);
+    await settled(shell, app);
+    await expect(spaceView(shell, "dd-errands").getByTestId("layout-control")).toHaveCount(0);
     await chooseHome(shell);
     const research = (await snapshot(shell)).tabGroups.find((group) => group.id === "dd-research")!;
 

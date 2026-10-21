@@ -205,7 +205,7 @@ test.describe.serial("live share in the shell: the Live card, its ways in, the m
     // Its rail tile and the card's head wear the live mark; the tooltip says how many are in.
     await expect(railSpace(shell, SPACE)).toHaveAttribute("data-live", "");
     await expect(railSpace(shell, SPACE).getByTestId("live-mark")).toBeVisible();
-    await expect(railSpace(shell, SPACE)).toHaveAttribute("title", /· Live · 0$/);
+    await expect(railSpace(shell, SPACE)).toHaveAttribute("aria-label", /· Live · 0$/);
     await expect(shell.getByTestId("space-live")).toHaveAttribute("title", "Live · 0");
     await capture(shell.getByTestId("sidebar-pane"), "02-marks.png");
     // The space's menu now offers its card and Stop sharing live.
@@ -320,7 +320,7 @@ test.describe.serial("live share in the shell: the Live card, its ways in, the m
     await expect(notices.getByTestId("notice-card").filter({ hasText: "Sam joined" })).toBeVisible();
     await expect(card().getByTestId("live-person")).toHaveCount(1);
     await expect(card().getByTestId("live-person")).toContainText("Sam");
-    await expect(railSpace(shell, SPACE)).toHaveAttribute("title", /· Live · 1$/);
+    await expect(railSpace(shell, SPACE)).toHaveAttribute("aria-label", /· Live · 1$/);
     await report({ type: "chat", from: "g_r1", id: "m1", text: "Can you open the pricing page?" });
     await expect(card().getByTestId("live-unread")).toHaveText("1");
     await capture(card(), "04-live-guest-knock.png");

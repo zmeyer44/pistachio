@@ -37,7 +37,7 @@ export const AREAS = [
       `${UI}/{NotchApp,ShelfApp,PipApp,DragApp}.tsx`,
       `${UI}/lib/{dictation,recorder,pane-drag}.ts`,
       `${C}/desk*.ts`,
-      `${M}/{desk-bridge,desk-conversations,desk-glass,desk-layout,desk-scope,group-context-store,document-convert,chrome-view,spaces}.ts`,
+      `${M}/{desk-bridge,desk-conversations,desk-glass,desk-layout,desk-scope,group-context-store,document-convert,chrome-view,spaces,page-health}.ts`,
       // The window's glass under the notch view (main/desk-glass.ts): the desktop's own native module.
       "apps/desktop/native/**",
       "apps/desktop/scripts/build-native.mjs",
