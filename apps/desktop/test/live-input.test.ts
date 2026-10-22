@@ -5,6 +5,7 @@
  * a press making the window the one in use and its guest the one using it —
  * and what no guest's page may send whatever it is: a button but the left,
  * a click with ⌘, Ctrl or Shift, a zooming wheel, one of the app's own keys.
+ * A terminal the shell draws takes what the gate lets through whole.
  */
 
 import { describe, expect, it } from "vitest";
@@ -12,24 +13,33 @@ import type { ElectronInputStep, LiveInputEvent, LiveModifier } from "@pistachio
 import { DEFAULT_SHORTCUTS } from "@pistachio/shell-contracts/shortcuts";
 import { isAppShortcut, LIVE_INPUT_RATE, LiveInputGate, type LiveInputContext } from "../src/main/live/live-input";
 
-function setup(overrides: Partial<LiveInputContext> = {}, viewSize: { width: number; height: number } | null = { width: 800, height: 600 }) {
+function setup(overrides: Partial<LiveInputContext> = {}, viewSize: { width: number; height: number } | null = { width: 800, height: 600 }, shell: { up: boolean } = { up: true }) {
   const sent: Array<{ tabId: string; steps: readonly ElectronInputStep[] }> = [];
+  /** What went to a terminal ("term", "term-2"), in the shell, and whose. */
+  const typed: Array<{ tabId: string; events: readonly LiveInputEvent[]; from: string }> = [];
   const activated: string[] = [];
   const used: Array<[string, string]> = [];
   let now = 1_000;
   const context: LiveInputContext = {
     isGuest: (identity) => identity === "g_ann",
     allowed: (windowId) => windowId !== "closed",
-    window: (windowId) => (windowId === "off-desk" ? null : { streamed: windowId !== "cold", minimized: windowId === "mini", masked: windowId === "masked" }),
+    window: (windowId) =>
+      windowId === "off-desk" ? null : { streamed: windowId !== "cold", minimized: windowId === "mini", masked: windowId === "masked", paused: windowId === "term-held" },
     hostPresent: () => true,
     ...overrides,
   };
   const gate = new LiveInputGate(
     context,
     {
-      viewSize: () => viewSize,
+      viewSize: (tabId) => (tabId.startsWith("term") ? null : viewSize),
       send: (tabId, steps) => {
         sent.push({ tabId, steps });
+        return true;
+      },
+      isTerminal: (tabId) => tabId.startsWith("term"),
+      sendTerminal: (tabId, events, from) => {
+        if (!shell.up) return false;
+        typed.push({ tabId, events, from });
         return true;
       },
       activate: (tabId) => activated.push(tabId),
@@ -38,7 +48,7 @@ function setup(overrides: Partial<LiveInputContext> = {}, viewSize: { width: num
     (windowId, identity) => used.push([windowId, identity]),
     () => now,
   );
-  return { gate, sent, activated, used, tick: (ms: number) => (now += ms) };
+  return { gate, sent, typed, activated, used, tick: (ms: number) => (now += ms) };
 }
 
 const click = (type: "mouseDown" | "mouseUp", x: number, y: number): LiveInputEvent => ({ type, x, y, button: "left", buttons: type === "mouseDown" ? 1 : 0, clickCount: 1, modifiers: [] });
@@ -310,6 +320,77 @@ describe("LiveInputGate", () => {
       else if (step.type === "keyUp") down.delete(step.keyCode);
     }
     expect([...down]).toEqual([]);
+  });
+
+  it("gives a terminal the guest's events whole — its keys, its text, its wheel — a press putting it in use and its guest using it, no page asked for", () => {
+    const { gate, sent, typed, activated, used } = setup();
+    const events: LiveInputEvent[] = [
+      click("mouseDown", 0.5, 0.5),
+      click("mouseUp", 0.5, 0.5),
+      { type: "keyDown", key: "l", code: "KeyL", modifiers: [] },
+      { type: "char", text: "l" },
+      { type: "keyUp", key: "l", code: "KeyL", modifiers: [] },
+      { type: "keyDown", key: "c", code: "KeyC", modifiers: ["control"] },
+      { type: "keyUp", key: "c", code: "KeyC", modifiers: ["control"] },
+      { type: "insertText", text: "ls -la" },
+      { type: "wheel", x: 0.5, y: 0.5, dx: 0, dy: -120, modifiers: [] },
+    ];
+    for (const event of events) expect(gate.apply("g_ann", "term", event)).toBeNull();
+    expect(typed).toEqual(events.map((event) => ({ tabId: "term", events: [event], from: "g_ann" })));
+    expect(sent).toEqual([]);
+    expect(activated).toEqual(["term"]);
+    expect(used).toEqual([["term", "g_ann"]]);
+    // The shell not there to take them: as a page with none.
+    expect(setup({}, undefined, { up: false }).gate.apply("g_ann", "term", { type: "char", text: "x" })).toBe("no-page");
+  });
+
+  it("holds a terminal to a page's refusals: the window not let use, one of the app's keys, a click with ⌘, a zooming wheel", () => {
+    const { gate, typed, activated } = setup({ allowed: (windowId) => windowId !== "term-2" });
+    expect(gate.apply("g_ann", "term-2", { type: "keyDown", key: "a", code: "KeyA", modifiers: [] })).toBe("not-allowed");
+    expect(gate.apply("g_ann", "term", { type: "keyDown", key: "w", code: "KeyW", modifiers: ["meta"] })).toBe("shortcut");
+    expect(gate.apply("g_ann", "term", { type: "keyDown", key: "v", code: "KeyV", modifiers: ["meta"] })).toBe("shortcut");
+    expect(gate.apply("g_ann", "term", { ...click("mouseDown", 0.5, 0.5), modifiers: ["meta"] })).toBe("chord");
+    expect(gate.apply("g_ann", "term", { type: "wheel", x: 0.5, y: 0.5, dx: 0, dy: 40, modifiers: ["control"] })).toBe("zoom");
+    expect(typed).toEqual([]);
+    expect(activated).toEqual([]);
+  });
+
+  it("takes nothing for a terminal whose picture is held (the host's palette or a menu over it): the guest could not see it run", () => {
+    let paused = false;
+    const { gate, typed } = setup({ window: () => ({ streamed: true, minimized: false, masked: false, paused }) });
+    expect(gate.apply("g_ann", "term-held", { type: "keyDown", key: "Shift", code: "ShiftLeft", modifiers: ["shift"] })).toBeNull();
+    paused = true;
+    expect(gate.apply("g_ann", "term-held", { type: "char", text: "x" })).toBe("paused");
+    // What they held down is let go as it pauses.
+    gate.releaseWithdrawn();
+    expect(typed.at(-1)).toEqual({ tabId: "term-held", from: "g_ann", events: [{ type: "keyUp", key: "Shift", code: "ShiftLeft", modifiers: [] }] });
+    paused = false;
+    expect(gate.apply("g_ann", "term-held", { type: "char", text: "x" })).toBeNull();
+  });
+
+  it("lets go of what a guest holds down on a terminal as their hands come off it: the releases go to the shell", () => {
+    let allowed = true;
+    const { gate, typed } = setup({ allowed: () => allowed });
+    gate.apply("g_ann", "term", click("mouseDown", 0.2, 0.2));
+    gate.apply("g_ann", "term", { type: "keyDown", key: "Control", code: "ControlLeft", modifiers: ["control"] });
+    gate.apply("g_ann", "term", { type: "keyDown", key: "c", code: "KeyC", modifiers: ["control"] });
+    typed.length = 0;
+    allowed = false;
+    gate.releaseWithdrawn();
+    expect(typed).toEqual([
+      {
+        tabId: "term",
+        from: "g_ann",
+        events: [
+          { type: "mouseUp", x: 0.2, y: 0.2, button: "left", buttons: 0, clickCount: 1, modifiers: [] },
+          { type: "keyUp", key: "Control", code: "ControlLeft", modifiers: [] },
+          { type: "keyUp", key: "c", code: "KeyC", modifiers: [] },
+        ],
+      },
+    ]);
+    // Their own release after is owed nothing more.
+    expect(gate.apply("g_ann", "term", { type: "keyUp", key: "c", code: "KeyC", modifiers: [] })).toBe("not-allowed");
+    expect(typed).toHaveLength(1);
   });
 
   it("holds each guest to 240 events a second, dropping the rest, and forgets a guest who left", () => {

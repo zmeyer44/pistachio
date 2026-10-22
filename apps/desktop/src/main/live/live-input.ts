@@ -34,6 +34,11 @@ import { shortcutActionForEvent, shortcutFromEvent, type ShortcutPlatform, type 
  * link instead; ⌥ goes (it opens nothing). No wheel with ⌘ or Ctrl (it zooms
  * the page, and Chromium keeps a site's zoom for the host), and no key that is
  * one of the app's own shortcuts or edit chords.
+ *
+ * A terminal (§6.6) has no page of its own to send events to — the shell
+ * draws it — so what the gate lets through goes to the shell whole, for the
+ * terminal to take as its own keys (`sendTerminal`); a press there makes it
+ * the window in use and its guest the one using it, as a page's does.
  */
 
 /** Why an event did not reach its page. */
@@ -48,6 +53,7 @@ export type LiveInputRefusal =
   | "not-streamed"
   | "minimized"
   | "masked"
+  | "paused"
   | "host-away"
   | "rate-limited"
   | "too-many-keys"
@@ -85,12 +91,16 @@ export interface LiveInputContext {
   /** The host lets guests use this window. */
   allowed(windowId: string): boolean;
   /** The window as the desk last had it, or null when it is not on the shared desk. */
-  window(windowId: string): { streamed: boolean; minimized: boolean; masked: boolean } | null;
+  window(windowId: string): { streamed: boolean; minimized: boolean; masked: boolean; paused?: boolean } | null;
   hostPresent(): boolean;
 }
 
 /** Where accepted events go: the window's tab. */
 export interface LiveInputTarget {
+  /** The tab is a terminal the shell draws: its events go to it whole (`sendTerminal`), not as a page's. */
+  isTerminal(tabId: string): boolean;
+  /** Hand a guest's (`from`) events to the terminal in the tab, in the shell; false when the shell is not there to take them. */
+  sendTerminal(tabId: string, events: readonly LiveInputEvent[], from: string): boolean;
   /** The tab view's size in DIPs, or null when it has no page. */
   viewSize(tabId: string): { width: number; height: number } | null;
   /** Hand the steps to the tab's page, past main's own hooks; false when it has none. */
@@ -133,15 +143,21 @@ export class LiveInputGate {
     const refusal = this.#heldBack(event) ?? this.#withdrawn(identity, windowId) ?? this.#pastHeldKeys(identity, windowId, event) ?? this.#notHeld(identity, windowId, event) ?? (this.#rate.take(identity, this.#now()) ? null : "rate-limited");
     if (refusal !== null) {
       const owed = this.#takeOwed(identity, windowId, event);
-      return owed === null ? refusal : this.#sendRelease(windowId, owed);
+      return owed === null ? refusal : this.#sendRelease(identity, windowId, owed);
     }
-    const size = this.#target.viewSize(windowId);
-    if (size === null) return "no-page";
+    const terminal = this.#target.isTerminal(windowId);
+    const size = terminal ? null : this.#target.viewSize(windowId);
+    if (!terminal && size === null) return "no-page";
     if (event.type === "mouseDown") {
       this.#target.activate(windowId);
       this.#used(windowId, identity);
     }
-    const steps = toElectronInputEvents(event, size);
+    if (terminal) {
+      if (!this.#target.sendTerminal(windowId, [event], identity)) return "no-page";
+      this.#track(identity, windowId, event);
+      return null;
+    }
+    const steps = toElectronInputEvents(event, size!);
     if (!this.#target.send(windowId, steps)) return "no-page";
     if (steps.length > 0) this.#track(identity, windowId, event);
     return null;
@@ -173,6 +189,9 @@ export class LiveInputGate {
     if (window === null || !window.streamed) return "not-streamed";
     if (window.minimized) return "minimized";
     if (window.masked) return "masked";
+    // (Its picture held — something of the host's over a terminal, the palette, a menu: what the guest would type there they
+    // could not see run.)
+    if (window.paused === true) return "paused";
     if (!context.hostPresent()) return "host-away";
     return null;
   }
@@ -235,7 +254,8 @@ export class LiveInputGate {
     return release;
   }
 
-  #sendRelease(windowId: string, release: LiveInputEvent): LiveInputRefusal | null {
+  #sendRelease(identity: string, windowId: string, release: LiveInputEvent): LiveInputRefusal | null {
+    if (this.#target.isTerminal(windowId)) return this.#target.sendTerminal(windowId, [release], identity) ? null : "no-page";
     const size = this.#target.viewSize(windowId);
     return size !== null && this.#target.send(windowId, toElectronInputEvents(release, size)) ? null : "no-page";
   }
@@ -247,9 +267,13 @@ export class LiveInputGate {
     if (windows === undefined || held === undefined) return;
     windows.delete(windowId);
     if (windows.size === 0) this.#held.delete(identity);
+    const releases = [...(held.button === null ? [] : [buttonUp(held.button.x, held.button.y, held.button.clickCount)]), ...[...held.keys.values()].map(keyUp)];
+    if (this.#target.isTerminal(windowId)) {
+      if (releases.length > 0) this.#target.sendTerminal(windowId, releases, identity);
+      return;
+    }
     const size = this.#target.viewSize(windowId);
     if (size === null) return;
-    const releases = [...(held.button === null ? [] : [buttonUp(held.button.x, held.button.y, held.button.clickCount)]), ...[...held.keys.values()].map(keyUp)];
     const steps = releases.flatMap((release) => toElectronInputEvents(release, size));
     if (steps.length > 0) this.#target.send(windowId, steps);
   }

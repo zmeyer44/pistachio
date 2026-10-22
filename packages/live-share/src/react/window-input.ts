@@ -6,15 +6,20 @@
  * The pointer is the guest's hand over the page: a press there also gives
  * the window the guest's keyboard, held by a hidden textarea inside it (so
  * an IME composes in place and a paste arrives as text); Escape or a press
- * anywhere else gives the keyboard back. Moves and wheel deltas are folded
+ * anywhere else gives the keyboard back — on a terminal, whose programs need
+ * Escape (Vim's modes), ⇧Escape does, and Escape is the program's. Moves and wheel deltas are folded
  * to one event per frame — the host takes at most 240 a second — while
  * presses and releases go at once, after the move before them.
  *
  * Only the left button reaches the page: a right-click would open a menu on
  * the host's screen that the guest cannot see. Copy and cut do nothing (the
  * host's clipboard is never written for a guest); paste sends the guest's own
- * text. Nothing goes out unless `usable()` says so at that moment — the
- * latest desk frame allows this window and the host is on the space.
+ * text. On a terminal (§6.6) Ctrl's C, X and V are its keys, as they are a
+ * terminal's on the host — Ctrl+C stops what runs — and nothing of a
+ * clipboard's: but for Ctrl+V where it pastes (off a Mac), which sends the
+ * guest's own text still. Nothing goes out unless `usable()` says so at that
+ * moment — the latest desk frame allows this window and the host is on the
+ * space.
  *
  * What the guest presses on the page is released there, even when its
  * release never comes here: main holds a guest's press until it hears the
@@ -49,9 +54,13 @@ export interface WindowInputOptions {
   onKeyboard(held: boolean): void;
   /** Calls back each time the host may have missed what was sent: it hears this guest again after a drop on either side. Returns the unsubscribe. */
   onReconnected(listener: () => void): () => void;
+  /** The window is a terminal now (its frame says so): Ctrl's clipboard chords are its keys. */
+  terminal?(): boolean;
+  /** This browser is a Mac's, where Ctrl+V pastes nothing (default: as `navigator.platform` says). */
+  mac?: boolean;
 }
 
-export function attachWindowInput({ page, keys, usable, send, onKeyboard, onReconnected }: WindowInputOptions): () => void {
+export function attachWindowInput({ page, keys, usable, send, onKeyboard, onReconnected, terminal, mac = isMacPlatform() }: WindowInputOptions): () => void {
   const clicks = new ClickCounter();
   let pressed: number | null = null;
   let lastPoint: PointerEvent | null = null;
@@ -178,8 +187,8 @@ export function attachWindowInput({ page, keys, usable, send, onKeyboard, onReco
       release();
       return;
     }
-    const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
-    if (event.key === "Escape" && plain) {
+    const onTerminal = terminal?.() === true;
+    if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && event.shiftKey === onTerminal) {
       event.preventDefault();
       event.stopPropagation();
       release();
@@ -187,14 +196,17 @@ export function attachWindowInput({ page, keys, usable, send, onKeyboard, onReco
     }
     if (composing || event.isComposing) return;
     // Paste (⌘V, Ctrl+V, Shift+Insert) is left to this browser, whose paste event below sends the
-    // guest's own text; copy and cut never reach the host, nor does any other clipboard chord.
+    // guest's own text; copy and cut never reach the host, nor does any other clipboard chord — but a
+    // terminal's Ctrl+C, Ctrl+X and (on a Mac, where it pastes nothing) Ctrl+V, which are its keys.
     const chord = event.altKey ? null : clipboardChord(event);
-    if (chord === "paste") return;
-    if (chord !== null || event.key === "Insert") {
+    const terminalKey = chord !== null && event.ctrlKey && !event.metaKey && /^[cxv]$/iu.test(event.key) && (chord !== "paste" || mac) && onTerminal;
+    if (chord === "paste" && !terminalKey) return;
+    // (Insert alone is a terminal's key — Vim's insert mode — and on a page Blink's overtype or a clipboard chord's.)
+    if ((chord !== null && !terminalKey) || (event.key === "Insert" && !onTerminal)) {
       event.preventDefault();
       return;
     }
-    const events = keyToLive(event, "keyDown");
+    const events = keyToLive(event, "keyDown", { mac });
     if (events.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -301,4 +313,9 @@ export function attachWindowInput({ page, keys, usable, send, onKeyboard, onReco
 /** A key as main's input gate tells keys apart: its physical key, or its name where there is none. */
 function keyId(event: { key: string; code: string }): string {
   return event.code === "" ? `key:${event.key}` : event.code;
+}
+
+/** A Mac's browser (an iPad's too): Ctrl+V pastes nothing there. */
+function isMacPlatform(): boolean {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform);
 }

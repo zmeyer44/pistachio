@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { LiveChatEntry, LiveDeskFrame, LiveGrant } from "@pistachio/live-share";
+import type { LiveChatEntry, LiveDeskFrame, LiveGrant, LiveInputEvent } from "@pistachio/live-share";
 import type { LiveBackground } from "@pistachio/live-share/effects";
 import {
   isLiveCommand,
@@ -17,6 +17,7 @@ import {
   type LiveChatMessage,
   type LiveDeskReport,
   type LiveHostDeskFrame,
+  type LiveTerminalEvent,
 } from "@pistachio/shell-contracts/live-share";
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -24,6 +25,8 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const FRAME_IS_THE_PROTOCOLS: Same<LiveHostDeskFrame, LiveDeskFrame> = true;
 const CHAT_IS_THE_PROTOCOLS: Same<LiveChatMessage, LiveChatEntry> = true;
 const BACKGROUND_IS_THE_EFFECTS: Same<LiveBackgroundChoice, LiveBackground> = true;
+// What a terminal takes of a guest's hands is the protocol's keys, text and wheel (live-browser.ts sends no other).
+const TERMINAL_TAKES_THE_PROTOCOLS: Same<LiveTerminalEvent, Extract<LiveInputEvent, { type: "keyDown" | "keyUp" | "char" | "insertText" | "wheel" }>> = true;
 // A window's use is the protocol's grant, renamed for the shell.
 const USE_CARRIES_A_GRANT: Same<{ windowId: string; identity: string }, { windowId: LiveGrant["w"]; identity: NonNullable<LiveGrant["user"]> }> = true;
 
@@ -41,7 +44,7 @@ const REPORT: LiveDeskReport = {
 
 describe("live share contracts", () => {
   it("restate the protocol's shapes exactly", () => {
-    expect([FRAME_IS_THE_PROTOCOLS, CHAT_IS_THE_PROTOCOLS, BACKGROUND_IS_THE_EFFECTS, USE_CARRIES_A_GRANT]).toEqual([true, true, true, true]);
+    expect([FRAME_IS_THE_PROTOCOLS, CHAT_IS_THE_PROTOCOLS, BACKGROUND_IS_THE_EFFECTS, USE_CARRIES_A_GRANT, TERMINAL_TAKES_THE_PROTOCOLS]).toEqual([true, true, true, true, true]);
   });
 
   it("take the shell's commands and refuse what is not one", () => {

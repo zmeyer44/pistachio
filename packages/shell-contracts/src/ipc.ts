@@ -8,7 +8,7 @@ import type { TabGroupCommand, TabGroupCommandResult, TabGroupInfo } from "./tab
 import type { TidyRequest, TidyResponse } from "./tidy.js";
 import type { TabSwitcherInput } from "./tab-switcher.js";
 import type { TerminalEvent, TerminalRequest } from "./terminal.js";
-import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState } from "./live-share.js";
+import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState, LiveTerminalInput } from "./live-share.js";
 import type { LiveFrame, LiveInput, LiveTabInfo } from "@pistachio/live-view";
 import type { EvidenceEntry } from "@pistachio/evidence";
 import type {
@@ -1256,6 +1256,13 @@ export interface NativeSurfaceApi {
    */
   captureTabStills(tabIds: string[], width: number): Promise<PaneStill[]>;
   /**
+   * A still of a page asleep, at most `width` device px wide, for its
+   * space's tile's card on the rail: main wakes it for the picture, at its
+   * window's page `size` (CSS px), and puts it back to sleep. Null when it
+   * is awake (captureTabStills), or will not wake or picture in time.
+   */
+  previewTabStill(tabId: string, size: { width: number; height: number }, width: number): Promise<PaneStill | null>;
+  /**
    * A capture of a desk window's page for the shell to draw live where its
    * still is (a covered window playing a video): a tab media source id for
    * getUserMedia, granted to this shell once; null when the tab is not on
@@ -1358,6 +1365,12 @@ export interface NativeSurfaceApi {
    * that; take them as the state's `participants`.
    */
   onLiveRoster(listener: (participants: LiveGuest[]) => void): () => void;
+  /**
+   * Shell only: a guest's keys, text and wheel on a terminal the host let
+   * them use (docs/live-share.md §6.6), each passed by main's input gate, for
+   * the terminal to take as typed.
+   */
+  onLiveTerminalInput(listener: (input: LiveTerminalInput) => void): () => void;
   /** Shell → main: the shared space's desk while a share is live (≤ every 33 ms in motion), or null. */
   setLiveDesk(report: LiveDeskReport | null): void;
   /** Live-host app only: the room and the share as they stand; null once the share has ended. Subscribe first. */
@@ -1523,6 +1536,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   setOverlay: "Hides and restores the native tab views under a shell overlay.",
   setDesk: "Arms main's hook on the desk windows' native page views for the grab key.",
   captureTabStills: "Captures native tab views, shown or hidden, for the desk's drawn windows.",
+  previewTabStill: "Wakes a sleeping tab's native view for a capture, then puts it back to sleep.",
   deskLiveSource: "Hands the shell a capture of a native tab view, granted by main for that view's session.",
   deskPageCorners: "Reads two pixels of a native tab view, which only main can capture.",
   focusTab: "Hands the keyboard to one native tab view among the desk's several.",
@@ -1563,6 +1577,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   getLiveShare: "The live share is held by main beside the native views it captures.",
   onLiveShare: "The live share is held by main beside the native views it captures.",
   onLiveRoster: "The live share is held by main beside the native views it captures.",
+  onLiveTerminalInput: "A live share guest's keys reach a terminal through main's input gate, which the share's room is held by.",
   setLiveDesk: "Tells main where the shared desk's native page views lie, for guests to rebuild it.",
   liveHostConfig: "The live-host window is a native child window over the browser's window.",
   onLiveHostEvent: "The live-host window is a native child window over the browser's window.",
@@ -1709,6 +1724,8 @@ export const IPC = {
   overlaySet: "pistachio:overlay-set",
   deskSet: "pistachio:desk-set",
   deskStillsCapture: "pistachio:desk-stills-capture",
+  /** Shell → main: a still of a page asleep, woken for it (previewTabStill). */
+  deskStillPreview: "pistachio:desk-still-preview",
   deskLiveSource: "pistachio:desk-live-source",
   deskPageCorners: "pistachio:desk-page-corners",
   deskFocus: "pistachio:desk-focus",
@@ -1755,6 +1772,7 @@ export const IPC = {
   liveShareChanged: "pistachio:live-changed",
   /** Main → the shell: the guests alone, when only their speaking or connection changed. */
   liveRosterChanged: "pistachio:live-roster-changed",
+  liveTerminalInput: "pistachio:live-terminal-input",
   liveDeskSet: "pistachio:live-desk-set",
   liveHostConfig: "pistachio:live-host-config",
   /** Main → the live-host app: a LiveHostEvent. */

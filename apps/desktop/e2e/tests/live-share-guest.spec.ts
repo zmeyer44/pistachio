@@ -310,7 +310,7 @@ const inboxOf = (page: Page): Promise<Received[]> => host<Received[]>(page, "inb
 /** An `lv.input` event the host received. */
 interface InputEvent {
   w: string;
-  e: { type: string; x?: number; y?: number; key?: string; text?: string; button?: string; clickCount?: number };
+  e: { type: string; x?: number; y?: number; key?: string; code?: string; text?: string; button?: string; clickCount?: number; modifiers?: string[] };
 }
 
 const inputs = async (page: Page): Promise<InputEvent[]> => (await inboxOf(page)).filter((m) => m.topic === "lv.input").map((m) => m.body as unknown as InputEvent);
@@ -875,6 +875,49 @@ test.describe.serial("live share: the guest page with a fake host", { tag: ["@we
     await guest.setViewportSize({ width: 1440, height: 900 });
     await host(fakeHost, "desk", deskFrame());
     await expect(guest.getByRole("radio", { name: "Pen" })).toBeEnabled();
+  });
+
+  test("a terminal the host lets guests use takes their keys as a page does; one not let offers to ask; another window the shell draws is only watched", async () => {
+    const terminal = { kind: "shell", terminal: true, title: "~/pistachio", origin: null };
+    const typedInto = async (windowId: string): Promise<string[]> => (await inputs(fakeHost)).filter((input) => input.w === windowId && input.e.type === "char").map((input) => input.e.text ?? "");
+    const page = (): Promise<{ x: number; y: number; width: number; height: number }> => boxOf(guest, '[data-window="t2"] [data-page]');
+    const before = (await typedInto("t2")).length;
+
+    // Let: pressed, the keyboard is its — what is typed goes to it, keys and all.
+    await host(fakeHost, "desk", deskFrame({ t1: { controllable: false }, t2: { ...terminal, controllable: true } }));
+    await expect(guest.locator('[data-window="t2"]')).toHaveAttribute("data-usable", "");
+    const box = await page();
+    await guest.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.5);
+    await expect(guest.locator('[data-window="t2"]')).toHaveAttribute("data-keyboard", "");
+    await guest.keyboard.type("ls");
+    await guest.keyboard.press("Enter");
+    await guest.keyboard.press("Control+c");
+    await expect.poll(async () => (await typedInto("t2")).slice(before)).toEqual(["l", "s", "\r"]);
+    // (Ctrl+C a key of the terminal's, not the clipboard chord a page's would be: its press goes, Control held.)
+    const pressed = async (): Promise<InputEvent["e"][]> => (await inputs(fakeHost)).filter((input) => input.w === "t2" && input.e.type === "keyDown").map((input) => input.e).slice(-5);
+    await expect.poll(async () => (await pressed()).map((event) => event.key)).toEqual(["l", "s", "Enter", "Control", "c"]);
+    expect((await pressed()).at(-1)).toMatchObject({ key: "c", code: "KeyC", modifiers: ["control"] });
+    if (captureEnabled) await capture(guest, "03c-terminal-in-hand");
+
+    // Not let: its tab offers to ask, as a page's does.
+    await host(fakeHost, "desk", deskFrame({ t2: { ...terminal } }));
+    await expect(guest.locator('[data-window="t2"]')).not.toHaveAttribute("data-usable", "");
+    await guest.locator('[data-window="t2"] .lvg-window-tab').hover();
+    await expect(guest.getByRole("button", { name: "Ask to use" })).toBeVisible();
+
+    // Another window of the shell's (home, notes): watched — nothing to ask for, and a click there goes nowhere.
+    await host(fakeHost, "desk", deskFrame({ t2: { kind: "shell", title: "Home", origin: null } }));
+    await guest.locator('[data-window="t2"] .lvg-window-tab').hover();
+    await expect(guest.getByRole("button", { name: "Ask to use" })).toHaveCount(0);
+    const downs = (await inputs(fakeHost)).filter((input) => input.e.type === "mouseDown").length;
+    const watched = await page();
+    await guest.mouse.click(watched.x + watched.width * 0.5, watched.y + watched.height * 0.5);
+    // (Input is reliable and ordered: once a later click on t1 has arrived, one on t2 before it would have too.)
+    await host(fakeHost, "desk", deskFrame());
+    const t1 = await boxOf(guest, '[data-window="t1"] [data-page]');
+    await guest.mouse.click(t1.x + t1.width * 0.5, t1.y + t1.height * 0.5);
+    await expect.poll(async () => (await inputs(fakeHost)).filter((input) => input.e.type === "mouseDown").length).toBe(downs + 1);
+    expect((await inputs(fakeHost)).filter((input) => input.e.type === "mouseDown").at(-1)?.w).toBe("t1");
   });
 
   test("chat goes both ways", async () => {

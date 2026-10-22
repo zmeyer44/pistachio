@@ -171,7 +171,8 @@ export class LiveShareService {
   #ending: Promise<void> | null = null;
   #report: LiveDeskReport | null = null;
   /** The windows of the last frame built, as guests' input is checked against them (`streamed`: a tab's page, captured). */
-  #windows = new Map<string, { streamed: boolean; minimized: boolean; masked: boolean }>();
+  /** The shared desk's windows as the last frame had them: `streamed`, one guests' hands may reach (a page or a terminal) that streams. */
+  #windows = new Map<string, { page: boolean; streamed: boolean; minimized: boolean; masked: boolean; paused: boolean }>();
   /** The streamed pages' tabs and sizes, as the last frame has them. */
   #streamed: LiveHeldTab[] = [];
   /** A shell-drawn window of the last frame streams: its picture is cut from the shell's own (§6.6). */
@@ -492,7 +493,8 @@ export class LiveShareService {
 
   /** The live-host app may capture this tab: a page window of the shared desk that streams. */
   streams(tabId: string): boolean {
-    return this.#share !== null && this.#windows.get(tabId)?.streamed === true;
+    const window = this.#windows.get(tabId);
+    return this.#share !== null && window?.page === true && window.streamed;
   }
 
   /**
@@ -1179,7 +1181,19 @@ export class LiveShareService {
     const masked = new Set(report.windows.filter((window) => window.masked).map((window) => window.id));
     // (A shell-drawn window has no tab page to capture, use or hold awake: its picture is the shell's.)
     const pages = frame.windows.filter((window) => window.kind === "page" && window.track !== null);
-    this.#windows = new Map(frame.windows.map((window) => [window.id, { streamed: window.kind === "page" && window.track !== null, minimized: window.minimized, masked: masked.has(window.id) }]));
+    // (Of the shell's windows, guests' hands reach a terminal alone: §6.6.)
+    this.#windows = new Map(
+      frame.windows.map((window) => [
+        window.id,
+        {
+          page: window.kind === "page",
+          streamed: window.track !== null && (window.kind === "page" || window.terminal === true),
+          minimized: window.minimized,
+          masked: masked.has(window.id),
+          paused: window.paused,
+        },
+      ]),
+    );
     this.#streamed = pages.map((window) => ({ tabId: window.id, width: Math.round(window.page.w), height: Math.round(window.page.h) }));
     this.#shellStreamed = frame.windows.some((window) => window.kind === "shell" && window.track !== null);
     // (The card tells the host which windows guests see only the frame of, and so cannot use.)

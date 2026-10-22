@@ -146,25 +146,29 @@ function typedText(ev: KeyLike): string | null {
  * a release `keyUp`. Nothing while an IME composes — its result arrives as
  * `insertText` from the composition's end. The char keeps Shift alone of
  * what is held (§4): Chromium breaks a line on Shift+Enter's char, where
- * Enter's starts a paragraph; ⌥, ⌘ and Ctrl stay on the key down.
+ * Enter's starts a paragraph; ⌥, ⌘ and Ctrl stay on the key down. A key down
+ * with Alt says whether this keyboard is a Mac's (`mac`, when given): Option
+ * types there, where a PC's Alt is Meta.
  */
-export function keyToLive(ev: KeyLike, type: "keyDown" | "keyUp"): LiveInputEvent[] {
+export function keyToLive(ev: KeyLike, type: "keyDown" | "keyUp", keyboard: { mac?: boolean } = {}): LiveInputEvent[] {
   if (ev.isComposing === true || ev.key === "Process" || ev.key === "Dead" || ev.key === "Unidentified") return [];
   const key = ev.key.slice(0, 32);
   const code = ev.code.slice(0, 32);
   const modifiers = modifiersOf(ev);
   if (type === "keyUp") return [{ type: "keyUp", key, code, modifiers }];
-  const events: LiveInputEvent[] = [{ type: "keyDown", key, code, modifiers, ...(ev.repeat ? { repeat: true } : {}) }];
+  const events: LiveInputEvent[] = [
+    { type: "keyDown", key, code, modifiers, ...(ev.repeat ? { repeat: true } : {}), ...(ev.altKey && keyboard.mac !== undefined ? { mac: keyboard.mac } : {}) },
+  ];
   const text = typedText(ev);
   if (text !== null) events.push(ev.shiftKey ? { type: "char", text, modifiers: ["shift"] } : { type: "char", text });
   return events;
 }
 
-/** Pasted or composed text as `insertText` events of at most 2000 characters, never splitting a character. */
+/** Pasted or composed text as `insertText` events of at most 2000 characters, never splitting a character nor a CRLF (one line break, which a terminal's paste would make two). */
 export function textToLive(text: string): LiveInputEvent[] {
   const events: LiveInputEvent[] = [];
   let chunk = "";
-  for (const point of text) {
+  for (const point of text.match(/\r\n|[^]/gu) ?? []) {
     if (chunk.length + point.length > MAX_INSERT_TEXT_LENGTH) {
       events.push({ type: "insertText", text: chunk });
       chunk = "";

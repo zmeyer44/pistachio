@@ -38,13 +38,15 @@ export function deskFacts(frame: LiveDeskFrame): LiveDeskFacts {
       focused: window.focused,
       minimized: window.minimized,
       controllable: window.controllable,
+      // (Only where it is one: a frame without it said nothing, and a page's facts stay as they were.)
+      ...(window.terminal === true ? { terminal: true } : {}),
       track: window.track,
       paused: window.paused,
     })),
   };
 }
 
-const WINDOW_KEYS = ["id", "kind", "title", "origin", "favicon", "focused", "minimized", "controllable", "track", "paused"] as const;
+const WINDOW_KEYS = ["id", "kind", "title", "origin", "favicon", "focused", "minimized", "controllable", "terminal", "track", "paused"] as const;
 
 export function sameFacts(a: LiveDeskFacts | null, b: LiveDeskFacts | null): boolean {
   if (a === b) return true;

@@ -40,6 +40,15 @@ describe("deskFacts and sameFacts", () => {
     expect(sameFacts(base, null)).toBe(false);
   });
 
+  it("keep a terminal said to be one — the guest page lets its hands onto it — and see it change", () => {
+    const shell = win("t", { kind: "shell" });
+    const terminal = win("t", { kind: "shell", terminal: true });
+    expect(deskFacts(frame([terminal])).windows[0]?.terminal).toBe(true);
+    // (A frame without it, as before terminals could be used: nothing added.)
+    expect(deskFacts(frame([shell])).windows[0]).not.toHaveProperty("terminal");
+    expect(sameFacts(deskFacts(frame([shell])), deskFacts(frame([terminal])))).toBe(false);
+  });
+
   it("read a frame without guestsCanDraw as drawing allowed", () => {
     expect(deskFacts(frame([])).guestsCanDraw).toBe(true);
     expect(deskFacts(frame([], { guestsCanDraw: false })).guestsCanDraw).toBe(false);

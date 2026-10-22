@@ -130,7 +130,7 @@ import type { ArtifactListing } from "@pistachio/shell-contracts/artifacts";
 import type { NoteResponse, NoteSnapshot } from "@pistachio/shell-contracts/notes";
 import type { ReportResponse } from "@pistachio/shell-contracts/reports";
 import type { TerminalEvent, TerminalRequest } from "@pistachio/shell-contracts/terminal";
-import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState } from "@pistachio/shell-contracts/live-share";
+import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState, LiveTerminalInput } from "@pistachio/shell-contracts/live-share";
 
 /**
  * The shell's end of a port to the terminal host (docs/terminal.md §3).
@@ -318,6 +318,8 @@ const api: PistachioApi = {
   setDesk: (state: DeskState | null) => ipcRenderer.send(IPC.deskSet, state),
   captureTabStills: (tabIds: string[], width: number) =>
     ipcRenderer.invoke(IPC.deskStillsCapture, tabIds, width) as Promise<PaneStill[]>,
+  previewTabStill: (tabId: string, size: { width: number; height: number }, width: number) =>
+    ipcRenderer.invoke(IPC.deskStillPreview, tabId, size, width) as Promise<PaneStill | null>,
   deskLiveSource: async (tabId: string) => {
     const id: unknown = await ipcRenderer.invoke(IPC.deskLiveSource, tabId);
     return typeof id === "string" ? id : null;
@@ -471,6 +473,11 @@ const api: PistachioApi = {
     const handler = (_event: Electron.IpcRendererEvent, participants: LiveGuest[]): void => listener(participants);
     ipcRenderer.on(IPC.liveRosterChanged, handler);
     return () => ipcRenderer.removeListener(IPC.liveRosterChanged, handler);
+  },
+  onLiveTerminalInput(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, input: LiveTerminalInput): void => listener(input);
+    ipcRenderer.on(IPC.liveTerminalInput, handler);
+    return () => ipcRenderer.removeListener(IPC.liveTerminalInput, handler);
   },
   setLiveDesk: (report: LiveDeskReport | null) => ipcRenderer.send(IPC.liveDeskSet, report),
   liveHostConfig: () => ipcRenderer.invoke(IPC.liveHostConfig) as Promise<LiveHostConfig | null>,

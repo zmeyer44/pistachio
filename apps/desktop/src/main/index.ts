@@ -2534,7 +2534,17 @@ async function createWindow(): Promise<void> {
       if (!auth.modelsAvailable() && !(await auth.ensureAnonymous())) throw new LiveUnavailableError("Pistachio couldn't reach your account. Try again in a moment.");
       return liveControl(auth.controlClient());
     },
-    browser: liveBrowser(browser, window, { contexts: () => groupContexts, shown: livePresence.shown, shortcuts: () => requireSettings().get().shortcuts }),
+    browser: liveBrowser(browser, window, {
+      contexts: () => groupContexts,
+      shown: livePresence.shown,
+      shortcuts: () => requireSettings().get().shortcuts,
+      // (The shell's page is the window's own: the terminal is drawn there.)
+      terminalInput: (input) => {
+        if (window.isDestroyed() || window.webContents.isDestroyed()) return false;
+        if (input.events.length > 0) window.webContents.send(IPC.liveTerminalInput, input);
+        return true;
+      },
+    }),
     openHost: () => {
       // (Its own preload: the room's members alone, never the shell's API — preload/live-host.ts.)
       const host = new LiveHostWindow({ parent: window, preload: join(currentDir, "../preload/live-host.cjs"), rendererUrl, rendererFile, onGone: () => liveShare?.hostGone() });
@@ -3500,6 +3510,16 @@ function installIpc(): void {
     if (!isShell(event.sender) || !Array.isArray(tabIds)) return [];
     return requireBrowser().captureTabStills(
       tabIds.filter((tabId): tabId is string => typeof tabId === "string"),
+      typeof width === "number" ? width : 0,
+    );
+  });
+  ipcMain.handle(IPC.deskStillPreview, (event, tabId: unknown, size: unknown, width: unknown) => {
+    if (!isShell(event.sender) || typeof tabId !== "string" || typeof size !== "object" || size === null) return null;
+    const { width: pageWidth, height: pageHeight } = size as Record<string, unknown>;
+    if (typeof pageWidth !== "number" || typeof pageHeight !== "number" || !Number.isFinite(pageWidth) || !Number.isFinite(pageHeight)) return null;
+    return requireBrowser().previewTabStill(
+      tabId,
+      { width: Math.min(8192, Math.max(1, Math.round(pageWidth))), height: Math.min(8192, Math.max(1, Math.round(pageHeight))) },
       typeof width === "number" ? width : 0,
     );
   });

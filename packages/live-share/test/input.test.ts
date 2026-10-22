@@ -163,6 +163,15 @@ describe("keys", () => {
     }
   });
 
+  it("says, with Alt held, whether the keyboard is a Mac's (Option types there, a PC's Alt is Meta) — and only then", () => {
+    expect(keyToLive(key("@", "KeyL", { altKey: true }), "keyDown", { mac: true })[0]).toEqual({ type: "keyDown", key: "@", code: "KeyL", modifiers: ["alt"], mac: true });
+    expect(keyToLive(key("b", "KeyB", { altKey: true }), "keyDown", { mac: false })[0]).toEqual({ type: "keyDown", key: "b", code: "KeyB", modifiers: ["alt"], mac: false });
+    expect(keyToLive(key("b", "KeyB"), "keyDown", { mac: true })[0]).toEqual({ type: "keyDown", key: "b", code: "KeyB", modifiers: [] });
+    expect(keyToLive(key("b", "KeyB", { altKey: true }), "keyDown")[0]).toEqual({ type: "keyDown", key: "b", code: "KeyB", modifiers: ["alt"] });
+    // A page's key down is the same to Chromium whatever it says.
+    expect(toElectron(keyToLive(key("@", "KeyL", { altKey: true }), "keyDown", { mac: true }))[0]).toEqual({ type: "keyDown", keyCode: "@", modifiers: ["alt"] });
+  });
+
   it("sends a ⌘ shortcut without typing it", () => {
     expect(toElectron(keyToLive(key("a", "KeyA", { metaKey: true }), "keyDown"))).toEqual([{ type: "keyDown", keyCode: "a", modifiers: ["meta"] }]);
     expect(toElectron(keyToLive(key("k", "KeyK", { ctrlKey: true }), "keyDown"))).toEqual([{ type: "keyDown", keyCode: "k", modifiers: ["control"] }]);
@@ -290,5 +299,11 @@ describe("text", () => {
     expect(events.map((e) => (e.type === "insertText" ? e.text : "")).join("")).toBe(text);
     expect(toElectron(events)).toEqual(events);
     expect(textToLive("")).toEqual([]);
+  });
+
+  it("never splits a CRLF: one line break, which a terminal's paste would make two", () => {
+    const text = `${"a".repeat(1999)}\r\nnext`;
+    const events = textToLive(text);
+    expect(events.map((e) => (e.type === "insertText" ? e.text : ""))).toEqual(["a".repeat(1999), "\r\nnext"]);
   });
 });

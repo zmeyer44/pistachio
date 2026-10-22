@@ -159,6 +159,116 @@ describe("a guest's keys on a window", () => {
   });
 });
 
+describe("a guest's clipboard chords", () => {
+  /** The input taken down and put up again over a terminal (or not), in a Mac's browser or another's. */
+  function over(terminal: boolean, mac: boolean): void {
+    detach();
+    detach = attachWindowInput({
+      page: page as unknown as HTMLElement,
+      keys: keys as unknown as HTMLTextAreaElement,
+      usable: () => true,
+      send: (event) => sent.push(event),
+      onKeyboard: () => undefined,
+      onReconnected: () => () => undefined,
+      terminal: () => terminal,
+      mac,
+    });
+  }
+  const press = (key: string, modifiers: Partial<typeof noModifiers>): Event => {
+    const event = keyEvent("keydown", key, `Key${key.toUpperCase()}`, modifiers);
+    keys.dispatchEvent(event);
+    return event;
+  };
+  const keyDowns = (): string[] => sent.filter((event) => event.type === "keyDown").map((event) => (event.type === "keyDown" ? event.key : ""));
+
+  it("never reach a page: copy and cut are swallowed, paste is left to the browser's paste", () => {
+    over(false, false);
+    keys.focus();
+    expect(press("c", { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(press("x", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(press("v", { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(keyDowns()).toEqual([]);
+  });
+
+  it("are a terminal's keys with Ctrl — Ctrl+C stops what runs — but for Ctrl+V where it pastes; ⌘'s stay the clipboard's", () => {
+    over(true, false);
+    keys.focus();
+    press("c", { ctrlKey: true });
+    press("x", { ctrlKey: true });
+    // Off a Mac, Ctrl+V pastes: the browser's paste brings the guest's text.
+    expect(press("v", { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press("c", { metaKey: true }).defaultPrevented).toBe(true);
+    expect(keyDowns()).toEqual(["c", "x"]);
+    expect(sent.find((event) => event.type === "keyDown")).toEqual({ type: "keyDown", key: "c", code: "KeyC", modifiers: ["control"] });
+    // On a Mac, Ctrl+V pastes nothing: it is the terminal's key too.
+    sent = [];
+    over(true, true);
+    keys.focus();
+    press("v", { ctrlKey: true });
+    expect(press("v", { metaKey: true }).defaultPrevented).toBe(false);
+    expect(keyDowns()).toEqual(["v"]);
+  });
+});
+
+describe("Insert", () => {
+  it("is a terminal's key (Vim's insert mode); on a page nothing — Blink's overtype, or a clipboard chord", () => {
+    for (const terminal of [false, true]) {
+      detach();
+      sent = [];
+      detach = attachWindowInput({
+        page: page as unknown as HTMLElement,
+        keys: keys as unknown as HTMLTextAreaElement,
+        usable: () => true,
+        send: (event) => sent.push(event),
+        onKeyboard: () => undefined,
+        onReconnected: () => () => undefined,
+        terminal: () => terminal,
+      });
+      keys.focus();
+      keys.dispatchEvent(keyEvent("keydown", "Insert", "Insert"));
+      // Ctrl+Insert copies: never a guest's, a terminal's neither.
+      keys.dispatchEvent(keyEvent("keydown", "Insert", "Insert", { ctrlKey: true }));
+      expect(sent.filter((event) => event.type === "keyDown")).toEqual(terminal ? [{ type: "keyDown", key: "Insert", code: "Insert", modifiers: [] }] : []);
+    }
+  });
+});
+
+describe("Escape", () => {
+  function over(terminal: boolean): void {
+    detach();
+    detach = attachWindowInput({
+      page: page as unknown as HTMLElement,
+      keys: keys as unknown as HTMLTextAreaElement,
+      usable: () => true,
+      send: (event) => sent.push(event),
+      onKeyboard: () => undefined,
+      onReconnected: () => () => undefined,
+      terminal: () => terminal,
+    });
+  }
+
+  it("gives a page's keyboard back, and goes nowhere", () => {
+    over(false);
+    keys.focus();
+    keys.dispatchEvent(keyEvent("keydown", "Escape", "Escape"));
+    expect(doc.activeElement).toBeNull();
+    expect(sent).toEqual([]);
+  });
+
+  it("is a terminal's program's (Vim's modes): ⇧Escape gives the keyboard back there", () => {
+    over(true);
+    keys.focus();
+    keys.dispatchEvent(keyEvent("keydown", "Escape", "Escape"));
+    expect(doc.activeElement).toBe(keys);
+    expect(sent).toEqual([{ type: "keyDown", key: "Escape", code: "Escape", modifiers: [] }]);
+    sent = [];
+    keys.dispatchEvent(keyEvent("keydown", "Escape", "Escape", { shiftKey: true }));
+    expect(doc.activeElement).toBeNull();
+    // (Nothing of it went, and what was down — Escape, its release missed — is let go.)
+    expect(sent).toEqual([{ type: "keyUp", key: "Escape", code: "Escape", modifiers: [] }]);
+  });
+});
+
 describe("after a drop", () => {
   it("lets go again of each key and the button let go of, whose release the host may have missed, but of nothing pressed again since", () => {
     page.dispatchEvent(pointerEvent("pointerdown", 400, 300));

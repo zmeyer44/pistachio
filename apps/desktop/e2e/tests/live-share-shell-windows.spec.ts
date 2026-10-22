@@ -65,6 +65,8 @@ interface DeskWindow {
   kind: string;
   track: string | null;
   paused: boolean;
+  controllable: boolean;
+  terminal?: boolean;
   page: { x: number; y: number; w: number; h: number };
 }
 
@@ -925,6 +927,130 @@ test.describe.serial("live share: windows the shell draws, live for guests", { t
     } finally {
       await greenDesk(shell, null);
     }
+  });
+
+  test("a guest the host lets use the terminal types into its shell as the host would — their keys, Ctrl+C, a paste — never ⌘, and only while let", async () => {
+    test.setTimeout(90_000);
+    const input = (event: Record<string, unknown>): Promise<void> =>
+      guest.evaluate(([windowId, body]) => (window as unknown as GuestWindow).guest.send("lv.input", { w: windowId, e: body }), [terminalTab, event] as const);
+    /** Where each character is on a US keyboard, as the guest's page names it, and whether it is shifted. */
+    const keyOf = (char: string): { key: string; code: string; shift: boolean } => {
+      const shifted: Record<string, string> = { $: "Digit4", "(": "Digit9", ")": "Digit0", "*": "Digit8", "+": "Equal" };
+      if (/[a-z]/u.test(char)) return { key: char, code: `Key${char.toUpperCase()}`, shift: false };
+      if (/[A-Z]/u.test(char)) return { key: char, code: `Key${char}`, shift: true };
+      if (/[0-9]/u.test(char)) return { key: char, code: `Digit${char}`, shift: false };
+      if (char === " ") return { key: char, code: "Space", shift: false };
+      if (char === "-") return { key: char, code: "Minus", shift: false };
+      return { key: char, code: shifted[char]!, shift: true };
+    };
+    /** As the guest's page sends a key typed (keyToLive): its key down, the character it types, its key up. */
+    const type = async (text: string): Promise<void> => {
+      for (const char of text) {
+        const { key, code, shift } = keyOf(char);
+        const modifiers = shift ? ["shift"] : [];
+        await input({ type: "keyDown", key, code, modifiers });
+        await input(shift ? { type: "char", text: char, modifiers: ["shift"] } : { type: "char", text: char });
+        await input({ type: "keyUp", key, code, modifiers });
+      }
+    };
+    const enter = async (): Promise<void> => {
+      await input({ type: "keyDown", key: "Enter", code: "Enter", modifiers: [] });
+      await input({ type: "char", text: "\r" });
+      await input({ type: "keyUp", key: "Enter", code: "Enter", modifiers: [] });
+    };
+    const chord = async (key: string, code: string, modifier: "control" | "meta"): Promise<void> => {
+      await input({ type: "keyDown", key, code, modifiers: [modifier] });
+      await input({ type: "keyUp", key, code, modifiers: [modifier] });
+    };
+    const text = (): Promise<string> => terminalText(shell, terminalId);
+    /** The guest asks to use the terminal: their word comes after everything they sent before it, the same way (§4). */
+    const ask = async (): Promise<string> => {
+      await guest.evaluate((windowId) => (window as unknown as GuestWindow).guest.send("lv.ask", { w: windowId }), terminalTab);
+      await expect.poll(async () => (await liveShare(shell)).asks.find((each) => each.windowId === terminalTab)?.identity, { timeout: 10_000 }).toBeTruthy();
+      return (await liveShare(shell)).asks.find((each) => each.windowId === terminalTab)!.identity;
+    };
+    await expect.poll(async () => (await deskWindow(terminalTab))?.terminal).toBe(true);
+
+    // ── 1. Not let use it: nothing they type reaches the shell; they may ask ─
+    expect((await deskWindow(terminalTab))?.controllable).toBe(false);
+    await type("echo NOT-LET");
+    await enter();
+    const identity = await ask();
+    expect(await text()).not.toMatch(/NOT-LET/u);
+
+    // ── 2. Let (the host's answer): a press puts the terminal in use, theirs to use, and their keys are its shell's ─
+    await command(shell, { type: "answerAsk", identity, windowId: terminalTab, allow: true });
+    await expect.poll(async () => (await deskWindow(terminalTab))?.controllable, { timeout: 10_000 }).toBe(true);
+    await input({ type: "mouseDown", x: 0.5, y: 0.5, button: "left", buttons: 1, clickCount: 1, modifiers: [] });
+    await input({ type: "mouseUp", x: 0.5, y: 0.5, button: "left", buttons: 0, clickCount: 1, modifiers: [] });
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(terminalTab);
+    await expect.poll(async () => (await liveShare(shell)).using.find((use) => use.windowId === terminalTab)?.identity).toBe(identity);
+    await type("echo GUEST-$((6*7))");
+    await enter();
+    await expect.poll(text, { timeout: 15_000 }).toMatch(/^GUEST-42$/mu);
+    expect(await text()).not.toMatch(/NOT-LET/u);
+
+    // ── 3. Ctrl+C ends what runs, as the host's would ─
+    await type("sleep 30");
+    await enter();
+    await expect.poll(text).toMatch(/sleep 30$/mu);
+    await chord("c", "KeyC", "control");
+    await type("echo AFTER-$((1+1))");
+    await enter();
+    await expect.poll(text, { timeout: 10_000 }).toMatch(/^AFTER-2$/mu);
+
+    // ── 4. A paste: bracketed — the shell runs none of it until Enter ─
+    await input({ type: "insertText", text: "echo PASTED-$((2*4))" });
+    await expect.poll(text).toMatch(/echo PASTED-\$\(\(2\*4\)\)$/mu);
+    expect(await text()).not.toMatch(/^PASTED-8$/mu);
+    await enter();
+    await expect.poll(text, { timeout: 10_000 }).toMatch(/^PASTED-8$/mu);
+
+    // ── 5. ⌘ is the app's, the host's: ⌘K clears nothing of theirs ─
+    await chord("k", "KeyK", "meta");
+    await type("echo STILL");
+    await enter();
+    await expect.poll(text, { timeout: 10_000 }).toMatch(/^STILL$/mu);
+    expect(await text()).toMatch(/^GUEST-42$/mu);
+    if (captureEnabled) {
+      await mkdir(screenshots, { recursive: true });
+      await shell.screenshot({ path: join(screenshots, "01-guest-typed-in-the-terminal.png") });
+    }
+
+    // ── 6. A PC's Alt is Meta (on this Mac xterm.js has no bytes for it: Option types here): Alt+B a word back, ESC b ─
+    await type("echo ab cd");
+    await input({ type: "keyDown", key: "b", code: "KeyB", modifiers: ["alt"] });
+    await input({ type: "char", text: "b" });
+    await input({ type: "keyUp", key: "b", code: "KeyB", modifiers: ["alt"] });
+    await type("X");
+    await enter();
+    await expect.poll(text, { timeout: 10_000 }).toMatch(/^ab Xcd$/mu);
+
+    // ── 7. Its picture held (the host's palette over the desk): nothing they type there goes in, though it stays theirs ─
+    await shell.keyboard.press("Meta+L");
+    await expect(shell.getByTestId("url-bar")).toBeVisible();
+    await expect.poll(async () => (await deskWindow(terminalTab))?.paused).toBe(true);
+    expect((await deskWindow(terminalTab))?.controllable).toBe(true);
+    await type("echo BLIND");
+    await enter();
+    // (A word in the chat after it, the same way: once main has it, it has had what they typed before.)
+    await guest.evaluate(() => (window as unknown as GuestWindow).guest.send("lv.chat", { id: "after-blind", text: "typed under the palette" }));
+    await expect.poll(async () => (await liveShare(shell)).chat.some((message) => message.id === "after-blind")).toBe(true);
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("url-bar")).toHaveCount(0);
+    await expect.poll(async () => (await deskWindow(terminalTab))?.paused).toBe(false);
+    await type("echo SEEN");
+    await enter();
+    await expect.poll(text, { timeout: 10_000 }).toMatch(/^SEEN$/mu);
+    expect(await text()).not.toMatch(/BLIND/u);
+
+    // ── 8. Taken back: what they type goes nowhere again ─
+    await command(shell, { type: "setControllable", windowId: terminalTab, allowed: false });
+    await expect.poll(async () => (await deskWindow(terminalTab))?.controllable).toBe(false);
+    await type("echo TAKEN-BACK");
+    await enter();
+    await command(shell, { type: "answerAsk", identity: await ask(), windowId: terminalTab, allow: false });
+    expect(await text()).not.toMatch(/TAKEN-BACK/u);
   });
 
   test("stopping ends it: the terminal's picture goes with the room", async () => {

@@ -21,7 +21,7 @@ function report(windows: LiveDeskReportWindow[], shellCovered = false): LiveDesk
   return { groupId: "g1", stage: { w: 1200, h: 800 }, stageInWindow: { x: 240, y: 12, w: 1200, h: 800 }, viewport: { w: 1440, h: 900 }, windows, settled: true, shellCovered, covers: [], mark: 1 };
 }
 
-const PAGE: LiveWindowFacts = { title: "GitHub", url: "https://github.com/acme/app/pull/12?token=secret", favicon: "https://github.com/favicon.ico", page: true };
+const PAGE: LiveWindowFacts = { title: "GitHub", url: "https://github.com/acme/app/pull/12?token=secret", favicon: "https://github.com/favicon.ico", page: true, terminal: false };
 
 function frameOf(windows: LiveDeskReportWindow[], options: { facts?: (id: string) => LiveWindowFacts | null; controllable?: string[]; hostPresent?: boolean; shellCovered?: boolean } = {}) {
   return deskFrame({
@@ -80,7 +80,7 @@ describe("deskFrame", () => {
 
   it("makes a window a page only when the shell says so and main knows it as a tab's own page", () => {
     const facts = (id: string): LiveWindowFacts | null =>
-      id === "home" ? { title: "Home", url: null, favicon: "data:image/svg+xml,%3Csvg/%3E", page: false } : id === "gone" ? null : PAGE;
+      id === "home" ? { title: "Home", url: null, favicon: "data:image/svg+xml,%3Csvg/%3E", page: false, terminal: false } : id === "gone" ? null : PAGE;
     const frame = frameOf([win("home"), win("file:doc", { kind: "shell" }), win("gone"), win("a")], { facts });
     expect(frame.windows.map((window) => [window.id, window.kind, window.track, window.paused])).toEqual([
       // A shell page the shell called a page is still the shell's: never captured as a tab — its picture is cut from the shell's.
@@ -119,6 +119,25 @@ describe("deskFrame", () => {
     const controllable = ["a", "b", "c", "e"];
     expect(frameOf(windows, { controllable }).windows.filter((window) => window.controllable).map((window) => window.id)).toEqual(["a"]);
     expect(frameOf(windows, { controllable, hostPresent: false }).windows.some((window) => window.controllable)).toBe(false);
+  });
+
+  it("lets guests use a terminal the shell draws, said to be one, as a page — and no other window of the shell's", () => {
+    const facts = (id: string): LiveWindowFacts | null =>
+      id === "term" || id === "term-mini"
+        ? { title: "~/pistachio", url: null, favicon: null, page: false, terminal: true }
+        : id === "home"
+          ? { title: "Home", url: null, favicon: null, page: false, terminal: false }
+          : PAGE;
+    const windows = [win("term", { kind: "shell" }), win("term-mini", { kind: "shell", minimized: true }), win("home", { kind: "shell" }), win("a")];
+    const frame = frameOf(windows, { facts, controllable: ["term", "term-mini", "home"] });
+    expect(frame.windows.map((window) => [window.id, window.kind, window.terminal, window.controllable])).toEqual([
+      ["term", "shell", true, true],
+      // (Minimized, it does not stream: no hands on it.)
+      ["term-mini", "shell", true, false],
+      ["home", "shell", undefined, false],
+      ["a", "page", undefined, false],
+    ]);
+    expect(frameOf(windows, { facts, controllable: ["term"], hostPresent: false }).windows[0]).toMatchObject({ terminal: true, controllable: false });
   });
 
   it("never lets guests use a window past the eight that stream: they see its frame alone, and no input reaches it", () => {

@@ -376,6 +376,8 @@ export interface LiveHostWindow {
   minimized: boolean;
   /** Guests may use it now (allowed, and the host is on the space). */
   controllable: boolean;
+  /** A terminal the shell draws: the one shell-drawn window guests may be let use. */
+  terminal?: boolean;
   /** `win:<id>` while the host app should stream it; null otherwise. */
   track: string | null;
   /**
@@ -529,6 +531,33 @@ export interface LiveHostApi {
   liveHostShellSource(): Promise<string | null>;
   /** The appearance settings (scheme, colours, radius) the window's theme is drawn in. */
   liveHostAppearance(): Promise<AppearanceSettings | null>;
+}
+
+/* ------------------------------ main → the shell ------------------------------ */
+
+/** A modifier held with a guest's key: the protocol's `LiveModifier`. */
+export type LiveKeyModifier = "shift" | "control" | "alt" | "meta";
+
+/**
+ * What of a guest's hands on a terminal they were let use reaches the
+ * terminal (docs/live-share.md §6.6): the protocol's key, text and wheel
+ * events (`LiveInputEvent`), restated, each as main's gate passed it. A
+ * press makes the window the one in use in main; the shell has nothing more
+ * to do with the pointer.
+ */
+export type LiveTerminalEvent =
+  | { type: "keyDown"; key: string; code: string; modifiers: LiveKeyModifier[]; repeat?: boolean; mac?: boolean }
+  | { type: "keyUp"; key: string; code: string; modifiers: LiveKeyModifier[] }
+  | { type: "char"; text: string; modifiers?: "shift"[] }
+  | { type: "insertText"; text: string }
+  | { type: "wheel"; x: number; y: number; dx: number; dy: number; modifiers: LiveKeyModifier[] };
+
+/** A guest's events for the terminal in a tab (main → the shell). */
+export interface LiveTerminalInput {
+  tabId: string;
+  /** The guest's identity: several may type into one terminal, and each key's character follows its own key down. */
+  from: string;
+  events: LiveTerminalEvent[];
 }
 
 /* --------------------------------- guards --------------------------------- */

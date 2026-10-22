@@ -40,6 +40,7 @@ import { HomePage } from "../home/HomePage";
 import { BriefPage } from "../reports/BriefPage";
 import { DRAWER_H, MASK_CARD_TOP, MASK_INSETS, WINDOW_INSETS, windowTipCover, type DeskEngine, type DeskWindowView } from "./desk-engine";
 import { DeskLivePicture } from "./DeskLivePicture";
+import { liveWindowEntries } from "../live/menu-entries";
 import { usePageEntries } from "./page-entries";
 import { FileGlyph } from "./files/FileGlyph";
 import { shellWindowParts, type DeskFileSubject, type ShellWindowSubject } from "./window-kinds";
@@ -332,6 +333,8 @@ export const DeskWindow = memo(function DeskWindow({
       if (tab !== null && !shellPage) rare.push({ label: "Edit mask", icon: <Crop aria-hidden="true" />, testId: "desk-edit-mask", onSelect: () => engine.editMask(tabId) });
     } else if (!mini) {
       if (tab !== null && !shellPage) rare.push(...pageEntries(tab));
+      // (A terminal, of the shell's pages, guests can be let use while its space is shared live.)
+      else if (tab !== null) rare.push(...liveWindowEntries(tab));
       for (const action of parts?.actions ?? []) rare.push({ label: action.label, icon: action.icon, testId: action.testId, onSelect: action.run });
       if (canMask)
         rare.push({

@@ -181,6 +181,12 @@ export const liveWindowSchema = z.object({
   minimized: z.boolean(),
   /** Guests may use it (and the host is present). */
   controllable: z.boolean(),
+  /**
+   * A terminal the shell draws (`kind: "shell"`): the one shell-drawn window
+   * the host can let guests use — their keys are its program's, as the host's
+   * are (§6.6). Optional so a frame without it still parses; absent, it is not.
+   */
+  terminal: z.boolean().optional(),
   /** "win:<id>" while streamed. */
   track: z.string().max(210).nullable(),
   /** Its picture is the last one, not live (shell kind while away). */
@@ -369,6 +375,13 @@ export const liveInputEventSchema = z.discriminatedUnion("type", [
     code: codeSchema,
     modifiers: modifiersSchema,
     repeat: z.boolean().optional(),
+    /**
+     * With Alt held: the guest's keyboard is a Mac's, whose Option types the
+     * character it makes (German Option+L's @), where a PC's Alt is Meta — a
+     * terminal tells them apart by it (§6.6). Absent from a page that does
+     * not say (one from before it), and without Alt.
+     */
+    mac: z.boolean().optional(),
   }),
   z.object({ type: z.literal("keyUp"), key: keySchema, code: codeSchema, modifiers: modifiersSchema }),
   z.object({ type: z.literal("char"), text: charTextSchema, modifiers: charModifiersSchema.optional() }),

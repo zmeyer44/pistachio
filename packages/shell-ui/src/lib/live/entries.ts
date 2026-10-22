@@ -16,6 +16,7 @@
 
 import type { LiveDrawing, LiveShareState } from "@pistachio/shell-contracts/live-share";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
+import { isTerminalUrl } from "@pistachio/shell-contracts/terminal";
 import type { SavedDesk } from "../desk/store";
 
 /** A share is under way: being made, live, or being ended. */
@@ -60,16 +61,16 @@ export function drawActionFor(state: LiveShareState, currentGroupId: string | nu
 }
 
 /**
- * Whether guests can be let use a window: not one the shell draws (home,
- * notes, a brief, a terminal: guests watch it, cut from the shell's own
- * picture, §6.6, but a guest's hands reach only a tab's page) nor a masked
- * one (its capture would be its whole page, what the mask cuts away
- * included: it is its frame alone to guests, not streamed, §3). A window is
- * masked as the desk saved it (`saved`: its space's arrangement, kept as it
- * changes).
+ * Whether guests can be let use a window: a tab's page, or a terminal —
+ * whose keys main hands the shell's terminal as typed (§6.6) — but no other
+ * window the shell draws (home, notes, a brief: guests watch it, cut from the
+ * shell's own picture, and no hands reach it) nor a masked one (its capture
+ * would be its whole page, what the mask cuts away included: it is its frame
+ * alone to guests, not streamed, §3). A window is masked as the desk saved
+ * it (`saved`: its space's arrangement, kept as it changes).
  */
 export function guestsCanBeLetUse(tab: { id: string; url: string }, saved: SavedDesk | undefined): boolean {
-  return !isShellPageUrl(tab.url) && saved?.windows.some((window) => window.tabId === tab.id && window.mask !== undefined) !== true;
+  return (!isShellPageUrl(tab.url) || isTerminalUrl(tab.url)) && saved?.windows.some((window) => window.tabId === tab.id && window.mask !== undefined) !== true;
 }
 
 /** Why a window cannot be handed to guests, as its row in the Live card says: they watch a window the shell draws; a masked one they do not see. */
@@ -88,9 +89,9 @@ export function notStreamingReason(state: LiveShareState, windowId: string): str
 }
 
 /**
- * A page window's *Guests can use this window*: offered while its space is
- * shared live and the window is a page of it guests can be let use (a tab's
- * own page, streamed — guests' hands reach only what main captures),
+ * A window's *Guests can use this window*: offered while its space is
+ * shared live and the window is one of it guests can be let use (a tab's own
+ * page or a terminal, streamed — guests' hands reach only what they see),
  * checked while guests may use it. One that does not stream now is offered
  * only to take back (the card says why it is not theirs to use).
  */

@@ -107,16 +107,18 @@ describe("a page window's Guests can use this window", () => {
     expect(notStreamingReason(live({ streamed: ["tab-1"] }), "tab-1")).toBeNull();
   });
 
-  it("is offered for a tab's own page, not for Home or another page the shell draws, nor for a masked window", () => {
+  it("is offered for a tab's own page and a terminal, not for Home or another page the shell draws, nor for a masked window", () => {
     const desk = { windows: [{ tabId: "tab-1", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } }, { tabId: "tab-2", rect: { x: 0.5, y: 0, w: 0.5, h: 0.5 }, mask: { x: 10, y: 10, width: 200, height: 120, pageWidth: 1000, pageHeight: 800 } }] };
     expect(guestsCanBeLetUse({ id: "tab-1", url: "https://github.com/" }, desk)).toBe(true);
     expect(guestsCanBeLetUse({ id: "tab-1", url: "https://github.com/" }, undefined)).toBe(true);
+    // A terminal: its keys are the shell's terminal's (§6.6).
+    expect(guestsCanBeLetUse({ id: "tab-4", url: "pistachio://terminal/0123456789ab" }, desk)).toBe(true);
     // Shell-drawn: guests watch it, cut from the shell's picture, but no hands reach it; masked: not streamed at all.
     expect(guestsCanBeLetUse({ id: "tab-3", url: "pistachio://home/" }, desk)).toBe(false);
     expect(guestsCanBeLetUse({ id: "tab-3", url: "pistachio://notes/" }, desk)).toBe(false);
     expect(guestsCanBeLetUse({ id: "tab-2", url: "https://mail.example.com/" }, desk)).toBe(false);
     // And the card says which.
-    expect(notUsableReason({ url: "pistachio://terminal/0123456789ab" })).toBe("Guests watch it; only you can use it");
+    expect(notUsableReason({ url: "pistachio://notes/" })).toBe("Guests watch it; only you can use it");
     expect(notUsableReason({ url: "https://mail.example.com/" })).toBe("Only on your screen for now");
   });
 

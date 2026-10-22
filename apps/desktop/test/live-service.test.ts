@@ -62,12 +62,15 @@ function setup(options: { control?: () => Promise<LiveControl>; hostName?: () =>
   const held: LiveHeldTab[][] = [];
   const heldGroups: Array<string | null> = [];
   const sent: Array<{ tabId: string; steps: readonly ElectronInputStep[] }> = [];
+  /** What went to the terminal "tty", in the shell. */
+  const typed: unknown[] = [];
   const activated: string[] = [];
   const browser: LiveBrowser = {
     space: (groupId) => (groupId === "g1" && !world.spaceGone ? { title: world.title, color: "#388cf0", spaceId: "p1" } : null),
     current: () => ({ spaceId: world.spaceId, groupId: world.current }),
     windowShown: () => world.shown,
-    facts: (windowId) => ({ title: windowId.toUpperCase(), url: `https://${windowId}.test/`, favicon: null, page: true }),
+    facts: (windowId) =>
+      windowId === "tty" ? { title: "~", url: null, favicon: null, page: false, terminal: true } : { title: windowId.toUpperCase(), url: `https://${windowId}.test/`, favicon: null, page: true, terminal: false },
     hold: (groupId, tabs) => {
       heldGroups.push(groupId);
       held.push([...tabs]);
@@ -79,6 +82,11 @@ function setup(options: { control?: () => Promise<LiveControl>; hostName?: () =>
     },
     activate: (tabId) => activated.push(tabId),
     isShortcut: () => false,
+    isTerminal: (tabId) => tabId === "tty",
+    sendTerminal: (_tabId, events) => {
+      typed.push(...events);
+      return true;
+    },
   };
   const host = { events: [] as LiveHostEvent[], interactive: [] as boolean[], drawing: [] as boolean[], opened: 0, closed: 0 };
   const states: LiveShareState[] = [];
@@ -106,7 +114,7 @@ function setup(options: { control?: () => Promise<LiveControl>; hostName?: () =>
     log: () => undefined,
   });
   const events = <T extends LiveHostEvent["type"]>(type: T) => host.events.filter((event): event is Extract<LiveHostEvent, { type: T }> => event.type === type);
-  return { service, control, world, held, heldGroups, sent, activated, host, states, rosters, clipboard, cards, events };
+  return { service, control, world, held, heldGroups, sent, typed, activated, host, states, rosters, clipboard, cards, events };
 }
 
 /** Lets the share's promises and its coalesced publish run. */
@@ -583,6 +591,50 @@ describe("LiveShareService", () => {
     await settle();
     expect(service.state.using).toEqual([]);
     expect(events("grant").at(-1)).toEqual({ type: "grant", windowId: "a", identity: null });
+  });
+
+  it("lets a guest's hands onto a terminal the host allowed, its keys to the shell — a shell window no tab page main captures or keeps awake", async () => {
+    const { service, sent, typed, activated, held, events } = await live();
+    service.setDesk(desk([win("a"), win("tty", { kind: "shell" })]));
+    service.hostReport({ type: "roster", guests: [ANN] });
+    await settle();
+    const tty = () => events("desk").at(-1)?.frame.windows.find((window) => window.id === "tty");
+    expect(tty()).toMatchObject({ kind: "shell", terminal: true, track: "win:tty", controllable: false });
+    expect(service.streams("tty")).toBe(false);
+    expect(held.at(-1)?.map((tab) => tab.tabId)).toEqual(["a"]);
+    const press = { type: "mouseDown", x: 0.5, y: 0.5, button: "left", buttons: 1, clickCount: 1, modifiers: [] };
+    const key = { type: "keyDown", key: "l", code: "KeyL", modifiers: [] };
+    // Not allowed yet: the guest asks, as for a page.
+    service.hostReport({ type: "input", from: ANN.identity, windowId: "tty", event: key });
+    service.hostReport({ type: "ask", from: ANN.identity, windowId: "tty" });
+    await settle();
+    expect(typed).toEqual([]);
+    expect(service.state.asks).toEqual([{ identity: ANN.identity, name: "Ann", windowId: "tty", at: expect.any(Number) }]);
+    await service.command({ type: "answerAsk", identity: ANN.identity, windowId: "tty", allow: true });
+    await vi.advanceTimersByTimeAsync(40);
+    expect(tty()?.controllable).toBe(true);
+    service.hostReport({ type: "input", from: ANN.identity, windowId: "tty", event: press });
+    service.hostReport({ type: "input", from: ANN.identity, windowId: "tty", event: key });
+    await settle();
+    expect(typed).toEqual([press, key]);
+    expect(sent).toEqual([]);
+    expect(activated).toEqual(["tty"]);
+    expect(service.state.using).toEqual([{ windowId: "tty", identity: ANN.identity }]);
+    // Still no tab page of the share's: never captured or held awake.
+    expect(service.streams("tty")).toBe(false);
+    expect(held.at(-1)?.map((tab) => tab.tabId)).toEqual(["a"]);
+    // Something of the shell's over the desk (the palette): its picture held, nothing typed there goes in, though it stays theirs.
+    service.setDesk(desk([win("a"), win("tty", { kind: "shell" })], true));
+    expect(tty()).toMatchObject({ paused: true, controllable: true });
+    service.hostReport({ type: "input", from: ANN.identity, windowId: "tty", event: { type: "char", text: "x" } });
+    await settle();
+    // (And what they held there is let go: the press, the key.)
+    expect(typed).toEqual([
+      press,
+      key,
+      { type: "mouseUp", x: 0.5, y: 0.5, button: "left", buttons: 0, clickCount: 1, modifiers: [] },
+      { type: "keyUp", key: "l", code: "KeyL", modifiers: [] },
+    ]);
   });
 
   it("lets go of what a guest holds down on a page as their hands come off it: taken back, the host away, removed, gone, the share over", async () => {

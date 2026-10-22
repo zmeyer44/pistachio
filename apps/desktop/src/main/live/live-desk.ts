@@ -18,6 +18,8 @@ export interface LiveWindowFacts {
   favicon: string | null;
   /** A tab's own page, which its native view shows and tab capture can stream; false for a shell-drawn window. */
   page: boolean;
+  /** A terminal the shell draws: guests let use it type into its shell (live-input.ts), its picture the shell's. */
+  terminal: boolean;
 }
 
 /** Window tracks at once (§3); past that, by the stack from the top, a window is its frame alone. */
@@ -144,8 +146,9 @@ export function deskFrame(inputs: DeskFrameInputs): Omit<LiveDeskFrame, "seq"> {
     focused: window.focused,
     minimized: window.minimized,
     // Only a window that streams (minimized, masked and those past the eight do not): a guest's hands reach only what they see,
-    // and the input gate lets nothing through to any other.
-    controllable: inputs.hostPresent && kind === "page" && inputs.controllable.has(window.id) && streamed.has(window.id),
+    // and the input gate lets nothing through to any other. Of the shell's windows, a terminal alone takes them (§6.6).
+    controllable: inputs.hostPresent && (kind === "page" || facts.terminal) && inputs.controllable.has(window.id) && streamed.has(window.id),
+    ...(kind === "shell" && facts.terminal ? { terminal: true } : {}),
     track: streamed.has(window.id) ? `win:${window.id}` : null,
     paused: pausedWindow(kind, window, streamed.has(window.id), { hostPresent: inputs.hostPresent, shellCovered: inputs.report.shellCovered }),
   }));

@@ -35,8 +35,10 @@ import {
   type TerminalEvent,
   type TerminalRequest,
 } from "@pistachio/shell-contracts/terminal";
+import type { LiveTerminalEvent } from "@pistachio/shell-contracts/live-share";
 import { nativeApi, shellApi } from "../../api";
 import { useAppStore } from "../../store";
+import { guestKeyDown, guestKeyEvent, guestKeyUp, guestPaste } from "./guest-keys";
 import { forgetTerminal, rememberTerminalFolder, takeTerminalStart } from "./places";
 import { terminalTheme } from "./theme";
 
@@ -58,6 +60,8 @@ const FONT_FAMILY = '"Geist Mono Variable", "Geist Mono", "SF Mono", Menlo, "Sym
 const RELEASE_MS = 2_000;
 /** Title changes are passed to the tab at most this often: some programs animate theirs. */
 const TITLE_MS = 250;
+/** Option types its character on a Mac (macOptionIsMeta off): a guest's Option key, too (guest-keys.ts). */
+const IS_MAC = typeof navigator !== "undefined" && /Mac/u.test(navigator.platform);
 
 function storedFontSize(): number {
   try {
@@ -115,6 +119,10 @@ export class TerminalSession {
   #prompts: IMarker[] = [];
   #title = "";
   #titleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The live share guests whose last key down said nothing itself: the character it types (their char, next) says it. */
+  readonly #guestTyped = new Set<string>();
+  /** A guest's wheel, short of a whole line yet. */
+  #guestWheel = 0;
   readonly #disposables: IDisposable[] = [];
 
   constructor(id: string, tabId: string) {
@@ -562,6 +570,64 @@ export class TerminalSession {
     }
   }
 
+  // ── A live share guest's hands (docs/live-share.md §6.6) ─────────────────
+
+  /**
+   * A live share guest's events on this terminal, each passed by main's
+   * input gate, said to the shell as the host's own keys would be: each key
+   * encoded by xterm.js (guest-keys.ts) — never sent through the page, whose
+   * key handlers are the host's — and the terminal's own keys (⌥← ⌥→, Enter
+   * once the shell stopped) theirs as they are the host's; but no ⌘ key: ⌘
+   * is the app's, and the app is the host's (find, ⌘K, the type size are
+   * not a guest's). A paste goes bracketed, for programs that ask; the wheel
+   * scrolls the scrollback.
+   */
+  guestInput(from: string, events: readonly LiveTerminalEvent[]): void {
+    for (const event of events) {
+      switch (event.type) {
+        case "keyDown":
+        case "keyUp":
+          this.#guestKey(from, event);
+          break;
+        case "char":
+          // (Each guest's own: two typing at once, one's keys come between the other's key down and its char.)
+          if (this.#guestTyped.delete(from)) this.term.input(event.text, true);
+          break;
+        case "insertText":
+          this.term.input(guestPaste(this.term, event.text), true);
+          break;
+        case "wheel":
+          this.#guestScroll(event.dy);
+          break;
+      }
+    }
+  }
+
+  #guestKey(from: string, key: Extract<LiveTerminalEvent, { type: "keyDown" | "keyUp" }>): void {
+    const down = key.type === "keyDown";
+    if (down) this.#guestTyped.delete(from);
+    const event = guestKeyEvent(down ? "keydown" : "keyup", key);
+    if (event.metaKey || !this.#key(event)) return;
+    if (!down) {
+      const release = guestKeyUp(this.term, event);
+      if (release !== null) this.term.input(release, true);
+      return;
+    }
+    const said = guestKeyDown(this.term, event, IS_MAC, key.type === "keyDown" ? key.mac : undefined);
+    if (said === "typed") this.#guestTyped.add(from);
+    else if ("page" in said) this.term.scrollLines(said.page * Math.max(1, this.term.rows - 1));
+    else this.term.input(said.data, true);
+  }
+
+  /** A guest's wheel: the scrollback, a line for each line's height it went (dy in CSS px, down positive). */
+  #guestScroll(dy: number): void {
+    const line = (this.term.options.fontSize ?? TERMINAL_FONT_SIZE.initial) * (this.term.options.lineHeight ?? 1);
+    this.#guestWheel += dy / line;
+    const lines = Math.trunc(this.#guestWheel);
+    this.#guestWheel -= lines;
+    if (lines !== 0) this.term.scrollLines(lines);
+  }
+
   // ── Find ────────────────────────────────────────────────────────────────
 
   openSearch(): void {
@@ -711,6 +777,13 @@ function wire(): void {
     if (session !== undefined) session.receive(event);
     // A terminal let go here (its Profile not in front) still says what its program asked to be noticed for.
     else if (event.type === "notice") noticeFor(tabOfTerminal.get(event.id) ?? null, event.text);
+  });
+  // A live share guest's keys on a terminal the host let them use, each passed by main's input gate: the tab's terminal,
+  // by its address (a duplicated tab shows the same one).
+  nativeApi()?.onLiveTerminalInput((input) => {
+    const tab = useAppStore.getState().snapshot?.tabs.find((candidate) => candidate.id === input.tabId);
+    const id = tab === undefined ? null : terminalUrlId(tab.url);
+    if (id !== null) sessions.get(id)?.guestInput(input.from, input.events);
   });
   // A terminal whose tab left the snapshot is let go (its shell runs on in the host until no tab names it).
   useAppStore.subscribe((state, previous) => {

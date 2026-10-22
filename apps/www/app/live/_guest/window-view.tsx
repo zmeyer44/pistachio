@@ -7,11 +7,13 @@
  *
  * A window the host lets guests use takes the guest's pointer and, once
  * pressed, their keyboard (a ring in the guest's colour says so); any other
- * page offers *Ask to use* on its tab. A window the shell draws on the Mac
- * (home, notes, a terminal) streams like a page — the host cuts its picture
- * out of the shell's — and is only watched; without a picture (a host that
- * does not cut one) it shows its frame and "Only on Zach's screen"; a page
- * past the eight that stream, "Not streamed". A picture held says "Paused".
+ * page, or terminal, offers *Ask to use* on its tab. A window the shell draws
+ * on the Mac (home, notes, a terminal) streams like a page — the host cuts
+ * its picture out of the shell's — and is only watched, but for a terminal,
+ * which the host can let guests type into as into a page (§6.6); without a
+ * picture (a host that does not cut one) it shows its frame and "Only on
+ * Zach's screen"; a page past the eight that stream, "Not streamed". A
+ * picture held says "Paused".
  * Double-clicking the tab brings the window up to fill the view.
  */
 
@@ -64,8 +66,10 @@ export function WindowView({ window, order, room, controller, hostName, hostPres
   const [keyboard, setKeyboard] = useState(false);
   const [painted, setPainted] = useState(false);
   const usableRef = useRef(usable);
+  const terminalRef = useRef(window.terminal === true);
   useLayoutEffect(() => {
     usableRef.current = usable;
+    terminalRef.current = window.terminal === true;
   });
 
   const id = window.id;
@@ -92,15 +96,17 @@ export function WindowView({ window, order, room, controller, hostName, hostPres
     };
   }, [room, id, streamed]);
 
-  // The guest's hands on it.
+  // The guest's hands on it: a page, or a terminal (its keys the terminal's on the Mac).
+  const handed = window.kind === "page" || window.terminal === true;
   useEffect(() => {
     const page = pageRef.current;
     const keys = keysRef.current;
-    if (page === null || keys === null || window.kind !== "page") return;
+    if (page === null || keys === null || !handed) return;
     return attachWindowInput({
       page,
       keys,
       usable: () => usableRef.current(id),
+      terminal: () => terminalRef.current,
       send: (event: LiveInputEvent) => {
         // To the host alone, as the room sends every lv.input: no other guest reads these keys (§4).
         room.send("lv.input", { w: id, e: event }).catch(() => undefined);
@@ -111,10 +117,10 @@ export function WindowView({ window, order, room, controller, hostName, hostPres
       // a change of who is in too; the releases sent again then are of nothing main holds, and it ignores them.)
       onReconnected: (listener) => room.onMessage("lv.guests", listener),
     });
-  }, [room, id, window.kind]);
+  }, [room, id, handed]);
 
   const canUse = window.controllable && hostPresent;
-  const canAsk = window.kind === "page" && !window.controllable && hostPresent && streamed;
+  const canAsk = handed && !window.controllable && hostPresent && streamed;
   const usedBy = user !== null && !user.isMe ? user : null;
   const ringColor = usedBy?.color ?? myColor;
 

@@ -238,8 +238,9 @@ function AskRow({ ask, guest, window }: { ask: LiveWindowAsk; guest: LiveGuest |
 
 /**
  * One of the space's windows with *Guests can use*. A page the shell draws
- * (home, notes, a brief, a terminal) guests watch but cannot use, and a
- * masked window is on the host's screen alone (docs/live-share.md §3, §6.6):
+ * (home, notes, a brief) guests watch but cannot use — a terminal they can,
+ * as a page (its keys the terminal's) — and a masked window is on the host's
+ * screen alone (docs/live-share.md §3, §6.6):
  * nothing to hand over, and the row says which under the window's name. A
  * page that does not stream now (minimized, or under the eight that do) can
  * be handed over for when it does, and the row says why it is not yet.

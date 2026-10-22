@@ -312,6 +312,34 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     await chooseHome(shell);
   });
 
+  test("a space's pages asleep are woken for its card's picture, one at a time, and put back to sleep", async () => {
+    await chooseHome(shell);
+    await settled(shell, app);
+    const research = (await snapshot(shell)).tabGroups.find((group) => group.id === "ds-research")!.tabIds;
+    for (const tabId of research) await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.suspendTab(id), tabId);
+    const asleep = async (): Promise<number> => (await snapshot(shell)).tabs.filter((tab) => research.includes(tab.id) && tab.lifecycle === "suspended").length;
+    await expect.poll(asleep).toBe(research.length);
+    // Every page main loads from here on.
+    await app.evaluate(({ app: electron }) => {
+      const woke: string[] = [];
+      (globalThis as unknown as { __woke: string[] }).__woke = woke;
+      electron.on("web-contents-created", (_event, contents) => contents.once("did-finish-load", () => woke.push(contents.getURL())));
+    });
+    const card = shell.locator('[data-testid="rail-space-card"][data-group-id="ds-research"]');
+    await railSpace(shell, "ds-research").hover();
+    await expect(card).toHaveAttribute("data-shown", "", { timeout: 5_000 });
+    // Its page pictured, not its icon — woken for it…
+    await expect(card.locator(".rail-space-card-still").first()).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(() => app.evaluate((_electron, urls) => (globalThis as unknown as { __woke: string[] }).__woke.filter((url) => urls.includes(url)).length, [SOUTH, EAST]))
+      .toBeGreaterThan(0);
+    // …and asleep again.
+    await expect.poll(asleep, { timeout: 15_000 }).toBe(research.length);
+    await capture(app, shell, "04d-rail-card-asleep.png");
+    await awayFromColumn();
+    await expect(card).toHaveCount(0);
+  });
+
   test("a space's tile rested on brings up its card a moment later — its desk drawn small, its name and count — and leaving the tile takes it away", async () => {
     await chooseHome(shell);
     await settled(shell, app);
@@ -852,6 +880,68 @@ test.describe.serial("the three ways to stand", { tag: ["@sidebar", "@desk"] }, 
     await expect.poll(() => buttonsNow(app)).toBe(true);
     await settled(shell, app);
     expect(Math.abs((await box(shell, ".desk-stage")).x - WHOLE_W)).toBeLessThan(2);
+  });
+
+  test("the rail alone: a space's card lies over the only page in view, so a page asleep is woken for its picture and drawn once the card is gone — there for the next look — and put back to sleep; its space chosen meanwhile, the page is the person's, heard", async () => {
+    test.setTimeout(60_000);
+    // Two spaces of two pages asleep; Home's one page the whole desk.
+    const [north, west, late, vendor, invoices] = (await openTabs(shell, [NORTH, WEST, LATE, VENDOR, INVOICES])) as [string, string, string, string, string];
+    await createGroup(shell, "ds-asleep", [north, west], "Asleep", "blue");
+    await createGroup(shell, "ds-chosen", [late, vendor], "Chosen", "green");
+    await selectTab(shell, invoices);
+    await shell.keyboard.press("Meta+s");
+    await expect(shell.locator(SLOT)).toHaveAttribute("data-mode", "rail");
+    await onDesk();
+    await settled(shell, app);
+    for (const tabId of [north, west, late, vendor]) await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.suspendTab(id), tabId);
+    const asleep = async (tabIds = [north, west]): Promise<number> =>
+      (await snapshot(shell)).tabs.filter((tab) => tabIds.includes(tab.id) && tab.lifecycle === "suspended").length;
+    await expect.poll(() => asleep([north, west, late, vendor])).toBe(4);
+    await app.evaluate(({ app: electron }) => {
+      const woke: string[] = [];
+      (globalThis as unknown as { __woke: string[] }).__woke = woke;
+      electron.on("web-contents-created", (_event, contents) => contents.once("did-finish-load", () => woke.push(contents.getURL())));
+    });
+    const woken = (urls = [NORTH, WEST]): Promise<string[]> =>
+      app.evaluate((_electron, among) => (globalThis as unknown as { __woke: string[] }).__woke.filter((url) => among.includes(url)), urls);
+    const card = shell.locator('[data-testid="rail-space-card"][data-group-id="ds-asleep"]');
+    const restOnTile = async (groupId = "ds-asleep"): Promise<{ x: number; y: number }> => {
+      const tile = center(await box(shell, groupSelector(groupId)));
+      await pointerAt(app, tile.x, tile.y);
+      await shell.mouse.move(tile.x, tile.y);
+      await expect(shell.locator(`[data-testid="rail-space-card"][data-group-id="${groupId}"]`)).toHaveAttribute("data-shown", "", { timeout: 5_000 });
+      return tile;
+    };
+
+    // ── 1. The card over the page in use, whose view is down for it: a page woken now has nothing to be drawn beneath ─
+    await restOnTile();
+    const [over, page] = [await box(shell, '[data-testid="rail-space-card"]'), await box(shell, windowSelector(invoices))];
+    expect(over.x + over.width).toBeGreaterThan(page.x);
+    await expect.poll(async () => (await woken()).length, { timeout: 20_000 }).toBeGreaterThan(0);
+    // ── 2. The card gone, the page back: the woken page is drawn beneath it, pictured, and asleep again ─
+    await onDesk();
+    await expect(card).toHaveCount(0);
+    await expect.poll(asleep, { timeout: 20_000 }).toBe(2);
+    // ── 3. The next look: its picture at once, not its icon ─
+    await restOnTile();
+    await expect(card.locator(".rail-space-card-still").first()).toBeVisible({ timeout: 2_000 });
+    await capture(app, shell, "13-rail-card-asleep.png");
+    await onDesk();
+    await expect(card).toHaveCount(0);
+
+    // ── 4. Another space's card: its page woken, silent from the start, waits to be drawn — and the space is chosen
+    //       meanwhile: the person's page now, heard at once and left awake ─
+    const tile = await restOnTile("ds-chosen");
+    await expect.poll(async () => (await woken([LATE, VENDOR])).length, { timeout: 20_000 }).toBeGreaterThan(0);
+    const [url] = await woken([LATE, VENDOR]);
+    const muted = (): Promise<boolean | null> =>
+      app.evaluate(({ webContents }, address) => webContents.getAllWebContents().find((contents) => contents.getURL() === address)?.isAudioMuted() ?? null, url!);
+    expect(await muted()).toBe(true);
+    await shell.mouse.click(tile.x, tile.y);
+    await expect(railSpace(shell, "ds-chosen")).toHaveAttribute("aria-current", "true");
+    await expect.poll(muted, { timeout: 2_000 }).toBe(false);
+    await onDesk();
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === (url === LATE ? late : vendor))?.lifecycle).toBe("live");
   });
 });
 

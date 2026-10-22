@@ -772,6 +772,12 @@ const DESK_RELEASE_SETTLE_MS = 250;
 const STUCK_DRAG_SETTLE_MS = 250;
 /** Drags stay refused this long after a press main sent a page has come up (#guardSyntheticDrags). */
 const SYNTHETIC_DRAG_TAIL_MS = 1000;
+/** How long a page asleep may take to wake and load for the rail card's picture of it (previewTabStill). */
+const PREVIEW_WAKE_MS = 8_000;
+/** How long a page woken for its picture waits for a page in view to be drawn beneath (#previewCover): the card itself may be over the only one. */
+const PREVIEW_COVER_WAIT_MS = 10_000;
+/** A window other than the one in use hides a page woken for its picture only if the page keeps at least this share of its size beneath it. */
+const PREVIEW_MIN_FIT = 0.5;
 /** Who sends a page the presses whose drags are refused: a live share guest, or a masked window (#forwardMaskedMouse). */
 type SyntheticDragSource = "live-share" | "mask";
 /** debugger-hold.ts holders: the moment a stuck drag is ended, and a page taking input main sends it. */
@@ -1084,6 +1090,8 @@ export class BrowserController {
   readonly #endingDrags = new Set<number>();
   /** When each page last stopped answering (`unresponsive`), for the log's "answered again after". */
   readonly #unresponsiveSince = new Map<WebContents, number>();
+  /** The rail card's pictures of pages asleep, one wake at a time (previewTabStill). */
+  #previewing: Promise<void> = Promise.resolve();
   /** The desk window being woken from the queue, until it has painted. */
   #deskWaking: string | null = null;
   readonly #recentlyClosedTabs: RecentlyClosedTabInfo[] = [];
@@ -2170,7 +2178,7 @@ export class BrowserController {
 
   async #ensureLiveTab(
     tabId: string,
-    options: { awaitLoad?: boolean } = {},
+    options: { awaitLoad?: boolean; muted?: boolean } = {},
   ): Promise<ManagedTab> {
     const live = this.#tabs.get(tabId);
     if (live !== undefined) return live;
@@ -2191,6 +2199,7 @@ export class BrowserController {
       restoredInfo: dormant.info,
       history: dormant.history,
       awaitLoad: options.awaitLoad,
+      muted: options.muted,
     }).then(() => this.#requireTab(tabId));
     this.#wakeInFlight.set(tabId, wake);
     try {
@@ -2299,12 +2308,17 @@ export class BrowserController {
     }
   }
 
-  async suspendTab(tabId: string): Promise<void> {
+  /**
+   * `evenPlaying`: what the page plays does not keep it awake — a page woken
+   * for its picture alone (#sleepPreviewed), muted, plays only what it
+   * started itself.
+   */
+  async suspendTab(tabId: string, options: { evenPlaying?: boolean } = {}): Promise<void> {
     const tab = this.#tabs.get(tabId);
     if (
       tab === undefined ||
       tab.info.kind !== "human" ||
-      (this.#visibleTabIds().includes(tabId) || this.#media.has(tabId)) ||
+      (this.#visibleTabIds().includes(tabId) || (this.#media.has(tabId) && options.evenPlaying !== true)) ||
       // Sleep would end the share without a word to the people watching it.
       this.#screenShares.has(tabId) ||
       // A desk shows several pages besides the active one: none of them is
@@ -4320,6 +4334,8 @@ export class BrowserController {
      * caller, which needs the awaited load to happen.
      */
     awaitLoad?: boolean;
+    /** Silent from before its page loads: a page woken for its picture alone (previewTabStill). */
+    muted?: boolean;
     /**
      * Opened beside this tab (a duplicate): straight after it in the row,
      * and in its tab group beside it — before it is ever shown, so it is
@@ -4441,7 +4457,7 @@ export class BrowserController {
     // desk finds it, and nothing can fall back on it (#spaceTabIds) — not
     // even an empty window. Nor is it heard.
     const hidden = info.hiddenFor !== undefined;
-    if (hidden) view.webContents.setAudioMuted(true);
+    if (hidden || options.muted === true) view.webContents.setAudioMuted(true);
     if (!hidden && !this.#tabOrder.includes(id)) this.#tabOrder.push(id);
     if (options.beside !== undefined) this.#setBeside(id, options.beside);
     else if (!hidden && options.restoredInfo === undefined && options.place !== undefined) options.place(id);
@@ -9212,6 +9228,150 @@ export class BrowserController {
   }
 
   /**
+   * A picture of a page asleep, for its space's tile's card on the rail
+   * (RailSpaceCard), at most `width` device px wide: the tab is woken for
+   * it (muted before its page loads), given its window's page size (`size`,
+   * CSS px) by being drawn for a moment beneath a page in view — as a live
+   * share's held pages are (#layOutHeldPage), scaled down to fit under it;
+   * once one is up, if the card is over the only one (#previewCover) —
+   * captured, and put back to sleep, so a look at a space never keeps its
+   * pages awake on this Mac. One at a time, whoever asks (#previewing). Null
+   * when it is awake already (captureTabStills is for those), will not wake
+   * or lay out in time, or has nothing to picture. (Until 2026-10-21 the
+   * card drew a sleeping page as its icon.)
+   */
+  previewTabStill(tabId: string, size: { width: number; height: number }, width: number): Promise<PaneStill | null> {
+    const run = this.#previewing.then(() => this.#previewSleepingTab(tabId, size, width));
+    this.#previewing = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run.catch(() => null);
+  }
+
+  async #previewSleepingTab(tabId: string, size: { width: number; height: number }, width: number): Promise<PaneStill | null> {
+    const dormant = this.#dormantTabs.get(tabId);
+    // (One waking already is someone else's, and a window on the desk asleep — minimized — the desk's: both stay as they are.)
+    if (
+      dormant === undefined ||
+      this.#wakeInFlight.has(tabId) ||
+      this.#previewTakenUp(tabId) ||
+      dormant.info.spaceId !== this.activeSpaceId() ||
+      isShellPageUrl(dormant.info.url)
+    )
+      return null;
+    const limit = Math.max(64, Math.min(MAX_DESK_STILL_WIDTH, Math.round(Number.isFinite(width) ? width : 0)));
+    // Its view at once, its page loading after (so the person choosing it meanwhile waits for nothing).
+    const waking = this.#ensureLiveTab(tabId, { awaitLoad: false, muted: true });
+    const loaded = waking.then(async (up) => {
+      if (up.pendingLoad !== null) await up.pendingLoad;
+      return up;
+    });
+    // Taken up meanwhile — chosen, on the desk, held — it is the person's: heard at once, and the picture let go.
+    let takenUp = false;
+    let letGo: (value: null) => void = () => undefined;
+    const lettingGo = new Promise<null>((done) => (letGo = done));
+    const watch = setInterval(() => {
+      if (!this.#previewTakenUp(tabId)) return;
+      takenUp = true;
+      clearInterval(watch);
+      const up = this.#tabs.get(tabId);
+      if (up !== undefined && !up.view.webContents.isDestroyed()) up.view.webContents.setAudioMuted(false);
+      letGo(null);
+    }, 100);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const tab = await Promise.race([loaded.catch(() => null), lettingGo, new Promise<null>((done) => (timer = setTimeout(() => done(null), PREVIEW_WAKE_MS)))]).finally(
+        () => clearTimeout(timer),
+      );
+      if (tab === null) {
+        // (Not up in time, its page failed, or taken up: back to sleep now if it may — its view is made before its page
+        // loads — or once it is made.)
+        const late = this.#tabs.get(tabId);
+        if (late !== undefined) await this.#sleepPreviewed(late);
+        else void waking.then((up) => this.#sleepPreviewed(up)).catch(() => undefined);
+        return null;
+      }
+      try {
+        const contents = tab.view.webContents;
+        // Drawn for a moment beneath a page in view, at its window's size scaled to fit — once one is up.
+        let under = this.#previewCover(tab, size);
+        for (const until = Date.now() + PREVIEW_COVER_WAIT_MS; under === null && Date.now() < until; under = this.#previewCover(tab, size)) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          if (takenUp || contents.isDestroyed() || this.#tabs.get(tabId) !== tab) return null;
+        }
+        if (under === null || takenUp || contents.isDestroyed()) return null;
+        const laid = await this.#layOutHeldPage(tab, under.size, under.cover);
+        if (!this.#liveHeld.has(tabId)) this.#liveUnlaid.delete(tabId);
+        if (!laid || contents.isDestroyed()) return null;
+        const taken = await contents.capturePage();
+        if (taken.isEmpty()) return null;
+        const scale = this.#captureScale();
+        const pictured = taken.getSize();
+        return {
+          tabId,
+          dataUrl: `data:image/jpeg;base64,${fitStillToView(taken, limit).toJPEG(84).toString("base64")}`,
+          width: Math.round(pictured.width / scale),
+          height: Math.round(pictured.height / scale),
+        };
+      } finally {
+        await this.#sleepPreviewed(tab);
+      }
+    } finally {
+      clearInterval(watch);
+    }
+  }
+
+  /** The person has a page woken for its picture now (suspendTab's reasons to keep a page awake, but for what it plays). */
+  #previewTakenUp(tabId: string): boolean {
+    return (
+      this.#visibleTabIds().includes(tabId) ||
+      this.#layout.views.some((view) => view.tabId === tabId) ||
+      this.#desk?.tabIds.includes(tabId) === true ||
+      this.#liveHeld.has(tabId) ||
+      this.#screenShares.has(tabId)
+    );
+  }
+
+  /**
+   * The page in view a page woken for its picture is drawn beneath
+   * (#layOutHeldPage), and the size it is drawn at there — its window's,
+   * scaled down to fit inside the cover's box: the window in use, or else
+   * the desk's window it fits best, if it keeps half its size there
+   * (PREVIEW_MIN_FIT). Null while none is up — a card of the shell's over
+   * the desk takes the pages under it down, as the rail card itself does
+   * over a filled window.
+   */
+  #previewCover(tab: ManagedTab, size: { width: number; height: number }): { cover: ManagedTab; size: { width: number; height: number } } | null {
+    let best: { cover: ManagedTab; fit: number } | null = null;
+    for (const tabId of new Set([this.#activeTabId, ...this.#layout.views.map((view) => view.tabId)])) {
+      const cover = tabId === null ? undefined : this.#tabs.get(tabId);
+      if (cover === undefined || cover === tab || !cover.view.getVisible() || this.#deskMasks.has(cover.info.id)) continue;
+      const box = cover.view.getBounds();
+      const fit = Math.min(1, box.width / Math.max(1, size.width), box.height / Math.max(1, size.height));
+      if (box.width < 1 || box.height < 1 || (tabId !== this.#activeTabId && fit < PREVIEW_MIN_FIT)) continue;
+      if (tabId === this.#activeTabId) {
+        best = { cover, fit };
+        break;
+      }
+      if (best === null || fit > best.fit) best = { cover, fit };
+    }
+    if (best === null) return null;
+    return { cover: best.cover, size: { width: Math.max(1, Math.floor(size.width * best.fit)), height: Math.max(1, Math.floor(size.height * best.fit)) } };
+  }
+
+  /**
+   * A page woken for its picture alone goes back to sleep — whatever it
+   * plays, muted, it started itself — unless it was taken up meanwhile
+   * (suspendTab leaves a page shown, on the desk, or held); then it is heard.
+   */
+  async #sleepPreviewed(tab: ManagedTab): Promise<void> {
+    if (this.#tabs.get(tab.info.id) !== tab) return;
+    await this.suspendTab(tab.info.id, { evenPlaying: true });
+    if (this.#tabs.get(tab.info.id) === tab && !tab.view.webContents.isDestroyed()) tab.view.webContents.setAudioMuted(false);
+  }
+
+  /**
    * Stills of these tabs' pages for the desk's drawn windows and its
    * inventory, shown or hidden — capturePage renders a hidden view for the
    * capture, as the tab switcher's previews do. At most `width` device px
@@ -9366,7 +9526,9 @@ export class BrowserController {
    * until the page has the size (it lays out at once), then hidden again,
    * after which it keeps that size, and its pictures, while hidden. Its
    * capture is then taken afresh (onPageReplaced). With no such view to draw
-   * it under, or one too small to hide it, it is left as it is.
+   * it under, or one too small to hide it, it is left as it is. (`under`:
+   * another view in sight to draw it beneath, for a page woken for its
+   * picture — #previewCover.) Whether the page is at its size.
    *
    * A hold comes with every change of any streamed window's size (each frame
    * of a resize drag), so a page known to be at its size — drawn at it here,
@@ -9376,14 +9538,14 @@ export class BrowserController {
    * would never answer), and a renderer that does not answer within a second
    * is taken as not at it.
    */
-  async #layOutHeldPage(tab: ManagedTab, size: { width: number; height: number }): Promise<void> {
+  async #layOutHeldPage(tab: ManagedTab, size: { width: number; height: number }, under?: ManagedTab): Promise<boolean> {
     const contents = tab.view.webContents;
-    if (contents.isDestroyed() || tab.view.getVisible() || size.width < 1 || size.height < 1) return;
+    if (contents.isDestroyed() || tab.view.getVisible() || size.width < 1 || size.height < 1) return false;
     const tabId = tab.info.id;
     const drawnAt = `${String(size.width)}x${String(size.height)}`;
     if (this.#liveDrawn.get(contents) === drawnAt) {
       this.#liveUnlaid.delete(tabId);
-      return;
+      return true;
     }
     // A page zoomed for its window lays out at its zoom's box, whatever it was drawn at: it is drawn once at each size.
     const zoom = this.#deskZooms.get(tabId);
@@ -9397,18 +9559,18 @@ export class BrowserController {
     if (!zoomed && (await atSize())) {
       this.#liveUnlaid.delete(tabId);
       if (!contents.isDestroyed()) this.#liveDrawn.set(contents, drawnAt);
-      return;
+      return true;
     }
-    const cover = this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
+    const cover = under ?? (this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId));
     const box = cover?.view.getBounds();
     const children = this.#window.contentView.children;
     const at = cover === undefined ? -1 : children.indexOf(cover.view);
     if (cover === undefined || box === undefined || cover === tab || !cover.view.getVisible() || this.#deskMasks.has(cover.info.id) || at < 0 || size.width > box.width || size.height > box.height) {
       // (The windows under a cover of the shell's — a card, a menu — are stills, their views down: tried again once one is up.)
       this.#liveUnlaid.set(tabId, this.#liveCover());
-      return;
+      return false;
     }
-    if (tab.view.getVisible()) return;
+    if (tab.view.getVisible()) return false;
     // (Re-adding takes it out first: a view above the cover, or out of the window, lands in its slot, directly beneath it.)
     const own = children.indexOf(tab.view);
     if (own === -1 || own > at) this.#window.contentView.addChildView(tab.view, at);
@@ -9421,10 +9583,11 @@ export class BrowserController {
       // The layout decides what is shown: the person may have raised this very window meanwhile.
       this.#applyLayout();
     }
-    if (contents.isDestroyed() || this.#tabs.get(tabId) !== tab) return;
+    if (contents.isDestroyed() || this.#tabs.get(tabId) !== tab) return false;
     this.#liveUnlaid.delete(tabId);
     this.#liveDrawn.set(contents, drawnAt);
     this.#hooks.onPageReplaced?.(tabId);
+    return true;
   }
 
   /** The view a held page would be drawn under now — the one the person is looking at, and its size — or "" when none is up. */

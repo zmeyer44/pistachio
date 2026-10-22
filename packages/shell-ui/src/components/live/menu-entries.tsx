@@ -28,7 +28,7 @@ export function liveSpaceEntries(groupId: string): MenuEntry[] {
   });
 }
 
-/** A page window's *Guests can use this window* on its ⋯, while its space is shared live (none otherwise). */
+/** A page's or a terminal's window's *Guests can use this window* on its ⋯, while its space is shared live (none otherwise). */
 export function liveWindowEntries(tab: BrowserTabInfo): MenuEntry[] {
   const state = liveShareNow();
   const shared = deskGroups(useAppStore.getState().snapshot).find((group) => group.id === state.groupId);

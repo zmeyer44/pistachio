@@ -4302,7 +4302,8 @@ body:not([data-chrome-view])::after {
     0 0 0 1.5px var(--tg-solid),
     0 1px 3px rgb(0 0 0 / 0.12);
 }
-.rail-space-card-window img {
+/* (The page's picture alone: a page with none yet shows its icon at its own size, in the middle.) */
+.rail-space-card-still {
   display: block;
   width: 100%;
   height: 100%;
