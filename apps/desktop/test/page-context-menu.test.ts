@@ -198,6 +198,21 @@ describe("buildPageContextMenu", () => {
     expect(shape(script)).not.toContain("Open Link in New Tab");
   });
 
+  it("gives a local file's link to a file beside it the link items but a Glance; a web page's file link none", () => {
+    const run = actions();
+    const link = "file:///Users/someone/site/next.html";
+    const page = "file:///Users/someone/site/index.html";
+    const menu = buildPageContextMenu(params({ linkURL: link, pageURL: page, frameURL: page }), state({ fileLinks: true }), run);
+    expect(shape(menu)).toEqual(["Open Link in New Tab", "---", "Save Link As…", "Copy Link Address", "---", "Inspect"]);
+    click(menu, "Open Link in New Tab");
+    click(menu, "Copy Link Address");
+    expect(run.openInNewTab).toHaveBeenCalledWith(link);
+    expect(run.copyText).toHaveBeenCalledWith(link);
+    const web = buildPageContextMenu(params({ linkURL: link }), state(), run);
+    expect(shape(web)).not.toContain("Open Link in New Tab");
+    expect(shape(web)).not.toContain("Copy Link Address");
+  });
+
   it("gives an image Chrome's image items: open, save, copy, copy address, search", () => {
     const run = actions();
     const src = "https://cdn.example.com/photo.jpg";

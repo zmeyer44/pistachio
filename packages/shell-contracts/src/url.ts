@@ -27,6 +27,20 @@ export function isAllowedNavigation(value: string): boolean {
 }
 
 /**
+ * A local file's address: never a navigation a page or a typed address may
+ * make (isAllowedNavigation). The desktop loads one only where the person
+ * put it — a file macOS asked it to open, that tab's own copies, a file's
+ * links to the files beside it — and keeps it out of what other devices see.
+ */
+export function isLocalFileUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "file:";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Schemes the browser itself answers, or that must never leave it. None of
  * them is a hand-off to another app, whatever the system has registered.
  */

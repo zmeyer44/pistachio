@@ -5,6 +5,7 @@ import {
   sameBackgroundChoice,
   type LiveCommand,
   type LiveDeskReport,
+  type LiveDeviceKind,
   type LiveDrawing,
   type LiveEndReason,
   type LiveGuest,
@@ -19,6 +20,16 @@ import { describeLiveError, liveShareEnded, type LiveControl, type LiveShareSett
 import { LiveCursorPoll } from "./live-cursor";
 import { deskFrame, LiveDeskFrames, shellMarkOf, type LiveWindowFacts } from "./live-desk";
 import { LiveInputGate, type LiveInputTarget } from "./live-input";
+import {
+  DEFAULT_LIVE_SHARE_PREFS,
+  deviceToKeep,
+  LIVE_DEVICE_KINDS,
+  restoredDevices,
+  samePrefs,
+  startingChoices,
+  type LivePrefsFile,
+  type LiveSharePrefs,
+} from "./live-prefs";
 
 /**
  * The one owner of this Mac's live share (docs/live-share.md §6.1). It holds
@@ -116,6 +127,8 @@ export interface LiveShareDeps {
   pointer(): CursorPoint | null;
   /** Who the host is to guests when the shell names nobody: read off the Mac's own name (live-host-name.ts). */
   hostName?: () => Promise<string | null>;
+  /** The host's choices kept between shares (live-prefs.ts); without it, every share starts as the first. */
+  prefs?: LivePrefsFile;
   now?: () => number;
   log?: (message: string, error?: unknown) => void;
 }
@@ -230,10 +243,19 @@ export class LiveShareService {
   #published: LiveShareState | null = null;
   /** The share control is making now, if any: shares are made one at a time (#start). */
   #making: Promise<void> = Promise.resolve();
+  /** The host's choices as last made, kept for the next share (live-prefs.ts). */
+  #prefs: LiveSharePrefs;
+  /**
+   * The kinds of device this share has yet to take up as kept: it starts on
+   * the system's default, and takes each up once the host app lists it — by
+   * id, else by label — unless the host picks one of that kind first.
+   */
+  #devicesToRestore = new Set<LiveDeviceKind>();
 
   constructor(deps: LiveShareDeps) {
     this.#deps = deps;
     this.#now = deps.now ?? Date.now;
+    this.#prefs = deps.prefs?.read() ?? structuredClone(DEFAULT_LIVE_SHARE_PREFS);
     this.#cursor = new LiveCursorPoll(deps.pointer, (at) => this.#share?.host.send({ type: "pointer", at }));
     this.#input = new LiveInputGate(
       {
@@ -301,11 +323,13 @@ export class LiveShareService {
       case "setAdmission":
         if (this.#state.admission === command.admission) return;
         this.#set({ admission: command.admission, error: null });
+        this.#keep({ admission: command.admission });
         this.#pollKnocks(share);
         await this.#update(share);
         return;
       case "setGuestsCanDraw":
         this.#set({ guestsCanDraw: command.allowed });
+        this.#keep({ guestsCanDraw: command.allowed });
         // Guests learn it from the desk (their pens are put away).
         this.#buildFrame();
         return;
@@ -318,15 +342,21 @@ export class LiveShareService {
         return;
       case "setMic":
         this.#set({ local: { ...this.#state.local, mic: command.on } });
+        this.#keep({ mic: command.on });
         return;
       case "setCamera":
         this.#set({ local: { ...this.#state.local, camera: command.on } });
+        this.#keep({ camera: command.on });
         return;
       case "setBackground":
         this.#set({ local: { ...this.#state.local, background: command.background } });
+        this.#keep({ background: command.background });
         return;
       case "setDevice":
+        // (The host's pick: the kept one of this kind is not taken up over it.)
+        this.#devicesToRestore.delete(command.kind);
         this.#set({ local: { ...this.#state.local, devices: { ...this.#state.local.devices, [command.kind]: command.deviceId } } });
+        this.#keep({ devices: { ...this.#prefs.devices, [command.kind]: deviceToKeep(this.#state.devices, this.#prefs.devices[command.kind], command.kind, command.deviceId) } });
         return;
       case "setDrawing":
         this.#setDrawing(command.drawing);
@@ -467,9 +497,17 @@ export class LiveShareService {
         // (The app's own controls steer the share; they never start one.)
         if (report.command.type !== "start") void this.command(report.command);
         return;
-      case "devices":
+      case "devices": {
         this.#set({ devices: report.devices });
+        // The kept devices this share has yet to take up, now that the app says what it can open (it may list more,
+        // or name them, once it may use the mic and camera: a kind not there yet waits for the next list).
+        const restored = restoredDevices(this.#prefs, report.devices, this.#devicesToRestore);
+        const kinds = Object.keys(restored) as LiveDeviceKind[];
+        if (kinds.length === 0) return;
+        for (const kind of kinds) this.#devicesToRestore.delete(kind);
+        this.#set({ local: { ...this.#state.local, devices: { ...this.#state.local.devices, ...restored } } });
         return;
+      }
       case "tokenExpiring":
         // A fresh token asked for, and answered whatever control says: the room waits on one to join again with.
         void this.#beat(share, true).then(() => {
@@ -561,7 +599,10 @@ export class LiveShareService {
       return;
     }
     const serial = ++this.#serial;
-    this.#state = { ...idleLiveShare(), status: "starting", groupId };
+    // The host's choices as they last made them (live-prefs.ts): who can join, drawing, their mic, camera and
+    // background; the devices on the system's default until the host app lists the kept ones.
+    this.#state = { ...idleLiveShare(), ...startingChoices(this.#prefs), status: "starting", groupId };
+    this.#devicesToRestore = new Set(LIVE_DEVICE_KINDS.filter((kind) => this.#prefs.devices[kind] !== null));
     this.#changed();
     let control: LiveControl;
     let created: Awaited<ReturnType<LiveControl["create"]>>;
@@ -628,13 +669,29 @@ export class LiveShareService {
     this.#share = share;
     this.#chatCount = 0;
     this.#hostPresent = false;
-    this.#state = { ...this.#state, status: "live", shareId: share.shareId, link: share.link, admission: created.admission, startedAt: this.#now() };
+    // Who can join is the host's kept choice; control made the share as it makes every one (knocking), so one kept
+    // otherwise goes to control at once — `#update` sends what differs from `sent`, and if control refuses, puts
+    // the card back to what control holds and says why.
+    this.#state = { ...this.#state, status: "live", shareId: share.shareId, link: share.link, admission: this.#state.admission, startedAt: this.#now() };
     this.#deps.writeClipboard(share.link);
     // (Nothing held awake yet — no guest is in — but the space is the share's: Tidy leaves it be.)
     this.#hold(share);
     this.#pollKnocks(share);
     this.refresh();
     this.#changed();
+    void this.#update(share);
+  }
+
+  /** Keep a choice the host just made, for the next share: written at once, and a write that fails is only logged. */
+  #keep(change: Partial<LiveSharePrefs>): void {
+    const next = { ...this.#prefs, ...change };
+    if (samePrefs(next, this.#prefs)) return;
+    this.#prefs = next;
+    try {
+      this.#deps.prefs?.write(next);
+    } catch (error) {
+      this.#log("could not keep the share's settings for the next one", error);
+    }
   }
 
   /** End the share: the window goes at once, then control hears of it (unless control said so first). */

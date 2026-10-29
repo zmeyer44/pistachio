@@ -89,6 +89,30 @@ export function notStreamingReason(state: LiveShareState, windowId: string): str
 }
 
 /**
+ * The Live card's *All windows*: the space's windows guests can be let use
+ * (as each row's own switch: one that does not stream now included, for when
+ * it does), how many of them guests may use now, and whether that is all of
+ * them. Null under two such windows: one row's switch is the whole of it.
+ */
+export interface AllWindowsUse {
+  windowIds: string[];
+  allowed: number;
+  all: boolean;
+}
+
+export function allWindowsUse(tabs: readonly { id: string; url: string }[], saved: SavedDesk | undefined, controllable: readonly string[]): AllWindowsUse | null {
+  const windowIds = tabs.filter((tab) => guestsCanBeLetUse(tab, saved)).map((tab) => tab.id);
+  if (windowIds.length < 2) return null;
+  const allowed = windowIds.filter((windowId) => controllable.includes(windowId)).length;
+  return { windowIds, allowed, all: allowed === windowIds.length };
+}
+
+/** The windows *All windows* switches over — on: those guests cannot use yet; off: those they can — one `setControllable` each. */
+export function allWindowsChanges(use: AllWindowsUse, controllable: readonly string[], allowed: boolean): string[] {
+  return use.windowIds.filter((windowId) => controllable.includes(windowId) !== allowed);
+}
+
+/**
  * A window's *Guests can use this window*: offered while its space is
  * shared live and the window is one of it guests can be let use (a tab's own
  * page or a terminal, streamed — guests' hands reach only what they see),

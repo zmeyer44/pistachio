@@ -15,8 +15,8 @@
 
 import { sanitizePageResume, type PageResumeState } from "./page-resume.js";
 import { isTabGroupColor, isTabGroupId, storedTabGroupTitle, type TabGroupColor, type TabGroupOrigin } from "./tab-groups.js";
-import { normalizeRestorableTabUrl, sanitizeTabHistory, type DurableTabHistory } from "./tab-session.js";
-import { isAllowedNavigation } from "./url.js";
+import { normalizeRestorableTabUrl, sanitizeTabHistory, type DurableTabHistory, type TabSessionReading } from "./tab-session.js";
+import { isAllowedNavigation, isLocalFileUrl } from "./url.js";
 
 export const TAB_ARCHIVE_VERSION = 1;
 export const MAX_ARCHIVE_ENTRIES = 500;
@@ -160,13 +160,15 @@ function time(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-export function sanitizeArchivedTab(value: unknown): ArchivedTab | null {
+/** An archived tab read back; `options.files` as sanitizeTabSession's (TabArchiveStore, this device's own file: its local files kept). */
+export function sanitizeArchivedTab(value: unknown, options: TabSessionReading = {}): ArchivedTab | null {
   if (typeof value !== "object" || value === null) return null;
   const raw = value as Record<string, unknown>;
   const rawUrl = typeof raw["url"] === "string" && raw["url"].length <= 2_048 ? raw["url"] : "";
-  if (!isAllowedNavigation(rawUrl)) return null;
-  const url = normalizeRestorableTabUrl(rawUrl);
-  const history = sanitizeTabHistory(raw["history"]);
+  const file = options.files === true && isLocalFileUrl(rawUrl);
+  if (!(file || isAllowedNavigation(rawUrl))) return null;
+  const url = file ? rawUrl : normalizeRestorableTabUrl(rawUrl);
+  const history = sanitizeTabHistory(raw["history"], options);
   const resume = sanitizePageResume(raw["resume"], url);
   return {
     title: typeof raw["title"] === "string" ? raw["title"].trim().slice(0, 240) : "",
@@ -178,7 +180,7 @@ export function sanitizeArchivedTab(value: unknown): ArchivedTab | null {
   };
 }
 
-function sanitizeEntry(value: unknown): ArchiveEntry | null {
+function sanitizeEntry(value: unknown, options: TabSessionReading): ArchiveEntry | null {
   if (typeof value !== "object" || value === null) return null;
   const raw = value as Record<string, unknown>;
   const id = raw["id"];
@@ -193,12 +195,12 @@ function sanitizeEntry(value: unknown): ArchiveEntry | null {
     runId: typeof runId === "string" && SAFE_ID.test(runId) ? runId : null,
   };
   if (raw["kind"] === "tab") {
-    const tab = sanitizeArchivedTab(raw["tab"]);
+    const tab = sanitizeArchivedTab(raw["tab"], options);
     return tab === null ? null : { ...base, kind: "tab", tab };
   }
   if (raw["kind"] !== "group" || !Array.isArray(raw["tabs"])) return null;
   const tabs = raw["tabs"].flatMap((candidate: unknown) => {
-    const tab = sanitizeArchivedTab(candidate);
+    const tab = sanitizeArchivedTab(candidate, options);
     return tab === null ? [] : [tab];
   });
   // A space's entry may be the space alone — but only one that says which space it is.
@@ -218,14 +220,14 @@ function sanitizeEntry(value: unknown): ArchiveEntry | null {
   };
 }
 
-export function sanitizeTabArchive(value: unknown): TabArchiveFile {
+export function sanitizeTabArchive(value: unknown, options: TabSessionReading = {}): TabArchiveFile {
   if (typeof value !== "object" || value === null) return structuredClone(EMPTY_TAB_ARCHIVE);
   const raw = value as Record<string, unknown>;
   if (raw["version"] !== TAB_ARCHIVE_VERSION || !Array.isArray(raw["entries"])) return structuredClone(EMPTY_TAB_ARCHIVE);
   const seen = new Set<string>();
   const entries: ArchiveEntry[] = [];
   for (const candidate of raw["entries"]) {
-    const entry = sanitizeEntry(candidate);
+    const entry = sanitizeEntry(candidate, options);
     if (entry === null || seen.has(entry.id)) continue;
     seen.add(entry.id);
     entries.push(entry);

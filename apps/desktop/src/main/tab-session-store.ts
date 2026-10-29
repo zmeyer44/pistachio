@@ -9,7 +9,7 @@ const WRITE_DELAY_MS = 120;
 export class TabSessionStore {
   readonly #path: string;
   readonly #validSpaceIds: () => ReadonlySet<string>;
-  readonly #listeners = new Set<(session: DurableTabSession) => void>();
+  readonly #listeners = new Set<() => void>();
   #current: DurableTabSession;
   #timer: NodeJS.Timeout | null = null;
   /** A session file was there to read at launch (existed). */
@@ -21,8 +21,18 @@ export class TabSessionStore {
     this.#current = this.#read();
   }
 
+  /** This device's session, as it reopens here: its tabs of local files too. */
   get(): DurableTabSession {
     return structuredClone(this.#current);
+  }
+
+  /**
+   * This device's restore point, as other devices may have it (§10.2): no
+   * tab of a local file — its path is this computer's alone, and no other
+   * device's session ever opens one here (applyDurableSession reads without).
+   */
+  restorePoint(): DurableTabSession {
+    return sanitizeTabSession(this.#current);
   }
 
   /**
@@ -36,16 +46,16 @@ export class TabSessionStore {
   }
 
   /**
-   * Hear about every save (the sanitized graph). Workspace sync publishes
-   * this device's restore point shortly after each one (§10.2).
+   * Hear about every save. Workspace sync publishes this device's restore
+   * point (restorePoint) shortly after each one (§10.2).
    */
-  onChange(listener: (session: DurableTabSession) => void): () => void {
+  onChange(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
 
   save(value: DurableTabSession): void {
-    const next = sanitizeTabSession(value, this.#validSpaceIds());
+    const next = sanitizeTabSession(value, this.#validSpaceIds(), { files: true });
     for (const [spaceId, space] of Object.entries(next.spaces)) {
       const previous = this.#current.spaces[spaceId];
       const { updatedAt: _currentTime, ...content } = space;
@@ -56,7 +66,7 @@ export class TabSessionStore {
     this.#current = next;
     for (const listener of this.#listeners) {
       try {
-        listener(this.get());
+        listener();
       } catch (error) {
         console.error("[tab-session] change listener failed", error);
       }
@@ -78,7 +88,7 @@ export class TabSessionStore {
 
   #read(): DurableTabSession {
     try {
-      const session = sanitizeTabSession(JSON.parse(readFileSync(this.#path, "utf8")), this.#validSpaceIds());
+      const session = sanitizeTabSession(JSON.parse(readFileSync(this.#path, "utf8")), this.#validSpaceIds(), { files: true });
       this.#existed = true;
       return session;
     } catch {

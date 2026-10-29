@@ -142,7 +142,8 @@ export class TabArchiveStore {
 
   #read(): TabArchiveFile {
     try {
-      return sanitizeTabArchive(JSON.parse(readFileSync(this.#path, "utf8")));
+      // (This device's own archive: its tabs of local files kept, as the session's are — TabSessionStore.)
+      return sanitizeTabArchive(JSON.parse(readFileSync(this.#path, "utf8")), { files: true });
     } catch {
       return structuredClone(EMPTY_TAB_ARCHIVE);
     }

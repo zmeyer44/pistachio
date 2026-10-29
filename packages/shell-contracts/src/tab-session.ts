@@ -14,7 +14,7 @@ import {
 import type { SplitGridLayout, SplitGroupInfo } from "./ipc.js";
 import { DEFAULT_SIDEBAR_STATE, sanitizeSidebarState, type SidebarState } from "./sidebar.js";
 import { sanitizeTabGroups, type TabGroupInfo } from "./tab-groups.js";
-import { isAllowedNavigation, normalizeNavigation } from "./url.js";
+import { isAllowedNavigation, isLocalFileUrl, normalizeNavigation } from "./url.js";
 
 export const TAB_SESSION_VERSION = 1;
 export const MAX_RESTORED_TABS_PER_SPACE = 200;
@@ -131,7 +131,7 @@ export function normalizeRestorableTabUrl(value: string): string {
  * all, which would cost every person their tabs and every restore point synced from them. An older build reading this
  * file drops the empty spaces and the field, and nothing else.
  */
-export function sanitizeTabSession(value: unknown, validSpaceIds?: ReadonlySet<string>): DurableTabSession {
+export function sanitizeTabSession(value: unknown, validSpaceIds?: ReadonlySet<string>, options: TabSessionReading = {}): DurableTabSession {
   if (typeof value !== "object" || value === null) return structuredClone(EMPTY_TAB_SESSION);
   const root = value as Record<string, unknown>;
   if (root["version"] !== TAB_SESSION_VERSION) return structuredClone(EMPTY_TAB_SESSION);
@@ -140,19 +140,24 @@ export function sanitizeTabSession(value: unknown, validSpaceIds?: ReadonlySet<s
   const spaces: Record<string, DurableSpaceSession> = {};
   for (const [spaceId, rawSpace] of Object.entries(rawSpaces as Record<string, unknown>)) {
     if (!SAFE_ID.test(spaceId) || (validSpaceIds !== undefined && !validSpaceIds.has(spaceId))) continue;
-    const space = sanitizeSpaceSession(rawSpace, spaceId);
+    const space = sanitizeSpaceSession(rawSpace, spaceId, options.files === true);
     if (space.tabs.length > 0 || (space.tabGroups?.length ?? 0) > 0) spaces[spaceId] = space;
   }
   return { version: TAB_SESSION_VERSION, spaces };
 }
 
-function sanitizeSpaceSession(value: unknown, spaceId: string): DurableSpaceSession {
+/** How a session is read: `files`, this device's own file (TabSessionStore) — its tabs of local files kept. Anything another device sees or sent is read without them. */
+export interface TabSessionReading {
+  files?: boolean;
+}
+
+function sanitizeSpaceSession(value: unknown, spaceId: string, files: boolean): DurableSpaceSession {
   const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const tabs: DurableTab[] = [];
   const seen = new Set<string>();
   if (Array.isArray(raw["tabs"])) {
     for (const candidate of raw["tabs"]) {
-      const tab = sanitizeTab(candidate, spaceId);
+      const tab = sanitizeTab(candidate, spaceId, files);
       if (tab === null || seen.has(tab.id)) continue;
       seen.add(tab.id);
       tabs.push(tab);
@@ -192,14 +197,15 @@ function sanitizeSpaceSession(value: unknown, spaceId: string): DurableSpaceSess
   };
 }
 
-function sanitizeTab(value: unknown, spaceId: string): DurableTab | null {
+function sanitizeTab(value: unknown, spaceId: string, files: boolean): DurableTab | null {
   if (typeof value !== "object" || value === null) return null;
   const raw = value as Record<string, unknown>;
   const id = typeof raw["id"] === "string" && SAFE_ID.test(raw["id"]) ? raw["id"] : "";
   const rawUrl = typeof raw["url"] === "string" && raw["url"].length <= 2_048 ? raw["url"] : "";
-  if (id === "" || !isAllowedNavigation(rawUrl)) return null;
-  const url = normalizeRestorableTabUrl(rawUrl);
-  const history = sanitizeTabHistory(raw["history"]);
+  const file = files && isLocalFileUrl(rawUrl);
+  if (id === "" || !(file || isAllowedNavigation(rawUrl))) return null;
+  const url = file ? rawUrl : normalizeRestorableTabUrl(rawUrl);
+  const history = sanitizeTabHistory(raw["history"], { files });
   const anchorId = typeof raw["anchorId"] === "string" && raw["anchorId"].length <= 2_048 ? raw["anchorId"] : null;
   return {
     id,
@@ -227,7 +233,7 @@ function sanitizeTab(value: unknown, spaceId: string): DurableTab | null {
  * the tab's address is. Trimmed to the newest MAX_RESTORED_HISTORY_ENTRIES
  * without ever dropping the entry being shown.
  */
-export function sanitizeTabHistory(value: unknown): DurableTabHistory | null {
+export function sanitizeTabHistory(value: unknown, options: TabSessionReading = {}): DurableTabHistory | null {
   if (typeof value !== "object" || value === null) return null;
   const raw = value as Record<string, unknown>;
   if (!Array.isArray(raw["entries"])) return null;
@@ -241,10 +247,11 @@ export function sanitizeTabHistory(value: unknown): DurableTabHistory | null {
       title: typeof entry["title"] === "string" ? entry["title"].trim().slice(0, 240) : "",
     };
   });
-  const trimmed = trimTabHistory(entries, rawIndex, (entry) => isAllowedNavigation(entry.url));
+  const file = (url: string): boolean => options.files === true && isLocalFileUrl(url);
+  const trimmed = trimTabHistory(entries, rawIndex, (entry) => file(entry.url) || isAllowedNavigation(entry.url));
   if (trimmed === null) return null;
   return {
-    entries: trimmed.entries.map((entry) => ({ ...entry, url: normalizeRestorableTabUrl(entry.url) })),
+    entries: trimmed.entries.map((entry) => ({ ...entry, url: file(entry.url) ? entry.url : normalizeRestorableTabUrl(entry.url) })),
     index: trimmed.index,
   };
 }

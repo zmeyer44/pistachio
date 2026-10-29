@@ -7,20 +7,24 @@
  * would be there").
  *
  * - On the RAIL: another space's tile, its tab joins that space ("space");
- *   New space, a space of its own ("new"); Home, a Home tab ("home"); the
- *   desk's own space's tile — or Home, for a space of Home's — it is put away
- *   into its row ("collapse"). Meanwhile it is a space's tile: 38px, rounded
- *   as the rail's are, its icon on the tint of the space it would go to.
+ *   New space — or the rail's own ground, anywhere on it that is no item of
+ *   it: between the tiles, below them, round New space (since 2026-10-26;
+ *   until then nothing there took it) — a space of its own ("new"), New
+ *   space lit; Home, a Home tab ("home"); the desk's own space's tile — or
+ *   Home, for a space of Home's — it is put away into its row ("collapse").
+ *   Meanwhile it is a space's tile: 38px, rounded as the rail's are, its
+ *   icon on the tint of the space it would go to.
  * - On the CARD while the card shows the desk's own space: put away into its
  *   row ("collapse"). Meanwhile it is one of the card's rows: as wide as its
  *   list's rows, a row's height, following the pointer up and down. The card
  *   showing Home (a Home tab's desk, or another view) takes nothing.
  * - Anywhere else — the gap beside the card, the card showing another view,
  *   the column hidden — nothing: the desk's own leading edge has the window,
- *   as before (the left half lights), and it is a window. Between the rail's
- *   items it stays a tile (neutral, nothing lit), so it does not swell into a
- *   window and back on its way from one item to the next — and let go there,
- *   it too lands in the left half.
+ *   as before (the left half lights), and it is a window. Over the rail it
+ *   is a tile everywhere, so it does not swell into a window and back on its
+ *   way from one item to the next; where the rail takes nothing of it (the
+ *   Profile full) it is a neutral tile, nothing lit — and let go there, it
+ *   too lands in the left half.
  *
  * Only a tab's window goes to another space; a document's (the shell's own
  * window, docs/desk-documents.md) is put away into the Stack from over the
@@ -69,7 +73,7 @@ export interface DockTargets {
   homeSpace: boolean;
   /**
    * The Profile holds as many drawn spaces as it may (MAX_TAB_GROUPS_PER_SPACE): New space makes none, so it takes
-   * nothing — over it the window is a tile with nothing lit, as between the rail's items (2026-10-14).
+   * nothing — over it, and over the rail's ground, the window is a tile with nothing lit (2026-10-14).
    */
   spacesFull?: boolean;
 }
@@ -119,12 +123,16 @@ export function dockOverAt(point: Point, targets: DockTargets | null, ownGroupId
       point.y,
       rail.list,
     );
-    if (found === null || (found.item === "space" && found.groupId === null)) return { shape: "tile", drop: null };
-    const { item, groupId, color, box } = found;
-    if (item === "space") return { shape: "tile", drop: { kind: groupId === ownGroupId ? "collapse" : "space", item, groupId, color, box } };
-    if (item === "home") return { shape: "tile", drop: { kind: targets.homeSpace ? "collapse" : "home", item, groupId: null, color: null, box } };
-    if (targets.spacesFull === true) return { shape: "tile", drop: null };
-    return { shape: "tile", drop: { kind: "new", item, groupId: null, color: null, box } };
+    if (found !== null && found.item === "space") {
+      if (found.groupId === null) return { shape: "tile", drop: null };
+      const { groupId, color, box } = found;
+      return { shape: "tile", drop: { kind: groupId === ownGroupId ? "collapse" : "space", item: "space", groupId, color, box } };
+    }
+    if (found !== null && found.item === "home") return { shape: "tile", drop: { kind: targets.homeSpace ? "collapse" : "home", item: "home", groupId: null, color: null, box: found.box } };
+    // New space — or the rail's own ground, on none of its items (2026-10-26): a space of its own, going into New space.
+    const plus = found ?? rail.items.find((item) => item.item === "new") ?? null;
+    if (plus === null || targets.spacesFull === true) return { shape: "tile", drop: null };
+    return { shape: "tile", drop: { kind: "new", item: "new", groupId: null, color: null, box: plus.box } };
   }
   const card = targets.card;
   if (card !== null && inside(card.box, point) && card.groupId !== null && card.groupId === ownGroupId) {

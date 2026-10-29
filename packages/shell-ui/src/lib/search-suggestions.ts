@@ -70,9 +70,20 @@ function aiSearchItem(q: string, search: SearchSettings, assistant: AssistantTar
   };
 }
 
+/**
+ * A local file's address — a file tab's own, as the address bar shows it, a
+ * space and all: somewhere to go (the desktop loads the tab's own file again
+ * and refuses any other), never words to look up — its path would go to the
+ * engine or the assistant.
+ */
+function isFileAddress(q: string): boolean {
+  return /^file:/iu.test(q.trim());
+}
+
 /** The first result for typed text: go to it when it reads as an address, else search the web for it. */
 export function primaryItemFor(q: string, search: SearchSettings): UrlItem | null {
   if (q.length === 0) return null;
+  if (isFileAddress(q)) return { id: "goto", kind: "navigate", title: `Go to ${prettyUrl(q.trim())}`, subtitle: q.trim(), hint: "↵", url: q.trim() };
   return isProbablyUrl(q)
     ? { id: "goto", kind: "navigate", title: `Go to ${prettyUrl(q)}`, subtitle: q, hint: "↵", url: q }
     : webSearchItem(q, search, "↵");
@@ -81,9 +92,11 @@ export function primaryItemFor(q: string, search: SearchSettings): UrlItem | nul
 /**
  * The searches offered beside `primaryItem`: the AI prompt always, and the
  * web search too when the primary is an address — "github.com" is a place to
- * go first, but still words someone may have meant to look up.
+ * go first, but still words someone may have meant to look up. None for a
+ * local file's address.
  */
 export function secondarySearchItems(q: string, primaryItem: UrlItem, search: SearchSettings, assistant: AssistantTarget = "provider"): UrlItem[] {
+  if (isFileAddress(q)) return [];
   const ai = aiSearchItem(q, search, assistant);
   return primaryItem.kind === "search" ? [ai] : [webSearchItem(q, search, "Web"), ai];
 }

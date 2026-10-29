@@ -50,6 +50,13 @@ async function carry(app: ElectronApplication, shell: Page, tabId: string, to: {
 const sidebarCommand = (shell: Page, command: SidebarCommand): Promise<unknown> =>
   shell.evaluate((body) => (window as unknown as { pistachio: PistachioApi }).pistachio.sidebarCommand(body), command);
 
+/** The foot of the lowest space's tile on the rail (viewport px): the rail's ground lies below it. */
+async function lowestTileBottom(shell: Page): Promise<number> {
+  const feet = await shell.locator('[data-testid="rail-space"]').evaluateAll((tiles) => tiles.map((tile) => tile.getBoundingClientRect().bottom));
+  expect(feet.length).toBeGreaterThan(0);
+  return Math.max(...feet);
+}
+
 async function moveTo(shell: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> {
   for (let step = 1; step <= 14; step += 1) {
     await shell.mouse.move(from.x + ((to.x - from.x) * step) / 14, from.y + ((to.y - from.y) * step) / 14);
@@ -153,15 +160,25 @@ test.describe.serial("a desk window carried over the sidebar's column", { tag: [
     await expect(shell.locator(`.desk-stage[data-group-id="dd-research"]`)).toHaveCount(1);
   });
 
-  test("let go on New space, its tab is a space of its own, and the desk stays where it is", async () => {
+  test("over New space, and over the rail's ground below the tiles, New space lights; let go on the ground its tab is a space of its own, and the desk stays where it is", async () => {
     const inUse = (await snapshot(shell)).activeTabId!;
     expect(ids.slice(1, 3)).toContain(inUse);
     await expect(shell.locator(windowSelector(inUse))).toHaveCount(1);
-    const plus = center(await box(shell, '[data-testid="rail-new-space"]'));
+    const plusBox = await box(shell, '[data-testid="rail-new-space"]');
+    const plus = center(plusBox);
     await carry(app, shell, inUse, plus);
     await expect(shell.locator(windowSelector(inUse))).toHaveAttribute("data-morph", "tile");
     await expect(shell.getByTestId("rail-new-space")).toHaveAttribute("data-dropping", "");
     await capture(app, shell, "04-tile-over-new-space.png");
+    // Up onto the rail's ground, midway between the lowest tile and New space (2026-10-26; until then nothing there took
+    // it): a tile still, New space still lit, no tile lit.
+    const ground = { x: plus.x, y: (plusBox.y + (await lowestTileBottom(shell))) / 2 };
+    expect(plusBox.y - ground.y).toBeGreaterThan(30);
+    await moveTo(shell, plus, ground);
+    await expect(shell.locator(windowSelector(inUse))).toHaveAttribute("data-morph", "tile");
+    await expect(shell.getByTestId("rail-new-space")).toHaveAttribute("data-dropping", "");
+    await expect(shell.locator('[data-testid="rail-space"][data-dropping]')).toHaveCount(0);
+    await capture(app, shell, "04b-tile-over-rail-ground.png");
     await shell.mouse.up();
     await expect.poll(async () => (await snapshot(shell)).tabGroups.some((group) => group.tabIds.length === 1 && group.tabIds[0] === inUse)).toBe(true);
     await settled(shell, app);

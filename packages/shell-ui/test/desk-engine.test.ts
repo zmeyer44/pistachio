@@ -1457,11 +1457,25 @@ describe("a window carried over the sidebar's column (lib/desk/dock-drop.ts)", (
     desk.destroy();
   });
 
-  it("stays a tile between the rail's items, nothing there lit but the desk's leading half, where a release lands it", () => {
+  // (Until 2026-10-26 nothing there took it: a neutral tile, the left half lit, and let go there it landed in it.)
+  it("is New space's tile on the rail's ground between its items, New space lit and nothing on the desk; let go there, a space of its own", () => {
+    const { desk, host, carry, release, view } = column({ tabs: 3, out: 2 });
+    // tab-1 is in use, on top: the ground far below the tiles and well above New space itself.
+    carry("tab-1", { x: 28, y: 500 });
+    expect(desk.getView().dockDrop).toEqual({ kind: "new", item: "new", groupId: null });
+    expect(view("tab-1").dock).toEqual({ shape: "tile", color: null });
+    expect(view("tab-1").aiming).toBe(false);
+    release();
+    expect(host.toNewSpace).toHaveBeenCalledWith("tab-1", "tab-0");
+    expect(desk.windowTabIds()).toEqual(["tab-0"]);
+    desk.destroy();
+  });
+
+  it("stays a window in the gap beside the card, nothing there lit but the desk's leading half, where a release lands it", () => {
     const { desk, wins, host, carry, release, view } = column();
-    carry("tab-0", { x: 28, y: 500 });
+    carry("tab-0", { x: 284, y: 500 });
     expect(desk.getView().dockDrop).toBeNull();
-    expect(view("tab-0").dock).toEqual({ shape: "tile", color: null });
+    expect(view("tab-0").dock).toBeNull();
     expect(view("tab-0").aiming).toBe(true);
     release();
     expect(desk.windowTabIds()).toEqual(["tab-0"]);

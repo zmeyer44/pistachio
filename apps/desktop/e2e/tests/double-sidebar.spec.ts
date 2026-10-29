@@ -602,16 +602,31 @@ test.describe.serial("the rail takes favorites, pins and spaces", { tag: ["@side
     await app?.close();
   });
 
-  test("a Today row and a favorite let go on New space each make a space of their own, not chosen — the favorite open there, in its colour; held over the rail each is a space's tile", async () => {
+  test("a Today row let go on the rail's ground below the tiles, and a favorite let go on New space, each make a space of their own, not chosen — the favorite open there, in its colour; held over the rail each is a space's tile", async () => {
     test.setTimeout(60_000);
     const before = new Set((await snapshot(shell)).tabGroups.map((group) => group.id));
     const fresh = async (): Promise<string[]> => (await snapshot(shell)).tabGroups.filter((group) => !before.has(group.id)).map((group) => group.id);
 
-    // ── 1. The day's row: held over New space it is a tile, New space lit; let go, a space of its own, the desk staying ─
+    // ── 1. The day's row: held over New space it is a tile, New space lit; up on the rail's ground between the lowest
+    //      tile and New space, the same (2026-10-26; until then a row let go there went nowhere); let go there, a space
+    //      of its own, the desk staying ─
     await holdOver(shell, shell.locator(rowSelector(late)), shell.getByTestId("rail-new-space"));
     // (Its row waits in its slot, dimmed: the token is what is carried.)
     await expect.poll(() => shell.locator(rowSelector(late)).evaluate((row) => Number(getComputedStyle(row).opacity))).toBeLessThan(0.6);
     await capture(app, shell, "20-row-over-new-space.png");
+    const plusBox = (await shell.getByTestId("rail-new-space").boundingBox())!;
+    const plus = center(plusBox);
+    const feet = await shell.getByTestId("rail-space").evaluateAll((tiles) => tiles.map((tile) => tile.getBoundingClientRect().bottom));
+    const ground = { x: plus.x, y: (plusBox.y + Math.max(...feet)) / 2 };
+    expect(plusBox.y - ground.y).toBeGreaterThan(30);
+    for (let step = 1; step <= 8; step += 1) {
+      await shell.mouse.move(plus.x, plus.y + ((ground.y - plus.y) * step) / 8);
+      await shell.waitForTimeout(16);
+    }
+    await expect(shell.getByTestId("rail-new-space")).toHaveAttribute("data-dropping", "");
+    await expect(shell.getByTestId("shelf-rail-token-face")).toHaveAttribute("data-shown", "");
+    await expect(shell.locator('[data-testid="rail-space"][data-dropping]')).toHaveCount(0);
+    await capture(app, shell, "20b-row-over-rail-ground.png");
     await shell.mouse.up();
     await expect.poll(fresh).toHaveLength(1);
     const [lateSpace] = await fresh();

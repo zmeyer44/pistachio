@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "reac
 import { BookmarkCheck, BookmarkPlus, BookOpen, BookOpenText, ChevronLeft, ChevronRight, Pin, PinOff, RotateCw, X } from "lucide-react";
 import { bookmarkUrlKey, isBookmarkableUrl } from "@pistachio/shell-contracts/bookmarks";
 import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
+import { isKeepableUrl } from "@pistachio/shell-contracts/sidebar";
 import {
   PANE_TOOLBAR_H,
   PANE_TOOLBAR_TRIGGER_H,
@@ -433,7 +434,8 @@ function PinButton({ tab }: { tab: ChromeTab }) {
   const pinned = useAppStore(
     (state) => tab.anchorId !== null && (state.snapshot?.sidebar.entries.some((entry) => entry.kind === "pin" && entry.id === tab.anchorId) ?? false),
   );
-  if (tab.kind !== "human" || (tab.anchorId !== null && !pinned)) return null;
+  // (Nor a local file's, which no shelf keeps: isKeepableUrl.)
+  if (tab.kind !== "human" || (tab.anchorId !== null && !pinned) || (!pinned && !isKeepableUrl(tab.url))) return null;
   return (
     <button
       type="button"

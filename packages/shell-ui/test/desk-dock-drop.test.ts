@@ -3,7 +3,8 @@
  * docs/desk.md "Over the sidebar"): which drop the pointer's place makes —
  * another space's tile moves its tab there, the desk's own tile (or Home, for
  * a space of Home's) and the card showing the desk's own space put the window
- * away, Home and New space send its tab there, and between them nothing — and
+ * away, Home and New space send its tab there — the rail's ground, on none
+ * of its items, as New space does — and the gap beside the card nothing; and
  * the row or tile the window is drawn as meanwhile.
  */
 
@@ -59,12 +60,18 @@ describe("a window carried over the column", () => {
     expect(dockDropAt({ x: 28, y: 80 }, column("own", { homeSpace: true }), "loose-1", "tab")).toMatchObject({ kind: "collapse", item: "home" });
   });
 
-  it("takes nothing between the rail's items, nor on a tile scrolled out of the rail's sight — a tile there all the same", () => {
-    expect(dockDropAt({ x: 28, y: 400 }, column(), "own", "tab")).toBeNull();
-    expect(dockOverAt({ x: 28, y: 400 }, column(), "own", "tab")).toEqual({ shape: "tile", drop: null });
-    // (The low tile reaches past the list's foot: only its part in sight takes a drop.)
+  // (Until 2026-10-26 nothing there took it: a neutral tile, and let go there it landed in the desk's left half.)
+  it("makes a space of its tab on the rail's ground — between its items, below them, over its head — going into New space", () => {
+    const ground = { kind: "new", item: "new", groupId: null, color: null, box: { x: 9, y: 820, w: 38, h: 38 } };
+    expect(dockDropAt({ x: 28, y: 400 }, column(), "own", "tab")).toEqual(ground);
+    expect(dockOverAt({ x: 28, y: 400 }, column(), "own", "tab")).toEqual({ shape: "tile", drop: ground });
+    expect(dockDropAt({ x: 28, y: 30 }, column(), "own", "tab")).toEqual(ground);
+    expect(dockDropAt({ x: 28, y: 880 }, column(), "own", "tab")).toEqual(ground);
+    // (The low tile reaches past the list's foot: only its part in sight takes a drop; past it is the ground.)
     expect(dockDropAt({ x: 28, y: 595 }, column(), "own", "tab")).toMatchObject({ groupId: "low" });
-    expect(dockDropAt({ x: 28, y: 620 }, column(), "own", "tab")).toBeNull();
+    expect(dockDropAt({ x: 28, y: 620 }, column(), "own", "tab")).toEqual(ground);
+    // With the Profile full, New space makes none: nothing there either — a tile all the same.
+    expect(dockOverAt({ x: 28, y: 400 }, column("own", { spacesFull: true }), "own", "tab")).toEqual({ shape: "tile", drop: null });
   });
 
   it("puts it away over the card while the card shows the desk's own space, and takes nothing over another view — a window there", () => {
@@ -86,6 +93,7 @@ describe("a window carried over the column", () => {
   it("takes a document's window only over the card, into the Stack", () => {
     expect(dockOverAt({ x: 28, y: 180 }, column(), "own", "file")).toBeNull();
     expect(dockDropAt({ x: 28, y: 835 }, column(), "own", "file")).toBeNull();
+    expect(dockOverAt({ x: 28, y: 400 }, column(), "own", "file")).toBeNull();
     expect(dockDropAt({ x: 150, y: 300 }, column(), "own", "file")).toMatchObject({ kind: "collapse", item: "card" });
   });
 

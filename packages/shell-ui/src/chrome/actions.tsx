@@ -57,6 +57,7 @@ import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/i
 import { hasCopyableSelection } from "@pistachio/shell-contracts/page-link";
 import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
 import { nextSidebarMode, type DesktopSettings, type SidebarMode } from "@pistachio/shell-contracts/settings";
+import { isKeepableUrl } from "@pistachio/shell-contracts/sidebar";
 import {
   RUN_SHORTCUT_EVENT,
   SHORTCUT_DEFINITIONS,
@@ -446,8 +447,8 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
     icon: (ctx) => (pinnedTab(ctx) ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />),
     shortcutId: "togglePin",
     active: (ctx) => pinnedTab(ctx),
-    // A day tab of the person's own; an agent tab is a run's, a favorite is the grid's.
-    enabled: ({ tab, ...ctx }) => tab !== null && tab.kind === "human" && (tab.anchorId === null || pinnedTab({ tab, ...ctx })),
+    // A day tab of the person's own; an agent tab is a run's, a favorite is the grid's, a local file's no shelf's (isKeepableUrl).
+    enabled: ({ tab, ...ctx }) => tab !== null && tab.kind === "human" && ((tab.anchorId === null && isKeepableUrl(tab.url)) || pinnedTab({ tab, ...ctx })),
     run: ({ tab, store, ...ctx }) => {
       if (tab === null) return;
       if (pinnedTab({ tab, store, ...ctx })) void store.sidebarCommand({ type: "unpin", pinId: tab.anchorId ?? "" });

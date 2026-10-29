@@ -1,12 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { Check, Copy, Ellipsis, Link2, Mic, MicOff, UserX, Video, VideoOff, X } from "lucide-react";
+import { Check, Copy, Ellipsis, Link2, ListChecks, Mic, MicOff, UserX, Video, VideoOff, X } from "lucide-react";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import type { LiveAdmission, LiveGuest, LiveShareState, LiveWindowAsk } from "@pistachio/shell-contracts/live-share";
 import { selectSpace } from "../../lib/desk/open";
 import { deskGroups, useDeskStore, type SavedDesk } from "../../lib/desk/store";
 import { setGuestsCanUse } from "../../lib/live/actions";
-import { guestsCanBeLetUse, linkLabel, notStreamingReason, notUsableReason } from "../../lib/live/entries";
+import { allWindowsChanges, allWindowsUse, guestsCanBeLetUse, linkLabel, notStreamingReason, notUsableReason } from "../../lib/live/entries";
 import { sendLive } from "../../lib/live/store";
 import { useAppStore } from "../../store";
 import { useContextMenu } from "../ContextMenu";
@@ -138,7 +138,12 @@ export function LiveShareTab({ state, name }: { state: LiveShareState; name: str
         {tabs.length === 0 ? (
           <p className="live-empty">No windows in “{name}” yet.</p>
         ) : (
-          tabs.map((tab) => <WindowRow key={tab.id} tab={tab} state={state} saved={saved} guestByIdentity={guestByIdentity} />)
+          <>
+            <AllWindowsRow tabs={tabs} state={state} saved={saved} />
+            {tabs.map((tab) => (
+              <WindowRow key={tab.id} tab={tab} state={state} saved={saved} guestByIdentity={guestByIdentity} />
+            ))}
+          </>
         )}
       </LiveSection>
       <LiveYou state={state} />
@@ -232,6 +237,39 @@ function AskRow({ ask, guest, window }: { ask: LiveWindowAsk; guest: LiveGuest |
       >
         Allow
       </Button>
+    </div>
+  );
+}
+
+/**
+ * *All windows*, over the rows: one switch for every window guests can be
+ * let use — on once they may use them all, and turned on, they may; turned
+ * off, they may use none. Some but not all: the row counts them, and the
+ * switch, off, lets guests use the rest.
+ */
+function AllWindowsRow({ tabs, state, saved }: { tabs: readonly BrowserTabInfo[]; state: LiveShareState; saved: SavedDesk | undefined }) {
+  const use = allWindowsUse(tabs, saved, state.controllable);
+  if (use === null) return null;
+  return (
+    <div className="live-row" data-testid="live-windows-all" data-allowed={use.allowed} data-of={use.windowIds.length}>
+      {/* (In the favicons' place, so its name lines up with the windows'.) */}
+      <ListChecks className="size-4 shrink-0 text-gray-700" aria-hidden="true" />
+      <span className="live-row-name">
+        All windows
+        {use.allowed === 0 || use.all ? null : (
+          <span className="live-row-note">
+            {" "}
+            · {use.allowed} of {use.windowIds.length}
+          </span>
+        )}
+      </span>
+      <Switch
+        label="Guests can use all windows"
+        checked={use.all}
+        onChange={(allowed) => {
+          for (const windowId of allWindowsChanges(use, state.controllable, allowed)) setGuestsCanUse(windowId, allowed);
+        }}
+      />
     </div>
   );
 }

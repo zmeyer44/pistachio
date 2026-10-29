@@ -19,7 +19,7 @@ import {
   type ShortcutSettings,
 } from "./shortcuts.js";
 import { webSearchLabel, type WebSearchProvider } from "./search.js";
-import { isAllowedNavigation, viewSourceUrl } from "./url.js";
+import { isAllowedNavigation, isLocalFileUrl, viewSourceUrl } from "./url.js";
 
 /** The editing capabilities of the field under the pointer. */
 export interface ContextMenuEditFlags {
@@ -106,6 +106,13 @@ export interface PageContextMenuState {
   shortcuts: ShortcutSettings;
   /** The engine "Search … for" names and runs on (`search.webProvider`). */
   searchProvider: WebSearchProvider;
+  /**
+   * The link's page is a local file the person opened (the desktop's,
+   * createTab's `file`): its links to the files beside it are links too —
+   * opened in a new tab, saved, copied — though never in a Glance, which
+   * shows the web alone.
+   */
+  fileLinks?: boolean;
 }
 
 export interface PageContextMenuActions {
@@ -242,16 +249,21 @@ function linkSection(
       },
     ];
   }
-  if (params.linkURL === "" || !isAllowedNavigation(params.linkURL)) return [];
+  const fileLink = state.fileLinks === true && isLocalFileUrl(params.linkURL);
+  if (params.linkURL === "" || !(fileLink || isAllowedNavigation(params.linkURL))) return [];
   return [
     {
       label: "Open Link in New Tab",
       click: () => actions.openInNewTab(params.linkURL),
     },
-    {
-      label: "Open Link in Glance",
-      click: () => actions.openInGlance(params.linkURL),
-    },
+    ...(fileLink
+      ? []
+      : [
+          {
+            label: "Open Link in Glance",
+            click: () => actions.openInGlance(params.linkURL),
+          },
+        ]),
     { type: "separator" },
     {
       label: "Save Link As…",

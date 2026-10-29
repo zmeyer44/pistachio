@@ -19,6 +19,7 @@ import { BookmarkCheck, BookmarkPlus, BookOpen, BookOpenText, ChevronLeft, Chevr
 import { bookmarkUrlKey, isBookmarkableUrl } from "@pistachio/shell-contracts/bookmarks";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
+import { isKeepableUrl } from "@pistachio/shell-contracts/sidebar";
 import { useShell } from "../../chrome/shell-host";
 import { useAppStore } from "../../store";
 import type { MenuEntry } from "../ContextMenu";
@@ -58,7 +59,8 @@ export function usePageEntries(): (tab: BrowserTabInfo) => MenuEntry[] {
       }
       // (Never a favorite's tab, which is the grid's to keep.)
       const pinned = tab.anchorId !== null && (store.snapshot?.sidebar.entries.some((entry) => entry.kind === "pin" && entry.id === tab.anchorId) ?? false);
-      if (human && (tab.anchorId === null || pinned))
+      // (Nor a local file's, which no shelf keeps: isKeepableUrl.)
+      if (human && (pinned || (tab.anchorId === null && isKeepableUrl(tab.url))))
         page.push({
           label: pinned ? "Unpin tab" : "Pin tab",
           icon: pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />,

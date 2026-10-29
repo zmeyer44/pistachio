@@ -68,6 +68,31 @@ describe("durable tab sessions", () => {
     reopened.flush();
   });
 
+  it("keeps a tab of a local file on this device alone: in its own file, never in the restore point other devices see", () => {
+    const directory = mkdtempSync(join(tmpdir(), "pistachio-files-"));
+    const history = {
+      entries: [
+        { url: "file:///Users/someone/site/index.html", title: "Index" },
+        { url: "file:///Users/someone/site/report.html", title: "Report" },
+      ],
+      index: 1,
+    };
+    const fileTab = { id: "tab-f", spaceId: "work", title: "Report", url: "file:///Users/someone/site/report.html", faviconUrl: null, anchorId: null, lastActiveAt: 30, history };
+    const work = SESSION.spaces.work!;
+    const session: DurableTabSession = { ...SESSION, spaces: { work: { ...work, tabs: [...work.tabs, fileTab] } } };
+    const store = new TabSessionStore(directory, () => new Set(["work"]));
+    store.save(session);
+    expect(store.get().spaces.work!.tabs.find((tab) => tab.id === "tab-f")).toMatchObject({ url: fileTab.url, history });
+    expect(store.restorePoint().spaces.work!.tabs.map((tab) => tab.id)).toEqual(["tab-a", "tab-b"]);
+    store.flush();
+    const reopened = new TabSessionStore(directory, () => new Set(["work"]));
+    expect(reopened.get().spaces.work!.tabs.find((tab) => tab.id === "tab-f")).toMatchObject({ url: fileTab.url, history });
+    // Another device's session — read as sanitizeTabSession reads by default — never opens a file here.
+    expect(sanitizeTabSession(session, new Set(["work"])).spaces.work!.tabs.map((tab) => tab.id)).toEqual(["tab-a", "tab-b"]);
+    expect(sanitizeTabHistory(history)).toBeNull();
+    expect(sanitizeTabHistory(history, { files: true })).toEqual(history);
+  });
+
   it("keeps recoverable tab order, anchors, MRU state, and valid split groups", () => {
     expect(sanitizeTabSession(SESSION, new Set(["work"]))).toEqual(SESSION);
   });

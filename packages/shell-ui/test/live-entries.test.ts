@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 import { idleLiveShare, type LiveShareState } from "@pistachio/shell-contracts/live-share";
 import { commandCandidates, parseCommand } from "../src/lib/desk/slash-commands";
 import {
+  allWindowsChanges,
+  allWindowsUse,
   drawActionFor,
   elapsedLabel,
   guestsCanBeLetUse,
@@ -128,6 +130,45 @@ describe("a page window's Guests can use this window", () => {
     expect(guestUseEntry(live(streaming), null, "tab-1", true)).toBeNull();
     expect(guestUseEntry(live(streaming), "space-a", "tab-1", false)).toBeNull();
     expect(guestUseEntry(live({ ...streaming, status: "starting" }), "space-a", "tab-1", true)).toBeNull();
+  });
+});
+
+describe("the Live card's All windows", () => {
+  const page = (id: string) => ({ id, url: `https://example.com/${id}` });
+  const masked = { windows: [{ tabId: "masked", rect: { x: 0, y: 0, w: 0.5, h: 0.5 }, mask: { x: 10, y: 10, width: 200, height: 120, pageWidth: 1000, pageHeight: 800 } }] };
+
+  it("covers the windows guests can be let use: a terminal, not Home or a masked window", () => {
+    const tabs = [page("a"), { id: "home", url: "pistachio://home/" }, { id: "term", url: "pistachio://terminal/0123456789ab" }, page("masked")];
+    expect(allWindowsUse(tabs, masked, [])).toEqual({ windowIds: ["a", "term"], allowed: 0, all: false });
+  });
+
+  it("is not there under two such windows: one row's switch is the whole of it", () => {
+    expect(allWindowsUse([page("a")], undefined, [])).toBeNull();
+    expect(allWindowsUse([page("a"), { id: "home", url: "pistachio://home/" }], undefined, [])).toBeNull();
+    expect(allWindowsUse([], undefined, [])).toBeNull();
+  });
+
+  it("counts the windows guests may use, and is on once that is all of them", () => {
+    const tabs = [page("a"), page("b"), page("c")];
+    expect(allWindowsUse(tabs, undefined, ["b"])).toEqual({ windowIds: ["a", "b", "c"], allowed: 1, all: false });
+    // (A window no longer in the space, still in main's list, counts for nothing.)
+    expect(allWindowsUse(tabs, undefined, ["a", "b", "c", "gone"])).toEqual({ windowIds: ["a", "b", "c"], allowed: 3, all: true });
+  });
+
+  it("turned on, lets guests use the rest; turned off, takes back those they could — each once", () => {
+    const tabs = [page("a"), page("b"), page("c")];
+    const some = allWindowsUse(tabs, undefined, ["b"])!;
+    expect(allWindowsChanges(some, ["b"], true)).toEqual(["a", "c"]);
+    expect(allWindowsChanges(some, ["b"], false)).toEqual(["b"]);
+    const every = allWindowsUse(tabs, undefined, ["a", "b", "c"])!;
+    expect(allWindowsChanges(every, ["a", "b", "c"], false)).toEqual(["a", "b", "c"]);
+    expect(allWindowsChanges(every, ["a", "b", "c"], true)).toEqual([]);
+  });
+
+  it("never hands over a window guests cannot be let use", () => {
+    const tabs = [page("a"), page("b"), { id: "notes", url: "pistachio://notes/" }, page("masked")];
+    const use = allWindowsUse(tabs, masked, [])!;
+    expect(allWindowsChanges(use, [], true)).toEqual(["a", "b"]);
   });
 });
 

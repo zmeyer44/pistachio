@@ -44,9 +44,11 @@ mac:
   # build/embedded.provisionprofile exists (enables Touch ID passkeys).
   # Notarization runs when APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID are set.
   notarize: true
-  # Claiming http and https is what lists Pistachio under System Settings →
-  # Desktop & Dock → Default web browser (once installed in /Applications);
-  # links other apps open then arrive as main's `open-url`.
+  # Claiming http and https, and HTML files (CFBundleDocumentTypes below), is
+  # what lists Pistachio under System Settings → Desktop & Dock → Default web
+  # browser (once installed in /Applications): the list is of apps that open
+  # both. Links other apps open then arrive as main's `open-url`, files as its
+  # `open-file`.
   protocols:
     - name: Web site URL
       schemes: [http, https]
@@ -54,6 +56,16 @@ mac:
   extendInfo:
     NSCameraUsageDescription: Pistachio needs camera access for sites that request it.
     NSMicrophoneUsageDescription: Pistachio needs microphone access for sites that request it.
+    # As Chrome's: a viewer of HTML and XHTML at the default rank. Safari stays
+    # the opener of .html files (it is Apple's default for them) until the
+    # person makes Pistachio their browser.
+    CFBundleDocumentTypes:
+      - CFBundleTypeName: HTML document
+        CFBundleTypeRole: Viewer
+        LSItemContentTypes: [public.html]
+      - CFBundleTypeName: XHTML document
+        CFBundleTypeRole: Viewer
+        LSItemContentTypes: [public.xhtml]
 dmg:
   sign: true
   artifactName: ${productName}-${version}-${arch}.${ext}

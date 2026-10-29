@@ -321,4 +321,17 @@ describe("the shelf with spaces: an entry's page in a space stays its entry's (2
     await controller.run({ type: "open", anchorId: state().favorites[0]!.id });
     expect(opened).toEqual(["https://mail.example/"]);
   });
+
+  it("keeps no local file's tab as a pin or a favorite: the shelf could not hold it, and the tab would vanish", async () => {
+    const { controller, browser, state } = harness();
+    const file = { ...tabInfo("report", null), url: "file:///Users/someone/site/report.html" };
+    const anchored: string[] = [];
+    browser.tab = (id) => (id === file.id ? file : null);
+    browser.setAnchor = (tabId) => anchored.push(tabId);
+    await controller.run({ type: "pinTab", tabId: file.id, folderId: null, index: 0 });
+    await controller.run({ type: "addFavorite", source: { tabId: file.id } });
+    expect(anchored).toEqual([]);
+    expect(state().entries).toEqual([]);
+    expect(state().favorites).toEqual([]);
+  });
 });

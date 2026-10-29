@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { isReaderUrl } from "@pistachio/shell-contracts/reader";
 import { screenShareObject } from "@pistachio/shell-contracts/screen-share";
+import { isKeepableUrl } from "@pistachio/shell-contracts/sidebar";
 import { cn } from "../lib/cn";
 import { splitAvailable } from "../lib/desk/open";
 import { displayHost, prettyUrl } from "../lib/url";
@@ -147,7 +148,8 @@ export function PinToggleButton({ tab }: { tab: ChromeTab }) {
   const pinned = useAppStore(
     (s) => tab.anchorId !== null && (s.snapshot?.sidebar.entries.some((e) => e.kind === "pin" && e.id === tab.anchorId) ?? false),
   );
-  if (tab.kind !== "human" || (tab.anchorId !== null && !pinned)) return null;
+  // (Nor a local file's, which no shelf keeps: isKeepableUrl.)
+  if (tab.kind !== "human" || (tab.anchorId !== null && !pinned) || (!pinned && !isKeepableUrl(tab.url))) return null;
   return (
     <button
       type="button"

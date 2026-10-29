@@ -115,6 +115,7 @@ import { liveBrowser } from "./live/live-browser";
 import { liveControl, LiveUnavailableError } from "./live/live-control";
 import { LiveHostWindow } from "./live/live-host-window";
 import { macHostName } from "./live/live-host-name";
+import { livePrefsFile } from "./live/live-prefs";
 import { watchLivePresence } from "./live/live-presence";
 import { LiveShareService } from "./live/live-service";
 import { DeskConversationStore } from "./desk-conversations";
@@ -1870,7 +1871,7 @@ async function initializeAccountServices(): Promise<void> {
       },
     }),
     browser: () => browser,
-    restorePoint: () => requireTabSessions().get(),
+    restorePoint: () => requireTabSessions().restorePoint(),
     onSessionPersisted: (listener) => requireTabSessions().onChange(() => listener()),
     control: controlWhenEnrolled,
     enrolled: () => authService.enrolled(),
@@ -2569,6 +2570,8 @@ async function createWindow(): Promise<void> {
     openCard: () => sendShellCommand({ type: "openLiveCard" }),
     pointer: () => cursorPoint(window),
     hostName: macHostName,
+    // (The Live card's settings as the host last set them, for the next share: this Mac's alone.)
+    prefs: livePrefsFile(app.getPath("userData")),
   });
   // The drag layer covers the whole content box. Sizing it here — and on
   // every window resize — keeps it laid out BEFORE a gesture shows it: a
@@ -4947,11 +4950,13 @@ app.on("second-instance", () => {
 });
 
 /**
- * Links other apps open, Pistachio being the default web browser (the http
- * and https schemes electron-builder.yml claims). A link that launches the
- * app arrives before the window and its tabs are up, so links wait until
- * the launch's window is; one opened after the window was closed brings a
- * new one. Each opens as a tab of the showing Space, in front.
+ * Links and files other apps open, Pistachio being the default web browser
+ * (the http and https schemes, and the HTML files, electron-builder.yml
+ * claims): a file — an .html file double-clicked in Finder — at its file:
+ * address. A link that launches the app arrives before the window and its
+ * tabs are up, so links wait until the launch's window is; one opened after
+ * the window was closed brings a new one. Each opens as a tab of the
+ * showing Space, in front.
  */
 const pendingOpenUrls: string[] = [];
 let openUrlsReady = false;
@@ -4962,6 +4967,11 @@ app.on("open-url", (event, url) => {
   pendingOpenUrls.push(url);
   void openPendingUrls();
 });
+app.on("open-file", (event, path) => {
+  event.preventDefault();
+  pendingOpenUrls.push(pathToFileURL(path).href);
+  void openPendingUrls();
+});
 
 async function openPendingUrls(): Promise<void> {
   if (!openUrlsReady || openingUrls) return;
@@ -4969,7 +4979,9 @@ async function openPendingUrls(): Promise<void> {
   try {
     while (pendingOpenUrls.length > 0) {
       if (shellWindow === null || shellWindow.isDestroyed()) await createWindow();
-      await requireBrowser().createTab(pendingOpenUrls.shift()!, { activate: true });
+      const url = pendingOpenUrls.shift()!;
+      // (A file: address is only ever open-file's: a link's is http or https.)
+      await requireBrowser().createTab(url, { activate: true, file: url.startsWith("file:") });
     }
     if (shellWindow === null || shellWindow.isDestroyed()) return;
     if (shellWindow.isMinimized()) shellWindow.restore();

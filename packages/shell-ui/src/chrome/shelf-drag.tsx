@@ -86,9 +86,12 @@ export interface ShelfItem {
 /**
  * A row let go on the double sidebar's rail (docs/double-sidebar.md §1): on a
  * space's tile it joins that space (`space`, its id), on Home it leaves its
- * space and is a Home tab, on New space it makes a space of its own — a
- * favorite or a pin a space of its page (since 2026-10-14). `null`: over the
- * rail, but on nothing that would take it — let go there it goes nowhere.
+ * space and is a Home tab, on New space — or on the rail's own ground,
+ * anywhere on it that is no item of it (since 2026-10-26) — it makes a space
+ * of its own; a favorite or a pin a space of its page (since 2026-10-14).
+ * `null`: over the rail, but on nothing that would take it (a space it is in
+ * already, Home for a tab that is Home's, a Profile with no room for a
+ * space) — let go there it goes nowhere.
  * Meanwhile the row waits in its slot, dimmed (TabList keeps it there,
  * `measureFollow` holds it still), drawn over the rail as a space's tile
  * (`RailToken`), while the rail says where it would go.
@@ -556,9 +559,11 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
 
     /**
      * The double sidebar's rail under the pointer: the drop its target there
-     * would take — undefined off the rail; on it, a rail drop, its target
-     * null over none of them (between them, a tile scrolled out of sight)
-     * or over one that cannot take it (a space the row is in already, Home
+     * would take — undefined off the rail; on it, a rail drop: the item under
+     * the pointer, or New space anywhere on the rail that is no item of it
+     * (its ground — between the tiles, below them, round New space; since
+     * 2026-10-26, until then a row let go there went nowhere), its target
+     * null over one that cannot take it (a space the row is in already, Home
      * for a tab that is Home's). A live row takes every target; a favorite or
      * a pin a space's (its page coming down into it, still its entry's:
      * @pistachio/shell-contracts/sidebar's bringDown) — not the space its
@@ -583,11 +588,11 @@ export function ShelfDragProvider({ children, className = "flex min-h-0 flex-1 f
         return { el, top: at.top, bottom: at.bottom, listed: list?.contains(el) === true };
       });
       const over = railTargetAt(targets, ev.clientY, span === null ? null : { top: span.top, bottom: span.bottom })?.el ?? null;
-      if (over === null) return none;
       const snapshot = useAppStore.getState().snapshot;
       const tabIds = item.tabs.map((tab) => tab.id);
-      const target = over.dataset["railDrop"];
-      if (target === "space") {
+      // (The rail's ground, on none of its items, is New space's.)
+      const target = over === null ? "new" : over.dataset["railDrop"];
+      if (over !== null && target === "space") {
         const groupId = over.dataset["groupId"] ?? "";
         const members = [...(snapshot?.tabGroups ?? []), ...(snapshot?.anchorGroups ?? [])].find((group) => group.id === groupId)?.tabIds ?? [];
         if (live && tabIds.every((tabId) => members.includes(tabId))) return none;

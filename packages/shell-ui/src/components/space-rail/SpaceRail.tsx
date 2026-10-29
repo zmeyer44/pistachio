@@ -59,8 +59,10 @@ function windowsLabel(count: number): string {
  * (`data-rail-key`), so the rail only lays its items out and says when
  * they move (`onLayout`). Its tiles, Home and New space take a row, a
  * favorite or a pin let go on them (`data-rail-drop`, chrome/shelf-drag.tsx,
- * which draws what it carries as a tile over the rail), and a tile carried
- * onto another merges the two spaces (useRailMove).
+ * which draws what it carries as a tile over the rail) — and so does its
+ * ground, anywhere on it that is no item of it, as New space does (since
+ * 2026-10-26; New space lights for it) — and a tile carried onto another
+ * merges the two spaces (useRailMove).
  */
 export function SpaceRail({
   spaces,

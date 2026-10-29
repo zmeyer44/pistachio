@@ -477,6 +477,15 @@ describe("tab archive", () => {
     expect(sanitizeTabArchive({ version: 9, entries: [] }).entries).toEqual([]);
   });
 
+  it("keeps a local file's tab only in this device's own archive, read with `files`", () => {
+    const url = "file:///Users/someone/site/report.html";
+    const history = { entries: [{ url: "file:///Users/someone/site/index.html", title: "Index" }, { url, title: "Report" }], index: 1 };
+    const raw = { version: 1, entries: [{ ...entry("report", 10), tab: { title: "Report", url, faviconUrl: null, lastActiveAt: 1, history } }] };
+    const own = sanitizeTabArchive(raw, { files: true }).entries[0];
+    expect(own?.kind === "tab" ? own.tab : null).toMatchObject({ url, history });
+    expect(sanitizeTabArchive(raw).entries).toEqual([]);
+  });
+
   it("keeps a space's entry with no tabs when it says which space it is, and its id with it", () => {
     const space = { id: "space", spaceId: "work", archivedAt: 40, reason: "closed", runId: null, kind: "group", group: { title: "New group", color: "green", origin: "manual" }, tabs: [] };
     const file = sanitizeTabArchive({

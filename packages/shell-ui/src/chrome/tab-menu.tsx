@@ -1,7 +1,7 @@
 import { BookOpen, BookOpenText, Columns2, Copy, Focus, Layers, Moon, Pin, Sparkles, SquareMinus, SquarePlus, Star, X } from "lucide-react";
 import { useMemo } from "react";
 import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
-import { DEFAULT_SIDEBAR_STATE, type SidebarFolder } from "@pistachio/shell-contracts/sidebar";
+import { DEFAULT_SIDEBAR_STATE, isKeepableUrl, type SidebarFolder } from "@pistachio/shell-contracts/sidebar";
 import { tabGroupOf, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import type { MenuEntry } from "../components/ContextMenu";
 import { splitAvailable } from "../lib/desk/open";
@@ -110,7 +110,8 @@ export function useTabMenu(options: TabMenuOptions = {}): (tab: ChromeTab) => Me
     {
       label: "Pin tab",
       icon: <Pin aria-hidden="true" />,
-      disabled: tab.kind !== "human",
+      // (A local file's tab is no shelf's: isKeepableUrl.)
+      disabled: tab.kind !== "human" || !isKeepableUrl(tab.url),
       onSelect: () =>
         void sidebarCommand({
           type: "pinTab",
@@ -122,7 +123,7 @@ export function useTabMenu(options: TabMenuOptions = {}): (tab: ChromeTab) => Me
     {
       label: "Add to favorites",
       icon: <Star aria-hidden="true" />,
-      disabled: tab.kind !== "human",
+      disabled: tab.kind !== "human" || !isKeepableUrl(tab.url),
       onSelect: () => void sidebarCommand({ type: "addFavorite", source: { tabId: tab.id } }),
     },
     ...moveToFolderEntries(

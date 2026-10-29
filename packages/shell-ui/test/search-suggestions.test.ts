@@ -64,3 +64,14 @@ describe("the home page's own assistant", () => {
     expect(secondarySearchItems("why is the sky blue", primary, search)[0]?.title).toBe("Ask Claude “why is the sky blue”");
   });
 });
+
+describe("a local file's address", () => {
+  it("is somewhere to go, a space and all, never words for the engine or the assistant", () => {
+    const address = "file:///Users/someone/site/first file.html";
+    const primary = primaryItemFor(` ${address}`, DEFAULTS);
+    expect(primary).toMatchObject({ id: "goto", kind: "navigate", url: address });
+    if (primary === null) throw new Error("no primary item");
+    expect(secondarySearchItems(address, primary, DEFAULTS)).toEqual([]);
+    expect(secondarySearchItems(address, primary, DEFAULTS, "pistachio")).toEqual([]);
+  });
+});

@@ -182,6 +182,7 @@ import {
 import {
   externalAppScheme,
   isAllowedNavigation,
+  isLocalFileUrl,
   normalizeNavigation,
 } from "@pistachio/shell-contracts/url";
 import { hasFileUpload } from "@pistachio/shell-contracts/request-upload";
@@ -372,6 +373,15 @@ interface ManagedTab {
    * emulation comes off once the view is drawn at a real size.
    */
   offscreenViewport: boolean;
+  /**
+   * A tab of local files (createTab's `file`): its view runs none of their
+   * scripts, and it shows files alone — a link of theirs to the web opens a
+   * tab of its own. Electron lets a file: page read any other file (its
+   * GrantFileProtocolExtraPrivileges fuse, which the shell's own file: pages
+   * need), where Chrome would not: a downloaded .html would read the
+   * person's files and send them away. Fixed for the view's life.
+   */
+  files: boolean;
 }
 
 interface DormantTab {
@@ -657,7 +667,7 @@ function captureTabHistory(contents: WebContents, withPageState: boolean): TabHi
         ...(withPageState && entry.pageState !== undefined ? { pageState: entry.pageState } : {}),
       })),
       contents.navigationHistory.getActiveIndex(),
-      (entry) => isAllowedNavigation(entry.url),
+      (entry) => restorableUrl(entry.url),
     );
   } catch {
     return null;
@@ -666,11 +676,30 @@ function captureTabHistory(contents: WebContents, withPageState: boolean): TabHi
 
 /**
  * The part of a stack a fresh page can be given again: web and app
- * addresses only (a blob: or about: entry cannot be rebuilt), trimmed the
- * way the durable file is (@pistachio/shell-contracts/tab-session trimTabHistory).
+ * addresses and local files only (a blob: or about: entry cannot be
+ * rebuilt), trimmed the way the durable file is
+ * (@pistachio/shell-contracts/tab-session trimTabHistory).
  */
 function restorableTabHistory(history: TabHistory | null): TabHistory | null {
-  return history === null ? null : trimTabHistory(history.entries, history.index, (entry) => isAllowedNavigation(entry.url));
+  return history === null ? null : trimTabHistory(history.entries, history.index, (entry) => restorableUrl(entry.url));
+}
+
+/**
+ * An address a stack keeps: a web or app address, or a local file — in a
+ * stack only by the person (a file macOS opened, its links: will-navigate),
+ * and kept on this device alone (TabSessionStore.restorePoint).
+ */
+function restorableUrl(url: string): boolean {
+  return isAllowedNavigation(url) || isLocalFileUrl(url);
+}
+
+/** Whether two addresses are the same once parsed (a typed space is the page's %20). */
+function sameUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -705,9 +734,12 @@ function durableTabHistory(history: TabHistory | null): DurableTabHistory | null
  * that was current. A stack Chromium will not take at all falls back to a
  * plain load of the tab's address, so a restore is never worse than the
  * load it replaces; a page that fails to load fails the way loadURL does.
+ * A tab of files (`files`, ManagedTab's) takes their entries alone, any
+ * other tab none of them.
  */
-async function loadTabHistory(contents: WebContents, history: TabHistory | null, url: string): Promise<void> {
-  const restorable = restorableTabHistory(history);
+async function loadTabHistory(contents: WebContents, history: TabHistory | null, url: string, files: boolean): Promise<void> {
+  const restorable =
+    history === null ? null : trimTabHistory(history.entries, history.index, (entry) => (files ? isLocalFileUrl(entry.url) : isAllowedNavigation(entry.url)));
   if (restorable !== null) {
     try {
       await contents.navigationHistory.restore({ entries: restorable.entries, index: restorable.index });
@@ -4110,6 +4142,13 @@ export class BrowserController {
       /** Placed after this tab, and in its group, before anything hears of it. */
       beside?: string;
       group?: "current" | "loose" | (string & {});
+      /**
+       * A file the person put here (main's open-file: one macOS asked
+       * Pistachio to open; a file's link asking for a tab): its file:
+       * address loads as itself. Any other caller's opens the home page — a
+       * tab is only ever sent to a file by the person.
+       */
+      file?: boolean;
     } = {},
   ): Promise<string> {
     const spaceId = options.spaceId ?? this.activeSpaceId();
@@ -4126,6 +4165,7 @@ export class BrowserController {
       unlisted: options.unlisted ?? false,
       group: options.group ?? "loose",
       ...(options.beside === undefined ? {} : { beside: options.beside }),
+      ...(options.file === true ? { file: true } : {}),
     });
   }
 
@@ -4257,6 +4297,8 @@ export class BrowserController {
       spaceId: info.spaceId,
       history,
       beside: tabId,
+      // (A tab's own file is the person's: its copy opens it too.)
+      file: isLocalFileUrl(info.url),
     });
     // At the zoom it was copied at, from then on its own (#tabZoom).
     const zoom = this.#tabZoom.get(tabId);
@@ -4363,6 +4405,8 @@ export class BrowserController {
     ready?: () => void;
     /** What a fresh tab is called until its page names itself (an entry's page: the entry's title), not "New tab". */
     title?: string;
+    /** `url` is a file macOS asked Pistachio to open (createTab's `file`), loaded as itself. */
+    file?: boolean;
   }): Promise<string> {
     const id = options.restoredInfo?.id ?? randomUUID();
     // (A delegated session's own partition, guard and session hook went with createAgentTab on 2026-10-09: it had no caller.)
@@ -4378,6 +4422,14 @@ export class BrowserController {
       partition,
     );
     options.ready?.();
+    // A local file only where the person put it (createTab's `file`); anywhere else the home page — never a search,
+    // which would send its path to the search engine. A tab of files runs none of their scripts (ManagedTab's `files`).
+    const url =
+      options.restoredInfo?.url ??
+      (isLocalFileUrl(options.url.trim())
+        ? options.file === true ? options.url : this.#homeUrl()
+        : normalizeNavigation(options.url, this.#settings().search.webProvider));
+    const files = isLocalFileUrl(url);
     const view = new WebContentsView({
       webPreferences: {
         partition,
@@ -4390,6 +4442,7 @@ export class BrowserController {
         nodeIntegration: false,
         sandbox: true,
         spellcheck: true,
+        ...(files ? { javascript: false } : {}),
         ...(options.kind === "agent"
           ? { disableBlinkFeatures: "WebAuth" }
           : {}),
@@ -4415,7 +4468,7 @@ export class BrowserController {
             id,
             spaceId: options.spaceId,
             title: options.kind === "agent" ? "Delegated session" : options.title?.trim() || "New tab",
-            url: normalizeNavigation(options.url, this.#settings().search.webProvider),
+            url,
             faviconUrl: null,
             loading: true,
             canGoBack: false,
@@ -4449,6 +4502,7 @@ export class BrowserController {
       pendingLoad: null,
       shellTitle: null,
       offscreenViewport: false,
+      files,
     };
     this.#dormantTabs.delete(id);
     this.#tabs.set(id, tab);
@@ -4492,7 +4546,7 @@ export class BrowserController {
             resolve();
             return;
           }
-          void loadTabHistory(view.webContents, options.history ?? null, info.url)
+          void loadTabHistory(view.webContents, options.history ?? null, info.url, files)
             .catch(() => {
               info.loading = false;
               info.title = fallbackTitle;
@@ -4504,7 +4558,7 @@ export class BrowserController {
       return id;
     }
     try {
-      await loadTabHistory(view.webContents, options.history ?? null, info.url);
+      await loadTabHistory(view.webContents, options.history ?? null, info.url, files);
     } catch (error) {
       // Closed while its page loaded (⌘T, then ⌘W): Electron's load rejects
       // as the view goes, and that is no failure to tell anyone of — until
@@ -4786,10 +4840,19 @@ export class BrowserController {
         event.preventDefault();
         return;
       }
+      // A tab of files (ManagedTab's `files`) follows their links to the files beside them — a coverage report's, a
+      // saved site's — and shows nothing else: one to the web opens a tab of its own, beside it, with scripts. A web
+      // page never reaches a file.
+      if (tab.files && !isLocalFileUrl(url)) {
+        event.preventDefault();
+        if (isAllowedNavigation(url)) void this.createTab(url, { spaceId: info.spaceId, beside: info.id });
+        else this.#offerExternalApp(tab, url);
+        return;
+      }
       const allowed =
         info.kind === "agent"
           ? tab.enforcer?.isNavigationAllowed(url) === true
-          : isAllowedNavigation(url);
+          : tab.files || isAllowedNavigation(url);
       if (allowed) return;
       event.preventDefault();
       // A link meant for another app (a meeting page's `zoommtg:`). The tab
@@ -4802,6 +4865,9 @@ export class BrowserController {
       if (info.kind !== "human" || this.#tabs.get(info.id) !== tab) return;
       const allows = (action: GuardedBrowserAction): boolean =>
         this.#actionVerdict(tab, action).decision === "allow";
+      // A file's own links, from its page or a frame of files (not a web page framed in it): links to open (createTab's
+      // `file`), as the file follows them itself (will-navigate, the window-open handler).
+      const fileLinks = tab.files && (params.frameURL === "" || isLocalFileUrl(params.frameURL));
       const template = buildPageContextMenu(
         params,
         {
@@ -4815,6 +4881,7 @@ export class BrowserController {
           platform: process.platform === "darwin" ? "darwin" : "other",
           shortcuts: this.#settings().shortcuts,
           searchProvider: this.#settings().search.webProvider,
+          fileLinks,
         },
         {
           back: () => void this.goBack(info.id),
@@ -4822,7 +4889,7 @@ export class BrowserController {
           reload: () => void this.reload(info.id),
           // Beside the page, in its space (as a link it opens itself), not the space in front's by default (2026-10-09).
           openInNewTab: (url) =>
-            void this.createTab(url, { spaceId: info.spaceId, beside: info.id }),
+            void this.createTab(url, { spaceId: info.spaceId, beside: info.id, ...(fileLinks && isLocalFileUrl(url) ? { file: true } : {}) }),
           // (Electron's point is the view's, not the page's: drawn at a zoom, the two differ.)
           openInGlance: (url) =>
             void this.openGlance(
@@ -5026,8 +5093,14 @@ export class BrowserController {
     contents.setWindowOpenHandler((details: HandlerDetails) => {
       // (Nor does it open one: docs/terminal.md §5.)
       if (tab.info.kind === "agent" || isTerminalUrl(details.url)) return { action: "deny" };
-      const preservePopup = shouldPreserveAuthenticationPopup(details);
+      // (Never from a tab of files: a popup takes its opener's preferences, scripts off — a sign-in that could not run.
+      // Its web links open a tab of their own, with scripts.)
+      const preservePopup = !tab.files && shouldPreserveAuthenticationPopup(details);
+      // A file's link to a file beside it that asks for a tab (`target="_blank"`, ⌘-click): a tab of the person's own,
+      // as the links it follows in place are (will-navigate) — never a sign-in popup, a Glance or a hidden page.
+      const fileLink = tab.files && isLocalFileUrl(details.url);
       const safeUrl =
+        fileLink ||
         isAllowedNavigation(details.url) ||
         (preservePopup && details.url === "about:blank");
       if (!safeUrl) {
@@ -5044,11 +5117,12 @@ export class BrowserController {
       const hold = this.#popupsHiddenFor.get(tab.info.id);
       if (hold?.setAside === true) return { action: "deny" };
       const hiddenFor = tab.info.hiddenFor ?? hold?.owner;
+      if (fileLink && hiddenFor !== undefined) return { action: "deny" };
       if (hiddenFor !== undefined && !preservePopup) {
         void this.openHiddenTab(hiddenFor, details.url, { spaceId: tab.info.spaceId }).catch(() => undefined);
         return { action: "deny" };
       }
-      if (preservePopup) {
+      if (preservePopup && !fileLink) {
         return {
           action: "allow",
           overrideBrowserWindowOptions: this.#authenticationPopupOptions(tab),
@@ -5097,7 +5171,7 @@ export class BrowserController {
       // Authentication popups were already preserved above, where they keep
       // their real child-window relationship.
       const intentSource = this.#takeGlanceIntent(contents.id);
-      if (intentSource !== null && this.#glance === null) {
+      if (intentSource !== null && this.#glance === null && !fileLink) {
         void this.openGlance(contents.id, {
           url: details.url,
           source: intentSource,
@@ -5117,6 +5191,7 @@ export class BrowserController {
         // the desk's agent may use it (docs/desk-agent.md §2). Elsewhere it
         // is a loose space of its own (createTab's `group`).
         ...(this.#onDesk(tab.info.id) ? { beside: tab.info.id } : {}),
+        ...(fileLink ? { file: true } : {}),
       });
       return { action: "deny" };
     });
@@ -6761,6 +6836,7 @@ export class BrowserController {
       pendingLoad: null,
       shellTitle: null,
       offscreenViewport: false,
+      files: false,
     };
     this.#glance = {
       tab,
@@ -7314,6 +7390,8 @@ export class BrowserController {
       activate: false,
       history,
       group: "current",
+      // (The record is the closed tab's own address: a file it showed opens again.)
+      file: isLocalFileUrl(closed.url),
     });
     await this.selectTab(tabId);
   }
@@ -7372,6 +7450,20 @@ export class BrowserController {
 
   async navigate(tabId: string, rawUrl: string): Promise<void> {
     const tab = await this.#ensureLiveTab(tabId);
+    // A file: address is never searched for (its path would go to the search engine), nor loaded on a caller's say —
+    // the agent navigates through here too: the tab's own file, given back from the address bar, loads again; any
+    // other is refused (createTab's `file`).
+    if (isLocalFileUrl(rawUrl.trim())) {
+      if (!sameUrl(rawUrl.trim(), tab.view.webContents.getURL())) throw new Error("a local file opens only from Finder");
+      await this.#whenSessionReady(tab.info.spaceId);
+      tab.view.webContents.reload();
+      return;
+    }
+    // A tab of files shows nothing else (ManagedTab's `files`): an address for the web opens a tab of its own beside it.
+    if (tab.files) {
+      await this.selectTab(await this.createTab(rawUrl, { spaceId: tab.info.spaceId, beside: tabId }));
+      return;
+    }
     const url = normalizeNavigation(rawUrl, this.#settings().search.webProvider);
     if (tab.enforcer !== null && !tab.enforcer.isNavigationAllowed(url)) {
       throw new Error("navigation is outside the task capsule");

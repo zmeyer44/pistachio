@@ -12,6 +12,7 @@ import type { ElectronInputStep } from "@pistachio/live-share";
 import type { LiveDeskReport, LiveDeskReportWindow, LiveGuest, LiveHostEvent, LiveShareState } from "@pistachio/shell-contracts/live-share";
 import { ControlError } from "../src/main/account/control-client";
 import { LiveUnavailableError, type LiveControl } from "../src/main/live/live-control";
+import { DEFAULT_LIVE_SHARE_PREFS, type LivePrefsFile, type LiveSharePrefs } from "../src/main/live/live-prefs";
 import {
   LIVE_HEARTBEAT_MS,
   LIVE_HOLD_GRACE_MS,
@@ -47,7 +48,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function setup(options: { control?: () => Promise<LiveControl>; hostName?: () => Promise<string | null> } = {}) {
+function setup(options: { control?: () => Promise<LiveControl>; hostName?: () => Promise<string | null>; prefs?: LivePrefsFile } = {}) {
   const control = {
     create: vi.fn<LiveControl["create"]>(async () => ({ shareId: "s1", link: "https://www.pistachio.run/live/tok", admission: "ask", livekit: { url: "ws://127.0.0.1:7880", token: "t1" } })),
     // (A control that let Ann and Bo in, unless a test says otherwise.)
@@ -111,6 +112,7 @@ function setup(options: { control?: () => Promise<LiveControl>; hostName?: () =>
     openCard: () => cards.push(1),
     pointer: () => null,
     ...(options.hostName === undefined ? {} : { hostName: options.hostName }),
+    ...(options.prefs === undefined ? {} : { prefs: options.prefs }),
     log: () => undefined,
   });
   const events = <T extends LiveHostEvent["type"]>(type: T) => host.events.filter((event): event is Extract<LiveHostEvent, { type: T }> => event.type === type);
@@ -1302,5 +1304,119 @@ describe("LiveShareService", () => {
     expect(heldGroups.at(-1)).toBe("g1");
     await service.command({ type: "stop" });
     expect(heldGroups.at(-1)).toBeNull();
+  });
+});
+
+describe("LiveShareService: the host's choices kept for the next share", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const KEPT: LiveSharePrefs = {
+    admission: "open",
+    guestsCanDraw: false,
+    mic: true,
+    camera: false,
+    background: { kind: "blur" },
+    devices: { audioinput: { deviceId: "mic-1", label: "AirPods Pro" }, videoinput: null, audiooutput: null },
+  };
+
+  function keptFile(prefs: LiveSharePrefs = KEPT) {
+    const written: LiveSharePrefs[] = [];
+    const file: LivePrefsFile = { read: () => structuredClone(prefs), write: (next) => written.push(structuredClone(next)) };
+    return { file, written };
+  }
+
+  it("starts a share as the host last left one: who can join, drawing, their mic and background", async () => {
+    const { file } = keptFile();
+    const { service, states } = await live({ prefs: file });
+    expect(states.find((state) => state.status === "starting")).toMatchObject({ admission: "open", guestsCanDraw: false, local: { mic: true, camera: false, background: { kind: "blur" } } });
+    expect(service.state).toMatchObject({ status: "live", admission: "open", guestsCanDraw: false, local: { mic: true, camera: false, background: { kind: "blur" } } });
+  });
+
+  it("tells control at once when the kept choice of who can join is not its own (it makes every share knocking)", async () => {
+    const { file } = keptFile();
+    const { control, service } = await live({ prefs: file });
+    expect(control.update).toHaveBeenCalledWith("s1", { admission: "open" });
+    expect(service.state.admission).toBe("open");
+    // Kept as control makes it: nothing to tell.
+    const asked = await live({ prefs: keptFile({ ...KEPT, admission: "ask" }).file });
+    expect(asked.control.update).not.toHaveBeenCalled();
+  });
+
+  it("puts the card back to knocking, and says why, when control will not open the share", async () => {
+    const harness = setup({ prefs: keptFile().file });
+    harness.control.update.mockRejectedValueOnce(new ControlError(500, "internal", "PATCH", "/v1/live/shares/s1"));
+    await harness.service.command({ type: "start", groupId: "g1", hostName: "Zach" });
+    await settle();
+    expect(harness.service.state.admission).toBe("ask");
+    expect(harness.service.state.error).not.toBeNull();
+  });
+
+  it("starts as a first share with nothing kept", async () => {
+    const { service, control } = await live({ prefs: keptFile(DEFAULT_LIVE_SHARE_PREFS).file });
+    expect(service.state).toMatchObject({ admission: "ask", guestsCanDraw: true, local: { mic: false, camera: false, background: { kind: "none" } } });
+    expect(control.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps each choice the host makes in the card, as they make it", async () => {
+    const { file, written } = keptFile(DEFAULT_LIVE_SHARE_PREFS);
+    const { service } = await live({ prefs: file });
+    await service.command({ type: "setAdmission", admission: "open" });
+    await service.command({ type: "setGuestsCanDraw", allowed: false });
+    await service.command({ type: "setMic", on: true });
+    await service.command({ type: "setCamera", on: true });
+    await service.command({ type: "setBackground", background: { kind: "blur", strength: "light" } });
+    service.hostReport({ type: "devices", devices: [{ kind: "videoinput", deviceId: "cam-2", label: "Studio Display Camera" }] });
+    await service.command({ type: "setDevice", kind: "videoinput", deviceId: "cam-2" });
+    expect(written.at(-1)).toEqual({
+      admission: "open",
+      guestsCanDraw: false,
+      mic: true,
+      camera: true,
+      background: { kind: "blur", strength: "light" },
+      devices: { audioinput: null, videoinput: { deviceId: "cam-2", label: "Studio Display Camera" }, audiooutput: null },
+    });
+    // The same choice again is not written again.
+    const writes = written.length;
+    await service.command({ type: "setMic", on: true });
+    expect(written).toHaveLength(writes);
+  });
+
+  it("keeps what the host chose, not what came of it: a mic that would not come on stays kept on", async () => {
+    const { file, written } = keptFile(DEFAULT_LIVE_SHARE_PREFS);
+    const { service } = await live({ prefs: file });
+    await service.command({ type: "setMic", on: true });
+    service.hostReport({ type: "mediaFailed", kind: "mic", error: "No microphone was found." });
+    expect(service.state.local.mic).toBe(false);
+    await service.command({ type: "setGuestsCanDraw", allowed: false });
+    expect(written.at(-1)).toMatchObject({ mic: true, guestsCanDraw: false });
+  });
+
+  it("takes up the kept device once the host app lists it — by id, else by its label — and stays on the default when it is gone", async () => {
+    const { service } = await live({ prefs: keptFile().file });
+    expect(service.state.local.devices.audioinput).toBeNull();
+    // A list from before the app may use the mic names nothing: the kept one waits for the next.
+    service.hostReport({ type: "devices", devices: [{ kind: "audioinput", deviceId: "", label: "" }] });
+    expect(service.state.local.devices.audioinput).toBeNull();
+    // This session's id for it: found by its label.
+    service.hostReport({ type: "devices", devices: [{ kind: "audioinput", deviceId: "mic-9", label: "AirPods Pro" }] });
+    expect(service.state.local.devices.audioinput).toBe("mic-9");
+
+    const gone = await live({ prefs: keptFile().file });
+    gone.service.hostReport({ type: "devices", devices: [{ kind: "audioinput", deviceId: "mic-3", label: "MacBook Pro Microphone" }] });
+    expect(gone.service.state.local.devices.audioinput).toBeNull();
+  });
+
+  it("does not take the kept device up over one the host picked first", async () => {
+    const { file, written } = keptFile();
+    const { service } = await live({ prefs: file });
+    await service.command({ type: "setDevice", kind: "audioinput", deviceId: null });
+    service.hostReport({ type: "devices", devices: [{ kind: "audioinput", deviceId: "mic-1", label: "AirPods Pro" }] });
+    expect(service.state.local.devices.audioinput).toBeNull();
+    expect(written.at(-1)?.devices.audioinput).toBeNull();
   });
 });

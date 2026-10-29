@@ -28,6 +28,7 @@ import {
   favoriteOf,
   folderEmoji,
   folderOf,
+  isKeepableUrl,
   isPresetAnchorId,
   MAX_FAVORITES,
   MAX_FOLDER_NAME,
@@ -359,8 +360,9 @@ export class SidebarController {
 
   async #pinTab(tabId: string, folderId: string | null, index: number): Promise<void> {
     const tab = this.#browser.tab(tabId);
-    // Agent tabs are a run's, not a page to keep; an anchored tab is already kept.
-    if (tab === null || tab.kind !== "human" || tab.anchorId !== null) return;
+    // Agent tabs are a run's, not a page to keep; an anchored tab is already kept; a local file's is no shelf's
+    // (isKeepableUrl) — bound to a pin the shelf then drops, it would vanish.
+    if (tab === null || tab.kind !== "human" || tab.anchorId !== null || !isKeepableUrl(tab.url)) return;
     const state = this.#state();
     const pin: SidebarPin = { kind: "pin", id: newId(), url: tab.url, title: tab.title, faviconUrl: tab.faviconUrl, folderId: null };
     this.#browser.setAnchor(tab.id, pin.id);
@@ -475,7 +477,7 @@ export class SidebarController {
     let bind: BrowserTabInfo | null = null;
     if ("tabId" in source) {
       const tab = this.#browser.tab(source.tabId);
-      if (tab === null || tab.kind !== "human") return;
+      if (tab === null || tab.kind !== "human" || !isKeepableUrl(tab.url)) return;
       favorite.url = tab.url;
       favorite.title = tab.title;
       favorite.faviconUrl = tab.faviconUrl;

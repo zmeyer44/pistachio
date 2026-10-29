@@ -130,7 +130,17 @@ function isId(value: unknown): value is string {
 }
 
 function isUrl(value: unknown): value is string {
-  return typeof value === "string" && value.length <= MAX_URL && isAllowedNavigation(value);
+  return typeof value === "string" && value.length <= MAX_URL && isKeepableUrl(value);
+}
+
+/**
+ * An address the shelf keeps as a pin or a favorite: a web or app address.
+ * A local file's tab (the desktop's, opened from Finder) is never one — the
+ * shelf is synced to the person's other devices, where its path means
+ * nothing — so it is never offered to pin or favorite.
+ */
+export function isKeepableUrl(url: string): boolean {
+  return isAllowedNavigation(url);
 }
 
 function text(value: unknown, max: number): string {

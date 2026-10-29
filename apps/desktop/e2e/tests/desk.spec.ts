@@ -854,9 +854,10 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     const railStage = await box(shell, ".desk-stage");
     const railUsable = usableOf(railStage);
 
-    // ── 9. Carry a window to the desk's leading edge, and on out over the rail, between its items (where it is a tile
-    //      that nothing there takes: desk-dock-drop.spec.ts): the left half lights all the way, as the right half does
-    //      past the right edge, and the window lands there, its tab kept. Its × closes it ─
+    // ── 9. Carry a window to the desk's leading edge: the left half lights, as the right half does past the right edge.
+    //      On out over the rail, between its items, it is New space's tile — the rail's ground makes a space of it
+    //      (2026-10-26; desk-dock-drop.spec.ts) — New space lit and nothing on the desk; back over the edge it is the
+    //      window again, the left half lit, and let go there it lands in the left half, its tab kept. Its × closes it ─
     // (The stranger's window, on top.)
     const { at: grip } = await frameGrip(app, shell, stranger);
     await shell.mouse.move(grip.x, grip.y);
@@ -875,10 +876,19 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
       await shell.mouse.move(band.x + ((past.x - band.x) * step) / 8, band.y + ((past.y - band.y) * step) / 8);
       await shell.waitForTimeout(16);
     }
-    await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(1);
     await expect(shell.locator(`${windowSelector(stranger)}[data-morph="tile"]`)).toHaveCount(1);
+    await expect(shell.getByTestId("rail-new-space")).toHaveAttribute("data-dropping", "");
+    await expect(shell.locator("[data-rail-drop][data-dropping]")).toHaveCount(1);
+    await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(0);
+    await capture(app, shell, "22-over-rail-ground.png");
+    for (let step = 1; step <= 8; step += 1) {
+      await shell.mouse.move(past.x + ((band.x - past.x) * step) / 8, past.y + ((band.y - past.y) * step) / 8);
+      await shell.waitForTimeout(16);
+    }
+    await expect(shell.locator(`${windowSelector(stranger)}[data-morph]`)).toHaveCount(0);
     await expect(shell.locator("[data-rail-drop][data-dropping]")).toHaveCount(0);
-    await capture(app, shell, "22-left-edge-over-sidebar.png");
+    await expect(shell.locator(".desk-zone[data-on]")).toHaveCount(1);
+    await capture(app, shell, "23-left-edge-again.png");
     await shell.mouse.up();
     await settled(shell, app);
     expect((await snapshot(shell)).tabs.some((tab) => tab.id === stranger)).toBe(true);
@@ -889,7 +899,7 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.id === stranger)).toBe(false);
     await expect(shell.getByTestId("desk-window")).toHaveCount(3);
     await settled(shell, app);
-    await capture(app, shell, "23-closed.png");
+    await capture(app, shell, "24-closed.png");
 
     // ── 10. The footer's menu on the rail hangs out over the desk, in front of it: the pages give way
     //       to their pictures, as for a context menu, and the menu is what the pointer finds there ─
@@ -901,7 +911,7 @@ test.describe.serial("the sidebar as the desk's dock", { tag: ["@desk", "@sideba
     expect(panel.x + panel.width).toBeGreaterThan(railStage.x + 40);
     const over = { x: railStage.x + 30, y: panel.y + panel.height / 2 };
     expect(await shell.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-testid="sidebar-menu"]') !== null, over)).toBe(true);
-    await capture(app, shell, "23b-footer-menu.png");
+    await capture(app, shell, "24b-footer-menu.png");
     await shell.keyboard.press("Escape");
     await expect(shell.getByTestId("sidebar-menu")).toHaveCount(0);
     await expect.poll(async () => (await liveViews(app)).length).toBeGreaterThan(0);
