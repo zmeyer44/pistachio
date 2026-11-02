@@ -1,0 +1,701 @@
+/*
+ * The editor's stylesheet (docs/notes.md §5): the one place in an app that is
+ * a DOCUMENT rather than chrome. The sizes are the spec's — 16/28 body,
+ * 30/24/20 headings on the heading tracking — and every colour is a token
+ * (`--color-gray-*`, `--color-alpha-*`, the Geist ramp both the shell's
+ * theme and the account site declare), so dark mode is the tokens' job and
+ * not a second copy of this sheet. ProseMirror is given no styling of its
+ * own beyond this: what a note looks like is what its document means.
+ *
+ * `@source` is relative to this file: wherever the sheet is imported, the
+ * utilities the editor's components use are generated from this package.
+ */
+@source ".";
+
+.note-editor {
+  /* The faces a host writes in; the account site names Geist's own here. */
+  --note-font-sans: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --note-font-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  position: relative;
+}
+.note-editor .ProseMirror {
+  outline: none;
+}
+.note-editor__content {
+  position: relative;
+}
+.note-prose {
+  font-size: 16px;
+  line-height: 28px;
+  color: var(--color-gray-1000);
+  caret-color: var(--color-gray-1000);
+  overflow-wrap: break-word;
+  /* The shell turns selection off globally (theme.css); a document being
+     written has to have it back, and clicking anywhere in it means "put the
+     caret here". */
+  user-select: text;
+  cursor: text;
+  /* The block handle lives in the left gutter, a widget's edit button in
+     the right one (see .note-drag-handle). TipTap hides the handle when the
+     pointer leaves the editable element, so the gutters must be part of it:
+     otherwise the handle vanishes on the way from the text to the handle. */
+  padding-left: 56px;
+  padding-right: 40px;
+  min-height: 8em;
+}
+.note-prose ::selection {
+  background: color-mix(in oklch, var(--color-blue-700) 22%, transparent);
+}
+.note-prose > * + * {
+  margin-top: 12px;
+}
+.note-prose h1,
+.note-prose h2,
+.note-prose h3 {
+  font-weight: 600;
+  color: var(--color-gray-1000);
+}
+.note-prose h1 {
+  font-size: 30px;
+  line-height: 38px;
+  letter-spacing: -0.03em;
+  margin-top: 28px;
+}
+.note-prose h2 {
+  font-size: 24px;
+  line-height: 32px;
+  letter-spacing: -0.03em;
+  margin-top: 24px;
+}
+.note-prose h3 {
+  font-size: 20px;
+  line-height: 26px;
+  letter-spacing: -0.02em;
+  margin-top: 20px;
+}
+.note-prose > :first-child {
+  margin-top: 0;
+}
+.note-prose strong {
+  font-weight: 600;
+}
+.note-prose a {
+  color: var(--color-gray-1000);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-alpha-400);
+  cursor: text;
+}
+.note-prose a:hover {
+  text-decoration-color: var(--color-gray-800);
+}
+.note-prose ul,
+.note-prose ol {
+  padding-left: 24px;
+}
+.note-prose ul {
+  list-style: disc;
+}
+.note-prose ol {
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+.note-prose ol ol {
+  list-style: lower-alpha;
+}
+.note-prose ol ol ol {
+  list-style: lower-roman;
+}
+.note-prose ul ul {
+  list-style: circle;
+}
+.note-prose ul ul ul {
+  list-style: square;
+}
+.note-prose li::marker {
+  color: var(--color-gray-700);
+}
+.note-prose li > p {
+  margin: 0;
+}
+.note-prose li + li,
+.note-prose li > ul,
+.note-prose li > ol {
+  margin-top: 4px;
+}
+/* To-dos: the home page's tick, drawn by the checkbox itself so the row is
+   one line of text with a control beside it rather than a nested layout. */
+.note-prose ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.note-prose ul[data-type="taskList"] > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.note-prose ul[data-type="taskList"] > li > label {
+  display: grid;
+  flex: none;
+  place-items: center;
+  margin-top: 5px;
+  user-select: none;
+}
+.note-prose ul[data-type="taskList"] > li > label > input {
+  appearance: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border: 1.5px solid var(--color-gray-500);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background-color 100ms,
+    border-color 100ms;
+}
+.note-prose ul[data-type="taskList"] > li > label > input:hover {
+  border-color: var(--color-gray-800);
+}
+.note-prose ul[data-type="taskList"] > li > label > input:checked {
+  background-color: var(--color-gray-700);
+  border-color: var(--color-gray-700);
+  /* The same 3px-stroke tick the home page's to-dos carry. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+  background-size: 11px 11px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+.note-prose ul[data-type="taskList"] > li > div {
+  min-width: 0;
+  flex: 1;
+}
+.note-prose ul[data-type="taskList"] > li[data-checked="true"] > div {
+  color: var(--color-gray-700);
+  text-decoration: line-through;
+}
+.note-prose blockquote {
+  border-left: 2px solid var(--color-alpha-400);
+  padding-left: 16px;
+  color: var(--color-gray-800);
+}
+.note-prose code {
+  font-family: var(--note-font-mono);
+  font-size: 14px;
+  background-color: var(--color-alpha-100);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.note-prose pre {
+  position: relative;
+  background-color: var(--color-alpha-100);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-x: auto;
+  tab-size: 2;
+  white-space: pre;
+}
+.note-prose pre code {
+  font-size: 13px;
+  line-height: 20px;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+/* A code block's bar — the language and Copy — shown when the pointer is on it. */
+.note-code__bar {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--note-font-sans);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  user-select: none;
+}
+.note-code:hover .note-code__bar,
+.note-code__bar:focus-within {
+  opacity: 1;
+}
+.note-code__language,
+.note-code__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-gray-800);
+  font: inherit;
+  cursor: pointer;
+}
+.note-code__language {
+  appearance: none;
+}
+span.note-code__language {
+  cursor: default;
+}
+.note-code__language:hover,
+.note-code__copy:hover {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.note-code__copy svg {
+  width: 13px;
+  height: 13px;
+}
+.note-prose hr {
+  border: 0;
+  border-bottom: 1px solid var(--color-alpha-300);
+  margin: 24px 0;
+}
+.note-prose hr.ProseMirror-selectednode {
+  border-bottom-color: var(--color-gray-800);
+}
+.note-prose .tableWrapper {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.note-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  overflow: hidden;
+}
+.note-prose th,
+.note-prose td {
+  position: relative;
+  min-width: 80px;
+  border: 1px solid var(--color-alpha-300);
+  padding: 6px 10px;
+  vertical-align: top;
+  text-align: left;
+}
+.note-prose th {
+  background-color: var(--color-alpha-100);
+  font-weight: 600;
+}
+.note-prose td > p,
+.note-prose th > p {
+  margin: 0;
+}
+.note-prose .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--color-alpha-200);
+  pointer-events: none;
+}
+.note-prose .column-resize-handle {
+  position: absolute;
+  top: -1px;
+  right: -2px;
+  bottom: -1px;
+  width: 3px;
+  background: var(--color-blue-700);
+  pointer-events: none;
+}
+.note-prose.resize-cursor {
+  cursor: col-resize;
+}
+.note-prose img {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+}
+/* The one line of instruction the block under the caret carries while it is
+   empty — "Type / for commands", "Heading 1", "List", "To-do" — as a
+   pseudo-element, so the document itself stays empty: there is nothing to
+   delete and nothing to serialise. */
+.note-prose .is-empty[data-placeholder]::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--color-gray-600);
+}
+/* A block the grip's menu is open on, and a selected atom (a picture, a
+   widget, an embed): a quiet wash rather than the browser's blue. */
+.note-prose .ProseMirror-selectednode,
+.note-prose .note-block-selected {
+  border-radius: 4px;
+  background-color: var(--color-alpha-100);
+  box-shadow: 0 0 0 2px var(--color-alpha-100);
+}
+.note-prose img.ProseMirror-selectednode {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-blue-700) 30%, transparent);
+}
+/* The selection kept visible while the link editor has the keyboard. */
+.note-pending-selection {
+  background: color-mix(in oklch, var(--color-blue-700) 22%, transparent);
+  border-radius: 2px;
+}
+/* The block handle (@tiptap/extension-drag-handle-react). The plugin owns
+   whether it is shown at all — it sets `visibility` as the pointer moves from
+   block to block, and hides it the moment the pointer LEAVES the editor's
+   element unless it left for the handle itself. So the handle has to live
+   inside that element: the document pads a gutter on its left, wide enough
+   for its two buttons, and the handle is placed at the block's edge, in the
+   gutter. Out of the measure, still in the editor. */
+.note-drag-handle {
+  z-index: 20;
+  transition: opacity 120ms ease;
+}
+.note-drag-handle[data-dragging="true"] {
+  cursor: grabbing;
+}
+.note-handle {
+  display: flex;
+  align-items: center;
+  height: 24px;
+}
+.note-handle__button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-gray-600);
+  cursor: pointer;
+  transition:
+    background-color 100ms ease,
+    color 100ms ease;
+}
+.note-handle__button:hover,
+.note-handle__button[aria-expanded="true"] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-900);
+}
+.note-handle__button svg {
+  width: 18px;
+  height: 18px;
+}
+.note-handle__grip {
+  width: 18px;
+  cursor: grab;
+}
+.note-handle__grip svg {
+  width: 16px;
+  height: 16px;
+}
+.note-handle__grip:active {
+  cursor: grabbing;
+}
+/* Where the block being dragged will land. The plugin sizes and places it
+   (3px, between blocks); this gives it the quiet grey of a rule rather than
+   its default black hairline, and softens the ends. */
+.note-drop-cursor {
+  background: var(--color-alpha-500);
+  border-radius: 999px;
+  pointer-events: none;
+}
+/* Iframes swallow pointer events and would break block dragging. */
+.note-editor:has(.note-drag-handle[data-dragging="true"]) iframe {
+  pointer-events: none;
+}
+/* Keyboard focus on a note's chrome: the shell's ring instead of the UA outline. */
+.note-prose button:focus-visible,
+.note-prose [role="button"]:focus-visible,
+.note-handle__button:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+
+/* A callout: an emoji-led tinted box holding blocks. The emoji is a button
+   that opens the picker (components/notes/nodes/CalloutView.tsx). */
+.note-callout {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px 14px 14px;
+  border-radius: 8px;
+  background: var(--color-alpha-100);
+}
+.note-callout[data-emoji="⚠️"] {
+  background: rgba(255, 163, 68, 0.13);
+}
+.note-callout[data-emoji="❗"],
+.note-callout[data-emoji="❌"],
+.note-callout[data-emoji="🛑"] {
+  background: rgba(255, 115, 105, 0.12);
+}
+.note-callout[data-emoji="✅"] {
+  background: rgba(77, 171, 154, 0.13);
+}
+.note-callout[data-emoji="ℹ️"] {
+  background: rgba(35, 131, 226, 0.09);
+}
+.note-callout__emoji {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.note-callout__emoji:hover:not(:disabled) {
+  background: var(--color-alpha-200);
+}
+.note-callout__emoji:disabled {
+  cursor: default;
+}
+.note-callout__content {
+  flex: 1;
+  min-width: 0;
+}
+.note-callout__content > * + * {
+  margin-top: 12px;
+}
+.note-callout__content > :first-child {
+  margin-top: 0;
+}
+
+/* A toggle: a chevron and a title, and the blocks it hides while closed
+   (components/notes/nodes/ToggleView.tsx). */
+.note-toggle {
+  display: flex;
+  gap: 2px;
+}
+.note-toggle__body {
+  flex: 1;
+  min-width: 0;
+}
+.note-toggle:not([data-open]) [data-type="detailsContent"] {
+  display: none;
+}
+.note-prose [data-type="details"] summary {
+  display: block;
+  list-style: none;
+  font-weight: 500;
+}
+.note-prose [data-type="details"] summary::-webkit-details-marker {
+  display: none;
+}
+.note-prose [data-type="detailsContent"] {
+  margin-top: 8px;
+}
+.note-prose [data-type="detailsContent"] > * + * {
+  margin-top: 12px;
+}
+.note-toggle__button {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-gray-900);
+  cursor: pointer;
+}
+.note-toggle__button:hover {
+  background: var(--color-alpha-200);
+}
+.note-toggle__button svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 150ms ease;
+}
+.note-toggle[data-open] > .note-toggle__button svg {
+  transform: rotate(90deg);
+}
+
+/* An embed: a sandboxed frame for a link (components/notes/nodes/EmbedView.tsx). */
+.note-embed__frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--color-alpha-100);
+  box-shadow: var(--shadow-border);
+}
+.note-embed[data-provider="Web"] .note-embed__frame {
+  aspect-ratio: auto;
+  height: 480px;
+}
+.note-embed[data-provider="Figma"] .note-embed__frame {
+  aspect-ratio: 16 / 10;
+}
+.note-embed__frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.note-embed[data-selected] .note-embed__frame,
+.note-html-block[data-selected] {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-blue-700) 30%, transparent);
+}
+.note-embed__caption {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--color-gray-700);
+}
+.note-embed__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 14px;
+  border-radius: 8px;
+  background: var(--color-alpha-100);
+  box-shadow: var(--shadow-border);
+}
+.note-embed__icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-gray-800);
+}
+.note-embed__input {
+  flex: 1;
+  min-width: 12em;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+}
+.note-embed__input::placeholder {
+  color: var(--color-gray-600);
+}
+.note-embed__error {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 28px;
+  font-size: 12.5px;
+  color: var(--color-red-900);
+}
+
+/* An HTML block: the live, sandboxed frame, its edit toggle in the right
+   gutter, and the code field beneath it while editing
+   (components/notes/nodes/HtmlBlockView.tsx). */
+.note-html-block {
+  position: relative;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px transparent;
+  transition: box-shadow 150ms ease;
+}
+.note-html-block[data-editing] {
+  box-shadow: var(--shadow-border);
+}
+.note-html-block__gutter {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 6px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.note-html-block__toggle {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-gray-600);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.note-html-block__toggle:hover,
+.note-html-block__toggle[aria-pressed="true"] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.note-html-block__toggle svg {
+  width: 16px;
+  height: 16px;
+}
+.note-html-block__preview iframe {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+}
+.note-html-block__empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 14px 14px 14px 16px;
+  border-radius: 8px;
+  background: var(--color-alpha-100);
+  color: var(--color-gray-700);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.note-html-block__write {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-gray-900);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.note-html-block__write:hover {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.note-html-block__code {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-top: 1px solid var(--color-alpha-300);
+  border-radius: 0 0 8px 8px;
+  outline: 0;
+  resize: vertical;
+  background: var(--color-alpha-100);
+  color: var(--color-gray-1000);
+  font-family: var(--note-font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  user-select: text;
+}
+/* Clicks on chrome icons land on their button, which the editor leaves alone
+   (a click on the bare icon would select the whole block). */
+.note-html-block button svg,
+.note-embed button svg,
+.note-toggle__button svg,
+.note-callout__emoji {
+  pointer-events: none;
+}
+.note-callout__emoji {
+  pointer-events: auto;
+}

@@ -71,6 +71,8 @@ export interface DurableTabGroup {
   anchorId?: string;
   /** Grown from a Home tab by a window opened beside it: made for the person, and never Tidy's to archive or unmake (2026-10-13). */
   grown?: true;
+  /** Shows its tabs as windows on its desk; absent, as a browser's tabs, one at a time (2026-11-02, docs/space-tabs.md). */
+  windows?: true;
   /** An empty space's place among the row's units (a tab id, `split:<id>` or `group:<id>`) it stands before. */
   beforeUnit?: string;
 }

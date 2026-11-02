@@ -5,7 +5,7 @@
  * page's teaser all read this one copy, so opening a note twice asks once.
  *
  * Two shapes are kept apart on purpose. `summaries` is what `onNotes` carries
- * — metadata only, so five hundred notes never serialise their markdown on a
+ * — metadata only, so five hundred notes never serialise their text on a
  * keystroke — and `notes` holds the bodies of the ones actually opened.
  *
  * Nothing here throws into React. A host that will never answer (a cloud
@@ -315,7 +315,7 @@ export const useNotes = create<NotesState>((set, get) => ({
  * note is the open note's job, and the agent's `note_search`.
  */
 export function summaryAsNote(summary: NoteSummary): Note {
-  return { ...summary, markdown: summary.snippet };
+  return { ...summary, html: "", markdown: summary.snippet };
 }
 
 /**
@@ -324,6 +324,6 @@ export function summaryAsNote(summary: NoteSummary): Note {
  * thing a moment afterwards, through the same `noteSnippet`.
  */
 function summaryOf(note: Note): NoteSummary {
-  const { markdown, ...rest } = note;
+  const { html: _html, markdown, ...rest } = note;
   return { ...rest, snippet: noteSnippet(markdown) };
 }

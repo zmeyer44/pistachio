@@ -240,6 +240,7 @@ const memoryRecord: MemoryRecord = {
 const noteValue: Note = {
   id: "0a1b2c3d4e5f",
   title: "Sour cherry pie",
+  html: "<h1>Sunday</h1><p>Lattice top.</p>",
   markdown: "# Sunday\n\nLattice top.",
   icon: "\u{1F967}",
   blobIds: ["0123456789abcdef01234567"],
@@ -252,6 +253,7 @@ const noteValue: Note = {
 const noteRecord: NoteRecord = {
   id: "0a1b2c3d4e5f",
   title: "Sour cherry pie",
+  html: "<h1>Sunday</h1><p>Lattice top.</p>",
   markdown: "# Sunday\n\nLattice top.",
   icon: "\u{1F967}",
   blobIds: ["0123456789abcdef01234567"],

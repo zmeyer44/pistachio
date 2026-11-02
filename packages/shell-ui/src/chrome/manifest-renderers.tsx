@@ -76,7 +76,17 @@ function SidebarAddress() {
         {shown.length > 0 ? shown : <span className="text-gray-700">Search or enter URL</span>}
       </span>
       {hint === null ? null : (
-        <Kbd small className="opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">{hint}</Kbd>
+        // Out on hover or keyboard focus, as a tab row's controls are (TabTrailing's clip box): until then it takes no
+        // width — the pill's gap before it given back (-ml-2, the key's ml-2) — and the address runs to the pill's
+        // edge. (Margins, not the clip box's padding, which would hold it open; the key's pixel round it keeps its
+        // outline, a box shadow, inside the clip.)
+        <span className="-ml-2 grid grid-cols-[0fr] opacity-0 transition-[grid-template-columns,opacity] duration-200 ease-out group-hover:grid-cols-[1fr] group-hover:opacity-100 group-focus-visible:grid-cols-[1fr] group-focus-visible:opacity-100">
+          <span className="flex min-w-0 items-center overflow-hidden">
+            <Kbd small className="my-px mr-px ml-2">
+              {hint}
+            </Kbd>
+          </span>
+        </span>
       )}
     </button>
   );

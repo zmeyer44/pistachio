@@ -59,7 +59,8 @@ export interface ArchivedGroupEntry extends ArchiveEntryBase {
    * with a Stack filed and restored whole.
    */
   groupId?: string;
-  group: { title: string; color: TabGroupColor; origin: TabGroupOrigin };
+  /** `windows`: it showed its tabs as windows (TabGroupInfo.windows, docs/space-tabs.md), and comes back so. */
+  group: { title: string; color: TabGroupColor; origin: TabGroupOrigin; windows?: true };
   /** Its tabs; empty only with `groupId`. */
   tabs: ArchivedTab[];
 }
@@ -215,6 +216,7 @@ function sanitizeEntry(value: unknown, options: TabSessionReading): ArchiveEntry
       title: storedTabGroupTitle(group["title"]),
       color: isTabGroupColor(group["color"]) ? group["color"] : "gray",
       origin: group["origin"] === "auto" ? "auto" : "manual",
+      ...(group["windows"] === true ? { windows: true as const } : {}),
     },
     tabs: tabs.slice(0, MAX_ARCHIVED_GROUP_TABS),
   };

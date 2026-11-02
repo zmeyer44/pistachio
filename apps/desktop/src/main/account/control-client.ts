@@ -235,6 +235,8 @@ export interface ControlNoteShare {
  */
 export interface ControlSharedNote {
   title: string;
+  /** The body the editor keeps (docs/notes.md N1), or "" from a device that sent markdown alone. */
+  html: string;
   markdown: string;
   revision: number;
   updatedAt: string;
@@ -922,7 +924,7 @@ export class ControlClient {
    */
   async putSharedNote(
     noteId: string,
-    input: { title: string; markdown: string; revision: number },
+    input: { title: string; html: string; markdown: string; revision: number },
   ): Promise<{ stale: boolean; note?: ControlSharedNote }> {
     try {
       return await this.#request<{ stale: boolean; note?: ControlSharedNote }>(

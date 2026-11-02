@@ -253,34 +253,3 @@ export function httpsUpgradeFor(url: string, failedHosts: Pick<ReadonlySet<strin
   parsed.protocol = "https:";
   return parsed.toString();
 }
-
-/**
- * Hosts that get Chrome's user agent rather than Electron's (docs/shields.md
- * §5): Google's sign-in, which refuses embedded browsers. Everywhere else the
- * user agent stays Electron's own — Cloudflare Turnstile fails a page whose
- * user agent hides the `Electron/` token (error 600010), so it is never
- * reduced across the board.
- */
-export const CHROME_USER_AGENT_HOSTS: readonly string[] = ["accounts.google.com"];
-
-/** Whether this address is on one of `hosts` (or below it). */
-export function wantsChromeUserAgent(url: string, hosts: readonly string[]): boolean {
-  let host: string;
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  return host !== "" && hosts.some((listed) => host === listed || host.endsWith(`.${listed}`));
-}
-
-/**
- * Electron's user agent as Chrome of the same version spells it: the app's
- * and Electron's tokens out, and the version reduced to its major number the
- * way Chrome has frozen it since Chrome 110 (`Chrome/150.0.0.0`).
- */
-export function chromeUserAgent(userAgent: string): string {
-  const match = /^(Mozilla\/5\.0 \([^)]*\) AppleWebKit\/[\d.]+ \(KHTML, like Gecko\)).*?Chrome\/(\d+)[\d.]*.*?(Safari\/[\d.]+)/.exec(userAgent);
-  if (match === null) return userAgent.replace(/\sElectron\/\S+/, "");
-  return `${match[1] ?? ""} Chrome/${match[2] ?? ""}.0.0.0 ${match[3] ?? ""}`;
-}

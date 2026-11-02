@@ -188,6 +188,12 @@ describe("WorkspaceToolStore", () => {
     const over = "x".repeat(262_145);
     expect(() => person.updateNote(pie.id, { markdown: over })).toThrow(/at most 262144/u);
     expect(() => person.createNote({ title: "Too long", markdown: over })).toThrow(/at most 262144/u);
+    // Markdown within its cap whose HTML would not fit (`&` is five bytes
+    // converted) is refused too, rather than stored for every other device
+    // to clamp on arrival.
+    const wide = "&".repeat(220_000);
+    expect(() => person.updateNote(pie.id, { markdown: wide })).toThrow(/at most 1048576/u);
+    expect(() => person.createNote({ title: "Too wide", markdown: wide })).toThrow(/at most 1048576/u);
     expect(person.getNote(pie.id)?.markdown).toBe(illustrated.markdown);
     expect(notified).toBe(3);
 
@@ -239,5 +245,35 @@ describe("WorkspaceToolStore", () => {
     expect(person.listNotes()).toEqual([]);
     expect(person.getNoteBlob(blob.id)).toBeNull();
     expect(() => person.deleteNote(pie.id)).toThrow("note not found");
+
+    // A note from a device that knew markdown alone, with more of it than
+    // the HTML cap can take once converted (N4): read whole, sealed as it
+    // came — a title alone must not publish the HTML the reader was shown.
+    const legacyId = "c".repeat(12);
+    const { html: _html, ...legacyBase } = illustrated;
+    store.receive([await wire(`note:${legacyId}`, { kind: "note", note: { ...legacyBase, id: legacyId, title: "Wide", markdown: wide, blobIds: [], revision: 1 } }, 1_900_000_000_002)]);
+    await store.settled();
+    const servedHtml = `<p>${"&amp;".repeat(220_000)}</p>`;
+    expect(person.getNote(legacyId)?.html).toBe(servedHtml);
+    published.length = 0;
+    expect(person.updateNote(legacyId, { title: "Wider" })).toMatchObject({ title: "Wider", html: servedHtml, markdown: wide, revision: 2 });
+    await store.settled();
+    const sealedWide = published.find((record) => record.key === `note:${legacyId}`)!;
+    const openedWide = JSON.parse(fromUtf8(await open(keys.sealKey, fromBase64(sealedWide.sealedValue!), workspaceSealAad(sealedWide.key)))) as { note: { html: string; markdown: string } };
+    expect(openedWide.note).toMatchObject({ html: "", markdown: wide });
+    expect(person.getNote(legacyId)?.html).toBe(servedHtml);
+
+    // An ordinary note from such a device: a title alone completes it on the
+    // way — the HTML fits, so it is sealed with the note — and what is
+    // answered is the whole note, never a body the editor would take for empty.
+    const olderId = "d".repeat(12);
+    store.receive([await wire(`note:${olderId}`, { kind: "note", note: { ...legacyBase, id: olderId, title: "Old", markdown: "# Sunday\n\nLattice top.", blobIds: [], revision: 1 } }, 1_900_000_000_003)]);
+    await store.settled();
+    published.length = 0;
+    expect(person.updateNote(olderId, { title: "Older" })).toMatchObject({ title: "Older", html: "<h1>Sunday</h1><p>Lattice top.</p>", markdown: "# Sunday\n\nLattice top.", revision: 2 });
+    await store.settled();
+    const sealedOld = published.find((record) => record.key === `note:${olderId}`)!;
+    const openedOld = JSON.parse(fromUtf8(await open(keys.sealKey, fromBase64(sealedOld.sealedValue!), workspaceSealAad(sealedOld.key)))) as { note: { html: string } };
+    expect(openedOld.note.html).toBe("<h1>Sunday</h1><p>Lattice top.</p>");
   });
 });

@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "A note's markdown as one self-contained HTML document, plus its plain text and word count (docs/notes.md §2).",
+  "description": "A note's document: the shared TipTap schema, HTML/markdown/JSON conversions that run without a browser, the agent's structural edit, plain text, and the self-contained page a note is published as (docs/notes.md §2).",
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*.ts"
@@ -14,8 +14,15 @@
     "lint": "eslint src test --max-warnings 0"
   },
   "dependencies": {
-    "markdown-it": "^15.0.2",
-    "markdown-it-task-lists": "^2.1.1"
+    "@tiptap/core": "3.32.1",
+    "@tiptap/extension-details": "3.32.1",
+    "@tiptap/extension-image": "3.32.1",
+    "@tiptap/extension-list": "3.32.1",
+    "@tiptap/extension-table": "3.32.1",
+    "@tiptap/markdown": "3.32.1",
+    "@tiptap/pm": "3.32.1",
+    "@tiptap/starter-kit": "3.32.1",
+    "zeed-dom": "0.18.0"
   },
   "devDependencies": {
     "@repo/eslint-config": "workspace:*",

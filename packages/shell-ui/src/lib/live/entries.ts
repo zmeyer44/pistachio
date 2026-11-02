@@ -16,6 +16,7 @@
 
 import type { LiveDrawing, LiveShareState } from "@pistachio/shell-contracts/live-share";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
+import { spaceShowsTabs, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { isTerminalUrl } from "@pistachio/shell-contracts/terminal";
 import type { SavedDesk } from "../desk/store";
 
@@ -71,6 +72,15 @@ export function drawActionFor(state: LiveShareState, currentGroupId: string | nu
  */
 export function guestsCanBeLetUse(tab: { id: string; url: string }, saved: SavedDesk | undefined): boolean {
   return (!isShellPageUrl(tab.url) || isTerminalUrl(tab.url)) && saved?.windows.some((window) => window.tabId === tab.id && window.mask !== undefined) !== true;
+}
+
+/**
+ * The shared space's arrangement as it stands, for what reads its masks (guestsCanBeLetUse): a space of WINDOWS's, as
+ * the desk saves it — but none for a space showing its tabs one at a time (docs/space-tabs.md), whose saved one waits
+ * for Windows unused while its page is whole, never masked.
+ */
+export function sharedArrangement(group: Pick<TabGroupInfo, "loose" | "anchorId" | "tabIds" | "windows"> | undefined, saved: SavedDesk | undefined): SavedDesk | undefined {
+  return group !== undefined && spaceShowsTabs(group) ? undefined : saved;
 }
 
 /** Why a window cannot be handed to guests, as its row in the Live card says: they watch a window the shell draws; a masked one they do not see. */

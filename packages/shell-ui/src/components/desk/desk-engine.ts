@@ -321,6 +321,11 @@ const SWITCH_STILL_WAIT_MS = 400;
 
 /** A Glance taken in (receiveGlance): where it landed waits this long for its tab to join the group. */
 const GLANCE_LANDING_MS = 3_000;
+/**
+ * A space of tabs made one of windows by its Windows control, never laid out as windows before (docs/space-tabs.md):
+ * the tab in use and the space's tabs used most lately beside it come out, tiled, this many at most.
+ */
+const SPREAD_WINDOWS = 4;
 
 /**
  * The desk's dock is the sidebar's column beside it (docs/desk.md): a tab's
@@ -672,6 +677,12 @@ export interface DeskHost {
    * away"). Any other space's, nothing.
    */
   brokeAway?(tabId: string): void;
+  /**
+   * The desk's space, showing its tabs one at a time (DeskEngine.setTabbed: docs/space-tabs.md), is one of windows from
+   * now on: the person took its window off the whole desk, or brought a second one out beside it. The engine is one
+   * already; the host tells main (TabGroupCommand `setWindows`), whose snapshot then agrees.
+   */
+  windowed?(groupId: string): void;
   save(windows: SavedDeskWindow[], reserve: number): void;
   /**
    * A tab of the group sent to another group (its row's menu): the tab goes
@@ -1057,6 +1068,21 @@ export class DeskEngine {
   #editing: string | null = null;
   /** The group's tabs (start, syncTabs, switchGroup): the dock's, whose pictures are kept fresh. */
   #groupTabIds: readonly string[] = [];
+  /**
+   * The desk's space shows its tabs as a browser does (docs/space-tabs.md; every space's way since 2026-11-02 until it
+   * is made one of windows): the tab in use alone, filling the desk, and another chosen takes its place as the desk
+   * passing to another space would (#swapTo) — so going from tab to tab is going from Home tab to Home tab. A second
+   * window brought out, or the one taken off the whole desk, makes it a space of windows (#toWindows). Never Home's
+   * (each Home tab is a space of its own, the whole desk already). Its arrangement is not saved meanwhile: the space's
+   * last one as windows stays, for its Windows control to bring back (#spread).
+   */
+  #tabbed = false;
+  /**
+   * A space made one of windows by the person while the desk was still passing to it (setTabbed, not yet open — a
+   * tile's Show as windows, the desk then passing there): spread out once the desk is open (#tick). A passing, or the
+   * space made one of tabs again, calls it off.
+   */
+  #pendingSpread: { saved: readonly SavedDeskWindow[]; reserve: number; recent: readonly string[] } | null = null;
   /** The group whose windows these are (start, switchGroup, regroup), as main is told (DeskState.groupId); null where the host did not say. */
   #groupId: string | null = null;
   /**
@@ -1693,6 +1719,7 @@ export class DeskEngine {
     this.#render();
     this.#kick();
     // (A part of a page is no browser's tab.)
+    this.#toWindows();
     this.#host.brokeAway?.(tabId);
   }
 
@@ -2009,12 +2036,15 @@ export class DeskEngine {
     groupId: string | null = null,
     /** How much room was kept for the chat's place when the desk was saved (SavedDesk.reserve): its boxes are read against that much. */
     reserve = 0,
+    /** The space shows its tabs one at a time (#tabbed): the tab in use comes up alone, filling the desk. */
+    tabbed = false,
   ): void {
     this.#shellIds = shellIds;
     this.#groupId = groupId;
     this.#started = true;
+    this.#tabbed = tabbed;
     // The window in use goes on top.
-    const { windows, entry } = this.#laidOut(saved, groupTabIds, entryTabId, this.#shellIds, false, reserve);
+    const { windows, entry } = this.#laidOut(saved, groupTabIds, entryTabId, this.#shellIds, false, reserve, tabbed);
     this.#parked = windows.filter((window) => window.mini?.parked === true).map((window) => window.tabId);
     for (const window of windows) {
       const win = this.#newWin(window.tabId, window.rect);
@@ -2075,12 +2105,17 @@ export class DeskEngine {
      * entry too comes back as it was left (#laidOut).
      */
     reveal?: boolean;
+    /** It shows its tabs one at a time (#tabbed): its tab in use comes alone, filling the desk. */
+    tabbed?: boolean;
   }): void {
     this.#cancelGesture();
     this.#dropPreview();
     this.#selecting = null;
     this.#editing = null;
+    // (Saved as the space left had it — not at all, one of tabs — before the desk is the next one's.)
     this.#save();
+    this.#tabbed = next.tabbed === true;
+    this.#pendingSpread = null;
     const now = performance.now();
     const { exit, arrival } = this.#host.spaceSwitch();
     for (const tabId of this.#order) {
@@ -2106,7 +2141,7 @@ export class DeskEngine {
     // way home, the desk passed from it a moment ago: it is taken back where
     // it was left, not made anew.)
     const reserve = next.reserve ?? 0;
-    const { windows, entry } = this.#laidOut(next.saved, next.tabIds, next.entry, this.#shellIds, next.reveal === true, reserve);
+    const { windows, entry } = this.#laidOut(next.saved, next.tabIds, next.entry, this.#shellIds, next.reveal === true, reserve, this.#tabbed);
     const coming: Win[] = [];
     windows.forEach((window, index) => {
       const homing = this.#wins.get(window.tabId);
@@ -2159,11 +2194,12 @@ export class DeskEngine {
    * where it left, under the window in use (#turnBack). Until 2026-10-09 it
    * flew on into the row and was gone, its tab the desk's all the same.
    */
-  regroup(tabIds: readonly string[], shellIds: readonly string[] | null, groupId: string | null = this.#groupId): void {
+  regroup(tabIds: readonly string[], shellIds: readonly string[] | null, groupId: string | null = this.#groupId, tabbed: boolean = this.#tabbed): void {
     this.#dropPreview();
     this.#groupTabIds = tabIds;
     this.#shellIds = shellIds;
     this.#groupId = groupId;
+    this.#tabbed = tabbed;
     let turned = false;
     for (const id of [...this.#order]) {
       const win = this.#wins.get(id)!;
@@ -2182,7 +2218,48 @@ export class DeskEngine {
       this.#stackShelf();
       this.#dirtyView = true;
     }
+    // A space of tabs taken on in place (a Home tab put in one: Tidy's, a drop): its tab in use alone, filling the desk.
+    if (tabbed) this.#gather(focused);
     this.#save();
+    this.#emit();
+    this.#render();
+    this.#kick();
+  }
+
+  /** The desk's space shows its tabs one at a time (#tabbed; docs/space-tabs.md), as far as the engine knows. */
+  tabbed(): boolean {
+    return this.#tabbed;
+  }
+
+  /**
+   * The desk's space made one of tabs, or of windows (docs/space-tabs.md: main's TabGroupInfo.windows, the snapshot
+   * saying so; DeskSurface). Of tabs: its arrangement is kept as it stands (saved, for Windows to bring back), its
+   * other windows go home into their rows, and the tab in use — the window in use, else `entry` — fills the desk, out
+   * of its row if it was not out. Of windows, `spread` given (the person asked: the space's Tabs/Windows control, its
+   * menu): its windows come out as it last had them as windows, or — never laid out so — the tab in use and the tabs
+   * used most lately beside it (`recent`, most lately first), tiled; with one tab, its window lets go of the desk. With
+   * no `spread` (the desk's own doing, #toWindows, the snapshot catching up), nothing moves.
+   */
+  setTabbed(
+    tabbed: boolean,
+    options: { entry?: string | null; spread?: { saved: readonly SavedDeskWindow[]; reserve: number; recent: readonly string[] } } = {},
+  ): void {
+    if (tabbed === this.#tabbed || this.#destroyed) return;
+    this.#dropPreview();
+    this.#pendingSpread = null;
+    if (tabbed) {
+      // (Saved while it is still one of windows: its arrangement waits for Windows.)
+      this.#save();
+      this.#tabbed = true;
+      const focused = this.#focused !== null && this.#groupTabIds.includes(this.#focused) && this.isStaying(this.#focused) ? this.#focused : null;
+      this.#gather(focused ?? options.entry ?? null);
+    } else {
+      this.#tabbed = false;
+      // (Still passing to it: once the desk is open — its windows have somewhere to come out beside.)
+      if (options.spread !== undefined && this.#phase === "open") this.#spread(options.spread);
+      else if (options.spread !== undefined) this.#pendingSpread = options.spread;
+    }
+    this.#dirtyView = true;
     this.#emit();
     this.#render();
     this.#kick();
@@ -2282,11 +2359,14 @@ export class DeskEngine {
     shellIds: readonly string[] | null = this.#shellIds,
     reveal = false,
     reserve = 0,
+    /** A space of tabs (#tabbed): its entry alone, filling the desk — the arrangement saved for it as windows waits. */
+    tabbed = false,
   ): { windows: LaidOut[]; entry: string | null } {
     const member = (id: string): boolean => (isTabWindow(id) ? tabIds.includes(id) : shellIds === null || shellIds.includes(id));
     const kept = saved.filter((window) => member(window.tabId));
     // The desk comes up on a tab: the one in use, or the window left on top.
     const entry = entryTabId !== null && tabIds.includes(entryTabId) ? entryTabId : (kept.filter((window) => isTabWindow(window.tabId)).at(-1)?.tabId ?? null);
+    if (tabbed) return { windows: entry === null ? [] : [{ tabId: entry, rect: { ...this.#usable() }, mask: null, mini: null, fresh: true }], entry };
     const parkedIds = kept.filter((window) => window.mini?.parked === true && window.mask === undefined && !(reveal && window.tabId === entry)).map((window) => window.tabId);
     // (Each saved box is of the desk short of the room kept when it was saved; the room kept now is given after — start, switchGroup.)
     const usable = this.#usableWith(reserve);
@@ -2324,7 +2404,7 @@ export class DeskEngine {
    * bottom to top, each with the latest picture of its page (null: none
    * yet). Minimized windows are left out: they are not on the desk.
    */
-  sketchSpace(space: { groupId: string; tabIds: readonly string[]; saved: readonly SavedDeskWindow[]; reserve: number; entry: string | null }): DeskSketch {
+  sketchSpace(space: { groupId: string; tabIds: readonly string[]; saved: readonly SavedDeskWindow[]; reserve: number; entry: string | null; tabbed?: boolean }): DeskSketch {
     const still = (tabId: string): string | null => (this.#wins.get(tabId)?.still ?? this.#thumbs.get(tabId) ?? null)?.src ?? null;
     const size = { width: this.#stageBox.width, height: this.#stageBox.height };
     if (space.groupId === this.#groupId) {
@@ -2335,7 +2415,7 @@ export class DeskEngine {
       });
       return { ...size, windows };
     }
-    const { windows, entry } = this.#laidOut(space.saved, space.tabIds, space.entry, null, false, space.reserve);
+    const { windows, entry } = this.#laidOut(space.saved, space.tabIds, space.entry, null, false, space.reserve, space.tabbed === true);
     return {
       ...size,
       windows: windows.filter((window) => window.mini === null).map((window) => ({ tabId: window.tabId, rect: window.rect, still: still(window.tabId), focused: window.tabId === entry })),
@@ -2504,6 +2584,212 @@ export class DeskEngine {
     win.written = "";
   }
 
+  // ── A space of tabs (docs/space-tabs.md) ───────────────────────────────
+
+  /** The tab's window is out and staying on the desk, and no other window is. */
+  #alone(tabId: string): boolean {
+    return this.isStaying(tabId) && this.#order.every((id) => id === tabId || !this.isStaying(id));
+  }
+
+  /** Some window other than this one is out and staying on the desk. */
+  #othersOut(tabId: string): boolean {
+    return this.#order.some((id) => id !== tabId && this.isStaying(id));
+  }
+
+  /**
+   * A space of tabs (#tabbed) is one of windows from now on: the person took its page off the whole desk (#brokeAway,
+   * a mask), or brought a second window out beside it (a row let go on the desk, a document, a Glance as a tile, the
+   * agent's windows). Nothing on the desk moves for it — the windows are where the person put them — and the host
+   * tells main (DeskHost.windowed), whose snapshot then agrees (setTabbed, which does nothing then).
+   */
+  #toWindows(): void {
+    if (!this.#tabbed) return;
+    this.#tabbed = false;
+    this.#dirtyView = true;
+    if (this.#groupId !== null) this.#host.windowed?.(this.#groupId);
+  }
+
+  /**
+   * In a space of tabs, another tab takes the desk (a row chosen, ⌘T, the tab switcher, a tab closed and the next in
+   * use): the window there goes as a passing sends a space's windows — Settings → General's Switching spaces:
+   * dismissed where it stands, or into its row — and the chosen tab's comes in filling the desk as the chosen space's
+   * would ("matched": at its place; else out of its row). So going from tab to tab in a space is going from Home tab
+   * to Home tab, and nothing about the space changes (no passing: its Bar, its Stack, its chat stay). The chosen tab's
+   * window on its way out a moment ago turns round; one minimized or out at another size grows to fill the desk.
+   * `landed`: a Glance taken in filling the desk, its window where the preview landed — the page there goes home into
+   * its row, as in Home.
+   */
+  #swapTo(tabId: string, options: { focus: boolean; landed?: Rect }): void {
+    this.#dropPreview();
+    if (this.#selecting !== null && this.#selecting !== tabId) this.#selecting = null;
+    if (this.#editing !== null && this.#editing !== tabId) this.#editing = null;
+    const now = performance.now();
+    const { exit, arrival } = this.#host.spaceSwitch();
+    const posed = isPosedExit(exit) && options.landed === undefined;
+    for (const id of [...this.#order]) {
+      if (id === tabId || !this.isStaying(id)) continue;
+      const win = this.#wins.get(id)!;
+      if (this.#gesture?.tabId === id) this.#cancelGesture();
+      win.coasting = false;
+      // (Gone home as a passing's windows go: dismissed together once each has a still, or into its own row.)
+      if (posed) this.#departing.set(id, { groupId: this.#groupId ?? "", since: now, exit });
+      else this.#sendAway(win, false);
+    }
+    // (A tab chosen a moment ago, still waiting to come in, is on its way out now.)
+    this.#awaitingCue = null;
+    const usable = this.#usable();
+    const existing = this.#wins.get(tabId);
+    if (existing !== undefined && existing.closing) return;
+    if (existing !== undefined) {
+      if (!this.isStaying(tabId)) this.#takeBack(existing, { ...usable });
+      this.#fillWin(existing, usable);
+      this.#order = [...this.#order.filter((id) => id !== tabId), tabId];
+    } else {
+      this.#makeRoom();
+      const entrance = options.landed === undefined && isPosedExit(exit) && arrival === "matched" ? entranceMotion(exit, reducedMotion()) : null;
+      const win =
+        options.landed !== undefined ? this.#newWin(tabId, options.landed) : entrance === null ? this.#flyingIn(tabId, { ...usable }) : this.#comingIn(tabId, { ...usable }, entrance);
+      this.#wins.set(tabId, win);
+      this.#order.push(tabId);
+      if (entrance !== null) this.#awaitEntrance([win], tabId, entrance, now);
+    }
+    this.#stackShelf();
+    this.#focused = tabId;
+    this.#pendingFocus = options.focus ? tabId : null;
+    this.#host.select(tabId);
+    this.#dirtyView = true;
+    this.#emit();
+    this.#render();
+    this.#requestThumbs([tabId]);
+    // A window whose still never comes goes all the same once the wait is up.
+    this.#renderIn(SWITCH_STILL_WAIT_MS + 20);
+    this.#kick();
+  }
+
+  /**
+   * A space of tabs' desk (#tabbed), made so where it stands (setTabbed, regroup): every window but the tab in use's
+   * goes home into its row — gathered, not passed from — and that one fills the desk, whole (grown back from
+   * minimized, its mask let go of), or comes out of its row filling it. With no tab in use, nothing stays out.
+   */
+  #gather(entry: string | null): void {
+    const usable = this.#usable();
+    const keep = entry !== null && isTabWindow(entry) && this.#groupTabIds.includes(entry) ? entry : null;
+    for (const id of [...this.#order]) {
+      if (id === keep || !this.isStaying(id)) continue;
+      if (this.#gesture?.tabId === id) this.#cancelGesture();
+      this.#sendAway(this.#wins.get(id)!, false);
+    }
+    if (keep === null) {
+      this.#dirtyView = true;
+      return;
+    }
+    const win = this.#wins.get(keep);
+    if (win !== undefined && win.closing) return;
+    if (win === undefined) {
+      this.#wins.set(keep, this.#flyingIn(keep, { ...usable }));
+      this.#order.push(keep);
+    } else {
+      if (!this.isStaying(keep)) this.#takeBack(win, { ...usable });
+      this.#fillWin(win, usable);
+      this.#order = [...this.#order.filter((id) => id !== keep), keep];
+    }
+    this.#stackShelf();
+    this.#focused = keep;
+    this.#pendingFocus = keep;
+    this.#dirtyView = true;
+  }
+
+  /**
+   * A window made to fill the desk as a space of tabs' page does: out of the shelf and whole if it was minimized, its
+   * mask let go of (a part of a page is no tab), headed for the whole desk — its box kept to let go of it to (⤢), as
+   * toggleMaximize keeps it.
+   */
+  #fillWin(win: Win, usable: Rect): void {
+    if (this.#gesture?.tabId === win.tabId) this.#cancelGesture();
+    if (win.mini !== null) this.#unminimize(win);
+    const masked = win.mask !== null;
+    if (masked) {
+      win.mask = null;
+      win.unmasking = null;
+      win.written = "";
+    }
+    const current = win.target ?? win.rect;
+    if (!sameRect(current, usable, 2)) {
+      win.restore = masked ? null : { ...current };
+      win.target = { ...usable };
+    }
+    win.coasting = false;
+    win.delay = 0;
+    this.#dirtyView = true;
+  }
+
+  /**
+   * A space of tabs made one of windows by the person (setTabbed with `spread`): the arrangement it last had as
+   * windows comes back — each window still its own where it was left, the window in use among them, flying out of
+   * their rows a beat apart, as a passing brings a space's windows — or, with none to bring back, the tab in use and
+   * the tabs used most lately beside it (SPREAD_WINDOWS at most) come out tiled, the window in use in the main place;
+   * a space of one tab's window lets go of the desk, to the box it had before it filled it, or the middle.
+   */
+  #spread(spread: { saved: readonly SavedDeskWindow[]; reserve: number; recent: readonly string[] }): void {
+    const usable = this.#usable();
+    const entry = this.#focused !== null && this.isStaying(this.#focused) ? this.#focused : null;
+    const { windows } = this.#laidOut(spread.saved, this.#groupTabIds, entry, this.#shellIds, true, spread.reserve);
+    // (Any window of its own saved — the window in use's alone, too — is an arrangement to bring back; only the entry
+    // #laidOut lays out afresh, saved nowhere, is none.)
+    if (windows.some((window) => window.fresh !== true)) {
+      const placed: Win[] = [];
+      windows.forEach((window, index) => {
+        const out = this.#wins.get(window.tabId);
+        if (out !== undefined) {
+          if (out.closing) return;
+          if (!this.isStaying(window.tabId)) this.#takeBack(out, window.rect);
+          // As it was left: masked again — the page's region, then to its box — or minimized, or at its own size.
+          if (window.mini !== null) {
+            this.#setMinimized(out, window.mini);
+            out.target = { ...window.rect };
+          } else if (out.mini !== null) this.#unminimize(out);
+          if (window.mask !== null && out.mask === null) this.#maskWindow(out, window.mask, window.rect);
+          else if (window.mini === null) out.target = { ...window.rect };
+          out.restore = null;
+          out.coasting = false;
+          out.delay = 0;
+          if (!window.fresh) placed.push(out);
+          return;
+        }
+        const win = this.#flyingIn(window.tabId, window.rect);
+        win.mask = window.mask;
+        win.mini = window.mini;
+        this.#keepOwn(win, window, spread.reserve);
+        if (window.mini?.parked === true) this.#parked.push(window.tabId);
+        win.delay = this.#beat(index, windows.length, 0.03, 0.035);
+        this.#wins.set(window.tabId, win);
+        this.#order.push(window.tabId);
+        if (!window.fresh) placed.push(win);
+      });
+      // (Saved with other room kept for the chat's place than is kept now: where each lands is where the room now leaves it.)
+      if (spread.reserve !== this.#reserve) this.#reroom(placed, spread.reserve, this.#reserve, false);
+      if (entry !== null) this.#order = [...this.#order.filter((id) => id !== entry), entry];
+      this.#stackShelf();
+      this.#layShelf();
+    } else if (entry !== null) {
+      const recent = spread.recent.filter((id) => id !== entry && this.#groupTabIds.includes(id) && !this.isStaying(id));
+      const beside = recent.slice(0, SPREAD_WINDOWS - 1);
+      if (beside.length === 0) {
+        // One tab: its window lets go of the desk.
+        const win = this.#wins.get(entry)!;
+        if (sameRect(win.target ?? win.rect, usable, 2)) {
+          win.target = win.restore !== null && !sameRect(win.restore, usable, 2) ? clampRect(win.restore, this.#reach()) : centeredRect(usable);
+          win.restore = null;
+          win.coasting = false;
+        }
+      } else {
+        for (const tabId of beside) this.#addQuiet(tabId);
+        this.#layOut("tile");
+      }
+    }
+    this.#save();
+  }
+
   // ── What the rest of the browser did ───────────────────────────────────
 
   /** The tabs of the group now: a window whose tab left it (closed, moved out) goes. */
@@ -2530,6 +2816,13 @@ export class DeskEngine {
   /** The browser's active tab changed; if it is on the desk it comes to the top, if not it comes out. */
   activeChanged(tabId: string): void {
     this.#unblur();
+    // A space of tabs: the tab chosen takes the desk from the one there (unless it is out there alone already, or its
+    // window is in hand — a row pulled out over the page selects its tab: a second window, not a swap, #gestureEnd).
+    // (Through add: a Glance taken in filling the desk lands where its preview did.)
+    if (this.#tabbed && this.#groupTabIds.includes(tabId) && !this.#alone(tabId) && this.#gesture?.tabId !== tabId) {
+      this.add(tabId, { focus: true });
+      return;
+    }
     if (this.#wins.has(tabId)) {
       // Chosen from outside the desk (the sidebar, a shortcut), not by a raise of the desk's own.
       const chosen = this.#focused !== tabId;
@@ -2646,8 +2939,8 @@ export class DeskEngine {
    * ones as pictures, minimized ones parked), the window left on top in use:
    * a live share's report of its space while another is in front.
    */
-  savedGeometry(saved: readonly SavedDeskWindow[], tabIds: readonly string[], shellIds: readonly string[] | null, reserve = 0): DeskLiveWindow[] {
-    const { windows, entry } = this.#laidOut(saved, tabIds, null, shellIds, false, reserve);
+  savedGeometry(saved: readonly SavedDeskWindow[], tabIds: readonly string[], shellIds: readonly string[] | null, reserve = 0, tabbed = false, entryTabId: string | null = null): DeskLiveWindow[] {
+    const { windows, entry } = this.#laidOut(saved, tabIds, entryTabId, shellIds, false, reserve, tabbed);
     return windows.map((window) => {
       const insets = window.mask !== null ? MASK_INSETS : WINDOW_INSETS;
       const page = { x: window.rect.x + insets.left, y: window.rect.y + insets.top, w: window.rect.w - insets.left - insets.right, h: window.rect.h - insets.top - insets.bottom };
@@ -2667,6 +2960,20 @@ export class DeskEngine {
 
   /** Bring a tab out of the inventory — or, if its window is out, to the top. */
   add(tabId: string, options: { focus?: boolean; rect?: Rect } = {}): void {
+    // A space of tabs (#tabbed): the tab takes the desk from the one there, filling it — unless it is put somewhere
+    // short of that beside another window (a row let go on the desk: addAt), which makes the space one of windows.
+    // (A document is no tab: a window of its own, wherever it comes out — a space of windows, as a file makes a Home tab.)
+    if (this.#tabbed) {
+      const member = isTabWindow(tabId) && this.#groupTabIds.includes(tabId);
+      const fills = options.rect === undefined || sameRect(options.rect, this.#usable(), 2);
+      if (!isTabWindow(tabId) || (!fills && this.#othersOut(tabId))) this.#toWindows();
+      else if (member && !this.#alone(tabId) && this.#gesture?.tabId !== tabId) {
+        const incoming = this.#incoming?.tabId === tabId && performance.now() - this.#incoming.at < GLANCE_LANDING_MS ? this.#incoming : null;
+        if (this.#incoming?.tabId === tabId) this.#incoming = null;
+        this.#swapTo(tabId, { focus: options.focus !== false, ...(incoming === null || options.rect !== undefined ? {} : { landed: incoming.rect }) });
+        return;
+      }
+    }
     // Chosen from the dock (or the sidebar, a shortcut) while minimized: it grows back, and is in use.
     if (options.focus === true && this.#wins.get(tabId)?.mini != null && this.#wins.get(tabId)!.flight === null) {
       this.expand(tabId);
@@ -2763,6 +3070,9 @@ export class DeskEngine {
    */
   openAt(id: string, client: Point, share: { w: number; h: number; maxW: number }): void {
     if (this.#phase !== "open") return;
+    // (A document's window — a file let go on the desk — is no tab: a space of tabs is one of windows from now on, as a
+    // Home tab given a file is, so the window is kept where it was put, the desk saved as it stands.)
+    this.#toWindows();
     if (this.#wins.has(id) && this.#wins.get(id)!.flight !== "away") {
       this.add(id, { focus: true });
       return;
@@ -3149,6 +3459,9 @@ export class DeskEngine {
   receiveGlance(tabId: string, how: "fill" | "tile", ownerId: string): { stage: Rect; window: Rect } | null {
     if (this.#phase !== "open" || this.#wins.has(tabId)) return null;
     this.#cancelGesture();
+    // A tile beside the page of a space of tabs is a second window: a space of windows. (Filling the desk, it is a tab
+    // of it taking the desk: add → #swapTo.)
+    if (how === "tile") this.#toWindows();
     const usable = this.#usable();
     const rect = how === "fill" ? { ...usable } : this.#tileForGlance(tabId, ownerId, usable);
     this.#incoming = { tabId, rect, at: performance.now() };
@@ -3511,7 +3824,9 @@ export class DeskEngine {
     const returning = this.#wins.get(tabId);
     if (returning !== undefined && (returning.flight !== "away" || !returning.homeward)) return;
     if (returning === undefined) this.#makeRoom();
-    let target = rect;
+    // A space of tabs: beside another window, or a document's, a space of windows; alone, its tab fills the desk.
+    if (this.#tabbed && (this.#othersOut(tabId) || !isTabWindow(tabId))) this.#toWindows();
+    let target = this.#tabbed ? { ...this.#usable() } : rect;
     if (target === undefined) {
       const staying = this.#staying().filter((id) => this.#wins.get(id)!.mini?.parked !== true);
       const rects = staying.map((id) => this.#wins.get(id)!.target ?? this.#wins.get(id)!.rect);
@@ -4338,8 +4653,10 @@ export class DeskEngine {
     this.#emit();
     this.#render();
     this.#kick();
-    // (A row pulled out of the sidebar is a tab brought to the desk, not one taken off it.)
+    // (A row pulled out of the sidebar is a tab brought to the desk, not one taken off it — but in a space of tabs,
+    // let go beside the page there or short of the whole desk, a second window: a space of windows.)
     if (gesture.kind === "move") this.#brokeAway(win);
+    else if (gesture.kind === "spawn" && this.#tabbed && (this.#othersOut(win.tabId) || !sameRect(win.target ?? win.rect, usable, 2))) this.#toWindows();
   }
 
   /**
@@ -4350,6 +4667,8 @@ export class DeskEngine {
     if (win.mini !== null) return;
     const rest = win.coasting ? null : (win.target ?? win.rect);
     if (rest !== null && sameRect(rest, this.#usable(), 2)) return;
+    // (A space of tabs whose page is taken off the whole desk: one of windows from now on.)
+    this.#toWindows();
     this.#host.brokeAway?.(win.tabId);
   }
 
@@ -4483,6 +4802,14 @@ export class DeskEngine {
       this.#phase = "open";
       this.#dirtyView = true;
       this.#save();
+      // A space made one of windows as the desk passed to it: its windows come out now (setTabbed).
+      const spread = this.#pendingSpread;
+      this.#pendingSpread = null;
+      if (spread !== null && !this.#tabbed) {
+        this.#spread(spread);
+        this.#emit();
+        active = true;
+      }
     }
     this.#render();
     if (this.#maskFade !== null) active = true;
@@ -6098,7 +6425,8 @@ export class DeskEngine {
   }
 
   #save(): void {
-    if (this.#phase !== "open") return;
+    // (A space of tabs keeps the arrangement it last had as windows: its Windows control brings that back, #spread.)
+    if (this.#phase !== "open" || this.#tabbed) return;
     const usable = this.#usable();
     if (usable.w <= 1 || usable.h <= 1) return;
     const whole = this.#usableWith(0);

@@ -5,7 +5,7 @@ import { SURFACE_GUTTER } from "@pistachio/shell-contracts/chrome";
 import type { BrowserTabInfo, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { isDeskUndoKey } from "@pistachio/shell-contracts/desk";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
-import { tabGroupTitle, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { isHomeGroup, spaceShowsTabs, tabGroupTitle, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi, shellApi } from "../../api";
 import { agentActivity } from "../../lib/desk/agent";
 import { useGroupContexts, useGroupContextsLoaded } from "../../lib/desk/group-context";
@@ -14,7 +14,7 @@ import { useNowPlaying } from "../../lib/desk/now-playing";
 import { documentWindowIds, fileOf } from "../../lib/desk/documents";
 import { fileItemOf, fileWindowId, isTabWindow } from "../../lib/desk/windows";
 import { displayHost } from "../../lib/url";
-import { lendDeskArrange, lendDeskAsk, lendDeskEngine, revealFor, takeSpaceChoice } from "../../lib/desk/open";
+import { lendDeskArrange, lendDeskAsk, lendDeskEngine, revealFor, takeSpaceChoice, takeSpread } from "../../lib/desk/open";
 import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
 import type { DockItem, DockRailItem, DockTargets } from "../../lib/desk/dock-drop";
 import type { Rect } from "../../lib/desk/geometry";
@@ -119,6 +119,11 @@ function sidebarHome(kind: "tab" | "group" | "file", id: string, groupId: string
   if (kind === "group") return tile(id) ?? groupRow(id);
   if (kind === "file") return stack() ?? tile(groupId) ?? groupRow(groupId);
   return tabRow(id) ?? tile(groupId) ?? groupRow(groupId);
+}
+
+/** A space's tabs, the one used most lately first: a space of tabs comes up on the first (docs/space-tabs.md). */
+function byRecency(tabs: ReadonlyArray<{ id: string; lastActiveAt: number }>): string[] {
+  return [...tabs].sort((a, b) => b.lastActiveAt - a.lastActiveAt).map((tab) => tab.id);
 }
 
 /**
@@ -247,6 +252,11 @@ export default function DeskSurface() {
     return state.snapshot?.tabs.find((tab) => tab.id === own)?.title ?? "";
   });
   const deskGroup = useMemo(() => (group !== null && ownTitle !== null ? { ...group, title: tabGroupTitle(ownTitle) } : group), [group, ownTitle]);
+  // It shows its tabs as a browser does, one at a time filling the desk (docs/space-tabs.md), or as windows.
+  const tabbed = group !== null && spaceShowsTabs(group);
+  // (A space gone back to Home — a page's space down to its page, a grown one down to one tab — is no space of windows
+  // the person asked for: the desk stops showing it as tabs, and nothing moves.)
+  const homeNow = group !== null && isHomeGroup(group);
   const activeTabId = useAppStore((state) => state.snapshot?.activeTabId ?? null);
   const wakingTabIds = useAppStore((state) => state.snapshot?.wakingTabIds ?? EMPTY_IDS);
   const overlayActive = useAppStore((state) => state.overlayActive);
@@ -345,6 +355,7 @@ export default function DeskSurface() {
       // A Home tab's window taken off the whole desk — moved, resized, let go of, masked — is no browser's tab any more:
       // its space is one of its own, on the rail (main's ownSpace: the same space, so the desk stays on it, the window
       // where it was let go). Until 2026-10-14 it stayed a Home tab, its window wherever it was left.
+      // (A space of windows, as main makes every Home tab broken away — docs/space-tabs.md.)
       brokeAway: (tabId) => {
         const store = useAppStore.getState();
         const groupId = shownGroup.current;
@@ -352,6 +363,9 @@ export default function DeskSurface() {
         if (!latest.current.tabs.some((tab) => tab.id === tabId)) return;
         void store.tabGroupCommand({ type: "ownSpace", groupId });
       },
+      // A space of tabs whose page was taken off the whole desk, or given a second window beside it: one of windows
+      // from now on (main's setWindows; the engine is one already, and the snapshot agreeing moves nothing).
+      windowed: (gid) => void useAppStore.getState().tabGroupCommand({ type: "setWindows", groupId: gid, windows: true }),
       save: (windows, reserve) => {
         if (shownGroup.current !== null) useDeskStore.getState().save(shownGroup.current, reserve > 0 ? { windows, reserve } : { windows });
       },
@@ -398,7 +412,8 @@ export default function DeskSurface() {
     // (Saved with room kept for the chat's place, its boxes are of the desk short of it; the card, once up, asks for
     // the room kept now — DeskBar — and the engine gives it then.)
     const startDesk = useDeskStore.getState().saved[startGroup];
-    created.start(startDesk?.windows ?? [], entry, ids, documents, startGroup, startDesk?.reserve ?? 0);
+    const startTabbed = latest.current.group !== null && spaceShowsTabs(latest.current.group);
+    created.start(startDesk?.windows ?? [], entry ?? (startTabbed ? (byRecency(latest.current.tabs)[0] ?? null) : null), ids, documents, startGroup, startDesk?.reserve ?? 0, startTabbed);
     setEngine(created);
 
     const measure = (): void => {
@@ -475,10 +490,16 @@ export default function DeskSurface() {
     // (Read on every passing, so a mark never outlives the passing it was for.)
     const spaceChosen = takeSpaceChoice(groupId, chosen);
     const desk = useDeskStore.getState();
+    const shows = latest.current.group !== null && latest.current.group.id === groupId && spaceShowsTabs(latest.current.group);
+    // Made one of windows from its tile's menu while another space was in front, never laid out so: it comes up as
+    // tabs, and the effect below spreads it out as windows, as its Windows control would have in front (askSpread).
+    // With an arrangement of its own, the passing brings that back as it was left — a window minimized stays so.
+    const spreading = !shows && latest.current.group?.id === groupId && !homeNow && takeSpread(groupId, desk.saved[groupId]?.windows ?? [], groupTabIds, shellIds);
+    const nextTabbed = shows || spreading;
     if (takesOnInPlace(engine, chosen, desk.saved[groupId] !== undefined)) {
       // (What it saves from here is the new desk's.)
       shownGroup.current = groupId;
-      engine.regroup(groupTabIds, shellIds, groupId);
+      engine.regroup(groupTabIds, shellIds, groupId, nextTabbed);
       return;
     }
     // A Glance taken in filling the desk from a Home tab: a Home tab of its own (main's; a Home tab's space takes no tab,
@@ -486,17 +507,39 @@ export default function DeskSurface() {
     // the page it was opened from going home to its row, rather than passing to it (2026-10-14).
     if (chosen !== null && desk.saved[groupId] === undefined && engine.awaitsLanding(chosen)) {
       shownGroup.current = groupId;
-      engine.regroup(groupTabIds, shellIds, groupId);
+      engine.regroup(groupTabIds, shellIds, groupId, nextTabbed);
       engine.add(chosen, { focus: true });
       return;
     }
     const saved = desk.saved[groupId]?.windows ?? [];
     const reserve = desk.saved[groupId]?.reserve ?? 0;
-    const entry = chosen ?? passedEntry(saved, latest.current.tabs);
+    // (A space of tabs comes up on its tab used last: what was on top of its desk as windows, long ago maybe, is not it.)
+    const entry = chosen ?? (nextTabbed ? (byRecency(latest.current.tabs)[0] ?? null) : passedEntry(saved, latest.current.tabs));
     // A tab chosen (not the space: selectSpace marks that) comes out whole, minimized or not (2026-10-09).
-    engine.switchGroup({ from: from ?? groupId, groupId, tabIds: groupTabIds, shellIds, saved, reserve, entry, reveal: revealFor(chosen, spaceChosen) });
+    engine.switchGroup({ from: from ?? groupId, groupId, tabIds: groupTabIds, shellIds, saved, reserve, entry, reveal: revealFor(chosen, spaceChosen), tabbed: nextTabbed });
     shownGroup.current = groupId;
   }, [engine, groupId, groupKnown]);
+
+  // The space on the desk made one of tabs, or of windows (docs/space-tabs.md: main's TabGroupInfo.windows): the desk
+  // follows — gathered into the tab in use filling it, or, asked for by the person (the space's Tabs/Windows control,
+  // its menu), spread out as windows: as it last had them, or its tabs used most lately, tiled. Made one of windows by
+  // the desk itself (a window carried off it, a second one brought out), the engine is one already, and nothing moves.
+  // (After the passing above, in the same commit: a space passed to comes up as it shows its tabs.)
+  useLayoutEffect(() => {
+    if (engine === null || groupId === null || shownGroup.current !== groupId || engine.tabbed() === tabbed) return;
+    const active = useAppStore.getState().snapshot?.activeTabId ?? null;
+    if (tabbed) {
+      engine.setTabbed(true, { entry: active !== null && latest.current.tabs.some((tab) => tab.id === active) ? active : (byRecency(latest.current.tabs)[0] ?? null) });
+      return;
+    }
+    if (homeNow) {
+      engine.setTabbed(false);
+      return;
+    }
+    const saved = useDeskStore.getState().saved[groupId];
+    engine.setTabbed(false, { spread: { saved: saved?.windows ?? [], reserve: saved?.reserve ?? 0, recent: byRecency(latest.current.tabs) } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, groupId, tabbed]);
 
   // ── The smart layout (docs/desk-layout.md) ─────────────────────────────
 

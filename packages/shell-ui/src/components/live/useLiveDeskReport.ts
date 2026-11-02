@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { LIVE_SHELL_MARKS, type LiveRect } from "@pistachio/shell-contracts/live-share";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
+import { spaceShowsTabs } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { documentWindowIds } from "../../lib/desk/documents";
 import { deskGroups, useDeskStore } from "../../lib/desk/store";
@@ -148,7 +149,10 @@ export function useLiveDeskReport(engine: DeskEngine | null, contexts: readonly 
       const from = { saved, tabs: useAppStore.getState().snapshot?.tabs, key: [group.tabIds.join(" "), shellIds.join(" "), geometry.stage.w, geometry.stage.h].join("|") };
       if (laidFrom !== null && laidFrom.saved === from.saved && laidFrom.tabs === from.tabs && laidFrom.key === from.key) return;
       laidFrom = from;
-      const windows = engine.savedGeometry(saved.windows, group.tabIds, shellIds, saved.reserve ?? 0);
+      // (A space of tabs is its tab used last, alone, filling its desk: docs/space-tabs.md.)
+      const tabbed = spaceShowsTabs(group);
+      const lastUsed = tabbed ? ((useAppStore.getState().snapshot?.tabs ?? []).filter((tab) => group.tabIds.includes(tab.id)).sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id ?? null) : null;
+      const windows = engine.savedGeometry(saved.windows, group.tabIds, shellIds, saved.reserve ?? 0, tabbed, lastUsed);
       // (The stage shows another space: no picture of the shared one is there to cut.)
       pacer.still(deskReport({ groupId: shared, stage: geometry.stage, viewport: viewport(), windows, kindOf, covers: [], covered: true, sent: pacer.sent }, true));
     };

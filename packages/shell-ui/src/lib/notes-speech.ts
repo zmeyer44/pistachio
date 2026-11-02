@@ -3,20 +3,22 @@
  * (components/notes/NoteEditor.tsx). Its title, then its body the way the
  * reader speaks an article (shell-contracts reader.ts, readerSpeechText):
  * headings and list items their own sentences, so the voice pauses at each;
- * quotes as their paragraphs; a table row by row. Code, pictures and rules
- * are dropped — a synthesizer reading a code block aloud is noise — and so
- * is every bit of markdown's own punctuation, since this reads the document
- * the markdown stands for, not the markdown.
+ * quotes and callouts as their paragraphs; a toggle's title then what it
+ * hides; a table row by row. Code, pictures, rules, embeds and widgets are
+ * dropped — a synthesizer reading a code block aloud is noise — since this
+ * reads the document, not its markup.
+ *
+ * It takes the editor's own JSON (the document in hand) rather than parsing
+ * HTML, so the shell never needs a parser of its own for this.
  */
 
 import type { JSONContent } from "@tiptap/core";
-import { markdownToDoc } from "./notes-markdown";
 
-export function noteSpeechText(title: string, markdown: string): string {
+export function noteSpeechText(title: string, doc: JSONContent): string {
   const parts: string[] = [];
   const heading = clean(title);
   if (heading !== "") parts.push(sentence(heading));
-  speakBlocks(markdownToDoc(markdown).content ?? [], parts);
+  speakBlocks(doc.content ?? [], parts);
   return parts.filter((part) => part !== "").join("\n\n");
 }
 
@@ -24,6 +26,7 @@ function speakBlocks(blocks: readonly JSONContent[], parts: string[]): void {
   for (const block of blocks) {
     switch (block.type) {
       case "heading":
+      case "detailsSummary":
         parts.push(sentence(inline(block)));
         break;
       case "paragraph":
@@ -35,13 +38,16 @@ function speakBlocks(blocks: readonly JSONContent[], parts: string[]): void {
         for (const item of block.content ?? []) speakItem(item, parts);
         break;
       case "blockquote":
+      case "callout":
+      case "details":
+      case "detailsContent":
         speakBlocks(block.content ?? [], parts);
         break;
       case "table":
         for (const row of block.content ?? []) parts.push(sentence((row.content ?? []).map(inline).filter((cell) => cell !== "").join(", ")));
         break;
       default:
-        // codeBlock, image, horizontalRule: nothing to say.
+        // codeBlock, image, horizontalRule, embed, htmlBlock: nothing to say.
         break;
     }
   }

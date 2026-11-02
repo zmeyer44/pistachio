@@ -32,21 +32,24 @@ export const MAX_MEDIA_CARDS = 3;
 /**
  * Put the stack's cards in the order they are drawn: front first.
  *
- * `background` arrives newest-active first, which is the order for the
- * audio cards. The live picture goes with the video that is playing — main
- * keeps that to one in the background — so that card comes to the front
- * whatever its age. Failing a playing one, the most recent video leads: a
- * paused picture is still the richer continuation, and the front is where
- * the picture returns when it resumes. The pick happens before the cut to
- * `MAX_MEDIA_CARDS`, so the video is never the fourth-newest card dropped
- * from the stack that exists to show it.
+ * `background` arrives newest-active first (an item is active again when
+ * it starts playing). What is playing leads: the live picture goes with the
+ * video that is playing — main keeps that to one in the background, and
+ * only the front card draws it — so that card comes first whatever its age;
+ * failing one, the most recently started of whatever else is playing (Read
+ * aloud started over a paused video comes in front of it). With nothing
+ * playing the newest-active order stands, so pausing the front card leaves
+ * it where it is; a paused video is no longer pulled ahead of newer audio,
+ * and the front is where its picture returns when it plays again. The pick
+ * happens before the cut to `MAX_MEDIA_CARDS`, so what is playing is never
+ * the fourth-newest card dropped from the stack.
  */
 export function orderMediaStack(background: readonly BrowserMediaInfo[]): BrowserMediaInfo[] {
-  const playing = background.findIndex((item) => item.hasVideo && item.playing);
-  const videoIndex = playing === -1 ? background.findIndex((item) => item.hasVideo) : playing;
-  const ordered = videoIndex <= 0
+  const video = background.findIndex((item) => item.hasVideo && item.playing);
+  const lead = video === -1 ? background.findIndex((item) => item.playing) : video;
+  const ordered = lead <= 0
     ? [...background]
-    : [background[videoIndex]!, ...background.filter((_, index) => index !== videoIndex)];
+    : [background[lead]!, ...background.filter((_, index) => index !== lead)];
   return ordered.slice(0, MAX_MEDIA_CARDS);
 }
 

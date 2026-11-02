@@ -63,23 +63,27 @@ import {
 import {
   MAX_NOTE_BLOB_BYTES,
   MAX_NOTE_BLOBS_PER_NOTE,
+  MAX_NOTE_HTML_BYTES,
   MAX_NOTE_MARKDOWN_BYTES,
   MAX_NOTES,
   noteBlobIdsIn,
   sanitizeNote,
   sanitizeNoteBlob,
   sanitizeNoteInput,
+  sanitizeNoteMarkdown,
   sanitizeNotePatch,
   searchNotes,
   summaryOf,
   type Note,
   type NoteBlob,
   type NoteBlobMediaType,
+  type NoteEdit,
   type NoteInput,
   type NotePatch,
   type NoteSource,
   type NoteSummary,
 } from "@pistachio/agent-runtime/notes";
+import { applyNoteEdit, completeNote, completeNoteBody, htmlToMarkdown, markdownToHtml, type NoteBody } from "@pistachio/notes";
 import {
   MAX_ARTIFACT_BRIEF,
   MAX_ARTIFACT_HTML_BYTES,
@@ -239,27 +243,61 @@ function storedDoc(value: unknown, key: string): StoredDoc | null | undefined {
 
 /**
  * A body over the cap is refused, never quietly cut: `sanitizeNoteMarkdown`
- * clamps so a hostile register cannot grow past it, but a person's own save
- * must come back as a refusal the editor can show, the way the desktop store
- * answers it. Read off the raw value, before sanitizing has a chance to hide it.
+ * and `sanitizeNoteHtml` clamp so a hostile register cannot grow past it, but
+ * a person's own save must come back as a refusal the editor can show, the
+ * way the desktop store answers it. Read off the raw value, before sanitizing
+ * has a chance to hide it.
  */
-function requireNoteMarkdownFits(value: unknown): void {
-  const markdown = typeof value === "object" && value !== null ? (value as Record<string, unknown>)["markdown"] : undefined;
-  if (typeof markdown !== "string") return;
-  const bytes = Buffer.byteLength(markdown, "utf8");
-  if (bytes > MAX_NOTE_MARKDOWN_BYTES) {
-    throw new Error(`that note is ${String(bytes)} bytes; a note holds at most ${String(MAX_NOTE_MARKDOWN_BYTES)}`);
+function requireNoteBodyFits(value: unknown): void {
+  const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  for (const [field, cap] of [["html", MAX_NOTE_HTML_BYTES], ["markdown", MAX_NOTE_MARKDOWN_BYTES]] as const) {
+    const body = raw[field];
+    if (typeof body !== "string") continue;
+    const bytes = Buffer.byteLength(body, "utf8");
+    if (bytes > cap) throw new Error(`that note is ${String(bytes)} bytes; a note holds at most ${String(cap)}`);
+    const pictures = new Set(body.match(/note-blob:[a-f0-9]{24}/gu) ?? []).size;
+    if (pictures > MAX_NOTE_BLOBS_PER_NOTE) {
+      throw new Error(`a note holds at most ${String(MAX_NOTE_BLOBS_PER_NOTE)} images; this one references ${String(pictures)}`);
+    }
   }
-  const pictures = (markdown.match(/note-blob:[a-f0-9]{24}/gu) ?? []).length;
-  if (pictures > MAX_NOTE_BLOBS_PER_NOTE) {
-    throw new Error(`a note holds at most ${String(MAX_NOTE_BLOBS_PER_NOTE)} images; this one references ${String(pictures)}`);
+}
+
+/**
+ * The body a write carries, in both forms (docs/notes.md N1): the editor
+ * sends HTML and the markdown is derived from it; the agent and a web editor
+ * send markdown and the HTML is derived from that. Null when it carries none.
+ */
+/**
+ * A stored body made whole under the cap (N1, N4): the missing half derived
+ * and sealed with the note when it fits, the body left as it came — markdown
+ * alone — when the HTML it would take is more than a note holds. Readers
+ * complete the latter for themselves (`completeNote`); nothing seals it.
+ */
+function completeWithinCap(body: NoteBody): NoteBody {
+  const whole = completeNoteBody(body);
+  if (Buffer.byteLength(whole.html, "utf8") > MAX_NOTE_HTML_BYTES) return { html: body.html, markdown: body.markdown };
+  return { html: whole.html, markdown: sanitizeNoteMarkdown(whole.markdown) };
+}
+
+function noteBodyFrom(clean: NoteInput | NotePatch): NoteBody | null {
+  if (clean.html !== undefined) return { html: clean.html, markdown: sanitizeNoteMarkdown(htmlToMarkdown(clean.html)) };
+  if (clean.markdown !== undefined) {
+    // Markdown within its cap can grow past the HTML's as it is converted
+    // (`&` is five bytes in HTML), and the canonical half is the one every
+    // other device would then clamp on arrival: refused here instead.
+    const html = markdownToHtml(clean.markdown);
+    requireNoteBodyFits({ html });
+    return { html, markdown: clean.markdown };
   }
+  return null;
 }
 
 export class WorkspaceToolStore {
   readonly #options: WorkspaceToolStoreOptions;
   readonly #clock: HlcClock;
   readonly #registers = new Map<string, Register>();
+  /** Notes made whole, by the record they were made from (see `#notes`). */
+  readonly #completed = new WeakMap<object, Note>();
   readonly #recordListeners = new Set<() => void>();
   readonly #now: () => Date;
   #queue: Promise<void> = Promise.resolve();
@@ -414,6 +452,7 @@ export class WorkspaceToolStore {
       get: (id) => this.#note(id),
       create: (input) => this.#addNote(input, source),
       update: (id, patch) => this.#updateNote(id, patch, source),
+      edit: (id, edit, title) => this.#editNote(id, edit, title, source),
       remove: (id) => this.#removeNote(id),
     };
   }
@@ -603,8 +642,33 @@ export class WorkspaceToolStore {
     return [...this.#registers.values()].flatMap((entry) => entry.doc?.kind === "artifact" ? [entry.doc.artifact] : []);
   }
 
+  /**
+   * Every note, whole: one from a device that knew markdown alone is
+   * completed on the way out (N1) — once per record, not on every read. A
+   * register's record is replaced whole whenever it changes, so a cache
+   * keyed by the record itself is invalidated by the change and by nothing
+   * else; a library of five hundred such notes is converted the first time
+   * it is listed, not every time a record anywhere in the workspace moves.
+   */
   #notes(): Note[] {
-    return [...this.#registers.values()].flatMap((entry) => entry.doc?.kind === "note" ? [entry.doc.note] : []);
+    return [...this.#registers.values()].flatMap((entry) => {
+      const doc = entry.doc;
+      if (doc?.kind !== "note") return [];
+      let whole = this.#completed.get(doc);
+      if (whole === undefined) {
+        whole = completeNote(doc.note);
+        this.#completed.set(doc, whole);
+      }
+      return [whole];
+    });
+  }
+
+  /** One note as its register holds it: a body from before N1 may be markdown alone. */
+  #storedNote(id: string): Note | null {
+    for (const entry of this.#registers.values()) {
+      if (entry.doc?.kind === "note" && entry.doc.note.id === id) return entry.doc.note;
+    }
+    return null;
   }
 
   #noteBlobs(): NoteBlob[] {
@@ -617,17 +681,18 @@ export class WorkspaceToolStore {
   }
 
   #addNote(value: unknown, source: NoteSource): Note {
-    requireNoteMarkdownFits(value);
+    requireNoteBodyFits(value);
     const input = sanitizeNoteInput(value);
     if (this.#notes().length >= MAX_NOTES) throw new Error(`no more than ${String(MAX_NOTES)} notes can be kept`);
     const at = this.#now().toISOString();
-    const markdown = input.markdown ?? "";
+    const body = noteBodyFrom(input) ?? { html: "", markdown: "" };
     const note: Note = {
       id: randomBytes(6).toString("hex"),
       title: input.title ?? "",
-      markdown,
+      html: body.html,
+      markdown: body.markdown,
       icon: input.icon ?? null,
-      blobIds: noteBlobIdsIn(markdown),
+      blobIds: noteBlobIdsIn(body.html === "" ? body.markdown : body.html),
       createdAt: at,
       updatedAt: at,
       revision: 1,
@@ -638,22 +703,39 @@ export class WorkspaceToolStore {
   }
 
   #updateNote(id: string, value: unknown, source: NoteSource): Note {
-    requireNoteMarkdownFits(value);
+    requireNoteBodyFits(value);
     const patch = sanitizeNotePatch(value);
-    const current = this.#notes().find((entry) => entry.id === id);
-    if (current === undefined) throw new Error("note not found");
-    const markdown = patch.markdown ?? current.markdown;
+    // The register's own copy, not the completed one `#notes()` serves: a
+    // body completed on the way out may be more than a note holds (N4), and
+    // a write that does not carry a body must not seal it.
+    const current = this.#storedNote(id);
+    if (current === null) throw new Error("note not found");
+    const { html: _html, markdown: _markdown, ...rest } = patch;
+    // A write without a body keeps the stored one, made whole where it fits.
+    const body = noteBodyFrom(patch) ?? completeWithinCap({ html: current.html, markdown: current.markdown });
     const next: Note = {
       ...structuredClone(current),
-      ...patch,
-      markdown,
-      blobIds: noteBlobIdsIn(markdown),
+      ...rest,
+      html: body.html,
+      markdown: body.markdown,
+      blobIds: noteBlobIdsIn(body.html === "" ? body.markdown : body.html),
       revision: current.revision + 1,
       source,
       updatedAt: this.#now().toISOString(),
     };
     this.#put({ kind: "note", note: next });
-    return structuredClone(next);
+    // What is answered is the note as a reader gets it: an editor adopts the
+    // answer, and must never be shown an empty page over a note it could read.
+    return structuredClone(completeNote(next));
+  }
+
+  /** The agent's structural edit (docs/notes.md §6), on the note's blocks rather than its markdown. */
+  #editNote(id: string, edit: NoteEdit, title: string | null, source: NoteSource): Note {
+    const current = this.#notes().find((entry) => entry.id === id);
+    if (current === undefined) throw new Error("note not found");
+    const result = applyNoteEdit(current.html, edit);
+    if (!result.ok) throw new Error(result.error);
+    return this.#updateNote(id, { html: result.html, ...(title === null ? {} : { title }) }, source);
   }
 
   /** Tombstone a note, and with it every picture no other note still names (N3). */

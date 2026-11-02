@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PaneStill } from "@pistachio/shell-contracts/ipc";
-import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
+import { spaceShowsTabs, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi } from "../../api";
 import { cn } from "../../lib/cn";
 import { useDeskCover, type DeskAnchor } from "../../lib/desk/chrome";
@@ -71,7 +71,10 @@ export function RailSpaceCard({ group, name, windows, anchor }: { group: TabGrou
     const saved = useDeskStore.getState().saved[group.id];
     const members = (tabs ?? []).filter((tab) => group.tabIds.includes(tab.id));
     const windows = saved?.windows ?? [];
-    return engine.sketchSpace({ groupId: group.id, tabIds: group.tabIds, saved: windows, reserve: saved?.reserve ?? 0, entry: passedEntry(windows, members) });
+    // (A space of tabs is its tab used last, filling its desk: docs/space-tabs.md.)
+    const tabbed = spaceShowsTabs(group);
+    const entry = tabbed ? ([...members].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]?.id ?? null) : passedEntry(windows, members);
+    return engine.sketchSpace({ groupId: group.id, tabIds: group.tabIds, saved: windows, reserve: saved?.reserve ?? 0, entry, tabbed });
   });
   const [fresh, setFresh] = useState<ReadonlyMap<string, string>>(() => {
     forgetTaken();

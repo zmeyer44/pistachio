@@ -655,6 +655,8 @@ export interface SharedNoteListItem {
 
 export interface SharedNoteBody {
   title: string;
+  /** The body the editor keeps (docs/notes.md N1), or "" from a device that sent markdown alone. */
+  html: string;
   markdown: string;
   revision: number;
   updatedAt: string;
@@ -681,7 +683,7 @@ export const putSharedNote = (
   token: string,
   ownerId: string,
   noteId: string,
-  body: { title: string; markdown: string; revision: number },
+  body: { title: string; html: string; markdown: string; revision: number },
 ): Promise<{ note: SharedNoteBody }> =>
   request(`/shared-notes/${encodeURIComponent(ownerId)}/${encodeURIComponent(noteId)}`, {
     method: "PUT",

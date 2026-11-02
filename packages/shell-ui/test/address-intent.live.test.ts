@@ -33,7 +33,7 @@ import { sanitizeAddressIntentRequest, type AddressIntentRanking } from "@pistac
 import { DEFAULT_SETTINGS } from "@pistachio/shell-contracts/settings";
 import type { Entry } from "../src/components/address-palette";
 import { ACTION_INTENT_DETAILS } from "../src/lib/action-intents";
-import { rankFuzzy, STRONG_FUZZY_SCORE, type FuzzyCandidate } from "../src/lib/fuzzy";
+import { rankFuzzy, STRONG_FUZZY_SCORE, type FuzzyCandidate } from "@pistachio/shell-contracts/fuzzy";
 import {
   aiLeadsSearch,
   applyIntentRanking,

@@ -49,6 +49,7 @@ const nextConfig = {
     "@pistachio/evidence",
     "@pistachio/live-share",
     "@pistachio/live-view",
+    "@pistachio/note-editor",
     "@pistachio/notes",
     "@pistachio/protocol",
     "@pistachio/reports",

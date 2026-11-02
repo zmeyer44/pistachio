@@ -23,6 +23,7 @@ import {
   noteTitle,
   notesUrlId,
   type Note,
+  type NoteEdit,
   type NoteInput,
   type NotePatch,
   type NoteSource,
@@ -153,6 +154,8 @@ export interface NoteRecordStore {
   search(query: string, limit: number): NoteSummary[];
   create(input: NoteInput, source: NoteSource): Note;
   update(id: string, patch: NotePatch, source: NoteSource): Note;
+  /** The agent's structural edit (docs/notes.md §6), on the note's blocks. */
+  edit(id: string, edit: NoteEdit, title: string | null, source: NoteSource): Note;
   remove(id: string): void;
 }
 
@@ -2488,7 +2491,7 @@ export class RunController {
   }
 
   /**
-   * The note tools for this run: the person's own markdown documents, which
+   * The note tools for this run: the person's own documents, which
    * the agent lists, searches, reads whole, writes and removes. Every write
    * is sourced here — the model never says who it is.
    */
@@ -2502,6 +2505,7 @@ export class RunController {
       get: (id) => store.get(id),
       create: (input) => store.create(input, source),
       update: (id, patch) => store.update(id, patch, source),
+      edit: (id, edit, title) => store.edit(id, edit, title, source),
       remove: (id) => {
         const note = store.get(id);
         if (note === null) throw new Error(`no note ${id}; note_list shows what exists`);

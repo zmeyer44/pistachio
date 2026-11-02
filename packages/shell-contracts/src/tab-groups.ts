@@ -107,6 +107,16 @@ export interface TabGroupInfo {
    */
   grown?: true;
   /**
+   * The space shows its tabs as WINDOWS on its desk — free, side by side, laid out (docs/space-tabs.md; the desk as it
+   * was for every space until 2026-11-02). Absent, it shows them as a browser's tabs, as Home does: one at a time, the
+   * tab in use filling the desk, and going from tab to tab goes from one whole page to the next (spaceShowsTabs). Set
+   * when the person takes the window in use off the whole desk, brings a second window out beside it, or asks (the
+   * space's Tabs/Windows control); cleared when they ask for tabs again. A Home tab grown or broken away into a space
+   * of its own is one of windows, as Home's always grew (its row's +, its window carried off the desk, a file in its
+   * Context). Never on a loose tab's space (a Home tab).
+   */
+  windows?: true;
+  /**
    * Where an EMPTY space stands among the day's row units (dayRowUnits):
    * the unit it is drawn before — a tab's id, `split:<id>` or `group:<id>`,
    * as tabGroupUnitId and dayRowUnits name them. Absent, or naming a unit
@@ -244,6 +254,8 @@ export function sanitizeTabGroups(value: unknown, groupableTabIds: ReadonlySet<s
       ...(anchorId !== undefined ? { anchorId } : {}),
       // (Grown from a Home tab: only a drawn space made for the person — Tidy's to leave whole.)
       ...(raw["grown"] === true && raw["origin"] === "auto" && !isLoose && anchorId === undefined ? { grown: true as const } : {}),
+      // (A space of windows: never a loose tab's, which is a Home tab.)
+      ...(raw["windows"] === true && !isLoose ? { windows: true as const } : {}),
       // (Only an empty space stands by its unit: one with tabs stands where its first tab does.)
       ...(empty && isUnitId(beforeUnit) ? { beforeUnit } : {}),
     });
@@ -320,10 +332,10 @@ export function withoutTabs(
  * afresh from its tabs, or called "New space" when nobody can name it, never
  * by what it held before (since 2026-10-13; until then a space gone back to
  * Home and regrown came back under its old name). No longer `grown`: it is a
- * Home tab again.
+ * Home tab again, and so no space of windows (a Home tab is the whole desk).
  */
 export function looseInPlace(group: TabGroupInfo): TabGroupInfo {
-  const { beforeUnit: _beforeUnit, grown: _grown, naming: _naming, ...rest } = group;
+  const { beforeUnit: _beforeUnit, grown: _grown, naming: _naming, windows: _windows, ...rest } = group;
   return { ...rest, title: DEFAULT_TAB_GROUP_TITLE, color: "gray", loose: true };
 }
 
@@ -347,6 +359,23 @@ export function asPersons(group: TabGroupInfo): TabGroupInfo {
  */
 export function isTidysGroup(group: Pick<TabGroupInfo, "origin" | "grown" | "loose" | "anchorId">): boolean {
   return group.origin === "auto" && group.grown !== true && group.loose !== true && group.anchorId === undefined;
+}
+
+/**
+ * Whether a space is one of Home's (docs/double-sidebar.md §1): a loose tab's — a Home tab — or a favorite's or pin's
+ * page alone in its page's space. Home is a browser's tabs, each its own space of one; everything else is on the rail.
+ */
+export function isHomeGroup(group: Pick<TabGroupInfo, "loose" | "anchorId" | "tabIds">): boolean {
+  return group.loose === true || (group.anchorId !== undefined && group.tabIds.length < 2);
+}
+
+/**
+ * Whether a space shows its tabs as a browser does — one at a time, the tab in use filling its desk (docs/space-tabs.md;
+ * since 2026-11-02 every space's way until it is made one of windows: TabGroupInfo.windows). Home's are not: each of
+ * its tabs is a space of its own, the whole desk already, and Home's ways stay as they were.
+ */
+export function spaceShowsTabs(group: Pick<TabGroupInfo, "loose" | "anchorId" | "tabIds" | "windows">): boolean {
+  return !isHomeGroup(group) && group.windows !== true;
 }
 
 /**
@@ -518,8 +547,10 @@ export type TabGroupCommand =
    * anchored (since 2026-10-09): an empty space in the active Profile (Space) — "New space". `select`: make it the current
    * space at once, as `select` does. `url`, with no tabs (⌘⇧L's address bar, 2026-10-10): the space opens with a tab
    * there, current with that tab in use — never empty in between; at the bound of spaces it fails, and opens nothing.
+   * `windows`: a space of windows from the start (TabGroupInfo.windows; not for a loose tab's) — else, as every space
+   * made by hand starts since 2026-11-02, one showing its tabs one at a time (docs/space-tabs.md).
    */
-  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean; anchored?: boolean; select?: boolean; url?: string }
+  | { type: "create"; id: string; tabIds: string[]; title?: string; color?: TabGroupColor; loose?: boolean; anchored?: boolean; select?: boolean; url?: string; windows?: boolean }
   /**
    * Make the space current (docs/spaces.md §2; main owns which one is, ShellSnapshot.currentGroupId): main activates
    * `tabId` if it is the space's, else the space's tab used last, else nothing — an empty space, `activeTabId` null. The
@@ -546,9 +577,15 @@ export type TabGroupCommand =
    * A Home space — a loose tab's, or a favorite's or pin's page alone — made a space of its own where it stands
    * (docs/double-sidebar.md §1, "Breaking away"; since 2026-10-14): its window taken off the whole desk, or something
    * put in its Context. The same id, so the desk stays on it; drawn, the person's, named by the namer. Any other space,
-   * or no room for another: a no-op.
+   * or no room for another: a no-op. A space of windows (TabGroupInfo.windows), as Home's broke away before spaces
+   * showed their tabs one at a time: its window where it was let go, a file's window beside it.
    */
   | { type: "ownSpace"; groupId: string }
+  /**
+   * Show the space's tabs as windows on its desk (`windows` true), or as a browser's tabs, one at a time filling it
+   * (false: TabGroupInfo.windows; docs/space-tabs.md). Any space but a Home tab's: a loose one is a no-op.
+   */
+  | { type: "setWindows"; groupId: string; windows: boolean }
   /** Close every tab in the group and file it in the archive as one entry (docs/tab-tidy.md §3.5). */
   | { type: "close"; groupId: string }
   /** Show the group's tabs side by side — up to four of them (§3.4). The web host's: the desktop's desk tiles windows instead. */
@@ -590,6 +627,7 @@ const COMMAND_TYPES: ReadonlySet<string> = new Set([
   "newTab",
   "ungroup",
   "ownSpace",
+  "setWindows",
   "close",
   "openAsSplit",
   "move",
@@ -626,6 +664,7 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
         (raw["loose"] === undefined || (typeof raw["loose"] === "boolean" && (raw["loose"] === false || raw["tabIds"].length === 1))) &&
         (raw["anchored"] === undefined || (typeof raw["anchored"] === "boolean" && (raw["anchored"] === false || (raw["tabIds"].length === 1 && raw["loose"] !== true)))) &&
         (raw["select"] === undefined || typeof raw["select"] === "boolean") &&
+        (raw["windows"] === undefined || (typeof raw["windows"] === "boolean" && (raw["windows"] === false || raw["loose"] !== true))) &&
         (raw["url"] === undefined ||
           (typeof raw["url"] === "string" && raw["url"].length > 0 && raw["url"].length <= MAX_CREATE_URL && raw["tabIds"].length === 0 && raw["loose"] !== true && raw["anchored"] !== true))
       );
@@ -647,6 +686,8 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
       return isTabGroupId(raw["groupId"]) && isIndex(raw["index"]);
     case "merge":
       return isTabGroupId(raw["groupId"]) && isTabGroupId(raw["into"]) && raw["groupId"] !== raw["into"];
+    case "setWindows":
+      return isTabGroupId(raw["groupId"]) && typeof raw["windows"] === "boolean";
     default:
       return isTabGroupId(raw["groupId"]);
   }

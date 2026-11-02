@@ -51,6 +51,28 @@ export function msUntilNextMinute(now: Date): number {
   return 60_000 - (now.getSeconds() * 1_000 + now.getMilliseconds());
 }
 
+/* --------------------------------- search -------------------------------- */
+
+/**
+ * Whether a key struck on the home page with nothing editable focused hands
+ * the keyboard to its search before the key does its work: a printable
+ * character, so the letter lands in the field, and the paste key — ⌘V on
+ * the Mac, Ctrl+V elsewhere (⇧ too: plain-text paste off the Mac) — so the
+ * paste does. A paste struck on the page's body pastes nowhere: a URL copied
+ * in another app, the window clicked to bring it forward (which took the
+ * field's focus), and ⌘V did nothing while a letter would have gone in
+ * (2026-10-31). Any other chord is a shortcut, not typing.
+ */
+export function keyGoesToHomeSearch(
+  key: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean },
+  platform: "darwin" | "other",
+): boolean {
+  if (key.altKey) return false;
+  const command = platform === "darwin" ? key.metaKey && !key.ctrlKey : key.ctrlKey && !key.metaKey;
+  if (command) return key.key.toLowerCase() === "v";
+  return !key.metaKey && !key.ctrlKey && key.key.length === 1;
+}
+
 /* --------------------------------- sites --------------------------------- */
 
 /** A host as a tile names it: no `www.`, lower case. */

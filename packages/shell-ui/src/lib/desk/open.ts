@@ -11,11 +11,13 @@
 import { useCallback, useSyncExternalStore } from "react";
 import type { ShortcutSurface } from "@pistachio/shell-contracts/shortcuts";
 import { entryPageOf } from "@pistachio/shell-contracts/sidebar";
+import { spaceShowsTabs } from "@pistachio/shell-contracts/tab-groups";
 import type { DeskEngine, DeskView } from "../../components/desk/desk-engine";
 import { isHomeSpace } from "../../components/space-rail/rail-model";
 import { nativeApi } from "../../api";
 import { isPageOverlay, useAppStore, type Overlay } from "../../store";
-import { deskGroups, passedEntry, useDeskStore } from "./store";
+import { deskGroups, passedEntry, useDeskStore, type SavedDeskWindow } from "./store";
+import { isTabWindow } from "./windows";
 
 /**
  * THE predicate for "this is the desktop", where the desk is: a native
@@ -71,7 +73,9 @@ export function selectSpace(groupId: string): void {
   store.closePage();
   const group = deskGroups(store.snapshot).find((candidate) => candidate.id === groupId);
   const tabs = group === undefined ? [] : (store.snapshot?.tabs ?? []).filter((tab) => group.tabIds.includes(tab.id));
-  const tabId = passedEntry(useDeskStore.getState().saved[groupId]?.windows ?? [], tabs);
+  // (A space of tabs comes up on its tab used last, main's choice: what was on top of its desk as windows is not it —
+  // docs/space-tabs.md.)
+  const tabId = group !== undefined && spaceShowsTabs(group) ? null : passedEntry(useDeskStore.getState().saved[groupId]?.windows ?? [], tabs);
   spaceChoice = { groupId, tabId, at: performance.now() };
   void store.tabGroupCommand(tabId === null ? { type: "select", groupId } : { type: "select", groupId, tabId });
 }
@@ -109,6 +113,32 @@ export function takeSpaceChoice(groupId: string, chosen: string | null): boolean
  */
 export function revealFor(chosen: string | null, spaceChosen: boolean): boolean {
   return chosen !== null && !spaceChosen;
+}
+
+/**
+ * The spaces made ones of windows by the person while another was in front — Show as windows on a tile's menu
+ * (docs/space-tabs.md): the desk spreads each out as it passes to it, as the Windows control spreads the space in
+ * front (DeskSurface: it comes up as tabs, then is made one of windows). Show as tabs takes the request back.
+ */
+const spreadAsked = new Set<string>();
+
+/** Show as windows (or, `on` false, as tabs) asked for a space not in front: remember to spread it, or forget it. */
+export function askSpread(groupId: string, on: boolean): void {
+  if (on) spreadAsked.add(groupId);
+  else spreadAsked.delete(groupId);
+}
+
+/**
+ * Whether the desk passing to `groupId` is to spread it out as windows (askSpread) — only when it has no arrangement
+ * of its own as windows to come back to (`saved`: a window the passing would bring out — one of its tabs', `tabIds`,
+ * or a document's whose file is still in its Context, `shellIds`, or not known yet: null — as DeskEngine's #laidOut
+ * counts them): with one, the passing brings it back as it was left (a window minimized stays so), which is what
+ * Windows in front would have brought back too. Read once, either way.
+ */
+export function takeSpread(groupId: string, saved: readonly SavedDeskWindow[], tabIds: readonly string[], shellIds: readonly string[] | null): boolean {
+  const asked = spreadAsked.delete(groupId);
+  const member = (id: string): boolean => (isTabWindow(id) ? tabIds.includes(id) : shellIds === null || shellIds.includes(id));
+  return asked && !saved.some((window) => member(window.tabId));
 }
 
 /**

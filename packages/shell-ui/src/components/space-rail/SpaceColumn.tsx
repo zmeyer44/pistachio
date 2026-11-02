@@ -111,7 +111,10 @@ export function SpaceColumn({ mode, cardWidth }: { mode: SidebarMode; cardWidth:
     },
     [tabOrder, tabGroups, splitGroups, anchorGroups, looseGroups, entryOrder],
   );
-  const spacesKey = computed.map((space) => `${space.group.id}:${space.group.color}:${space.group.title}:${space.group.naming === true ? "n" : ""}:${space.group.tabIds.join(",")}`).join(" ");
+  // (Whether it shows its tabs as tabs or windows too: the card's Tabs/Windows control reads it — docs/space-tabs.md.)
+  const spacesKey = computed
+    .map((space) => `${space.group.id}:${space.group.color}:${space.group.title}:${space.group.naming === true ? "n" : ""}:${space.group.windows === true ? "w" : ""}:${space.group.tabIds.join(",")}`)
+    .join(" ");
   const spaces = useStable(computed, spacesKey);
   const flightSpaces = useMemo<FlightSpace[]>(() => spaces.map((space) => ({ id: space.group.id, tabIds: space.group.tabIds })), [spaces]);
 

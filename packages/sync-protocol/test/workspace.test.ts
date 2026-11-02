@@ -53,6 +53,7 @@ const session: DurableTabSession = {
 const note: NoteRecord = {
   id: "0a1b2c3d4e5f",
   title: "Pie",
+  html: "<h1>Pie</h1>",
   markdown: "# Pie\n",
   icon: null,
   blobIds: [],

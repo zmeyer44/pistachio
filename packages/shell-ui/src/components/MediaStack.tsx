@@ -590,11 +590,8 @@ export const MediaCard = memo(function MediaCard({
         : media.hasVideo
           ? "Video"
           : "Audio");
-  const utilities =
-    listed || media.canPictureInPicture || media.followText !== null;
   const style = {
     "--media-index": index,
-    "--media-expanded-height": utilities ? "142px" : "116px",
     "--media-progress": `${media.duration === null || media.duration === 0 ? 0 : Math.min(100, Math.max(0, (position / media.duration) * 100))}%`,
   } as CSSProperties;
   // A playlist keeps its track buttons; they flank the seeks as a pair so the
@@ -674,11 +671,7 @@ export const MediaCard = memo(function MediaCard({
             onClick={() => run({ type: "playPause" })}
           />
         </div>
-        <div
-          className="media-card-details"
-          data-utilities={utilities || undefined}
-          inert={!expanded || exiting}
-        >
+        <div className="media-card-details" inert={!expanded || exiting}>
           {media.duration === null ? (
             <div className="media-live-line" aria-label="Live playback">
               <span />
@@ -723,6 +716,9 @@ export const MediaCard = memo(function MediaCard({
               </div>
             </div>
           )}
+          {/* One row: the speed, the transport, then the card's tools with
+              the volume last — the speed's width held either way, so the
+              transport keeps its place from card to card. */}
           <div className="media-actions" data-track-nav={trackNav || undefined}>
             {media.canSetRate && !exiting ? (
               <RateControl
@@ -732,7 +728,7 @@ export const MediaCard = memo(function MediaCard({
                 closeRequested={closePopovers}
               />
             ) : (
-              <span />
+              <span className="media-rate" />
             )}
             <div className="media-skip-controls">
               {trackNav ? (
@@ -766,20 +762,7 @@ export const MediaCard = memo(function MediaCard({
                 />
               ) : null}
             </div>
-            {exiting ? (
-              <span />
-            ) : (
-              <VolumeControl
-                media={media}
-                title={title}
-                send={run}
-                onOpenChange={popupOpenChanged}
-                closeRequested={closePopovers}
-              />
-            )}
-          </div>
-          {utilities ? (
-            <div className="media-utility-controls">
+            <div className="media-tool-controls">
               {media.followText !== null ? (
                 <MediaButton
                   label={
@@ -812,8 +795,19 @@ export const MediaCard = memo(function MediaCard({
                   onClick={() => run({ type: "pictureInPicture" })}
                 />
               ) : null}
+              {exiting ? (
+                <span className="media-volume" />
+              ) : (
+                <VolumeControl
+                  media={media}
+                  title={title}
+                  send={run}
+                  onOpenChange={popupOpenChanged}
+                  closeRequested={closePopovers}
+                />
+              )}
             </div>
-          ) : null}
+          </div>
         </div>
         {media.duration !== null ? (
           <div className="media-compact-progress" aria-hidden="true">

@@ -1,28 +1,31 @@
 /**
  * One note (docs/notes.md §5). A blank page with a title and a body: no
  * toolbar of heading buttons, no save. The person types, `#`, `-`, `[]`, `>`,
- * ` ``` ` and `/` do what they do in Notion, and `lib/notes-autosave.ts`
+ * ` ``` ` and `/` do what they do in Notion, every block has a handle that
+ * drags it and a menu that turns it into another, and `lib/notes-autosave.ts`
  * decides when what they wrote goes to the host.
  *
- * What is drawn here is chrome around a ProseMirror document: a 52px bar, the
- * title, and the editor. The document's shape is `lib/notes-markdown.ts`; the
- * floating menus are their own files; the arithmetic of saving, of accepting
- * a picture and of filtering `/` is in `src/lib`, tested without a DOM.
+ * What is drawn here is the chrome around the document: a 52px bar, the
+ * title, and the shell's answers to what the editor asks for — where a link
+ * opens, where a note's own pictures are, how a dropped file becomes one,
+ * where a widget's document is served. The document itself is
+ * `@pistachio/note-editor` (`NoteBlockEditor`), the same surface the web
+ * shell and the account site mount; the arithmetic of saving and of
+ * accepting a picture is in `src/lib`, tested without a DOM. The body the
+ * host keeps is the editor's own HTML (N1); the host derives the markdown.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EditorContent, ReactNodeViewRenderer, useEditor, type Editor } from "@tiptap/react";
-import { Placeholder } from "@tiptap/extension-placeholder";
-import { Markdown } from "@tiptap/markdown";
-import { DragHandle } from "@tiptap/extension-drag-handle-react";
-import { TextSelection } from "@tiptap/pm/state";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { ChevronLeft, Copy, GripVertical, LoaderCircle, LogIn, Share2, Trash2, Volume2 } from "lucide-react";
+import { ChevronLeft, Copy, LoaderCircle, LogIn, Share2, Trash2, Volume2 } from "lucide-react";
+import { htmlToMarkdown, jsonToMarkdown } from "@pistachio/notes";
+import { NoteBlockEditor, NoteTitle, type NoteBlockEditorHandle, type NoteEditorHost } from "@pistachio/note-editor";
 import {
   MAX_NOTE_BLOBS_PER_NOTE,
+  MAX_NOTE_TITLE,
   NOTE_UNTITLED,
-  NOTES_PAGE_URL,
   noteBlobIdsIn,
+  noteFrameUrl,
+  NOTES_PAGE_URL,
   type Note,
   type NoteBlobMediaType,
 } from "@pistachio/shell-contracts/notes";
@@ -38,21 +41,17 @@ import {
   type AutosaveState,
 } from "../../lib/notes-autosave";
 import { acceptNoteImage, encodeTarget, imageBlobId, mayHaveAlpha, planDownscale, withinBlobCap } from "../../lib/notes-images";
-import { docToMarkdown, noteExtensions } from "../../lib/notes-markdown";
 import { noteSpeechText } from "../../lib/notes-speech";
-import type { SlashCommand } from "../../lib/notes-slash";
 import { useAppStore } from "../../store";
 import { usePagePreview } from "../page-preview";
-import { BubbleMenu, type TurnIntoId } from "./BubbleMenu";
-import { NoteImageView } from "./NoteImage";
-import { NoteTitle } from "./NoteTitle";
 import { ShareMenu } from "./ShareMenu";
-import { SlashMenu, slashExtension, type SlashBridge, type SlashState } from "./SlashMenu";
 import { FOCUS, LINK, NOTE_BAR_HEIGHT, NOTE_COLUMN, RowMenu, useTransient, type RowMenuItem } from "./parts";
 import { useNotes } from "./use-notes";
 
 /** How long a title sits still before the tab is told about it. */
 const TAB_TITLE_MS = 300;
+/** How long "Edited on another device" stays up. */
+const REMOTE_NOTICE_MS = 4_000;
 
 /**
  * Decode a picture the way the page would draw it — an `<img>` over an
@@ -73,8 +72,14 @@ function decodeImage(file: File): Promise<HTMLImageElement> {
     image.src = url;
   });
 }
-/** How long "Edited on another device" stays up. */
-const REMOTE_NOTICE_MS = 4_000;
+
+/**
+ * Whether this shell is the desktop's. Only there is a page's own policy too
+ * strict for a widget's `srcdoc` frame (docs/notes.md §5), and only there
+ * does main answer `pistachio-app://note-frame/` with the document served
+ * under a policy of its own.
+ */
+const onDesktop = typeof window !== "undefined" && "pistachio" in window;
 
 export function NoteEditor({ tabId, noteId, active }: { tabId: string | null; noteId: string; active: boolean }) {
   const note = useNotes((state) => state.notes[noteId]);
@@ -98,9 +103,8 @@ export function NoteEditor({ tabId, noteId, active }: { tabId: string | null; no
   if (note === undefined) {
     return error === null ? <Loading /> : <Message title="That note could not be opened" text={error} />;
   }
-  // Keyed by id AND by the revision the body was first read at, so opening a
-  // different note builds a different editor rather than reusing this one's
-  // document.
+  // Keyed by id, so opening a different note builds a different editor
+  // rather than reusing this one's document.
   return <NoteBody key={noteId} tabId={tabId} note={note} active={active} />;
 }
 
@@ -116,98 +120,23 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
   const enrolled = useAppStore((state) => state.account.state === "enrolled");
   const [remoteNotice, sayRemote] = useTransient(REMOTE_NOTICE_MS);
   const [refusal, sayRefusal] = useTransient(REMOTE_NOTICE_MS);
-  const [slash, setSlash] = useState<SlashState | null>(null);
-  const [revision, setRevision] = useState(0);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   /** The Share panel, and the corner of the bar it hangs off (docs/notes.md §8). */
   const [sharing, setSharing] = useState(false);
   const [shareAnchor, setShareAnchor] = useState<HTMLElement | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
 
   // The state machine lives in a ref: it is stepped from ProseMirror
   // callbacks and from timers, neither of which should re-render the page.
-  const save = useRef<AutosaveState>(
-    createAutosave({ revision: note.revision, stamp: noteStamp(note), title: note.title, markdown: note.markdown }),
-  );
+  const save = useRef<AutosaveState>(createAutosave({ revision: note.revision, stamp: noteStamp(note), title: note.title, html: note.html }));
   const [badge, setBadge] = useState(() => saveState(save.current));
   const timer = useRef<number | null>(null);
   const titleTimer = useRef<number | null>(null);
-  const slashKey = useRef<(event: KeyboardEvent) => boolean>(() => false);
-  const bridge = useRef<SlashBridge>({ onKey: (event) => slashKey.current(event), set: setSlash });
-  const registerSlashKey = useCallback((handler: (event: KeyboardEvent) => boolean) => {
-    slashKey.current = handler;
-  }, []);
   const [title, setTitle] = useState(note.title);
-  const editorRef = useRef<Editor | null>(null);
-
-  /* ── the document ─────────────────────────────────────────────────── */
-
-  const extensions = useMemo(
-    () => [
-      ...noteExtensions({ imageNodeView: ReactNodeViewRenderer(NoteImageView) }),
-      Placeholder.configure({
-        // Only the first empty paragraph: every empty line saying "type /"
-        // would be a page of instructions rather than a page.
-        placeholder: ({ node, pos }) => (pos === 0 && node.type.name === "paragraph" ? "Type / for commands" : ""),
-        showOnlyWhenEditable: true,
-      }),
-      Markdown,
-      slashExtension(bridge),
-    ],
-    [],
-  );
-
-  const editor = useEditor({
-    extensions,
-    content: note.markdown,
-    contentType: "markdown",
-    autofocus: false,
-    editable: !preview,
-    editorProps: {
-      attributes: { class: "note-prose", "data-testid": "note-body", spellcheck: "true" },
-      handleDrop: (_view, event) => takeFiles((event as DragEvent).dataTransfer?.files ?? null, event),
-      handlePaste: (_view, event) => takeFiles((event as ClipboardEvent).clipboardData?.files ?? null, event),
-      handleDOMEvents: {
-        // A link in a note is text being written, not a page to leave for —
-        // unless the person asks with Mod, which opens it the way the console's
-        // links open (store.openLink).
-        click: (_view, event) => {
-          const anchor = event.target instanceof Element ? event.target.closest("a") : null;
-          if (anchor === null || !(event.metaKey || event.ctrlKey)) return false;
-          const href = anchor.getAttribute("href");
-          if (href === null || href === "") return false;
-          event.preventDefault();
-          const box = anchor.getBoundingClientRect();
-          void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, false);
-          return true;
-        },
-      },
-    },
-  });
-  editorRef.current = editor;
+  const editor = useRef<NoteBlockEditorHandle>(null);
 
   /* ── saving ───────────────────────────────────────────────────────── */
 
   /** Step the machine, then do whatever it asks for. */
-  /**
-   * Put a document the host holds into the editor without a keystroke of
-   * our own, keeping the caret where it was when the new document is still
-   * long enough to hold it; a shorter one takes it wherever it fits.
-   */
-  const showDocument = useCallback((markdown: string) => {
-    const current = editorRef.current;
-    if (current === null) return;
-    const at = current.state.selection.from;
-    current.commands.setContent(markdown, { contentType: "markdown", emitUpdate: false });
-    try {
-      const clamped = Math.min(at, current.state.doc.content.size);
-      current.view.dispatch(current.state.tr.setSelection(TextSelection.near(current.state.doc.resolve(clamped))));
-    } catch {
-      // A position that no longer resolves is not worth a crash; the
-      // selection stays where setContent put it.
-    }
-  }, []);
-
   const step = useCallback(
     (next: AutosaveState) => {
       save.current = next;
@@ -236,13 +165,13 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
             const before = save.current;
             const after = autosave(before, {
               type: "saved",
-              note: { revision: saved.revision, stamp: noteStamp(saved), title: saved.title, markdown: saved.markdown },
+              note: { revision: saved.revision, stamp: noteStamp(saved), title: saved.title, html: saved.html },
               at: Date.now(),
             });
             // A field we did not send came back changed — the host merged a
             // version from elsewhere under our title-only save — and the
             // machine adopted it. The page has to show what it adopted.
-            if (after.local.markdown !== before.local.markdown) showDocument(after.local.markdown);
+            if (after.local.html !== before.local.html) editor.current?.show(after.local.html);
             if (after.local.title !== before.local.title) setTitle(after.local.title);
             step(after);
           });
@@ -261,13 +190,13 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
               step(autosave(save.current, { type: "remote", stamp: noteStamp(fresh), at: Date.now() }));
               return;
             }
-            if (fresh.markdown !== save.current.local.markdown) showDocument(fresh.markdown);
+            if (fresh.html !== save.current.local.html) editor.current?.show(fresh.html);
             setTitle(fresh.title);
             sayRemote("Edited on another device");
             step(
               autosave(save.current, {
                 type: "adopt",
-                note: { revision: fresh.revision, stamp: noteStamp(fresh), title: fresh.title, markdown: fresh.markdown },
+                note: { revision: fresh.revision, stamp: noteStamp(fresh), title: fresh.title, html: fresh.html },
               }),
             );
           });
@@ -279,7 +208,7 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
   );
 
   const edit = useCallback(
-    (draft: { title?: string; markdown?: string }) => {
+    (draft: { title?: string; html?: string }) => {
       // Every write starts here: a preview's machine never has one to send.
       if (preview) return;
       step(autosave(save.current, { type: "edit", draft, at: Date.now() }));
@@ -291,25 +220,10 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
     step(autosave(save.current, { type: "flushNow", at: Date.now() }));
   }, [step]);
 
-  // Every keystroke in the body, as markdown. Serialising per keystroke is
-  // what makes "only the changed fields" possible at all, and a note is
-  // kilobytes (N4) — the 600ms debounce is what limits the host traffic.
-  useEffect(() => {
-    if (editor === null) return;
-    const onUpdate = () => {
-      setRevision((current) => current + 1);
-      edit({ markdown: docToMarkdown(editor.getJSON()) });
-    };
-    const onSelection = () => setRevision((current) => current + 1);
-    editor.on("update", onUpdate);
-    editor.on("selectionUpdate", onSelection);
-    editor.on("blur", flushNow);
-    return () => {
-      editor.off("update", onUpdate);
-      editor.off("selectionUpdate", onSelection);
-      editor.off("blur", flushNow);
-    };
-  }, [editor, edit, flushNow]);
+  // Every keystroke in the body, as HTML. Serialising per keystroke is what
+  // makes "only the changed fields" possible at all, and a note is kilobytes
+  // (N4) — the 600ms debounce is what limits the host traffic.
+  const onUpdate = useCallback((html: string) => edit({ html }), [edit]);
 
   // Another device's revision, off the subscription. The machine decides
   // whether it is adopted now or after our own write (N5).
@@ -361,175 +275,90 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
   /* ── pictures ─────────────────────────────────────────────────────── */
 
   /**
-   * Decode, downscale, re-encode, hash, keep, insert (N4). The canvas half
-   * lives here because it needs a document; every decision it makes is
-   * `lib/notes-images.ts`.
+   * Decode, downscale, re-encode, hash, keep (N4): one file into one
+   * register, answering the `note-blob:` address the editor inserts, or null
+   * with the refusal said in the bar. The canvas half lives here because it
+   * needs a document; every decision it makes is `lib/notes-images.ts`.
    */
-  const addImages = useCallback(
-    async (files: readonly File[]) => {
-      const current = editorRef.current;
-      if (current === null) return;
-      const already = noteBlobIdsIn(save.current.local.markdown).length;
-      let added = 0;
-      for (const file of files) {
-        if (already + added >= MAX_NOTE_BLOBS_PER_NOTE) {
-          sayRefusal(`A note holds ${String(MAX_NOTE_BLOBS_PER_NOTE)} pictures`);
-          break;
+  const takeImage = useCallback(
+    async (file: File): Promise<string | null> => {
+      if (noteBlobIdsIn(save.current.local.html).length >= MAX_NOTE_BLOBS_PER_NOTE) {
+        sayRefusal(`A note holds ${String(MAX_NOTE_BLOBS_PER_NOTE)} pictures`);
+        return null;
+      }
+      const accepted = acceptNoteImage(file);
+      if (!accepted.ok) {
+        sayRefusal(accepted.reason);
+        return null;
+      }
+      try {
+        const picture = await decodeImage(file);
+        const box = planDownscale(picture.naturalWidth, picture.naturalHeight);
+        const target = encodeTarget(accepted.mediaType, mayHaveAlpha(accepted.mediaType));
+        const canvas = document.createElement("canvas");
+        canvas.width = box.width;
+        canvas.height = box.height;
+        const context = canvas.getContext("2d");
+        if (context === null) throw new Error("no 2d context");
+        // A JPEG has no transparency to keep; anything under it would show
+        // through as black without this.
+        if (target.mediaType === "image/jpeg") {
+          context.fillStyle = "#ffffff";
+          context.fillRect(0, 0, box.width, box.height);
         }
-        const accepted = acceptNoteImage(file);
-        if (!accepted.ok) {
-          sayRefusal(accepted.reason);
-          continue;
+        context.drawImage(picture, 0, 0, box.width, box.height);
+        URL.revokeObjectURL(picture.src);
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, target.mediaType, target.quality));
+        if (blob === null) throw new Error("could not encode");
+        if (!withinBlobCap(blob.size)) {
+          sayRefusal(`${file.name} is still too large after shrinking`);
+          return null;
         }
-        try {
-          const picture = await decodeImage(file);
-          const box = planDownscale(picture.naturalWidth, picture.naturalHeight);
-          const target = encodeTarget(accepted.mediaType, mayHaveAlpha(accepted.mediaType));
-          const canvas = document.createElement("canvas");
-          canvas.width = box.width;
-          canvas.height = box.height;
-          const context = canvas.getContext("2d");
-          if (context === null) throw new Error("no 2d context");
-          // A JPEG has no transparency to keep; anything under it would show
-          // through as black without this.
-          if (target.mediaType === "image/jpeg") {
-            context.fillStyle = "#ffffff";
-            context.fillRect(0, 0, box.width, box.height);
-          }
-          context.drawImage(picture, 0, 0, box.width, box.height);
-          URL.revokeObjectURL(picture.src);
-          const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, target.mediaType, target.quality));
-          if (blob === null) throw new Error("could not encode");
-          if (!withinBlobCap(blob.size)) {
-            sayRefusal(`${file.name} is still too large after shrinking`);
-            continue;
-          }
-          const bytes = new Uint8Array(await blob.arrayBuffer());
-          const expected = await imageBlobId(bytes);
-          const id = await useNotes.getState().putImage(bytes, target.mediaType as NoteBlobMediaType);
-          if (id === null) {
-            sayRefusal("That picture could not be kept");
-            continue;
-          }
-          if (id !== expected) {
-            // The host content-addresses the same way (N3); a mismatch means
-            // the bytes changed on the way, which is worth saying out loud.
-            sayRefusal("That picture did not arrive intact");
-            continue;
-          }
-          current.chain().focus().setImage({ src: `note-blob:${id}`, alt: file.name }).run();
-          added += 1;
-        } catch (error) {
-          // The person sees one line; the cause goes where a bug report can find it.
-          console.warn(`[notes] could not take ${file.name}`, error);
-          sayRefusal(`${file.name} could not be read`);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const expected = await imageBlobId(bytes);
+        const id = await useNotes.getState().putImage(bytes, target.mediaType as NoteBlobMediaType);
+        if (id === null) {
+          sayRefusal("That picture could not be kept");
+          return null;
         }
+        if (id !== expected) {
+          // The host content-addresses the same way (N3); a mismatch means
+          // the bytes changed on the way, which is worth saying out loud.
+          sayRefusal("That picture did not arrive intact");
+          return null;
+        }
+        return `note-blob:${id}`;
+      } catch (error) {
+        // The person sees one line; the cause goes where a bug report can find it.
+        console.warn(`[notes] could not take ${file.name}`, error);
+        sayRefusal(`${file.name} could not be read`);
+        return null;
       }
     },
     [sayRefusal],
   );
 
-  /** True when the event carried files and we took them — ProseMirror stops there. */
-  const takeFiles = (list: FileList | null, event: Event): boolean => {
-    const files = [...(list ?? [])].filter((file) => file.type.startsWith("image/"));
-    if (files.length === 0) return false;
-    event.preventDefault();
-    void addImages(files);
-    return true;
-  };
+  /* ── what the editor asks the shell for ───────────────────────────── */
 
-  /* ── the slash menu and the bubble menu ───────────────────────────── */
-
-  const runSlash = useCallback(
-    (command: SlashCommand, range: { from: number; to: number }) => {
-      const current = editorRef.current;
-      if (current === null) return;
-      setSlash(null);
-      const chain = current.chain().focus().deleteRange(range);
-      switch (command.id) {
-        case "paragraph":
-          chain.setParagraph().run();
-          break;
-        case "heading1":
-          chain.setNode("heading", { level: 1 }).run();
-          break;
-        case "heading2":
-          chain.setNode("heading", { level: 2 }).run();
-          break;
-        case "heading3":
-          chain.setNode("heading", { level: 3 }).run();
-          break;
-        case "bulletList":
-          chain.toggleBulletList().run();
-          break;
-        case "orderedList":
-          chain.toggleOrderedList().run();
-          break;
-        case "taskList":
-          chain.toggleTaskList().run();
-          break;
-        case "blockquote":
-          chain.toggleBlockquote().run();
-          break;
-        case "codeBlock":
-          chain.toggleCodeBlock().run();
-          break;
-        case "divider":
-          chain.setHorizontalRule().run();
-          break;
-        case "table":
-          chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
-          break;
-        case "image":
-          chain.run();
-          fileInput.current?.click();
-          break;
-      }
-    },
-    [],
+  const host = useMemo<NoteEditorHost>(
+    () => ({
+      // A link opens the way the console's links open (store.openLink).
+      openLink: (href, box) => {
+        void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, false);
+      },
+      // A picture the store already holds is answered at once, so nothing flickers.
+      blobUrl: (id) => useNotes.getState().blobUrls[id] ?? useNotes.getState().blobUrl(id),
+      // One missing here may be resolved elsewhere — another pane, a later
+      // upload — and the store's cache is where that shows.
+      subscribeBlobs: (listener) =>
+        useNotes.subscribe((state, previous) => {
+          if (state.blobUrls !== previous.blobUrls) listener();
+        }),
+      uploadImage: takeImage,
+      ...(onDesktop ? { frameSrc: noteFrameUrl } : {}),
+    }),
+    [openLink, takeImage],
   );
-
-  const turnInto = useCallback((id: TurnIntoId) => {
-    const current = editorRef.current;
-    if (current === null) return;
-    const chain = current.chain().focus();
-    if (id === "paragraph") chain.setParagraph().run();
-    else if (id === "heading1") chain.setNode("heading", { level: 1 }).run();
-    else if (id === "heading2") chain.setNode("heading", { level: 2 }).run();
-    else if (id === "heading3") chain.setNode("heading", { level: 3 }).run();
-    else if (id === "bulletList") chain.toggleBulletList().run();
-    else if (id === "orderedList") chain.toggleOrderedList().run();
-    else if (id === "taskList") chain.toggleTaskList().run();
-    else if (id === "blockquote") chain.toggleBlockquote().run();
-    else chain.toggleCodeBlock().run();
-  }, []);
-
-  const editLink = useCallback(() => {
-    const current = editorRef.current;
-    if (current === null) return;
-    const existing = (current.getAttributes("link")["href"] as string | undefined) ?? "";
-    const href = window.prompt("Link address", existing);
-    if (href === null) return;
-    if (href.trim() === "") current.chain().focus().unsetLink().run();
-    else current.chain().focus().extendMarkRange("link").setLink({ href: href.trim() }).run();
-  }, []);
-
-  /* ── the keyboard ─────────────────────────────────────────────────── */
-
-  useEffect(() => {
-    if (editor === null) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      const mod = event.metaKey || event.ctrlKey;
-      if (!mod || !editor.isFocused) return;
-      if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-        if (moveBlock(editor, event.key === "ArrowUp" ? -1 : 1)) event.preventDefault();
-        return;
-      }
-      if (event.key === "Enter" && toggleTask(editor)) event.preventDefault();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [editor]);
 
   /* ── the page ─────────────────────────────────────────────────────── */
 
@@ -537,6 +366,12 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
   const goLibrary = () => {
     if (tabId === null) void createTab(NOTES_PAGE_URL);
     else void navigate(tabId, NOTES_PAGE_URL);
+  };
+
+  /** The body as markdown: from the document in hand, or from what the host holds. */
+  const markdownNow = () => {
+    const current = editor.current?.editor ?? null;
+    return (current === null ? htmlToMarkdown(save.current.local.html) : jsonToMarkdown(current.getJSON())).trimEnd();
   };
 
   const menu: RowMenuItem[] = [
@@ -551,7 +386,7 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
       label: "Copy as markdown",
       icon: <Copy />,
       run: () => {
-        const body = save.current.local.markdown.trimEnd();
+        const body = markdownNow();
         void navigator.clipboard.writeText(title.trim() === "" ? body : `# ${title}\n\n${body}`);
         showNotice("Note copied as markdown", { tone: "success" });
       },
@@ -562,7 +397,9 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
       label: "Read aloud",
       icon: <Volume2 />,
       run: () => {
-        const text = noteSpeechText(title, save.current.local.markdown);
+        const current = editor.current;
+        if (current === null) return;
+        const text = noteSpeechText(title, current.getJSON());
         if (text === "") {
           showNotice("Nothing in this note to read aloud");
           return;
@@ -598,7 +435,7 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
       data-note-id={note.id}
       data-tab-id={tabId ?? undefined}
       data-active={active}
-      className="@container absolute inset-0 overflow-y-auto bg-background-200 text-gray-1000"
+      className="note-page @container absolute inset-0 overflow-y-auto bg-background-200 text-gray-1000"
     >
       <nav aria-label="Note" className="sticky top-0 z-10 flex items-center gap-2 bg-background-200 px-4" style={{ height: NOTE_BAR_HEIGHT }}>
         <button type="button" data-testid="note-back" className={cn(LINK, "shrink-0 gap-0.5 -ml-1 pl-1")} onClick={goLibrary}>
@@ -631,115 +468,32 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
       <div className={cn(NOTE_COLUMN, "pb-24")}>
         <NoteTitle
           value={title}
-          autoFocus={active && note.title === "" && note.markdown === ""}
+          maxLength={MAX_NOTE_TITLE}
+          readOnly={preview}
+          autoFocus={active && note.title === "" && note.html === ""}
           onChange={(next) => {
             setTitle(next);
             edit({ title: next });
           }}
-          onEnterBody={() => editor?.chain().focus("start").run()}
+          onEnterBody={() => editor.current?.focus("start")}
         />
-        {/* The shell turns selection off globally; a document being written
-            is the one place that has to have it back. `min-h-[50vh]` is what
-            makes the space under the last line part of the page, so clicking
-            there lands the caret at the end. */}
-        <div
-          // Pulled left by the gutter `.note-prose` pads, so the text still
-          // lines up under the title while the grip has room inside the editor.
-          className="mt-4 -ml-8 min-h-[50vh] [&_.ProseMirror]:outline-none"
-          style={{ userSelect: "text", cursor: "text" }}
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) editor?.chain().focus("end").run();
-          }}
-        >
-          {editor === null ? null : <EditorContent editor={editor} />}
-        </div>
+        {/* The gutters `.note-prose` pads — the block handle on the left, a
+            widget's edit button on the right — are pulled back out here, so
+            the text still lines up under the title while the chrome has room
+            inside the editor's own element. `min-h-[50vh]` makes the space
+            under the last line part of the page. */}
+        <NoteBlockEditor
+          ref={editor}
+          html={note.html}
+          editable={!preview}
+          host={host}
+          contentClassName="mt-4 -ml-14 -mr-10 min-h-[50vh]"
+          onUpdate={onUpdate}
+          onBlur={flushNow}
+        />
       </div>
-
-      {editor === null ? null : (
-        <>
-          {/* A quiet grip in the margin: it is there when the pointer is near
-              a block, and it drags that block somewhere else. */}
-          <DragHandle editor={editor} className="note-drag-handle">
-            <span aria-hidden="true" className="grid size-5 cursor-grab place-items-center rounded text-gray-600 transition-colors hover:bg-alpha-200 hover:text-gray-900">
-              <GripVertical className="size-4" strokeWidth={1.75} />
-            </span>
-          </DragHandle>
-          <SlashMenu
-            editor={editor}
-            state={slash}
-            onRun={runSlash}
-            onDismiss={() => setSlash(null)}
-            registerKeyHandler={registerSlashKey}
-          />
-          <BubbleMenu editor={editor} revision={revision} onTurnInto={turnInto} onLink={editLink} />
-        </>
-      )}
-
-      <input
-        ref={fileInput}
-        type="file"
-        accept="image/*"
-        multiple
-        data-testid="note-image-input"
-        className="hidden"
-        onChange={(event) => {
-          void addImages([...(event.target.files ?? [])]);
-          event.target.value = "";
-        }}
-      />
     </div>
   );
-}
-
-/* ------------------------------ commands -------------------------------- */
-
-/**
- * Move the block the caret is in up or down one. The drag handle can do this
- * with a pointer; this is the same move for the keyboard (Mod+Shift+↑/↓),
- * and it works on top-level blocks, which is what a person means by "this
- * paragraph".
- */
-function moveBlock(editor: Editor, direction: -1 | 1): boolean {
-  const { state, view } = editor;
-  const doc = state.doc;
-  const $from = state.selection.$from;
-  if ($from.depth < 1) return false;
-  const index = $from.index(0);
-  const target = index + direction;
-  if (target < 0 || target >= doc.childCount) return false;
-  const startOf = (at: number): number => {
-    let position = 0;
-    for (let child = 0; child < at; child += 1) position += doc.child(child).nodeSize;
-    return position;
-  };
-  const node: ProseMirrorNode = doc.child(index);
-  const from = startOf(index);
-  const to = from + node.nodeSize;
-  // Deleting first shifts everything after `to` back by the node's size, so
-  // moving down inserts at the neighbour's end minus that size.
-  const insertAt = direction === -1 ? startOf(target) : startOf(target) + doc.child(target).nodeSize - node.nodeSize;
-  const offset = state.selection.from - from;
-  const tr = state.tr.delete(from, to).insert(insertAt, node);
-  try {
-    tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(insertAt + offset, tr.doc.content.size))));
-  } catch {
-    // The caret ends up wherever the mapping put it; the block still moved.
-  }
-  view.dispatch(tr.scrollIntoView());
-  return true;
-}
-
-/** Tick or untick the to-do the caret is in. */
-function toggleTask(editor: Editor): boolean {
-  const $from = editor.state.selection.$from;
-  for (let depth = $from.depth; depth > 0; depth -= 1) {
-    const node = $from.node(depth);
-    if (node.type.name !== "taskItem") continue;
-    const position = $from.before(depth);
-    editor.view.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...node.attrs, checked: node.attrs["checked"] !== true }));
-    return true;
-  }
-  return false;
 }
 
 /* -------------------------------- states -------------------------------- */

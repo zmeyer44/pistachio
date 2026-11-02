@@ -16,7 +16,7 @@ import { NotificationRouter, type NotificationAdapter, type NotificationMessage 
 import { PAGE_IN_VIEW_HEADER, TURN_CUT_SHORT, USE_BROWSER_TOOL, type TurnRouteRequest } from "@pistachio/agent-runtime";
 import type { RunSummary, TaskStatus } from "@pistachio/protocol";
 import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
-import { noteUrl, searchNotes, summaryOf, type Note } from "@pistachio/shell-contracts/notes";
+import { applyNoteEdit, noteUrl, searchNotes, summaryOf, type Note } from "@pistachio/shell-contracts/notes";
 import type { BrowserController } from "../src/main/browser-controller";
 import { ArtifactStore } from "../src/main/artifact-store";
 import { RunController, type CloudRunCommands, type NoteRecordStore, type TurnRouter } from "../src/main/run-controller";
@@ -1312,7 +1312,7 @@ describe("Watchtower agent retrieval", () => {
 describe("the person's notes", () => {
   function note(id: string, title: string, markdown: string): Note {
     return {
-      id, title, markdown, icon: null, blobIds: [],
+      id, title, html: "", markdown, icon: null, blobIds: [],
       createdAt: "2026-08-01T10:00:00.000Z", updatedAt: "2026-08-20T10:00:00.000Z",
       revision: 1, source: { kind: "user", runId: null },
     };
@@ -1340,6 +1340,16 @@ describe("the person's notes", () => {
           const current = notes.get(id);
           if (current === undefined) throw new Error(`no note ${id}`);
           const next: Note = { ...current, ...patch, revision: current.revision + 1, updatedAt: "2026-08-29T15:00:00.000Z", source };
+          notes.set(id, next);
+          return next;
+        },
+        // This stand-in holds markdown alone; the real store edits the HTML's blocks.
+        edit: (id, edit, title, source) => {
+          const current = notes.get(id);
+          if (current === undefined) throw new Error(`no note ${id}`);
+          const edited = applyNoteEdit(current.markdown, edit);
+          if (!edited.ok) throw new Error(edited.error);
+          const next: Note = { ...current, markdown: edited.markdown, ...(title === null ? {} : { title }), revision: current.revision + 1, updatedAt: "2026-08-29T15:00:00.000Z", source };
           notes.set(id, next);
           return next;
         },

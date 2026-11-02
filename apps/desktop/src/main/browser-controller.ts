@@ -3651,7 +3651,9 @@ export class BrowserController {
    * space — its id, so the desk stays on it, its window where it was let go, its Stack and conversation with it — drawn
    * now, on the rail: the person's, coloured beside its neighbours, named by the namer. A page's lets go of its entry,
    * linked to it (docs/spaces.md §1, "A favorite in a space"). False, nothing changed, for any other space — or with no
-   * room for another (MAX_TAB_GROUPS_PER_SPACE): it stays Home's.
+   * room for another (MAX_TAB_GROUPS_PER_SPACE): it stays Home's. A space of WINDOWS (TabGroupInfo.windows,
+   * docs/space-tabs.md): a Home tab broke away as it always has — its window where it was let go, a file's window
+   * opening beside it — never into a space showing its tabs one at a time, which would gather them up again.
    */
   ownSpace(groupId: string): boolean {
     const group = this.#tabGroups.get(groupId);
@@ -3663,7 +3665,7 @@ export class BrowserController {
     this.#withPublishHeld(() => {
       const { loose: _loose, anchorId: _anchorId, beforeUnit: _beforeUnit, ...rest } = group;
       const neighbours = [...this.#tabGroups.values()].filter((other) => other.id !== groupId && other.loose !== true && other.anchorId === undefined && this.#groupSpaceIds.get(other.id) === spaceId);
-      const next: TabGroupInfo = { ...asPersons(rest), color: nextTabGroupColor(neighbours) };
+      const next: TabGroupInfo = { ...asPersons(rest), color: nextTabGroupColor(neighbours), windows: true };
       this.#tabGroups.set(groupId, next);
       // (Its page let go of after its space is drawn: a page's space without its page would be let go of — of one tab, a
       // Home tab again — by the reconcile.)
@@ -3675,6 +3677,21 @@ export class BrowserController {
       this.#nameTabGroup(this.#tabGroups.get(groupId) ?? next);
       this.#onChange();
     });
+    return true;
+  }
+
+  /**
+   * A space's tabs shown as windows on its desk, or as a browser's tabs, one at a time filling it (TabGroupCommand
+   * `setWindows`, TabGroupInfo.windows; docs/space-tabs.md): the person's word — the space's Tabs/Windows control, its
+   * menu — or the desk's, a window taken off the whole desk or a second one brought out. The desk follows the snapshot.
+   * False, nothing changed, for a Home tab's space (a loose one, the whole desk already) or one already so.
+   */
+  setWindows(groupId: string, windows: boolean): boolean {
+    const group = this.#tabGroups.get(groupId);
+    if (group === undefined || group.loose === true || (group.windows === true) === windows) return false;
+    const { windows: _windows, ...rest } = group;
+    this.#tabGroups.set(groupId, windows ? { ...rest, windows: true } : rest);
+    this.#onChange();
     return true;
   }
 
@@ -8117,8 +8134,20 @@ export class BrowserController {
    * drawn spaces (enforced here since 2026-10-09: until then only on read,
    * so the extras were lost at the next launch).
    */
-  createTabGroup(options: { id?: string; title?: string; color?: TabGroupColor; tabIds: readonly string[]; origin: TabGroupInfo["origin"]; loose?: boolean; anchored?: boolean; spaceId?: string }): TabGroupInfo | null {
+  createTabGroup(options: {
+    id?: string;
+    title?: string;
+    color?: TabGroupColor;
+    tabIds: readonly string[];
+    origin: TabGroupInfo["origin"];
+    loose?: boolean;
+    anchored?: boolean;
+    spaceId?: string;
+    /** A space of windows from the start (TabGroupInfo.windows, docs/space-tabs.md); not a loose tab's, nor a page's. */
+    windows?: boolean;
+  }): TabGroupInfo | null {
     const id = options.id ?? randomUUID();
+    const windows = options.windows === true ? { windows: true as const } : {};
     if (!isTabGroupId(id) || this.#tabGroups.has(id)) return null;
     if (options.anchored === true) return this.#createPageGroup(id, options.tabIds);
     if (options.tabIds.length === 0) {
@@ -8126,7 +8155,7 @@ export class BrowserController {
       if (options.loose === true || this.#spaceStore.get(spaceId) === null) return null;
       const drawn = this.tabGroups(spaceId);
       if (drawn.length >= MAX_TAB_GROUPS_PER_SPACE) return null;
-      const group: TabGroupInfo = { id, title: tabGroupTitle(options.title), color: options.color ?? nextTabGroupColor(drawn), tabIds: [], origin: options.origin, open: false, createdAt: Date.now() };
+      const group: TabGroupInfo = { id, title: tabGroupTitle(options.title), color: options.color ?? nextTabGroupColor(drawn), tabIds: [], origin: options.origin, open: false, createdAt: Date.now(), ...windows };
       this.#putGroup(group, spaceId);
       return group;
     }
@@ -8152,7 +8181,7 @@ export class BrowserController {
       origin: options.origin,
       open: false,
       createdAt: Date.now(),
-      ...(loose ? { loose: true } : {}),
+      ...(loose ? { loose: true } : windows),
     };
     this.#groupSpaceIds.set(id, spaceId);
     this.#setTabGroups([...others, group]);
@@ -8222,6 +8251,10 @@ export class BrowserController {
     // theirs since — named, coloured, given a Stack or a conversation. Grown by a tab they brought to it, it is theirs.
     // (Until 2026-10-13 every grown space was `manual`, and stayed drawn at one tab: docs/double-sidebar.md.)
     const grown = target.loose === true && members.length > 1;
+    // A Home tab — a loose tab's space, or an entry's page alone — given a second tab here was given a second WINDOW
+    // (its row's +, a row or window let go on the desk beside it, a Glance taken in as a tile): a space of windows, its
+    // desk split between the two, as Home's has always grown (docs/space-tabs.md; every other space starts as tabs).
+    const twoWindows = (target.loose === true || (target.anchorId !== undefined && target.tabIds.length < 2)) && members.length > 1 ? { windows: true as const } : {};
     // (Left out of the list, the target is counted all the same, as it will be: drawn, unless a page's or a loose tab's
     // still of one — else at the bound an emptied source of the person's was kept, and the Profile made fifty-one.)
     const targetDrawn = target.anchorId === undefined && (target.loose !== true || grown);
@@ -8231,11 +8264,11 @@ export class BrowserController {
     const color = (): TabGroupInfo["color"] => nextTabGroupColor(others.filter((other) => this.#groupSpaceIds.get(other.id) === spaceId && other.loose !== true));
     const next: TabGroupInfo = grown
       ? options.byPerson
-        ? { ...asPersons(drawn), tabIds: members, color: color() }
-        : { ...drawn, tabIds: members, origin: "auto", grown: true, color: color() }
+        ? { ...asPersons(drawn), tabIds: members, color: color(), ...twoWindows }
+        : { ...drawn, tabIds: members, origin: "auto", grown: true, color: color(), ...twoWindows }
       : options.byPerson
-        ? { ...asPersons(first ? drawn : target), tabIds: members }
-        : { ...(first ? drawn : target), tabIds: members };
+        ? { ...asPersons(first ? drawn : target), tabIds: members, ...twoWindows }
+        : { ...(first ? drawn : target), tabIds: members, ...twoWindows };
     this.#setTabGroups([...others, next]);
     if (grown || (first && next.origin === "manual" && next.title === DEFAULT_TAB_GROUP_TITLE)) this.#nameTabGroup(next);
     return added;
@@ -8418,7 +8451,7 @@ export class BrowserController {
     switch (command.type) {
       case "create": {
         // (No tabs: the person's New space, in the active Profile — the shell opens its name field.)
-        const group = this.createTabGroup({ id: command.id, title: command.title, color: command.color, tabIds: command.tabIds, origin: "manual", loose: command.loose, anchored: command.anchored });
+        const group = this.createTabGroup({ id: command.id, title: command.title, color: command.color, tabIds: command.tabIds, origin: "manual", loose: command.loose, anchored: command.anchored, windows: command.windows });
         if (command.url !== undefined) {
           // ⌘⇧L's address bar: a space opened at a page. The tab is made in it before either is shown, so the desk
           // passes straight to the page; naming waits for that tab, as for any space's first. It is in use as it is
@@ -8481,6 +8514,9 @@ export class BrowserController {
       }
       case "ownSpace":
         this.ownSpace(command.groupId);
+        return;
+      case "setWindows":
+        this.setWindows(command.groupId, command.windows);
         return;
       case "merge": {
         const moved = this.#mergeTabGroups(command.groupId, command.into);

@@ -189,6 +189,8 @@ const MAX_ARTIFACT_HTML_BYTES = 1_500_000;
  * upward on a device must not silently widen what the server accepts.
  */
 const MAX_NOTE_MARKDOWN_BYTES = 262_144;
+/** The shared body's canonical half (docs/notes.md N1, N4 `MAX_NOTE_HTML_BYTES`), restated for the same reason. */
+const MAX_NOTE_HTML_BYTES = 1_048_576;
 const MAX_NOTE_TITLE = 200;
 /**
  * Hard ceiling on any request body, enforced before a handler buffers it.
@@ -402,6 +404,13 @@ const noteShareRoleSchema = z.enum(["viewer", "editor"]);
 const noteShareBodySchema = z.object({ email: emailSchema, role: noteShareRoleSchema });
 const sharedNoteBodySchema = z.object({
   title: z.string().max(MAX_NOTE_TITLE),
+  /**
+   * The body in both its forms (docs/notes.md N1): the HTML the editor keeps
+   * and the markdown derived from it. A device from before HTML was
+   * canonical sends markdown alone; what it reads back is completed by the
+   * reader, as a sealed record is.
+   */
+  html: z.string().max(MAX_NOTE_HTML_BYTES).optional(),
   markdown: z.string().max(MAX_NOTE_MARKDOWN_BYTES),
   revision: z.number().int().positive(),
 });
@@ -1051,13 +1060,37 @@ export const ARTIFACT_CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'self'",
 ].join("; ");
 
-function artifactHtmlResponse(html: string): Response {
+/**
+ * A published note's policy (docs/notes.md §8), restated from
+ * `@pistachio/notes` `NOTE_PAGE_CSP` as the artifact's is: the page runs a
+ * person's own widgets — scripts on purpose, in `srcdoc` frames that inherit
+ * this policy — so it is served with an opaque origin and the web within
+ * reach for what a widget is made of, and may do nothing as the site it
+ * came from: no form, no same origin, no frame but under `'self'`.
+ */
+const NOTE_CONTENT_SECURITY_POLICY = [
+  "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
+  "default-src 'none'",
+  "script-src 'unsafe-inline' https:",
+  "style-src 'unsafe-inline' https:",
+  "img-src data: blob: https: http:",
+  "font-src data: https:",
+  "media-src data: blob: https:",
+  "connect-src https: wss:",
+  "frame-src https:",
+  "form-action 'none'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "frame-ancestors 'self'",
+].join("; ");
+
+function hostedHtmlResponse(html: string, policy: string): Response {
   return new Response(html, {
     status: 200,
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy": ARTIFACT_CONTENT_SECURITY_POLICY,
+      "content-security-policy": policy,
       "cross-origin-opener-policy": "same-origin",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
@@ -1065,6 +1098,9 @@ function artifactHtmlResponse(html: string): Response {
     },
   });
 }
+
+const artifactHtmlResponse = (html: string): Response => hostedHtmlResponse(html, ARTIFACT_CONTENT_SECURITY_POLICY);
+const noteHtmlResponse = (html: string): Response => hostedHtmlResponse(html, NOTE_CONTENT_SECURITY_POLICY);
 
 interface AffectedOrigin {
   domain: string;
@@ -2746,7 +2782,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
 
   v1.get("/public/notes/:shareId", validateParam(shareParamSchema), async (c) => {
     const html = await publicHosted(param(c, shareParamSchema).shareId, "note");
-    return html === null ? c.json({ error: "not_found" }, 404) : artifactHtmlResponse(html);
+    return html === null ? c.json({ error: "not_found" }, 404) : noteHtmlResponse(html);
   });
 
   v1.get("/notes", async (c) => {
@@ -2883,8 +2919,14 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
       .where(and(eq(sharedNotes.ownerUserId, ownerId), eq(sharedNotes.noteId, noteId)));
   };
 
+  /** Both halves under their caps, in bytes: the schema counts characters. */
+  const sharedBodyFits = (input: z.infer<typeof sharedNoteBodySchema>): boolean =>
+    Buffer.byteLength(input.markdown, "utf8") <= MAX_NOTE_MARKDOWN_BYTES &&
+    Buffer.byteLength(input.html ?? "", "utf8") <= MAX_NOTE_HTML_BYTES;
+
   const sharedNoteView = (row: typeof sharedNotes.$inferSelect) => ({
     title: row.title,
+    html: row.html,
     markdown: row.markdown,
     revision: row.revision,
     updatedAt: row.updatedAt.toISOString(),
@@ -3003,9 +3045,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
       const userId = c.get("userId");
       const { noteId } = param(c, noteParamSchema);
       const input = body(c, sharedNoteBodySchema);
-      if (Buffer.byteLength(input.markdown, "utf8") > MAX_NOTE_MARKDOWN_BYTES) {
-        return c.json({ error: "note_too_large" }, 413);
-      }
+      if (!sharedBodyFits(input)) return c.json({ error: "note_too_large" }, 413);
       const at = new Date(now());
       const outcome = await db.transaction(async (tx) => {
         const [live] = await tx
@@ -3032,6 +3072,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
             ownerUserId: userId,
             noteId,
             title: input.title,
+            html: input.html ?? "",
             markdown: input.markdown,
             revision: input.revision,
             updatedAt: at,
@@ -3041,6 +3082,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
             target: [sharedNotes.ownerUserId, sharedNotes.noteId],
             set: {
               title: input.title,
+              html: input.html ?? "",
               markdown: input.markdown,
               revision: input.revision,
               updatedAt: at,
@@ -3128,9 +3170,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
       const userId = c.get("userId");
       const { ownerId, noteId } = param(c, sharedNoteParamSchema);
       const input = body(c, sharedNoteBodySchema);
-      if (Buffer.byteLength(input.markdown, "utf8") > MAX_NOTE_MARKDOWN_BYTES) {
-        return c.json({ error: "note_too_large" }, 413);
-      }
+      if (!sharedBodyFits(input)) return c.json({ error: "note_too_large" }, 413);
       const role = await noteAccess(userId, ownerId, noteId);
       // A viewer is told it is not there to write, not that it exists and is
       // refused; a revoked share is told nothing at all.
@@ -3152,6 +3192,7 @@ export function createApp(db: Db, options: CreateAppOptions): ControlApp {
           .update(sharedNotes)
           .set({
             title: input.title,
+            html: input.html ?? "",
             markdown: input.markdown,
             revision: input.revision,
             updatedAt: at,

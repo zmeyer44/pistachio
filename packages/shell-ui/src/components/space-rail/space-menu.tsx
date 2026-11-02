@@ -5,6 +5,7 @@ import { groupPageOf } from "../../lib/desk/store";
 import { useAppStore } from "../../store";
 import type { MenuEntry } from "../ContextMenu";
 import { liveSpaceEntries } from "../live/menu-entries";
+import { spaceModeEntries } from "./SpaceModeControl";
 import { renameSpace } from "./column-state";
 import { dayUnitsOf, type RailSpace } from "./rail-model";
 
@@ -30,10 +31,12 @@ export interface PageSpaceActions {
  * Today (main's ungroup: the page stays its entry's); and closing them.
  * (Until 2026-10-13 it had the whole space menu.)
  */
-export function pageSpaceMenu(group: TabGroupInfo, pageTabId: string | null, act: PageSpaceActions, live: readonly MenuEntry[] = []): MenuEntry[] {
+export function pageSpaceMenu(group: TabGroupInfo, pageTabId: string | null, act: PageSpaceActions, live: readonly MenuEntry[] = [], mode: readonly MenuEntry[] = []): MenuEntry[] {
   const beside = group.tabIds.filter((tabId) => tabId !== pageTabId);
   return [
     { label: "New tab in space", icon: <Plus aria-hidden="true" />, onSelect: act.newTab },
+    // (Show as windows, or as tabs: spaceModeEntries.)
+    ...mode,
     // (Share live…, or its card and Stop: liveSpaceEntries, as a drawn space's menu has them.)
     ...live,
     { separator: true },
@@ -75,6 +78,6 @@ export function useSpaceMenu(): (space: RailSpace) => MenuEntry[] {
         for (const tabId of tabIds) void store.closeTab(tabId);
       },
     };
-    return pageSpaceMenu(group, pageTabId, act, liveSpaceEntries(group.id));
+    return pageSpaceMenu(group, pageTabId, act, liveSpaceEntries(group.id), spaceModeEntries(group));
   };
 }

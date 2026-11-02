@@ -20,6 +20,7 @@ import {
   guestUseEntry,
   hostNameFrom,
   linkLabel,
+  sharedArrangement,
   liveCardStatus,
   shareActionFor,
   spaceLiveEntries,
@@ -122,6 +123,15 @@ describe("a page window's Guests can use this window", () => {
     // And the card says which.
     expect(notUsableReason({ url: "pistachio://notes/" })).toBe("Guests watch it; only you can use it");
     expect(notUsableReason({ url: "https://mail.example.com/" })).toBe("Only on your screen for now");
+  });
+
+  it("reads a space of tabs as having no masks: its windows' arrangement waits unused, its page whole (docs/space-tabs.md)", () => {
+    const desk = { windows: [{ tabId: "tab-2", rect: { x: 0.5, y: 0, w: 0.5, h: 0.5 }, mask: { x: 10, y: 10, width: 200, height: 120, pageWidth: 1000, pageHeight: 800 } }] };
+    const tabs = { tabIds: ["tab-1", "tab-2"] };
+    const page = { id: "tab-2", url: "https://mail.example.com/" };
+    expect(guestsCanBeLetUse(page, sharedArrangement(tabs, desk))).toBe(true);
+    expect(guestsCanBeLetUse(page, sharedArrangement({ ...tabs, windows: true as const }, desk))).toBe(false);
+    expect(sharedArrangement(undefined, desk)).toBe(desk);
   });
 
   it("is not there for another space's window, a page the shell draws, or with nothing live", () => {

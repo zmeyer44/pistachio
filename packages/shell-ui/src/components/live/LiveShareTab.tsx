@@ -6,7 +6,7 @@ import type { LiveAdmission, LiveGuest, LiveShareState, LiveWindowAsk } from "@p
 import { selectSpace } from "../../lib/desk/open";
 import { deskGroups, useDeskStore, type SavedDesk } from "../../lib/desk/store";
 import { setGuestsCanUse } from "../../lib/live/actions";
-import { allWindowsChanges, allWindowsUse, guestsCanBeLetUse, linkLabel, notStreamingReason, notUsableReason } from "../../lib/live/entries";
+import { allWindowsChanges, allWindowsUse, guestsCanBeLetUse, linkLabel, notStreamingReason, notUsableReason, sharedArrangement } from "../../lib/live/entries";
 import { sendLive } from "../../lib/live/store";
 import { useAppStore } from "../../store";
 import { useContextMenu } from "../ContextMenu";
@@ -36,8 +36,11 @@ export function LiveShareTab({ state, name }: { state: LiveShareState; name: str
       return store.snapshot.tabs.filter((tab) => group.tabIds.includes(tab.id));
     }),
   );
-  // (Which windows are masked: the space's arrangement as the desk keeps it.)
-  const saved = useDeskStore((store) => (state.groupId === null ? undefined : store.saved[state.groupId]));
+  // (Which windows are masked: the space's arrangement as the desk keeps it — none for a space of tabs, whose saved one
+  // waits for Windows while its page is whole: sharedArrangement.)
+  const sharedGroup = useAppStore((store) => deskGroups(store.snapshot).find((candidate) => candidate.id === state.groupId));
+  const kept = useDeskStore((store) => (state.groupId === null ? undefined : store.saved[state.groupId]));
+  const saved = sharedArrangement(sharedGroup, kept);
   const [errorSeen, setErrorSeen] = useState<string | null>(null);
   const menu = useContextMenu();
   const guestByIdentity = new Map(state.participants.map((guest) => [guest.identity, guest]));

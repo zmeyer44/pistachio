@@ -88,9 +88,11 @@ function pipMedia(media: BrowserMediaInfo): DeskPipMedia {
 
 export function RailNowPlaying() {
   const { media } = useBackgroundMedia();
-  // The stack puts the video playing first: that one floats; the rest are the rail's.
-  const video = media[0]?.hasVideo === true ? media[0] : null;
-  const rest = video === null ? media : media.slice(1);
+  // One video floats; the rest are the rail's. The stack puts a playing video first, so that one; failing it, the most
+  // recent paused one, which keeps its floating player while something else plays in front of it in the stack
+  // (lib/media-stack.ts: audio playing leads a paused video there, where the floating player is no place in it).
+  const video = media.find((item) => item.hasVideo) ?? null;
+  const rest = video === null ? media : media.filter((item) => item !== video);
   const meterKey = rest.map((item) => item.tabId).join(" ");
   useEffect(() => {
     nativeApi()?.setMediaMeters(meterKey === "" ? [] : meterKey.split(" "));

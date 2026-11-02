@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { SETTINGS_SECTIONS, type SettingsSection } from "@pistachio/shell-contracts/settings";
 import { ADDRESS_INTENT_LIMITS } from "@pistachio/shell-contracts/address-intent";
-import { rankFuzzy, STRONG_FUZZY_SCORE } from "../src/lib/fuzzy";
+import { rankFuzzy, STRONG_FUZZY_SCORE } from "@pistachio/shell-contracts/fuzzy";
 import { SETTINGS_INTENTS, settingsIntentEntryId, settingsIntentKeywords } from "../src/lib/settings-intents";
 
 describe("the settings intent catalog", () => {

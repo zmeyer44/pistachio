@@ -13,67 +13,15 @@ import { useCallback, useEffect, useRef, useState, type ComponentType } from "re
 import { autoUpdate, flip, offset, shift, useFloating } from "@floating-ui/react";
 import { posToDOMRect, type Editor } from "@tiptap/core";
 import { TextSelection } from "@tiptap/pm/state";
-import {
-  Bold,
-  Check,
-  ChevronRight,
-  Code,
-  Heading1,
-  Heading2,
-  Heading3,
-  Italic,
-  Link2,
-  List,
-  ListOrdered,
-  ListTodo,
-  Quote,
-  RemoveFormatting,
-  SquareCode,
-  Strikethrough,
-  Type,
-  Underline,
-  type LucideProps,
-} from "lucide-react";
-import { cn } from "../../lib/cn";
+import { Bold, Check, ChevronRight, Code, Italic, Link2, RemoveFormatting, Strikethrough, Underline, type LucideProps } from "lucide-react";
+import { cn } from "./cn";
+import { activeBlockType, BLOCK_TYPES } from "./block-types";
 import { FOCUS, NOTE_PANEL_CLASS, rectReference } from "./parts";
-
-const TURN_INTO = [
-  { id: "paragraph", label: "Text", icon: Type },
-  { id: "heading1", label: "Heading 1", icon: Heading1 },
-  { id: "heading2", label: "Heading 2", icon: Heading2 },
-  { id: "heading3", label: "Heading 3", icon: Heading3 },
-  { id: "bulletList", label: "Bulleted list", icon: List },
-  { id: "orderedList", label: "Numbered list", icon: ListOrdered },
-  { id: "taskList", label: "To-do list", icon: ListTodo },
-  { id: "blockquote", label: "Quote", icon: Quote },
-  { id: "codeBlock", label: "Code block", icon: SquareCode },
-] as const satisfies ReadonlyArray<{ id: string; label: string; icon: ComponentType<LucideProps> }>;
-
-export type TurnIntoId = (typeof TURN_INTO)[number]["id"];
 
 /** How long the pointer rests on the row before the list opens on its own. */
 const TURN_INTO_HOVER_MS = 500;
 /** How long the pointer may be off both row and list before the list closes. */
 const TURN_INTO_LEAVE_MS = 300;
-
-/** Which of the block kinds the selection sits in, read off the editor. */
-export function currentBlock(editor: Editor): (typeof TURN_INTO)[number] {
-  const found = TURN_INTO.find((option) => {
-    switch (option.id) {
-      case "heading1":
-        return editor.isActive("heading", { level: 1 });
-      case "heading2":
-        return editor.isActive("heading", { level: 2 });
-      case "heading3":
-        return editor.isActive("heading", { level: 3 });
-      case "paragraph":
-        return false;
-      default:
-        return editor.isActive(option.id);
-    }
-  });
-  return found ?? TURN_INTO[0];
-}
 
 const BUTTON = cn(
   "grid size-8 shrink-0 cursor-pointer place-items-center rounded-lg text-gray-900 transition-colors hover:bg-alpha-200 hover:text-gray-1000 [&_svg]:size-4",
@@ -88,13 +36,14 @@ const ROW = cn(
 export function BubbleMenu({
   editor,
   revision,
-  onTurnInto,
+  enabled,
   onLink,
 }: {
   editor: Editor;
   /** Bumped on every transaction: what is active has to be re-read per keystroke. */
   revision: number;
-  onTurnInto(id: TurnIntoId): void;
+  /** False while a popover or the block menu owns the selection. */
+  enabled: boolean;
   onLink(): void;
 }) {
   const [turnOpen, setTurnOpen] = useState(false);
@@ -128,12 +77,14 @@ export function BubbleMenu({
   // Text only: a selected picture or table cell is a node selection, and
   // bold has nothing to say to it.
   const showing =
+    enabled &&
     editor.isEditable &&
     selection instanceof TextSelection &&
     !selection.empty &&
     editor.isFocused &&
     selection.from !== selection.to &&
-    !editor.isActive("codeBlock");
+    !editor.isActive("codeBlock") &&
+    editor.state.doc.textBetween(selection.from, selection.to).trim() !== "";
 
   useEffect(() => {
     if (!showing) {
@@ -149,7 +100,7 @@ export function BubbleMenu({
 
   if (!showing) return null;
   const mark = (name: string) => (editor.isActive(name) ? "bg-alpha-200 text-gray-1000" : "");
-  const block = currentBlock(editor);
+  const block = activeBlockType(editor);
   const BlockIcon = block.icon;
   const marks: Array<{ id: string; label: string; icon: ComponentType<LucideProps>; testId?: string; run(): void }> = [
     { id: "bold", label: "Bold", icon: Bold, testId: "note-bold", run: () => editor.chain().focus().toggleBold().run() },
@@ -158,7 +109,7 @@ export function BubbleMenu({
     { id: "clear", label: "Clear formatting", icon: RemoveFormatting, run: () => editor.chain().focus().unsetAllMarks().run() },
   ];
   const more: typeof marks = [
-    { id: "link", label: "Link", icon: Link2, testId: "note-link", run: onLink },
+    { id: "link", label: "Link (⌘K)", icon: Link2, testId: "note-link", run: onLink },
     { id: "strike", label: "Strikethrough", icon: Strikethrough, run: () => editor.chain().focus().toggleStrike().run() },
     { id: "code", label: "Code", icon: Code, run: () => editor.chain().focus().toggleCode().run() },
   ];
@@ -241,7 +192,7 @@ export function BubbleMenu({
             style={submenu.floatingStyles}
             className={cn(NOTE_PANEL_CLASS, "w-[188px]")}
           >
-            {TURN_INTO.map((option) => {
+            {BLOCK_TYPES.map((option) => {
               const Icon = option.icon;
               const current = option.id === block.id;
               return (
@@ -253,12 +204,13 @@ export function BubbleMenu({
                   data-testid={`note-turn-${option.id}`}
                   onClick={() => {
                     setTurnOpen(false);
-                    onTurnInto(option.id);
+                    option.apply(editor);
                   }}
                   className={ROW}
                 >
                   <Icon strokeWidth={2} aria-hidden="true" />
                   <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                  {option.hint === undefined ? null : <kbd className="font-mono text-[11px] text-gray-600">{option.hint}</kbd>}
                   {current ? <Check className="!size-3.5 !text-gray-1000" strokeWidth={2.5} aria-hidden="true" /> : null}
                 </button>
               );

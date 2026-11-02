@@ -53,12 +53,39 @@ describe("orderMediaStack", () => {
     expect(ids(stack)).toEqual(["watching", "podcast", "paused"]);
   });
 
-  it("leads with the most recent video when none is playing", () => {
+  it("puts playing audio, Read aloud among it, ahead of a paused video", () => {
+    const speech = item("speech", { tabUrl: "pistachio://read-aloud/0f7a9c5e-1b2d-4c3e-8f90-123456789abc" });
+    const clip = item("clip", { hasVideo: true, kind: "video", playing: false });
+    expect(ids(orderMediaStack([speech, clip]))).toEqual(["speech", "clip"]);
+    // Even when the video was started more recently than the audio, then paused.
+    expect(ids(orderMediaStack([clip, item("podcast")]))).toEqual(["podcast", "clip"]);
+  });
+
+  it("leads with the most recently started of what is playing", () => {
     const stack = orderMediaStack([
-      item("podcast"),
+      item("paused", { playing: false }),
+      item("newer"),
+      item("older"),
+    ]);
+    expect(ids(stack)).toEqual(["newer", "paused", "older"]);
+  });
+
+  it("keeps the newest-active order when nothing is playing, so a paused front card stays in front", () => {
+    const stack = orderMediaStack([
+      item("speech", { playing: false }),
       item("clip", { hasVideo: true, kind: "video", playing: false }),
     ]);
-    expect(ids(stack)).toEqual(["clip", "podcast"]);
+    expect(ids(stack)).toEqual(["speech", "clip"]);
+  });
+
+  it("never drops what is playing for being old", () => {
+    const stack = orderMediaStack([
+      item("a", { playing: false }),
+      item("b", { playing: false }),
+      item("c", { playing: false }),
+      item("podcast"),
+    ]);
+    expect(ids(stack)).toEqual(["podcast", "a", "b"]);
   });
 
   it("never drops the playing video for being old", () => {

@@ -12,6 +12,7 @@ const nextConfig = {
     "@pistachio/agent-runtime",
     "@pistachio/documents",
     "@pistachio/live-view",
+    "@pistachio/note-editor",
     "@pistachio/notes",
     "@pistachio/protocol",
     "@pistachio/reports",

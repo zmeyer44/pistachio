@@ -72,7 +72,8 @@ export const AREAS = [
     tag: "@address",
     paths: [
       `${UI}/components/{UrlBar,address-palette,SearchProviderLogo}.tsx`,
-      `${UI}/lib/{fuzzy,destination,search-suggestions,intent-ranking,use-address-intent,use-field-preview,recents,settings-intents,action-intents,url}.ts`,
+      `${UI}/lib/{destination,search-suggestions,intent-ranking,use-address-intent,use-field-preview,recents,settings-intents,action-intents,url}.ts`,
+      `${C}/fuzzy.ts`,
       `${C}/{address-intent,search,url,page-link}.ts`,
       `${M}/address-intent.ts`,
     ],
@@ -178,11 +179,11 @@ export const AREAS = [
       `${UI}/components/{notes,bookmarks,watchtower,reports,reminders,library}/**`,
       `${UI}/{BookmarkToastApp,FindApp}.tsx`,
       `${UI}/components/StreamFindBar.tsx`,
-      `${UI}/lib/{notes-autosave,notes-images,notes-markdown,notes-slash,reports,calendar-split,stream-menu,library}.ts`,
+      `${UI}/lib/{notes-autosave,notes-images,notes-speech,reports,calendar-split,stream-menu,library}.ts`,
       `${C}/{notes,bookmarks,watchtower,reports,reminders,double-shift,reader,reader-extract,tab-archive}.ts`,
       `${M}/{note-store,bookmark-store,bookmarks,bookmark-extractor,brief-service,brief-scheduler,reminder-store,reminder-scheduler,reader-store,reader-extract,smart-find}.ts`,
       `${M}/watchtower/**`,
-      "packages/{notes,watchtower,reports,smart-find,notifications}/**",
+      "packages/{notes,note-editor,watchtower,reports,smart-find,notifications}/**",
     ],
   },
   {

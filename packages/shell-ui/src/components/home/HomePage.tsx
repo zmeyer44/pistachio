@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { profileView } from "@pistachio/shell-contracts/memory";
 import { cn } from "../../lib/cn";
-import { greeting } from "../../lib/home";
+import { greeting, keyGoesToHomeSearch } from "../../lib/home";
 import { agentIsActing } from "../../lib/run";
 import { TABLESS_HOME_KEY, useAppStore } from "../../store";
 import { PistachioMark } from "../PistachioMark";
@@ -138,21 +138,18 @@ export function HomePage({
 
   useEffect(() => {
     if (!active || showChat) return;
+    const platform = /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "other";
     const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.defaultPrevented ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.altKey ||
-        event.key.length !== 1
-      )
+      if (event.defaultPrevented || !keyGoesToHomeSearch(event, platform))
         return;
       if (isEditable(event.target) || isEditable(document.activeElement))
         return;
       const state = useAppStore.getState();
       if (state.overlay !== "none" || state.onboardingOpen) return;
       // Focus moves before the key's default action, so the letter itself
-      // lands in the field.
+      // lands in the field — and so does a paste, which the Mac's Edit menu
+      // (or the key's own default, elsewhere) does on whatever has focus
+      // once the page has let the key go.
       searchRef.current?.focus();
     };
     window.addEventListener("keydown", onKeyDown);

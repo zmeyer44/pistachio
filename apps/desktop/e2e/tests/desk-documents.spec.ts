@@ -101,7 +101,11 @@ const BUDGET_XLSX = xlsxFixture({
 
 const FILES = {
   plan: file("plan.txt", "text/plain", "Lisbon plan\nFriday: Alfama walk\nSaturday: Sintra\n"),
-  notes: file("notes.md", "text/markdown", "# Trip notes\n\n- Pack the adapter\n- Print the boarding pass\n"),
+  notes: file(
+    "notes.md",
+    "text/markdown",
+    '# Trip notes\n\n- Pack the adapter\n- Print the boarding pass\n\n```html live\n<div id="w" style="height: 90px">inside</div><script>document.getElementById("w").textContent = "ran";</script>\n```\n',
+  ),
   trip: file("trip.docx", DOCX_TYPE, TRIP_DOCX),
   budget: file("budget.xlsx", XLSX_TYPE, BUDGET_XLSX),
   stops: file("stops.csv", "text/csv", "stop,time\nBaixa,10:00\nAlfama,12:30\n"),
@@ -312,6 +316,8 @@ test("documents on the desk: drop targets, a viewer for each kind, edits saved, 
     const notesWindow = windowSelector(`file:${notesId}`);
     await settled(shell, app);
     await expect(shell.locator(`${notesWindow} [data-testid="desk-markdown-viewer"] h1`)).toHaveText("Trip notes");
+    // An `html live` fence is the widget it is in a note: its own frame, its script run (docs/notes.md §5).
+    await expect(shell.frameLocator(`${notesWindow} [data-testid="note-html-block-frame"]`).locator("#w")).toHaveText("ran");
     await shell.locator(`${notesWindow} [data-testid="desk-markdown-viewer"] li`).last().click();
     await caretIn(shell, `${notesWindow} [data-testid="desk-markdown-viewer"]`, "Print the boarding pass");
     await shell.keyboard.press("End");

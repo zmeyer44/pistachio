@@ -27,7 +27,8 @@ export const NOTE_RETRY_CAP_MS = 30_000;
 
 export interface NoteDraft {
   title: string;
-  markdown: string;
+  /** The body as the editor keeps it (docs/notes.md N1); the host derives the markdown. */
+  html: string;
 }
 
 /**
@@ -92,7 +93,7 @@ export type AutosaveAction =
 
 export function createAutosave(note: NoteSaved): AutosaveState {
   return {
-    local: { title: note.title, markdown: note.markdown },
+    local: { title: note.title, html: note.html },
     saved: note,
     dirty: false,
     inflight: null,
@@ -110,14 +111,14 @@ export function retryDelay(retry: number): number {
 }
 
 function differs(local: NoteDraft, saved: NoteDraft): boolean {
-  return local.title !== saved.title || local.markdown !== saved.markdown;
+  return local.title !== saved.title || local.html !== saved.html;
 }
 
 /** Only what changed: a keystroke in the title must not re-seal the body. */
 export function pendingPatch(state: AutosaveState): NotePatch {
   const patch: NotePatch = {};
   if (state.local.title !== state.saved.title) patch.title = state.local.title;
-  if (state.local.markdown !== state.saved.markdown) patch.markdown = state.local.markdown;
+  if (state.local.html !== state.saved.html) patch.html = state.local.html;
   return patch;
 }
 
@@ -147,10 +148,7 @@ export function autosave(state: AutosaveState, event: AutosaveEvent): AutosaveSt
       const sent = state.inflight ?? state.local;
       const local: NoteDraft = {
         title: state.local.title === state.saved.title && sent.title === state.saved.title ? event.note.title : state.local.title,
-        markdown:
-          state.local.markdown === state.saved.markdown && sent.markdown === state.saved.markdown
-            ? event.note.markdown
-            : state.local.markdown,
+        html: state.local.html === state.saved.html && sent.html === state.saved.html ? event.note.html : state.local.html,
       };
       const dirty = differs(local, event.note);
       return {
@@ -182,7 +180,7 @@ export function autosave(state: AutosaveState, event: AutosaveEvent): AutosaveSt
       return {
         ...state,
         saved: event.note,
-        local: { title: event.note.title, markdown: event.note.markdown },
+        local: { title: event.note.title, html: event.note.html },
         dirty: false,
         pendingRemote: state.pendingRemote !== null && state.pendingRemote !== event.note.stamp ? state.pendingRemote : null,
         dueAt: null,

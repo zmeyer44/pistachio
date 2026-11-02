@@ -23,7 +23,7 @@ import { reorderDayTabs } from "../src/chrome/shelf-drag";
 import { dayUnits, dayUnitsInHand, type ChromeTab } from "../src/chrome/tabs";
 import { DeskEmpty } from "../src/components/desk/DeskEmpty";
 import { TabGroupRow } from "../src/components/TabGroupRow";
-import { bringOutJoined, deskAvailable, lendDeskEngine, newSpace, openEntry, revealFor, selectSpace, shortcutSurface, splitAvailable, takeSpaceChoice } from "../src/lib/desk/open";
+import { askSpread, bringOutJoined, deskAvailable, lendDeskEngine, newSpace, openEntry, revealFor, selectSpace, shortcutSurface, splitAvailable, takeSpaceChoice, takeSpread } from "../src/lib/desk/open";
 import type { DeskEngine } from "../src/components/desk/desk-engine";
 import { useDeskStore } from "../src/lib/desk/store";
 import { listDropAt, type MeasuredRow } from "../src/lib/sidebar-tree";
@@ -197,7 +197,8 @@ describe("choosing spaces (main's commands)", () => {
           { id: "a", lastActiveAt: 30 },
           { id: "b", lastActiveAt: 10 },
         ],
-        tabGroups: [group("there", ["a", "b"])],
+        // (A space of windows: docs/space-tabs.md. A space of tabs names none: main's choice, its tab used last.)
+        tabGroups: [{ ...group("there", ["a", "b"]), windows: true }],
         looseGroups: [],
         anchorGroups: [],
       } as unknown as ShellSnapshot,
@@ -222,6 +223,34 @@ describe("choosing spaces (main's commands)", () => {
     expect(revealFor(null, false)).toBe(false);
   });
 
+  it("Show as windows asked of a space not in front spreads it on arrival only when it has no windows' arrangement of its own (docs/space-tabs.md)", () => {
+    const tabIds = ["a", "b"];
+    const rect = { x: 0, y: 0, w: 0.5, h: 0.5 };
+    // Never laid out as windows: spread (tiled) on arrival — read once.
+    askSpread("never", true);
+    expect(takeSpread("never", [], tabIds, [])).toBe(true);
+    expect(takeSpread("never", [], tabIds, [])).toBe(false);
+    // An arrangement of its own (its window in use minimized, say): the passing brings it back as left, nothing spread.
+    askSpread("kept", true);
+    expect(takeSpread("kept", [{ tabId: "a", rect, mini: { restore: rect, parked: true } }], tabIds, [])).toBe(false);
+    // (Read all the same: the ask does not linger for a later passing.)
+    expect(takeSpread("kept", [], tabIds, [])).toBe(false);
+    // A document's window is its own too, while its file is still in the space's Context (or that is not known yet);
+    // one whose file has gone comes back as nothing, as another space's tab does — so the space is spread.
+    askSpread("doc", true);
+    expect(takeSpread("doc", [{ tabId: "file:notes", rect }], tabIds, ["file:notes"])).toBe(false);
+    askSpread("unknown", true);
+    expect(takeSpread("unknown", [{ tabId: "file:notes", rect }], tabIds, null)).toBe(false);
+    askSpread("gone", true);
+    expect(takeSpread("gone", [{ tabId: "file:notes", rect }], tabIds, [])).toBe(true);
+    askSpread("stray", true);
+    expect(takeSpread("stray", [{ tabId: "z", rect }], tabIds, [])).toBe(true);
+    // Show as tabs takes the ask back.
+    askSpread("undone", true);
+    askSpread("undone", false);
+    expect(takeSpread("undone", [], tabIds, [])).toBe(false);
+  });
+
   it("a space's row selects it, naming its window on top when it was left — or main's choice with none", () => {
     useAppStore.setState({
       snapshot: {
@@ -230,19 +259,23 @@ describe("choosing spaces (main's commands)", () => {
           { id: "a", lastActiveAt: 30 },
           { id: "b", lastActiveAt: 10 },
         ],
-        tabGroups: [group("there", ["a", "b"]), group("empty", [])],
+        tabGroups: [{ ...group("there", ["a", "b"]), windows: true }, group("empty", []), group("tabs", ["c", "d"])],
         looseGroups: [],
         anchorGroups: [],
       } as unknown as ShellSnapshot,
     });
-    useDeskStore.setState({ saved: { there: { windows: [{ tabId: "b", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } }] } } });
+    useDeskStore.setState({ saved: { there: { windows: [{ tabId: "b", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } }] }, tabs: { windows: [{ tabId: "d", rect: { x: 0, y: 0, w: 0.5, h: 0.5 } }] } } });
     selectSpace("there");
     selectSpace("empty");
+    // A space of tabs (docs/space-tabs.md) names no window: it comes up on its tab used last, main's choice — not the
+    // one on top when it was last shown as windows.
+    selectSpace("tabs");
     // The current one is not chosen again.
     selectSpace("here");
     expect(commands).toEqual([
       { type: "select", groupId: "there", tabId: "b" },
       { type: "select", groupId: "empty" },
+      { type: "select", groupId: "tabs" },
     ]);
   });
 });

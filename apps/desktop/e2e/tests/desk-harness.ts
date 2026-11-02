@@ -52,8 +52,21 @@ export const selectTab = (shell: Page, tabId: string): Promise<unknown> =>
 export const tabGroupCommand = (shell: Page, command: TabGroupCommand): Promise<unknown> =>
   shell.evaluate((body) => (window as unknown as WithPistachio).pistachio.tabGroupCommand(body), command);
 
-export const createGroup = (shell: Page, id: string, tabIds: readonly string[], title: string, color: TabGroupColor): Promise<unknown> =>
-  tabGroupCommand(shell, { type: "create", id, tabIds: [...tabIds], title, color });
+/**
+ * A space of these tabs, named and coloured — a space of WINDOWS unless `windows` is false: the desk's specs were written
+ * for a space's tabs as free windows, every space's way until 2026-11-02, when a space began to show its tabs as a
+ * browser does, one at a time filling the desk, until made one of windows (TabGroupInfo.windows, docs/space-tabs.md;
+ * space-tabs.spec.ts is that way's). Made so in one step (`create`'s `windows`): made of tabs and turned to windows
+ * after, a space taking the tab in use would be spread out as the person's Windows spreads it.
+ */
+export const createGroup = (
+  shell: Page,
+  id: string,
+  tabIds: readonly string[],
+  title: string,
+  color: TabGroupColor,
+  options: { windows?: boolean } = {},
+): Promise<unknown> => tabGroupCommand(shell, { type: "create", id, tabIds: [...tabIds], title, color, ...(options.windows === false ? {} : { windows: true }) });
 
 /**
  * A tab on each address not open yet, every one of them there before this

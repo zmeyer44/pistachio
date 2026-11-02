@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { autoUpdate, flip, offset, shift, useFloating, type ReferenceType } from "@floating-ui/react";
+import { autoUpdate, flip, offset, shift, useFloating } from "@floating-ui/react";
 import { MoreHorizontal } from "lucide-react";
 import { cn } from "../../lib/cn";
 
@@ -27,7 +27,7 @@ export const PILL = cn(
 export const NOTE_COLUMN = "mx-auto w-full max-w-[760px] px-6 @max-[481px]:px-4";
 /** The bar above a note and above the library. */
 export const NOTE_BAR_HEIGHT = 52;
-/** Every floating panel in a note: the slash menu, the bubble menu, a row's `…`. */
+/** The panel a row's `…` and the Share menu wear — the editor's own menus wear the same (`@pistachio/note-editor`). */
 export const NOTE_PANEL_CLASS = "z-50 flex flex-col rounded-xl bg-background-100 p-1 text-gray-1000 shadow-menu";
 
 export interface RowMenuItem {
@@ -162,16 +162,6 @@ export function RowMenu({
       ) : null}
     </>
   );
-}
-
-/**
- * A rectangle in the page as something @floating-ui can hang a panel off:
- * how both the slash menu (the caret) and the bubble menu (the selection)
- * are positioned, since neither has an element of its own.
- */
-export function rectReference(rect: DOMRect | null): ReferenceType | null {
-  if (rect === null) return null;
-  return { getBoundingClientRect: () => rect };
 }
 
 /** A transient line in the bar — a refusal, or "Edited on another device". */

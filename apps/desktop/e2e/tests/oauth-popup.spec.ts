@@ -218,7 +218,10 @@ async function selfRedirectingRelyingParty(options: {
     const authenticated = (request.headers.cookie ?? "").includes(
       "rp-session=connected",
     );
-    requests.push(`${request.method} ${path}${authenticated ? " [authenticated]" : ""}`);
+    // The page's favicon is fetched by the shell for the tab's row, not by
+    // the page (the renderer's `img-src` admits `http:` for a note's pictures
+    // by address, docs/notes.md §5): neither a document nor an API request.
+    if (path !== "/favicon.ico") requests.push(`${request.method} ${path}${authenticated ? " [authenticated]" : ""}`);
     if (path === "/auth/jwt" && request.method === "POST") {
       setTimeout(() => {
         response.writeHead(202, {
@@ -336,7 +339,10 @@ async function routingRelyingParty(options: {
     const authenticated = (request.headers.cookie ?? "").includes(
       "routed-session=connected",
     );
-    requests.push(`${request.method} ${path}${authenticated ? " [authenticated]" : ""}`);
+    // The page's favicon is fetched by the shell for the tab's row, not by
+    // the page (the renderer's `img-src` admits `http:` for a note's pictures
+    // by address, docs/notes.md §5): neither a document nor an API request.
+    if (path !== "/favicon.ico") requests.push(`${request.method} ${path}${authenticated ? " [authenticated]" : ""}`);
     if (path === "/googlepopupcallback") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       response.end(`<!doctype html><title>Signing in</title><script>

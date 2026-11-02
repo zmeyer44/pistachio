@@ -28,6 +28,7 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "@pistachio/web-account/auth.css";
+@import "@pistachio/note-editor/note-editor.css";
 @source "../../../../packages/web-account/src";
 
 
@@ -518,38 +519,14 @@ select.pa-input { appearance: none; padding-right: var(--pa-8); }
 .pa-artifact-stage { flex: 1; min-height: 560px; overflow: hidden; border: 1px solid var(--color-alpha-400); border-radius: var(--pa-radius-lg); background: white; box-shadow: var(--shadow-small); }
 .pa-artifact-stage iframe { display: block; width: 100%; height: 100%; min-height: 560px; border: 0; background: white; }
 
-/* A note shared with this account, being edited (docs/notes.md §9): the
-   markdown on the left, the same renderer that draws it everywhere else on
-   the right, so what is being typed and what a reader sees stay one thing. */
-.pa-shared-split { display: grid; flex: 1; min-height: 560px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--pa-3); }
-.pa-shared-compose { display: flex; min-width: 0; flex-direction: column; gap: var(--pa-2); }
-.pa-shared-title {
-  border: 1px solid var(--color-alpha-400);
-  border-radius: var(--pa-radius-lg);
-  background: var(--color-background-100);
-  padding: 10px var(--pa-3);
-  color: var(--color-gray-1000);
-  font: inherit;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  outline: 0;
-}
-.pa-shared-markdown {
-  flex: 1;
-  min-height: 480px;
-  resize: vertical;
-  border: 1px solid var(--color-alpha-400);
-  border-radius: var(--pa-radius-lg);
-  background: var(--color-background-100);
-  padding: var(--pa-3);
-  color: var(--color-gray-1000);
-  font-family: var(--font-geist-mono, ui-monospace, monospace);
-  font-size: 13px;
-  line-height: 20px;
-  outline: 0;
-}
-.pa-shared-title:focus, .pa-shared-markdown:focus { border-color: var(--color-blue-700); box-shadow: 0 0 0 1px var(--color-blue-700); }
+/* A note shared with this account (docs/notes.md §9), in the editor the
+   desktop writes with (`@pistachio/note-editor`): its own measure under the
+   toolbar, the shell's faces, and the gutters the editor pads for the block
+   handle pulled back out so the text lines up under the title. */
+.pa-note-document { flex: 1; padding: var(--pa-4) 0 var(--pa-16); }
+.pa-note-measure { max-width: 760px; margin: 0 auto; padding: 0 var(--pa-6); }
+.pa .note-editor { --note-font-sans: var(--font-geist); --note-font-mono: var(--font-geist-mono); }
+.pa .note-title { font-family: var(--font-geist); }
 .pa-shared-save { display: inline-flex; align-items: center; gap: 5px; color: var(--color-gray-800); font-size: 12px; }
 .pa-shared-save[data-tone="alert"] { color: var(--color-red-900); }
 .pa-spin { animation: pa-spin 900ms linear infinite; }
@@ -567,7 +544,7 @@ select.pa-input { appearance: none; padding-right: var(--pa-8); }
   .pa-artifact-search { width: 100%; }
   .pa-artifact-actions { justify-content: flex-start; }
   .pa-artifact-page { min-height: 0; }
-  .pa-shared-split { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .pa-note-measure { padding: 0 var(--pa-4); }
 }
 
 @media (prefers-reduced-motion: reduce) {

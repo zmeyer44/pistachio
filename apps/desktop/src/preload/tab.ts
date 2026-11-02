@@ -85,7 +85,7 @@ function startShields(): void {
   }
   if (boot === null || typeof boot !== "object") return;
   const { protections } = boot;
-  if (protections.globalPrivacyControl || protections.fingerprinting !== "off" || protections.userAgent !== null) {
+  if (protections.globalPrivacyControl || protections.fingerprinting !== "off") {
     try {
       contextBridge.executeInMainWorld({ func: installPageProtections, args: [protections] });
     } catch {

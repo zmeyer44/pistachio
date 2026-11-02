@@ -61,7 +61,7 @@ import { UpdateService } from "./update-service";
 import { ReadAloudService, shellReadAloudSource } from "./read-aloud";
 import { WatchtowerService } from "./watchtower/service";
 import { TerminalService } from "./terminal/service";
-import { frameOwnerUrl, ShieldsService } from "./shields/service";
+import { ShieldsService } from "./shields/service";
 import { isShieldsRequest } from "@pistachio/shell-contracts/shields";
 import { SHIELDS_COSMETICS_CHANNEL, SHIELDS_FRAME_CHANNEL, type ShieldsDomFeatures } from "@pistachio/shell-contracts/shields-page";
 import { watchtowerRequestSchema } from "@pistachio/shell-contracts/watchtower";
@@ -230,11 +230,12 @@ import {
   type NoteRequest,
   type NoteResponse,
   type NoteSource,
+  noteFrameDocument,
 } from "@pistachio/shell-contracts/notes";
 import { shellPageOf, shellPageTitle } from "@pistachio/shell-contracts/shell-pages";
 import { terminalUrlId } from "@pistachio/shell-contracts/terminal";
 import { isUpdateSnooze } from "@pistachio/shell-contracts/updates";
-import { renderNoteHtml } from "@pistachio/notes";
+import { HTML_BLOCK_FRAME_CSP, renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
 import { isScreenshotRequest } from "@pistachio/shell-contracts/screenshot";
 import { idleLiveShare, isLiveCommand, isLiveDeskReport, isLiveHostReport } from "@pistachio/shell-contracts/live-share";
@@ -346,7 +347,7 @@ const SHARED_NOTE_POLL_MS = 30_000;
  */
 const noteSharing = new Map<
   string,
-  { shared: boolean; mirror: { title: string; markdown: string; revision: number } | null }
+  { shared: boolean; mirror: { title: string; html: string; markdown: string; revision: number } | null }
 >();
 /** Note ids a refused push is already reading back; one pass, not a chain. */
 const reconciling = new Set<string>();
@@ -1055,10 +1056,12 @@ async function pushSharedNote(id: string): Promise<void> {
     mirror !== null &&
     mirror.revision >= note.revision &&
     mirror.title === note.title &&
+    mirror.html === note.html &&
     mirror.markdown === note.markdown
   ) return;
   const result = await client.putSharedNote(id, {
     title: note.title,
+    html: note.html,
     markdown: note.markdown,
     revision: note.revision,
   });
@@ -1080,7 +1083,7 @@ async function pushSharedNote(id: string): Promise<void> {
   }
   noteSharing.set(id, {
     shared: true,
-    mirror: { title: result.note.title, markdown: result.note.markdown, revision: result.note.revision },
+    mirror: { title: result.note.title, html: result.note.html, markdown: result.note.markdown, revision: result.note.revision },
   });
 }
 
@@ -1099,11 +1102,17 @@ async function pullSharedNote(id: string): Promise<void> {
   if (remote === null) return;
   noteSharing.set(id, {
     shared: true,
-    mirror: { title: remote.title, markdown: remote.markdown, revision: remote.revision },
+    mirror: { title: remote.title, html: remote.html, markdown: remote.markdown, revision: remote.revision },
   });
   const local = notes?.get(id) ?? null;
   if (local === null || remote.revision <= local.revision) return;
-  notes?.update(id, { title: remote.title, markdown: remote.markdown }, USER_NOTE_SOURCE);
+  // The web editor writes the HTML (N1) and the store derives the markdown;
+  // a body that arrived as markdown alone is completed the other way.
+  notes?.update(
+    id,
+    remote.html.trim() === "" ? { title: remote.title, markdown: remote.markdown } : { title: remote.title, html: remote.html },
+    USER_NOTE_SOURCE,
+  );
   await pushSharedNote(id);
 }
 
@@ -2661,7 +2670,11 @@ async function createWindow(): Promise<void> {
   // 2026-10-09 the agent's session also left the desk here, to come back as
   // the reloaded shell entered it again: it follows main's current space
   // now, which a reload does not change.)
-  window.webContents.on("did-start-loading", () => {
+  // The shell reloading, and only that: `did-start-loading` would also fire
+  // for a frame inside the shell starting to load — a note's widget served
+  // from `pistachio-app://note-frame/`, an embed — while the desk stays up.
+  window.webContents.on("did-start-navigation", (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
     deskBridge.cancelAll("the desk reloaded");
     screenshots.reset();
     // Until the reloaded desk reports again, no shell-drawn window's picture is cut from what the page shows (docs/live-share.md §6.6).
@@ -3136,7 +3149,7 @@ function installIpc(): void {
     const address = frame !== null && frame.url !== "" ? frame.url : typeof url === "string" ? url : "";
     let boot: ReturnType<ShieldsService["frameBootstrap"]> = null;
     try {
-      boot = answers && shields !== null ? shields.frameBootstrap(address, frameTopUrl(frame) ?? address, frameOwnerUrl(frame)) : null;
+      boot = answers && shields !== null ? shields.frameBootstrap(address, frameTopUrl(frame) ?? address) : null;
     } catch (error) {
       // The page waits on this answer: it gets one, whatever went wrong.
       console.error("[shields] bootstrap failed", error);
@@ -3448,8 +3461,10 @@ function installIpc(): void {
     // Nothing to bring back — no page, no Stack, no conversation (main's own fresh space, closed empty): no entry, which
     // would only restore an empty "New space".
     if (closed.tabs.length === 0 && !closed.persons) return { archivedEntryId: null };
-    const { id: groupId, title, color, origin } = closed.group;
-    const [entry] = tabArchive.add([{ kind: "group", spaceId: closed.spaceId, reason: "closed", runId: null, groupId, group: { title, color, origin }, tabs: closed.tabs }]);
+    const { id: groupId, title, color, origin, windows } = closed.group;
+    // (A space of windows comes back one: docs/space-tabs.md.)
+    const group = { title, color, origin, ...(windows === true ? { windows } : {}) };
+    const [entry] = tabArchive.add([{ kind: "group", spaceId: closed.spaceId, reason: "closed", runId: null, groupId, group, tabs: closed.tabs }]);
     return { archivedEntryId: entry?.id ?? null };
   });
   ipcMain.handle(IPC.tabArchive, async (event, request: unknown): Promise<TabArchiveResponse> => {
@@ -5027,6 +5042,22 @@ app.whenReady().then(async () => {
   // The trusted shell has its own origin. Sites always run in native tab views.
   protocol.handle("pistachio-app", request => {
     const url = new URL(request.url);
+    // A widget's document, served under a policy of its own (docs/notes.md
+    // §5): the shell's page allows no inline script, and a frame made from
+    // `srcdoc` would inherit that and run none of the widget. The whole
+    // document is in the address; nothing is kept between the two.
+    const frame = noteFrameDocument(url);
+    if (frame !== null) {
+      return new Response(frame, {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": HTML_BLOCK_FRAME_CSP,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
     const root = resolve(currentDir, "../renderer");
     const target = resolve(root, `.${decodeURIComponent(url.pathname)}`);
     const path = relative(root, target);
@@ -5205,10 +5236,6 @@ app.whenReady().then(async () => {
     onPageChanged: (contentsId) => browser?.shieldsChanged(contentsId),
     // An identity Space's WebRTC may only go through the gateway (D13).
     webRtcFloor: () => (featureEnabled ? "proxied" : "default"),
-    // Specs name a local host of their own as a site that refuses Electron's user agent.
-    ...(process.env["PISTACHIO_E2E"] === "1" && process.env["PISTACHIO_SHIELDS_CHROME_UA_HOSTS"] !== undefined
-      ? { chromeUserAgentHosts: process.env["PISTACHIO_SHIELDS_CHROME_UA_HOSTS"].split(",") }
-      : {}),
   });
   settings.onChange((next) => shields?.applySettings(next.shields));
   await shields.start();

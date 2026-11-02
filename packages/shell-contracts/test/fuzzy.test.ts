@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rankFuzzy, STRONG_FUZZY_SCORE } from "../src/lib/fuzzy";
+import { rankFuzzy, STRONG_FUZZY_SCORE } from "../src/fuzzy.js";
 
 describe("command palette fuzzy ranking", () => {
   const candidates = [

@@ -7,7 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -64,6 +64,7 @@ function remoteNote(overrides: Partial<Note> = {}): Note {
   return {
     id: "aaaabbbbcccc",
     title: "From the other Mac",
+    html: "<h1>Pie</h1><p>Sour cherries.</p>",
     markdown: "# Pie\n\nSour cherries.",
     icon: null,
     blobIds: [],
@@ -165,6 +166,108 @@ describe("NoteStore", () => {
     expect(readFileSync(join(directory, "notes", `${note.id}.md`), "utf8")).toBe("Sour cherries.\n");
     expect(store.get(note.id)).toEqual(note);
     expect(changes).toEqual([]);
+  });
+});
+
+describe("the body in both forms (docs/notes.md N1)", () => {
+  it("derives markdown from the editor's HTML, and HTML from the agent's markdown", () => {
+    const { store, directory } = open();
+    const typed = store.create({ title: "Pie", html: '<h2>Filling</h2><div data-type="callout" data-emoji="💡"><p>Sour <strong>cherries</strong>.</p></div>' }, USER);
+    expect(typed.markdown).toBe("## Filling\n\n> 💡 Sour **cherries**.\n");
+    expect(readFileSync(join(directory, "notes", `${typed.id}.html`), "utf8")).toBe(typed.html);
+    expect(readFileSync(join(directory, "notes", `${typed.id}.md`), "utf8")).toBe(typed.markdown);
+    expect(store.list()[0]?.snippet).toBe("Filling 💡 Sour cherries.");
+
+    const written = store.create({ title: "Trip", markdown: "- [ ] Ferry at nine" }, AGENT);
+    expect(written.html).toBe(
+      '<ul data-type="taskList"><li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Ferry at nine</p></div></li></ul>',
+    );
+    expect(written.markdown).toBe("- [ ] Ferry at nine");
+
+    // HTML wins when a write carries both; the markdown is derived afresh.
+    const both = store.update(written.id, { html: "<p>Walk instead.</p>", markdown: "stale" }, USER);
+    expect(both).toMatchObject({ html: "<p>Walk instead.</p>", markdown: "Walk instead.\n", revision: 2 });
+  });
+
+  it("refuses an HTML body over its own cap", () => {
+    const { store } = open();
+    expect(() => store.create({ html: `<p>${"x".repeat(1_048_576)}</p>` }, USER)).toThrow(/at most 1048576/);
+  });
+
+  it("refuses markdown whose HTML would not fit, rather than storing what sync would clamp", () => {
+    const { store } = open();
+    // Within the markdown cap; five bytes each once converted (`&amp;`).
+    const markdown = "&".repeat(220_000);
+    expect(() => store.create({ title: "Wide", markdown }, AGENT)).toThrow(/at most 1048576/);
+    const note = store.create({ title: "Narrow", markdown: "fine" }, AGENT);
+    expect(() => store.update(note.id, { markdown }, AGENT)).toThrow(/at most 1048576/);
+    expect(store.get(note.id)?.markdown).toBe("fine");
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it("completes a note written before HTML was canonical the first time it is read", () => {
+    const { store, directory } = open();
+    const note = store.create({ title: "Old", markdown: "# Sunday\n\nLattice top." }, USER);
+    rmSync(join(directory, "notes", `${note.id}.html`));
+    const reopened = new NoteStore(directory);
+    expect(reopened.get(note.id)).toMatchObject({ html: "<h1>Sunday</h1><p>Lattice top.</p>", markdown: "# Sunday\n\nLattice top." });
+    expect(existsSync(join(directory, "notes", `${note.id}.html`))).toBe(true);
+  });
+
+  it("serves a note from before N1 whose HTML would not fit, and neither writes nor syncs that HTML", () => {
+    const { store, directory } = open();
+    const note = store.create({ title: "Wide", markdown: "small" }, USER);
+    // As an older version of the app left it: markdown alone, and more of
+    // it than the HTML cap can take once converted.
+    const wide = "&".repeat(220_000);
+    writeFileSync(join(directory, "notes", `${note.id}.md`), wide, "utf8");
+    rmSync(join(directory, "notes", `${note.id}.html`));
+    const reopened = new NoteStore(directory);
+    const read = reopened.get(note.id);
+    expect(read?.markdown).toBe(wide);
+    expect(read?.html).toBe(`<p>${"&amp;".repeat(220_000)}</p>`);
+    expect(existsSync(join(directory, "notes", `${note.id}.html`))).toBe(false);
+    // What leaves this Mac is the markdown, for the other devices to complete for themselves.
+    expect(reopened.syncGet("note", note.id)).toMatchObject({ html: "", markdown: wide });
+    // A title alone keeps the body as stored and answers it as served — the
+    // editor adopts what comes back, and must not be shown an empty page.
+    const served = `<p>${"&amp;".repeat(220_000)}</p>`;
+    expect(reopened.update(note.id, { title: "Wider" }, USER)).toMatchObject({ title: "Wider", html: served, markdown: wide });
+    expect(reopened.syncGet("note", note.id)).toMatchObject({ title: "Wider", html: "", markdown: wide, revision: 2 });
+    // The body as it stands cannot be kept.
+    expect(() => reopened.update(note.id, { html: read!.html }, USER)).toThrow(/at most 1048576/);
+    // A record like it arriving from another device is held the same way.
+    const { html: _html, ...legacy } = { ...remoteNote(), markdown: wide };
+    expect(reopened.applyRemote("note", legacy)).toMatchObject({ html: "", markdown: wide });
+    expect(reopened.get(legacy.id)?.html).toBe(`<p>${"&amp;".repeat(220_000)}</p>`);
+    expect(existsSync(join(directory, "notes", `${legacy.id}.html`))).toBe(true);
+    expect(readFileSync(join(directory, "notes", `${legacy.id}.html`), "utf8")).toBe("");
+  });
+
+  it("completes a record from a device that knew markdown alone, and short-circuits its echo", () => {
+    const { store } = open();
+    const { html: _html, ...legacy } = remoteNote();
+    expect(store.applyRemote("note", legacy)).toMatchObject({ html: "<h1>Pie</h1><p>Sour cherries.</p>", markdown: "# Pie\n\nSour cherries." });
+    const snapshots: NoteSnapshot[] = [];
+    store.onChange((snapshot) => snapshots.push(snapshot));
+    store.applyRemote("note", legacy);
+    expect(snapshots).toEqual([]);
+  });
+
+  it("applies the agent's edit to the note's blocks, leaving a widget beside them untouched", () => {
+    const { store } = open();
+    const widget = '<div data-type="html-block" data-html="&lt;b&gt;x&lt;/b&gt;"></div>';
+    const note = store.create({ title: "Pie", html: `<h2>Filling</h2><p>Sour cherries.</p>${widget}<h2>Crust</h2><p>All butter.</p>` }, USER);
+    const edited = store.edit(note.id, { mode: "replace_section", markdown: "Lard.", section: "crust" }, "Rhubarb pie", AGENT);
+    expect(edited).toMatchObject({
+      title: "Rhubarb pie",
+      html: `<h2>Filling</h2><p>Sour cherries.</p>${widget}<h2>Crust</h2><p>Lard.</p>`,
+      revision: 2,
+      source: AGENT,
+    });
+    expect(edited.markdown).toContain("```html live\n<b>x</b>\n```");
+    expect(() => store.edit(note.id, { mode: "replace_section", markdown: "x", section: "Ingredients" }, null, AGENT)).toThrow(/no section titled "Ingredients"/);
+    expect(store.get(note.id)?.revision).toBe(2);
   });
 });
 
@@ -284,7 +387,7 @@ describe("records from another device", () => {
     store.onRecordChange((kind, id) => records.push([kind, id]));
 
     // The note may arrive before the picture it names; each is its own register.
-    const note = remoteNote({ markdown: `# Pie\n\n![](note-blob:${blobId})` });
+    const note = remoteNote({ html: `<h1>Pie</h1><img src="note-blob:${blobId}">`, markdown: `# Pie\n\n![](note-blob:${blobId})` });
     expect(store.applyRemote("note", note)).toMatchObject({ id: note.id, blobIds: [blobId] });
     expect(store.get(note.id)).toMatchObject({ title: "From the other Mac", revision: 3, blobIds: [blobId] });
     expect(store.getBlob(blobId)).toBeNull();
@@ -356,6 +459,7 @@ describe("records from another device", () => {
     expect(store.syncGet("noteBlob", blob.id)).toEqual(store.getBlob(blob.id));
     expect(store.syncGet("note", "aaaabbbbcccc")).toBeNull();
 
+    rmSync(join(directory, "notes", `${note.id}.html`));
     rmSync(join(directory, "notes", `${note.id}.md`));
     // An empty document must never be published over the good copy a peer holds.
     expect(store.syncAll("note")).toEqual([]);
@@ -364,6 +468,6 @@ describe("records from another device", () => {
 });
 
 function noteSummary(note: Note) {
-  const { markdown: _markdown, ...rest } = note;
+  const { html: _html, markdown: _markdown, ...rest } = note;
   return rest;
 }

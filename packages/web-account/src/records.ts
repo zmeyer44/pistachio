@@ -153,6 +153,7 @@ const NOTE_ID_RE = /^[a-f0-9]{12}$/u;
 const NOTE_BLOB_ID_RE = /^[a-f0-9]{24}$/u;
 const MAX_NOTE_TITLE = 200;
 const MAX_NOTE_MARKDOWN_BYTES = 262_144;
+const MAX_NOTE_HTML_BYTES = 1_048_576;
 const MAX_NOTE_BLOB_BYTES = 1_500_000;
 /** Base64 is four characters per three bytes, plus padding. */
 const MAX_NOTE_BLOB_BASE64 = Math.ceil(MAX_NOTE_BLOB_BYTES / 3) * 4 + 4;
@@ -166,6 +167,8 @@ function noteRecord(value: unknown): NoteRecord | null {
     typeof note.title !== "string" || note.title.length > MAX_NOTE_TITLE ||
     typeof note.markdown !== "string" ||
     new TextEncoder().encode(note.markdown).byteLength > MAX_NOTE_MARKDOWN_BYTES ||
+    // The canonical body (docs/notes.md N1); a record from before it was carries markdown alone.
+    (note.html !== undefined && (typeof note.html !== "string" || new TextEncoder().encode(note.html).byteLength > MAX_NOTE_HTML_BYTES)) ||
     (note.icon !== null && typeof note.icon !== "string") ||
     !Array.isArray(note.blobIds) || note.blobIds.some((id) => typeof id !== "string" || !NOTE_BLOB_ID_RE.test(id)) ||
     typeof note.createdAt !== "string" || Number.isNaN(Date.parse(note.createdAt)) ||
@@ -175,7 +178,7 @@ function noteRecord(value: unknown): NoteRecord | null {
     (note.source.kind !== "user" && note.source.kind !== "agent") ||
     (note.source.runId !== null && typeof note.source.runId !== "string")
   ) return null;
-  return note as NoteRecord;
+  return { ...note, html: note.html ?? "" } as NoteRecord;
 }
 
 function noteBlobRecord(value: unknown): NoteBlobRecord | null {

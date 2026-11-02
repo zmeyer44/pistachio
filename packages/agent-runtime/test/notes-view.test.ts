@@ -36,6 +36,7 @@ function note(overrides: Partial<Note> = {}): Note {
   return {
     id: "0a1b2c3d4e5f",
     title: "Sour cherry pie",
+    html: "",
     markdown: "Sour cherries, a lattice top.",
     icon: null,
     blobIds: [],
@@ -80,6 +81,18 @@ describe("sanitizeNote", () => {
     expect(sanitizeNote(note({ icon: "pie" }))?.icon).toBeNull();
   });
 
+  it("keeps the HTML body, reads the blob ids off it when there is one, and takes a record without one", () => {
+    const whole = sanitizeNote(note({ html: '<p>x</p><img src="note-blob:89abcdef0123456789abcdef">', markdown: "![](note-blob:0123456789abcdef01234567)" }));
+    expect(whole?.html).toBe('<p>x</p><img src="note-blob:89abcdef0123456789abcdef">');
+    expect(whole?.blobIds).toEqual(["89abcdef0123456789abcdef"]);
+    // A record from before HTML was canonical: markdown alone, html empty, blob ids off the markdown.
+    const { html: _html, ...legacy } = note({ markdown: "![](note-blob:0123456789abcdef01234567)" });
+    expect(sanitizeNote(legacy)).toMatchObject({ html: "", blobIds: ["0123456789abcdef01234567"] });
+    expect(sanitizeNoteInput({ html: "<p>a</p>" })).toEqual({ html: "<p>a</p>" });
+    expect(sanitizeNotePatch({ html: "<p>a</p>", markdown: "a" })).toEqual({ html: "<p>a</p>", markdown: "a" });
+    expect(summaryOf(note({ html: "<p>a</p>", markdown: "a" }))).not.toHaveProperty("html");
+  });
+
   it("bounds the markdown by BYTES, not characters, and normalizes line endings", () => {
     const huge = sanitizeNote(note({ markdown: "🥧".repeat(MAX_NOTE_MARKDOWN_BYTES) }));
     expect(new TextEncoder().encode(huge?.markdown ?? "").length).toBeLessThanOrEqual(MAX_NOTE_MARKDOWN_BYTES);
@@ -120,6 +133,19 @@ describe("noteSnippet", () => {
   it("says what the note says, without the syntax", () => {
     const markdown = "# Sunday\n\n- [ ] **butter**\n- [x] `flour`\n\n> a [link](https://example.com) and ![alt](note-blob:0123456789abcdef01234567)";
     expect(noteSnippet(markdown)).toBe("Sunday butter flour a link and alt");
+  });
+
+  it("leaves a widget's source out — an `html live` fence is not prose", () => {
+    expect(noteSnippet("Before\n\n```html live\n<b>secret</b>\n```\n\nAfter\n\n```ts\nconst a = 1;\n```")).toBe("Before After const a = 1;");
+    // Wherever it sits: in a callout or a quote, with tildes, in any case; and to the end when never closed.
+    expect(noteSnippet("> 💡 Tip\n> ```html live\n> <script>secret()</script>\n> ```\n> after\n\nTail")).toBe("💡 Tip after Tail");
+    expect(noteSnippet("Before\n\n~~~HTML LIVE\n<b>secret</b>\n~~~\n\nAfter")).toBe("Before After");
+    expect(noteSnippet("Before\n\n````html live\n```\n<b>secret</b>\n```\n````\n\nAfter")).toBe("Before After");
+    expect(noteSnippet("Before\n\n```html live\n<b>secret</b>\n\nnever closed")).toBe("Before");
+    // As the serializers write a widget that is a callout's first block, or a list item's.
+    expect(noteSnippet("> 💡 ```html live\n> <script>secret()</script>\n> ```\n> after\n\nTail")).toBe("after Tail");
+    expect(noteSnippet("- ```html live\n  <b>secret</b>\n  ```\n- second\n\nTail")).toBe("second Tail");
+    expect(noteSnippet("- [ ] ```html live\n  <b>secret</b>\n  ```\n\nTail")).toBe("Tail");
   });
 
   it("stops around a hundred and sixty characters, on a word", () => {

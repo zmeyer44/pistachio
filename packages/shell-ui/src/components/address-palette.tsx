@@ -24,7 +24,7 @@ import { useShell } from "../chrome/shell-host";
 import { ACTION_INTENT_DETAILS } from "../lib/action-intents";
 import { cn } from "../lib/cn";
 import { collapseDestinations, destinationKey } from "../lib/destination";
-import { rankFuzzy, STRONG_FUZZY_SCORE, type FuzzyCandidate } from "../lib/fuzzy";
+import { rankFuzzy, STRONG_FUZZY_SCORE, type FuzzyCandidate } from "@pistachio/shell-contracts/fuzzy";
 import { applyIntentRanking, buildIntentRequest, shouldAskIntentModel, type IntentCandidateSeed } from "../lib/intent-ranking";
 import { secondarySearchItems, type AssistantTarget, type UrlItem } from "../lib/search-suggestions";
 import { SETTINGS_INTENTS, settingsIntentEntryId, settingsIntentKeywords, type SettingsIntent } from "../lib/settings-intents";

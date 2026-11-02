@@ -1,14 +1,18 @@
 /**
- * Notes: the markdown documents a person writes in Pistachio (docs/notes.md).
+ * Notes: the documents a person writes in Pistachio (docs/notes.md).
  *
  * A note is one record — its metadata AND its body — and its images are
- * sibling records referenced from the markdown as `note-blob:<id>`, so a
+ * sibling records referenced from the body as `note-blob:<id>`, so a
  * keystroke re-seals kilobytes of text rather than megabytes of picture (N2,
- * N3). This module is the pure half both hosts share: the shapes, the caps,
- * the sanitizers, the snippet, the search, the one markdown edit the agent is
- * allowed to make blind, and what the model sees. The desktop store
- * (main/note-store.ts) owns the files; `@pistachio/notes` owns rendering a
- * note to HTML; the renderer only ever reads a snapshot and asks for a change.
+ * N3). The body is held twice (N1): `html` is canonical, what the editor
+ * keeps and what a callout, a toggle or a widget lives in; `markdown` is
+ * derived from it by whichever host writes the note, and is what the agent
+ * reads, the library searches and an older device can still show. This
+ * module is the pure, dependency-free half both hosts share: the shapes, the
+ * caps, the sanitizers, the snippet, the search, and what the model sees.
+ * `@pistachio/notes` owns the schema, the conversions and the agent's
+ * structural edit; the desktop store (main/note-store.ts) owns the files; the
+ * renderer only ever reads a snapshot and asks for a change.
  */
 
 /* --------------------------------- types -------------------------------- */
@@ -25,11 +29,13 @@ export interface Note {
   id: string;
   /** "" is allowed; the library shows `NOTE_UNTITLED`. */
   title: string;
-  /** The canonical body. Never includes the title. */
+  /** The canonical body, as the editor keeps it. Never includes the title. "" is an empty note. */
+  html: string;
+  /** The body as markdown, derived from `html` by the host that wrote it. */
   markdown: string;
   /** One emoji, or null. */
   icon: string | null;
-  /** Every note-blob the markdown references, for cleanup and the caps. */
+  /** Every note-blob the body references, for cleanup and the caps. */
   blobIds: string[];
   createdAt: string;
   updatedAt: string;
@@ -40,9 +46,9 @@ export interface Note {
 
 /**
  * A note without its body — what the library lists and what `onNotes` carries,
- * so five hundred notes never serialise their markdown on a keystroke (§3).
+ * so five hundred notes never serialise their text on a keystroke (§3).
  */
-export interface NoteSummary extends Omit<Note, "markdown"> {
+export interface NoteSummary extends Omit<Note, "markdown" | "html"> {
   snippet: string;
 }
 
@@ -59,16 +65,22 @@ export interface NoteBlob {
   createdAt: string;
 }
 
-/** A new note. Everything is optional: ⌘⌥N opens an empty one. */
+/**
+ * A new note. Everything is optional: ⌘⌥N opens an empty one. The body may
+ * come as `html` (the editor) or as `markdown` (the agent, a web editor); the
+ * host derives the other. When both are given, `html` is the one kept.
+ */
 export interface NoteInput {
   title?: string;
+  html?: string;
   markdown?: string;
   icon?: string | null;
 }
 
-/** A change to a note. Only the fields present are written. */
+/** A change to a note. Only the fields present are written; a body in either form replaces the whole body. */
 export interface NotePatch {
   title?: string;
+  html?: string;
   markdown?: string;
   icon?: string | null;
 }
@@ -83,6 +95,8 @@ export interface NoteSnapshot {
 export const MAX_NOTES = 500;
 export const MAX_NOTE_TITLE = 200;
 export const MAX_NOTE_MARKDOWN_BYTES = 262_144;
+/** The canonical body: a widget's HTML lives inside it, so it is allowed more room than the markdown. */
+export const MAX_NOTE_HTML_BYTES = 1_048_576;
 /** After base64 this is ~2 MB, which stays under `FRAME_BUDGET_BYTES` (N4). */
 export const MAX_NOTE_BLOB_BYTES = 1_500_000;
 export const MAX_NOTE_BLOBS_PER_NOTE = 40;
@@ -154,6 +168,12 @@ export function sanitizeNoteMarkdown(value: unknown): string {
   return clampBytes(value.replace(/\r\n?/gu, "\n"), MAX_NOTE_MARKDOWN_BYTES);
 }
 
+/** A note's HTML, bounded. What it may contain is the schema's business (`@pistachio/notes`), not a regex's. */
+export function sanitizeNoteHtml(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return clampBytes(value, MAX_NOTE_HTML_BYTES);
+}
+
 /**
  * One note off disk or off the wire, or null when it is not one. Entries that
  * do not parse are dropped rather than crashing the store, the way the other
@@ -171,12 +191,16 @@ export function sanitizeNote(value: unknown): Note | null {
     return null;
   }
   const markdown = sanitizeNoteMarkdown(raw["markdown"]);
+  // A record from before HTML was canonical carries markdown alone; it is
+  // whole once a host completes it (`completeNote`), never refused.
+  const html = sanitizeNoteHtml(raw["html"]);
   return {
     id: raw["id"],
     title: line(raw["title"], MAX_NOTE_TITLE),
+    html,
     markdown,
     icon: sanitizeNoteIcon(raw["icon"]),
-    blobIds: noteBlobIdsIn(markdown),
+    blobIds: noteBlobIdsIn(html === "" ? markdown : html),
     createdAt: raw["createdAt"],
     updatedAt: raw["updatedAt"],
     revision: raw["revision"],
@@ -188,6 +212,7 @@ export function sanitizeNoteInput(value: unknown): NoteInput {
   const raw = record(value);
   const input: NoteInput = {};
   if (raw["title"] !== undefined) input.title = line(raw["title"], MAX_NOTE_TITLE);
+  if (raw["html"] !== undefined) input.html = sanitizeNoteHtml(raw["html"]);
   if (raw["markdown"] !== undefined) input.markdown = sanitizeNoteMarkdown(raw["markdown"]);
   if (raw["icon"] !== undefined) input.icon = sanitizeNoteIcon(raw["icon"]);
   return input;
@@ -197,6 +222,7 @@ export function sanitizeNotePatch(value: unknown): NotePatch {
   const raw = record(value);
   const patch: NotePatch = {};
   if (raw["title"] !== undefined) patch.title = line(raw["title"], MAX_NOTE_TITLE);
+  if (raw["html"] !== undefined) patch.html = sanitizeNoteHtml(raw["html"]);
   if (raw["markdown"] !== undefined) patch.markdown = sanitizeNoteMarkdown(raw["markdown"]);
   if (raw["icon"] !== undefined) patch.icon = sanitizeNoteIcon(raw["icon"]);
   return patch;
@@ -232,7 +258,7 @@ export function sanitizeNoteBlob(value: unknown): NoteBlob | null {
  * read this, so "the recipe I wrote" matches what a person would say it says.
  */
 export function notePlainText(markdown: string): string {
-  return markdown
+  return withoutLiveFences(markdown)
     .replace(/^ {0,3}(?:```|~~~)[^\n]*$/gmu, " ")
     .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
     .replace(/\[([^\]]*)\]\([^)]*\)/gu, "$1")
@@ -245,6 +271,39 @@ export function notePlainText(markdown: string): string {
     .trim();
 }
 
+/**
+ * What may stand before a fence on its line: quote markers, a list item's
+ * marker and to-do box, and a callout's emoji — a widget that is a callout's
+ * first block is written `> 💡 ```html live`, one in a list `- ```html live`.
+ */
+const FENCE_LINE =
+  /^(?:[ \t]*>)*[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?(?:\p{Extended_Pictographic}[\p{Extended_Pictographic}\uFE0F\u200D]*[ \t]+)?(`{3,}|~{3,})(.*)$/u;
+
+/**
+ * A widget's source — an `html live` fence (docs/notes.md §5) — is not prose,
+ * wherever it sits: behind the `>` of a quote or a callout, after a list's
+ * marker or a callout's emoji, with backticks or tildes, in any case. The
+ * fence runs to its close, or to the end.
+ */
+function withoutLiveFences(markdown: string): string {
+  const out: string[] = [];
+  let fence: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const match = FENCE_LINE.exec(line);
+    if (fence === null) {
+      if (match !== null && /^\s*html\s+live\b/iu.test(match[2]!)) {
+        fence = match[1]!;
+        out.push(" ");
+        continue;
+      }
+      out.push(line);
+    } else if (match !== null && match[1]![0] === fence[0] && match[1]!.length >= fence.length && match[2]!.trim() === "") {
+      fence = null;
+    }
+  }
+  return out.join("\n");
+}
+
 /** The first ~160 characters of a note's prose, cut on a word boundary. */
 export function noteSnippet(markdown: string): string {
   const text = notePlainText(markdown);
@@ -255,13 +314,14 @@ export function noteSnippet(markdown: string): string {
 }
 
 /**
- * Every `note-blob:<id>` the markdown names, in the order they appear and
- * without repeats — what a note's `blobIds` is recomputed from on every write,
- * so a picture nobody references any more can be collected.
+ * Every `note-blob:<id>` a body names (HTML or markdown: the address is the
+ * same in both), in the order they appear and without repeats — what a note's
+ * `blobIds` is recomputed from on every write, so a picture nobody references
+ * any more can be collected.
  */
-export function noteBlobIdsIn(markdown: string): string[] {
+export function noteBlobIdsIn(body: string): string[] {
   const ids: string[] = [];
-  for (const match of markdown.matchAll(/note-blob:([a-f0-9]{24})/gu)) {
+  for (const match of body.matchAll(/note-blob:([a-f0-9]{24})/gu)) {
     const id = match[1]!;
     if (!ids.includes(id)) ids.push(id);
     if (ids.length === MAX_NOTE_BLOBS_PER_NOTE) break;
@@ -270,7 +330,7 @@ export function noteBlobIdsIn(markdown: string): string[] {
 }
 
 export function summaryOf(note: Note): NoteSummary {
-  const { markdown, ...rest } = note;
+  const { markdown, html: _html, ...rest } = note;
   return { ...rest, snippet: noteSnippet(markdown) };
 }
 
@@ -344,6 +404,8 @@ export function searchNotes(notes: Note[], query: string, options: NoteSearchOpt
 
 export type NoteEditMode = "replace" | "append" | "prepend" | "replace_section";
 
+/** What a `NoteToolHost.edit` applies: the same shape `@pistachio/notes` works on, in HTML. */
+
 export interface NoteEdit {
   mode: NoteEditMode;
   markdown: string;
@@ -365,6 +427,11 @@ function headingOf(fileLine: string): { level: number; text: string } | null {
  * names a mode and, for `replace_section`, the heading to write under. Never
  * rewriting a note to change a line is the rule the prompt states; this is
  * what makes obeying it possible (§6).
+ *
+ * This is the markdown form, for a host that holds markdown alone. A host
+ * that holds the canonical HTML applies the same edit to the document's
+ * blocks with `@pistachio/notes`' `applyNoteEdit`, so nothing elsewhere in
+ * the note is re-serialised through markdown on the way.
  */
 export function applyNoteEdit(markdown: string, edit: NoteEdit): NoteEditResult {
   const body = edit.markdown.replace(/\r\n?/gu, "\n");

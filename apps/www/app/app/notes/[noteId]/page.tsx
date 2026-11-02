@@ -11,6 +11,7 @@ import {
   isolatedNoteDocument,
   listHostedNotes,
   listNoteShares,
+  NOTE_FRAME_SANDBOX,
   NOTE_UNTITLED,
   Note as Callout,
   noteDocumentHtml,
@@ -181,7 +182,7 @@ export default function NoteViewerPage(): ReactNode {
         <iframe
           title={title}
           srcDoc={document}
-          sandbox="allow-popups allow-popups-to-escape-sandbox"
+          sandbox={NOTE_FRAME_SANDBOX}
           referrerPolicy="no-referrer"
         />
       </div>

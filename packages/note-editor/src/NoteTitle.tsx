@@ -6,20 +6,28 @@
  */
 
 import { useLayoutEffect, useRef } from "react";
-import { MAX_NOTE_TITLE } from "@pistachio/shell-contracts/notes";
-import { cn } from "../../lib/cn";
+import { cn } from "./cn";
+
+/** The most a title may hold (docs/notes.md N4), unless the host says otherwise. */
+const DEFAULT_MAX_LENGTH = 200;
 
 export function NoteTitle({
   value,
   onChange,
   onEnterBody,
   autoFocus,
+  maxLength = DEFAULT_MAX_LENGTH,
+  readOnly = false,
+  className,
 }: {
   value: string;
   onChange(value: string): void;
   /** Enter, ↓ at the end, or Tab: the keyboard belongs to the body now. */
   onEnterBody(): void;
   autoFocus: boolean;
+  maxLength?: number;
+  readOnly?: boolean;
+  className?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -57,7 +65,8 @@ export function NoteTitle({
       aria-label="Note title"
       placeholder="Untitled"
       spellCheck={false}
-      maxLength={MAX_NOTE_TITLE}
+      maxLength={maxLength}
+      readOnly={readOnly}
       value={value}
       onChange={(event) => onChange(event.target.value.replace(/[\r\n]+/gu, " "))}
       onKeyDown={(event) => {
@@ -67,8 +76,9 @@ export function NoteTitle({
         }
       }}
       className={cn(
-        "w-full resize-none overflow-hidden bg-transparent text-[40px] leading-[1.15] font-semibold tracking-[-0.03em] text-gray-1000 placeholder:text-gray-600 focus:outline-none",
+        "note-title w-full resize-none overflow-hidden bg-transparent text-[40px] leading-[1.15] font-semibold tracking-[-0.03em] text-gray-1000 placeholder:text-gray-600 focus:outline-none",
         "@max-[561px]:text-[32px]",
+        className,
       )}
       style={{ userSelect: "text" }}
     />

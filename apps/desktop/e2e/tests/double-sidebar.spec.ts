@@ -369,8 +369,9 @@ test.describe.serial("the rail and the card", { tag: ["@sidebar", "@desk"] }, ()
     await expect.poll(async () => (await snapshot(shell)).tabGroups.find((group) => group.tabIds.includes(west))?.tabIds.length ?? 0).toBe(2);
     const grown = (await snapshot(shell)).tabGroups.find((group) => group.tabIds.includes(west))!;
     const fresh = grown.tabIds.find((tabId) => !before.has(tabId))!;
-    // Made for the person, not theirs: Tidy's to leave whole (grown).
-    expect(grown).toMatchObject({ origin: "auto", grown: true });
+    // Made for the person, not theirs: Tidy's to leave whole (grown). A second window: a space of windows, as Home's
+    // always grew (docs/space-tabs.md: every other space starts as tabs).
+    expect(grown).toMatchObject({ origin: "auto", grown: true, windows: true });
     expect(grown.loose).toBeUndefined();
     // Its tile on the rail, chosen; the card turns to it.
     await expect(railSpace(shell, grown.id)).toHaveAttribute("aria-current", "true");
@@ -1051,6 +1052,8 @@ test.describe.serial("Home is a browser's tabs", { tag: ["@sidebar", "@desk"] },
     const space = (await snapshot(shell)).tabGroups.find((group) => group.id === home.id)!;
     expect(space.origin).toBe("manual");
     expect(space.loose).toBeUndefined();
+    // A space of windows, its window where it was let go (docs/space-tabs.md): never one of tabs, which would fill it again.
+    expect(space.windows).toBe(true);
     expect((await snapshot(shell)).currentGroupId).toBe(home.id);
     await expect(railSpace(shell, home.id)).toHaveAttribute("aria-current", "true");
     await expect(spaceView(shell, home.id)).toHaveCount(1);

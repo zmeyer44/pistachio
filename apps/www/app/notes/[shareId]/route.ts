@@ -1,12 +1,13 @@
-import { ARTIFACT_DOCUMENT_CSP, CONTROL_URL } from "@pistachio/web-account";
-// A published note is served exactly as a published artifact is: the same
-// proxy, the same sandbox policy, the same refusal to accept a device token
-// or a key. Only the upstream path differs (docs/notes.md §8).
+import { CONTROL_URL, NOTE_DOCUMENT_CSP } from "@pistachio/web-account";
+// A published note is served as a published artifact is — the same proxy,
+// the same refusal to accept a device token or a key — under the note's own
+// policy: an opaque origin in which the note's widgets may run and reach the
+// web (docs/notes.md §8).
 const SHARE_ID_RE = /^[A-Za-z0-9_-]{24}$/u;
 
 const SECURITY_HEADERS = {
   "cache-control": "no-store",
-  "content-security-policy": ARTIFACT_DOCUMENT_CSP,
+  "content-security-policy": NOTE_DOCUMENT_CSP,
   "cross-origin-opener-policy": "same-origin",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",

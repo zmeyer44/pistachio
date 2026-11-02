@@ -880,7 +880,7 @@ test("a playing video becomes a live extension of the sidebar mini player", { ta
       .poll(() =>
         card.evaluate((element) => element.getBoundingClientRect().height),
       )
-      .toBe((bounds?.height ?? 0) + 158);
+      .toBe((bounds?.height ?? 0) + 132);
     await expect
       .poll(() =>
         extraControls.evaluate(
@@ -897,7 +897,7 @@ test("a playing video becomes a live extension of the sidebar mini player", { ta
       .poll(() =>
         card.evaluate((element) => element.getBoundingClientRect().height),
       )
-      .toBe((bounds?.height ?? 0) + 158);
+      .toBe((bounds?.height ?? 0) + 132);
     await expect
       .poll(() =>
         extraControls.evaluate(
@@ -963,7 +963,7 @@ test("a playing video becomes a live extension of the sidebar mini player", { ta
       .poll(() =>
         card.evaluate((element) => element.getBoundingClientRect().height),
       )
-      .toBe((bounds?.height ?? 0) + 158);
+      .toBe((bounds?.height ?? 0) + 132);
     await card
       .getByRole("button", { name: "Picture in Picture", exact: true })
       .click();
@@ -1192,7 +1192,7 @@ test.describe.serial("background videos", { tag: ["@sidebar", "@media"] }, () =>
       .poll(() =>
         behind.evaluate((element) => element.getBoundingClientRect().height),
       )
-      .toBe(142);
+      .toBe(116);
     await expect
       .poll(() =>
         front.evaluate((element) =>

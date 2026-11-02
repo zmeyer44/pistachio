@@ -496,6 +496,8 @@ export const sharedNotes = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     noteId: text("note_id").notNull(),
     title: text("title").notNull(),
+    /** The body the editor keeps (docs/notes.md N1); "" from a device that sent markdown alone. */
+    html: text("html").notNull().default(""),
     markdown: text("markdown").notNull(),
     revision: integer("revision").notNull(),
     updatedAt: timestamptz("updated_at").notNull().defaultNow(),

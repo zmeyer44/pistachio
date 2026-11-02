@@ -1,0 +1,43 @@
+{
+  "name": "@pistachio/note-editor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The note editor's surface (docs/notes.md §5): TipTap on the shared schema with the Notion-style block handle, slash and bubble menus, link and image prompts and the live node views — free of any host, so the desktop shell, the web shell and the account site all write a note the same way.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./note-editor.css": "./src/note-editor.css",
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src test --max-warnings 0",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@floating-ui/react": "^0.27.20",
+    "@pistachio/notes": "workspace:*",
+    "@pistachio/shell-contracts": "workspace:*",
+    "@tiptap/core": "3.32.1",
+    "@tiptap/extension-drag-handle": "3.32.1",
+    "@tiptap/extension-drag-handle-react": "3.32.1",
+    "@tiptap/pm": "3.32.1",
+    "@tiptap/react": "3.32.1",
+    "@tiptap/suggestion": "3.32.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "eslint": "^9.39.1",
+    "typescript": "5.9.2",
+    "vitest": "^3.2.0"
+  }
+}

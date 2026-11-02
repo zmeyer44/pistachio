@@ -240,16 +240,21 @@ own (`Pistachio/x Chrome/… Electron/y`) at every level: Cloudflare Turnstile
 fails a page whose user agent hides the `Electron/` token (error 600010 —
 measured 2026-10-06 on a Clerk sign-up; dropping only `Electron/` failed,
 Shields off passed), so reducing it for the whole session, as Shields first
-did with fingerprinting on, broke every Turnstile CAPTCHA. Only the sites
-that refuse Electron's (`CHROME_USER_AGENT_HOSTS` in `url-rules.ts`: Google's
-sign-in, kept on Chrome's as a precaution — never measured either way) get
-Chrome's (`Chrome/150.0.0.0`, frozen as Chrome does): their documents and
-whatever their documents ask for, rewritten in `onBeforeSendHeaders`, and
-`navigator.userAgent`/`appVersion` in their frames through the protections —
-a blank or srcdoc frame judged by the frame it inherits its origin from, a
-blob frame by the origin that made it, never by the top page (a per-tab `setUserAgent` cannot do it: set at navigation start it misses
-that request's header, and set during a redirect it stalls the load). It is
-there for the site to work, so a site's exception keeps it.
+did with fingerprinting on, broke every Turnstile CAPTCHA. Google's sign-in
+must keep Electron's too: given Chrome's (as it was from 2026-10-03 to
+2026-11-01, first session-wide, then on `accounts.google.com` alone), Google
+serves its scripted sign-in, whose checks find Electron underneath, and
+refuses a first sign-in at the identifier step ("Couldn't sign you in — This
+browser or app may not be secure"); given Electron's it serves its
+script-free sign-in and goes on to the password or passkey. Measured
+2026-11-01 on a clean profile, directly and from claude.ai's "Continue with
+Google" popup; a profile already holding a Google session never reaches the
+check, which is why it went unseen. So Shields never touch the user agent,
+in headers or in `navigator`, and the machinery that gave a list of hosts
+Chrome's was removed with Google, its only entry. Should a site ever refuse
+Electron's, note that a per-tab `setUserAgent` cannot serve it: set at
+navigation start it misses that request's header, and set during a redirect
+it stalls the load.
 **GPC** sets `navigator.globalPrivacyControl`.
 
 **WebRTC**: `webContents.setWebRTCIPHandlingPolicy` per tab — `default`
@@ -316,10 +321,8 @@ other shell setting.
 - End to end: `apps/desktop/e2e/tests/shields.spec.ts` — a two-site local
   fixture with seeded list cache: request blocking, site and generic hiding,
   a scriptlet that runs before the page's first script, GPC (header and
-  property), Electron's user agent kept on the page and Chrome's on a listed
-  host (`PISTACHIO_SHIELDS_CHROME_UA_HOSTS=localhost`, E2E only) for its
-  requests, its page reached by a redirect, and the srcdoc and blob frames
-  its cross-site iframe makes, stable farbled canvas that differs once
+  property), Electron's user agent kept by the page, its requests, and its
+  frames, the cross-site one included, stable farbled canvas that differs once
   Shields are down, the cross-site cookie kept out, the popover count and
   hosts, `<a ping>`, tracking parameters, bounce pages, the dangerous-site
   warning and its way through, lowering Shields for the site, and the
@@ -335,9 +338,7 @@ other shell setting.
 ## 9. Not done, and known limits
 
 - **Workers** (dedicated, shared, service) run no Shields script: an
-  OffscreenCanvas or audio read inside one is not noised, and on a site that
-  gets Chrome's user agent a worker's `navigator` still reports Electron's,
-  as do its requests to other hosts.
+  OffscreenCanvas or audio read inside one is not noised.
 - **Procedural cosmetic filters** (`:has-text`, `:upward`, …) are not applied
   (`loadExtendedSelectors: false`): they need Ghostery's extended-selector
   matcher in the preload.

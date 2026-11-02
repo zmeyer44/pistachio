@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Markdown } from "@tiptap/markdown";
-import { docToMarkdown, noteExtensions } from "../../../lib/notes-markdown";
+import { jsonToMarkdown, noteExtensions } from "@pistachio/notes";
+import { NoteHostProvider, noteNodeViews, type NoteEditorHost } from "@pistachio/note-editor";
+import { noteFrameUrl } from "@pistachio/shell-contracts/notes";
 import { useAppStore } from "../../../store";
 import type { ViewerProps } from "./FileWindow";
 import { focusEditor } from "./focus-editor";
@@ -28,7 +30,21 @@ export default function MarkdownViewer({ item, content, focusSignal, onEdit }: V
   const richEdited = useRef(false);
   const sourceRef = useRef<HTMLTextAreaElement>(null);
   const openLink = useAppStore((state) => state.openLink);
-  const extensions = useMemo(() => [...noteExtensions(), Markdown], []);
+  // The notes' own node views, so a callout, a toggle, an embed and an
+  // `html live` fence in a file are what they are in a note rather than bare
+  // divs — all but the picture's, since a file's pictures are paths, not
+  // registers. The host is the note editor's: links through the store, and
+  // a widget's document served by main on the desktop (docs/notes.md §5).
+  const extensions = useMemo(() => [...noteExtensions({ overrides: noteNodeViews.filter((extension) => extension.name !== "image") }), Markdown], []);
+  const host = useMemo<NoteEditorHost>(
+    () => ({
+      openLink: (href, box) => {
+        void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, true);
+      },
+      ...("pistachio" in window ? { frameSrc: noteFrameUrl } : {}),
+    }),
+    [openLink],
+  );
   const editor = useEditor({
     extensions,
     content: body,
@@ -54,7 +70,7 @@ export default function MarkdownViewer({ item, content, focusSignal, onEdit }: V
     onUpdate: ({ editor: current, transaction }) => {
       if (!transaction.docChanged) return;
       richEdited.current = true;
-      onEdit(() => writeTextFile(file, frontMatter + docToMarkdown(current.getJSON())));
+      onEdit(() => writeTextFile(file, frontMatter + jsonToMarkdown(current.getJSON())));
     },
   });
 
@@ -66,7 +82,7 @@ export default function MarkdownViewer({ item, content, focusSignal, onEdit }: V
 
   const toSource = (): void => {
     if (mode === "source") return;
-    if (richEdited.current && editor !== null) setSource(docToMarkdown(editor.getJSON()));
+    if (richEdited.current && editor !== null) setSource(jsonToMarkdown(editor.getJSON()));
     richEdited.current = false;
     setMode("source");
   };
@@ -93,7 +109,9 @@ export default function MarkdownViewer({ item, content, focusSignal, onEdit }: V
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto bg-background-100">
         {mode === "rich" ? (
           <div className="mx-auto max-w-[720px] px-8 pt-5 pb-10">
-            <EditorContent editor={editor} />
+            <NoteHostProvider value={host}>
+              <EditorContent editor={editor} />
+            </NoteHostProvider>
           </div>
         ) : (
           <textarea

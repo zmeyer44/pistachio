@@ -46,6 +46,51 @@ export function noteUrl(id?: string | null): string {
   return id === undefined || id === null ? NOTES_PAGE_URL : `${NOTES_PAGE_URL}${id}`;
 }
 
+/* ------------------------------ widget frames ---------------------------- */
+
+/**
+ * Where the desktop serves a widget's document (docs/notes.md §5). A frame
+ * made from `srcdoc` inherits the shell's own policy, which allows no inline
+ * script, so a widget in the desktop editor has to come from an address of
+ * its own: the whole document travels in the address, and main answers it
+ * under `HTML_BLOCK_FRAME_CSP` with nothing kept between the two. The address
+ * is for `pistachio-app://shell` alone to frame — the renderer's `frame-src`
+ * names it — and a widget's document is bounded by the note that holds it
+ * (N4), well inside what an address may carry.
+ */
+export const NOTE_FRAME_ORIGIN = "pistachio-app://note-frame";
+
+export function noteFrameUrl(document: string): string {
+  const bytes = new TextEncoder().encode(document);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let at = 0; at < bytes.length; at += CHUNK) binary += String.fromCharCode(...bytes.subarray(at, at + CHUNK));
+  const encoded = btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+  return `${NOTE_FRAME_ORIGIN}/?d=${encoded}`;
+}
+
+/** The document a frame address carries, or null when the address is not one. */
+export function noteFrameDocument(value: string | URL): string | null {
+  let url: URL;
+  try {
+    url = typeof value === "string" ? new URL(value) : value;
+  } catch {
+    return null;
+  }
+  if (`${url.protocol}//${url.host}` !== NOTE_FRAME_ORIGIN) return null;
+  const encoded = url.searchParams.get("d");
+  if (encoded === null || encoded === "" || !/^[A-Za-z0-9_-]+$/u.test(encoded)) return null;
+  const padded = encoded.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - (encoded.length % 4)) % 4);
+  let binary: string;
+  try {
+    binary = atob(padded);
+  } catch {
+    return null;
+  }
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 /* ------------------------------- the request ----------------------------- */
 
 /**

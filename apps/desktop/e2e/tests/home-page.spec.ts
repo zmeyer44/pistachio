@@ -192,6 +192,25 @@ test.describe.serial("the home page", { tag: ["@address", "@home", "@settings"] 
     await expect(shell.getByTestId("url-bar-veil")).toHaveCount(0);
     await expect(shell.locator(`[data-testid="home-page"][data-tab-id="${secondId!}"] [data-testid="home-search-input"]`)).toBeFocused();
 
+    // A click on the page takes the search's focus; a letter typed then goes
+    // to the search, and so does a paste — struck on the page's body it
+    // pasted nowhere (2026-10-31). This drives the machine's real clipboard;
+    // put back what it held.
+    const secondSearch = shell.locator(`[data-testid="home-page"][data-tab-id="${secondId!}"] [data-testid="home-search-input"]`);
+    const heldClipboard = await app.evaluate(({ clipboard }) => clipboard.readText());
+    try {
+      await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), `${origin}/pasted`);
+      await shell.getByTestId("home-greeting").last().click();
+      await expect(secondSearch).not.toBeFocused();
+      await shell.keyboard.press("Meta+V");
+      await expect(secondSearch).toBeFocused();
+      await expect(secondSearch).toHaveValue(`${origin}/pasted`);
+    } finally {
+      await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), heldClipboard);
+    }
+    await shell.keyboard.press("Escape");
+    await expect(secondSearch).toHaveValue("");
+
     // A to-do, ticked off.
     await shell.getByTestId("home-todo-add").last().click();
     await shell.keyboard.type("Ship the home page");

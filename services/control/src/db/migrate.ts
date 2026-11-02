@@ -573,6 +573,10 @@ const STATEMENTS: ReadonlyArray<string> = [
   `ALTER TABLE live_shares ADD COLUMN IF NOT EXISTS room_close_attempts integer NOT NULL DEFAULT 0`,
   `CREATE INDEX IF NOT EXISTS live_shares_room_close_idx ON live_shares (room_close_due_at)
     WHERE room_close_due_at IS NOT NULL`,
+  // The shared body in both its forms (docs/notes.md N1): the HTML the
+  // editor keeps beside the markdown derived from it. Rows from before carry
+  // "" and are completed by whoever reads them, as a sealed record is.
+  `ALTER TABLE shared_notes ADD COLUMN IF NOT EXISTS html text NOT NULL DEFAULT ''`,
 ];
 
 /**

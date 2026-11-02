@@ -47,7 +47,16 @@ describe("hosted notes", () => {
     const page = await h.request(`/v1/public/notes/${publicView.note.shareId}`);
     expect(page.status).toBe(200);
     expect(await page.text()).toBe(HTML);
-    expect(page.headers.get("content-security-policy")).toContain("sandbox allow-scripts");
+    // A note's page runs the note's own widgets (docs/notes.md §8): an opaque
+    // origin, inline script, and the web within reach — unlike an artifact's.
+    const policy = page.headers.get("content-security-policy") ?? "";
+    expect(policy).toContain("sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox");
+    expect(policy).toContain("script-src 'unsafe-inline' https:");
+    expect(policy).toContain("connect-src https: wss:");
+    expect(policy).toContain("frame-src https:");
+    expect(policy).toContain("form-action 'none'");
+    expect(policy).toContain("frame-ancestors 'self'");
+    expect(policy).not.toContain("allow-same-origin");
     expect(page.headers.get("cache-control")).toBe("no-store");
     expect(page.headers.get("x-robots-tag")).toBe("noindex, nofollow, noarchive");
 

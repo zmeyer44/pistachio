@@ -12,6 +12,7 @@ import {
   dayRowUnits,
   DEFAULT_TAB_GROUP_TITLE,
   groupedTabOrder,
+  isHomeGroup,
   isPersonsGroup,
   isTabGroupCommand,
   isTidysGroup,
@@ -19,6 +20,7 @@ import {
   MAX_TAB_GROUPS_PER_SPACE,
   nextTabGroupColor,
   sanitizeTabGroups,
+  spaceShowsTabs,
   splitMembersOf,
   storedTabGroupTitle,
   tabGroupTitle,
@@ -270,6 +272,70 @@ describe("a space grown from a Home tab", () => {
   });
 });
 
+describe("a space of tabs, or of windows (docs/space-tabs.md)", () => {
+  it("shows its tabs one at a time unless it is one of windows — and Home's never do, each a space of its own", () => {
+    expect(spaceShowsTabs(group("s", ["a", "b"]))).toBe(true);
+    expect(spaceShowsTabs({ ...group("s", ["a", "b"]), windows: true })).toBe(false);
+    // An empty space, too: it shows its first tab as tabs once it has one.
+    expect(spaceShowsTabs(group("s", []))).toBe(true);
+    // Home's: a loose tab's, a favorite's or pin's page alone. A page's space with tabs beside its page is the rail's.
+    expect(spaceShowsTabs({ ...group("h", ["a"]), loose: true })).toBe(false);
+    expect(spaceShowsTabs({ ...group("p", ["a"]), anchorId: "fav" })).toBe(false);
+    expect(spaceShowsTabs({ ...group("p", ["a", "b"]), anchorId: "fav" })).toBe(true);
+    expect(isHomeGroup({ ...group("p", ["a", "b"]), anchorId: "fav" })).toBe(false);
+    expect(isHomeGroup({ ...group("h", ["a"]), loose: true })).toBe(true);
+  });
+
+  it("is read back as windows from a file — any space but a loose tab's — and through the session file", () => {
+    const read = sanitizeTabGroups(
+      [
+        { ...group("w", ["a", "b"]), windows: true },
+        { ...group("t", ["c", "d"]) },
+        { ...group("loose", ["e"], "auto"), loose: true, windows: true },
+        { ...group("odd", ["f", "g"]), windows: "yes" },
+        { ...group("empty", []), windows: true },
+      ],
+      new Set(["a", "b", "c", "d", "e", "f", "g"]),
+    );
+    expect(read.map((candidate) => candidate.windows)).toEqual([true, undefined, undefined, undefined, true]);
+    const session = sanitizeTabSession({
+      version: TAB_SESSION_VERSION,
+      spaces: {
+        work: {
+          tabs: ["a", "b"].map((id) => ({ id, spaceId: "work", title: id, url: `https://${id}.example/`, faviconUrl: null, anchorId: null, lastActiveAt: 1 })),
+          activeTabId: "a",
+          recentTabIds: [],
+          splitGroups: [],
+          tabGroups: [{ ...group("w", ["a", "b"]), windows: true }],
+        },
+      },
+    });
+    expect(session.spaces["work"]?.tabGroups?.[0]?.windows).toBe(true);
+  });
+
+  it("lets go of being one of windows as it goes back to Home: a Home tab is the whole desk", () => {
+    const grownWindows: TabGroupInfo = { ...group("g", ["h", "n"], "auto"), grown: true, windows: true };
+    const [back] = withoutTabs([grownWindows], new Set(["n"]));
+    expect(back?.loose).toBe(true);
+    expect(back).not.toHaveProperty("windows");
+    expect(looseInPlace({ ...grownWindows, tabIds: ["h"] })).not.toHaveProperty("windows");
+    // The person's hand on it keeps the way it shows its tabs.
+    expect(asPersons(grownWindows).windows).toBe(true);
+  });
+
+  it("is asked for over IPC as setWindows", () => {
+    expect(isTabGroupCommand({ type: "setWindows", groupId: "g-1", windows: true })).toBe(true);
+    expect(isTabGroupCommand({ type: "setWindows", groupId: "g-1", windows: false })).toBe(true);
+    expect(isTabGroupCommand({ type: "setWindows", groupId: "g-1" })).toBe(false);
+    expect(isTabGroupCommand({ type: "setWindows", groupId: "g-1", windows: "yes" })).toBe(false);
+    expect(isTabGroupCommand({ type: "setWindows", windows: true })).toBe(false);
+    // Made so from the start — never a loose tab's.
+    expect(isTabGroupCommand({ type: "create", id: "g-2", tabIds: ["a", "b"], windows: true })).toBe(true);
+    expect(isTabGroupCommand({ type: "create", id: "g-2", tabIds: ["a"], loose: true, windows: true })).toBe(false);
+    expect(isTabGroupCommand({ type: "create", id: "g-2", tabIds: [], windows: "yes" })).toBe(false);
+  });
+});
+
 describe("isPersonsGroup", () => {
   const none = { context: false, conversation: false, held: false };
   it("is the person's when made or touched by hand, and neither loose nor a page's", () => {
@@ -475,6 +541,13 @@ describe("tab archive", () => {
     });
     expect(file.entries.map((e) => e.id)).toEqual(["new", "grp", "old"]);
     expect(sanitizeTabArchive({ version: 9, entries: [] }).entries).toEqual([]);
+  });
+
+  it("keeps a space of windows' way through the archive, and nothing else for one of tabs (docs/space-tabs.md)", () => {
+    const tab = { title: "x", url: "https://x.example/", faviconUrl: null, lastActiveAt: 1 };
+    const group = (id: string, extra: Record<string, unknown>) => ({ id, spaceId: "work", archivedAt: 25, reason: "closed", runId: null, kind: "group", groupId: id, group: { title: "Trip", color: "amber", origin: "manual", ...extra }, tabs: [tab] });
+    const file = sanitizeTabArchive({ version: 1, entries: [group("w", { windows: true }), group("t", {}), group("odd", { windows: "yes" })] });
+    expect(file.entries.map((e) => (e.kind === "group" ? e.group.windows : null))).toEqual([true, undefined, undefined]);
   });
 
   it("keeps a local file's tab only in this device's own archive, read with `files`", () => {

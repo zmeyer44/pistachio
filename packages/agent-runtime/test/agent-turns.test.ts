@@ -30,7 +30,7 @@ import {
   type NotesToolHost,
   type NoteToolHost,
 } from "../src/index.js";
-import { searchNotes, summaryOf, type Note } from "../src/views/notes.js";
+import { applyNoteEdit, searchNotes, summaryOf, type Note } from "../src/views/notes.js";
 
 /* ------------------------------ the model -------------------------------- */
 
@@ -257,6 +257,7 @@ function note(id: string, title: string, markdown: string, updatedAt = "2026-08-
   return {
     id,
     title,
+    html: "",
     markdown,
     icon: null,
     blobIds: [],
@@ -287,6 +288,15 @@ function userNotesHost(seed: Note[] = []): { host: NoteToolHost; notes: Map<stri
       const next: Note = { ...current, ...patch, revision: current.revision + 1, updatedAt: NOW, source: { kind: "agent", runId: "run-1" } };
       notes.set(id, next);
       return next;
+    },
+    // A host that holds markdown alone applies the edit to it (a real host
+    // applies it to the HTML's blocks); the runner only names the mode.
+    edit: (id, edit, title) => {
+      const current = notes.get(id);
+      if (current === undefined) throw new Error(`no note ${id}`);
+      const edited = applyNoteEdit(current.markdown, edit);
+      if (!edited.ok) throw new Error(edited.error);
+      return host.update(id, { markdown: edited.markdown, ...(title === null ? {} : { title }) });
     },
     remove: (id) => {
       const current = notes.get(id);

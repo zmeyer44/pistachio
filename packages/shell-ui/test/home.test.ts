@@ -6,6 +6,7 @@ import {
   eventAgenda,
   greeting,
   greetingFor,
+  keyGoesToHomeSearch,
   msUntilNextMinute,
   orderedTodos,
   parseTodos,
@@ -61,6 +62,43 @@ describe("time", () => {
   it("waits exactly until the next minute turns", () => {
     expect(msUntilNextMinute(new Date(2026, 8, 11, 16, 0, 59, 500))).toBe(500);
     expect(msUntilNextMinute(new Date(2026, 8, 11, 16, 0, 0, 0))).toBe(60_000);
+  });
+});
+
+describe("keys the search takes from the page", () => {
+  const key = (k: string, mods: { meta?: boolean; ctrl?: boolean; alt?: boolean } = {}) => ({
+    key: k,
+    metaKey: mods.meta ?? false,
+    ctrlKey: mods.ctrl ?? false,
+    altKey: mods.alt ?? false,
+  });
+
+  it("takes a printable character, never a named key or an Option chord", () => {
+    expect(keyGoesToHomeSearch(key("a"), "darwin")).toBe(true);
+    expect(keyGoesToHomeSearch(key("A"), "other")).toBe(true);
+    expect(keyGoesToHomeSearch(key("Enter"), "darwin")).toBe(false);
+    expect(keyGoesToHomeSearch(key("ArrowDown"), "darwin")).toBe(false);
+    expect(keyGoesToHomeSearch(key("å", { alt: true }), "darwin")).toBe(false);
+  });
+
+  it("takes the platform's paste key, so a paste lands in the field rather than on the page", () => {
+    expect(keyGoesToHomeSearch(key("v", { meta: true }), "darwin")).toBe(true);
+    expect(keyGoesToHomeSearch(key("V", { meta: true }), "darwin")).toBe(true);
+    expect(keyGoesToHomeSearch(key("v", { ctrl: true }), "other")).toBe(true);
+    expect(keyGoesToHomeSearch(key("V", { ctrl: true }), "other")).toBe(true);
+    // The other platform's chord is not a paste.
+    expect(keyGoesToHomeSearch(key("v", { ctrl: true }), "darwin")).toBe(false);
+    expect(keyGoesToHomeSearch(key("v", { meta: true }), "other")).toBe(false);
+    // ⌥⇧⌘V (Paste and Match Style) and ⌃⌘V are the menu's or a binding's.
+    expect(keyGoesToHomeSearch(key("v", { meta: true, alt: true }), "darwin")).toBe(false);
+    expect(keyGoesToHomeSearch(key("v", { meta: true, ctrl: true }), "darwin")).toBe(false);
+  });
+
+  it("leaves every other command chord to the shortcuts", () => {
+    expect(keyGoesToHomeSearch(key("t", { meta: true }), "darwin")).toBe(false);
+    expect(keyGoesToHomeSearch(key("l", { meta: true }), "darwin")).toBe(false);
+    expect(keyGoesToHomeSearch(key("c", { ctrl: true }), "other")).toBe(false);
+    expect(keyGoesToHomeSearch(key("a", { meta: true }), "darwin")).toBe(false);
   });
 });
 

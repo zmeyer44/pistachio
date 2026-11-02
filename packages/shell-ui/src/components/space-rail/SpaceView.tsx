@@ -4,10 +4,12 @@ import { DeskContextRow } from "../desk/DeskSidebarControls";
 import { LayoutControl } from "../desk/LayoutControl";
 import { TabList } from "../TabList";
 import { SpaceHead } from "./SpaceHead";
+import { SpaceModeControl } from "./SpaceModeControl";
 
 /**
  * A space in the double sidebar's card (docs/double-sidebar.md §1): a small
- * control room for its desk. Its head (name, count, ⋯), its layouts
+ * control room for its desk. Its head (name, count, ⋯), how it shows its tabs
+ * (SpaceModeControl: Tabs or Windows, docs/space-tabs.md), its layouts
  * (LayoutControl, components/desk — drawn once the desk's half lands), a
  * hairline, its tabs as rows (TabList's "space" view: the one in use a card
  * of its colour, the desk's window marks) and its New tab, and at the
@@ -20,6 +22,8 @@ export function SpaceView({ group, page }: { group: TabGroupInfo; page: boolean 
   return (
     <div data-testid="space-view" data-group-id={group.id} data-group-color={group.color} className="space-view tab-group-tone">
       <SpaceHead group={group} page={page} count={count} />
+      {/* Tabs or windows (docs/space-tabs.md): one page at a time filling the desk, or the desk's free windows. */}
+      <SpaceModeControl group={group} />
       {/* (Whatever the space holds: the control hides itself with fewer than two windows on the desk to lay out — an
           empty space's documents are windows it can lay out. Until 2026-10-13 it waited for a tab.) */}
       <LayoutControl groupId={group.id} />

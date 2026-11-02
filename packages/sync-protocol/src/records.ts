@@ -198,19 +198,25 @@ export interface ArtifactRecord {
 /* ------------------------------------ notes ------------------------------------ */
 
 /**
- * A note the person writes: metadata AND its markdown in one sealed LWW
+ * A note the person writes: metadata AND its body in one sealed LWW
  * register, the way an artifact carries its HTML (docs/notes.md N2). No index
  * register — readers list by the `note:` prefix, and an index would be the one
  * key every device contends for.
+ *
+ * The body travels twice (N1): `html` is canonical, `markdown` is derived from
+ * it by the host that wrote the record. A record from before HTML was
+ * canonical carries `markdown` alone, with `html` empty; a host completes it.
  */
 export interface NoteRecord {
   id: string;
   title: string;
-  /** The canonical body. Never includes the title. */
+  /** The canonical body, as the editor keeps it. Never includes the title. */
+  html: string;
+  /** The body as markdown, derived from `html`. */
   markdown: string;
   /** One emoji, or null. */
   icon: string | null;
-  /** Every note-blob the markdown references, for cleanup and the caps. */
+  /** Every note-blob the body references, for cleanup and the caps. */
   blobIds: string[];
   createdAt: string;
   updatedAt: string;

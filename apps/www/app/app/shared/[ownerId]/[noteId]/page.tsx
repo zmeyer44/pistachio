@@ -1,30 +1,31 @@
 "use client";
 
 /**
- * One note someone shared with this account (docs/notes.md §9).
+ * One note someone shared with this account (docs/notes.md §9), in the same
+ * editor the desktop writes with (`@pistachio/note-editor`): a viewer reads
+ * the document live — toggles open, widgets run, embeds play — and an editor
+ * writes it the way the owner does, every block and key the same, autosaving
+ * a second after the typing stops.
  *
- * A viewer gets the note rendered read-only, in the same sandboxed frame an
- * artifact and a note of the person's own use. An editor gets a plain
- * markdown field beside a live rendering of it, autosaving a second after
- * the typing stops.
- *
- * It is NOT the shell's TipTap editor. That component reaches for the shell
- * socket and the shell store on the way to its first paint; giving this page
- * the same writing surface means either lifting the editor out of
- * `@pistachio/shell-ui` or dragging the shell in behind it, and neither is
- * this stage's work. Markdown IS the note's canonical format (N1), so a
- * field over it loses nothing but the affordances.
+ * What control holds for a share is the body in both its forms (N1): the
+ * HTML this page edits, and the markdown derived from it here before each
+ * save, so an older device of the owner's still reads what was written. The
+ * owner's own pictures are not here — a share carries text, not the sealed
+ * registers — and the editor says so in each picture's place; a picture by
+ * web address shows from where it is.
  */
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ArrowLeft, Eye, LoaderCircle, Pencil } from "lucide-react";
+import { htmlToMarkdown, markdownToHtml } from "@pistachio/notes";
+import { NoteBlockEditor, NoteTitle, type NoteBlockEditorHandle, type NoteEditorHost } from "@pistachio/note-editor";
+import { MAX_NOTE_TITLE, sanitizeNoteMarkdown } from "@pistachio/shell-contracts/notes";
 import {
   ControlError,
   Empty,
   getSharedNote,
-  isolatedSharedNoteDocument,
   NOTE_UNTITLED,
   Note as Callout,
   Page,
@@ -54,22 +55,44 @@ const SAVE_LABEL: Record<SaveState["kind"], string> = {
   error: "",
 };
 
+/** The body as the editor takes it: a share from before HTML was canonical carries markdown alone. */
+function bodyHtml(body: SharedNoteBody): string {
+  return body.html.trim() === "" ? markdownToHtml(body.markdown) : body.html;
+}
+
+const subscribeNever = () => () => {};
+
+/** A link in a shared note opens in a tab of its own. */
+const HOST: NoteEditorHost = {
+  openLink: (href) => {
+    window.open(href, "_blank", "noopener,noreferrer");
+  },
+};
+
 export default function SharedNotePage(): ReactNode {
   const { ownerId, noteId } = useParams<{ ownerId: string; noteId: string }>();
   const { token } = useSession();
+  // The editor is browser-only: nothing of it renders on the server or during hydration.
+  const isClient = useSyncExternalStore(subscribeNever, () => true, () => false);
   const [role, setRole] = useState<"owner" | "viewer" | "editor" | null>(null);
   const [body, setBody] = useState<SharedNoteBody | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
-  const [markdown, setMarkdown] = useState("");
   const [save, setSave] = useState<SaveState>({ kind: "clean" });
+  const editor = useRef<NoteBlockEditorHandle>(null);
   /** The revision control holds. A save is always one above it. */
   const revision = useRef(0);
   const timer = useRef<number | null>(null);
-  /** What the debounce is holding and has not yet sent, or null. */
-  const pending = useRef<{ title: string; markdown: string } | null>(null);
+  /** What the page has in hand, and what the debounce is holding and has not yet sent. */
+  const draft = useRef<{ title: string; html: string }>({ title: "", html: "" });
+  const pending = useRef<{ title: string; html: string } | null>(null);
 
+  // The session re-mints its token on its own, which runs this again. The
+  // first answer is the document; a later one is adopted only while nothing
+  // of ours is waiting to go up — the mounted editor is told through its
+  // handle, since it reads its `html` once — and is otherwise left to the
+  // save: a 409 is what says someone else got there first.
   useEffect(() => {
     if (token === null) return;
     let live = true;
@@ -77,12 +100,19 @@ export default function SharedNotePage(): ReactNode {
       .then((answer) => {
         if (!live) return;
         setRole(answer.role);
-        setBody(answer.note);
-        if (answer.note !== null) {
-          setTitle(answer.note.title);
-          setMarkdown(answer.note.markdown);
-          revision.current = answer.note.revision;
+        const note = answer.note;
+        if (note === null) {
+          setBody(null);
+          return;
         }
+        const first = revision.current === 0;
+        const theirs = note.revision > revision.current;
+        if (!first && (pending.current !== null || !theirs)) return;
+        setBody((held) => held ?? note);
+        setTitle(note.title);
+        draft.current = { title: note.title, html: bodyHtml(note) };
+        revision.current = note.revision;
+        if (!first) editor.current?.show(draft.current.html);
       })
       .catch((cause: unknown) => {
         if (!live) return;
@@ -95,7 +125,7 @@ export default function SharedNotePage(): ReactNode {
   }, [noteId, ownerId, token]);
 
   const flush = useCallback(
-    (nextTitle: string, nextMarkdown: string) => {
+    (next: { title: string; html: string }) => {
       if (token === null) return;
       if (timer.current !== null) {
         window.clearTimeout(timer.current);
@@ -104,8 +134,10 @@ export default function SharedNotePage(): ReactNode {
       pending.current = null;
       setSave({ kind: "saving" });
       void putSharedNote(token, ownerId, noteId, {
-        title: nextTitle,
-        markdown: nextMarkdown,
+        title: next.title,
+        html: next.html,
+        // Derived, so clamped to its cap as every host clamps it (N1); the HTML is whole.
+        markdown: sanitizeNoteMarkdown(htmlToMarkdown(next.html)),
         revision: revision.current + 1,
       })
         .then(({ note }) => {
@@ -122,21 +154,24 @@ export default function SharedNotePage(): ReactNode {
     [noteId, ownerId, token],
   );
 
-  const edit = (nextTitle: string, nextMarkdown: string): void => {
-    setTitle(nextTitle);
-    setMarkdown(nextMarkdown);
-    setSave({ kind: "pending" });
-    pending.current = { title: nextTitle, markdown: nextMarkdown };
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => flush(nextTitle, nextMarkdown), SAVE_DEBOUNCE_MS);
-  };
+  const edit = useCallback(
+    (change: { title?: string; html?: string }) => {
+      draft.current = { ...draft.current, ...change };
+      const next = draft.current;
+      setSave({ kind: "pending" });
+      pending.current = next;
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => flush(next), SAVE_DEBOUNCE_MS);
+    },
+    [flush],
+  );
 
   // The debounce must not be the only copy of what was typed. Leaving the
   // page — a link in the rail, the tab going into the background, the
   // window closing — sends whatever it was still holding, at once.
   const flushPending = useCallback(() => {
     const held = pending.current;
-    if (held !== null) flush(held.title, held.markdown);
+    if (held !== null) flush(held);
   }, [flush]);
   useEffect(() => {
     const onHide = (): void => {
@@ -152,7 +187,7 @@ export default function SharedNotePage(): ReactNode {
   }, [flushPending]);
 
   const shown = title.trim() === "" ? NOTE_UNTITLED : title;
-  const preview = useMemo(() => isolatedSharedNoteDocument({ title, markdown }), [markdown, title]);
+  const initialHtml = useMemo(() => (body === null ? "" : bodyHtml(body)), [body]);
 
   if (missing) {
     return (
@@ -208,7 +243,12 @@ export default function SharedNotePage(): ReactNode {
             {editable ? "Editor" : "Viewer"}
           </span>
           {!editable || save.kind === "clean" ? null : (
-            <span className="pa-shared-save" data-tone={save.kind === "conflict" || save.kind === "error" ? "alert" : undefined}>
+            <span
+              className="pa-shared-save"
+              data-testid="shared-note-save-state"
+              data-state={save.kind}
+              data-tone={save.kind === "conflict" || save.kind === "error" ? "alert" : undefined}
+            >
               {save.kind === "saving" ? <LoaderCircle size={12} className="pa-spin" aria-hidden="true" /> : null}
               {save.kind === "error" ? save.message : SAVE_LABEL[save.kind]}
             </span>
@@ -222,8 +262,8 @@ export default function SharedNotePage(): ReactNode {
           <strong>Shared with you, not encrypted</strong>
           <span>
             The owner shared this note with your account. Its text is stored on Pistachio&apos;s servers so you can read
-            {editable ? " and change" : ""} it here; pictures stay on the owner&apos;s devices and are shown as
-            placeholders.
+            {editable ? " and change" : ""} it here; the owner&apos;s own pictures stay on their devices, and a picture by
+            web address shows from where it is.
           </span>
         </div>
       </div>
@@ -233,41 +273,32 @@ export default function SharedNotePage(): ReactNode {
         <Empty title="Nothing here yet">
           <p>The owner&apos;s device has not sent this note&apos;s text yet. It appears as soon as it does.</p>
         </Empty>
-      ) : editable ? (
-        <div className="pa-shared-split">
-          <div className="pa-shared-compose">
-            <input
-              className="pa-shared-title"
-              aria-label="Title"
-              value={title}
-              maxLength={200}
-              onChange={(event) => edit(event.target.value, markdown)}
-            />
-            <textarea
-              className="pa-shared-markdown"
-              aria-label="Note, in markdown"
-              spellCheck
-              value={markdown}
-              onChange={(event) => edit(title, event.target.value)}
-            />
-          </div>
-          <div className="pa-artifact-stage">
-            <iframe
-              title={`${shown} — preview`}
-              srcDoc={preview}
-              sandbox="allow-popups allow-popups-to-escape-sandbox"
-              referrerPolicy="no-referrer"
-            />
-          </div>
-        </div>
       ) : (
-        <div className="pa-artifact-stage">
-          <iframe
-            title={shown}
-            srcDoc={preview}
-            sandbox="allow-popups allow-popups-to-escape-sandbox"
-            referrerPolicy="no-referrer"
-          />
+        <div className="pa-note-document" data-testid="shared-note-document" data-editable={editable || undefined}>
+          <div className="pa-note-measure">
+            <NoteTitle
+              value={title}
+              maxLength={MAX_NOTE_TITLE}
+              readOnly={!editable}
+              autoFocus={false}
+              onChange={(next) => {
+                setTitle(next);
+                edit({ title: next });
+              }}
+              onEnterBody={() => editor.current?.focus("start")}
+            />
+            {isClient ? (
+              <NoteBlockEditor
+                ref={editor}
+                html={initialHtml}
+                editable={editable}
+                host={HOST}
+                contentClassName="mt-4 -ml-14 -mr-10 min-h-[50vh]"
+                onUpdate={(html) => edit({ html })}
+                onBlur={flushPending}
+              />
+            ) : null}
+          </div>
         </div>
       )}
     </div>

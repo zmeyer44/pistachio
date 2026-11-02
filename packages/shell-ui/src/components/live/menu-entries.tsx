@@ -3,7 +3,7 @@ import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import { deskAvailable } from "../../lib/desk/open";
 import { deskGroups, useDeskStore } from "../../lib/desk/store";
 import { openLiveCard, setGuestsCanUse, shareSpace, stopSharing } from "../../lib/live/actions";
-import { guestsCanBeLetUse, guestUseEntry, spaceLiveEntries } from "../../lib/live/entries";
+import { guestsCanBeLetUse, guestUseEntry, sharedArrangement, spaceLiveEntries } from "../../lib/live/entries";
 import { liveShareNow } from "../../lib/live/store";
 import { useAppStore } from "../../store";
 import type { MenuEntry } from "../ContextMenu";
@@ -33,7 +33,8 @@ export function liveWindowEntries(tab: BrowserTabInfo): MenuEntry[] {
   const state = liveShareNow();
   const shared = deskGroups(useAppStore.getState().snapshot).find((group) => group.id === state.groupId);
   const groupId = shared !== undefined && shared.tabIds.includes(tab.id) ? shared.id : null;
-  const use = guestUseEntry(state, groupId, tab.id, guestsCanBeLetUse(tab, groupId === null ? undefined : useDeskStore.getState().saved[groupId]));
+  // (A space of tabs has no masks: its saved arrangement waits for Windows — sharedArrangement.)
+  const use = guestUseEntry(state, groupId, tab.id, guestsCanBeLetUse(tab, groupId === null ? undefined : sharedArrangement(shared, useDeskStore.getState().saved[groupId])));
   if (use === null) return [];
   return [
     {

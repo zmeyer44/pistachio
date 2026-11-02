@@ -30,6 +30,7 @@ interface ShareView {
 
 interface SharedNoteView {
   title: string;
+  html: string;
   markdown: string;
   revision: number;
   updatedAt: string;
@@ -159,6 +160,50 @@ describe("note shares", () => {
     expect(await json<{ note: SharedNoteView }>(owned)).toMatchObject({
       note: { revision: 5, updatedByUserId: null },
     });
+  });
+
+  it("carries the body in both its forms, and completes nothing for a device that sends markdown alone", async () => {
+    const h = await makeHarness();
+    const owner = await desktopAccount(h);
+    const editor = await desktopAccount(h);
+    await h.request(`/v1/notes/${ID}/shares`, jsonInit("POST", { email: editor.email, role: "editor" }, owner.token));
+
+    // The owner's Mac pushes the HTML it keeps beside the markdown derived from it (docs/notes.md N1).
+    const pushed = await h.request(
+      `/v1/notes/${ID}/shared`,
+      jsonInit("PUT", { title: "Groceries", html: "<p>Olives, <strong>bread</strong>.</p>", markdown: "Olives, **bread**.", revision: 3 }, owner.token),
+    );
+    expect(await json<{ stale: boolean; note: SharedNoteView }>(pushed)).toMatchObject({
+      stale: false,
+      note: { html: "<p>Olives, <strong>bread</strong>.</p>", markdown: "Olives, **bread**.", revision: 3 },
+    });
+    const read = await json<{ note: SharedNoteView }>(await h.request(`/v1/shared-notes/${owner.userId}/${ID}`, authed(editor.token)));
+    expect(read.note.html).toBe("<p>Olives, <strong>bread</strong>.</p>");
+
+    // The web editor writes both back; the owner reads both.
+    const written = await h.request(
+      `/v1/shared-notes/${owner.userId}/${ID}`,
+      jsonInit(
+        "PUT",
+        { title: "Groceries", html: '<p>Olives.</p><div data-type="callout" data-emoji="💡"><p>Bread.</p></div>', markdown: "Olives.\n\n> 💡 Bread.", revision: 4 },
+        editor.token,
+      ),
+    );
+    expect(written.status).toBe(200);
+    const back = await json<{ note: SharedNoteView }>(await h.request(`/v1/notes/${ID}/shared`, authed(owner.token)));
+    expect(back.note).toMatchObject({ html: '<p>Olives.</p><div data-type="callout" data-emoji="💡"><p>Bread.</p></div>', markdown: "Olives.\n\n> 💡 Bread.", revision: 4 });
+
+    // A device from before HTML was canonical sends markdown alone and is
+    // stored as it came: "" is for the reader to complete, never the server.
+    const older = await h.request(`/v1/notes/${ID}/shared`, jsonInit("PUT", body(5, "Olives, bread, wine."), owner.token));
+    expect(await json<{ note: SharedNoteView }>(older)).toMatchObject({ note: { html: "", markdown: "Olives, bread, wine.", revision: 5 } });
+
+    // Each half has its own ceiling, in bytes.
+    const tooBig = await h.request(
+      `/v1/notes/${ID}/shared`,
+      jsonInit("PUT", { title: "Groceries", html: `<p>${"é".repeat(600_000)}</p>`, markdown: "x", revision: 6 }, owner.token),
+    );
+    expect(tooBig.status).toBe(413);
   });
 
   it("ends both the access and the plaintext when the last share is revoked", async () => {

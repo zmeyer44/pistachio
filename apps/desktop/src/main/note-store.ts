@@ -1,13 +1,20 @@
 /**
  * The notes a person writes (docs/notes.md §3), kept the way the artifact
  * library is: the metadata in `<userData>/notes.json` — read once, rewritten
- * whole on every change — and each body as its own file in
- * `<userData>/notes/<id>.md`, read per request rather than held in memory,
- * because five hundred notes are a book and the library only ever shows their
- * titles. Images live apart again, in `<userData>/note-blobs/<id>`, raw bytes
- * named by the first 24 hex of their SHA-256 (N3), with their media type in
- * the index: a keystroke re-seals kilobytes of text, never megabytes of
- * picture.
+ * whole on every change — and each body as its own files in
+ * `<userData>/notes/<id>.html` (the canonical document, N1) and
+ * `<userData>/notes/<id>.md` (the markdown derived from it: what the agent
+ * reads, what a person can open in any editor), read per request rather than
+ * held in memory, because five hundred notes are a book and the library only
+ * ever shows their titles. Images live apart again, in
+ * `<userData>/note-blobs/<id>`, raw bytes named by the first 24 hex of their
+ * SHA-256 (N3), with their media type in the index: a keystroke re-seals
+ * kilobytes of text, never megabytes of picture.
+ *
+ * A body arrives in one of two forms and leaves in both: the editor writes
+ * HTML and the markdown is derived here; the agent (and a web editor) writes
+ * markdown and the HTML is derived here. A note written before HTML was
+ * canonical has only its `.md`; it is completed the first time it is read.
  *
  * Two audiences, two subscriptions, and the difference matters:
  * `onChange` carries a metadata-only `NoteSnapshot` to the renderer, so a
@@ -20,6 +27,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { applyNoteEdit, completeNoteBody, htmlToMarkdown, markdownToHtml, type NoteBody } from "@pistachio/notes";
 import {
   isNoteBlobId,
   isNoteId,
@@ -27,17 +35,20 @@ import {
   sanitizeNote,
   sanitizeNoteBlob,
   sanitizeNoteInput,
+  sanitizeNoteMarkdown,
   sanitizeNotePatch,
   searchNotes,
   summaryOf,
   MAX_NOTE_BLOB_BYTES,
   MAX_NOTE_BLOBS_PER_NOTE,
+  MAX_NOTE_HTML_BYTES,
   MAX_NOTE_MARKDOWN_BYTES,
   MAX_NOTES,
   NOTE_SNIPPET_LENGTH,
   type Note,
   type NoteBlob,
   type NoteBlobMediaType,
+  type NoteEdit,
   type NoteInput,
   type NotePatch,
   type NoteSnapshot,
@@ -69,10 +80,10 @@ const BLOB_MEDIA_TYPES: readonly string[] = ["image/png", "image/jpeg", "image/w
 /** How long an unreferenced picture is kept before it is collected: a day, well past any undo stack. */
 export const DEFAULT_BLOB_SWEEP_MS = 24 * 60 * 60 * 1_000;
 
-/** Every `note-blob:<id>` the markdown names — uncapped, so the cap can be refused rather than silently obeyed. */
-function blobIdsIn(markdown: string): string[] {
+/** Every `note-blob:<id>` a body names — uncapped, so the cap can be refused rather than silently obeyed. */
+function blobIdsIn(body: string): string[] {
   const ids: string[] = [];
-  for (const match of markdown.matchAll(/note-blob:([a-f0-9]{24})/gu)) {
+  for (const match of body.matchAll(/note-blob:([a-f0-9]{24})/gu)) {
     const id = match[1] ?? "";
     if (id !== "" && !ids.includes(id)) ids.push(id);
   }
@@ -86,7 +97,7 @@ function blobIdsIn(markdown: string): string[] {
  */
 function sameNote(a: Note, b: Note): boolean {
   return (
-    a.id === b.id && a.title === b.title && a.markdown === b.markdown && a.icon === b.icon &&
+    a.id === b.id && a.title === b.title && a.html === b.html && a.markdown === b.markdown && a.icon === b.icon &&
     a.createdAt === b.createdAt && a.updatedAt === b.updatedAt && a.revision === b.revision &&
     a.source.kind === b.source.kind && a.source.runId === b.source.runId &&
     a.blobIds.length === b.blobIds.length && a.blobIds.every((id, index) => id === b.blobIds[index])
@@ -105,9 +116,9 @@ function asRecord(value: unknown): Record<string, unknown> {
  */
 function sanitizeSummary(value: unknown): NoteSummary | null {
   const raw = asRecord(value);
-  const note = sanitizeNote({ ...raw, markdown: "" });
+  const note = sanitizeNote({ ...raw, html: "", markdown: "" });
   if (note === null) return null;
-  const { markdown: _markdown, ...rest } = note;
+  const { html: _html, markdown: _markdown, ...rest } = note;
   const blobIds = Array.isArray(raw["blobIds"])
     ? (raw["blobIds"] as unknown[]).filter((id): id is string => typeof id === "string" && isNoteBlobId(id)).slice(0, MAX_NOTE_BLOBS_PER_NOTE)
     : [];
@@ -134,9 +145,21 @@ function sanitizeBlobMeta(value: unknown): NoteBlobMeta | null {
   };
 }
 
+/** The text a body's blob ids and snippet are read off: the HTML when there is one. */
+function bodyText(body: NoteBody): string {
+  return body.html === "" ? body.markdown : body.html;
+}
+
 export class NoteStore {
   readonly #path: string;
   readonly #notesDir: string;
+  /**
+   * The HTML a note from before N1 would take, when it is more than a note
+   * holds (N4): served to this session's readers, never written or synced —
+   * every other device could only clamp it, and the person's own markdown
+   * is what survives. Keyed by note id; dropped when the note is written.
+   */
+  readonly #oversized = new Map<string, string>();
   readonly #blobsDir: string;
   readonly #now: () => Date;
   readonly #listeners = new Set<(snapshot: NoteSnapshot) => void>();
@@ -170,7 +193,7 @@ export class NoteStore {
   get(id: string): Note | null {
     const summary = this.#notes.find((note) => note.id === id);
     if (summary === undefined) return null;
-    return this.#noteOf(summary, this.#readBody(summary.id) ?? "");
+    return this.#noteOf(summary, this.#servedBody(summary.id) ?? { html: "", markdown: "" });
   }
 
   /**
@@ -198,22 +221,23 @@ export class NoteStore {
     if (this.#notes.length >= MAX_NOTES) {
       throw new Error(`This library already holds ${String(MAX_NOTES)} notes. Delete one before writing another.`);
     }
-    this.#requireMarkdownFits(asRecord(input)["markdown"]);
+    this.#requireBodyFits(asRecord(input));
     const clean = sanitizeNoteInput(input);
-    const markdown = clean.markdown ?? "";
+    const body = this.#bodyFrom(clean) ?? { html: "", markdown: "" };
     const at = this.#now().toISOString();
     const note: Note = {
       id: this.#freshId(),
       title: clean.title ?? "",
-      markdown,
+      html: body.html,
+      markdown: body.markdown,
       icon: clean.icon ?? null,
-      blobIds: this.#blobIdsOf(markdown),
+      blobIds: this.#blobIdsOf(bodyText(body)),
       createdAt: at,
       updatedAt: at,
       revision: 1,
       source: { ...source },
     };
-    this.#writeBody(note.id, markdown);
+    this.#writeBody(note.id, body);
     this.#notes.push(summaryOf(note));
     this.#commit(["note", note.id]);
     return structuredClone(note);
@@ -223,15 +247,22 @@ export class NoteStore {
   update(id: string, patch: NotePatch, source: NoteSource): Note {
     const summary = this.#notes.find((note) => note.id === id);
     if (summary === undefined) throw new Error(`no note ${id}`);
-    this.#requireMarkdownFits(asRecord(patch)["markdown"]);
+    this.#requireBodyFits(asRecord(patch));
     const clean = sanitizeNotePatch(patch);
-    const markdown = clean.markdown ?? this.#readBody(id) ?? "";
+    const next = this.#bodyFrom(clean);
+    // A write without a body keeps the body as stored; what is answered is
+    // the body as served (`#servedBody`), so an editor that adopts the
+    // answer is not shown an empty page over a note it could still read.
+    const body = next ?? this.#servedBody(id) ?? { html: "", markdown: "" };
     // Everything that can refuse is worked out before anything is written:
     // a body on disk with an index that still describes the old one is a
     // note that lies about itself.
-    const blobIds = this.#blobIdsOf(markdown);
-    const snippet = noteSnippet(markdown);
-    if (clean.markdown !== undefined) this.#writeBody(id, clean.markdown);
+    const blobIds = this.#blobIdsOf(bodyText(body));
+    const snippet = noteSnippet(body.markdown);
+    if (next !== null) {
+      this.#writeBody(id, next);
+      this.#oversized.delete(id);
+    }
     if (clean.title !== undefined) summary.title = clean.title;
     if (clean.icon !== undefined) summary.icon = clean.icon;
     summary.blobIds = blobIds;
@@ -240,7 +271,22 @@ export class NoteStore {
     summary.revision += 1;
     summary.source = { ...source };
     this.#commit(["note", id]);
-    return this.#noteOf(summary, markdown);
+    return this.#noteOf(summary, body);
+  }
+
+  /**
+   * The agent's edit (docs/notes.md §6): one mode applied to the note's
+   * blocks, on the canonical document, so a widget or a toggle elsewhere in
+   * the note is not flattened through markdown on the way. A heading the
+   * note does not have is refused, not appended to.
+   */
+  edit(id: string, edit: NoteEdit, title: string | null, source: NoteSource): Note {
+    const summary = this.#notes.find((note) => note.id === id);
+    if (summary === undefined) throw new Error(`no note ${id}`);
+    const body = this.#servedBody(id) ?? { html: "", markdown: "" };
+    const result = applyNoteEdit(body.html, edit);
+    if (!result.ok) throw new Error(result.error);
+    return this.update(id, { html: result.html, ...(title === null ? {} : { title }) }, source);
   }
 
   /**
@@ -253,6 +299,7 @@ export class NoteStore {
     if (summary === undefined) return false;
     this.#notes = this.#notes.filter((note) => note.id !== id);
     this.#removeBody(id);
+    this.#oversized.delete(id);
     const changed: Array<[NoteRecordKind, string]> = [["note", id]];
     for (const blobId of summary.blobIds) {
       if (this.#notes.some((note) => note.blobIds.includes(blobId))) continue;
@@ -324,7 +371,7 @@ export class NoteStore {
 
   /* -------------------------------- sync -------------------------------- */
 
-  /** Every record of one kind, complete: a note carries its markdown, a blob its bytes. */
+  /** Every record of one kind, complete: a note carries its body in both forms, a blob its bytes. */
   syncAll(kind: "note"): NoteRecord[];
   syncAll(kind: "noteBlob"): NoteBlobRecord[];
   syncAll(kind: NoteRecordKind): Array<NoteRecord | NoteBlobRecord>;
@@ -333,8 +380,8 @@ export class NoteStore {
       // A note whose body file went missing is not published: an empty
       // document would overwrite the good copy another device still holds.
       return this.#notes.flatMap((summary) => {
-        const markdown = this.#readBody(summary.id);
-        return markdown === null ? [] : [this.#noteOf(summary, markdown)];
+        const body = this.#readBody(summary.id);
+        return body === null ? [] : [this.#noteOf(summary, body)];
       });
     }
     return this.#blobs.flatMap((meta) => {
@@ -350,8 +397,8 @@ export class NoteStore {
     if (kind === "noteBlob") return this.getBlob(id);
     const summary = this.#notes.find((note) => note.id === id);
     if (summary === undefined) return null;
-    const markdown = this.#readBody(id);
-    return markdown === null ? null : this.#noteOf(summary, markdown);
+    const body = this.#readBody(id);
+    return body === null ? null : this.#noteOf(summary, body);
   }
 
   /**
@@ -359,7 +406,8 @@ export class NoteStore {
    * hub fans our own docs back at us), nothing here reports a local change,
    * and the caps a person is held to do not apply — this is their own writing
    * arriving, not a new note being made. A note may reference a blob this Mac
-   * has not received yet; the picture arrives in its own register.
+   * has not received yet; the picture arrives in its own register. A record
+   * from a device that knew markdown alone is completed on the way in.
    */
   applyRemote(kind: "note", value: unknown): NoteRecord | null;
   applyRemote(kind: "noteBlob", value: unknown): NoteBlobRecord | null;
@@ -389,16 +437,18 @@ export class NoteStore {
   /* ------------------------------ internals ----------------------------- */
 
   #applyRemoteNote(value: unknown): NoteRecord | null {
-    const incoming = sanitizeNote(value);
-    if (incoming === null) return null;
+    const sanitized = sanitizeNote(value);
+    if (sanitized === null) return null;
+    const { stored, served } = this.#complete(sanitized.id, { html: sanitized.html, markdown: sanitized.markdown });
+    const incoming: Note = { ...sanitized, ...stored, blobIds: blobIdsIn(bodyText(served)).slice(0, MAX_NOTE_BLOBS_PER_NOTE) };
     const index = this.#notes.findIndex((note) => note.id === incoming.id);
     const current = index === -1 ? null : this.#notes[index] ?? null;
     if (current !== null) {
-      const markdown = this.#readBody(incoming.id);
-      if (markdown !== null && sameNote(this.#noteOf(current, markdown), incoming)) return structuredClone(incoming);
+      const held = this.#readBody(incoming.id);
+      if (held !== null && sameNote(this.#noteOf(current, held), incoming)) return structuredClone(incoming);
     }
     try {
-      this.#writeBody(incoming.id, incoming.markdown);
+      this.#writeBody(incoming.id, stored);
     } catch {
       return null;
     }
@@ -443,14 +493,15 @@ export class NoteStore {
 
   /** Every note with its body, for search. */
   #allNotes(): Note[] {
-    return this.#notes.map((summary) => this.#noteOf(summary, this.#readBody(summary.id) ?? ""));
+    return this.#notes.map((summary) => this.#noteOf(summary, this.#servedBody(summary.id) ?? { html: "", markdown: "" }));
   }
 
-  #noteOf(summary: NoteSummary, markdown: string): Note {
+  #noteOf(summary: NoteSummary, body: NoteBody): Note {
     return {
       id: summary.id,
       title: summary.title,
-      markdown,
+      html: body.html,
+      markdown: body.markdown,
       icon: summary.icon,
       blobIds: [...summary.blobIds],
       createdAt: summary.createdAt,
@@ -461,20 +512,51 @@ export class NoteStore {
   }
 
   /**
-   * The markdown cap is refused, not obeyed quietly: `sanitizeNoteMarkdown`
-   * would clamp a too-long body to the budget, and a note silently losing its
-   * last paragraph is worse than a save that says why it did not happen.
+   * The body a write carries, in both forms, or null when it carries none.
+   * The editor sends HTML and the markdown is derived from it; the agent and
+   * a web editor send markdown and the HTML is derived from that. Both at
+   * once means the HTML — the canonical one — and markdown derived afresh.
    */
-  #requireMarkdownFits(value: unknown): void {
-    if (typeof value !== "string") return;
-    const bytes = Buffer.byteLength(value, "utf8");
-    if (bytes > MAX_NOTE_MARKDOWN_BYTES) {
-      throw new Error(`that note is ${String(bytes)} bytes; a note holds at most ${String(MAX_NOTE_MARKDOWN_BYTES)}`);
+  #bodyFrom(clean: NoteInput | NotePatch): NoteBody | null {
+    if (clean.html !== undefined) {
+      return { html: clean.html, markdown: sanitizeNoteMarkdown(htmlToMarkdown(clean.html)) };
+    }
+    if (clean.markdown !== undefined) {
+      // Markdown within its cap can grow past the HTML's as it is converted
+      // (`&` is five bytes in HTML), and the canonical half is the one every
+      // other device would then clamp on arrival: refused here instead.
+      const html = markdownToHtml(clean.markdown);
+      this.#requireBodyFits({ html });
+      return { html, markdown: clean.markdown };
+    }
+    return null;
+  }
+
+  /**
+   * The caps are refused, not obeyed quietly: `sanitizeNoteMarkdown` and
+   * `sanitizeNoteHtml` would clamp a too-long body to the budget, and a note
+   * silently losing its last paragraph is worse than a save that says why it
+   * did not happen.
+   */
+  #requireBodyFits(raw: Record<string, unknown>): void {
+    const html = raw["html"];
+    if (typeof html === "string") {
+      const bytes = Buffer.byteLength(html, "utf8");
+      if (bytes > MAX_NOTE_HTML_BYTES) {
+        throw new Error(`that note is ${String(bytes)} bytes; a note holds at most ${String(MAX_NOTE_HTML_BYTES)}`);
+      }
+    }
+    const markdown = raw["markdown"];
+    if (typeof markdown === "string") {
+      const bytes = Buffer.byteLength(markdown, "utf8");
+      if (bytes > MAX_NOTE_MARKDOWN_BYTES) {
+        throw new Error(`that note is ${String(bytes)} bytes; a note holds at most ${String(MAX_NOTE_MARKDOWN_BYTES)}`);
+      }
     }
   }
 
-  #blobIdsOf(markdown: string): string[] {
-    const ids = blobIdsIn(markdown);
+  #blobIdsOf(body: string): string[] {
+    const ids = blobIdsIn(body);
     if (ids.length > MAX_NOTE_BLOBS_PER_NOTE) {
       throw new Error(`a note holds at most ${String(MAX_NOTE_BLOBS_PER_NOTE)} images; this one references ${String(ids.length)}`);
     }
@@ -488,24 +570,85 @@ export class NoteStore {
     }
   }
 
-  #readBody(id: string): string | null {
-    if (!isNoteId(id)) return null;
+  #readFile(path: string): string | null {
     try {
-      return readFileSync(join(this.#notesDir, `${id}.md`), "utf8");
+      return readFileSync(path, "utf8");
     } catch {
       return null;
     }
   }
 
-  #writeBody(id: string, markdown: string): void {
+  /**
+   * The body in both forms, or null when neither file is there. A note from
+   * before HTML was canonical has only its `.md`: it is completed here, and
+   * its `.html` written, the first time it is read.
+   */
+  /**
+   * The body as the files hold it, and as it is synced: the HTML is "" for
+   * a note from before N1 that has not been completed yet, or whose HTML
+   * would not fit (see `#oversized`).
+   */
+  #readBody(id: string): NoteBody | null {
+    if (!isNoteId(id)) return null;
+    const html = this.#readFile(join(this.#notesDir, `${id}.html`));
+    const markdown = this.#readFile(join(this.#notesDir, `${id}.md`));
+    if (html === null && markdown === null) return null;
+    return { html: html ?? "", markdown: markdown ?? "" };
+  }
+
+  /**
+   * The body a reader gets: whole (N1), the missing half derived the first
+   * time — written back when it fits, held in memory for this session when
+   * it would not, so the editor shows the note and a save says why it
+   * cannot keep it as it is, rather than an empty page over the person's
+   * own markdown.
+   */
+  #servedBody(id: string): NoteBody | null {
+    const stored = this.#readBody(id);
+    if (stored === null) return null;
+    if ((stored.html === "") === (stored.markdown === "")) return stored;
+    const held = this.#oversized.get(id);
+    if (held !== undefined) return { html: held, markdown: stored.markdown };
+    const { stored: next, served } = this.#complete(id, stored);
+    if (next.html !== stored.html || next.markdown !== stored.markdown) {
+      try {
+        this.#writeBody(id, next);
+      } catch {
+        // Still readable this session; the next write lands both files.
+      }
+    }
+    return served;
+  }
+
+  /**
+   * A body made whole under the caps: what is stored and synced, and what is
+   * served. Markdown derived from HTML is clamped like any derived markdown;
+   * HTML derived from markdown that would not fit is not stored at all.
+   */
+  #complete(id: string, body: NoteBody): { stored: NoteBody; served: NoteBody } {
+    const whole = completeNoteBody(body);
+    const markdown = sanitizeNoteMarkdown(whole.markdown);
+    if (Buffer.byteLength(whole.html, "utf8") <= MAX_NOTE_HTML_BYTES) {
+      this.#oversized.delete(id);
+      const fitted = { html: whole.html, markdown };
+      return { stored: fitted, served: fitted };
+    }
+    this.#oversized.set(id, whole.html);
+    return { stored: { html: "", markdown }, served: { html: whole.html, markdown } };
+  }
+
+  #writeBody(id: string, body: NoteBody): void {
     mkdirSync(this.#notesDir, { recursive: true });
-    const path = join(this.#notesDir, `${id}.md`);
-    writeFileSync(`${path}.tmp`, markdown, "utf8");
-    renameSync(`${path}.tmp`, path);
+    for (const [extension, text] of [["html", body.html], ["md", body.markdown]] as const) {
+      const path = join(this.#notesDir, `${id}.${extension}`);
+      writeFileSync(`${path}.tmp`, text, "utf8");
+      renameSync(`${path}.tmp`, path);
+    }
   }
 
   #removeBody(id: string): void {
     try {
+      rmSync(join(this.#notesDir, `${id}.html`), { force: true });
       rmSync(join(this.#notesDir, `${id}.md`), { force: true });
     } catch {
       // The index is authoritative; a stray file is harmless.

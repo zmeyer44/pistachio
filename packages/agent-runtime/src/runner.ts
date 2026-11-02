@@ -37,13 +37,13 @@ import {
   type BookmarkToolView,
 } from "./views/bookmarks.js";
 import {
-  applyNoteEdit,
   describeNote,
   MAX_NOTE_MARKDOWN_BYTES,
   MAX_NOTE_TITLE,
   noteTitle,
   noteToolView,
   type Note,
+  type NoteEdit,
   type NoteEditMode,
   type NoteInput,
   type NotePatch,
@@ -153,6 +153,12 @@ export interface NoteToolHost {
   get(id: string): Note | null;
   create(input: NoteInput): Note;
   update(id: string, patch: NotePatch): Note;
+  /**
+   * One structural edit on the note's blocks (§6) — applied by the host with
+   * `@pistachio/notes`, on the canonical HTML, so the rest of the note is
+   * never re-serialised through markdown — and, with it, a new title or null.
+   */
+  edit(id: string, edit: NoteEdit, title: string | null): Note;
   /** The note as it was, so the trace can say what went. */
   remove(id: string): Note;
 }
@@ -1162,9 +1168,10 @@ function noteSummaryView(note: NoteSummary): NoteToolView {
  * run's tool trace and the evidence chain through the same callbacks, every
  * result is `{ok, result}` or `{ok: false, error}`, and nothing throws at
  * the model. The one thing they do that the others do not is edit text the
- * agent does not hold: `note_update` fetches the note, applies the named
- * edit with `applyNoteEdit`, and writes the whole body back, so a line can
- * be added to a long note without it passing through the model twice.
+ * agent does not hold: `note_update` names a mode and the host applies it to
+ * the note's blocks (`NoteToolHost.edit`), so a line can be added to a long
+ * note without it passing through the model twice, and without the rest of
+ * the note passing through markdown at all.
  */
 function noteTools(host: NoteToolHost, callbacks: AiAgentRunCallbacks) {
   const perform = async <T,>(request: NoteToolRequest, work: () => Promise<T> | T, summary: (value: T) => string) => {
@@ -1248,16 +1255,10 @@ function noteTools(host: NoteToolHost, callbacks: AiAgentRunCallbacks) {
           () => {
             const note = host.get(id);
             if (note === null) throw new Error(`no note ${id}; note_list shows what exists`);
-            const patch: NotePatch = {};
-            if (title !== null && title.trim() !== "") patch.title = title.trim();
-            if (body !== null) {
-              const edited = applyNoteEdit(note.markdown, { mode, markdown: body, ...(section === null ? {} : { section }) });
-              if (!edited.ok) throw new Error(edited.error);
-              patch.markdown = edited.markdown;
-            } else if (patch.title === undefined) {
-              throw new Error("note_update needs markdown, a title, or both");
-            }
-            return host.update(id, patch);
+            const nextTitle = title !== null && title.trim() !== "" ? title.trim() : null;
+            if (body !== null) return host.edit(id, { mode, markdown: body, ...(section === null ? {} : { section }) }, nextTitle);
+            if (nextTitle === null) throw new Error("note_update needs markdown, a title, or both");
+            return host.update(id, { title: nextTitle });
           },
           (note) => `Updated: ${describeNote(note)}`,
         ),
