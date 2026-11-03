@@ -1031,6 +1031,37 @@ export function nubFace(shape: NotchShape): Point {
 }
 
 /**
+ * The nub's lane (2026-10-30): while an extension's live pill stands
+ * (`pistachio.ui.setStatus`, docs/extensions.md §5), the nub is drawn out
+ * along the desk's foot, its circle stretched `lane` px to the left into a
+ * groove of the same ground, and the pills lie in it. So they are the
+ * notch's, a hole down to the shell's ground — over a live page, main's
+ * notch view — never a cover: no page under them gives way (until then they
+ * were one, and a page being recorded under them froze into its still).
+ *
+ * The pills' row: its trailing edge NUB_LANE_INSET in from the desk's
+ * trailing edge (4px clear of the idle circle), its middle the idle circle's
+ * centre (NUB_LANE_FOOT above the foot to its bottom), NUB_LANE_PILL_H tall.
+ */
+export const NUB_LANE_PILL_H = 30;
+export const NUB_LANE_INSET = NUB_IDLE.sink + NUB_IDLE.radius + 4;
+export const NUB_LANE_FOOT = NUB_IDLE.sink - NUB_LANE_PILL_H / 2;
+
+/**
+ * The lane that holds a row of pills `width` wide: its far end (the circle
+ * stretched there) concentric with the last pill's round end, 3px round it.
+ */
+export function nubLaneFor(width: number): number {
+  return width <= 0 ? 0 : width + NUB_LANE_INSET - NUB_IDLE.sink - NUB_LANE_PILL_H / 2;
+}
+
+/** How far from the corner the nub drawn out `lane` px along the foot reaches: across (w) and up (h) — the box it fills. */
+export function nubLaneBox(shape: NotchShape, lane: number): { w: number; h: number } {
+  const extent = nubExtent(shape);
+  return { w: lane > 0 ? Math.max(extent, nubReach(shape) + lane) : extent, h: extent };
+}
+
+/**
  * The nub's outline, its corner at (x, y) — the stage's trailing foot —
  * offset by (dx, dy): out of the foot at one fillet, round the far side of
  * the circle, into the trailing edge at the other fillet, down that edge and
@@ -1038,8 +1069,12 @@ export function nubFace(shape: NotchShape): Point {
  * So it holds the whole corner, and nothing past the stage's curve: a window
  * filling the desk is rounded there as the desk is, and the hole matches it.
  * The notch view over a live page (NotchApp) is cut to the same outline.
+ *
+ * With a `lane` (the extensions' pills, above), the circle is stretched that
+ * far along the foot: its near half and the foot's fillet drawn `lane` px to
+ * the left, joined to the rest by a straight run along its top.
  */
-export function nubOutline(shape: NotchShape, x: number, y: number, corner: number, dx: number, dy: number): string {
+export function nubOutline(shape: NotchShape, x: number, y: number, corner: number, dx: number, dy: number, lane = 0): string {
   const n = (value: number): string => value.toFixed(2);
   const { radius: r, sink: a, fillet: f } = shape;
   const ex = x + dx;
@@ -1054,16 +1089,24 @@ export function nubOutline(shape: NotchShape, x: number, y: number, corner: numb
   const t1 = { x: cx + (foot.x - cx) * k, y: cy + (foot.y - cy) * k };
   const t2 = { x: cx + (side.x - cx) * k, y: cy + (side.y - cy) * k };
   // Round the circle's far side, clockwise on screen; the long way when the fillets meet it past its middle.
-  const span = (Math.atan2(t2.y - cy, t2.x - cx) - Math.atan2(t1.y - cy, t1.x - cx) + Math.PI * 4) % (Math.PI * 2);
+  const turn = (from: Point, to: Point): number => (Math.atan2(to.y - cy, to.x - cx) - Math.atan2(from.y - cy, from.x - cx) + Math.PI * 4) % (Math.PI * 2);
   const c = Math.max(0, Math.min(corner, a + d - f - 1));
+  const tail = [`A ${n(f)} ${n(f)} 0 0 0 ${n(ex)} ${n(side.y)}`, `V ${n(ey - c)}`, c > 0 ? `A ${n(c)} ${n(c)} 0 0 1 ${n(ex - c)} ${n(ey)}` : `V ${n(ey)}`, "Z"];
+  if (!(lane > 0.01)) {
+    const span = turn(t1, t2);
+    return [`M ${n(foot.x)} ${n(ey)}`, `A ${n(f)} ${n(f)} 0 0 0 ${n(t1.x)} ${n(t1.y)}`, `A ${n(r)} ${n(r)} 0 ${span > Math.PI ? 1 : 0} 1 ${n(t2.x)} ${n(t2.y)}`, ...tail].join(" ");
+  }
+  // Stretched: the circle's top is where its near half, drawn `lane` to the left, and its far half part.
+  const top = { x: cx, y: cy - r };
+  const near = turn(t1, top);
+  const far = turn(top, t2);
   return [
-    `M ${n(foot.x)} ${n(ey)}`,
-    `A ${n(f)} ${n(f)} 0 0 0 ${n(t1.x)} ${n(t1.y)}`,
-    `A ${n(r)} ${n(r)} 0 ${span > Math.PI ? 1 : 0} 1 ${n(t2.x)} ${n(t2.y)}`,
-    `A ${n(f)} ${n(f)} 0 0 0 ${n(ex)} ${n(side.y)}`,
-    `V ${n(ey - c)}`,
-    c > 0 ? `A ${n(c)} ${n(c)} 0 0 1 ${n(ex - c)} ${n(ey)}` : `V ${n(ey)}`,
-    "Z",
+    `M ${n(foot.x - lane)} ${n(ey)}`,
+    `A ${n(f)} ${n(f)} 0 0 0 ${n(t1.x - lane)} ${n(t1.y)}`,
+    `A ${n(r)} ${n(r)} 0 ${near > Math.PI ? 1 : 0} 1 ${n(top.x - lane)} ${n(top.y)}`,
+    `H ${n(top.x)}`,
+    `A ${n(r)} ${n(r)} 0 ${far > Math.PI ? 1 : 0} 1 ${n(t2.x)} ${n(t2.y)}`,
+    ...tail,
   ].join(" ");
 }
 

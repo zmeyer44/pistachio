@@ -58,7 +58,11 @@ import {
   type TurnRouteRequest,
   type IntegrationToolHost,
   type DeskToolHost,
+  type ExtensionAuthorHost,
+  type ExtensionToolCallContext,
+  type ExtensionToolSpec,
 } from "@pistachio/agent-runtime";
+import { parseAuthorMarker, type DraftClaim } from "./extensions/agent";
 import {
   deskStateLines,
   groupContextLines,
@@ -191,12 +195,31 @@ export interface DeskAgentHost {
   };
 }
 
+/**
+ * Extensions and the agent (docs/extensions.md §6.2 "Agent tools", §8), as
+ * the controller reaches them (ExtensionService): the tools a turn in a
+ * Profile may have and the call into a worker; the draft folders an author
+ * turn writes, claimed with the token the Bar's prompt carries.
+ */
+export interface RunExtensions {
+  tools(profileId: string): ExtensionToolSpec[];
+  call(extensionId: string, tool: string, input: unknown, ctx: ExtensionToolCallContext & { profileId: string }): Promise<unknown>;
+  claimDraft(slug: string, token: string): DraftClaim | null;
+  readonly authorHost: ExtensionAuthorHost;
+  /** `AGENTS.md`, for the author turn's prompt. */
+  authorGuide(): string;
+  /** An author turn started or stopped writing into a draft folder (the Ledge's shimmer). */
+  setDrafting?(folder: string, on: boolean): void;
+}
+
 /** A desk request before the group it is for is named (#deskToolHost names it). */
 type DeskRequestFor = DeskRequest extends infer Request ? (Request extends DeskRequest ? Omit<Request, "groupId"> : never) : never;
 
 /** Which surface a tool call touched, for the trace and the evidence chain. */
-function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "desk" | "integration" {
+function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "desk" | "integration" | "extension" {
   if (name.startsWith("desk.") || name.startsWith("context.")) return "desk";
+  // An extension's tool, or the author turn's drafting (docs/extensions.md §6.2, §8).
+  if (name.startsWith("ext.")) return "extension";
   if (name.startsWith("memory.")) return "memory";
   if (name.startsWith("reminder.")) return "reminder";
   if (name.startsWith("artifact.")) return "artifact";
@@ -307,7 +330,7 @@ function recentExchanges(messages: RunSummary["messages"]): TurnRouteExchange[] 
 }
 
 /** The non-browser abilities the answer path keeps, named for the router in plain words. */
-function answerPathTools(input: Pick<AiAgentRunInput, "memory" | "reminders" | "bookmarks" | "userNotes" | "watchtower" | "integrations">): string[] {
+function answerPathTools(input: Pick<AiAgentRunInput, "memory" | "reminders" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">): string[] {
   const tools: string[] = [];
   if (input.memory !== undefined) tools.push("recall and remember things about the person");
   if (input.reminders !== undefined) tools.push("set reminders");
@@ -320,6 +343,8 @@ function answerPathTools(input: Pick<AiAgentRunInput, "memory" | "reminders" | "
     if (host.provider === "gmail") tools.push("read and send the person's Gmail");
     if (host.provider === "google_calendar") tools.push("read the person's Google Calendar");
   }
+  // An installed extension's tools are the answer path's too (docs/extensions.md §6.2): named by what they say they do.
+  for (const spec of (input.extensions?.tools ?? []).slice(0, 12)) tools.push(`${spec.description.replace(/\s+/g, " ").trim().slice(0, 100)} (the ${spec.extensionName} extension)`);
   return tools;
 }
 
@@ -407,6 +432,14 @@ export class RunController {
    */
   #notes: NoteRecordStore | null = null;
   readonly #integrations: { hostsFor(spaceId: string): Promise<IntegrationToolHost[]> } | null;
+  readonly #extensions: RunExtensions | null;
+  /**
+   * The thread an author turn is writing an extension in (docs/extensions.md
+   * §8), and its draft folder: that turn, and the turns that continue it — an
+   * answer to its question, a resume, a word while it runs — are author
+   * turns. A follow-up once it ended is an ordinary turn.
+   */
+  #author: (DraftClaim & { runId: string }) | null = null;
   readonly #onRunEnded: ((run: RunSummary) => void) | null;
   readonly #threads: ThreadStore | null;
   readonly #cloud: CloudRunCommands | null;
@@ -498,6 +531,8 @@ export class RunController {
      * to the next turn; absent under E2E and before enrollment.
      */
     integrations?: { hostsFor(spaceId: string): Promise<IntegrationToolHost[]> } | null;
+    /** The person's extensions' tools, and the author turn's draft folders (docs/extensions.md §6.2, §8); absent where there are none. */
+    extensions?: RunExtensions | null;
     /** Every terminal transition — the scheduler retries queued tasks on it. */
     onRunEnded?: (run: RunSummary) => void;
     /** Where threads persist. Absent in the demo and some tests: then a thread lives only in memory. */
@@ -552,6 +587,7 @@ export class RunController {
     this.#watchtower = options.watchtower ?? null;
     this.#bookmarks = options.bookmarks ?? null;
     this.#integrations = options.integrations ?? null;
+    this.#extensions = options.extensions ?? null;
     this.#onRunEnded = options.onRunEnded ?? null;
     this.#browser = options.browser;
     // The agent's hidden tabs belong to the conversation open when it opened them.
@@ -1321,6 +1357,11 @@ export class RunController {
   }
 
   async start(intent: string, attachments: AgentAttachment[] = [], options: { page: boolean } = { page: true }): Promise<void> {
+    const marked = this.#authorMarker(intent);
+    if (marked !== null) {
+      if (marked.claim !== null) return this.#startAuthor(marked.text, marked.claim, attachments);
+      intent = marked.text;
+    }
     // A fresh intent over an open cloud run starts a conversation of its own here.
     if (this.#run !== null && !isCloudRun(this.#run) && (!isTerminalStatus(this.#run.status) || this.#shouldUseAi())) {
       await this.message(intent, attachments, options);
@@ -1328,6 +1369,27 @@ export class RunController {
     }
     this.#startFresh(intent, attachments);
     await this.#launch(options.page);
+  }
+
+  /**
+   * The Bar's `/extension` marker at the head of a message (docs/extensions.md §8): what follows it, and the draft
+   * folder it claims — null when the token is not the one `draftFolder` handed the shell, or was used already, and
+   * then the message is an ordinary one, the marker gone. Null for a message with no marker.
+   */
+  #authorMarker(text: string): { text: string; claim: DraftClaim | null } | null {
+    const marker = parseAuthorMarker(text);
+    if (marker === null) return null;
+    return { text: marker.rest, claim: this.#extensions?.claimDraft(marker.slug, marker.token) ?? null };
+  }
+
+  /**
+   * An author turn: a thread of its own, so its history holds nothing a page, a mail or a note said — an extension
+   * is never written by a turn that read untrusted content — and the draft folder it may write.
+   */
+  async #startAuthor(text: string, claim: DraftClaim, attachments: AgentAttachment[]): Promise<void> {
+    this.#startFresh(text, attachments);
+    this.#author = { ...claim, runId: this.#requireRun().runId };
+    await this.#launch(false);
   }
 
   /** A new thread from the composer. Any open thread is saved and set aside. */
@@ -1480,7 +1542,9 @@ export class RunController {
    * everything the agent learned still in its context and notes.
    */
   async message(content: string, attachments: AgentAttachment[] = [], options: { page: boolean } = { page: true }): Promise<void> {
-    const text = content.trim();
+    const marked = this.#authorMarker(content);
+    if (marked !== null && marked.claim !== null) return this.#startAuthor(marked.text, marked.claim, attachments);
+    const text = (marked?.text ?? content).trim();
     // An attachment alone is a sendable turn — "what about this?" implied.
     if (text === "" && attachments.length === 0) return;
     const run = this.#run;
@@ -1826,8 +1890,16 @@ export class RunController {
     let releaseGroup: (() => void) | null = null;
     /** The space (tab group) this turn is working in, if it is a desk turn: the console re-follows from it once it ends. */
     let turnGroupId: string | null = null;
+    /** An author turn's draft folder while it writes (the Ledge's shimmer), let go however the turn ends. */
+    let drafting: string | null = null;
 
     try {
+      // An author turn (docs/extensions.md §8) is the `/extension` thread's,
+      // and every turn that continues it; a follow-up once it ended is an
+      // ordinary turn. It has the author tools and nothing else: no desk, no
+      // pages, no memory, no notes, no mail, no extension's tools.
+      if (this.#author?.runId === runId && turn.kind === "message" && turn.after === "ended") this.#author = null;
+      const author = this.#author?.runId === runId && this.#extensions !== null ? this.#author : null;
       // A turn at a desk works on the desk (docs/desk-agent.md §2): the
       // group's tabs only, the desk tools, and the desk as it stands now,
       // read from the shell before the model is. It holds the group for as
@@ -1837,7 +1909,7 @@ export class RunController {
       if (desk !== null) releaseGroup = desk.host.browser.holdGroup(desk.groupId);
       turnGroupId = desk?.groupId ?? null;
       let deskState: DeskAgentState | null = null;
-      if (desk !== null) {
+      if (desk !== null && author === null) {
         const reply = await desk.host.bridge.request({ type: "state", groupId: desk.groupId });
         if (reply.ok && reply.state.groupId === desk.groupId) deskState = reply.state;
       }
@@ -1846,7 +1918,7 @@ export class RunController {
       // Read at run time, not at construction: an edit in Settings applies
       // to the next run without restarting anything. Read once for the turn:
       // the browser path that follows a hand-off works from the same inputs.
-      const extras = {
+      const extras: Pick<AiAgentRunInput, "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions" | "desk"> = author !== null ? {} : {
         ...(await this.#memoryInput(run)),
         ...this.#reminderInput(run),
         ...this.#artifactInput(run),
@@ -1854,6 +1926,7 @@ export class RunController {
         ...this.#noteInput(run),
         ...this.#watchtowerInput(),
         ...(await this.#integrationInput()),
+        ...this.#extensionInput(runId, desk?.groupId ?? run.groupId ?? null),
         ...(desk === null
           ? {}
           : {
@@ -1871,7 +1944,7 @@ export class RunController {
       // and pages are the point of it. Recorded before a model step is
       // spent, so the trace says why a turn went the way it did.
       const attachments = turn.kind === "start" || turn.kind === "message" ? turn.attachments : [];
-      const decision: TurnRouteDecision = desk !== null ? { route: "browse", basis: "skipped", evaluation: null } : await this.#route(run, turn, attachments, extras, abort.signal);
+      const decision: TurnRouteDecision = desk !== null || author !== null ? { route: "browse", basis: "skipped", evaluation: null } : await this.#route(run, turn, attachments, extras, abort.signal);
       if (!current() || abort.signal.aborted) return;
       this.#chain?.append("turn.routed", {
         route: decision.route,
@@ -1897,12 +1970,13 @@ export class RunController {
       // whether it is the subject — it reads pages itself, so a line, not
       // the text. Fixed for the turn: a hand-off carries the same line.
       const pointer = newRequest && (turn.kind === "start" || turn.kind === "message") ? pageContextLine(turn.page, this.#browser.activeTab(), this.#noteInView()) : "";
-      // (Not at a desk: the agent is seen working there, on the windows.)
-      if (mode === "browse" && desk === null && run.messages.filter((message) => message.role === "assistant").length === 0) {
+      // (Not at a desk: the agent is seen working there, on the windows. Nor writing an extension, which no browser does.)
+      if (mode === "browse" && desk === null && author === null && run.messages.filter((message) => message.role === "assistant").length === 0) {
         this.#message("assistant", BROWSE_INTRO);
       }
       const fromPage = decision.route === "page" ? page : null;
-      this.#activity(
+      if (author !== null) this.#activity("Writing an extension", `Drafting it in ${author.slug}, where it waits for your approval`, "safe");
+      else this.#activity(
         fromPage !== null ? "Answering from the page" : mode === "answer" ? "Answering directly" : turn.kind === "start" ? "Agent started" : "Agent continuing",
         fromPage !== null
           ? `Read “${fromPage.title}” without taking any browser action`
@@ -1927,8 +2001,10 @@ export class RunController {
             ...(deskState === null ? ["Desk: the desk's layout could not be read just now; call desk_state before arranging anything."] : deskStateLines(deskState)),
             ...groupContextLines(desk.host.context.items(desk.groupId)),
           ].join("\n")}]`;
-      const pageBlock = page !== null ? `\n\n${pageInViewBlock(page)}` : mode === "browse" ? (deskBlock ?? pointer) : "";
-      this.#history = [...base, userMessage(`${turnText(turn, run.origin, mode)}${pageBlock}`, attachments)];
+      // (An author turn reads no page and no desk: the person's wish, as they made it.)
+      const pageBlock = author !== null ? "" : page !== null ? `\n\n${pageInViewBlock(page)}` : mode === "browse" ? (deskBlock ?? pointer) : "";
+      const said = author !== null && turn.kind === "start" ? turn.text : turnText(turn, run.origin, mode);
+      this.#history = [...base, userMessage(`${said}${pageBlock}`, attachments)];
       this.#persistNow();
       this.#onChange();
 
@@ -1963,6 +2039,9 @@ export class RunController {
         modelName: turnMode === "answer" ? answerModelName() : modelName(),
         ...(this.#summarize === null ? {} : { summarize: this.#summarize }),
         ...extras,
+        ...(author === null || this.#extensions === null
+          ? {}
+          : { author: { host: this.#extensions.authorHost, slug: author.slug, guide: this.#extensions.authorGuide() } }),
         timezone: this.timezone(),
         ...(this.#scheduledTurn && run.origin?.kind === "reminder" ? { scheduled: { title: run.origin.title, scheduledFor: run.origin.scheduledFor } } : {}),
         ...(this.#stream ? { providerOptions: MODEL_PROVIDER_OPTIONS } : {}),
@@ -1978,6 +2057,14 @@ export class RunController {
               tabId,
             });
             return call.id;
+          },
+          // An extension's tool said how far it got (`ctx.progress`): the step's detail line, while it runs.
+          toolProgress: (toolId, detail) => {
+            if (!current()) return;
+            const toolCall = this.#run?.toolCalls.find((item) => item.id === toolId);
+            if (toolCall === undefined || toolCall.status !== "running") return;
+            toolCall.detail = detail;
+            this.#touch();
           },
           toolCompleted: (toolId, toolResult) => {
             this.#completeTool(toolId, toolResult.summary);
@@ -2075,6 +2162,10 @@ export class RunController {
           changed: this.#onChange,
         },
       });
+      if (author !== null) {
+        drafting = author.folder;
+        this.#extensions?.setDrafting?.(drafting, true);
+      }
       let result = await runTurn(mode);
       const live = (): boolean =>
         generation === this.#aiGeneration &&
@@ -2143,6 +2234,7 @@ export class RunController {
       await this.#failRun(runId, error);
     } finally {
       releaseGroup?.();
+      if (drafting !== null) this.#extensions?.setDrafting?.(drafting, false);
       // The turn kept the space it started in; ended, the console follows the person to the space they are in.
       // A turn off the desk (the answer to a question asked away from it) re-follows for the turn it continues.
       const away = this.#refollowLater?.runId === runId ? this.#refollowLater.groupId : null;
@@ -2234,7 +2326,7 @@ export class RunController {
     run: RunSummary,
     turn: TurnInput,
     attachments: AgentAttachment[],
-    extras: Pick<AiAgentRunInput, "memory" | "reminders" | "bookmarks" | "userNotes" | "watchtower" | "integrations">,
+    extras: Pick<AiAgentRunInput, "memory" | "reminders" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">,
     abortSignal: AbortSignal,
   ): Promise<TurnRouteDecision> {
     if (!isRoutable(turn, this.#scheduledTurn) || !turnRouterEnabled()) {
@@ -2550,6 +2642,32 @@ export class RunController {
     } catch {
       return {};
     }
+  }
+
+  /**
+   * The person's extensions' tools for this turn (docs/extensions.md §6.2, "Agent tools"): those on in the run's
+   * Profile that may give the agent tools, read per turn — one turned off applies to the next — and called with the
+   * run, the space and the Profile. A local run's alone: a cloud run never comes here.
+   */
+  #extensionInput(runId: string, spaceId: string | null): Pick<AiAgentRunInput, "extensions"> {
+    const extensions = this.#extensions;
+    if (extensions === null) return {};
+    const profileId = this.#runSpaceId ?? this.#spaceId();
+    let tools: ExtensionToolSpec[];
+    try {
+      tools = extensions.tools(profileId);
+    } catch {
+      return {};
+    }
+    if (tools.length === 0) return {};
+    return {
+      extensions: {
+        tools,
+        host: { call: (extensionId, tool, input, ctx) => extensions.call(extensionId, tool, input, { ...ctx, profileId }) },
+        runId,
+        spaceId,
+      },
+    };
   }
 
   /** The zone the person keeps time in: their profile's, else this Mac's. */

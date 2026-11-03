@@ -19,7 +19,7 @@
  * integration while its tab closed).
  */
 
-import { TERMINAL_CLEAR, TERMINAL_FLOW, type TerminalEvent, type TerminalRequest } from "@pistachio/shell-contracts/terminal";
+import { TERMINAL_CLEAR, TERMINAL_FLOW, type TerminalEvent, type TerminalRequest, type TerminalRun } from "@pistachio/shell-contracts/terminal";
 
 /** A shell on a pseudo-terminal: what is used of node-pty's IPty. */
 export interface Shell {
@@ -65,8 +65,8 @@ export interface TerminalPlaces {
 
 export interface TerminalSessionsDeps {
   send(event: TerminalEvent): void;
-  /** Start a shell in `cwd` at this size (throws when it cannot). */
-  spawn(cwd: string, cols: number, rows: number): Shell;
+  /** Start a shell in `cwd` at this size (throws when it cannot) — one running `run` in place of its prompt, when given. */
+  spawn(cwd: string, cols: number, rows: number, run: TerminalRun | null): Shell;
   /**
    * A mirror at this size. `onCwd` hears each folder the shell reports (OSC 7); `onReply`, the mirror's answer to a
    * program's question (where the cursor is, what the terminal is) — sent to the shell while no window is there to;
@@ -103,6 +103,8 @@ interface Session {
   exit: { code: number; signal: number | null } | null;
   mirror: Mirror;
   cwd: string | null;
+  /** A program to run in place of the first shell's prompt (TerminalRequest `run`), taken as it starts. */
+  run: TerminalRun | null;
   /** A window has it open over the current port: its output is sent there. */
   attached: boolean;
   /**
@@ -261,6 +263,8 @@ export class TerminalSessions {
           onClipboard: (text) => this.#deps.clipboard(text),
         }),
         cwd,
+        // (Its first shell's alone: one started again by the person is a plain shell.)
+        run: request.restart === true ? null : (request.run ?? null),
         attached,
         mirrorAnswers: !attached,
         serial: 1,
@@ -323,7 +327,8 @@ export class TerminalSessions {
   }
 
   #start(session: Session, cols: number, rows: number): void {
-    const shell = this.#deps.spawn(session.cwd ?? this.#deps.home, cols, rows);
+    const shell = this.#deps.spawn(session.cwd ?? this.#deps.home, cols, rows, session.run);
+    session.run = null;
     session.shell = shell;
     shell.onData((data) => {
       if (session.shell !== shell) return;

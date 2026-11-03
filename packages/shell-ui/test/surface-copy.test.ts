@@ -218,6 +218,10 @@ const NATIVE_ONLY: Record<string, string> = {
   "components/live/LiveYou.tsx": "the host's camera in the Live card; hosting is the desktop's",
   "components/live-host/host-session.ts": "the live-host window's room; hosting is the desktop's",
   "lib/live/notices.ts": "the host's share notices, from main's live state, which no tab has",
+  // Extensions are the desktop's (docs/extensions.md): their page is drawn on the desk alone (a tab shows
+  // ContentArea's one line), and the host refuses Settings → Extensions whole, so its body renders Unavailable.
+  "components/extensions/ExtensionsPage.tsx": "drawn on the desk alone; a tab shows ContentArea's line instead",
+  "components/settings/sections/extensions.tsx": "the host refuses extensions whole; renders Unavailable",
   // The module itself: the Mac's own wording is the point.
   "lib/surface-copy.ts": "the copy module",
 };

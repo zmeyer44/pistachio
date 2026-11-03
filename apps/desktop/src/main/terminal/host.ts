@@ -21,7 +21,7 @@ import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { MessagePortMain } from "electron";
 import { isTerminalRequest } from "@pistachio/shell-contracts/terminal";
-import { shellLaunch, type ShellIntegrationPaths } from "./environment";
+import { programLaunch, shellLaunch, type ShellIntegrationPaths } from "./environment";
 import { headlessMirror } from "./mirror";
 import { TerminalSessions, type TerminalPlaces } from "./sessions";
 import { installShellIntegration } from "./shell-integration";
@@ -135,10 +135,11 @@ function isFolder(path: string): boolean {
 
 const sessions = new TerminalSessions({
   send: (event) => port?.postMessage(event),
-  spawn: (cwd, cols, rows) => {
+  spawn: (cwd, cols, rows, run) => {
     // (The host's environment is the shells': main forked it with the app's, less the app's own — ./environment.ts.)
     const inherited = process.env as Record<string, string>;
-    const launch = shellLaunch(loginShell(inherited), inherited, { appVersion: options.appVersion, locale: options.locale, integration });
+    const launchOptions = { appVersion: options.appVersion, locale: options.locale, integration };
+    const launch = run === null ? shellLaunch(loginShell(inherited), inherited, launchOptions) : programLaunch(loginShell(inherited), inherited, launchOptions, run);
     return pty.spawn(launch.file, launch.args, { name: "xterm-256color", cols, rows, cwd, env: launch.env, encoding: "utf8" });
   },
   mirror: headlessMirror,

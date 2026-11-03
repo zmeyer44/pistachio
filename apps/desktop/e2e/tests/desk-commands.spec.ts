@@ -43,8 +43,8 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
     await expect(input).toHaveAttribute("placeholder", "Ask about Northstar… (/ for commands)");
     await input.fill("/");
     await expect(menu).toBeVisible();
-    await expect(rows).toHaveCount(18);
-    await expect(menu.getByRole("group")).toHaveCount(4);
+    await expect(rows).toHaveCount(19);
+    await expect(menu.getByRole("group")).toHaveCount(5);
     await expect(lit).toHaveAttribute("data-command", "search");
     await expect(lit).toContainText("Search DuckDuckGo in a new tab");
     await expect(lit.locator('svg[data-provider-logo="duckduckgo"]')).toBeVisible();
@@ -140,7 +140,7 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
       field.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await expect(menu).toBeVisible();
-    await expect(rows).toHaveCount(18);
+    await expect(rows).toHaveCount(19);
     await expect.poll(upperLive).toBe(false);
     await input.fill("");
     await expect(shell.getByTestId("desk-commands")).toHaveCount(0);

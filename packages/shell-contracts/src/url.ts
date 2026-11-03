@@ -64,6 +64,8 @@ const INTERNAL_SCHEMES: ReadonlySet<string> = new Set([
   "devtools",
   "pistachio",
   "pistachio-app",
+  // An extension's pages (docs/extensions.md §4): opened by main alone, never handed to another app.
+  "pistachio-ext",
 ]);
 
 /**

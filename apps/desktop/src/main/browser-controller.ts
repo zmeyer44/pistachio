@@ -8,6 +8,7 @@ import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import {
   BrowserWindow,
   Menu,
+  MenuItem,
   WebContentsView,
   app,
   clipboard,
@@ -64,6 +65,7 @@ import type { DragSample, ShellCommand } from "@pistachio/shell-contracts/chrome
 import {
   DESK_DRAWER_KEEP,
   DESK_DRAWER_TRIGGER,
+  DESK_MINI_ZOOM,
   deskMaskKey,
   holdsDeskModifier,
   isDeskUndoKey,
@@ -103,7 +105,9 @@ import {
   contextMediaScript,
   pageFileName,
   type ContextMediaCommand,
+  type PageContextMenuExtensionItem,
 } from "./page-context-menu";
+import { extensionIdOfUrl } from "@pistachio/shell-contracts/extensions";
 import {
   canvasImageScript,
   imageInsertFromBytes,
@@ -382,6 +386,50 @@ interface ManagedTab {
    * person's files and send them away. Fixed for the view's life.
    */
   files: boolean;
+  /**
+   * A Pistachio extension's page (isExtensionTab): the extension whose
+   * partition and preload the view was made with. Fixed for the view's life;
+   * `info.extensionId` says the same to everything else.
+   */
+  extensionId: string | null;
+}
+
+/**
+ * A Pistachio extension's page (docs/extensions.md §4, "Pages are tabs";
+ * BrowserTabInfo.extensionId) — kind "human", marked by `extensionId`, made
+ * in #createManagedTab with the extension's partition and preload (the
+ * `extensionPages` hook) instead of a Profile's partition and the tab preload.
+ *
+ * Like any page's: the tab list, the desk (a window, stills, minimize, ⤢),
+ * suspension and waking, session restore — on this Mac alone (the session
+ * file keeps `extensionId`; the synced restore point drops the tab).
+ *
+ * Never: Shields, Watchtower's archive, the tab preload, the Profile's session
+ * setup (protocols, permissions, egress, the hydration gate), a Glance owned
+ * by it, a pop-up from it, moving it to another Profile, closed-tab memory,
+ * Tidy, the agent's page tools, the live share — nor a Chrome extension's
+ * `addTab` (main/extensions/chrome/, later). A navigation main starts to
+ * another origin opens a tab of its own beside it (navigate); one its page
+ * starts is refused (will-navigate).
+ */
+export function isExtensionTab(info: { extensionId?: string | undefined } | null | undefined): boolean {
+  return info !== null && info !== undefined && info.extensionId !== undefined;
+}
+
+/** Whether `url` is on extension `id`'s own origin. */
+function onExtensionOrigin(id: string, url: string): boolean {
+  return url.startsWith(`pistachio-ext://${id}/`);
+}
+
+/**
+ * What a Chrome extension's own page (its popup, its options) may be granted in a Profile's session: writing to the
+ * clipboard — a password manager's Copy — and nothing else a tab may ask, never the camera or the screen
+ * (docs/extensions.md §6.4).
+ */
+const CHROME_EXTENSION_PAGE_PERMISSIONS: ReadonlySet<string> = new Set(["clipboard-write", "clipboard-sanitized-write"]);
+
+function isChromeExtensionPage(contents: WebContents | null, requestingUrl: string): boolean {
+  return contents !== null && !contents.isDestroyed() && contents.getURL().startsWith("chrome-extension://") && requestingUrl.startsWith("chrome-extension://");
 }
 
 interface DormantTab {
@@ -606,6 +654,33 @@ export interface BrowserControllerHooks {
    * (docs/live-share.md §6.1). A navigation within a page's life is not one.
    */
   onPageReplaced?: (tabId: string) => void;
+  /**
+   * Pistachio extensions' pages (docs/extensions.md §4; isExtensionTab). Absent, a `pistachio-ext:` address is no
+   * page at all (it is searched for, as any unknown text).
+   */
+  extensionPages?: {
+    /** The partition and preload an extension's page view is made with. */
+    view(extensionId: string): { partition: string; preload: string };
+    /** An extension's page view was made (a tab opened, woken, restored): main maps it to its extension. */
+    attach(tabId: string, contents: WebContents, extensionId: string): void;
+  };
+  /** Extensions' declared context-menu items for a page (docs/extensions.md §2), and a click on one. */
+  extensionMenu?: {
+    items(tab: BrowserTabInfo): PageContextMenuExtensionItem[];
+    clicked(item: PageContextMenuExtensionItem, click: { tabId: string; pageUrl: string; linkUrl?: string; selectionText?: string; srcUrl?: string }): void;
+  };
+  /**
+   * Chrome extensions' tabs (docs/extensions.md §4 "Chrome extensions"; main/extensions/chrome/): a person's page view
+   * was made (with the address it is to load), or put in use — never a hidden agent tab, an unlisted one, Glance, a
+   * sign-in pop-up, an extension's page or a tab of files (#chromeTabContents); the host tells the extensions of it
+   * only while it shows a web page, never one of Pistachio's own surfaces. A view that goes is heard by its own
+   * `destroyed`. `menuItems` are their `contextMenus` items for a page, appended to its menu.
+   */
+  chromeTabs?: {
+    added(tabId: string, contents: WebContents, url: string): void;
+    selected(tabId: string, contents: WebContents): void;
+    menuItems(contents: WebContents, params: ContextMenuParams): MenuItem[];
+  };
 }
 
 /** How long a closed switcher's page waits to be laid out before it gives up on the keyboard. */
@@ -1197,6 +1272,14 @@ export class BrowserController {
   #liveHeld: ReadonlyMap<string, { width: number; height: number }> = new Map();
   /** The space a live share shares: Tidy leaves it be, as it does the space in front (holdLiveTabs). */
   #liveGroupId: string | null = null;
+  /**
+   * Tabs an extension holds (docs/extensions.md §5 `capture.hold`, and every tab it is capturing): never put to
+   * sleep, archived or reset by Tidy, nor zoomed for the desk (the page at 100% while it is recorded); woken if
+   * asleep, and laid out at its window's size while hidden (#layOutHeldPage). (holdExtensionTabs)
+   */
+  #extensionHeld: ReadonlySet<string> = new Set();
+  /** The box main last drew each desk page's view at (setLayout), for an extension's `desk.state` while the view is down. */
+  readonly #lastViewBoxes = new Map<string, ContentBounds>();
   #liveWaking = false;
   /** Held again while a wake was under way: one more pass follows it. */
   #liveHeldAgain = false;
@@ -1627,7 +1710,7 @@ export class BrowserController {
 
   watchtowerSources(): { id: string; spaceId: string; contents: WebContents; visible: boolean; agentDriven: boolean }[] {
     // A hidden tab is the agent's research, never the person's reading.
-    return [...this.#tabs.values()].filter((tab) => tab.info.kind === "human" && tab.info.hiddenFor === undefined && !tab.view.webContents.isDestroyed()).map((tab) => ({
+    return [...this.#tabs.values()].filter((tab) => tab.info.kind === "human" && tab.info.hiddenFor === undefined && tab.extensionId === null && !tab.view.webContents.isDestroyed()).map((tab) => ({
       id: tab.info.id, spaceId: tab.info.spaceId, contents: tab.view.webContents,
       // Only the tab the agent is driving is not the person's reading; their
       // own tabs beside it still are.
@@ -1999,6 +2082,7 @@ export class BrowserController {
   #discardTab(tabId: string): void {
     this.#pageResume.delete(tabId);
     this.#tabZoom.delete(tabId);
+    this.#lastViewBoxes.delete(tabId);
     const tab = this.#tabs.get(tabId);
     const info = tab?.info ?? this.#dormantTabs.get(tabId)?.info;
     if (info === undefined) return;
@@ -2070,6 +2154,8 @@ export class BrowserController {
             faviconUrl: info.faviconUrl,
             anchorId: info.anchorId,
             ...(info.linkedAnchorId === undefined ? {} : { linkedAnchorId: info.linkedAnchorId }),
+            // (This Mac's file alone keeps it: the synced restore point drops an extension's page.)
+            ...(info.extensionId === undefined ? {} : { extensionId: info.extensionId }),
             lastActiveAt: info.lastActiveAt,
             ...(history === null ? {} : { history }),
             ...(this.#pageResume.get(info.id)?.url === info.url ? { resume: this.#pageResume.get(info.id)! } : {}),
@@ -2131,6 +2217,7 @@ export class BrowserController {
           runId: null,
           anchorId: tab.anchorId,
           ...(tab.linkedAnchorId === undefined ? {} : { linkedAnchorId: tab.linkedAnchorId }),
+          ...(tab.extensionId === undefined ? {} : { extensionId: tab.extensionId }),
           lifecycle: "suspended",
           lastActiveAt: tab.lastActiveAt,
           unlisted: false,
@@ -2359,7 +2446,9 @@ export class BrowserController {
       this.#layout.views.some((view) => view.tabId === tabId) ||
       this.#desk?.tabIds.includes(tabId) === true ||
       // Guests are watching it live (docs/live-share.md §6.1), whatever space is in front.
-      this.#liveHeld.has(tabId)
+      this.#liveHeld.has(tabId) ||
+      // An extension records it, or holds it to (docs/extensions.md §5 `capture.hold`).
+      this.#extensionHeld.has(tabId)
     )
       return;
     this.#cancelPermissionsForTab(tabId);
@@ -4426,44 +4515,75 @@ export class BrowserController {
     file?: boolean;
   }): Promise<string> {
     const id = options.restoredInfo?.id ?? randomUUID();
+    // An extension's page (isExtensionTab): its own partition and preload, none of a Profile's session setup. Only a
+    // person's listed tab may be one — a hidden or unlisted tab's `pistachio-ext:` address is searched for, as text.
+    const extensionPages = this.#hooks.extensionPages;
+    const extensionId =
+      extensionPages === undefined || options.kind !== "human" || options.hiddenFor !== undefined || options.unlisted === true
+        ? null
+        : (options.restoredInfo?.extensionId ?? extensionIdOfUrl(options.restoredInfo?.url ?? options.url.trim()));
+    const extensionView = extensionId === null ? null : extensionPages!.view(extensionId);
     // (A delegated session's own partition, guard and session hook went with createAgentTab on 2026-10-09: it had no caller.)
-    const partition = spacePartition(options.spaceId);
-    const targetSession = session.fromPartition(partition);
-    this.#configureSession(targetSession, options.kind, options.spaceId, partition);
-    // Proxy rules before the first view: nothing leaves the session direct
-    // that the Space's policy says must not (§10.3).
-    await this.#hooks.prepareSpaceSession?.(
-      targetSession,
-      options.spaceId,
-      options.kind,
-      partition,
-    );
+    const partition = extensionView?.partition ?? spacePartition(options.spaceId);
+    if (extensionView === null) {
+      const targetSession = session.fromPartition(partition);
+      this.#configureSession(targetSession, options.kind, options.spaceId, partition);
+      // Proxy rules before the first view: nothing leaves the session direct
+      // that the Space's policy says must not (§10.3).
+      await this.#hooks.prepareSpaceSession?.(
+        targetSession,
+        options.spaceId,
+        options.kind,
+        partition,
+      );
+    }
     options.ready?.();
     // A local file only where the person put it (createTab's `file`); anywhere else the home page — never a search,
     // which would send its path to the search engine. A tab of files runs none of their scripts (ManagedTab's `files`).
+    // An extension's page is at its own address, as given.
     const url =
-      options.restoredInfo?.url ??
-      (isLocalFileUrl(options.url.trim())
-        ? options.file === true ? options.url : this.#homeUrl()
-        : normalizeNavigation(options.url, this.#settings().search.webProvider));
-    const files = isLocalFileUrl(url);
+      extensionId !== null
+        ? (options.restoredInfo?.url ?? options.url.trim())
+        : (options.restoredInfo?.url ??
+          (isLocalFileUrl(options.url.trim())
+            ? options.file === true ? options.url : this.#homeUrl()
+            : normalizeNavigation(options.url, this.#settings().search.webProvider)));
+    if (extensionId !== null && !onExtensionOrigin(extensionId, url)) throw new Error("an extension's page is at its own address");
+    const files = extensionId === null && isLocalFileUrl(url);
+    // (An extension page's stack is held to its own origin: a restored one names nothing else.)
+    if (extensionId !== null && options.history !== undefined && options.history !== null && options.history.entries.some((entry) => !onExtensionOrigin(extensionId, entry.url))) {
+      options = { ...options, history: null };
+    }
     const view = new WebContentsView({
-      webPreferences: {
-        partition,
-        // In every frame, not only the top one: Shields protect each frame
-        // from its first script (preload/tab.ts runs the rest top-only).
-        ...(options.kind === "human" && this.#tabPreload !== ""
-          ? { preload: this.#tabPreload, nodeIntegrationInSubFrames: true }
-          : {}),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        spellcheck: true,
-        ...(files ? { javascript: false } : {}),
-        ...(options.kind === "agent"
-          ? { disableBlinkFeatures: "WebAuth" }
-          : {}),
-      },
+      webPreferences:
+        extensionView !== null
+          ? {
+              partition,
+              preload: extensionView.preload,
+              // Its frames get no preload: the API is the page's, never a frame's inside it.
+              nodeIntegrationInSubFrames: false,
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: true,
+              spellcheck: false,
+              webviewTag: false,
+            }
+          : {
+              partition,
+              // In every frame, not only the top one: Shields protect each frame
+              // from its first script (preload/tab.ts runs the rest top-only).
+              ...(options.kind === "human" && this.#tabPreload !== ""
+                ? { preload: this.#tabPreload, nodeIntegrationInSubFrames: true }
+                : {}),
+              contextIsolation: true,
+              nodeIntegration: false,
+              sandbox: true,
+              spellcheck: true,
+              ...(files ? { javascript: false } : {}),
+              ...(options.kind === "agent"
+                ? { disableBlinkFeatures: "WebAuth" }
+                : {}),
+            },
     });
     const appearance = this.#settings().appearance;
     const dark =
@@ -4497,6 +4617,7 @@ export class BrowserController {
             lastActiveAt: Date.now(),
             unlisted: options.unlisted ?? false,
             ...(options.hiddenFor === undefined ? {} : { hiddenFor: options.hiddenFor }),
+            ...(extensionId === null ? {} : { extensionId }),
           }
         : {
             ...options.restoredInfo,
@@ -4504,6 +4625,7 @@ export class BrowserController {
             canGoBack: false,
             canGoForward: false,
             lifecycle: "live",
+            ...(extensionId === null ? {} : { extensionId }),
           };
     const tab: ManagedTab = {
       info,
@@ -4520,9 +4642,15 @@ export class BrowserController {
       shellTitle: null,
       offscreenViewport: false,
       files,
+      extensionId,
     };
     this.#dormantTabs.delete(id);
     this.#tabs.set(id, tab);
+    // Mapped to its extension before its page loads: the page's first call finds it.
+    if (extensionId !== null) extensionPages!.attach(id, view.webContents, extensionId);
+    // A tab of the person's, for Chrome extensions, before it is shown (its activation then finds it told).
+    const chromeContents = this.#chromeTabContents(tab);
+    if (chromeContents !== null) this.#hooks.chromeTabs!.added(id, chromeContents, info.url);
     if (options.restoredInfo !== undefined) this.#beginWake(id);
     // A hidden tab is in no order and never shown: no list, count, Space or
     // desk finds it, and nothing can fall back on it (#spaceTabIds) — not
@@ -4551,14 +4679,19 @@ export class BrowserController {
     const restored = options.restoredInfo;
     if (
       (restored !== undefined && options.awaitLoad === false) ||
-      this.#gate.isHydrating(info.spaceId)
+      (extensionId === null && this.#gate.isHydrating(info.spaceId))
     ) {
       // The view exists and is laid out at once; the page fills in when it
       // arrives — after the Space's jar is settled, if it is being hydrated
-      // right now. Neither the window nor the caller waits on it.
+      // right now. Neither the window nor the caller waits on it. (An
+      // extension's page is in no Space's jar: it never waits on one.)
       const fallbackTitle = restored?.title ?? info.title;
+      const whenReady = (run: () => void): void => {
+        if (extensionId !== null) run();
+        else this.#gate.run(info.spaceId, run);
+      };
       tab.pendingLoad = new Promise<void>((resolve) => {
-        this.#gate.run(info.spaceId, () => {
+        whenReady(() => {
           if (view.webContents.isDestroyed()) {
             resolve();
             return;
@@ -4628,9 +4761,11 @@ export class BrowserController {
    */
   #wireManagedTab(tab: ManagedTab): () => void {
     const { info, view } = tab;
-    // A hidden tab's pages are the agent's research: archived once the person is shown it (#showHidden).
-    if (info.kind === "human" && info.hiddenFor === undefined) this.#hooks.onArchiveTab?.(info.id, view.webContents);
-    if (info.kind === "human") this.#hooks.shields?.attachContents(view.webContents);
+    // A hidden tab's pages are the agent's research: archived once the person is shown it (#showHidden). An
+    // extension's page is no Profile's page: neither archived nor shielded (isExtensionTab).
+    const extensionId = tab.extensionId;
+    if (info.kind === "human" && info.hiddenFor === undefined && extensionId === null) this.#hooks.onArchiveTab?.(info.id, view.webContents);
+    if (info.kind === "human" && extensionId === null) this.#hooks.shields?.attachContents(view.webContents);
     const publish = (): void => this.#publishManagedTab(tab);
     const refresh = (): void => {
       if (view.webContents.isDestroyed()) return;
@@ -4851,10 +4986,17 @@ export class BrowserController {
     // a server's redirect, which will-navigate never sees (it saw the address that redirected).
     view.webContents.on("will-redirect", (event) => {
       if (event.isMainFrame && isTerminalUrl(event.url)) event.preventDefault();
+      if (event.isMainFrame && extensionId !== null && !onExtensionOrigin(extensionId, event.url)) event.preventDefault();
     });
     view.webContents.on("will-navigate", (event, url) => {
       if (isTerminalUrl(url)) {
         event.preventDefault();
+        return;
+      }
+      // An extension's page goes nowhere but its own pages (docs/extensions.md §4): it opens the web with
+      // pistachio.tabs.create.
+      if (extensionId !== null) {
+        if (!onExtensionOrigin(extensionId, url)) event.preventDefault();
         return;
       }
       // A tab of files (ManagedTab's `files`) follows their links to the files beside them — a coverage report's, a
@@ -4880,6 +5022,20 @@ export class BrowserController {
     });
     view.webContents.on("context-menu", (_event, params) => {
       if (info.kind !== "human" || this.#tabs.get(info.id) !== tab) return;
+      // An extension's page: its editing, Reload and Inspect — none of a web page's (save, reader, search, Glance).
+      if (extensionId !== null) {
+        const template: Electron.MenuItemConstructorOptions[] = [
+          ...(params.isEditable
+            ? ([{ role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }, { type: "separator" }] as const)
+            : params.selectionText.trim() !== ""
+              ? ([{ role: "copy" }, { type: "separator" }] as const)
+              : []),
+          { label: "Reload", click: () => void this.reload(info.id) },
+          { label: "Inspect", click: () => view.webContents.inspectElement(params.x, params.y) },
+        ];
+        Menu.buildFromTemplate(template).popup({ window: this.#window });
+        return;
+      }
       const allows = (action: GuardedBrowserAction): boolean =>
         this.#actionVerdict(tab, action).decision === "allow";
       // A file's own links, from its page or a frame of files (not a web page framed in it): links to open (createTab's
@@ -4899,6 +5055,8 @@ export class BrowserController {
           shortcuts: this.#settings().shortcuts,
           searchProvider: this.#settings().search.webProvider,
           fileLinks,
+          // Extensions' declared items for this page (held to their Profiles and hosts by main).
+          ...(this.#hooks.extensionMenu === undefined || info.hiddenFor !== undefined ? {} : { extensions: this.#hooks.extensionMenu.items({ ...info }) }),
         },
         {
           back: () => void this.goBack(info.id),
@@ -4936,9 +5094,25 @@ export class BrowserController {
             void this.#runContextMediaCommand(view.webContents, params, command),
           addImageToChat: () => void this.#attachImageToChat(tab, params),
           addSelectionToChat: (text) => this.#attachSelectionToChat(tab, text),
+          extensionItem: (item) =>
+            this.#hooks.extensionMenu?.clicked(item, {
+              tabId: info.id,
+              pageUrl: params.pageURL,
+              ...(params.linkURL === "" ? {} : { linkUrl: params.linkURL }),
+              ...(params.selectionText === "" ? {} : { selectionText: params.selectionText }),
+              ...(params.srcURL === "" ? {} : { srcUrl: params.srcURL }),
+            }),
         },
       );
-      Menu.buildFromTemplate(template).popup({ window: this.#window });
+      const menu = Menu.buildFromTemplate(template);
+      // Chrome extensions' `contextMenus` items, after the page's own (docs/extensions.md §2).
+      const chromeContents = this.#chromeTabContents(tab);
+      const chromeItems = chromeContents === null ? [] : this.#hooks.chromeTabs!.menuItems(chromeContents, params);
+      if (chromeItems.length > 0) {
+        menu.append(new MenuItem({ type: "separator" }));
+        for (const item of chromeItems) menu.append(item);
+      }
+      menu.popup({ window: this.#window });
     });
     // A site entering fullscreen from a Glance becomes a regular selected tab:
     // fullscreen is never trapped in the preview.
@@ -5108,8 +5282,8 @@ export class BrowserController {
    */
   #installWindowOpenHandler(tab: ManagedTab, contents: WebContents): void {
     contents.setWindowOpenHandler((details: HandlerDetails) => {
-      // (Nor does it open one: docs/terminal.md §5.)
-      if (tab.info.kind === "agent" || isTerminalUrl(details.url)) return { action: "deny" };
+      // (Nor does it open one: docs/terminal.md §5. Nor an extension's page: it opens tabs with pistachio.tabs.create.)
+      if (tab.info.kind === "agent" || isTerminalUrl(details.url) || tab.extensionId !== null) return { action: "deny" };
       // (Never from a tab of files: a popup takes its opener's preferences, scripts off — a sign-in that could not run.
       // Its web links open a tab of their own, with scripts.)
       const preservePopup = !tab.files && shouldPreserveAuthenticationPopup(details);
@@ -5221,7 +5395,7 @@ export class BrowserController {
    */
   recordGlanceIntent(senderId: number, source: ContentBounds): void {
     const tab = this.#tabForWebContents(senderId);
-    if (tab === undefined || tab.info.kind !== "human") return;
+    if (tab === undefined || tab.info.kind !== "human" || tab.extensionId !== null) return;
     this.#glanceIntent = { webContentsId: senderId, source, at: Date.now() };
   }
 
@@ -5724,6 +5898,11 @@ export class BrowserController {
     target.setPermissionRequestHandler(
       (contents, rawPermission, callback, details) => {
         const tab = this.#tabForWebContents(contents.id);
+        // A Chrome extension's popup or page: copying, and nothing else (CHROME_EXTENSION_PAGE_PERMISSIONS).
+        if (tab === undefined && isChromeExtensionPage(contents, details.requestingUrl)) {
+          callback(CHROME_EXTENSION_PAGE_PERMISSIONS.has(rawPermission));
+          return;
+        }
         // The shell drawing a desk window's page live (deskLiveSource): Electron asks the captured page's session.
         if (rawPermission === "media" && this.#takeDeskLiveGrant(contents.id, details)) {
           callback(true);
@@ -5855,9 +6034,10 @@ export class BrowserController {
       (request, callback) => void this.#shareScreenWithoutPicker(request, callback),
       { useSystemPicker: true },
     );
-    target.setPermissionCheckHandler((contents, rawPermission, _origin, details) => {
+    target.setPermissionCheckHandler((contents, rawPermission, origin, details) => {
       const tab =
         contents === null ? undefined : this.#tabForWebContents(contents.id);
+      if (tab === undefined && isChromeExtensionPage(contents, origin)) return CHROME_EXTENSION_PAGE_PERMISSIONS.has(rawPermission);
       // A check names the one device it is about ("unknown" is taken as
       // the camera); it is never about screen capture.
       const permission =
@@ -6644,7 +6824,8 @@ export class BrowserController {
     // ⌘I is the Bar's (docs/desk-agent.md §1): its field is the shell's too — always, since the desk is the browser
     // (2026-10-09; until then only while a desk was up).
     // A new space's name field (⌘N) is the shell's too, and a new terminal (⌘J, docs/terminal.md).
-    if (action === "editAddress" || action === "newTabAddress" || action === "newSpaceAddress" || action === "newTab" || action === "newSpace" || action === "newTerminal" || action === "toggleConsole") this.#hooks.focusShell?.();
+    // ⌘⇧E puts the keyboard on the Ledge, the shell's (docs/extensions.md §2).
+    if (action === "editAddress" || action === "newTabAddress" || action === "newSpaceAddress" || action === "newTab" || action === "newSpace" || action === "newTerminal" || action === "toggleConsole" || action === "focusLedge") this.#hooks.focusShell?.();
     switch (action) {
       case "back":
         void this.goBack(tab.info.id);
@@ -6739,9 +6920,11 @@ export class BrowserController {
     sourceIn: "page" | "view" = "page",
   ): Promise<void> {
     if (this.#glance !== null || !isAllowedNavigation(request.url)) return;
+    // (Never an extension's page: a Glance takes its owner's partition.)
     const owner = [...this.#tabs.values()].find(
       (candidate) =>
         candidate.info.kind === "human" &&
+        candidate.extensionId === null &&
         candidate.view.webContents.id === senderId,
     );
     if (
@@ -6780,6 +6963,7 @@ export class BrowserController {
     if (!isAllowedNavigation(request.url)) return false;
     const onScreen = (tab: ManagedTab): boolean =>
       tab.info.kind === "human" &&
+      tab.extensionId === null &&
       this.#layout.views.some(({ tabId }) => tabId === tab.info.id);
     const active =
       this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
@@ -6854,6 +7038,7 @@ export class BrowserController {
       shellTitle: null,
       offscreenViewport: false,
       files: false,
+      extensionId: null,
     };
     this.#glance = {
       tab,
@@ -7090,6 +7275,7 @@ export class BrowserController {
     // A working tab — the read-aloud player, the agent's hidden tab — was never the person's to reopen.
     if (info.kind === "human" && !info.unlisted) this.#rememberClosedTab(info, history);
     this.#tabZoom.delete(tabId);
+    this.#lastViewBoxes.delete(tabId);
     if (tab !== undefined) {
       // Out of the window and the map first: what follows may lay the
       // window out (the Glance it owned, its video in the media preview, the
@@ -7271,6 +7457,8 @@ export class BrowserController {
   }
 
   #rememberClosedTab(info: BrowserTabInfo, history: TabHistory | null): void {
+    // (An extension's page is the extension's to open again, not ⌘⇧T's.)
+    if (isExtensionTab(info)) return;
     const closed: RecentlyClosedTabInfo = {
       spaceId: info.spaceId,
       title: info.title,
@@ -7294,6 +7482,7 @@ export class BrowserController {
     if (info === null) throw new Error("unknown tab");
     if (info.kind !== "human")
       throw new Error("delegated tabs cannot move between Profiles");
+    if (isExtensionTab(info)) throw new Error("an extension's page belongs to no Profile's session and does not move between them");
     if (this.#spaceStore.get(targetSpaceId) === null)
       throw new Error("unknown Space");
     if (info.spaceId === targetSpaceId) {
@@ -7478,6 +7667,17 @@ export class BrowserController {
     }
     // A tab of files shows nothing else (ManagedTab's `files`): an address for the web opens a tab of its own beside it.
     if (tab.files) {
+      await this.selectTab(await this.createTab(rawUrl, { spaceId: tab.info.spaceId, beside: tabId }));
+      return;
+    }
+    // Nor does an extension's page (isExtensionTab): an address typed over it, the agent's navigate, anything main
+    // loads that is not one of that extension's own pages opens a tab of its own beside it — a load from here fires no
+    // will-navigate, and the view carries the extension's preload.
+    if (tab.extensionId !== null) {
+      if (onExtensionOrigin(tab.extensionId, rawUrl.trim())) {
+        await loadTabUrl(tab.view.webContents, rawUrl.trim());
+        return;
+      }
       await this.selectTab(await this.createTab(rawUrl, { spaceId: tab.info.spaceId, beside: tabId }));
       return;
     }
@@ -8896,7 +9096,7 @@ export class BrowserController {
     const visible = new Set(this.activeSpaceId() === spaceId ? this.#visibleTabIds() : []);
     // (A terminal is never idle: its shell may be serving, building or waiting, and archiving it would end it.)
     const idle = (info: BrowserTabInfo): boolean =>
-      idleMs > 0 && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null && !isTerminalUrl(info.url);
+      idleMs > 0 && info.lastActiveAt > 0 && now - info.lastActiveAt >= idleMs && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null && !isTerminalUrl(info.url) && !this.#extensionHeld.has(info.id);
     // Never the space in front, nor a space that is the person's (docs/spaces.md §1, "Tidy"; ./spaces tidyReach).
     const reach = this.#tidyReach(spaceId);
     const current = this.currentGroupId(spaceId);
@@ -8907,8 +9107,8 @@ export class BrowserController {
     const staleHomeTabIds: string[] = [];
     for (const tabId of this.#spaceTabIds(spaceId)) {
       const info = this.#tabInfo(tabId);
-      // (Skipped outright, not just kept from the archive: the model regroups none of them either.)
-      if (!this.#groupable(info) || grouped.has(tabId) || info.runId !== null || reach.spareTabIds.has(tabId)) continue;
+      // (Skipped outright, not just kept from the archive: the model regroups none of them either. Nor an extension's page.)
+      if (!this.#groupable(info) || grouped.has(tabId) || info.runId !== null || reach.spareTabIds.has(tabId) || isExtensionTab(info) || this.#extensionHeld.has(tabId)) continue;
       if (isHomeUrl(info.url)) {
         if (idle(info)) staleHomeTabIds.push(tabId);
         continue;
@@ -8955,7 +9155,7 @@ export class BrowserController {
     for (const tabId of tabIds) {
       const info = this.#tabInfo(tabId);
       // (The last line: a tab of the space in front, or a loose tab whose space is the person's, never goes; nor a terminal.)
-      if (!this.#groupable(info) || visible.has(tabId) || this.#media.has(tabId) || info.runId !== null || spared(info) || isTerminalUrl(info.url)) continue;
+      if (!this.#groupable(info) || visible.has(tabId) || this.#media.has(tabId) || info.runId !== null || spared(info) || isTerminalUrl(info.url) || isExtensionTab(info) || this.#extensionHeld.has(tabId)) continue;
       const tab = this.#archivedTabOf(tabId);
       if (tab === null) continue;
       archived.push({ tabId, index: this.#spaceTabIds(info.spaceId).indexOf(tabId), tab });
@@ -9019,7 +9219,7 @@ export class BrowserController {
     const reset: Array<{ tabId: string; url: string; title: string; history: TabHistory | null }> = [];
     for (const tabId of this.#spaceTabIds(spaceId)) {
       const info = this.#tabInfo(tabId);
-      if (info === null || info.anchorId === null || info.kind !== "human" || info.runId !== null || kept.has(tabId)) continue;
+      if (info === null || info.anchorId === null || info.kind !== "human" || info.runId !== null || kept.has(tabId) || this.#extensionHeld.has(tabId)) continue;
       if (visible.has(tabId) || this.#media.has(tabId) || now - info.lastActiveAt < minIdleMs) continue;
       const home = homeOf(info.anchorId);
       if (home === null || sameAddress(info.url, home.url)) continue;
@@ -9052,8 +9252,10 @@ export class BrowserController {
     return this.anchorTabGroups(spaceId).flatMap((group) => {
       if (group.tabIds.length < 2 || spared.has(group.id) || !isFavorite(group.anchorId!)) return [];
       const members = group.tabIds.map((tabId) => this.#tabInfo(tabId));
+      // (Nor an extension's page, as archiveTabs: the archive has no place for one, and Tidy never discards an editor.)
       const settled = members.every(
-        (info) => info !== null && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null && now - info.lastActiveAt >= minIdleMs,
+        (info) =>
+          info !== null && !visible.has(info.id) && !this.#media.has(info.id) && !info.loading && info.runId === null && !isExtensionTab(info) && !this.#extensionHeld.has(info.id) && now - info.lastActiveAt >= minIdleMs,
       );
       if (!settled) return [];
       // (Holding a terminal, it is never idle: it comes down instead of going to the archive, which would end the shell.)
@@ -9075,7 +9277,7 @@ export class BrowserController {
     const visible = new Set(this.#visibleTabIds());
     const members = group.tabIds.map((tabId) => this.#tabInfo(tabId));
     // (Nor a terminal: archiving ends its shell — docs/terminal.md §2.)
-    if (members.some((info) => info === null || !this.#canHold(group, info) || visible.has(info.id) || this.#media.has(info.id) || info.runId !== null || isTerminalUrl(info.url))) return null;
+    if (members.some((info) => info === null || !this.#canHold(group, info) || visible.has(info.id) || this.#media.has(info.id) || info.runId !== null || isTerminalUrl(info.url) || this.#extensionHeld.has(info.id))) return null;
     const pageTabId = members.find((info) => info?.anchorId === group.anchorId)?.id;
     if (pageTabId === undefined) return null;
     const tabs = members.flatMap((info) => {
@@ -9198,11 +9400,24 @@ export class BrowserController {
       this.#exitHtmlFullscreen();
     this.#activeTabId = tabId;
     this.#lastActiveTabBySpace.set(target.info.spaceId, tabId);
+    // Chrome extensions hear `tabs.onActivated` (a Glance promoted, a hidden tab shown: told now, as a tab of the person's).
+    const chromeContents = this.#chromeTabContents(target);
+    if (chromeContents !== null) this.#hooks.chromeTabs!.selected(tabId, chromeContents);
     // (A tab no space may hold — the agent's, an unlisted one — leaves the current space as it was.)
     const space = this.#ensureSpaceFor(tabId);
     if (space !== null) this.#setCurrentGroup(target.info.spaceId, space.id);
     if (previousActiveTabId !== tabId) this.#settleBackgroundVideos();
     this.#emitBrowserControls();
+  }
+
+  /** A person's own page as Chrome extensions see tabs (the `chromeTabs` hook), or null for any other. */
+  #chromeTabContents(tab: ManagedTab): WebContents | null {
+    const { info } = tab;
+    // (The host tells the library of it only while it shows a web page — never one of Pistachio's own surfaces.)
+    if (this.#hooks.chromeTabs === undefined || info.kind !== "human" || info.hiddenFor !== undefined || info.unlisted || tab.extensionId !== null || tab.files || this.#tabs.get(info.id) !== tab)
+      return null;
+    const contents = tab.view.webContents as WebContents | undefined;
+    return contents === undefined || contents.isDestroyed() ? null : contents;
   }
 
   setLayout(layout: BrowserLayout): void {
@@ -9212,6 +9427,8 @@ export class BrowserController {
     if (preview !== null && layout.views.some(({ tabId }) => tabId === preview.tabId))
       this.#clearMediaPreview();
     this.#layout = layout;
+    // (Kept per tab: a window covered or minimized since is where main last drew it, for an extension's desk.state.)
+    if (layout.stacked === true) for (const view of layout.views) this.#lastViewBoxes.set(view.tabId, view.bounds);
     this.#applyLayout();
     this.#restackViews();
   }
@@ -9587,6 +9804,107 @@ export class BrowserController {
   tabGroup(groupId: string): TabGroupInfo | null {
     const group = this.#tabGroups.get(groupId);
     return group === undefined ? null : { ...group, tabIds: [...group.tabIds] };
+  }
+
+  /**
+   * A desk as main knows it, for an extension's `desk.state` (docs/extensions.md §5). The geometry is the shell's:
+   * main has the windows the shell last reported for the space in front (in its stacking order, bottom first), the one
+   * in use, and the window-relative box of each page the layout draws now — and, for a window whose view is down now
+   * (covered, minimized, put to sleep), the box main last drew it at (#lastViewBoxes): where it was, which is where
+   * it is unless it was moved while covered. `minimized` is a window whose page the desk holds at its minimized
+   * zoom out of the layout. A window main never drew, and the windows of a space not in front (its tabs in their
+   * row's order), have a zero box.
+   */
+  extensionDeskState(profileId: string, groupId: string | null): {
+    spaceId: string | null;
+    stage: { width: number; height: number };
+    windows: { tabId: string; box: { x: number; y: number; width: number; height: number }; z: number; inUse: boolean; minimized: boolean; pageKind: "page" | "shell" | "extension"; title: string }[];
+  } {
+    const current = this.currentGroupId(profileId);
+    const spaceId = groupId ?? current;
+    const front = profileId === this.activeSpaceId() && spaceId !== null && spaceId === current && this.#desk !== null;
+    const tabIds = front ? this.#desk!.tabIds : spaceId === null ? [] : (this.#tabGroups.get(spaceId)?.tabIds ?? []);
+    const [width, height] = this.#window.isDestroyed() ? [0, 0] : this.#window.getContentSize();
+    const laid = new Map(this.#layout.stacked === true ? this.#layout.views.map((view) => [view.tabId, view.bounds]) : []);
+    const mini = new Set((this.#desk?.zoomed ?? []).filter((page) => page.zoom === DESK_MINI_ZOOM).map((page) => page.tabId));
+    const zero = { x: 0, y: 0, width: 0, height: 0 };
+    return {
+      spaceId,
+      stage: { width: width ?? 0, height: height ?? 0 },
+      windows: tabIds.flatMap((tabId, z) => {
+        const info = this.#tabInfo(tabId);
+        if (info === null || info.hiddenFor !== undefined) return [];
+        const box = front ? (laid.get(tabId) ?? this.#lastViewBoxes.get(tabId) ?? zero) : zero;
+        return [
+          {
+            tabId,
+            box: { x: box.x, y: box.y, width: box.width, height: box.height },
+            z,
+            inUse: front && tabId === this.#activeTabId,
+            minimized: front && mini.has(tabId) && !laid.has(tabId),
+            pageKind: isExtensionTab(info) ? "extension" : isShellPageUrl(info.url) ? "shell" : "page",
+            title: info.title,
+          },
+        ];
+      }),
+    };
+  }
+
+  // ── Extensions' holds and captures (docs/extensions.md §5 `capture`, `input`) ──
+
+  /**
+   * The tabs extensions hold now (capture.hold, and each tab captured or armed for a capture), the rest let go: a
+   * held tab is never put to sleep, archived or reset by Tidy, nor zoomed for the desk — its page at 100% while it
+   * is recorded — and one asleep is woken and laid out at its window's size while hidden, as a live share's held
+   * pages are (#layOutHeldPage). One let go takes its desk zoom again.
+   */
+  holdExtensionTabs(tabIds: readonly string[]): void {
+    const next = new Set(tabIds.filter((tabId) => this.#tabInfo(tabId) !== null));
+    const before = this.#extensionHeld;
+    if (next.size === before.size && [...next].every((tabId) => before.has(tabId))) return;
+    this.#extensionHeld = next;
+    this.#syncDeskZooms(this.#desk?.zoomed ?? []);
+    for (const tabId of next) if (!before.has(tabId)) void this.wakeExtensionTab(tabId).catch(() => false);
+  }
+
+  /** A held tab's page, woken if asleep and laid out at its window's size if its view is down. Whether it has a page. */
+  async wakeExtensionTab(tabId: string): Promise<boolean> {
+    const info = this.#tabInfo(tabId);
+    if (info === null || info.kind !== "human" || info.hiddenFor !== undefined || isExtensionTab(info)) return false;
+    const tab = await this.#ensureLiveTab(tabId, { awaitLoad: false });
+    if (tab.view.webContents.isDestroyed()) return false;
+    if (!tab.view.getVisible()) {
+      const size = this.extensionCaptureSize(tabId);
+      if (size !== null) await this.#layOutHeldPage(tab, size).catch(() => false);
+      // (Not one of a live share's: not tried again for it.)
+      if (!this.#liveHeld.has(tabId)) this.#liveUnlaid.delete(tabId);
+    }
+    return this.#tabs.get(tabId) === tab;
+  }
+
+  /** A listed tab's page view while it has one (not asleep, not an agent's hidden tab), for an extension's capture and input taps. */
+  extensionTabView(tabId: string): WebContentsView | null {
+    const tab = this.#tabs.get(tabId);
+    if (tab === undefined || tab.info.kind !== "human" || tab.info.hiddenFor !== undefined || tab.info.unlisted === true || tab.view.webContents.isDestroyed()) return null;
+    return tab.view;
+  }
+
+  /**
+   * The size (DIP) a tab's page is laid out at for a capture: its view's while shown, else the pane it was last laid
+   * out in, else the box main last drew its window at, else the size of the page in view. Null when there is none.
+   */
+  extensionCaptureSize(tabId: string): { width: number; height: number } | null {
+    const view = this.#tabs.get(tabId)?.view;
+    if (view !== undefined && view.getVisible()) {
+      const { width, height } = view.getBounds();
+      if (width > 0 && height > 0) return { width, height };
+    }
+    const known = this.#paneSizes.get(tabId) ?? this.#lastViewBoxes.get(tabId);
+    if (known !== undefined && known.width > 0 && known.height > 0) return { width: Math.round(known.width), height: Math.round(known.height) };
+    const cover = this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
+    if (cover === undefined || !cover.view.getVisible()) return null;
+    const { width, height } = cover.view.getBounds();
+    return width > 0 && height > 0 ? { width, height } : null;
   }
 
   /**
@@ -10322,8 +10640,13 @@ export class BrowserController {
 
   // ── Desk zooms (DeskZoomState) ────────────────────────────────────────────
 
-  /** The desk's zoomed pages now: new ones zoomed, sizes followed, the rest set back to their views. */
-  #syncDeskZooms(pages: readonly DeskZoomedPage[]): void {
+  /**
+   * The desk's zoomed pages now: new ones zoomed, sizes followed, the rest set back to their views. A page an
+   * extension holds (docs/extensions.md §5 `capture.hold`) is never one: it stays at 100% while it is recorded, and
+   * takes its zoom again once let go (holdExtensionTabs).
+   */
+  #syncDeskZooms(reported: readonly DeskZoomedPage[]): void {
+    const pages = this.#extensionHeld.size === 0 ? reported : reported.filter((page) => !this.#extensionHeld.has(page.tabId));
     const wanted = new Map(pages.map((page) => [page.tabId, page]));
     for (const [tabId, state] of [...this.#deskZooms]) {
       const tab = this.#tabs.get(tabId);

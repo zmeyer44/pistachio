@@ -1,0 +1,4 @@
+{
+  "entries": ["worker.ts", "src/panel/main.ts", "src/editor/main.ts", "src/export/export.worker.ts"],
+  "exclude": ["src/**", "test/**", "tsconfig.json", "vitest.config.ts", "README.md"]
+}

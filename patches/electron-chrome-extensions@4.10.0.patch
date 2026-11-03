@@ -1,0 +1,1436 @@
+diff --git a/dist/chrome-extension-api.preload.js b/dist/chrome-extension-api.preload.js
+index 67d3be4b5026069ec4ae73c1fc6e661f8a19098e..3690fe6326fdfde5b69111e9729dc8acdf93db30 100644
+--- a/dist/chrome-extension-api.preload.js
++++ b/dist/chrome-extension-api.preload.js
+@@ -458,6 +458,48 @@
+             };
+           }
+         },
++        // pistachio (hunk 23): MV3 scripting — Electron's own first (the extension's content-script world, chrome.* and
++        // all), and only a page that refused for want of a host permission goes through the library, which knows the
++        // activeTab grant (in an isolated world of the library's, with no chrome.* in it). The whole target goes
++        // along (frameIds, allFrames, documentIds), and a trailing callback as Chrome takes one.
++        scripting: {
++          factory: (base) => {
++            const target = (injection) => {
++              const given = injection && injection.target || {};
++              return { tabId: given.tabId, frameIds: Array.isArray(given.frameIds) ? given.frameIds : null, documentIds: Array.isArray(given.documentIds) ? given.documentIds : null, allFrames: !!given.allFrames };
++            };
++            const files = (injection) => Array.isArray(injection.files) ? injection.files : null;
++            const refusedForHost = (error) => /cannot access contents of the page|must request permission to access/i.test(String(error && error.message || error));
++            const through = (name, nativeName, injection, details, callback) => {
++              const run = async () => {
++                const native = base && typeof base[nativeName] === "function" ? base[nativeName] : null;
++                if (native) {
++                  try {
++                    return await native.call(base, injection);
++                  } catch (error) {
++                    if (!refusedForHost(error)) throw error;
++                  }
++                }
++                return invokeExtension2(name)(target(injection).tabId, details);
++              };
++              const promise = run();
++              if (typeof callback === "function") {
++                promise.then((result) => callback(result), () => callback());
++                return;
++              }
++              return promise;
++            };
++            return {
++              ...base,
++              executeScript: (injection, callback) => {
++                const code = typeof injection.func === "function" ? `(${injection.func.toString()})(...${JSON.stringify(Array.isArray(injection.args) ? injection.args : [])})` : null;
++                return through("pistachio.scripting.executeScript", "executeScript", injection, { target: target(injection), code, files: files(injection), world: injection.world || "ISOLATED" }, callback);
++              },
++              insertCSS: (injection, callback) => through("pistachio.scripting.insertCSS", "insertCSS", injection, { target: target(injection), css: typeof injection.css === "string" ? injection.css : null, files: files(injection) }, callback),
++              removeCSS: (injection, callback) => through("pistachio.scripting.removeCSS", "removeCSS", injection, { target: target(injection), css: typeof injection.css === "string" ? injection.css : null, files: files(injection) }, callback)
++            };
++          }
++        },
+         tabs: {
+           factory: (base) => {
+             const api = {
+diff --git a/dist/cjs/index.js b/dist/cjs/index.js
+index a91ca8fd07194abb081e9bb35fad0060fefddf91..26ec5dbb70fa1173c41fceebdb7a134dab3972df 100644
+--- a/dist/cjs/index.js
++++ b/dist/cjs/index.js
+@@ -66,7 +66,9 @@ var validateExtensionUrl = (url, extension) => {
+   } catch (e) {
+     throw new Error("Invalid URL");
+   }
+-  if (url.startsWith("chrome:") || url.startsWith("javascript:")) {
++  // pistachio: never an extension's to open or navigate to — the app's own schemes, local files, data: documents
++  // and script URLs (`url` is normalized above, so the protocol is lowercase).
++  if (url.startsWith("chrome:") || ["javascript:", "data:", "file:", "pistachio:", "pistachio-app:", "pistachio-ext:"].includes(new URL(url).protocol)) {
+     throw new Error("Invalid URL");
+   }
+   return url;
+@@ -121,6 +123,131 @@ var matchesTitlePattern = (pattern, title) => {
+   const regexp = new RegExp(`^${pattern.split("*").map(escapePattern).join(".*")}$`);
+   return title.match(regexp);
+ };
++
++// pistachio: the checks Chrome makes and the library does not (patches/README.md). Host permissions are read as
++// Chrome reads them — MV3 `host_permissions`, and the match patterns MV2 lists among `permissions` — and tested with
++// Chrome's match-pattern grammar, never the library's `matchesPattern` (which turns `*` into `.*`, so
++// `*://*.google.com/*` would match `https://evil.example/?.google.com/`). Paths are ignored, as Chrome ignores them
++// for host permissions. No pattern here reaches a `file:` URL: Pistachio never gives an extension local files.
++var pistachioHostPatterns = (extension) => {
++  const manifest = extension && extension.manifest || {};
++  const declared = [
++    ...Array.isArray(manifest.host_permissions) ? manifest.host_permissions : [],
++    ...Array.isArray(manifest.permissions) ? manifest.permissions : []
++  ];
++  return declared.filter((p) => typeof p === "string" && (p === "<all_urls>" || p.includes("://")));
++};
++var pistachioMatchesHost = (pattern, url) => {
++  let parsed;
++  try {
++    parsed = new URL(url);
++  } catch {
++    return false;
++  }
++  const scheme = parsed.protocol.slice(0, -1);
++  if (!["http", "https", "ws", "wss"].includes(scheme)) return false;
++  if (pattern === "<all_urls>") return true;
++  const match = /^(\*|https?|wss?):\/\/(\*|\*\.[^/*:]+|[^/*:]+)(:(?:\*|\d+))?\/.*$/.exec(pattern);
++  if (!match) return false;
++  const [, wantScheme, wantHost, wantPort] = match;
++  if (wantScheme === "*" ? scheme !== "http" && scheme !== "https" : wantScheme !== scheme) return false;
++  if (wantPort && wantPort !== ":*") {
++    const port = parsed.port || (scheme === "https" || scheme === "wss" ? "443" : "80");
++    if (wantPort.slice(1) !== port) return false;
++  }
++  const host = parsed.hostname.toLowerCase();
++  const want = wantHost.toLowerCase();
++  if (want === "*") return true;
++  if (want.startsWith("*.")) return host === want.slice(2) || host.endsWith(want.slice(1));
++  return host === want;
++};
++var pistachioHasHostPermission = (extension, url) => typeof url === "string" && pistachioHostPatterns(extension).some((pattern) => pistachioMatchesHost(pattern, url));
++var pistachioHasPermission = (extension, name) => {
++  const permissions = extension && extension.manifest && extension.manifest.permissions;
++  return Array.isArray(permissions) && permissions.includes(name);
++};
++// pistachio: a tab's address, title and icon are an extension's to see only with `tabs`, a host permission for the
++// address, or — on a gesture (its action clicked, its menu item chosen) — `activeTab`: Chrome's rule. The details
++// cache is shared by every extension in the session, so details are scrubbed per extension where they are sent,
++// never in the cache.
++// pistachio: `activeTab`'s grant as Chrome keeps it — the tab an extension's action was clicked on, or whose page's
++// menu item of its was chosen, is its to see (address, title, icon) from then on, until that tab goes to another
++// origin or closes. Per extension, per tab: the tab's origin when granted.
++var pistachioActiveTabGrants = new Map();
++// pistachio (hunk 23): the isolated world scripting.executeScript runs in (never the page's own; 999 is the preloads')
++var PISTACHIO_SCRIPTING_WORLD = 1113;
++// pistachio (hunk 23): a world of its own per extension — two sharing one would share globals and bindings
++var pistachioScriptingWorlds = /* @__PURE__ */ new Map();
++var pistachioScriptingWorld = (extensionId) => {
++  let world = pistachioScriptingWorlds.get(extensionId);
++  if (world === void 0) {
++    world = PISTACHIO_SCRIPTING_WORLD + pistachioScriptingWorlds.size;
++    pistachioScriptingWorlds.set(extensionId, world);
++  }
++  return world;
++};
++var pistachioOriginOf = (url) => {
++  try {
++    return new URL(url).origin;
++  } catch {
++    return null;
++  }
++};
++var pistachioGrantActiveTab = (extension, details) => {
++  if (!extension || !details || typeof details.id !== "number" || !pistachioHasPermission(extension, "activeTab")) return;
++  let tabs = pistachioActiveTabGrants.get(extension.id);
++  if (!tabs) {
++    tabs = new Map();
++    pistachioActiveTabGrants.set(extension.id, tabs);
++  }
++  tabs.set(details.id, pistachioOriginOf(details.url));
++};
++var pistachioActiveTabGranted = (extension, tabId) => !!extension && typeof tabId === "number" && (pistachioActiveTabGrants.get(extension.id) || new Map()).has(tabId);
++var pistachioTabNavigated = (tabId, url) => {
++  const origin = pistachioOriginOf(url);
++  for (const tabs of pistachioActiveTabGrants.values()) {
++    if (tabs.has(tabId) && tabs.get(tabId) !== origin) tabs.delete(tabId);
++  }
++};
++var pistachioTabRemoved = (tabId) => {
++  for (const tabs of pistachioActiveTabGrants.values()) tabs.delete(tabId);
++};
++var pistachioCanSeeTab = (extension, url, gesture, tabId) => pistachioHasPermission(extension, "tabs") || gesture === true && pistachioHasPermission(extension, "activeTab") || pistachioActiveTabGranted(extension, tabId) || pistachioHasHostPermission(extension, url);
++var pistachioScrubTab = (extension, details, gesture) => {
++  if (!details || typeof details !== "object" || pistachioCanSeeTab(extension, details.url, gesture, details.id)) return details;
++  const { url, pendingUrl, title, favIconUrl, ...rest } = details;
++  return rest;
++};
++var pistachioScrubWindow = (extension, details) => details && Array.isArray(details.tabs) ? { ...details, tabs: details.tabs.map((tab) => pistachioScrubTab(extension, tab)) } : details;
++// pistachio: the URL Chrome checks a cookie's host permission against (cookies_helpers' GetURLFromCanonicalCookie).
++var pistachioCookieUrl = (cookie) => {
++  const domain = String(cookie && cookie.domain || "");
++  return `${cookie && cookie.secure ? "https" : "http"}://${domain.startsWith(".") ? domain.slice(1) : domain}/`;
++};
++var pistachioRequireCookieHost = (extension, url) => {
++  if (!pistachioHasHostPermission(extension, url)) {
++    throw new Error(`No host permissions for cookies at url: "${String(url).slice(0, 256)}".`);
++  }
++};
++// pistachio: the extension an IPC comes from, read from its sender — the frame's committed origin, or the service
++// worker's scope — never from the message. Null for anything that is not an extension context (a web page, a site's
++// service worker, a sandboxed extension page with an opaque origin, a frame gone).
++var pistachioSenderExtensionId = (event) => {
++  try {
++    let origin;
++    if (event && event.type === "service-worker") {
++      origin = event.serviceWorker && event.serviceWorker.scope;
++    } else {
++      const frame = event && event.senderFrame;
++      if (!frame || frame.detached) return null;
++      origin = frame.origin;
++    }
++    if (typeof origin !== "string" || !origin.startsWith("chrome-extension://")) return null;
++    return new URL(origin).hostname || null;
++  } catch {
++    return null;
++  }
++};
+ var getAllWindows = () => [...import_electron.BaseWindow.getAllWindows(), ...import_electron.BrowserWindow.getAllWindows()];
+ 
+ // src/browser/popup.ts
+@@ -602,6 +729,8 @@ var BrowserActionAPI = class {
+     if (!tab) {
+       throw new Error(`Unable to get active tab`);
+     }
++    // pistachio: the click grants `activeTab` on this tab, popup or not — kept until it goes to another origin or closes
++    pistachioGrantActiveTab((this.ctx.session.extensions || this.ctx.session).getExtension(extensionId), this.ctx.store.tabDetailsCache.get(tab.id) || { id: tab.id, url: tab.getURL() });
+     const popupUrl = this.getPopupUrl(extensionId, tab.id);
+     if (popupUrl) {
+       const win = this.ctx.store.tabToWindow.get(tab);
+@@ -621,7 +750,9 @@ var BrowserActionAPI = class {
+     } else {
+       d2(`dispatching onClicked for ${extensionId}`);
+       const tabDetails = this.ctx.store.tabDetailsCache.get(tab.id);
+-      this.ctx.router.sendEvent(extensionId, "browserAction.onClicked", tabDetails);
++      // pistachio: the clicked tab as this extension may see it (a click is a gesture: `activeTab` counts)
++      const clickedBy = (this.ctx.session.extensions || this.ctx.session).getExtension(extensionId);
++      this.ctx.router.sendEvent(extensionId, "browserAction.onClicked", pistachioScrubTab(clickedBy, tabDetails, true));
+     }
+   }
+   activateContextMenu(details) {
+@@ -768,14 +899,15 @@ var _WindowsAPI = class _WindowsAPI {
+   get(event, windowId) {
+     const win = this.getWindowFromId(windowId);
+     if (!win) return { id: _WindowsAPI.WINDOW_ID_NONE };
+-    return this.getWindowDetails(win);
++    // pistachio: a window's tabs as this extension may see them (pistachioScrubTab)
++    return pistachioScrubWindow(event.extension, this.getWindowDetails(win));
+   }
+   getLastFocused(event) {
+     const win = this.ctx.store.getLastFocusedWindow();
+-    return win ? this.getWindowDetails(win) : null;
++    return win ? pistachioScrubWindow(event.extension, this.getWindowDetails(win)) : null;
+   }
+   getAll(event) {
+-    return Array.from(this.ctx.store.windows).map(this.getWindowDetails.bind(this));
++    return Array.from(this.ctx.store.windows).map((win) => pistachioScrubWindow(event.extension, this.getWindowDetails(win)));
+   }
+   async create(event, details) {
+     if (details.url) {
+@@ -784,7 +916,7 @@ var _WindowsAPI = class _WindowsAPI {
+       details = { ...details, url: Array.isArray(details.url) ? resolved : resolved[0] };
+     }
+     const win = await this.ctx.store.createWindow(event, details);
+-    return this.getWindowDetails(win);
++    return pistachioScrubWindow(event.extension, this.getWindowDetails(win));
+   }
+   async update(event, windowId, updateProperties = {}) {
+     const win = this.getWindowFromId(windowId);
+@@ -806,7 +938,7 @@ var _WindowsAPI = class _WindowsAPI {
+         }
+       }
+     }
+-    return this.createWindowDetails(win);
++    return pistachioScrubWindow(event.extension, this.createWindowDetails(win));
+   }
+   async remove(event, windowId = _WindowsAPI.WINDOW_ID_CURRENT) {
+     const win = this.getWindowFromId(windowId);
+@@ -819,7 +951,7 @@ var _WindowsAPI = class _WindowsAPI {
+     const window = this.ctx.store.getWindowById(windowId);
+     if (!window) return;
+     const windowDetails = this.getWindowDetails(window);
+-    this.ctx.router.broadcastEvent("windows.onCreated", windowDetails);
++    this.ctx.router.pistachioBroadcastEvent("windows.onCreated", (extension) => [pistachioScrubWindow(extension, windowDetails)]);
+   }
+   onRemoved(windowId) {
+     this.ctx.router.broadcastEvent("windows.onRemoved", windowId);
+@@ -833,7 +965,7 @@ var _WindowsAPI = class _WindowsAPI {
+     const window = this.ctx.store.getWindowById(windowId);
+     if (!window) return;
+     const windowDetails = this.createWindowDetails(window);
+-    this.ctx.router.broadcastEvent("windows.onBoundsChanged", windowDetails);
++    this.ctx.router.pistachioBroadcastEvent("windows.onBoundsChanged", (extension) => [pistachioScrubWindow(extension, windowDetails)]);
+   }
+ };
+ _WindowsAPI.WINDOW_ID_NONE = -1;
+@@ -852,6 +984,10 @@ var _TabsAPI = class _TabsAPI {
+     handle("tabs.getCurrent", this.getCurrent.bind(this));
+     handle("tabs.create", this.create.bind(this));
+     handle("tabs.insertCSS", this.insertCSS.bind(this));
++    // pistachio (hunk 23): MV3 scripting, through this process (the methods below)
++    handle("pistachio.scripting.executeScript", this.pistachioExecuteScript.bind(this));
++    handle("pistachio.scripting.insertCSS", this.pistachioInsertCSS.bind(this));
++    handle("pistachio.scripting.removeCSS", this.pistachioRemoveCSS.bind(this));
+     handle("tabs.query", this.query.bind(this));
+     handle("tabs.reload", this.reload.bind(this));
+     handle("tabs.update", this.update.bind(this));
+@@ -859,8 +995,21 @@ var _TabsAPI = class _TabsAPI {
+     handle("tabs.goForward", this.goForward.bind(this));
+     handle("tabs.goBack", this.goBack.bind(this));
+     this.ctx.store.on("tab-added", this.observeTab.bind(this));
++    // pistachio: a tab the host removed (one of Pistachio's own pages now) is removed to extensions too — its closing
++    // reaches here the same way, through the store, once (hunk 22)
++    this.ctx.store.on("tab-removed", (tabId) => this.onRemoved(tabId));
+   }
+   observeTab(tab) {
++    const tabId = tab.id;
++    // pistachio: told of again (back on the web after one of Pistachio's own pages), a tab is observed once (hunk 22)
++    if (!(this.pistachioObserved ||= new WeakSet()).has(tab)) {
++      this.pistachioObserved.add(tab);
++      this.pistachioObserveTab(tab);
++    }
++    this.onCreated(tabId);
++    this.onActivated(tabId);
++  }
++  pistachioObserveTab(tab) {
+     const tabId = tab.id;
+     const updateEvents = [
+       "page-title-updated",
+@@ -903,10 +1052,7 @@ var _TabsAPI = class _TabsAPI {
+       });
+       tab.off("page-favicon-updated", faviconHandler);
+       this.ctx.store.removeTab(tab);
+-      this.onRemoved(tabId);
+     });
+-    this.onCreated(tabId);
+-    this.onActivated(tabId);
+     d4(`Observing tab[${tabId}][${tab.getType()}] ${tab.getURL()}`);
+   }
+   createTabDetails(tab) {
+@@ -956,7 +1102,8 @@ var _TabsAPI = class _TabsAPI {
+   get(event, tabId) {
+     const tab = this.ctx.store.getTabById(tabId);
+     if (!tab) return { id: _TabsAPI.TAB_ID_NONE };
+-    return this.getTabDetails(tab);
++    // pistachio: as this extension may see it (pistachioScrubTab), here and in every tabs answer below
++    return pistachioScrubTab(event.extension, this.getTabDetails(tab));
+   }
+   getAllInWindow(event, windowId = _TabsAPI.WINDOW_ID_CURRENT) {
+     if (windowId === _TabsAPI.WINDOW_ID_CURRENT) windowId = this.ctx.store.lastFocusedWindowId;
+@@ -966,11 +1113,11 @@ var _TabsAPI = class _TabsAPI {
+       if (!browserWindow || browserWindow.isDestroyed()) return;
+       return browserWindow.id === windowId;
+     });
+-    return tabs.map(this.getTabDetails.bind(this));
++    return tabs.map((tab) => pistachioScrubTab(event.extension, this.getTabDetails(tab)));
+   }
+   getCurrent(event) {
+     const tab = this.ctx.store.getActiveTabOfCurrentWindow();
+-    return tab ? this.getTabDetails(tab) : void 0;
++    return tab ? pistachioScrubTab(event.extension, this.getTabDetails(tab)) : void 0;
+   }
+   async create(event, details = {}) {
+     const url = details.url ? validateExtensionUrl(details.url, event.extension) : void 0;
+@@ -979,11 +1126,116 @@ var _TabsAPI = class _TabsAPI {
+     if (details.active) {
+       queueMicrotask(() => this.onActivated(tab.id));
+     }
+-    return tabDetails;
++    return pistachioScrubTab(event.extension, tabDetails);
++  }
++  // pistachio (hunk 23): chrome.scripting for MV3 here rather than in Electron's own, which knows nothing of the
++  // activeTab grant (hunk 21) and refused a click-to-act extension the page it was clicked on. `scripting` must be
++  // declared; each frame reached needs a host permission for its own address, or the tab's grant when the frame is
++  // the page's own origin (a grant is the page's, never a cross-origin frame's).
++  pistachioScriptingTab(event, tabId) {
++    if (!pistachioHasPermission(event.extension, "scripting")) throw new Error('The extension manifest must request the "scripting" permission.');
++    const tab = this.ctx.store.getTabById(tabId);
++    if (!tab) throw new Error(`No tab with id: ${tabId}.`);
++    return tab;
++  }
++  pistachioScriptingMay(event, tab, frame) {
++    const origin = (url) => { try { return new URL(url).origin; } catch { return null; } };
++    if (pistachioHasHostPermission(event.extension, frame.url)) return true;
++    return pistachioActiveTabGranted(event.extension, tab.id) && origin(frame.url) !== null && origin(frame.url) === origin(tab.getURL());
++  }
++  // The frames a target names: `frameIds` (0 the top, else frameTreeNodeId) each checked and refused when not the
++  // extension's; `allFrames` every frame it may reach, the others left out as Chrome leaves them; else the top.
++  pistachioScriptingFrames(event, tab, target) {
++    if (Array.isArray(target.documentIds) && target.documentIds.length > 0) throw new Error("documentIds are not supported in Pistachio.");
++    const all = tab.mainFrame.framesInSubtree;
++    const refuse = () => { throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host."); };
++    if (Array.isArray(target.frameIds) && target.frameIds.length > 0) {
++      return target.frameIds.map((id) => {
++        const frame = all.find((candidate) => getFrameId(candidate) === id);
++        if (!frame) throw new Error(`No frame with id ${id} in tab with id ${tab.id}.`);
++        if (!this.pistachioScriptingMay(event, tab, frame)) refuse();
++        return frame;
++      });
++    }
++    if (target.allFrames) return all.filter((frame) => this.pistachioScriptingMay(event, tab, frame));
++    if (!this.pistachioScriptingMay(event, tab, tab.mainFrame)) refuse();
++    return [tab.mainFrame];
++  }
++  async pistachioScriptingSources(extension, inline, files) {
++    if (typeof inline === "string") return [inline];
++    const sources = [];
++    for (const file of Array.isArray(files) ? files : []) {
++      // (By real path: a link in the folder pointing out of it would read any file on the Mac otherwise.)
++      const root = await require("node:fs").promises.realpath(extension.path);
++      let real;
++      try {
++        real = await require("node:fs").promises.realpath(import_node_path.default.resolve(extension.path, String(file)));
++      } catch {
++        throw new Error(`Could not load file: '${String(file)}'.`);
++      }
++      if (real !== root && !real.startsWith(root + import_node_path.default.sep)) throw new Error(`Could not load file: '${String(file)}'.`);
++      sources.push(await require("node:fs").promises.readFile(real, "utf8"));
++    }
++    return sources;
++  }
++  async pistachioExecuteScript(event, tabId, details) {
++    const tab = this.pistachioScriptingTab(event, tabId);
++    // The files first, then the frames: a tab that went elsewhere while they were read is judged as it stands now,
++    // and once more before each script, since a frame keeps its object across a change of origin.
++    const sources = await this.pistachioScriptingSources(event.extension, details.code, details.files);
++    const frames = this.pistachioScriptingFrames(event, tab, details.target || {});
++    const results = [];
++    for (const frame of frames) {
++      let result;
++      for (const code of sources) {
++        if (frame.isDestroyed?.() || !this.pistachioScriptingMay(event, tab, frame)) throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
++        // The top frame in an isolated world of its own (Electron gives a WebContents one; a frame has none, so a
++        // subframe runs in its page's own world — measured on 43.4.1); `world: "MAIN"` the page's by request.
++        if (details.world !== "MAIN" && frame === tab.mainFrame) result = await tab.executeJavaScriptInIsolatedWorld(pistachioScriptingWorld(event.extension.id), [{ code }], true);
++        else result = await frame.executeJavaScript(code, true);
++      }
++      results.push({ frameId: getFrameId(frame), result: result === void 0 ? null : result });
++    }
++    return results;
++  }
++  // CSS reaches the top frame alone (Electron inserts CSS by WebContents, not by frame): a target naming another
++  // frame is refused rather than styled elsewhere; `allFrames` styles the top.
++  pistachioScriptingCssTarget(event, tab, target) {
++    if (Array.isArray(target.documentIds) && target.documentIds.length > 0) throw new Error("documentIds are not supported in Pistachio.");
++    if (Array.isArray(target.frameIds) && target.frameIds.some((id) => id !== 0)) throw new Error("CSS reaches the top frame only in Pistachio.");
++    if (!this.pistachioScriptingMay(event, tab, tab.mainFrame)) throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
++  }
++  async pistachioInsertCSS(event, tabId, details) {
++    const tab = this.pistachioScriptingTab(event, tabId);
++    const sources = await this.pistachioScriptingSources(event.extension, details.css, details.files);
++    const keys = this.pistachioCssKeys || (this.pistachioCssKeys = new Map());
++    for (const css of sources) {
++      // (Judged as the tab stands before each insert, the files read already.)
++      this.pistachioScriptingCssTarget(event, tab, details.target || {});
++      keys.set(`${tab.id}\n${event.extension.id}\n${css}`, await tab.insertCSS(css));
++    }
++  }
++  async pistachioRemoveCSS(event, tabId, details) {
++    const tab = this.pistachioScriptingTab(event, tabId);
++    const sources = await this.pistachioScriptingSources(event.extension, details.css, details.files);
++    const keys = this.pistachioCssKeys || new Map();
++    for (const css of sources) {
++      this.pistachioScriptingCssTarget(event, tab, details.target || {});
++      const id = `${tab.id}\n${event.extension.id}\n${css}`;
++      const key = keys.get(id);
++      if (!key) continue;
++      keys.delete(id);
++      await tab.removeInsertedCSS(key).catch(() => void 0);
++    }
+   }
+   insertCSS(event, tabId, details) {
+     const tab = this.ctx.store.getTabById(tabId);
+     if (!tab) return;
++    // pistachio: CSS goes only into a page the extension holds a host permission for, or was clicked on with
++    // activeTab (its grant, hunk 21) — attribute-selector CSS reads what is typed; an overlay redresses the page
++    if (!pistachioHasHostPermission(event.extension, tab.getURL()) && !pistachioActiveTabGranted(event.extension, tab.id)) {
++      throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
++    }
+     if (details.code) {
+       tab.insertCSS(details.code);
+     }
+@@ -992,6 +1244,8 @@ var _TabsAPI = class _TabsAPI {
+     const isSet = (value) => typeof value !== "undefined";
+     const filteredTabs = Array.from(this.ctx.store.tabs).map(this.getTabDetails.bind(this)).filter((tab) => {
+       if (!tab) return false;
++      // pistachio: a url or title filter only ever matches a tab whose address the extension may see (Chrome's rule)
++      if ((isSet(info.url) || isSet(info.title)) && !pistachioCanSeeTab(event.extension, tab.url, false, tab.id)) return false;
+       if (isSet(info.active) && info.active !== tab.active) return false;
+       if (isSet(info.pinned) && info.pinned !== tab.pinned) return false;
+       if (isSet(info.audible) && info.audible !== tab.audible) return false;
+@@ -1027,7 +1281,7 @@ var _TabsAPI = class _TabsAPI {
+       }
+       return tab;
+     });
+-    return filteredTabs;
++    return filteredTabs.map((tab) => pistachioScrubTab(event.extension, tab));
+   }
+   reload(event, arg1, arg2) {
+     const tabId = typeof arg1 === "number" ? arg1 : void 0;
+@@ -1048,11 +1302,16 @@ var _TabsAPI = class _TabsAPI {
+     tabId = tab.id;
+     const props = updateProperties;
+     const url = props.url ? validateExtensionUrl(props.url, event.extension) : void 0;
+-    if (url) await tab.loadURL(url);
++    // pistachio: through the app's own navigation and its guards (impl.navigateTab), never a bare loadURL from main,
++    // which no will-navigate handler sees
++    if (url) {
++      if (typeof this.ctx.store.impl.navigateTab === "function") await this.ctx.store.impl.navigateTab(tab, url);
++      else await tab.loadURL(url);
++    }
+     if (typeof props.muted === "boolean") tab.setAudioMuted(props.muted);
+     if (props.active) this.onActivated(tabId);
+     this.onUpdated(tabId);
+-    return this.createTabDetails(tab);
++    return pistachioScrubTab(event.extension, this.createTabDetails(tab));
+   }
+   remove(event, id) {
+     const ids = Array.isArray(id) ? id : [id];
+@@ -1078,7 +1337,7 @@ var _TabsAPI = class _TabsAPI {
+     const tab = this.ctx.store.getTabById(tabId);
+     if (!tab) return;
+     const tabDetails = this.getTabDetails(tab);
+-    this.ctx.router.broadcastEvent("tabs.onCreated", tabDetails);
++    this.ctx.router.pistachioBroadcastEvent("tabs.onCreated", (extension) => [pistachioScrubTab(extension, tabDetails)]);
+   }
+   onUpdated(tabId) {
+     const tab = this.ctx.store.getTabById(tabId);
+@@ -1115,9 +1374,18 @@ var _TabsAPI = class _TabsAPI {
+       didUpdate = true;
+     }
+     if (!didUpdate) return;
+-    this.ctx.router.broadcastEvent("tabs.onUpdated", tab.id, changeInfo, details);
++    // pistachio: at another origin, the tab is no longer the one `activeTab` was granted on
++    if (changeInfo.url !== void 0) pistachioTabNavigated(tab.id, details.url);
++    // pistachio: an extension that may not see the address hears only the changes that are not the address,
++    // title or icon, and nothing when those were all that changed
++    this.ctx.router.pistachioBroadcastEvent("tabs.onUpdated", (extension) => {
++      if (pistachioCanSeeTab(extension, details.url, false, tab.id)) return [tab.id, changeInfo, details];
++      const { url, pendingUrl, title, favIconUrl, ...visibleChange } = changeInfo;
++      return Object.keys(visibleChange).length > 0 ? [tab.id, visibleChange, pistachioScrubTab(extension, details)] : null;
++    });
+   }
+   onRemoved(tabId) {
++    pistachioTabRemoved(tabId);
+     const details = this.ctx.store.tabDetailsCache.has(tabId) ? this.ctx.store.tabDetailsCache.get(tabId) : null;
+     this.ctx.store.tabDetailsCache.delete(tabId);
+     const windowId = details ? details.windowId : WindowsAPI.WINDOW_ID_NONE;
+@@ -1179,8 +1447,12 @@ var WebNavigationAPI = class {
+   constructor(ctx) {
+     this.ctx = ctx;
+     this.sendNavigationEvent = (eventName, details) => {
++      // pistachio: a tab that is no tab to extensions — removed by the host for one of Pistachio's own pages, its
++      // observers still attached — has no navigation to tell of (hunk 22)
++      if (!this.ctx.store.getTabById(details.tabId)) return;
+       d5(`${eventName} [url: ${details.url}]`);
+-      this.ctx.router.broadcastEvent(`webNavigation.${eventName}`, details);
++      // pistachio: navigation events reach only the extensions that declared `webNavigation` (Chrome's rule)
++      this.ctx.router.pistachioBroadcastEvent(`webNavigation.${eventName}`, (extension) => pistachioHasPermission(extension, "webNavigation") ? [details] : null);
+     };
+     this.onCreatedNavigationTarget = (tab, { url, frame }) => {
+       if (!frame) return;
+@@ -1287,11 +1559,15 @@ var WebNavigationAPI = class {
+       this.sendNavigationEvent("onCompleted", details);
+     };
+     const handle = this.ctx.router.apiHandler();
+-    handle("webNavigation.getFrame", this.getFrame.bind(this));
+-    handle("webNavigation.getAllFrames", this.getAllFrames.bind(this));
++    // pistachio: only with the `webNavigation` permission (the router checks `permission`)
++    handle("webNavigation.getFrame", this.getFrame.bind(this), { permission: "webNavigation" });
++    handle("webNavigation.getAllFrames", this.getAllFrames.bind(this), { permission: "webNavigation" });
+     this.ctx.store.on("tab-added", this.observeTab.bind(this));
+   }
+   observeTab(tab) {
++    // pistachio: told of again, a tab is observed once (hunk 22)
++    if ((this.pistachioObserved ||= new WeakSet()).has(tab)) return;
++    this.pistachioObserved.add(tab);
+     tab.once("will-navigate", this.onCreatedNavigationTarget.bind(this, tab));
+     tab.on("did-start-navigation", this.onBeforeNavigate.bind(this, tab));
+     tab.on("did-frame-finish-load", this.onFinishLoad.bind(this, tab));
+@@ -1723,7 +1999,11 @@ var ContextMenusAPI = class {
+       // TODO
+       srcUrl: params?.srcURL
+     };
+-    this.ctx.router.sendEvent(extensionId, "contextMenus.onClicked", data, tab);
++    // pistachio: the tab as this extension may see it (choosing its item is a gesture: `activeTab` counts)
++    const clickedBy = (this.ctx.session.extensions || this.ctx.session).getExtension(extensionId);
++    // pistachio: choosing its item grants `activeTab` on the tab, as the action's click does
++    pistachioGrantActiveTab(clickedBy, tab);
++    this.ctx.router.sendEvent(extensionId, "contextMenus.onClicked", data, pistachioScrubTab(clickedBy, tab, true));
+   }
+ };
+ 
+@@ -2020,20 +2300,25 @@ var CookiesAPI = class {
+         cookie: createCookieDetails(cookie),
+         removed
+       };
+-      this.ctx.router.broadcastEvent("cookies.onChanged", changeInfo);
++      // pistachio: a change reaches only the extensions holding `cookies` and a host permission for the cookie
++      this.ctx.router.pistachioBroadcastEvent("cookies.onChanged", (extension) => pistachioHasPermission(extension, "cookies") && pistachioHasHostPermission(extension, pistachioCookieUrl(cookie)) ? [changeInfo] : null);
+     };
+     const handle = this.ctx.router.apiHandler();
+-    handle("cookies.get", this.get.bind(this));
+-    handle("cookies.getAll", this.getAll.bind(this));
+-    handle("cookies.set", this.set.bind(this));
+-    handle("cookies.remove", this.remove.bind(this));
+-    handle("cookies.getAllCookieStores", this.getAllCookieStores.bind(this));
++    // pistachio: every call needs the `cookies` permission (the router checks `permission`); get, getAll, set and
++    // remove a host permission as well (below), as Chrome does
++    const needsCookies = { permission: "cookies" };
++    handle("cookies.get", this.get.bind(this), needsCookies);
++    handle("cookies.getAll", this.getAll.bind(this), needsCookies);
++    handle("cookies.set", this.set.bind(this), needsCookies);
++    handle("cookies.remove", this.remove.bind(this), needsCookies);
++    handle("cookies.getAllCookieStores", this.getAllCookieStores.bind(this), needsCookies);
+     this.cookies.addListener("changed", this.onChanged);
+   }
+   get cookies() {
+     return this.ctx.session.cookies;
+   }
+   async get(event, details) {
++    pistachioRequireCookieHost(event.extension, details && details.url);
+     const cookies = await this.cookies.get({
+       url: details.url,
+       name: details.name
+@@ -2041,6 +2326,7 @@ var CookiesAPI = class {
+     return cookies.length > 0 ? createCookieDetails(cookies[0]) : null;
+   }
+   async getAll(event, details) {
++    if (details && typeof details.url !== "undefined") pistachioRequireCookieHost(event.extension, details.url);
+     const cookies = await this.cookies.get({
+       url: details.url,
+       name: details.name,
+@@ -2049,14 +2335,17 @@ var CookiesAPI = class {
+       secure: details.secure,
+       session: details.session
+     });
+-    return cookies.map(createCookieDetails);
++    // pistachio: only the cookies of hosts the extension holds a permission for
++    return cookies.filter((cookie) => pistachioHasHostPermission(event.extension, pistachioCookieUrl(cookie))).map(createCookieDetails);
+   }
+   async set(event, details) {
++    pistachioRequireCookieHost(event.extension, details && details.url);
+     await this.cookies.set(details);
+     const cookies = await this.cookies.get(details);
+     return cookies.length > 0 ? createCookieDetails(cookies[0]) : null;
+   }
+   async remove(event, details) {
++    pistachioRequireCookieHost(event.extension, details && details.url);
+     try {
+       await this.cookies.remove(details.url, details.name);
+     } catch {
+@@ -2272,8 +2561,20 @@ var RoutingDelegate = class _RoutingDelegate {
+     this.workers = /* @__PURE__ */ new WeakSet();
+     this.onRouterMessage = async (event, extensionId, handlerName, ...args) => {
+       d8(`received '${handlerName}'`, args);
++      // pistachio: the extension is the sender's — its frame's origin or its service worker's scope — never the id
++      // the renderer names: a message naming another extension, or sent by a page that is no extension's, is refused
++      const senderExtensionId = pistachioSenderExtensionId(event);
++      if (!senderExtensionId || senderExtensionId !== extensionId) {
++        throw new Error(`${String(handlerName).slice(0, 64)} refused: not sent by extension '${String(extensionId).slice(0, 64)}'`);
++      }
+       const observer = this.sessionMap.get(getSessionFromEvent(event));
+-      return observer?.onExtensionMessage(event, extensionId, handlerName, ...args);
++      // pistachio: the handlers that need no extension (browserAction.getState/activate/addObserver/removeObserver)
++      // served the remote channel, which is gone; from an extension they would read other extensions' actions or
++      // open their popups. Main calls them in-process.
++      if (observer?.handlers.get(handlerName)?.extensionContext === false) {
++        throw new Error(`${String(handlerName).slice(0, 64)} refused: not an extension's to call`);
++      }
++      return observer?.onExtensionMessage(event, senderExtensionId, handlerName, ...args);
+     };
+     this.onRemoteMessage = async (event, sessionPartition, handlerName, ...args) => {
+       d8(`received remote '${handlerName}' for '${sessionPartition}'`, args);
+@@ -2282,6 +2583,20 @@ var RoutingDelegate = class _RoutingDelegate {
+       return observer?.onExtensionMessage(event, void 0, handlerName, ...args);
+     };
+     this.onAddListener = (event, extensionId, eventName) => {
++      // pistachio: as crx-msg — the sender's extension or nothing. Dropped rather than thrown, and the library's own
++      // throw (an unloaded extension) caught: an exception in an ipcMain.on listener is an uncaught one in main.
++      const senderExtensionId = pistachioSenderExtensionId(event);
++      if (!senderExtensionId || senderExtensionId !== extensionId) {
++        d8("refused crx-add-listener for '%s'", String(eventName).slice(0, 64));
++        return;
++      }
++      try {
++        return this.pistachioAddListener(event, extensionId, eventName);
++      } catch (error) {
++        d8("crx-add-listener failed: %s", error);
++      }
++    };
++    this.pistachioAddListener = (event, extensionId, eventName) => {
+       const observer = this.sessionMap.get(getSessionFromEvent(event));
+       const listener = event.type === "frame" ? {
+         type: event.type,
+@@ -2294,6 +2609,12 @@ var RoutingDelegate = class _RoutingDelegate {
+       return observer?.addListener(listener, extensionId, eventName);
+     };
+     this.onRemoveListener = (event, extensionId, eventName) => {
++      // pistachio: as crx-add-listener
++      const senderExtensionId = pistachioSenderExtensionId(event);
++      if (!senderExtensionId || senderExtensionId !== extensionId) {
++        d8("refused crx-remove-listener for '%s'", String(eventName).slice(0, 64));
++        return;
++      }
+       const observer = this.sessionMap.get(getSessionFromEvent(event));
+       const listener = event.type === "frame" ? {
+         type: event.type,
+@@ -2306,7 +2627,10 @@ var RoutingDelegate = class _RoutingDelegate {
+       return observer?.removeListener(listener, extensionId, eventName);
+     };
+     import_electron9.ipcMain.handle("crx-msg", this.onRouterMessage);
+-    import_electron9.ipcMain.handle("crx-msg-remote", this.onRemoteMessage);
++    // pistachio: no remote channel. It names no extension and lets any renderer name any partition (one it names is
++    // even created: resolvePartition) to reach browserAction.getState/activate. Pistachio's main calls the action API
++    // in-process (main/extensions/chrome/compat.ts); <browser-action-list> is not used.
++    // import_electron9.ipcMain.handle("crx-msg-remote", this.onRemoteMessage);
+     import_electron9.ipcMain.on("crx-add-listener", this.onAddListener);
+     import_electron9.ipcMain.on("crx-remove-listener", this.onRemoveListener);
+   }
+@@ -2327,7 +2651,8 @@ var RoutingDelegate = class _RoutingDelegate {
+         d8(`listening to service worker [versionId:${versionId}, scope:${serviceWorker.scope}]`);
+         this.workers.add(serviceWorker);
+         serviceWorker.ipc.handle("crx-msg", this.onRouterMessage);
+-        serviceWorker.ipc.handle("crx-msg-remote", this.onRemoteMessage);
++        // pistachio: no remote channel (see the ipcMain registration above)
++        // serviceWorker.ipc.handle("crx-msg-remote", this.onRemoteMessage);
+         serviceWorker.ipc.on("crx-add-listener", this.onAddListener);
+         serviceWorker.ipc.on("crx-remove-listener", this.onRemoveListener);
+       }
+@@ -2531,6 +2856,20 @@ var ExtensionRouter = class {
+     }
+     d8(`sent '${eventName}' event to ${sentCount} listeners`);
+   }
++  /**
++   * pistachio: a broadcast whose arguments are made per listening extension (null: not sent to it), for the events
++   * that carry what not every extension may see — tab addresses, windows' tabs, cookies, navigations.
++   */
++  pistachioBroadcastEvent(eventName, argsFor) {
++    const eventListeners = this.listeners.get(eventName);
++    if (!eventListeners || eventListeners.length === 0) return;
++    const sessionExtensions = this.session.extensions || this.session;
++    for (const extensionId of new Set(eventListeners.map((listener) => listener.extensionId))) {
++      const extension = sessionExtensions.getExtension(extensionId);
++      const args = extension ? argsFor(extension) : null;
++      if (args) this.sendEvent(extensionId, eventName, ...args);
++    }
++  }
+   /** Broadcasts extension event to all extension hosts listening for it. */
+   broadcastEvent(eventName, ...args) {
+     this.sendEvent(void 0, eventName, ...args);
+diff --git a/dist/esm/index.mjs b/dist/esm/index.mjs
+index 43929222572e4d6875cc192aca0750da79d8ff14..3b4c7f53e5e90ead8d6bc3b808bea2145a194162 100644
+--- a/dist/esm/index.mjs
++++ b/dist/esm/index.mjs
+@@ -29,7 +29,9 @@ var validateExtensionUrl = (url, extension) => {
+   } catch (e) {
+     throw new Error("Invalid URL");
+   }
+-  if (url.startsWith("chrome:") || url.startsWith("javascript:")) {
++  // pistachio: never an extension's to open or navigate to — the app's own schemes, local files, data: documents
++  // and script URLs (`url` is normalized above, so the protocol is lowercase).
++  if (url.startsWith("chrome:") || ["javascript:", "data:", "file:", "pistachio:", "pistachio-app:", "pistachio-ext:"].includes(new URL(url).protocol)) {
+     throw new Error("Invalid URL");
+   }
+   return url;
+@@ -84,6 +86,131 @@ var matchesTitlePattern = (pattern, title) => {
+   const regexp = new RegExp(`^${pattern.split("*").map(escapePattern).join(".*")}$`);
+   return title.match(regexp);
+ };
++
++// pistachio: the checks Chrome makes and the library does not (patches/README.md). Host permissions are read as
++// Chrome reads them — MV3 `host_permissions`, and the match patterns MV2 lists among `permissions` — and tested with
++// Chrome's match-pattern grammar, never the library's `matchesPattern` (which turns `*` into `.*`, so
++// `*://*.google.com/*` would match `https://evil.example/?.google.com/`). Paths are ignored, as Chrome ignores them
++// for host permissions. No pattern here reaches a `file:` URL: Pistachio never gives an extension local files.
++var pistachioHostPatterns = (extension) => {
++  const manifest = extension && extension.manifest || {};
++  const declared = [
++    ...Array.isArray(manifest.host_permissions) ? manifest.host_permissions : [],
++    ...Array.isArray(manifest.permissions) ? manifest.permissions : []
++  ];
++  return declared.filter((p) => typeof p === "string" && (p === "<all_urls>" || p.includes("://")));
++};
++var pistachioMatchesHost = (pattern, url) => {
++  let parsed;
++  try {
++    parsed = new URL(url);
++  } catch {
++    return false;
++  }
++  const scheme = parsed.protocol.slice(0, -1);
++  if (!["http", "https", "ws", "wss"].includes(scheme)) return false;
++  if (pattern === "<all_urls>") return true;
++  const match = /^(\*|https?|wss?):\/\/(\*|\*\.[^/*:]+|[^/*:]+)(:(?:\*|\d+))?\/.*$/.exec(pattern);
++  if (!match) return false;
++  const [, wantScheme, wantHost, wantPort] = match;
++  if (wantScheme === "*" ? scheme !== "http" && scheme !== "https" : wantScheme !== scheme) return false;
++  if (wantPort && wantPort !== ":*") {
++    const port = parsed.port || (scheme === "https" || scheme === "wss" ? "443" : "80");
++    if (wantPort.slice(1) !== port) return false;
++  }
++  const host = parsed.hostname.toLowerCase();
++  const want = wantHost.toLowerCase();
++  if (want === "*") return true;
++  if (want.startsWith("*.")) return host === want.slice(2) || host.endsWith(want.slice(1));
++  return host === want;
++};
++var pistachioHasHostPermission = (extension, url) => typeof url === "string" && pistachioHostPatterns(extension).some((pattern) => pistachioMatchesHost(pattern, url));
++var pistachioHasPermission = (extension, name) => {
++  const permissions = extension && extension.manifest && extension.manifest.permissions;
++  return Array.isArray(permissions) && permissions.includes(name);
++};
++// pistachio: a tab's address, title and icon are an extension's to see only with `tabs`, a host permission for the
++// address, or — on a gesture (its action clicked, its menu item chosen) — `activeTab`: Chrome's rule. The details
++// cache is shared by every extension in the session, so details are scrubbed per extension where they are sent,
++// never in the cache.
++// pistachio: `activeTab`'s grant as Chrome keeps it — the tab an extension's action was clicked on, or whose page's
++// menu item of its was chosen, is its to see (address, title, icon) from then on, until that tab goes to another
++// origin or closes. Per extension, per tab: the tab's origin when granted.
++var pistachioActiveTabGrants = new Map();
++// pistachio (hunk 23): the isolated world scripting.executeScript runs in (never the page's own; 999 is the preloads')
++var PISTACHIO_SCRIPTING_WORLD = 1113;
++// pistachio (hunk 23): a world of its own per extension — two sharing one would share globals and bindings
++var pistachioScriptingWorlds = /* @__PURE__ */ new Map();
++var pistachioScriptingWorld = (extensionId) => {
++  let world = pistachioScriptingWorlds.get(extensionId);
++  if (world === void 0) {
++    world = PISTACHIO_SCRIPTING_WORLD + pistachioScriptingWorlds.size;
++    pistachioScriptingWorlds.set(extensionId, world);
++  }
++  return world;
++};
++var pistachioOriginOf = (url) => {
++  try {
++    return new URL(url).origin;
++  } catch {
++    return null;
++  }
++};
++var pistachioGrantActiveTab = (extension, details) => {
++  if (!extension || !details || typeof details.id !== "number" || !pistachioHasPermission(extension, "activeTab")) return;
++  let tabs = pistachioActiveTabGrants.get(extension.id);
++  if (!tabs) {
++    tabs = new Map();
++    pistachioActiveTabGrants.set(extension.id, tabs);
++  }
++  tabs.set(details.id, pistachioOriginOf(details.url));
++};
++var pistachioActiveTabGranted = (extension, tabId) => !!extension && typeof tabId === "number" && (pistachioActiveTabGrants.get(extension.id) || new Map()).has(tabId);
++var pistachioTabNavigated = (tabId, url) => {
++  const origin = pistachioOriginOf(url);
++  for (const tabs of pistachioActiveTabGrants.values()) {
++    if (tabs.has(tabId) && tabs.get(tabId) !== origin) tabs.delete(tabId);
++  }
++};
++var pistachioTabRemoved = (tabId) => {
++  for (const tabs of pistachioActiveTabGrants.values()) tabs.delete(tabId);
++};
++var pistachioCanSeeTab = (extension, url, gesture, tabId) => pistachioHasPermission(extension, "tabs") || gesture === true && pistachioHasPermission(extension, "activeTab") || pistachioActiveTabGranted(extension, tabId) || pistachioHasHostPermission(extension, url);
++var pistachioScrubTab = (extension, details, gesture) => {
++  if (!details || typeof details !== "object" || pistachioCanSeeTab(extension, details.url, gesture, details.id)) return details;
++  const { url, pendingUrl, title, favIconUrl, ...rest } = details;
++  return rest;
++};
++var pistachioScrubWindow = (extension, details) => details && Array.isArray(details.tabs) ? { ...details, tabs: details.tabs.map((tab) => pistachioScrubTab(extension, tab)) } : details;
++// pistachio: the URL Chrome checks a cookie's host permission against (cookies_helpers' GetURLFromCanonicalCookie).
++var pistachioCookieUrl = (cookie) => {
++  const domain = String(cookie && cookie.domain || "");
++  return `${cookie && cookie.secure ? "https" : "http"}://${domain.startsWith(".") ? domain.slice(1) : domain}/`;
++};
++var pistachioRequireCookieHost = (extension, url) => {
++  if (!pistachioHasHostPermission(extension, url)) {
++    throw new Error(`No host permissions for cookies at url: "${String(url).slice(0, 256)}".`);
++  }
++};
++// pistachio: the extension an IPC comes from, read from its sender — the frame's committed origin, or the service
++// worker's scope — never from the message. Null for anything that is not an extension context (a web page, a site's
++// service worker, a sandboxed extension page with an opaque origin, a frame gone).
++var pistachioSenderExtensionId = (event) => {
++  try {
++    let origin;
++    if (event && event.type === "service-worker") {
++      origin = event.serviceWorker && event.serviceWorker.scope;
++    } else {
++      const frame = event && event.senderFrame;
++      if (!frame || frame.detached) return null;
++      origin = frame.origin;
++    }
++    if (typeof origin !== "string" || !origin.startsWith("chrome-extension://")) return null;
++    return new URL(origin).hostname || null;
++  } catch {
++    return null;
++  }
++};
+ var getAllWindows = () => [...BaseWindow.getAllWindows(), ...BrowserWindow.getAllWindows()];
+ 
+ // src/browser/popup.ts
+@@ -565,6 +692,8 @@ var BrowserActionAPI = class {
+     if (!tab) {
+       throw new Error(`Unable to get active tab`);
+     }
++    // pistachio: the click grants `activeTab` on this tab, popup or not — kept until it goes to another origin or closes
++    pistachioGrantActiveTab((this.ctx.session.extensions || this.ctx.session).getExtension(extensionId), this.ctx.store.tabDetailsCache.get(tab.id) || { id: tab.id, url: tab.getURL() });
+     const popupUrl = this.getPopupUrl(extensionId, tab.id);
+     if (popupUrl) {
+       const win = this.ctx.store.tabToWindow.get(tab);
+@@ -584,7 +713,9 @@ var BrowserActionAPI = class {
+     } else {
+       d2(`dispatching onClicked for ${extensionId}`);
+       const tabDetails = this.ctx.store.tabDetailsCache.get(tab.id);
+-      this.ctx.router.sendEvent(extensionId, "browserAction.onClicked", tabDetails);
++      // pistachio: the clicked tab as this extension may see it (a click is a gesture: `activeTab` counts)
++      const clickedBy = (this.ctx.session.extensions || this.ctx.session).getExtension(extensionId);
++      this.ctx.router.sendEvent(extensionId, "browserAction.onClicked", pistachioScrubTab(clickedBy, tabDetails, true));
+     }
+   }
+   activateContextMenu(details) {
+@@ -731,14 +862,15 @@ var _WindowsAPI = class _WindowsAPI {
+   get(event, windowId) {
+     const win = this.getWindowFromId(windowId);
+     if (!win) return { id: _WindowsAPI.WINDOW_ID_NONE };
+-    return this.getWindowDetails(win);
++    // pistachio: a window's tabs as this extension may see them (pistachioScrubTab)
++    return pistachioScrubWindow(event.extension, this.getWindowDetails(win));
+   }
+   getLastFocused(event) {
+     const win = this.ctx.store.getLastFocusedWindow();
+-    return win ? this.getWindowDetails(win) : null;
++    return win ? pistachioScrubWindow(event.extension, this.getWindowDetails(win)) : null;
+   }
+   getAll(event) {
+-    return Array.from(this.ctx.store.windows).map(this.getWindowDetails.bind(this));
++    return Array.from(this.ctx.store.windows).map((win) => pistachioScrubWindow(event.extension, this.getWindowDetails(win)));
+   }
+   async create(event, details) {
+     if (details.url) {
+@@ -747,7 +879,7 @@ var _WindowsAPI = class _WindowsAPI {
+       details = { ...details, url: Array.isArray(details.url) ? resolved : resolved[0] };
+     }
+     const win = await this.ctx.store.createWindow(event, details);
+-    return this.getWindowDetails(win);
++    return pistachioScrubWindow(event.extension, this.getWindowDetails(win));
+   }
+   async update(event, windowId, updateProperties = {}) {
+     const win = this.getWindowFromId(windowId);
+@@ -769,7 +901,7 @@ var _WindowsAPI = class _WindowsAPI {
+         }
+       }
+     }
+-    return this.createWindowDetails(win);
++    return pistachioScrubWindow(event.extension, this.createWindowDetails(win));
+   }
+   async remove(event, windowId = _WindowsAPI.WINDOW_ID_CURRENT) {
+     const win = this.getWindowFromId(windowId);
+@@ -782,7 +914,7 @@ var _WindowsAPI = class _WindowsAPI {
+     const window = this.ctx.store.getWindowById(windowId);
+     if (!window) return;
+     const windowDetails = this.getWindowDetails(window);
+-    this.ctx.router.broadcastEvent("windows.onCreated", windowDetails);
++    this.ctx.router.pistachioBroadcastEvent("windows.onCreated", (extension) => [pistachioScrubWindow(extension, windowDetails)]);
+   }
+   onRemoved(windowId) {
+     this.ctx.router.broadcastEvent("windows.onRemoved", windowId);
+@@ -796,7 +928,7 @@ var _WindowsAPI = class _WindowsAPI {
+     const window = this.ctx.store.getWindowById(windowId);
+     if (!window) return;
+     const windowDetails = this.createWindowDetails(window);
+-    this.ctx.router.broadcastEvent("windows.onBoundsChanged", windowDetails);
++    this.ctx.router.pistachioBroadcastEvent("windows.onBoundsChanged", (extension) => [pistachioScrubWindow(extension, windowDetails)]);
+   }
+ };
+ _WindowsAPI.WINDOW_ID_NONE = -1;
+@@ -815,6 +947,10 @@ var _TabsAPI = class _TabsAPI {
+     handle("tabs.getCurrent", this.getCurrent.bind(this));
+     handle("tabs.create", this.create.bind(this));
+     handle("tabs.insertCSS", this.insertCSS.bind(this));
++    // pistachio (hunk 23): MV3 scripting, through this process (the methods below)
++    handle("pistachio.scripting.executeScript", this.pistachioExecuteScript.bind(this));
++    handle("pistachio.scripting.insertCSS", this.pistachioInsertCSS.bind(this));
++    handle("pistachio.scripting.removeCSS", this.pistachioRemoveCSS.bind(this));
+     handle("tabs.query", this.query.bind(this));
+     handle("tabs.reload", this.reload.bind(this));
+     handle("tabs.update", this.update.bind(this));
+@@ -822,8 +958,21 @@ var _TabsAPI = class _TabsAPI {
+     handle("tabs.goForward", this.goForward.bind(this));
+     handle("tabs.goBack", this.goBack.bind(this));
+     this.ctx.store.on("tab-added", this.observeTab.bind(this));
++    // pistachio: a tab the host removed (one of Pistachio's own pages now) is removed to extensions too — its closing
++    // reaches here the same way, through the store, once (hunk 22)
++    this.ctx.store.on("tab-removed", (tabId) => this.onRemoved(tabId));
+   }
+   observeTab(tab) {
++    const tabId = tab.id;
++    // pistachio: told of again (back on the web after one of Pistachio's own pages), a tab is observed once (hunk 22)
++    if (!(this.pistachioObserved ||= new WeakSet()).has(tab)) {
++      this.pistachioObserved.add(tab);
++      this.pistachioObserveTab(tab);
++    }
++    this.onCreated(tabId);
++    this.onActivated(tabId);
++  }
++  pistachioObserveTab(tab) {
+     const tabId = tab.id;
+     const updateEvents = [
+       "page-title-updated",
+@@ -866,10 +1015,7 @@ var _TabsAPI = class _TabsAPI {
+       });
+       tab.off("page-favicon-updated", faviconHandler);
+       this.ctx.store.removeTab(tab);
+-      this.onRemoved(tabId);
+     });
+-    this.onCreated(tabId);
+-    this.onActivated(tabId);
+     d4(`Observing tab[${tabId}][${tab.getType()}] ${tab.getURL()}`);
+   }
+   createTabDetails(tab) {
+@@ -919,7 +1065,8 @@ var _TabsAPI = class _TabsAPI {
+   get(event, tabId) {
+     const tab = this.ctx.store.getTabById(tabId);
+     if (!tab) return { id: _TabsAPI.TAB_ID_NONE };
+-    return this.getTabDetails(tab);
++    // pistachio: as this extension may see it (pistachioScrubTab), here and in every tabs answer below
++    return pistachioScrubTab(event.extension, this.getTabDetails(tab));
+   }
+   getAllInWindow(event, windowId = _TabsAPI.WINDOW_ID_CURRENT) {
+     if (windowId === _TabsAPI.WINDOW_ID_CURRENT) windowId = this.ctx.store.lastFocusedWindowId;
+@@ -929,11 +1076,11 @@ var _TabsAPI = class _TabsAPI {
+       if (!browserWindow || browserWindow.isDestroyed()) return;
+       return browserWindow.id === windowId;
+     });
+-    return tabs.map(this.getTabDetails.bind(this));
++    return tabs.map((tab) => pistachioScrubTab(event.extension, this.getTabDetails(tab)));
+   }
+   getCurrent(event) {
+     const tab = this.ctx.store.getActiveTabOfCurrentWindow();
+-    return tab ? this.getTabDetails(tab) : void 0;
++    return tab ? pistachioScrubTab(event.extension, this.getTabDetails(tab)) : void 0;
+   }
+   async create(event, details = {}) {
+     const url = details.url ? validateExtensionUrl(details.url, event.extension) : void 0;
+@@ -942,11 +1089,116 @@ var _TabsAPI = class _TabsAPI {
+     if (details.active) {
+       queueMicrotask(() => this.onActivated(tab.id));
+     }
+-    return tabDetails;
++    return pistachioScrubTab(event.extension, tabDetails);
++  }
++  // pistachio (hunk 23): chrome.scripting for MV3 here rather than in Electron's own, which knows nothing of the
++  // activeTab grant (hunk 21) and refused a click-to-act extension the page it was clicked on. `scripting` must be
++  // declared; each frame reached needs a host permission for its own address, or the tab's grant when the frame is
++  // the page's own origin (a grant is the page's, never a cross-origin frame's).
++  pistachioScriptingTab(event, tabId) {
++    if (!pistachioHasPermission(event.extension, "scripting")) throw new Error('The extension manifest must request the "scripting" permission.');
++    const tab = this.ctx.store.getTabById(tabId);
++    if (!tab) throw new Error(`No tab with id: ${tabId}.`);
++    return tab;
++  }
++  pistachioScriptingMay(event, tab, frame) {
++    const origin = (url) => { try { return new URL(url).origin; } catch { return null; } };
++    if (pistachioHasHostPermission(event.extension, frame.url)) return true;
++    return pistachioActiveTabGranted(event.extension, tab.id) && origin(frame.url) !== null && origin(frame.url) === origin(tab.getURL());
++  }
++  // The frames a target names: `frameIds` (0 the top, else frameTreeNodeId) each checked and refused when not the
++  // extension's; `allFrames` every frame it may reach, the others left out as Chrome leaves them; else the top.
++  pistachioScriptingFrames(event, tab, target) {
++    if (Array.isArray(target.documentIds) && target.documentIds.length > 0) throw new Error("documentIds are not supported in Pistachio.");
++    const all = tab.mainFrame.framesInSubtree;
++    const refuse = () => { throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host."); };
++    if (Array.isArray(target.frameIds) && target.frameIds.length > 0) {
++      return target.frameIds.map((id) => {
++        const frame = all.find((candidate) => getFrameId(candidate) === id);
++        if (!frame) throw new Error(`No frame with id ${id} in tab with id ${tab.id}.`);
++        if (!this.pistachioScriptingMay(event, tab, frame)) refuse();
++        return frame;
++      });
++    }
++    if (target.allFrames) return all.filter((frame) => this.pistachioScriptingMay(event, tab, frame));
++    if (!this.pistachioScriptingMay(event, tab, tab.mainFrame)) refuse();
++    return [tab.mainFrame];
++  }
++  async pistachioScriptingSources(extension, inline, files) {
++    if (typeof inline === "string") return [inline];
++    const sources = [];
++    for (const file of Array.isArray(files) ? files : []) {
++      // (By real path: a link in the folder pointing out of it would read any file on the Mac otherwise.)
++      const root = await fs.realpath(extension.path);
++      let real;
++      try {
++        real = await fs.realpath(path3.resolve(extension.path, String(file)));
++      } catch {
++        throw new Error(`Could not load file: '${String(file)}'.`);
++      }
++      if (real !== root && !real.startsWith(root + path3.sep)) throw new Error(`Could not load file: '${String(file)}'.`);
++      sources.push(await fs.readFile(real, "utf8"));
++    }
++    return sources;
++  }
++  async pistachioExecuteScript(event, tabId, details) {
++    const tab = this.pistachioScriptingTab(event, tabId);
++    // The files first, then the frames: a tab that went elsewhere while they were read is judged as it stands now,
++    // and once more before each script, since a frame keeps its object across a change of origin.
++    const sources = await this.pistachioScriptingSources(event.extension, details.code, details.files);
++    const frames = this.pistachioScriptingFrames(event, tab, details.target || {});
++    const results = [];
++    for (const frame of frames) {
++      let result;
++      for (const code of sources) {
++        if (frame.isDestroyed?.() || !this.pistachioScriptingMay(event, tab, frame)) throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
++        // The top frame in an isolated world of its own (Electron gives a WebContents one; a frame has none, so a
++        // subframe runs in its page's own world — measured on 43.4.1); `world: "MAIN"` the page's by request.
++        if (details.world !== "MAIN" && frame === tab.mainFrame) result = await tab.executeJavaScriptInIsolatedWorld(pistachioScriptingWorld(event.extension.id), [{ code }], true);
++        else result = await frame.executeJavaScript(code, true);
++      }
++      results.push({ frameId: getFrameId(frame), result: result === void 0 ? null : result });
++    }
++    return results;
++  }
++  // CSS reaches the top frame alone (Electron inserts CSS by WebContents, not by frame): a target naming another
++  // frame is refused rather than styled elsewhere; `allFrames` styles the top.
++  pistachioScriptingCssTarget(event, tab, target) {
++    if (Array.isArray(target.documentIds) && target.documentIds.length > 0) throw new Error("documentIds are not supported in Pistachio.");
++    if (Array.isArray(target.frameIds) && target.frameIds.some((id) => id !== 0)) throw new Error("CSS reaches the top frame only in Pistachio.");
++    if (!this.pistachioScriptingMay(event, tab, tab.mainFrame)) throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
++  }
++  async pistachioInsertCSS(event, tabId, details) {
++    const tab = this.pistachioScriptingTab(event, tabId);
++    const sources = await this.pistachioScriptingSources(event.extension, details.css, details.files);
++    const keys = this.pistachioCssKeys || (this.pistachioCssKeys = new Map());
++    for (const css of sources) {
++      // (Judged as the tab stands before each insert, the files read already.)
++      this.pistachioScriptingCssTarget(event, tab, details.target || {});
++      keys.set(`${tab.id}\n${event.extension.id}\n${css}`, await tab.insertCSS(css));
++    }
++  }
++  async pistachioRemoveCSS(event, tabId, details) {
++    const tab = this.pistachioScriptingTab(event, tabId);
++    const sources = await this.pistachioScriptingSources(event.extension, details.css, details.files);
++    const keys = this.pistachioCssKeys || new Map();
++    for (const css of sources) {
++      this.pistachioScriptingCssTarget(event, tab, details.target || {});
++      const id = `${tab.id}\n${event.extension.id}\n${css}`;
++      const key = keys.get(id);
++      if (!key) continue;
++      keys.delete(id);
++      await tab.removeInsertedCSS(key).catch(() => void 0);
++    }
+   }
+   insertCSS(event, tabId, details) {
+     const tab = this.ctx.store.getTabById(tabId);
+     if (!tab) return;
++    // pistachio: CSS goes only into a page the extension holds a host permission for, or was clicked on with
++    // activeTab (its grant, hunk 21) — attribute-selector CSS reads what is typed; an overlay redresses the page
++    if (!pistachioHasHostPermission(event.extension, tab.getURL()) && !pistachioActiveTabGranted(event.extension, tab.id)) {
++      throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
++    }
+     if (details.code) {
+       tab.insertCSS(details.code);
+     }
+@@ -955,6 +1207,8 @@ var _TabsAPI = class _TabsAPI {
+     const isSet = (value) => typeof value !== "undefined";
+     const filteredTabs = Array.from(this.ctx.store.tabs).map(this.getTabDetails.bind(this)).filter((tab) => {
+       if (!tab) return false;
++      // pistachio: a url or title filter only ever matches a tab whose address the extension may see (Chrome's rule)
++      if ((isSet(info.url) || isSet(info.title)) && !pistachioCanSeeTab(event.extension, tab.url, false, tab.id)) return false;
+       if (isSet(info.active) && info.active !== tab.active) return false;
+       if (isSet(info.pinned) && info.pinned !== tab.pinned) return false;
+       if (isSet(info.audible) && info.audible !== tab.audible) return false;
+@@ -990,7 +1244,7 @@ var _TabsAPI = class _TabsAPI {
+       }
+       return tab;
+     });
+-    return filteredTabs;
++    return filteredTabs.map((tab) => pistachioScrubTab(event.extension, tab));
+   }
+   reload(event, arg1, arg2) {
+     const tabId = typeof arg1 === "number" ? arg1 : void 0;
+@@ -1011,11 +1265,16 @@ var _TabsAPI = class _TabsAPI {
+     tabId = tab.id;
+     const props = updateProperties;
+     const url = props.url ? validateExtensionUrl(props.url, event.extension) : void 0;
+-    if (url) await tab.loadURL(url);
++    // pistachio: through the app's own navigation and its guards (impl.navigateTab), never a bare loadURL from main,
++    // which no will-navigate handler sees
++    if (url) {
++      if (typeof this.ctx.store.impl.navigateTab === "function") await this.ctx.store.impl.navigateTab(tab, url);
++      else await tab.loadURL(url);
++    }
+     if (typeof props.muted === "boolean") tab.setAudioMuted(props.muted);
+     if (props.active) this.onActivated(tabId);
+     this.onUpdated(tabId);
+-    return this.createTabDetails(tab);
++    return pistachioScrubTab(event.extension, this.createTabDetails(tab));
+   }
+   remove(event, id) {
+     const ids = Array.isArray(id) ? id : [id];
+@@ -1041,7 +1300,7 @@ var _TabsAPI = class _TabsAPI {
+     const tab = this.ctx.store.getTabById(tabId);
+     if (!tab) return;
+     const tabDetails = this.getTabDetails(tab);
+-    this.ctx.router.broadcastEvent("tabs.onCreated", tabDetails);
++    this.ctx.router.pistachioBroadcastEvent("tabs.onCreated", (extension) => [pistachioScrubTab(extension, tabDetails)]);
+   }
+   onUpdated(tabId) {
+     const tab = this.ctx.store.getTabById(tabId);
+@@ -1078,9 +1337,18 @@ var _TabsAPI = class _TabsAPI {
+       didUpdate = true;
+     }
+     if (!didUpdate) return;
+-    this.ctx.router.broadcastEvent("tabs.onUpdated", tab.id, changeInfo, details);
++    // pistachio: at another origin, the tab is no longer the one `activeTab` was granted on
++    if (changeInfo.url !== void 0) pistachioTabNavigated(tab.id, details.url);
++    // pistachio: an extension that may not see the address hears only the changes that are not the address,
++    // title or icon, and nothing when those were all that changed
++    this.ctx.router.pistachioBroadcastEvent("tabs.onUpdated", (extension) => {
++      if (pistachioCanSeeTab(extension, details.url, false, tab.id)) return [tab.id, changeInfo, details];
++      const { url, pendingUrl, title, favIconUrl, ...visibleChange } = changeInfo;
++      return Object.keys(visibleChange).length > 0 ? [tab.id, visibleChange, pistachioScrubTab(extension, details)] : null;
++    });
+   }
+   onRemoved(tabId) {
++    pistachioTabRemoved(tabId);
+     const details = this.ctx.store.tabDetailsCache.has(tabId) ? this.ctx.store.tabDetailsCache.get(tabId) : null;
+     this.ctx.store.tabDetailsCache.delete(tabId);
+     const windowId = details ? details.windowId : WindowsAPI.WINDOW_ID_NONE;
+@@ -1142,8 +1410,12 @@ var WebNavigationAPI = class {
+   constructor(ctx) {
+     this.ctx = ctx;
+     this.sendNavigationEvent = (eventName, details) => {
++      // pistachio: a tab that is no tab to extensions — removed by the host for one of Pistachio's own pages, its
++      // observers still attached — has no navigation to tell of (hunk 22)
++      if (!this.ctx.store.getTabById(details.tabId)) return;
+       d5(`${eventName} [url: ${details.url}]`);
+-      this.ctx.router.broadcastEvent(`webNavigation.${eventName}`, details);
++      // pistachio: navigation events reach only the extensions that declared `webNavigation` (Chrome's rule)
++      this.ctx.router.pistachioBroadcastEvent(`webNavigation.${eventName}`, (extension) => pistachioHasPermission(extension, "webNavigation") ? [details] : null);
+     };
+     this.onCreatedNavigationTarget = (tab, { url, frame }) => {
+       if (!frame) return;
+@@ -1250,11 +1522,15 @@ var WebNavigationAPI = class {
+       this.sendNavigationEvent("onCompleted", details);
+     };
+     const handle = this.ctx.router.apiHandler();
+-    handle("webNavigation.getFrame", this.getFrame.bind(this));
+-    handle("webNavigation.getAllFrames", this.getAllFrames.bind(this));
++    // pistachio: only with the `webNavigation` permission (the router checks `permission`)
++    handle("webNavigation.getFrame", this.getFrame.bind(this), { permission: "webNavigation" });
++    handle("webNavigation.getAllFrames", this.getAllFrames.bind(this), { permission: "webNavigation" });
+     this.ctx.store.on("tab-added", this.observeTab.bind(this));
+   }
+   observeTab(tab) {
++    // pistachio: told of again, a tab is observed once (hunk 22)
++    if ((this.pistachioObserved ||= new WeakSet()).has(tab)) return;
++    this.pistachioObserved.add(tab);
+     tab.once("will-navigate", this.onCreatedNavigationTarget.bind(this, tab));
+     tab.on("did-start-navigation", this.onBeforeNavigate.bind(this, tab));
+     tab.on("did-frame-finish-load", this.onFinishLoad.bind(this, tab));
+@@ -1686,7 +1962,11 @@ var ContextMenusAPI = class {
+       // TODO
+       srcUrl: params?.srcURL
+     };
+-    this.ctx.router.sendEvent(extensionId, "contextMenus.onClicked", data, tab);
++    // pistachio: the tab as this extension may see it (choosing its item is a gesture: `activeTab` counts)
++    const clickedBy = (this.ctx.session.extensions || this.ctx.session).getExtension(extensionId);
++    // pistachio: choosing its item grants `activeTab` on the tab, as the action's click does
++    pistachioGrantActiveTab(clickedBy, tab);
++    this.ctx.router.sendEvent(extensionId, "contextMenus.onClicked", data, pistachioScrubTab(clickedBy, tab, true));
+   }
+ };
+ 
+@@ -1983,20 +2263,25 @@ var CookiesAPI = class {
+         cookie: createCookieDetails(cookie),
+         removed
+       };
+-      this.ctx.router.broadcastEvent("cookies.onChanged", changeInfo);
++      // pistachio: a change reaches only the extensions holding `cookies` and a host permission for the cookie
++      this.ctx.router.pistachioBroadcastEvent("cookies.onChanged", (extension) => pistachioHasPermission(extension, "cookies") && pistachioHasHostPermission(extension, pistachioCookieUrl(cookie)) ? [changeInfo] : null);
+     };
+     const handle = this.ctx.router.apiHandler();
+-    handle("cookies.get", this.get.bind(this));
+-    handle("cookies.getAll", this.getAll.bind(this));
+-    handle("cookies.set", this.set.bind(this));
+-    handle("cookies.remove", this.remove.bind(this));
+-    handle("cookies.getAllCookieStores", this.getAllCookieStores.bind(this));
++    // pistachio: every call needs the `cookies` permission (the router checks `permission`); get, getAll, set and
++    // remove a host permission as well (below), as Chrome does
++    const needsCookies = { permission: "cookies" };
++    handle("cookies.get", this.get.bind(this), needsCookies);
++    handle("cookies.getAll", this.getAll.bind(this), needsCookies);
++    handle("cookies.set", this.set.bind(this), needsCookies);
++    handle("cookies.remove", this.remove.bind(this), needsCookies);
++    handle("cookies.getAllCookieStores", this.getAllCookieStores.bind(this), needsCookies);
+     this.cookies.addListener("changed", this.onChanged);
+   }
+   get cookies() {
+     return this.ctx.session.cookies;
+   }
+   async get(event, details) {
++    pistachioRequireCookieHost(event.extension, details && details.url);
+     const cookies = await this.cookies.get({
+       url: details.url,
+       name: details.name
+@@ -2004,6 +2289,7 @@ var CookiesAPI = class {
+     return cookies.length > 0 ? createCookieDetails(cookies[0]) : null;
+   }
+   async getAll(event, details) {
++    if (details && typeof details.url !== "undefined") pistachioRequireCookieHost(event.extension, details.url);
+     const cookies = await this.cookies.get({
+       url: details.url,
+       name: details.name,
+@@ -2012,14 +2298,17 @@ var CookiesAPI = class {
+       secure: details.secure,
+       session: details.session
+     });
+-    return cookies.map(createCookieDetails);
++    // pistachio: only the cookies of hosts the extension holds a permission for
++    return cookies.filter((cookie) => pistachioHasHostPermission(event.extension, pistachioCookieUrl(cookie))).map(createCookieDetails);
+   }
+   async set(event, details) {
++    pistachioRequireCookieHost(event.extension, details && details.url);
+     await this.cookies.set(details);
+     const cookies = await this.cookies.get(details);
+     return cookies.length > 0 ? createCookieDetails(cookies[0]) : null;
+   }
+   async remove(event, details) {
++    pistachioRequireCookieHost(event.extension, details && details.url);
+     try {
+       await this.cookies.remove(details.url, details.name);
+     } catch {
+@@ -2235,8 +2524,20 @@ var RoutingDelegate = class _RoutingDelegate {
+     this.workers = /* @__PURE__ */ new WeakSet();
+     this.onRouterMessage = async (event, extensionId, handlerName, ...args) => {
+       d8(`received '${handlerName}'`, args);
++      // pistachio: the extension is the sender's — its frame's origin or its service worker's scope — never the id
++      // the renderer names: a message naming another extension, or sent by a page that is no extension's, is refused
++      const senderExtensionId = pistachioSenderExtensionId(event);
++      if (!senderExtensionId || senderExtensionId !== extensionId) {
++        throw new Error(`${String(handlerName).slice(0, 64)} refused: not sent by extension '${String(extensionId).slice(0, 64)}'`);
++      }
+       const observer = this.sessionMap.get(getSessionFromEvent(event));
+-      return observer?.onExtensionMessage(event, extensionId, handlerName, ...args);
++      // pistachio: the handlers that need no extension (browserAction.getState/activate/addObserver/removeObserver)
++      // served the remote channel, which is gone; from an extension they would read other extensions' actions or
++      // open their popups. Main calls them in-process.
++      if (observer?.handlers.get(handlerName)?.extensionContext === false) {
++        throw new Error(`${String(handlerName).slice(0, 64)} refused: not an extension's to call`);
++      }
++      return observer?.onExtensionMessage(event, senderExtensionId, handlerName, ...args);
+     };
+     this.onRemoteMessage = async (event, sessionPartition, handlerName, ...args) => {
+       d8(`received remote '${handlerName}' for '${sessionPartition}'`, args);
+@@ -2245,6 +2546,20 @@ var RoutingDelegate = class _RoutingDelegate {
+       return observer?.onExtensionMessage(event, void 0, handlerName, ...args);
+     };
+     this.onAddListener = (event, extensionId, eventName) => {
++      // pistachio: as crx-msg — the sender's extension or nothing. Dropped rather than thrown, and the library's own
++      // throw (an unloaded extension) caught: an exception in an ipcMain.on listener is an uncaught one in main.
++      const senderExtensionId = pistachioSenderExtensionId(event);
++      if (!senderExtensionId || senderExtensionId !== extensionId) {
++        d8("refused crx-add-listener for '%s'", String(eventName).slice(0, 64));
++        return;
++      }
++      try {
++        return this.pistachioAddListener(event, extensionId, eventName);
++      } catch (error) {
++        d8("crx-add-listener failed: %s", error);
++      }
++    };
++    this.pistachioAddListener = (event, extensionId, eventName) => {
+       const observer = this.sessionMap.get(getSessionFromEvent(event));
+       const listener = event.type === "frame" ? {
+         type: event.type,
+@@ -2257,6 +2572,12 @@ var RoutingDelegate = class _RoutingDelegate {
+       return observer?.addListener(listener, extensionId, eventName);
+     };
+     this.onRemoveListener = (event, extensionId, eventName) => {
++      // pistachio: as crx-add-listener
++      const senderExtensionId = pistachioSenderExtensionId(event);
++      if (!senderExtensionId || senderExtensionId !== extensionId) {
++        d8("refused crx-remove-listener for '%s'", String(eventName).slice(0, 64));
++        return;
++      }
+       const observer = this.sessionMap.get(getSessionFromEvent(event));
+       const listener = event.type === "frame" ? {
+         type: event.type,
+@@ -2269,7 +2590,10 @@ var RoutingDelegate = class _RoutingDelegate {
+       return observer?.removeListener(listener, extensionId, eventName);
+     };
+     ipcMain.handle("crx-msg", this.onRouterMessage);
+-    ipcMain.handle("crx-msg-remote", this.onRemoteMessage);
++    // pistachio: no remote channel. It names no extension and lets any renderer name any partition (one it names is
++    // even created: resolvePartition) to reach browserAction.getState/activate. Pistachio's main calls the action API
++    // in-process (main/extensions/chrome/compat.ts); <browser-action-list> is not used.
++    // ipcMain.handle("crx-msg-remote", this.onRemoteMessage);
+     ipcMain.on("crx-add-listener", this.onAddListener);
+     ipcMain.on("crx-remove-listener", this.onRemoveListener);
+   }
+@@ -2290,7 +2614,8 @@ var RoutingDelegate = class _RoutingDelegate {
+         d8(`listening to service worker [versionId:${versionId}, scope:${serviceWorker.scope}]`);
+         this.workers.add(serviceWorker);
+         serviceWorker.ipc.handle("crx-msg", this.onRouterMessage);
+-        serviceWorker.ipc.handle("crx-msg-remote", this.onRemoteMessage);
++        // pistachio: no remote channel (see the ipcMain registration above)
++        // serviceWorker.ipc.handle("crx-msg-remote", this.onRemoteMessage);
+         serviceWorker.ipc.on("crx-add-listener", this.onAddListener);
+         serviceWorker.ipc.on("crx-remove-listener", this.onRemoveListener);
+       }
+@@ -2494,6 +2819,20 @@ var ExtensionRouter = class {
+     }
+     d8(`sent '${eventName}' event to ${sentCount} listeners`);
+   }
++  /**
++   * pistachio: a broadcast whose arguments are made per listening extension (null: not sent to it), for the events
++   * that carry what not every extension may see — tab addresses, windows' tabs, cookies, navigations.
++   */
++  pistachioBroadcastEvent(eventName, argsFor) {
++    const eventListeners = this.listeners.get(eventName);
++    if (!eventListeners || eventListeners.length === 0) return;
++    const sessionExtensions = this.session.extensions || this.session;
++    for (const extensionId of new Set(eventListeners.map((listener) => listener.extensionId))) {
++      const extension = sessionExtensions.getExtension(extensionId);
++      const args = extension ? argsFor(extension) : null;
++      if (args) this.sendEvent(extensionId, eventName, ...args);
++    }
++  }
+   /** Broadcasts extension event to all extension hosts listening for it. */
+   broadcastEvent(eventName, ...args) {
+     this.sendEvent(void 0, eventName, ...args);
+diff --git a/dist/types/browser/impl.d.ts b/dist/types/browser/impl.d.ts
+index 28dcab4817e9a14057da54b4e37bd48878aa678c..fda871b974770028cfb70c96b9ee8be9e95baaf3 100644
+--- a/dist/types/browser/impl.d.ts
++++ b/dist/types/browser/impl.d.ts
+@@ -9,6 +9,11 @@ export interface ChromeExtensionImpl {
+      * background pages and content scripts.
+      */
+     assignTabDetails?(details: chrome.tabs.Tab, tab: Electron.WebContents): void;
++    /**
++     * pistachio: navigates a tab for `chrome.tabs.update({ url })` through the app's own guards. Without it the
++     * library falls back to `tab.loadURL(url)`, which no will-navigate handler sees.
++     */
++    navigateTab?(tab: Electron.WebContents, url: string): Promise<void>;
+     createWindow?(details: chrome.windows.CreateData): Promise<Electron.BaseWindow>;
+     removeWindow?(window: Electron.BaseWindow): void;
+     requestPermissions?(extension: Electron.Extension, permissions: chrome.permissions.Permissions): Promise<boolean>;
+diff --git a/dist/types/browser/router.d.ts b/dist/types/browser/router.d.ts
+index 926777f4f88f5e9ea3acd31d9b377b327923f2c2..8dea3cb051471b491c86b1b6f332cc20c71e1fb0 100644
+--- a/dist/types/browser/router.d.ts
++++ b/dist/types/browser/router.d.ts
+@@ -84,6 +84,8 @@ export declare class ExtensionRouter {
+      * registered a listener for it.
+      */
+     sendEvent(targetExtensionId: string | undefined, eventName: string, ...args: any[]): void;
++    /** pistachio: a broadcast whose arguments are made per listening extension (null: not sent to it). */
++    pistachioBroadcastEvent(eventName: string, argsFor: (extension: Electron.Extension) => any[] | null): void;
+     /** Broadcasts extension event to all extension hosts listening for it. */
+     broadcastEvent(eventName: string, ...args: any[]): void;
+ }

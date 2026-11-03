@@ -18,6 +18,21 @@ extraResources:
     to: icons
     filter:
       - "icon*.png"
+  # The app's own extensions (docs/extensions.md X8): Resources/extensions/<id>/, signed and updated with the app.
+  - from: out/extensions
+    to: extensions
+    filter:
+      - "**/*"
+  # What Developer mode writes into ~/Pistachio/Extensions (main/extensions/watch.ts): the guide, the skill, the
+  # types, the schema, the templates.
+  - from: ../../packages/extension-api
+    to: extension-api
+    filter:
+      - "AGENTS.md"
+      - "pistachio.d.ts"
+      - "skill/**"
+      - "schema/**"
+      - "templates/**"
 asar: true
 # node-pty (the terminals' shells, docs/terminal.md): its native module loads
 # from a real file, and its spawn-helper is executed — neither can be inside

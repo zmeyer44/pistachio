@@ -30,6 +30,7 @@ import {
   LockKeyhole,
   Palette,
   Plug,
+  Puzzle,
   RefreshCw,
   ScrollText,
   Settings,
@@ -104,6 +105,7 @@ export const SETTINGS_NAV: NavSection[] = [
       { key: "appearance", icon: Palette, section: "appearance", note: "Themes, gradients, material" },
       { key: "tabs", icon: Layers, section: "tabs", note: "Tidy, archive, tab switcher" },
       { key: "shortcuts", icon: Keyboard, section: "shortcuts", label: "Shortcuts", note: "Key combinations for commands" },
+      { key: "extensions", icon: Puzzle, section: "extensions", note: "Chrome's, Pistachio's and your own" },
       {
         key: "privacy",
         icon: ShieldCheck,

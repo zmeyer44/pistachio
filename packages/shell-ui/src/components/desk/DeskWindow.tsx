@@ -22,6 +22,7 @@ import { notesUrlId } from "@pistachio/shell-contracts/notes";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
 import type { ShellPage } from "@pistachio/shell-contracts/shell-pages";
 import { terminalUrlId } from "@pistachio/shell-contracts/terminal";
+import { isExtensionsPageUrl } from "@pistachio/shell-contracts/extensions";
 import { nativeApi } from "../../api";
 import { useAppStore } from "../../store";
 import { cn } from "../../lib/cn";
@@ -48,6 +49,8 @@ import { shellWindowParts, type DeskFileSubject, type ShellWindowSubject } from 
 const NotesPage = lazy(() => import("../notes/NotesPage").then((m) => ({ default: m.NotesPage })));
 // xterm.js and its addons come with the first terminal opened (docs/terminal.md §2).
 const TerminalPage = lazy(() => import("../terminal/TerminalPage").then((m) => ({ default: m.TerminalPage })));
+// The extensions page comes with the first time it is opened (docs/extensions.md §2).
+const ExtensionsPage = lazy(() => import("../extensions/ExtensionsPage").then((m) => ({ default: m.ExtensionsPage })));
 
 /** A frame button's tooltip opens after this long, as the Bar's do. */
 const TIP_DELAY_MS = 350;
@@ -696,6 +699,7 @@ export function pageKind(url: string): ShellPage | null {
   if (briefUrlDate(url.trim()) !== undefined) return "brief";
   if (notesUrlId(url.trim()) !== undefined) return "notes";
   if (terminalUrlId(url) !== null) return "terminal";
+  if (isExtensionsPageUrl(url)) return "extensions";
   return null;
 }
 
@@ -790,6 +794,12 @@ function ShellPageView({ tab, kind, active, frozen }: { tab: BrowserTabInfo; kin
     );
   }
   if (kind === "brief") return <BriefPage tabId={tab.id} date={briefUrlDate(tab.url.trim()) ?? null} active={active} />;
+  if (kind === "extensions")
+    return (
+      <Suspense fallback={null}>
+        <ExtensionsPage tabId={tab.id} active={active} />
+      </Suspense>
+    );
   return (
     <Suspense fallback={null}>
       <NotesPage tabId={tab.id} noteId={notesUrlId(tab.url.trim()) ?? null} active={active} />

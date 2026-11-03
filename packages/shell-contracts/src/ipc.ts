@@ -87,6 +87,7 @@ import type {
 } from "./browser-controls.js";
 import type { SidebarCommand, SidebarState } from "./sidebar.js";
 import type { UpdateSnooze, UpdateState } from "./updates.js";
+import type { ExtensionRequest, ExtensionResponse, ExtensionsSnapshot } from "./extensions.js";
 import type {
   ForkSpaceRequest,
   ForkSpaceResult,
@@ -144,6 +145,17 @@ export interface BrowserTabInfo {
    * this. Absent on every other tab. Always `unlisted` while set.
    */
   hiddenFor?: string;
+  /**
+   * A Pistachio extension's page (docs/extensions.md §4, "Pages are tabs"):
+   * the extension whose `pistachio-ext://<id>/…` page this tab shows, in that
+   * extension's own partition with its preload — never a Profile's. A desk
+   * window like any page's (stills, minimize, ⤢, session restore on this
+   * Mac), but no Profile's page: Shields, Watchtower, Tidy, the agent's page
+   * tools, the live share, closed-tab memory, moving to another Profile and
+   * the synced restore point all leave it out (main's isExtensionTab).
+   * Absent on every other tab. `kind` stays "human".
+   */
+  extensionId?: string;
   /**
    * The sidebar shelf entry this tab is the live page of — a pin's or a
    * favorite's id, or `preset:<url>` for an organization link — or null for
@@ -853,6 +865,12 @@ export interface AgentTurnOptions {
  */
 export interface ShellCreateTabOptions {
   group?: "current" | "loose";
+  /**
+   * A `file:` address loads as itself (BrowserController.createTab's `file`): a link to a local file the person
+   * clicked in a note or a document of their own. Any other `file:` opens the home page — a tab is sent to a file
+   * only by the person.
+   */
+  file?: boolean;
 }
 
 /** Whether a value is a ShellCreateTabOptions' `group` (the IPC boundary's check: a renderer sends it, main believes nothing else). */
@@ -1210,6 +1228,12 @@ export interface ShellApi {
    * only on `get`/`update`; the subscription is metadata (docs/notes.md §4).
    */
   notes(request: NoteRequest): Promise<NoteResponse>;
+  /**
+   * Extensions (./extensions.ts, docs/extensions.md): one request union and one
+   * snapshot, as notes. A host without extensions refuses the member with one reason.
+   */
+  extensions(request: ExtensionRequest): Promise<ExtensionResponse>;
+  onExtensions(listener: (snapshot: ExtensionsSnapshot) => void): () => void;
   onNotes(listener: (snapshot: NoteSnapshot) => void): () => void;
   /**
    * Rename a tab from the page drawn inside it: a note's title is known to
@@ -1405,6 +1429,8 @@ export interface NativeSurfaceApi {
    * renderer has painted that frame and hides it with setGlanceBounds(null).
    */
   prepareGlanceClose(): Promise<string | null>;
+  /** Place an extension's panel view (docs/extensions.md §4) inside the side card's slot, or hide it. */
+  setExtensionPanelBounds(bounds: ContentBounds | null): void;
   /**
    * Mark promotion in progress and synchronously place the same live preview
    * at `bounds`. The renderer advances those bounds with its visual frame.
@@ -1587,6 +1613,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   recedeGlanceOwner: "Coordinates the owner tab's native view with the glance view.",
   setGlanceBounds: "Places the native glance preview view at the shell's frame.",
   prepareGlanceClose: "Captures the native glance view's last frame before it hides.",
+  setExtensionPanelBounds: "Places the native view of an extension's panel at the shell's card.",
   stageGlancePromotion: "Moves the native glance view while the promotion animates.",
   setDragCapture: "Hands the OS pointer to the native drag layer window.",
   onDragCapture: "The native drag layer's own subscription to the held cursor.",
@@ -1953,6 +1980,17 @@ export const IPC = {
   reports: "pistachio:reports",
   notes: "pistachio:notes",
   notesChanged: "pistachio:notes-changed",
+  extensions: "pistachio:extensions",
+  extensionsChanged: "pistachio:extensions-changed",
+  extensionPanelBounds: "pistachio:extension-panel-bounds",
+  /**
+   * A tab preload's frame → main: what only the page knows of an extension's input subscription (the pressed
+   * element's rect and role, the focused field and whether it is a secret one, the caret, the scroll — in the
+   * frame's CSS px), sent only while main told the frame a subscription exists (`extensionInputOn`, main → every
+   * frame of the page: true or false). apps/desktop/src/main/extensions/input.ts.
+   */
+  extensionInput: "pistachio:extension-input",
+  extensionInputOn: "pistachio:extension-input-on",
   setTabTitle: "pistachio:set-tab-title",
 } as const;
 
@@ -2142,6 +2180,7 @@ export const SHELL_METHOD_NAMES = allMethods([  "getSnapshot",
   "integrationCalendarEvents",
   "reports",
   "notes",
+  "extensions",
   "setTabTitle",
 ]);
 
@@ -2168,6 +2207,7 @@ export const SHELL_EVENT_CHANNELS = allEvents([
   { member: "onReminders", channel: IPC.remindersChanged },
   { member: "onBookmarks", channel: IPC.bookmarksChanged },
   { member: "onNotes", channel: IPC.notesChanged },
+  { member: "onExtensions", channel: IPC.extensionsChanged },
   { member: "onBookmarkToast", channel: IPC.bookmarkToastChanged },
   { member: "onAccount", channel: IPC.accountChanged },
   { member: "onDevices", channel: IPC.devicesUpdated },

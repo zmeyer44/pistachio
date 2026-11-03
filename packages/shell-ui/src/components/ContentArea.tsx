@@ -22,6 +22,7 @@ import { useAppStore, type AppState } from "../store";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
 import { terminalUrlId } from "@pistachio/shell-contracts/terminal";
+import { isExtensionsPageUrl } from "@pistachio/shell-contracts/extensions";
 import { briefUrlDate } from "@pistachio/shell-contracts/reports";
 import DeskSurface from "./desk/DeskSurface";
 import { Favicon } from "./Favicon";
@@ -47,6 +48,7 @@ const PermissionPromptDialog = lazy(() =>
   import("./PermissionPromptDialog").then((m) => ({ default: m.PermissionPromptDialog })),
 );
 const SpaceForkDialog = lazy(() => import("./SpaceForkDialog").then((m) => ({ default: m.SpaceForkDialog })));
+const ApprovalSheet = lazy(() => import("./extensions/ApprovalSheet").then((m) => ({ default: m.ApprovalSheet })));
 const UpdatePrompt = lazy(() => import("./update-prompt/UpdatePrompt").then((m) => ({ default: m.UpdatePrompt })));
 const ImagePreview = lazy(() => import("./ImagePreview").then((m) => ({ default: m.ImagePreview })));
 const LiveViewPage = lazy(() => import("./LiveViewPage").then((m) => ({ default: m.LiveViewPage })));
@@ -74,6 +76,7 @@ export function ContentArea() {
   const siteControlsOpen = useAppStore((state) => state.overlay === "site");
   const permissionPromptOpen = useAppStore((state) => state.overlay === "permission");
   const spaceForkOpen = useAppStore((state) => state.overlay === "space-fork");
+  const extensionSheetOpen = useAppStore((state) => state.overlay === "extension-sheet");
   const updatePromptOpen = useAppStore((state) => state.overlay === "update");
   const imagePreviewOpen = useAppStore((state) => state.overlay === "image-preview");
   const liveViewOpen = useAppStore((state) => state.overlay === "liveView");
@@ -106,6 +109,8 @@ export function ContentArea() {
           once the request is answered or the dialog is put down. */}
       {permissionPromptOpen ? <SurfacePage overGlance><PermissionPromptDialog /></SurfacePage> : null}
       {spaceForkOpen ? <SurfacePage><SpaceForkDialog /></SurfacePage> : null}
+      {/* An extension's approval sheet (docs/extensions.md §2): over the pages and any extension's panel, never under. */}
+      {extensionSheetOpen ? <SurfacePage overGlance><ApprovalSheet /></SurfacePage> : null}
       {updatePromptOpen ? <SurfacePage><UpdatePrompt /></SurfacePage> : null}
       {imagePreviewOpen ? <SurfacePage><ImagePreview /></SurfacePage> : null}
       {/* A run in the cloud browser, watched here: the same hole the settings
@@ -476,6 +481,8 @@ function SplitPane({
   const noteId = tab === null ? undefined : notesUrlId(tab.url.trim());
   // A terminal is a Mac's (docs/terminal.md §6): the desktop draws it on its desk; here it is only named.
   const terminal = tab !== null && terminalUrlId(tab.url) !== null;
+  // So are extensions (docs/extensions.md): the desktop draws their page on its desk (DeskWindow); here it says so.
+  const extensions = tab !== null && isExtensionsPageUrl(tab.url);
   return (
     <div
       data-testid={testId}
@@ -500,6 +507,10 @@ function SplitPane({
         ) : terminal ? (
           <div className="grid size-full place-items-center text-[12px] text-gray-900" data-testid="terminal-page">
             Terminals open in the Pistachio desktop app.
+          </div>
+        ) : extensions ? (
+          <div className="grid size-full place-items-center text-[12px] text-gray-900" data-testid="extensions-page">
+            Extensions run in the Pistachio desktop app.
           </div>
         ) : noteId !== undefined ? (
           // A note is shell-drawn too, and lazily: the editor's chunk loads

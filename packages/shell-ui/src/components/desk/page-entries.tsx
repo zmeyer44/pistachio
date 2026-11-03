@@ -8,7 +8,10 @@
  * the tab's menu has it (chrome/tab-menu.tsx), a person's tab duplicated:
  * the copy beside it in its space, out on the desk and in use (in Home, a
  * Home tab of its own: docs/double-sidebar.md §1). And, while its space is
- * shared live, whether guests can use it (docs/live-share.md §1).
+ * shared live, whether guests can use it (docs/live-share.md §1). And what
+ * the extensions on here declared for a window, under their caption
+ * (docs/extensions.md §2: the menu has no submenus, so *Extensions* is a
+ * caption over a flat group rather than *Extensions ▸*).
  *
  * Read as the menu opens, not as the window renders: the menu says what is
  * true when it comes up, and a window re-renders only when it changes.
@@ -23,6 +26,7 @@ import { isKeepableUrl } from "@pistachio/shell-contracts/sidebar";
 import { useShell } from "../../chrome/shell-host";
 import { useAppStore } from "../../store";
 import type { MenuEntry } from "../ContextMenu";
+import { extensionWindowEntries } from "../extensions/menu";
 import { liveWindowEntries } from "../live/menu-entries";
 
 /** The entries for one window's page, ending in a separator from the window's own. */
@@ -75,7 +79,15 @@ export function usePageEntries(): (tab: BrowserTabInfo) => MenuEntry[] {
       if (store.snapshot?.activeTabId === tab.id)
         page.push({ label: "Site information", icon: <SlidersHorizontal aria-hidden="true" />, testId: "desk-page-site-info", onSelect: () => store.openSiteInfo() });
       const live = liveWindowEntries(tab);
-      return [...entries, ...(page.length > 0 ? [{ separator: true } as const, ...page] : []), ...(live.length > 0 ? [{ separator: true } as const, ...live] : []), { separator: true }];
+      // What the extensions on here put in a window's menu (docs/extensions.md §2), under their caption.
+      const extensions = extensionWindowEntries(tab);
+      return [
+        ...entries,
+        ...(page.length > 0 ? [{ separator: true } as const, ...page] : []),
+        ...(live.length > 0 ? [{ separator: true } as const, ...live] : []),
+        ...(extensions.length > 0 ? [{ separator: true } as const, ...extensions] : []),
+        { separator: true },
+      ];
     },
     [run],
   );

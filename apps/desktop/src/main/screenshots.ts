@@ -225,7 +225,7 @@ export function screenshotName(at: Date): string {
  * `com.apple.screencapture location`), or the Desktop, its default. A spec
  * points PISTACHIO_SCREENSHOT_DIR at its own folder.
  */
-async function screenshotFolder(): Promise<string> {
+export async function screenshotFolder(): Promise<string> {
   const override = process.env["PISTACHIO_SCREENSHOT_DIR"];
   if (override !== undefined && override !== "") return override;
   if (process.platform === "darwin") {

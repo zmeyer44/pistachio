@@ -186,6 +186,7 @@ const ACTION_KEYWORDS: Partial<Record<ChromeActionId, readonly string[]>> = {
   openNotes: ["notes notebook my writing documents written jot pad pistachio://notes"],
   newNote: ["new note blank note write jot down start writing scratch"],
   newTerminal: ["terminal shell bash zsh command line console cli prompt run commands claude code"],
+  openExtensions: ["extensions add-ons addons plugins chrome web store ledge install make an extension pistachio://extensions"],
   openReminders: ["schedule alarm calendar scheduled tasks pistachio://reminders"],
   openWatchtower: ["browsing memory history archive saved pages recall wiki pistachio://watchtower"],
   openArchive: ["archive archived tabs closed spaces closed groups put away restore old tabs"],

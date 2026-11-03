@@ -342,9 +342,9 @@ function NoteBody({ tabId, note, active }: { tabId: string | null; note: Note; a
 
   const host = useMemo<NoteEditorHost>(
     () => ({
-      // A link opens the way the console's links open (store.openLink).
+      // A link opens the way the console's links open (store.openLink); a local file's, as a tab (the note is the person's).
       openLink: (href, box) => {
-        void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, false);
+        void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, false, { fileLinks: true });
       },
       // A picture the store already holds is answered at once, so nothing flickers.
       blobUrl: (id) => useNotes.getState().blobUrls[id] ?? useNotes.getState().blobUrl(id),

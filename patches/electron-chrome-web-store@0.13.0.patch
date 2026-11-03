@@ -1,0 +1,88 @@
+diff --git a/dist/chrome-web-store.preload.js b/dist/chrome-web-store.preload.js
+index 94fb2b4c5d240bc80aba0d8e72b526b12684daf9..3d181e7d5170279d519e97a929807ff83f2f878b 100644
+--- a/dist/chrome-web-store.preload.js
++++ b/dist/chrome-web-store.preload.js
+@@ -292,7 +292,8 @@
+       window.navigation.addEventListener("navigate", maybeUpdateBranding);
+     }
+   }
+-  if (location.href.startsWith("https://chromewebstore.google.com")) {
++  // pistachio: the store's exact origin, not a prefix of the address (main checks the sender's origin again)
++  if (location.origin === "https://chromewebstore.google.com") {
+     log("Injecting Chrome Web Store API");
+     setupChromeWebStoreApi();
+   }
+diff --git a/dist/cjs/browser/index.js b/dist/cjs/browser/index.js
+index 4580b782dcf28a2d8d9ec2f0318276365cf2b957..c14e0e65267ec746baf93f1f08d5eee665d4c6ff 100644
+--- a/dist/cjs/browser/index.js
++++ b/dist/cjs/browser/index.js
+@@ -1275,7 +1275,8 @@ function registerWebStoreApi(webStoreState) {
+       import_electron3.ipcMain.handle(channel, async function handleWebStoreIpc(event, ...args) {
+         d3("received %s", channel);
+         const senderOrigin = event.senderFrame?.origin;
+-        if (!senderOrigin || !senderOrigin.startsWith(WEBSTORE_URL)) {
++        // pistachio: the store's exact origin — a prefix match lets https://chromewebstore.google.com.evil.example in
++        if (!senderOrigin || senderOrigin !== WEBSTORE_URL) {
+           d3("ignoring webstore request from %s", senderOrigin);
+           return;
+         }
+@@ -1372,19 +1373,10 @@ function registerWebStoreApi(webStoreState) {
+   });
+   handle(
+     "chrome.management.uninstall",
++    // pistachio: a page never removes an extension, the store's included (it ignored showConfirmDialog and removed
++    // the folder at once); removing is the person's, on Pistachio's extensions page
+     async (event, id, options) => {
+-      if (options?.showConfirmDialog) {
+-      }
+-      try {
+-        await uninstallExtension(id, webStoreState);
+-        queueMicrotask(() => {
+-          event.sender.send("chrome.management.onUninstalled", id);
+-        });
+-        return Result.SUCCESS;
+-      } catch (error) {
+-        console.error(error);
+-        return Result.UNKNOWN_ERROR;
+-      }
++      return Result.UNKNOWN_ERROR;
+     }
+   );
+ }
+diff --git a/dist/esm/browser/index.mjs b/dist/esm/browser/index.mjs
+index 85ba0e0023ea491e8d07b9a8effd01cfc89ee977..7472ccead9b3317b95c37125baf320cbd5333555 100644
+--- a/dist/esm/browser/index.mjs
++++ b/dist/esm/browser/index.mjs
+@@ -552,7 +552,8 @@ function registerWebStoreApi(webStoreState) {
+       ipcMain.handle(channel, async function handleWebStoreIpc(event, ...args) {
+         d3("received %s", channel);
+         const senderOrigin = event.senderFrame?.origin;
+-        if (!senderOrigin || !senderOrigin.startsWith(WEBSTORE_URL)) {
++        // pistachio: the store's exact origin — a prefix match lets https://chromewebstore.google.com.evil.example in
++        if (!senderOrigin || senderOrigin !== WEBSTORE_URL) {
+           d3("ignoring webstore request from %s", senderOrigin);
+           return;
+         }
+@@ -649,19 +650,10 @@ function registerWebStoreApi(webStoreState) {
+   });
+   handle(
+     "chrome.management.uninstall",
++    // pistachio: a page never removes an extension, the store's included (it ignored showConfirmDialog and removed
++    // the folder at once); removing is the person's, on Pistachio's extensions page
+     async (event, id, options) => {
+-      if (options?.showConfirmDialog) {
+-      }
+-      try {
+-        await uninstallExtension(id, webStoreState);
+-        queueMicrotask(() => {
+-          event.sender.send("chrome.management.onUninstalled", id);
+-        });
+-        return Result.SUCCESS;
+-      } catch (error) {
+-        console.error(error);
+-        return Result.UNKNOWN_ERROR;
+-      }
++      return Result.UNKNOWN_ERROR;
+     }
+   );
+ }

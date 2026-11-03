@@ -1,0 +1,17 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.hello-panel",
+  "name": "Hello panel",
+  "version": "1.0.0",
+  "description": "An e2e fixture: a panel, a /hello command and a page, each leaving a marker in storage.",
+  "icon": "icon.svg",
+  "permissions": ["tabs:read", "tabs:write"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "panel": { "file": "panel.html", "width": 320 },
+  "pages": { "hello": { "file": "hello.html", "title": "Hello" } },
+  "bar": {
+    "commands": [
+      { "name": "hello", "description": "Say hello", "arg": { "hint": "name" }, "run": { "event": true } }
+    ]
+  }
+}

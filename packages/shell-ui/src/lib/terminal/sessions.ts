@@ -316,9 +316,12 @@ export class TerminalSession {
   /** Open its shell (`restart`: a new one, in place of one that ended — the person pressed Enter). */
   #start(restart: boolean): void {
     this.#update({ status: "starting", note: null });
-    const cwd = takeTerminalStart(this.id) ?? this.#cwd;
+    const start = takeTerminalStart(this.id);
+    const cwd = start?.cwd ?? this.#cwd;
+    // (A program asked for runs in the first shell alone: one started again by the person is a plain shell.)
+    const run = restart ? null : (start?.run ?? null);
     this.#size = { cols: this.term.cols, rows: this.term.rows };
-    send({ type: "open", id: this.id, cols: this.term.cols, rows: this.term.rows, cwd, ...(restart ? { restart: true as const } : {}) });
+    send({ type: "open", id: this.id, cols: this.term.cols, rows: this.term.rows, cwd, ...(run === null ? {} : { run }), ...(restart ? { restart: true as const } : {}) });
   }
 
   /** The host's word about this terminal. */

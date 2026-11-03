@@ -217,16 +217,29 @@ export function arrangeDesk(kind: DeskArrangement): boolean {
  * here while it is mounted (lendDeskAsk).
  */
 let askUp: (() => void) | null = null;
+/** What the field is to hold as the Bar takes the keyboard (askDesk's `text`), until the Bar takes it. */
+let askText: string | null = null;
 
 export function lendDeskAsk(ask: (() => void) | null): void {
   askUp = ask;
 }
 
-/** The Bar takes the keyboard; false before the desk's engine is up, or off the desktop (⌘I then toggles the chat as ever). */
-export function askDesk(): boolean {
+/**
+ * The Bar takes the keyboard; false before the desk's engine is up, or off the desktop (⌘I then toggles the chat as
+ * ever). With `text`, its field holds that, the caret at its end (*Make one with Pistachio*: `/extension `).
+ */
+export function askDesk(text?: string): boolean {
   if (askUp === null) return false;
+  askText = text ?? null;
   askUp();
   return true;
+}
+
+/** The text askDesk asked the field to hold, once (the Bar reads it as it takes the keyboard). */
+export function takeDeskAskText(): string | null {
+  const text = askText;
+  askText = null;
+  return text;
 }
 
 /**

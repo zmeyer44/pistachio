@@ -502,6 +502,7 @@ export type ShellShortcutAction =
   | "newSpaceAddress"
   | "newSpace"
   | "newTerminal"
+  | "focusLedge"
   | "goToHome"
   | "goToSpace1"
   | "goToSpace2"
@@ -594,6 +595,10 @@ export interface ShellSettingsValue {
   };
   organization: {
     presetLinks: ShellPresetLinkRecord[];
+  };
+  extensions: {
+    developerMode: boolean;
+    devFolder: string | null;
   };
   general: {
     homePage: ShellHomePageBehavior;

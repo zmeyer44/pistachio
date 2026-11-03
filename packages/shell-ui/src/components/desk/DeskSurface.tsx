@@ -30,6 +30,7 @@ import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDropZone } from "./DeskDropZone";
 import { DeskEmpty } from "./DeskEmpty";
 import { DeskSideCard } from "./DeskSideCard";
+import { ExtensionPanelCard } from "../extensions/ExtensionPanelCard";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
 import { LayoutGhosts } from "./LayoutControl";
 import { SmartArranger, type WindowWords } from "./smart-arrange";
@@ -1054,6 +1055,8 @@ export default function DeskSurface() {
         {engine === null || view === null ? null : (
           <DeskSideCard engine={engine} view={view} stageRef={stageRef} group={shownDeskGroup} context={context} others={otherContexts} />
         )}
+        {/* An extension's panel beside the sidebar (docs/extensions.md §4): its card the shell's, its body main's view. */}
+        {engine === null || view === null ? null : <ExtensionPanelCard engine={engine} view={view} stageRef={stageRef} />}
         {engine === null || view === null || shownDeskGroup === null ? null : (
           <DeskDropZone group={shownDeskGroup} engine={engine} view={view} />
         )}

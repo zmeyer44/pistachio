@@ -1,0 +1,52 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.capture-probe",
+  "name": "Capture probe",
+  "version": "1.0.0",
+  "description": "An e2e fixture: /probe records the window in use for two seconds and counts what the person did in it.",
+  "permissions": [
+    "capture:tab",
+    "input:events",
+    "files:data",
+    "desk",
+    "agent:ask"
+  ],
+  "worker": {
+    "type": "web",
+    "main": "worker.js"
+  },
+  "bar": {
+    "commands": [
+      {
+        "name": "probe",
+        "description": "Record the window in use for two seconds (hold, sources, frame, panel-later: probes of their own)",
+        "run": {
+          "event": true
+        }
+      },
+      {
+        "name": "ask",
+        "description": "Put a question in the Bar",
+        "run": {
+          "event": true
+        }
+      }
+    ]
+  },
+  "commands": [
+    {
+      "id": "probe-key",
+      "title": "Say which window is in use",
+      "key": "Cmd+Shift+9"
+    },
+    {
+      "id": "steal",
+      "title": "Try to take New tab's key",
+      "key": "Cmd+T"
+    }
+  ],
+  "panel": {
+    "file": "panel.html",
+    "width": 320
+  }
+}

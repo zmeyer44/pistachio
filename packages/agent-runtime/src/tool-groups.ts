@@ -34,11 +34,31 @@ export const TOOL_GROUPS = {
   // provider, so a policy can allow the browser and memory but not mail.
   gmail: GMAIL_TOOL_NAMES,
   google_calendar: GOOGLE_CALENDAR_TOOL_NAMES,
+  /**
+   * The tools of the extensions the person installed (docs/extensions.md §6.2,
+   * "Agent tools"). Their names are minted per extension at run time
+   * (`x_<six hex of the id>_<tool>`, extension-tools.ts), so the list is empty
+   * and `toolGroupOf` places every `x_` name here: a policy can turn them off.
+   */
+  extensions: [],
 } as const satisfies Record<string, readonly string[]> & Record<IntegrationProvider, readonly string[]>;
 
 export type ToolGroup = keyof typeof TOOL_GROUPS;
 
 export const ALL_TOOL_GROUPS: readonly ToolGroup[] = Object.keys(TOOL_GROUPS) as ToolGroup[];
+
+/**
+ * The author turn's tools (docs/extensions.md §8): writing an extension into
+ * its draft folder. A group of their own that is NOT in `TOOL_GROUPS`, so not
+ * in `ALL_TOOL_GROUPS` either: no default policy, and no policy a host builds
+ * from the groups it lists, ever enables them. Only the runner's author turn
+ * (`AiAgentRunInput.author`) names this group, and nothing else beside it.
+ */
+export const EXTENSION_AUTHOR_TOOL_GROUP = "extension_author";
+export const EXTENSION_AUTHOR_TOOLS = ["extension_draft_write", "extension_draft_read", "extension_status"] as const;
+
+/** The prefix of every extension tool's model-facing name (`x_<hex>_<tool>`). */
+export const EXTENSION_TOOL_PREFIX = "x_";
 
 /** The groups that are integrations: one per provider in the catalog. */
 export const INTEGRATION_TOOL_GROUPS: readonly ToolGroup[] = [...INTEGRATION_PROVIDERS];
@@ -49,9 +69,17 @@ export const ALWAYS_ENABLED_TOOLS: readonly string[] = ["ask_user", "ask_user_te
 const GROUP_OF = new Map<string, ToolGroup>();
 for (const group of ALL_TOOL_GROUPS) for (const name of TOOL_GROUPS[group]) GROUP_OF.set(name, group);
 
-/** The group a model-facing tool name belongs to; null for the always-on tools and unknown names. */
-export function toolGroupOf(toolName: string): ToolGroup | null {
-  return GROUP_OF.get(toolName) ?? null;
+/**
+ * The group a model-facing tool name belongs to; null for the always-on tools
+ * and unknown names. An `x_…` name is an extension's (the `extensions` group);
+ * the author turn's three are `extension_author`, a group no default holds.
+ */
+export function toolGroupOf(toolName: string): ToolGroup | typeof EXTENSION_AUTHOR_TOOL_GROUP | null {
+  const known = GROUP_OF.get(toolName);
+  if (known !== undefined) return known;
+  if (toolName.startsWith(EXTENSION_TOOL_PREFIX)) return "extensions";
+  if ((EXTENSION_AUTHOR_TOOLS as readonly string[]).includes(toolName)) return EXTENSION_AUTHOR_TOOL_GROUP;
+  return null;
 }
 
 export function isToolGroup(value: string): value is ToolGroup {

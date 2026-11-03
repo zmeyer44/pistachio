@@ -414,6 +414,45 @@ export interface DeskNotchFrame {
    * corner, so the nub reads as the ground it rises out of.
    */
   ground: { x: number; y: number; width: number; height: number };
+  /**
+   * How far the nub is drawn out along the foot (px) for the extensions'
+   * live pills, which lie in it (docs/extensions.md §5, `ui.setStatus`): on
+   * its way from `from` to `to` since `at` (wall-clock ms) over `ms`, read
+   * off the clock as the swell is. The view's box holds the wider of the two.
+   */
+  lane: { from: number; to: number; at: number; ms: number };
+  /** The pills in the lane, first rightmost (as the shell lays them), and their row's width as the shell measured it (px). */
+  pills: DeskNotchPill[];
+  pillsWidth: number;
+}
+
+/** An extension's live pill as the notch view draws it in the nub's lane: its mark, its text, its actions. */
+export interface DeskNotchPill {
+  /** The extension's id. */
+  id: string;
+  name: string;
+  iconUrl: string | null;
+  text: string;
+  actions: { id: string; title: string }[];
+}
+
+/** At most this many pills, and actions on one, travel to the notch view (the shell lays no more in the lane). */
+export const DESK_NOTCH_PILLS_MAX = 8;
+export const DESK_NOTCH_PILL_ACTIONS_MAX = 8;
+
+function isDeskNotchPill(value: unknown): value is DeskNotchPill {
+  if (typeof value !== "object" || value === null) return false;
+  const pill = value as Partial<DeskNotchPill>;
+  const text = (s: unknown, max: number): boolean => typeof s === "string" && s.length <= max;
+  return (
+    text(pill.id, 128) &&
+    text(pill.name, 200) &&
+    (pill.iconUrl === null || text(pill.iconUrl, 2048)) &&
+    text(pill.text, 400) &&
+    Array.isArray(pill.actions) &&
+    pill.actions.length <= DESK_NOTCH_PILL_ACTIONS_MAX &&
+    pill.actions.every((action: unknown) => typeof action === "object" && action !== null && text((action as { id?: unknown }).id, 64) && text((action as { title?: unknown }).title, 64))
+  );
 }
 
 export interface DeskNubShape {
@@ -428,7 +467,9 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
   const bounds = frame.bounds;
   const ground = frame.ground;
   const swelling = frame.swelling;
+  const lane = frame.lane;
   const finite = (n: unknown): boolean => typeof n === "number" && Number.isFinite(n);
+  const width = (n: unknown): boolean => finite(n) && (n as number) >= 0 && (n as number) <= 2048;
   const shape = (nub: unknown): boolean => {
     if (typeof nub !== "object" || nub === null) return false;
     const { radius, sink, fillet } = nub as Partial<DeskNubShape>;
@@ -453,7 +494,8 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
     finite(bounds.height) &&
     bounds.width > 0 &&
     bounds.height > 0 &&
-    bounds.width <= 512 &&
+    // (Wide while the nub is drawn out along the foot for the extensions' pills; never tall.)
+    bounds.width <= 2048 &&
     bounds.height <= 512 &&
     typeof frame.label === "string" &&
     frame.label.length <= 400 &&
@@ -471,7 +513,18 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
     finite(swelling.ms) &&
     swelling.ms >= 0 &&
     typeof frame.acting === "boolean" &&
-    typeof frame.floating === "boolean"
+    typeof frame.floating === "boolean" &&
+    typeof lane === "object" &&
+    lane !== null &&
+    width(lane.from) &&
+    width(lane.to) &&
+    finite(lane.at) &&
+    finite(lane.ms) &&
+    lane.ms >= 0 &&
+    Array.isArray(frame.pills) &&
+    frame.pills.length <= DESK_NOTCH_PILLS_MAX &&
+    frame.pills.every(isDeskNotchPill) &&
+    width(frame.pillsWidth)
   );
 }
 
@@ -678,11 +731,20 @@ export function isDeskPipInput(value: unknown): value is DeskPipInput {
   );
 }
 
-/** The pointer onto the notch view and off it, and a press on it: the Bar's, as if on the Bar itself. */
-export type DeskNotchInput = "enter" | "leave" | "press";
+/**
+ * The pointer onto the notch view's nub and off it, and a press on it: the
+ * Bar's, as if on the Bar itself. Or a press on an action of an extension's
+ * pill in the nub's lane (`status`): the shell's to send on as the pill's own.
+ */
+export type DeskNotchInput = "enter" | "leave" | "press" | { status: { id: string; action: string } };
 
 export function isDeskNotchInput(value: unknown): value is DeskNotchInput {
-  return value === "enter" || value === "leave" || value === "press";
+  if (value === "enter" || value === "leave" || value === "press") return true;
+  if (typeof value !== "object" || value === null) return false;
+  const status = (value as { status?: unknown }).status;
+  if (typeof status !== "object" || status === null) return false;
+  const { id, action } = status as { id?: unknown; action?: unknown };
+  return typeof id === "string" && id.length > 0 && id.length <= 128 && typeof action === "string" && action.length > 0 && action.length <= 64;
 }
 
 /** A key event, as Electron's `before-input-event` has it. */

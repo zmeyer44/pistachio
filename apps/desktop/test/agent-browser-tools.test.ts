@@ -34,8 +34,9 @@ function harness(owner: string | null = "run-1") {
   const events: string[] = [];
   const hidden = [tab("research", { unlisted: true, hiddenFor: "run-1" }), tab("elsewhere", { unlisted: true, hiddenFor: "run-2" })];
   const browser = {
-    // The person's tabs, in order: their page, and the read-aloud player's working tab.
-    allTabs: vi.fn(() => [tab("mine"), tab("player", { unlisted: true })]),
+    // The person's tabs, in order: their page, the read-aloud player's working tab, and an extension's page.
+    allTabs: vi.fn(() => [tab("mine"), tab("player", { unlisted: true }), tab("ext", { url: "pistachio-ext://dev.zach.inbox/page.html", extensionId: "dev.zach.inbox" })]),
+    tab: vi.fn((id: string) => (id === "ext" ? tab("ext", { url: "pistachio-ext://dev.zach.inbox/page.html", extensionId: "dev.zach.inbox" }) : tab(id))),
     activeTab: vi.fn(() => tab("mine")),
     hiddenTabs: vi.fn((who?: string) => hidden.filter((item) => who === undefined || item.hiddenFor === who)),
     openHiddenTab: vi.fn(async () => "fresh"),
@@ -90,5 +91,13 @@ describe("the desktop's browser backend", () => {
     await vi.advanceTimersByTimeAsync(600);
     await clicked;
     expect(events).toEqual(["hold mine for run-1", "click", "release mine"]);
+  });
+
+  it("never reads or drives an extension's page (docs/extensions.md §4)", async () => {
+    const { backend, events } = harness();
+    expect(backend.listTabs().map((item) => item.id)).not.toContain("ext");
+    await expect(backend.click("ext", "Go")).rejects.toThrow(/extension's page/);
+    expect(() => backend.inspect("ext")).toThrow(/extension's page/);
+    expect(events).toEqual([]);
   });
 });

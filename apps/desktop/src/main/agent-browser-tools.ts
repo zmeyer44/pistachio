@@ -1,7 +1,7 @@
 import type { AgentTabInfo, BrowserBackend, PageInspection } from "@pistachio/agent-runtime";
 import type { AgentPressableKey } from "@pistachio/protocol";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
-import { BrowserController } from "./browser-controller";
+import { BrowserController, isExtensionTab } from "./browser-controller";
 
 /** page.press keys by the keyCode Chromium's input pipeline knows them as. */
 const PRESSABLE_KEY_CODES: Record<AgentPressableKey, string> = {
@@ -67,7 +67,8 @@ export class DesktopBrowserBackend implements BrowserBackend {
     const activeTabId = this.#browser.activeTab()?.id ?? null;
     const owner = this.#owner();
     return [
-      ...this.#browser.allTabs().filter((tab) => !tab.unlisted),
+      // (Never an extension's page: the agent's page tools leave those to their extension — isExtensionTab.)
+      ...this.#browser.allTabs().filter((tab) => !tab.unlisted && !isExtensionTab(tab)),
       ...(owner === null ? [] : this.#browser.hiddenTabs(owner)),
     ].map((tab) => agentTabInfo(tab, activeTabId));
   }
@@ -84,29 +85,35 @@ export class DesktopBrowserBackend implements BrowserBackend {
   }
 
   async navigate(tabId: string, url: string): Promise<void> {
+    this.#notExtension(tabId);
     await this.#browser.navigate(tabId, url);
   }
 
   async back(tabId: string): Promise<void> {
+    this.#notExtension(tabId);
     await this.#browser.goBack(tabId);
     await this.#settle();
   }
 
   async forward(tabId: string): Promise<void> {
+    this.#notExtension(tabId);
     await this.#browser.goForward(tabId);
     await this.#settle();
   }
 
   async reload(tabId: string): Promise<void> {
+    this.#notExtension(tabId);
     await this.#browser.reload(tabId);
     await this.#settle();
   }
 
   inspect(tabId: string): Promise<PageInspection> {
+    this.#notExtension(tabId);
     return this.#browser.inspectPage(tabId);
   }
 
   async click(tabId: string, target: string): Promise<void> {
+    this.#notExtension(tabId);
     await this.#popupsHidden(tabId, async () => {
       await this.#browser.clickPage(tabId, target);
       await this.#settle();
@@ -114,6 +121,7 @@ export class DesktopBrowserBackend implements BrowserBackend {
   }
 
   async type(tabId: string, target: string, value: string): Promise<string> {
+    this.#notExtension(tabId);
     return this.#popupsHidden(tabId, async () => {
       const written = await this.#browser.typePage(tabId, target, value);
       await this.#settle(180);
@@ -122,6 +130,7 @@ export class DesktopBrowserBackend implements BrowserBackend {
   }
 
   async press(tabId: string, key: AgentPressableKey): Promise<void> {
+    this.#notExtension(tabId);
     const keyCode = PRESSABLE_KEY_CODES[key];
     if (keyCode === undefined)
       throw new Error(`unsupported key: ${key} (one of ${Object.keys(PRESSABLE_KEY_CODES).join(", ")})`);
@@ -133,11 +142,13 @@ export class DesktopBrowserBackend implements BrowserBackend {
   }
 
   async scroll(tabId: string, deltaY: number): Promise<void> {
+    this.#notExtension(tabId);
     await this.#browser.scrollPage(tabId, deltaY);
     await this.#settle(180);
   }
 
   screenshot(tabId: string): Promise<string> {
+    this.#notExtension(tabId);
     return this.#browser.screenshotPage(tabId);
   }
 
@@ -155,6 +166,11 @@ export class DesktopBrowserBackend implements BrowserBackend {
     } finally {
       release?.();
     }
+  }
+
+  /** An extension's page is its extension's to drive (isExtensionTab), never the agent's. */
+  #notExtension(tabId: string): void {
+    if (isExtensionTab(this.#browser.tab(tabId))) throw new Error("that tab is an extension's page, which the agent does not read or drive");
   }
 
   #requireOwner(): string {

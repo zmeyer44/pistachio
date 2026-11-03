@@ -13,6 +13,7 @@ import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
 import { askDesk, deskAvailable, newTabAsChosen } from "../lib/desk/open";
+import { extensionsRequest } from "../lib/extensions/use-extensions";
 import { openLiveCard } from "../lib/live/actions";
 import {
   railOffered,
@@ -65,6 +66,7 @@ export function veiledOf(state: AppState): boolean {
     state.overlay === "site-info" ||
     state.overlay === "permission" ||
     state.overlay === "space-fork" ||
+    state.overlay === "extension-sheet" ||
     state.overlay === "update" ||
     state.overlay === "tab-switcher" ||
     state.overlay === "context-menu" ||
@@ -293,6 +295,20 @@ export function runShellCommand(command: ShellCommand): void {
     case "notice":
       s.showNotice(command.message, command.tone === undefined ? {} : { tone: command.tone });
       break;
+    case "askDesk":
+      // An extension's ask (docs/extensions.md §5 `agent.ask`): the Bar holds it for the person to send, or not.
+      if (askDesk(command.text)) {
+        if (command.via !== undefined) s.showNotice(`${command.via} put a question in the Bar`);
+      } else s.showNotice(`${command.via ?? "An extension"} wanted to ask Pistachio, but the Bar isn't here`, { tone: "warning" });
+      break;
+    case "extensionToast": {
+      const { id, action } = command;
+      s.showNotice(
+        command.message,
+        action === null ? {} : { action: { label: action.title, run: () => void extensionsRequest({ type: "statusAction", id, action: action.id, source: "toast" }) } },
+      );
+      break;
+    }
   }
 }
 

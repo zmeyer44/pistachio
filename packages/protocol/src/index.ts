@@ -210,7 +210,11 @@ export interface AgentToolCall {
     | "desk.note"
     | "desk.ungroup"
     | "context.read"
-    | "context.save";
+    | "context.save"
+    | "ext.call"
+    | "ext.draft.write"
+    | "ext.draft.read"
+    | "ext.status";
   label: string;
   detail: string;
   status: "running" | "completed" | "paused" | "failed";
@@ -395,7 +399,25 @@ export type WatchtowerToolRequest =
   | { name: "watchtower.index"; query: string }
   | { name: "watchtower.entity"; id: string };
 
-/** Anything the agent can call — browser, memory, reminders, artifacts, bookmarks, notes, integrations, or its scratchpad — for the run's tool trace. */
+/**
+ * A tool an extension the person installed declared (docs/extensions.md §6.2,
+ * "Agent tools"): the call as the trace shows it — whose, which tool, and a
+ * short rendering of what it was sent.
+ */
+export interface ExtensionToolRequest {
+  name: "ext.call";
+  extensionId: string;
+  tool: string;
+  summary: string;
+}
+
+/** The author turn's tools (docs/extensions.md §8): a file written or read in a draft folder, its status read. */
+export type ExtensionAuthorToolRequest =
+  | { name: "ext.draft.write"; slug: string; path: string }
+  | { name: "ext.draft.read"; slug: string; path: string | null }
+  | { name: "ext.status"; slug: string };
+
+/** Anything the agent can call — browser, memory, reminders, artifacts, bookmarks, notes, integrations, extensions, or its scratchpad — for the run's tool trace. */
 export type AgentToolRequest =
   | BrowserAgentToolRequest
   | MemoryToolRequest
@@ -407,7 +429,9 @@ export type AgentToolRequest =
   | CredentialToolRequest
   | IntegrationToolRequest
   | NotesToolRequest
-  | DeskToolRequest;
+  | DeskToolRequest
+  | ExtensionToolRequest
+  | ExtensionAuthorToolRequest;
 
 /**
  * A reminder the person or the agent scheduled earlier, firing as a turn of

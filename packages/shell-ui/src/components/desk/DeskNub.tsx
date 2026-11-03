@@ -144,7 +144,8 @@ export function DeskNub({
   faceRef: RefObject<HTMLButtonElement | null>;
   motionRef: RefObject<NubMotion | null>;
   pill: () => PillParts | null;
-  onShape: (shape: NotchShape | null) => void;
+  /** The nub as it is drawn now, and how far it is drawn out along the foot (its lane, px). */
+  onShape: (shape: NotchShape | null, lane: number) => void;
   corner: () => number;
   /** What the nub is for ("Ask about Research"), and its key, for its tooltip and its name. */
   label: { text: string; shortcut: string | null };
@@ -202,7 +203,7 @@ export function DeskNub({
       parts: { root, paint, base, anchor, tether, blob, drops, necks, bridge, bridgeEnd, face, mark, items },
       pill: () => host.current.pill(),
       corner: () => host.current.corner(),
-      shape: (shape) => host.current.onShape(shape),
+      shape: (shape, lane) => host.current.onShape(shape, lane),
     });
     motionRef.current = motion;
     // The desk resized, or its corners changed (the window's frame): drawn again.

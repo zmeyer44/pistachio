@@ -1,0 +1,11 @@
+{"t":0,"k":"meta","source":{"kind":"tab","tabId":"t_91","title":"Linear","url":"https://linear.app/team"},"capture":{"w":3200,"h":1800,"dpr":2},"view":{"w":1600,"h":900},"fps":60,"startedAt":1761836652000}
+{"t":412.6,"k":"move","x":801.5,"y":312}
+{"t":1102,"k":"cursor","type":"text"}
+{"t":980.1,"k":"down","b":"left","x":812,"y":318,"target":{"x":760,"y":300,"w":120,"h":36,"role":"button"}}
+{"t":1060.4,"k":"up","b":"left","x":812,"y":318}
+{"t":1200,"k":"move","x":
+{"t":1300.2,"k":"focus","rect":{"x":420,"y":180,"w":760,"h":44}}
+{"t":1320.9,"k":"key","kind":"char"}
+{"t":1330,"k":"telepathy","strength":9}
+{"t":5200,"k":"nav","url":"https://linear.app/issue/LIN-42","title":"Issue LIN-42"}
+{"t":5300.4,"k":"move","x":90

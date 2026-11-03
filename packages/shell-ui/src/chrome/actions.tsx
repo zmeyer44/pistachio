@@ -44,6 +44,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Puzzle,
   RotateCw,
   Settings,
   Sparkles,
@@ -72,6 +73,8 @@ import { chooseHome, chooseRailSpace } from "../components/space-rail/actions";
 import { MenuItem } from "../components/ui/menu";
 import { cn } from "../lib/cn";
 import { arrangeDesk, newSpaceByKey, shortcutSurface, splitAvailable } from "../lib/desk/open";
+import { openExtensionsPage } from "../lib/extensions/actions";
+import { focusLedge } from "../lib/extensions/ledge-focus";
 import { screenshotArea, screenshotView } from "../lib/screenshot";
 import { railOffered, sidebarModeOf } from "../lib/sidebar-mode";
 import { selectActiveTab, useAppStore, type AppState } from "../store";
@@ -95,6 +98,7 @@ export type ChromeActionId =
   | "openNotes"
   | "newNote"
   | "newTerminal"
+  | "openExtensions"
   | "openBookmarks"
   | "openWatchtower"
   | "openArchive"
@@ -354,6 +358,14 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
     // A shell runs on the Mac (docs/terminal.md): the web has none.
     enabled: () => nativeApi() !== null,
     run: ({ run }) => run({ type: "newTerminal" }),
+  },
+  // pistachio://extensions/ (docs/extensions.md §2): the Mac's alone — the web has none.
+  openExtensions: {
+    id: "openExtensions",
+    label: () => "Extensions",
+    icon: () => <Puzzle aria-hidden="true" />,
+    enabled: () => nativeApi() !== null,
+    run: () => openExtensionsPage(),
   },
   openWatchtower: {
     id: "openWatchtower",
@@ -618,6 +630,9 @@ export function runConfiguredShortcut(
     case "goToSpace7":
     case "goToSpace8":
       return chooseRailSpace(Number(id.slice("goToSpace".length)));
+    // The keyboard on the Ledge (docs/extensions.md §2): none on screen (the sidebar hidden, the web), the key is no one's.
+    case "focusLedge":
+      return focusLedge();
   }
 }
 

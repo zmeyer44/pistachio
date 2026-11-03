@@ -274,6 +274,203 @@ function startDefaultPlaybackRate(): void {
 
 startDefaultPlaybackRate();
 
+// ── An extension watching the page's input (docs/extensions.md §5 `input`) ──
+// What only the page knows of what the person does in it — the element a
+// press landed on (the nearest thing one presses: a link, a button, a field,
+// a role that says so; else the element itself while it is no more than 40%
+// of the viewport), the field that took focus and whether it is a secret one
+// (a password, a card number, a one-time code: main lets no key and no caret
+// out while one has focus), the caret in an editable (10 Hz), the scroll
+// (once a frame) — sent to main from every frame, in the frame's own CSS px
+// with the page's zoom, and only while main says an extension watches this
+// page (pistachio:extension-input-on): no listener is on the page otherwise.
+// Never a key, a character or a field's value.
+const EXTENSION_INPUT_CHANNEL = "pistachio:extension-input";
+const EXTENSION_INPUT_ON_CHANNEL = "pistachio:extension-input-on";
+const EXTENSION_INPUT_ACTIONABLE = "a, button, input, select, textarea, [role=button], [role=link], [role=tab], [role=menuitem], [role=checkbox], [contenteditable]";
+const EXTENSION_INPUT_CARET_MS = 100;
+const UNTYPED_INPUTS = new Set(["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "image", "hidden"]);
+
+function startExtensionInput(): void {
+  let on = false;
+  let caretAt = 0;
+  let caretTimer = 0;
+  let scrollFrame = 0;
+
+  const send = (message: Record<string, unknown>): void => {
+    try {
+      ipcRenderer.send(EXTENSION_INPUT_CHANNEL, message);
+    } catch {
+      // A frame going away says nothing more.
+    }
+  };
+  const zoom = (): number => {
+    try {
+      return webFrame.getZoomFactor();
+    } catch {
+      return 1;
+    }
+  };
+  const rectOf = (element: Element): { x: number; y: number; w: number; h: number } => {
+    const box = element.getBoundingClientRect();
+    return { x: box.left, y: box.top, w: box.width, h: box.height };
+  };
+  const roleOf = (element: Element): string => {
+    const role = element.getAttribute("role");
+    if (role !== null && role !== "") return role;
+    const tag = element.tagName.toLowerCase();
+    if (tag === "a") return "link";
+    if (tag === "button") return "button";
+    if (tag === "select") return "combobox";
+    if (tag === "textarea") return "textbox";
+    if (element instanceof HTMLInputElement) {
+      if (element.type === "checkbox" || element.type === "radio") return element.type;
+      return UNTYPED_INPUTS.has(element.type) ? "button" : "textbox";
+    }
+    return element instanceof HTMLElement && element.isContentEditable ? "textbox" : tag;
+  };
+  /** The element an event is about, inside a shadow root too. */
+  const deepTarget = (event: Event): Element | null => {
+    const first = event.composedPath()[0];
+    return first instanceof Element ? first : event.target instanceof Element ? event.target : null;
+  };
+  const secretField = (element: Element | null): boolean => {
+    if (!(element instanceof HTMLInputElement)) return false;
+    const autocomplete = (element.getAttribute("autocomplete") ?? "").toLowerCase();
+    return element.type === "password" || autocomplete.includes("password") || autocomplete.includes("cc-") || autocomplete.includes("one-time-code");
+  };
+  const editable = (element: Element | null): boolean =>
+    element instanceof HTMLInputElement
+      ? !UNTYPED_INPUTS.has(element.type)
+      : element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement || (element instanceof HTMLElement && element.isContentEditable);
+  const focused = (): Element | null => {
+    let element = document.activeElement;
+    while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  };
+
+  const onPointerDown = (event: PointerEvent): void => {
+    if (!event.isTrusted) return;
+    const target = deepTarget(event);
+    let pressed: Element | null = target?.closest(EXTENSION_INPUT_ACTIONABLE) ?? null;
+    if (pressed === null && target !== null) {
+      const box = target.getBoundingClientRect();
+      if (box.width * box.height <= 0.4 * innerWidth * innerHeight) pressed = target;
+    }
+    const button = event.button === 2 ? "right" : event.button === 1 ? "middle" : "left";
+    send({ k: "down", x: event.clientX, y: event.clientY, button, target: pressed === null ? null : { ...rectOf(pressed), role: roleOf(pressed) }, z: zoom() });
+  };
+  /** Elements focused for themselves: a focused one of any other kind — a div, a span — is a host hiding a closed tree, or taken for one (the body, focused by default, is nothing focused). */
+  const NATIVELY_FOCUSABLE = new Set(["A", "AREA", "AUDIO", "BUTTON", "DETAILS", "EMBED", "IFRAME", "INPUT", "OBJECT", "SELECT", "SUMMARY", "TEXTAREA", "VIDEO"]);
+  /**
+   * A focused host whose shadow tree is closed hides what has focus inside it — a custom element's own password
+   * field, as far as anyone outside can tell — so it is kept secret. (An open tree is looked into: `focused`.)
+   */
+  const hidesFocus = (element: Element | null): boolean =>
+    element !== null &&
+    element !== document.body &&
+    element !== document.documentElement &&
+    !editable(element) &&
+    element.shadowRoot === null &&
+    (element.tagName.includes("-") || !NATIVELY_FOCUSABLE.has(element.tagName));
+  /**
+   * What has focus now, in words main keeps: a field (secret or not), a host hiding one, or nothing typed into.
+   * Read from the document rather than the event: a move between two fields of one shadow tree reaches the window
+   * as the host's events, their target the host both times.
+   */
+  const reportFocus = (): void => {
+    const element = focused();
+    if (editable(element)) send({ k: "focus", rect: rectOf(element!), secret: secretField(element), z: zoom() });
+    else if (hidesFocus(element)) send({ k: "focus", rect: rectOf(element!), secret: true, z: zoom() });
+    else send({ k: "focus", rect: null, secret: false, z: zoom() });
+  };
+  /**
+   * Open shadow trees focus has entered, listened to from inside: a move between two fields of one tree fires
+   * no focus event past its root (MEASURED, Electron 43: the window hears nothing of it), while the first move
+   * into the tree reaches the window as the host's — where the tree is found and watched from then on.
+   */
+  const watchedRoots = new Set<ShadowRoot>();
+  const watchRootsOf = (element: Element | null): void => {
+    for (let node = element; node !== null; node = node.parentElement ?? (node.getRootNode() instanceof ShadowRoot ? (node.getRootNode() as ShadowRoot).host : null)) {
+      const root = node.getRootNode();
+      if (!(root instanceof ShadowRoot) || watchedRoots.has(root)) continue;
+      watchedRoots.add(root);
+      root.addEventListener("focusin", onFocusIn, true);
+      root.addEventListener("focusout", onFocusOut, true);
+    }
+  };
+  const onFocusIn = (): void => {
+    watchRootsOf(focused());
+    reportFocus();
+  };
+  const onFocusOut = (): void => {
+    // Out of a field: said once the move is done (a focusin follows at once when it went to another field here).
+    queueMicrotask(reportFocus);
+  };
+  const sendCaret = (): void => {
+    caretTimer = 0;
+    caretAt = performance.now();
+    const element = focused();
+    // In an editable that is not a field (a field's own box is its focus): never a secret one's.
+    if (!(element instanceof HTMLElement) || !element.isContentEditable || secretField(element)) return;
+    const selection = document.getSelection();
+    if (selection === null || selection.rangeCount === 0) return;
+    const range = selection.getRangeAt(0);
+    let box: DOMRect | undefined = range.getBoundingClientRect();
+    if (box.width === 0 && box.height === 0) box = range.getClientRects()[0];
+    if (box === undefined || (box.width === 0 && box.height === 0)) return;
+    send({ k: "caret", rect: { x: box.left, y: box.top, w: box.width, h: box.height }, z: zoom() });
+  };
+  const onSelection = (): void => {
+    if (caretTimer !== 0) return;
+    caretTimer = window.setTimeout(sendCaret, Math.max(0, EXTENSION_INPUT_CARET_MS - (performance.now() - caretAt)));
+  };
+  const onScroll = (event: Event): void => {
+    if (scrollFrame !== 0) return;
+    const target = event.target;
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      const page = target === document || target === document.scrollingElement || !(target instanceof Element);
+      send({ k: "scroll", x: page ? scrollX : (target as Element).scrollLeft, y: page ? scrollY : (target as Element).scrollTop });
+    });
+  };
+
+  ipcRenderer.on(EXTENSION_INPUT_ON_CHANNEL, (_event, value: unknown) => {
+    const next = value === true;
+    if (next === on) return;
+    on = next;
+    if (on) {
+      window.addEventListener("pointerdown", onPointerDown, true);
+      window.addEventListener("focusin", onFocusIn, true);
+      window.addEventListener("focusout", onFocusOut, true);
+      window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+      document.addEventListener("selectionchange", onSelection);
+      // Said at once: a secret field with focus as the watch begins silences the keys from the start — and the shadow
+      // trees that focus sits in are watched from now, as a move within one reaches the window no more than later.
+      const element = focused();
+      watchRootsOf(element);
+      if (editable(element) || hidesFocus(element)) reportFocus();
+      return;
+    }
+    window.removeEventListener("pointerdown", onPointerDown, true);
+    window.removeEventListener("focusin", onFocusIn, true);
+    window.removeEventListener("focusout", onFocusOut, true);
+    for (const root of watchedRoots) {
+      root.removeEventListener("focusin", onFocusIn, true);
+      root.removeEventListener("focusout", onFocusOut, true);
+    }
+    watchedRoots.clear();
+    window.removeEventListener("scroll", onScroll, { capture: true });
+    document.removeEventListener("selectionchange", onSelection);
+    window.clearTimeout(caretTimer);
+    caretTimer = 0;
+    if (scrollFrame !== 0) cancelAnimationFrame(scrollFrame);
+    scrollFrame = 0;
+  });
+}
+
+startExtensionInput();
+
 // Everything below is the page's own preload — Glance, media, read aloud,
 // passkeys, screen sharing — and belongs to the top frame alone. Subframes
 // run this file too (nodeIntegrationInSubFrames, so that Shields and the

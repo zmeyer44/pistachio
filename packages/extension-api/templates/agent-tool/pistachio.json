@@ -1,0 +1,23 @@
+{
+  "$schema": "../.pistachio/pistachio-extension.schema.json",
+  "api": 1,
+  "id": "dev.example.word-count",
+  "name": "Word count",
+  "version": "1.0.0",
+  "description": "Gives the agent a tool that counts the words in a text.",
+  "icon": "icon.svg",
+  "permissions": ["agent:tools"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "tools": [
+    {
+      "name": "word_count",
+      "description": "Count the words, sentences and characters in a text.",
+      "input": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "The text to count." } },
+        "required": ["text"]
+      },
+      "effect": "read"
+    }
+  ]
+}

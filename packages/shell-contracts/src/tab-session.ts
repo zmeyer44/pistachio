@@ -15,6 +15,7 @@ import type { SplitGridLayout, SplitGroupInfo } from "./ipc.js";
 import { DEFAULT_SIDEBAR_STATE, sanitizeSidebarState, type SidebarState } from "./sidebar.js";
 import { sanitizeTabGroups, type TabGroupInfo } from "./tab-groups.js";
 import { isAllowedNavigation, isLocalFileUrl, normalizeNavigation } from "./url.js";
+import { extensionIdOfUrl } from "./extensions.js";
 
 export const TAB_SESSION_VERSION = 1;
 export const MAX_RESTORED_TABS_PER_SPACE = 200;
@@ -51,6 +52,12 @@ export interface DurableTab {
    * anchored to it first (sanitizeTabSession). An older build reading the file drops it, and the entry is closed there.
    */
   linkedAnchorId?: string;
+  /**
+   * A Pistachio extension's page (BrowserTabInfo.extensionId, docs/extensions.md §4): kept on this Mac alone — read
+   * back only from the device's own file (`files`), with its address at that extension's `pistachio-ext://<id>/` and
+   * its stack held to that origin. Another device's restore point never carries one.
+   */
+  extensionId?: string;
   lastActiveAt: number;
   /** Absent in files written before history was recorded. */
   history?: DurableTabHistory;
@@ -203,9 +210,11 @@ function sanitizeTab(value: unknown, spaceId: string, files: boolean): DurableTa
   const id = typeof raw["id"] === "string" && SAFE_ID.test(raw["id"]) ? raw["id"] : "";
   const rawUrl = typeof raw["url"] === "string" && raw["url"].length <= 2_048 ? raw["url"] : "";
   const file = files && isLocalFileUrl(rawUrl);
-  if (id === "" || !(file || isAllowedNavigation(rawUrl))) return null;
-  const url = file ? rawUrl : normalizeRestorableTabUrl(rawUrl);
-  const history = sanitizeTabHistory(raw["history"], { files });
+  // (An extension's page only from this device's own file, and only at that extension's own address.)
+  const extensionId = files && typeof raw["extensionId"] === "string" && extensionIdOfUrl(rawUrl) === raw["extensionId"] ? raw["extensionId"] : null;
+  if (id === "" || !(file || extensionId !== null || isAllowedNavigation(rawUrl))) return null;
+  const url = file || extensionId !== null ? rawUrl : normalizeRestorableTabUrl(rawUrl);
+  const history = extensionId !== null ? sanitizeExtensionHistory(raw["history"], extensionId) : sanitizeTabHistory(raw["history"], { files });
   const anchorId = typeof raw["anchorId"] === "string" && raw["anchorId"].length <= 2_048 ? raw["anchorId"] : null;
   return {
     id,
@@ -218,6 +227,7 @@ function sanitizeTab(value: unknown, spaceId: string, files: boolean): DurableTa
     ...(anchorId === null && typeof raw["linkedAnchorId"] === "string" && raw["linkedAnchorId"].length > 0 && raw["linkedAnchorId"].length <= 2_048
       ? { linkedAnchorId: raw["linkedAnchorId"] }
       : {}),
+    ...(extensionId === null ? {} : { extensionId }),
     lastActiveAt: typeof raw["lastActiveAt"] === "number" && Number.isFinite(raw["lastActiveAt"]) && raw["lastActiveAt"] >= 0 ? raw["lastActiveAt"] : 0,
     ...(history === null ? {} : { history }),
     ...(sanitizePageResume(raw["resume"], url) ? { resume: sanitizePageResume(raw["resume"], url)! } : {}),
@@ -254,6 +264,22 @@ export function sanitizeTabHistory(value: unknown, options: TabSessionReading = 
     entries: trimmed.entries.map((entry) => ({ ...entry, url: file(entry.url) ? entry.url : normalizeRestorableTabUrl(entry.url) })),
     index: trimmed.index,
   };
+}
+
+/** An extension page's stack: its entries on that extension's own origin alone, kept as they were. */
+function sanitizeExtensionHistory(value: unknown, extensionId: string): DurableTabHistory | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const rawIndex = raw["index"];
+  if (!Array.isArray(raw["entries"]) || typeof rawIndex !== "number" || !Number.isInteger(rawIndex)) return null;
+  const entries = raw["entries"].map((candidate: unknown): DurableHistoryEntry => {
+    const entry = typeof candidate === "object" && candidate !== null ? (candidate as Record<string, unknown>) : {};
+    return {
+      url: typeof entry["url"] === "string" && entry["url"].length <= 2_048 ? entry["url"] : "",
+      title: typeof entry["title"] === "string" ? entry["title"].trim().slice(0, 240) : "",
+    };
+  });
+  return trimTabHistory(entries, rawIndex, (entry) => extensionIdOfUrl(entry.url) === extensionId);
 }
 
 /**

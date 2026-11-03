@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { cwdFromOsc7 } from "@pistachio/shell-contracts/terminal";
-import { inheritedEnvironment, shellKind, shellLaunch, utf8Locale, type ShellIntegrationPaths } from "../src/main/terminal/environment";
+import { inheritedEnvironment, programLaunch, shellKind, shellLaunch, utf8Locale, type ShellIntegrationPaths } from "../src/main/terminal/environment";
 import { installShellIntegration, shellIntegrationFiles } from "../src/main/terminal/shell-integration";
 
 const require = createRequire(import.meta.url);
@@ -64,6 +64,13 @@ describe("a terminal's environment", () => {
     const fish = shellLaunch("/opt/homebrew/bin/fish", { XDG_DATA_DIRS: "/opt/share" }, options);
     expect(fish.env).toMatchObject({ XDG_DATA_DIRS: "/i/fish-data:/opt/share", PISTACHIO_FISH_DATA: "/i/fish-data" });
     expect(shellLaunch("/opt/homebrew/bin/nu", {}, options).args).toEqual(["-l"]);
+    // A program in place of the prompt: the shell interactive too (its PATH), the program and its arguments as argv — the
+    // wish one argument, whatever it says.
+    const run = { program: "claude", args: ["make me a thing; rm -rf ~"] };
+    expect(programLaunch("/bin/zsh", {}, options, run).args).toEqual(["-l", "-i", "-c", 'exec "$0" "$@"', "claude", "make me a thing; rm -rf ~"]);
+    expect(programLaunch("/bin/bash", {}, options, run).args).toEqual(["--init-file", "/i/bash/pistachio.bash", "-i", "-c", 'exec "$0" "$@"', "claude", "make me a thing; rm -rf ~"]);
+    expect(programLaunch("/opt/homebrew/bin/fish", {}, options, run).args).toEqual(["-l", "-i", "-c", "exec $argv", "claude", "make me a thing; rm -rf ~"]);
+    expect(programLaunch("/bin/zsh", { ZDOTDIR: "/Users/ada/.config/zsh" }, options, run).env).toMatchObject({ ZDOTDIR: "/i/zsh" });
     expect(shellLaunch("/opt/homebrew/bin/elvish", {}, options).args).toEqual([]);
     expect(shellKind("-zsh")).toBe("zsh");
   });

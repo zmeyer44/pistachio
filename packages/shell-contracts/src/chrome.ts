@@ -519,7 +519,17 @@ export type ShellCommand =
   /** The page's menu offered it, but the image could not be read. */
   | { type: "attachToChatFailed"; reason: string }
   /** The live share's pill was pressed over the desk (docs/live-share.md §1): the Live card. */
-  | { type: "openLiveCard" };
+  | { type: "openLiveCard" }
+  /**
+   * An extension asked the agent (docs/extensions.md §5 `agent.ask`): the space's Bar takes the keyboard holding
+   * `text`, for the person to send or not — never a turn the extension starts. `via` names the extension.
+   */
+  | { type: "askDesk"; text: string; via?: string }
+  /**
+   * An extension's toast (`pistachio.ui.toast`) in the notice stack; with an action, its button is an
+   * `extensions({ type: "statusAction", id, action, source: "toast" })`.
+   */
+  | { type: "extensionToast"; id: string; message: string; action: { id: string; title: string } | null };
 
 export function isShellCommand(value: unknown): value is ShellCommand {
   if (typeof value !== "object" || value === null) return false;
@@ -628,6 +638,22 @@ export function isShellCommand(value: unknown): value is ShellCommand {
         message.length <= NOTICE_MESSAGE_MAX &&
         (tone === undefined || isNoticeTone(tone))
       );
+    }
+    case "askDesk": {
+      const { text, via } = value as { text?: unknown; via?: unknown };
+      return typeof text === "string" && text.length > 0 && text.length <= 8_000 && (via === undefined || (typeof via === "string" && via.length <= 80));
+    }
+    case "extensionToast": {
+      const { id, message, action } = value as { id?: unknown; message?: unknown; action?: unknown };
+      const actionOk =
+        action === null ||
+        (typeof action === "object" &&
+          action !== undefined &&
+          typeof (action as { id?: unknown }).id === "string" &&
+          typeof (action as { title?: unknown }).title === "string" &&
+          (action as { id: string }).id.length <= 64 &&
+          (action as { title: string }).title.length <= 60);
+      return typeof id === "string" && id.length > 0 && id.length <= 200 && typeof message === "string" && message.length > 0 && message.length <= NOTICE_MESSAGE_MAX && actionOk;
     }
     default:
       return false;

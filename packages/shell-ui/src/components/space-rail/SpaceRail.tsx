@@ -14,6 +14,7 @@ import { useContextMenu } from "../ContextMenu";
 import { RailNowPlaying } from "../desk/DeskNowPlaying";
 import { LiveMark, liveMarkLabel } from "../live/LiveMark";
 import { DeskMoreButton, DeskRailToggle } from "../desk/DeskSidebarControls";
+import { Ledge } from "../extensions/Ledge";
 import { SidebarRailContext } from "../sidebar-rail";
 import { FaviconCluster, type ClusterTab } from "../TabGroupRow";
 import { chooseHome } from "./actions";
@@ -247,6 +248,9 @@ export function SpaceRail({
       </div>
       <div className="space-rail-foot">
         {railOnly ? <RailNowPlaying /> : null}
+        {/* The Ledge on the rail alone (docs/extensions.md X9): a short column of the first pinned extensions and its ⋯,
+            above New space. Beside the card, the card's foot holds it. */}
+        {railOnly ? <Ledge variant="rail" /> : null}
         <button
           type="button"
           data-testid="rail-new-space"

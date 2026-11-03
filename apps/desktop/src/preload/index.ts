@@ -128,6 +128,7 @@ import {
 } from "@pistachio/shell-contracts/ipc";
 import type { ArtifactListing } from "@pistachio/shell-contracts/artifacts";
 import type { NoteResponse, NoteSnapshot } from "@pistachio/shell-contracts/notes";
+import type { ExtensionResponse, ExtensionsSnapshot } from "@pistachio/shell-contracts/extensions";
 import type { ReportResponse } from "@pistachio/shell-contracts/reports";
 import type { TerminalEvent, TerminalRequest } from "@pistachio/shell-contracts/terminal";
 import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState, LiveTerminalInput } from "@pistachio/shell-contracts/live-share";
@@ -535,6 +536,8 @@ const api: PistachioApi = {
     ipcRenderer.send(IPC.glanceBoundsSet, bounds),
   prepareGlanceClose: () =>
     ipcRenderer.invoke(IPC.glancePrepareClose) as Promise<string | null>,
+  setExtensionPanelBounds: (bounds: ContentBounds | null) =>
+    ipcRenderer.send(IPC.extensionPanelBounds, bounds),
   stageGlancePromotion: (bounds: ContentBounds) =>
     ipcRenderer.invoke(IPC.glancePromotionStage, bounds) as Promise<void>,
   closeGlance: () => ipcRenderer.invoke(IPC.glanceClose) as Promise<void>,
@@ -920,6 +923,12 @@ const api: PistachioApi = {
     ipcRenderer.invoke(IPC.integrationCalendarEvents, spaceId, from, to) as Promise<CalendarAgenda>,
   reports: (request) => ipcRenderer.invoke(IPC.reports, request) as Promise<ReportResponse>,
   notes: (request) => ipcRenderer.invoke(IPC.notes, request) as Promise<NoteResponse>,
+  extensions: (request) => ipcRenderer.invoke(IPC.extensions, request) as Promise<ExtensionResponse>,
+  onExtensions(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, snapshot: ExtensionsSnapshot): void => listener(snapshot);
+    ipcRenderer.on(IPC.extensionsChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.extensionsChanged, handler);
+  },
   onNotes(listener) {
     const handler = (
       _event: Electron.IpcRendererEvent,

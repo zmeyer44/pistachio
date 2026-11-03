@@ -122,14 +122,16 @@ function harness(options: { ready?: Promise<unknown>; folders?: string[] } = {})
   const events: TerminalEvent[] = [];
   const copies: string[] = [];
   const shells: FakeShell[] = [];
+  const runs: ({ program: string; args: string[] } | null)[] = [];
   const mirrors: FakeMirror[] = [];
   const places = new MemoryPlaces();
   const folders = new Set(options.folders ?? ["/Users/ada"]);
   const sessions = new TerminalSessions({
     send: (event) => events.push(event),
-    spawn: (cwd) => {
+    spawn: (cwd, _cols, _rows, run) => {
       const shell = new FakeShell(cwd);
       shells.push(shell);
+      runs.push(run);
       return shell;
     },
     mirror: (cols, rows, hear) => {
@@ -145,7 +147,7 @@ function harness(options: { ready?: Promise<unknown>; folders?: string[] } = {})
     clipboard: (text) => copies.push(text),
   });
   const sent = (type: TerminalEvent["type"]) => events.filter((event) => event.type === type);
-  return { sessions, events, shells, mirrors, places, sent, copies };
+  return { sessions, events, shells, runs, mirrors, places, sent, copies };
 }
 
 /** Let the open's await, and a mirror's drawn callback, run. */
@@ -163,10 +165,11 @@ afterEach(() => {
 
 describe("a terminal's shell", () => {
   it("starts where it was asked, sends its output in batches, and is held back while the window is behind", async () => {
-    const { sessions, shells, sent } = harness({ folders: ["/Users/ada", "/srv/app"] });
+    const { sessions, shells, sent, runs } = harness({ folders: ["/Users/ada", "/srv/app"] });
     sessions.handle({ type: "open", id: ID, cols: 80, rows: 24, cwd: "/srv/app" });
     await settle();
     expect(shells[0]?.cwd).toBe("/srv/app");
+    expect(runs).toEqual([null]);
     // (The window becomes what the mirror holds: for a shell started now, an empty screen.)
     expect(sent("opened")).toEqual([{ type: "opened", id: ID, replay: "<screen:>", cols: 80, rows: 24, fresh: true, cwd: "/srv/app" }]);
 
@@ -191,6 +194,19 @@ describe("a terminal's shell", () => {
     await settle();
     expect(shells).toHaveLength(1);
     expect(sent("opened").at(-1)).toMatchObject({ replay: "<screen:hello>", fresh: false, cols: 80, rows: 24 });
+  });
+});
+
+describe("a shell asked to run a program", () => {
+  it("hands the program and its arguments to the shell it starts, once: a shell started again is plain", async () => {
+    const { sessions, runs } = harness({ folders: ["/Users/ada", "/srv/app"] });
+    const run = { program: "claude", args: ["make me an extension that counts words"] };
+    sessions.handle({ type: "open", id: ID, cols: 80, rows: 24, cwd: "/srv/app", run });
+    await settle();
+    expect(runs).toEqual([run]);
+    sessions.handle({ type: "open", id: "beefbeefbeef", cols: 80, rows: 24, cwd: "/srv/app" });
+    await settle();
+    expect(runs).toEqual([run, null]);
   });
 });
 

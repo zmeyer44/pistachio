@@ -26,7 +26,9 @@
   },
   "pnpm": {
     "patchedDependencies": {
-      "playwright-core@1.62.1": "patches/playwright-core@1.62.1.patch"
+      "playwright-core@1.62.1": "patches/playwright-core@1.62.1.patch",
+      "electron-chrome-extensions@4.10.0": "patches/electron-chrome-extensions@4.10.0.patch",
+      "electron-chrome-web-store@0.13.0": "patches/electron-chrome-web-store@0.13.0.patch"
     }
   }
 }

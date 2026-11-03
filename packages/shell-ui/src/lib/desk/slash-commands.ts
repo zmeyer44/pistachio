@@ -8,9 +8,11 @@
  * (components/desk/DeskBar.tsx, `runCommand`).
  */
 
+import { extensionBarCommandId, type ExtensionInfo } from "@pistachio/shell-contracts/extensions";
 import { webSearchLabel, type WebSearchProvider } from "@pistachio/shell-contracts/search";
 
-export type BarCommandId =
+/** The Bar's own commands. */
+export type BuiltinBarCommandId =
   | "search"
   | "open"
   | "find"
@@ -28,12 +30,35 @@ export type BarCommandId =
   | "draw"
   | "note"
   | "brief"
-  | "terminal";
+  | "terminal"
+  | "extension";
 
-export type BarCommandGroup = "Browse" | "Ask Pistachio" | "Desk" | "Open";
+/**
+ * A command an extension declared (docs/extensions.md §2, *Say them*):
+ * `ext:<extension id>:<command>` (extensionBarCommandId), or — for a Chrome
+ * extension on the Ledge, which declares none — `ext:<id>:@action`, its action.
+ */
+export type ExtensionBarCommandId = `ext:${string}`;
+
+export type BarCommandId = BuiltinBarCommandId | ExtensionBarCommandId;
+
+export type BarCommandGroup = "Browse" | "Ask Pistachio" | "Desk" | "Open" | "Extensions" | "Make";
 
 /** The groups in the menu's order, as an empty `/` lists them. */
-export const BAR_COMMAND_GROUPS: readonly BarCommandGroup[] = ["Browse", "Ask Pistachio", "Desk", "Open"];
+export const BAR_COMMAND_GROUPS: readonly BarCommandGroup[] = ["Browse", "Ask Pistachio", "Desk", "Open", "Extensions", "Make"];
+
+/** What an extension's row runs: its declared command (main relays it, a prompt or an event), or a Chrome extension's action. */
+export interface BarCommandExtension {
+  id: string;
+  name: string;
+  iconUrl: string | null;
+  /** The declared command's name; for an action, `@action`. */
+  command: string;
+  action: boolean;
+}
+
+/** The Chrome action's command name in an `ext:` id. */
+export const EXTENSION_ACTION_COMMAND = "@action";
 
 export interface BarCommand {
   id: BarCommandId;
@@ -50,6 +75,8 @@ export interface BarCommand {
   arg: { hint: string; required: boolean } | null;
   /** A request to Pistachio (`commandPrompt`), or something the Bar does itself. */
   kind: "prompt" | "action";
+  /** An extension's: whose, and what it runs (main runs it: `barCommand`, or the action's `activate`). */
+  extension?: BarCommandExtension;
 }
 
 export const BAR_COMMANDS: readonly BarCommand[] = [
@@ -234,7 +261,124 @@ export const BAR_COMMANDS: readonly BarCommand[] = [
     arg: null,
     kind: "action",
   },
+  {
+    // (docs/extensions.md §8: a draft folder in the dev folder, then the wish to Pistachio, who writes it there; it
+    // lands paused, for the person's approval.)
+    id: "extension",
+    name: "extension",
+    aliases: ["ext"],
+    keywords: ["make", "build", "create", "add-on", "plugin", "wish"],
+    description: "Make an extension with Pistachio",
+    group: "Make",
+    arg: { hint: "what it should do", required: true },
+    kind: "action",
+  },
 ];
+
+/** A Chrome extension's name as a command word: `/dark-reader`. */
+export function commandWord(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 32);
+}
+
+/**
+ * The rows the extensions add (docs/extensions.md §2): each declared Bar
+ * command of an extension on in this Profile and not waiting on the person,
+ * with its hint; and each Chrome extension on the Ledge with an action, as
+ * `/<name>` (its action, as the icon's click). In the extensions' order.
+ */
+export function extensionBarCommands(extensions: readonly ExtensionInfo[]): BarCommand[] {
+  const rows: BarCommand[] = [];
+  // The words taken: the Bar's own commands and their aliases, then each row as it is added — a word names one command.
+  const taken = new Set(BAR_COMMANDS.flatMap((command) => [command.name, ...command.aliases]));
+  const wordFor = (extensionId: string, declared: string): string => {
+    if (!taken.has(declared)) return declared;
+    // A name a built-in (or another extension) holds completes and runs as /<its id's last segment>-<name> (docs §12);
+    // a Chrome extension's id has no segments, and its first eight letters stand in.
+    const segment = commandWord(extensionId.includes(".") ? extensionId.split(".").pop()! : extensionId.slice(0, 8)) || "ext";
+    let word = `${segment}-${declared}`;
+    for (let n = 2; taken.has(word); n++) word = `${segment}-${declared}-${String(n)}`;
+    return word;
+  };
+  for (const extension of extensions) {
+    if (!extension.enabled || !extension.enabledHere || extension.pending !== null) continue;
+    if (extension.status === "needs-approval" || extension.status === "paused" || extension.status === "incompatible" || extension.status === "off") continue;
+    const owner = { id: extension.id, name: extension.name, iconUrl: extension.iconUrl };
+    for (const declared of extension.barCommands) {
+      const name = declared.name.replace(/^\//u, "").trim();
+      if (name === "" || /\s/u.test(name)) continue;
+      const word = wordFor(extension.id, name);
+      taken.add(word);
+      rows.push({
+        id: extensionBarCommandId(extension.id, name),
+        name: word,
+        aliases: [],
+        keywords: [extension.name],
+        description: declared.description,
+        group: "Extensions",
+        arg: declared.arg,
+        kind: "action",
+        extension: { ...owner, command: name, action: false },
+      });
+    }
+    if (extension.kind === "chrome" && extension.pinned && extension.hasAction) {
+      const name = commandWord(extension.name);
+      if (name === "") continue;
+      const word = wordFor(extension.id, name);
+      taken.add(word);
+      rows.push({
+        id: extensionBarCommandId(extension.id, EXTENSION_ACTION_COMMAND),
+        name: word,
+        aliases: [],
+        keywords: [],
+        description: `Open ${extension.name}`,
+        group: "Extensions",
+        arg: null,
+        kind: "action",
+        extension: { ...owner, command: EXTENSION_ACTION_COMMAND, action: true },
+      });
+    }
+  }
+  return rows;
+}
+
+/** The whole catalog with the extensions' rows after the Bar's own (whose names win a clash: a clashing row completes as /<segment>-<name>). */
+export function barCommandsFor(extensions: readonly ExtensionInfo[]): readonly BarCommand[] {
+  const rows = extensionBarCommands(extensions);
+  return rows.length === 0 ? BAR_COMMANDS : [...BAR_COMMANDS, ...rows];
+}
+
+/** The draft folder's name for a wish (`draftFolder`): its first words, as a slug. */
+export function extensionDraftName(wish: string): string {
+  const words = wish
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/^(?:an? |the |that |to |which )/u, "")
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean)
+    .slice(0, 5);
+  const slug = words.join("-").slice(0, 40).replace(/-+$/u, "");
+  return slug === "" ? "my-extension" : slug;
+}
+
+/**
+ * What `/extension <wish>` asks Pistachio (docs/extensions.md §8), put as a
+ * person would ask it, with the draft folder when main made one. With the
+ * draft's `author` (its slug and the one-time token `draftFolder` answered),
+ * the first line is the marker main reads and strips: that turn is the author
+ * turn, with the draft tools alone (run-controller's #authorMarker).
+ */
+export function extensionPrompt(wish: string, folder: string | null, author: { slug: string; token: string } | null = null): string {
+  let what = wish.trim().replace(/[.!\s]+$/u, "");
+  what = what.replace(/^(?:that|which|to)\s+/iu, "");
+  const ask = /^(?:an?|the)\s/iu.test(what) ? `Build a Pistachio extension: ${what}.` : `Build a Pistachio extension that ${what}.`;
+  const said = folder === null ? ask : `${ask} Write it in ${folder}.`;
+  return author === null ? said : `[pistachio:extension-author slug=${author.slug} token=${author.token}]\n${said}`;
+}
 
 /** What the person's settings put into a row: the engine `/search` uses. */
 export interface CommandSettings {
@@ -246,9 +390,9 @@ export function commandDescription(command: BarCommand, settings: CommandSetting
   return command.description.replace("{engine}", webSearchLabel(settings.webProvider));
 }
 
-function byName(name: string): BarCommand | null {
+function byName(name: string, commands: readonly BarCommand[]): BarCommand | null {
   const typed = name.toLowerCase();
-  return BAR_COMMANDS.find((command) => command.name === typed || command.aliases.includes(typed)) ?? null;
+  return commands.find((command) => command.name === typed || command.aliases.includes(typed)) ?? null;
 }
 
 /**
@@ -270,17 +414,18 @@ export function commandQuery(text: string, caret: number): { query: string; end:
  * — from two letters, so `/s` is not every row with an s word — other names
  * that do (`/goo` is `/search`), then rows each typed word begins a word of
  * (`/new tab` is `/open`). Never letters scattered through a row: a menu that
- * offers what was not asked for is not one to press Enter in.
+ * offers what was not asked for is not one to press Enter in. `commands` is
+ * the catalog (`barCommandsFor`: the Bar's own and the extensions').
  */
-export function commandCandidates(query: string): BarCommand[] {
+export function commandCandidates(query: string, commands: readonly BarCommand[] = BAR_COMMANDS): BarCommand[] {
   const typed = query.trim().toLowerCase();
-  if (typed === "") return [...BAR_COMMANDS];
-  const byPrefix = BAR_COMMANDS.filter((command) => command.name.startsWith(typed));
+  if (typed === "") return [...commands];
+  const byPrefix = commands.filter((command) => command.name.startsWith(typed));
   if (typed.length < 2) return byPrefix;
-  const byAlias = BAR_COMMANDS.filter((command) => !byPrefix.includes(command) && command.aliases.some((alias) => alias.startsWith(typed)));
+  const byAlias = commands.filter((command) => !byPrefix.includes(command) && command.aliases.some((alias) => alias.startsWith(typed)));
   const named = [...byPrefix, ...byAlias];
   const tokens = typed.split(/[\s-]+/).filter(Boolean);
-  const byWords = BAR_COMMANDS.filter((command) => {
+  const byWords = commands.filter((command) => {
     if (named.includes(command)) return false;
     const words = [...command.aliases, ...command.keywords, command.description.replace("{engine}", "web")].flatMap((text) => text.toLowerCase().split(/[^a-z0-9']+/));
     return tokens.every((token) => words.some((word) => word.startsWith(token)));
@@ -296,10 +441,10 @@ export function insertCommand(text: string, end: number, command: BarCommand): {
 }
 
 /** A message read as a command: the one its first word names, and what follows it. Any other `/word` is a message. */
-export function parseCommand(text: string): { command: BarCommand; args: string } | null {
+export function parseCommand(text: string, commands: readonly BarCommand[] = BAR_COMMANDS): { command: BarCommand; args: string } | null {
   const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (match === null) return null;
-  const command = byName(match[1]!);
+  const command = byName(match[1]!, commands);
   return command === null ? null : { command, args: (match[2] ?? "").trim() };
 }
 
@@ -309,10 +454,10 @@ export function parseCommand(text: string): { command: BarCommand; args: string 
  * the head of the field, followed by a space (or still being typed, by
  * nothing — no hint then).
  */
-export function commandSpan(text: string): { end: number; command: BarCommand; hint: string | null } | null {
+export function commandSpan(text: string, commands: readonly BarCommand[] = BAR_COMMANDS): { end: number; command: BarCommand; hint: string | null } | null {
   const match = /^\/(\S+)(\s*)/.exec(text);
   if (match === null) return null;
-  const command = byName(match[1]!);
+  const command = byName(match[1]!, commands);
   if (command === null) return null;
   const end = 1 + match[1]!.length;
   const spaced = match[2]!.length > 0;
@@ -321,8 +466,8 @@ export function commandSpan(text: string): { end: number; command: BarCommand; h
 }
 
 /** Whether the field holds a command that waits for what it takes: Enter then does nothing. */
-export function commandWaiting(text: string): boolean {
-  const parsed = parseCommand(text);
+export function commandWaiting(text: string, commands: readonly BarCommand[] = BAR_COMMANDS): boolean {
+  const parsed = parseCommand(text, commands);
   return parsed !== null && parsed.command.arg?.required === true && parsed.args === "";
 }
 

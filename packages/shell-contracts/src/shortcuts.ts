@@ -42,6 +42,7 @@ export type ShortcutActionId =
   | "newSpaceAddress"
   | "newSpace"
   | "newTerminal"
+  | "focusLedge"
   | "goToHome"
   | "goToSpace1"
   | "goToSpace2"
@@ -145,6 +146,8 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
   { id: "goToSpace6", group: "Spaces", label: "Go to space 6", surfaces: ["native"] },
   { id: "goToSpace7", group: "Spaces", label: "Go to space 7", surfaces: ["native"] },
   { id: "goToSpace8", group: "Spaces", label: "Go to space 8", surfaces: ["native"] },
+  // The Ledge (docs/extensions.md §2): the keyboard on the extensions strip at the card's foot. Last: appended after the rest.
+  { id: "focusLedge", group: "Window", label: "Go to the Ledge", note: "The keyboard on the extensions at the foot of the sidebar: ←/→ walk, ↵ runs, 1–9 run the nth, ⎋ gives it back.", surfaces: ["native"] },
 ];
 
 export const SHORTCUT_ACTION_IDS = SHORTCUT_DEFINITIONS.map((definition) => definition.id) as readonly ShortcutActionId[];
@@ -214,6 +217,7 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   newSpace: "Mod+N",
   // VS Code's key for its terminal panel; free in every browser on the Mac.
   newTerminal: "Mod+J",
+  focusLedge: "Mod+Shift+E",
   // Slack's: ⌘1 the top of the rail, Home, and ⌘2–⌘9 the spaces under it.
   goToHome: "Mod+1",
   goToSpace1: "Mod+2",

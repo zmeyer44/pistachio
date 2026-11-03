@@ -53,7 +53,8 @@ export function liveBrowser(
         return item?.kind === "file" ? { title: item.name, url: null, favicon: null, page: false, terminal: false } : null;
       }
       const tab = browser.tab(windowId);
-      if (tab === null || tab.hiddenFor !== undefined || browser.tabGroupMembers(groupId)?.includes(windowId) !== true) return null;
+      // (An extension's page is no window of a share: docs/extensions.md §4, isExtensionTab.)
+      if (tab === null || tab.hiddenFor !== undefined || tab.extensionId !== undefined || browser.tabGroupMembers(groupId)?.includes(windowId) !== true) return null;
       const shellPage = isShellPageUrl(tab.url);
       return { title: tab.title, url: shellPage ? null : tab.url, favicon: tab.faviconUrl, page: tab.kind === "human" && !shellPage, terminal: terminal(windowId) };
     },

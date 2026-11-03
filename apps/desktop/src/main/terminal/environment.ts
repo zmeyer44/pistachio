@@ -12,6 +12,7 @@
  */
 
 import { basename, join } from "node:path";
+import type { TerminalRun } from "@pistachio/shell-contracts/terminal";
 
 /** The shell integration's files, as `installShellIntegration` wrote them. */
 export interface ShellIntegrationPaths {
@@ -143,6 +144,24 @@ export function shellLaunch(shell: string, inherited: Record<string, string>, op
     return { file: shell, args: ["-l"], env };
   }
   return { file: shell, args: LOGIN_FLAG.has(name) ? ["-l"] : [], env };
+}
+
+/** What a POSIX shell is handed after `-c`: the program and its arguments as `$0` and `$@`, never a line they are spelled into. */
+const EXEC_ARGV = 'exec "$0" "$@"';
+
+/**
+ * The login shell started as `shellLaunch` starts it — interactive too, so it reads what sets the person's PATH
+ * (`.zshrc`, the bash init file) — and told to run `run.program` with `run.args` in place of its prompt, each
+ * argument its own (`exec "$0" "$@"` for a POSIX shell, `exec $argv` for fish): *Build with Claude Code*'s
+ * `claude <wish>`, the wish one argument whatever it says. When the program ends, so does the shell.
+ */
+export function programLaunch(shell: string, inherited: Record<string, string>, options: { appVersion: string; locale: string; integration: ShellIntegrationPaths | null }, run: TerminalRun): ShellLaunch {
+  const base = shellLaunch(shell, inherited, options);
+  const kind = shellKind(shell);
+  if (kind === "zsh") return { ...base, args: ["-l", "-i", "-c", EXEC_ARGV, run.program, ...run.args] };
+  if (kind === "bash") return { ...base, args: [...base.args, "-i", "-c", EXEC_ARGV, run.program, ...run.args] };
+  if (kind === "fish") return { ...base, args: ["-l", "-i", "-c", "exec $argv", run.program, ...run.args] };
+  return { ...base, args: [...base.args, "-c", EXEC_ARGV, run.program, ...run.args] };
 }
 
 /** `en-US` (Intl's spelling) as `en_US` (a POSIX locale's); `en_US` for anything that is not a language and region. */

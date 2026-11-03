@@ -77,6 +77,22 @@ export interface ContextMenuTemplateItem {
   type?: "normal" | "separator" | "checkbox";
   role?: "undo" | "redo" | "cut" | "copy" | "paste" | "pasteAndMatchStyle" | "delete" | "selectAll";
   click?: () => void;
+  /** An extension's items under its name (docs/extensions.md §2), past one. Only the desktop's menu has any. */
+  submenu?: ContextMenuTemplateItem[];
+}
+
+/**
+ * A context-menu item an extension declared (docs/extensions.md §2, §3
+ * `contextMenus`), already held by main to the extensions on in the page's
+ * Profile and to the item's own hosts; the builder decides which apply to
+ * what the pointer is over.
+ */
+export interface PageContextMenuExtensionItem {
+  extensionId: string;
+  extensionName: string;
+  itemId: string;
+  title: string;
+  contexts: readonly ("page" | "selection" | "link" | "image" | "window")[];
 }
 
 /**
@@ -113,6 +129,8 @@ export interface PageContextMenuState {
    * shows the web alone.
    */
   fileLinks?: boolean;
+  /** Extensions' declared items (the desktop's alone); absent or empty, there is no extensions section. */
+  extensions?: readonly PageContextMenuExtensionItem[];
 }
 
 export interface PageContextMenuActions {
@@ -143,6 +161,8 @@ export interface PageContextMenuActions {
   addImageToChat(): void;
   /** Stage the selected words in the agent console's composer. */
   addSelectionToChat(text: string): void;
+  /** An extension's item was chosen: its worker hears it (`contextMenus.onClicked`). */
+  extensionItem?(item: PageContextMenuExtensionItem): void;
 }
 
 type Section = ContextMenuTemplateItem[];
@@ -494,6 +514,44 @@ function editingSection(
   return items;
 }
 
+/**
+ * What the pointer is over, as an extension's `contexts` name it: a link, an
+ * image, selected words — and `page` when it is over none of those (nor a
+ * field), as Chrome's `contextMenus` reads it.
+ */
+export function extensionMenuContexts(params: PageContextMenuParams): Set<"page" | "selection" | "link" | "image"> {
+  const contexts = new Set<"page" | "selection" | "link" | "image">();
+  if (params.linkURL !== "") contexts.add("link");
+  if (params.mediaType === "image") contexts.add("image");
+  if (params.selectionText.trim() !== "") contexts.add("selection");
+  if (contexts.size === 0 && !params.isEditable) contexts.add("page");
+  return contexts;
+}
+
+/** Extensions' items that apply here: one extension's alone as itself, several of one extension's under its name. */
+function extensionSection(
+  params: PageContextMenuParams,
+  state: PageContextMenuState,
+  actions: PageContextMenuActions,
+): Section {
+  const choose = actions.extensionItem;
+  const items = state.extensions ?? [];
+  if (choose === undefined || items.length === 0) return [];
+  const applies = extensionMenuContexts(params);
+  const byExtension = new Map<string, PageContextMenuExtensionItem[]>();
+  for (const item of items) {
+    if (!item.contexts.some((context) => context !== "window" && applies.has(context))) continue;
+    byExtension.set(item.extensionId, [...(byExtension.get(item.extensionId) ?? []), item]);
+  }
+  const section: Section = [];
+  for (const group of byExtension.values()) {
+    const rows = group.map((item) => ({ label: item.title, click: () => choose(item) }));
+    if (rows.length === 1) section.push(rows[0]!);
+    else section.push({ label: group[0]!.extensionName, submenu: rows });
+  }
+  return section;
+}
+
 /** Join the non-empty sections with a separator between each pair. */
 function joinSections(sections: Section[]): ContextMenuTemplateItem[] {
   const template: ContextMenuTemplateItem[] = [];
@@ -517,6 +575,8 @@ export function buildPageContextMenu(
   const inspect: Section = [
     { label: "Inspect", click: () => actions.inspect() },
   ];
+  // (Before Inspect, as Chrome puts an extension's items.)
+  const extensions = extensionSection(params, state, actions);
 
   if (params.isEditable) {
     return joinSections([
@@ -526,6 +586,7 @@ export function buildPageContextMenu(
       lookUpSection(selection, state, actions),
       editingSection(params, state, actions),
       selection === "" ? [] : searchSection(selection, state, actions),
+      extensions,
       inspect,
     ]);
   }
@@ -536,6 +597,7 @@ export function buildPageContextMenu(
     return joinSections([
       navigationSection(state, actions),
       pageSection(state, actions),
+      extensions,
       [...sourceSection(params, actions), ...inspect],
     ]);
   }
@@ -547,6 +609,7 @@ export function buildPageContextMenu(
     lookUpSection(selection, state, actions),
     selection === "" ? [] : selectionSection(selection, state, actions),
     selection === "" ? [] : [printItem(state, actions)],
+    extensions,
     inspect,
   ]);
 }

@@ -41,6 +41,11 @@ describe("the port's requests", () => {
   it("are taken only whole", () => {
     expect(isTerminalRequest({ type: "open", id, cols: 80, rows: 24, cwd: null })).toBe(true);
     expect(isTerminalRequest({ type: "open", id, cols: 80, rows: 24, cwd: "/tmp" })).toBe(true);
+    // A program to run in place of the prompt: a plain name, its arguments as they are (a wish is one argument, whatever it says).
+    expect(isTerminalRequest({ type: "open", id, cols: 80, rows: 24, cwd: "/tmp", run: { program: "claude", args: ["make me a thing; rm -rf ~"] } })).toBe(true);
+    expect(isTerminalRequest({ type: "open", id, cols: 80, rows: 24, cwd: "/tmp", run: { program: "/bin/sh -c", args: [] } })).toBe(false);
+    expect(isTerminalRequest({ type: "open", id, cols: 80, rows: 24, cwd: "/tmp", run: { program: "claude", args: [1] } })).toBe(false);
+    expect(isTerminalRequest({ type: "open", id, cols: 80, rows: 24, cwd: "/tmp", run: { program: "claude", args: Array.from({ length: 9 }, () => "a") } })).toBe(false);
     expect(isTerminalRequest({ type: "input", id, data: "ls\r" })).toBe(true);
     expect(isTerminalRequest({ type: "input", id, data: "\x1b[M !!", binary: true })).toBe(true);
     expect(isTerminalRequest({ type: "resize", id, cols: 120, rows: 40 })).toBe(true);

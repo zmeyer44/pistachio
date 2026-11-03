@@ -72,8 +72,17 @@ import {
 import { executeBrowserTool, type BrowserBackend } from "./browser-backend.js";
 import { integrationRules, integrationTools } from "./integrations/index.js";
 import type { IntegrationToolDeps, IntegrationToolHost } from "./integrations/host.js";
-import { ALL_TOOL_GROUPS, filterToolSet } from "./tool-groups.js";
+import { ALL_TOOL_GROUPS, EXTENSION_AUTHOR_TOOL_GROUP, filterToolSet } from "./tool-groups.js";
 import { DESK_RULES, deskTools, type DeskToolHost } from "./desk-tools.js";
+import {
+  authorInstructions,
+  EXTENSION_RULES,
+  extensionAuthorTools,
+  extensionTools,
+  type ExtensionAuthorInput,
+  type ExtensionToolHost,
+  type ExtensionToolSpec,
+} from "./extension-tools.js";
 import {
   applyCompaction,
   closeDanglingToolCalls,
@@ -215,6 +224,8 @@ export interface AiAgentRunCallbacks {
   toolStarted(request: AgentToolRequest, label: string, detail: string): string;
   toolCompleted(toolId: string, result: BrowserAgentToolResult): void;
   toolFailed(toolId: string, error: unknown): void;
+  /** A running call said how far it got (an extension's `ctx.progress`): its detail line, when the host shows one. */
+  toolProgress?(toolId: string, detail: string): void;
   questionAsked(question: AgentQuestion): void;
   takeoverRequested(takeover: AgentTakeover): void;
   /**
@@ -354,6 +365,22 @@ export interface AiAgentRunInput {
    * then no integration tool exists and the prompt never mentions one.
    */
   integrations?: { hosts: IntegrationToolHost[] } & IntegrationToolDeps;
+  /**
+   * The tools of the extensions the person installed (docs/extensions.md
+   * §6.2, "Agent tools"): those on in the run's Profile, holding
+   * `agent:tools`, with *Agent can use it* left on — the host decides, and
+   * calls their workers. Group `extensions`. Absent, or empty, on a run with
+   * none (a cloud run never has any); then the prompt never mentions them.
+   * `runId` and `spaceId` ride with every call to the worker.
+   */
+  extensions?: { tools: ExtensionToolSpec[]; host: ExtensionToolHost; runId?: string; spaceId?: string | null };
+  /**
+   * An author turn (docs/extensions.md §8): the agent writes an extension
+   * into one draft folder. It has the author tools and the two that ask the
+   * person, and nothing else — whatever else the host passed is not
+   * registered — and its own prompt, which carries the API's guide.
+   */
+  author?: ExtensionAuthorInput;
   /** Present only for a cloud run that can inject a one-time encrypted handoff. */
   credentials?: { host: CredentialCaptureToolHost };
   /**
@@ -575,7 +602,12 @@ Notes and long tasks:
 
 export const MAX_TASK_NOTES = 12_000;
 
-type InstructionInput = Pick<AiAgentRunInput, "browser" | "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "desk" | "integrations" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
+type InstructionInput = Pick<AiAgentRunInput, "browser" | "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "desk" | "integrations" | "extensions" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
+
+/** The extensions' paragraph, when this turn has any of their tools. */
+function extensionRules(input: Pick<AiAgentRunInput, "extensions">): string {
+  return (input.extensions?.tools.length ?? 0) > 0 ? EXTENSION_RULES : "";
+}
 
 function instructions(input: InstructionInput, notes: string): string {
   return input.mode === "answer" ? answerInstructions(input, notes) : browseInstructions(input, notes);
@@ -594,7 +626,7 @@ function answerInstructions(input: InstructionInput, notes: string): string {
   const timezone = input.reminders?.timezone ?? "UTC";
   const memory = input.memory;
   const integrations = input.integrations === undefined ? "" : integrationRules(input.integrations.hosts);
-  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("answer")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${integrations}${input.scheduled === undefined ? "" : SCHEDULED_RULES}`;
+  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("answer")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${integrations}${extensionRules(input)}${input.scheduled === undefined ? "" : SCHEDULED_RULES}`;
   const trimmedNotes = notes.trim();
   const context = `${memory === undefined || memory.prompt === "" ? "" : `\n\n${memory.prompt}`}${trimmedNotes === "" ? "" : `\n\nYour notes from earlier in this thread:\n${trimmedNotes}`}`;
   return `You are Pistachio, an assistant in the sidebar of the person's web browser, replying in conversation.
@@ -662,7 +694,7 @@ function browseInstructions(input: InstructionInput, notes: string): string {
     : `- For passwords, authentication codes, payment details, recovery secrets, and other sensitive editable fields on a cloud tab, use request_credentials. Include only the minimum fields needed and copy each target from page_inspect. The encrypted values are inserted without being shown to you; inspect the page after the run resumes and continue the task. When the person's vault already holds those fields for the site, they are entered at once and the run does not pause; if the site rejects them, call request_credentials again and the person is asked for fresh values.
 - Do not request takeover merely because a step involves login, MFA, or a consent you can give with a page control. Operate every usable page control yourself. Use request_takeover only when the page requires a person-bound action that the available tools technically cannot perform, such as a CAPTCHA, hardware passkey, or bot check with no operable control${lastStep}. Explain the specific technical blocker and stop interacting until they resume you.`;
   const integrations = input.integrations === undefined ? "" : integrationRules(input.integrations.hosts);
-  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("browse")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${input.desk === undefined ? "" : DESK_RULES}${integrations}${input.scheduled === undefined ? "" : SCHEDULED_RULES}${NOTES_RULES}`;
+  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("browse")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${input.desk === undefined ? "" : DESK_RULES}${integrations}${extensionRules(input)}${input.scheduled === undefined ? "" : SCHEDULED_RULES}${NOTES_RULES}`;
   const context = `${memory === undefined || memory.prompt === "" ? "" : `\n\n${memory.prompt}`}\n\nYour notes for this thread:\n${notes.trim() === "" ? "(none yet — write them with task_notes once you have a plan)" : notes.trim()}`;
   return `You are Pistachio, a browser-operating agent working collaboratively in the person's real browser.
 
@@ -1407,6 +1439,29 @@ function forMode(mode: AgentTurnMode, tools: ToolSet): ToolSet {
   };
 }
 
+/**
+ * An author turn's steps: one call's worth and no checkpoint — a checkpoint
+ * asks for `task_notes`, which an author turn does not have. Past it the
+ * turn stops as `budget` and the person decides.
+ */
+export const AUTHOR_TURN_LIMITS: TurnLimits = { stepsPerCall: 40, continuations: 0 };
+
+/**
+ * An author turn's tool surface (docs/extensions.md §8): of everything the
+ * policy-filtered set holds — which, with no group enabled, is only the
+ * always-on tools — the two that ask the person, and the author tools in
+ * their own group. No takeover (there is no page to hand over), no secret
+ * handoff, no page, mail, notes or memory tool: an extension is never written
+ * by a turn that read untrusted content. Any other turn is as it was.
+ */
+function authorSurface(author: ExtensionAuthorInput | undefined, callbacks: AiAgentRunCallbacks, tools: ToolSet): ToolSet {
+  if (author === undefined) return tools;
+  const asking: ToolSet = {};
+  if (tools["ask_user"] !== undefined) asking["ask_user"] = tools["ask_user"];
+  if (tools["ask_user_text"] !== undefined) asking["ask_user_text"] = tools["ask_user_text"];
+  return { ...asking, ...filterToolSet(extensionAuthorTools(author, callbacks), [EXTENSION_AUTHOR_TOOL_GROUP]) };
+}
+
 export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgentRunResult> {
   const model = input.model;
   const mode: AgentTurnMode = input.mode ?? "browse";
@@ -1416,12 +1471,18 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
   // the notes, which are for long tasks: a reply that needs to remember
   // something across steps has a memory tool for it.
   const policyToolGroups = policy === undefined ? ALL_TOOL_GROUPS : policy.enabledToolGroups;
-  const enabledToolGroups = mode === "answer"
-    ? policyToolGroups.filter((group) => !BROWSER_TOOL_GROUPS.includes(group) && group !== "notes")
-    : policyToolGroups;
+  // An author turn (docs/extensions.md §8) registers none of the groups: only
+  // the author tools and the two that ask the person (`authorSurface`).
+  const author = input.author;
+  const enabledToolGroups = author !== undefined
+    ? []
+    : mode === "answer"
+      ? policyToolGroups.filter((group) => !BROWSER_TOOL_GROUPS.includes(group) && group !== "notes")
+      : policyToolGroups;
   const now = input.now ?? (() => new Date());
   const budget = input.budget ?? contextBudget();
-  const limits: TurnLimits = { ...(mode === "answer" ? ANSWER_TURN_LIMITS : DEFAULT_TURN_LIMITS), ...input.limits };
+  const limits: TurnLimits = { ...(author !== undefined ? AUTHOR_TURN_LIMITS : mode === "answer" ? ANSWER_TURN_LIMITS : DEFAULT_TURN_LIMITS), ...input.limits };
+  const prompt = (): string => (author === undefined ? instructions(input, input.notes.read()) : authorInstructions(author, now()));
   const summarize =
     input.summarize ??
     (async (prompt: string) => (await generateText({ model, prompt, abortSignal: input.abortSignal })).text);
@@ -1464,7 +1525,7 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
 
   const agent = new ToolLoopAgent({
     model,
-    instructions: instructions(input, input.notes.read()),
+    instructions: prompt(),
     ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
     stopWhen: [
       ({ steps: done }) => done.length >= callAllowance,
@@ -1510,9 +1571,9 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
       history = next;
       input.callbacks.historyChanged(history);
       // The notes change as the agent works; the prompt shows the current ones.
-      return { messages: next, instructions: instructions(input, input.notes.read()) };
+      return { messages: next, instructions: prompt() };
     },
-    tools: forMode(mode, filterToolSet(
+    tools: authorSurface(author, input.callbacks, forMode(mode, filterToolSet(
       {
         tabs_list: tool({
           description: desktop
@@ -1740,10 +1801,17 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
               ...(input.integrations.fetch === undefined ? {} : { fetch: input.integrations.fetch }),
               now,
             })),
+        ...(input.extensions === undefined || input.extensions.tools.length === 0
+          ? {}
+          : extensionTools(input.extensions.tools, input.extensions.host, input.callbacks, {
+              runId: input.extensions.runId ?? "",
+              spaceId: input.extensions.spaceId ?? null,
+              signal: input.abortSignal,
+            })),
         ...notesTools(input.notes, input.callbacks),
       },
       enabledToolGroups,
-    )),
+    ))),
   });
 
   const step = (result: { usage: { inputTokens?: number; outputTokens?: number }; response: { messages: ModelMessage[] } }): void => {

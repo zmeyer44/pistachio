@@ -29,6 +29,7 @@ import {
   Paperclip,
   PanelsTopLeft,
   Plug,
+  Puzzle,
   RotateCw,
   ScanText,
   Sparkles,
@@ -110,6 +111,8 @@ function toolIcon(name: AgentToolCall["name"] | null): LucideIcon {
   if (name.startsWith("google_calendar.")) return Calendar;
   if (name.startsWith("desk.")) return LayoutGrid;
   if (name.startsWith("context.")) return Paperclip;
+  // An extension's tool (its label is the extension's name) and the author turn's drafting (docs/extensions.md §6.2, §8).
+  if (name.startsWith("ext.")) return Puzzle;
   return Plug;
 }
 

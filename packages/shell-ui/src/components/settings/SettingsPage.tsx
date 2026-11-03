@@ -36,6 +36,7 @@ import { DelegationPage } from "./sections/delegation";
 import { DevicesPage } from "./sections/devices";
 import { EgressPage } from "./sections/egress";
 import { EvidencePage } from "./sections/evidence";
+import { ExtensionsSettingsPage } from "./sections/extensions";
 import { GeneralPage } from "./sections/general";
 import { IntegrationsPage } from "./sections/integrations";
 import { MemoryPage } from "./sections/memory";
@@ -63,6 +64,7 @@ const PAGES: Record<SettingsSection, () => React.ReactElement> = {
   "privacy/shields": ShieldsPage,
   "privacy/spaces": SpacesPage,
   "privacy/isolation": IsolationPage,
+  extensions: ExtensionsSettingsPage,
   account: AccountPage,
   devices: DevicesPage,
   sync: SyncPage,

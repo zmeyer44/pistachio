@@ -27,6 +27,7 @@ import {
   PenLine,
   PictureInPicture2,
   Plus,
+  Puzzle,
   Radio,
   ScrollText,
   Square,
@@ -40,6 +41,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { AgentAttachment, RunSummary, ThreadListItem } from "@pistachio/protocol";
+import type { DeskNotchPill } from "@pistachio/shell-contracts/desk";
 import { groupContextMediaTypeOf, type GroupContextFile, type GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
 import { webSearchUrl } from "@pistachio/shell-contracts/search";
@@ -51,25 +53,30 @@ import { addContextFiles } from "../../lib/desk/group-context";
 import { activeMention, insertMention, mentionCandidates, mentionQuery, mentionsIn } from "../../lib/desk/mentions";
 import {
   BAR_COMMAND_GROUPS,
+  barCommandsFor,
   commandCandidates,
   commandDescription,
   commandPrompt,
   commandQuery,
   commandSpan,
   commandWaiting,
+  extensionDraftName,
+  extensionPrompt,
   insertCommand,
   parseCommand,
   type BarCommand,
-  type BarCommandId,
+  type BuiltinBarCommandId,
   type CommandSettings,
 } from "../../lib/desk/slash-commands";
-import { arrangeDesk } from "../../lib/desk/open";
+import { runExtensionBarCommand } from "../../lib/extensions/actions";
+import { extensionsRequest, useAllExtensions } from "../../lib/extensions/use-extensions";
+import { arrangeDesk, takeDeskAskText } from "../../lib/desk/open";
 import { shareSpace, toggleLiveDrawing } from "../../lib/live/actions";
 import { screenshotView } from "../../lib/screenshot";
 import { isProbablyUrl } from "../../lib/url";
 import { agentActivity } from "../../lib/desk/agent";
 import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictation";
-import { DESK_GAP, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubDrops, nubExtent, type NotchShape, type Rect } from "../../lib/desk/geometry";
+import { DESK_GAP, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubDrops, nubExtent, nubLaneFor, type NotchShape, type Rect } from "../../lib/desk/geometry";
 import { readFloatSpot } from "../../lib/desk/answer-float";
 import { runFailure } from "../../lib/chat-trace";
 import { AnswerMotion, type AnswerEdge } from "./answer-motion";
@@ -90,6 +97,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/
 import type { DeskEngine, DeskView } from "./desk-engine";
 import { DeskNub, NubPillClose, NubPillSide, type NubTip } from "./DeskNub";
 import { DictationWave } from "./DictationWave";
+import { ExtensionMark } from "../extensions/LedgeIcon";
+import { sendStatusAction, StatusPills, useStatusPills } from "../extensions/StatusPills";
 import { FileGlyph, fileKindLabel } from "./files/FileGlyph";
 import { nubTimeScale, type NubMotion, type PillParts, type PillSource, type Swelling } from "./nub-motion";
 
@@ -148,6 +157,18 @@ const TIP_SIDE_W = 200;
 const PILL_SHADOW = 16;
 /** The view over a live page holds the nub swelled (and a little past, as the swell overshoots), its corner the desk's (NotchApp). */
 const NUB_VIEW = Math.ceil(nubExtent(NUB_SWELL)) + 3;
+/**
+ * The nub's lane (the extensions' pills lie in it, geometry's nubOutline) steps by LANE_STEP and narrows only once it
+ * is LANE_SLACK wider than it need be: a pill's text changing by a pixel never resizes the notch view over a page
+ * (Chromium stretches a view's last frame a moment as it is resized). No wider than the notch view may be.
+ */
+const LANE_STEP = 4;
+const LANE_SLACK = 12;
+const LANE_MAX = 2048 - NUB_VIEW - 8;
+/** The pills stand this far left of the Bar's pill while it is out (shell.css, .extension-status-pills[data-raised]). */
+const STATUS_RAISED_GAP = 8;
+/** No pills in the lane (one array, so the notch view is not told afresh for nothing). */
+const NO_PILLS: DeskNotchPill[] = [];
 
 /** A tooltip over one of the Bar's buttons (as the dock's DockTip): open as Base UI says, seen once no live page is under it. */
 type BarTip = NubTip;
@@ -251,6 +272,19 @@ function useLinger(on: boolean, ms: number, slowed = false): boolean {
   return on || lingering;
 }
 
+/** The lane `wanted` (px, 0 for none) as the nub is drawn out by: in steps, and narrowing only past a little slack. */
+function useSteadyLane(wanted: number): number {
+  const [lane, setLane] = useState(0);
+  useLayoutEffect(() => {
+    setLane((current) => {
+      if (wanted <= 0) return 0;
+      const next = Math.min(LANE_MAX, Math.ceil(wanted / LANE_STEP) * LANE_STEP);
+      return next > current || next < current - LANE_SLACK ? next : current;
+    });
+  }, [wanted]);
+  return lane;
+}
+
 /** True once `on` has held for `ms` (what waits on the pages giving way waits no longer than that). */
 function useOverdue(on: boolean, ms: number): boolean {
   const [overdue, setOverdue] = useState(false);
@@ -336,6 +370,8 @@ export const DeskBar = memo(function DeskBar({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   /** The composer's own: puts text at the caret (a mention of a file just taken into the context). */
   const insertRef = useRef<((text: string) => void) | null>(null);
+  /** The composer's own: the field holds this, the caret at its end (askDesk's text: `/extension `). */
+  const fillRef = useRef<((text: string) => void) | null>(null);
   /** The composer's own: starts dictation (the microphone's droplet), and drops a recording (the pill put away). */
   const dictateRef = useRef<(() => void) | null>(null);
   const undictateRef = useRef<(() => void) | null>(null);
@@ -410,7 +446,7 @@ export const DeskBar = memo(function DeskBar({
         place: (width) => engine.setReserve(width === null ? 0 : width + DESK_GAP),
         notch: () => {
           const shape = hole.current.off ? null : hole.current.shape;
-          return shape === null ? null : { shape, corner: cornerOf(nubRef.current) };
+          return shape === null ? null : { shape, corner: cornerOf(nubRef.current), lane: hole.current.lane };
         },
         held: setCardHeld,
         cover: (rect, slot, lit) => {
@@ -630,8 +666,28 @@ export const DeskBar = memo(function DeskBar({
   // nub's own (over a live page, the notch view draws it), and a pointer passing the corner freezes no page.
   const nubCovering = useLinger(menuShown || pickerOpen, NUB_CLOSE_MS, true) || menuWanted;
   useCover(engine, "bar", nubRef, nubCovering);
+
+  // The extensions' live pills (docs/extensions.md §5, `ui.setStatus`): in the nub's lane — the nub drawn out along the
+  // foot by their width (geometry's nubOutline), a hole as the nub is — so no page under them gives way; over a live
+  // page main's notch view draws them in it (below). Until 2026-10-30 they were a cover of their own, and a page being
+  // recorded under them froze into its still for the whole recording. While the Bar's pill or menu is out, the foot is
+  // the Bar's: the lane closes and they stand left of the pill, in its cover (its footprint reaches over them).
+  const statusPills = useStatusPills();
+  const [pillsWidth, setPillsWidth] = useState(0);
+  const statusRaised = statusPills.length > 0 && (pillWanted || menuWanted);
+  const raisedWidth = useLinger(statusRaised, NOTCH_CLOSE_MS, true) && statusPills.length > 0 ? pillsWidth : 0;
+  const pillShape = useCallback(
+    (box: Rect): Rect => {
+      const foot = pillFootprint(box);
+      if (raisedWidth <= 0) return foot;
+      const left = box.x - STATUS_RAISED_GAP - raisedWidth - PILL_SHADOW;
+      return { x: left, y: foot.y, w: foot.x + foot.w - left, h: foot.h };
+    },
+    [raisedWidth],
+  );
   const pillCovering = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted || menuWanted;
-  useCover(engine, "pill", barRef, pillCovering, pillFootprint);
+  useCover(engine, "pill", barRef, pillCovering, pillShape);
+  const laneTarget = useSteadyLane(statusPills.length > 0 && !statusRaised ? nubLaneFor(pillsWidth) : 0);
   // The pill's close above the nub, while the pill is out (not while the menu is: it would stand among its droplets).
   const closeUp = pillOpen && !menuWanted && !pickerOpen;
   const closeCovering = useLinger(closeUp, NOTCH_CLOSE_MS, true) || (pillWanted && !menuWanted && !pickerOpen);
@@ -653,29 +709,45 @@ export const DeskBar = memo(function DeskBar({
   // A screenshot of the desk is the windows without the Bar: neither it nor its hole is drawn while one is taken.
   const capturing = useDeskStore((state) => state.capturing);
   const holeOff = capturing;
-  const hole = useRef<{ shape: NotchShape | null; off: boolean }>({ shape: NUB_IDLE, off: holeOff });
+  const hole = useRef<{ shape: NotchShape | null; lane: number; off: boolean }>({ shape: NUB_IDLE, lane: 0, off: holeOff });
   hole.current.off = holeOff;
-  // (None while it stands free of the corner for its menu.)
+  // (None while it stands free of the corner for its menu. Drawn out along the foot, its lane, while the extensions'
+  // pills lie there.)
   const cutNub = useCallback(
-    (shape: NotchShape | null) => {
+    (shape: NotchShape | null, drawnOut: number) => {
       hole.current.shape = shape;
-      if (!hole.current.off) engine.setNotchShape(shape);
+      hole.current.lane = drawnOut;
+      if (!hole.current.off) engine.setNotchShape(shape, drawnOut);
       // (A card over the corner — the chat's place — has it cut through its glass too.)
       motionRef.current?.nub();
     },
     [engine],
   );
   useLayoutEffect(() => {
-    engine.setNotchShape(holeOff ? null : hole.current.shape);
+    engine.setNotchShape(holeOff ? null : hole.current.shape, hole.current.lane);
     motionRef.current?.nub();
   }, [engine, holeOff]);
   useEffect(() => () => engine.setNotchShape(null), [engine]);
   const deskCorner = useCallback(() => cornerOf(nubRef.current), []);
-  // The idle nub's box, in the desk's trailing foot corner: the engine knows where it lies over the windows (whether a
-  // live page is under it).
+  // The lane on its way out or in, on the nub's clock (nub-motion's laneAt), which the notch view reads too; and the
+  // view's box meanwhile, which holds the wider of where it is and where it goes until it is there.
+  const [laneWay, setLaneWay] = useState<Swelling>({ from: 0, to: 0, at: 0, ms: 0 });
   useLayoutEffect(() => {
-    engine.setNotch({ w: NUB_VIEW, h: NUB_VIEW });
-  }, [engine]);
+    const motion = nubMotion.current;
+    if (motion !== null) setLaneWay(motion.lane(laneTarget));
+  }, [laneTarget]);
+  const [laneHeld, setLaneHeld] = useState(0);
+  useLayoutEffect(() => {
+    setLaneHeld(Math.ceil(Math.max(laneWay.from, laneWay.to)));
+    if (laneWay.to >= laneWay.from) return;
+    const timer = window.setTimeout(() => setLaneHeld(Math.ceil(laneWay.to)), Math.max(0, laneWay.at + laneWay.ms - Date.now()) + 32);
+    return () => window.clearTimeout(timer);
+  }, [laneWay]);
+  // The idle nub's box, in the desk's trailing foot corner, and its lane left of it: the engine knows where it lies over
+  // the windows (whether a live page is under it).
+  useLayoutEffect(() => {
+    engine.setNotch({ w: NUB_VIEW + laneHeld, h: NUB_VIEW });
+  }, [engine, laneHeld]);
   useEffect(() => () => engine.setNotch(null), [engine]);
 
   // Swelled while the pointer rests on it and while its droplets are out; the pill out of its droplet (or the nub),
@@ -869,6 +941,8 @@ export const DeskBar = memo(function DeskBar({
     // (Floating, the card comes in front of the windows with it.)
     if (inCardNow.current) callAnswer();
     focusInput();
+    const text = takeDeskAskText();
+    if (text !== null) fillRef.current?.(text);
   }, [focusSignal, focusInput, callAnswer]);
 
   /** The nub pressed (or the notch view over a page): its menu out, or back in — opened from the keys, the keys go to its first droplet. */
@@ -914,7 +988,9 @@ export const DeskBar = memo(function DeskBar({
   useEffect(
     () =>
       nativeApi()?.onDeskNotchInput((input) => {
-        if (input === "enter") {
+        // (An action of an extension's pill in the nub's lane, pressed in the view: the pill's own.)
+        if (typeof input === "object") sendStatusAction(input.status.id, input.status.action);
+        else if (input === "enter") {
           if (armed.current) return;
           void pointerOnNub().then((on) => {
             if (on !== false && !armed.current) {
@@ -935,6 +1011,8 @@ export const DeskBar = memo(function DeskBar({
   // be: it is told where (the box the nub may fill, its corner the desk's), how swelled it is, and what it shows.
   // Once what the nub opens has made the page under it a still, there is no live page under it, and the view goes.
   const overPage = view.notchOver && !capturing;
+  // The pills in the lane, for the view to lay where the shell lays them (none while they stand by the Bar's pill).
+  const lanePills = statusRaised ? NO_PILLS : statusPills;
   useLayoutEffect(() => {
     const api = nativeApi();
     const el = nubRef.current;
@@ -950,8 +1028,9 @@ export const DeskBar = memo(function DeskBar({
       const ground = el.closest(".chrome-container")?.getBoundingClientRect() ?? { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
       const right = Math.round(stage.right);
       const bottom = Math.round(stage.bottom);
-      const bounds = { x: right - NUB_VIEW, y: bottom - NUB_VIEW, width: NUB_VIEW, height: NUB_VIEW };
-      notchBox.current = bounds;
+      // The nub's own box in the corner (what the pointer on it is checked against), and the lane drawn out left of it.
+      notchBox.current = { x: right - NUB_VIEW, y: bottom - NUB_VIEW, width: NUB_VIEW, height: NUB_VIEW };
+      const bounds = { x: right - NUB_VIEW - laneHeld, y: bottom - NUB_VIEW, width: NUB_VIEW + laneHeld, height: NUB_VIEW };
       api.setDeskNotch({
         bounds,
         label: `Ask about ${group.title}`,
@@ -964,6 +1043,9 @@ export const DeskBar = memo(function DeskBar({
         acting,
         floating: floatingOut,
         ground: { x: ground.x, y: ground.y, width: ground.width, height: ground.height },
+        lane: laneWay,
+        pills: lanePills,
+        pillsWidth: lanePills.length === 0 ? 0 : Math.min(2048, pillsWidth),
       });
     };
     send();
@@ -975,7 +1057,7 @@ export const DeskBar = memo(function DeskBar({
       observer.disconnect();
       window.removeEventListener("resize", send);
     };
-  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut]);
+  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut, laneWay, laneHeld, lanePills, pillsWidth]);
   useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
 
   // A button's tooltip is open: the band it appears in — above the pill, or beside the nub — is a cover, and stays
@@ -1062,6 +1144,8 @@ export const DeskBar = memo(function DeskBar({
         </div>
       </div>
       <div ref={hintRef} className="desk-answer-hint" data-testid="desk-answer-hint" aria-hidden="true" />
+      {/* Extensions' live pills in the nub's lane (pistachio.ui.setStatus): left of the pill while it is out. */}
+      <StatusPills pills={statusPills} raised={statusRaised} shown={!statusRaised || shownCover("pill")} onWidth={setPillsWidth} />
       {/* One column, the pill's width: the answer rests on the pill, however tall the pill grows. */}
       <div className="desk-bar-column">
         {cardShown ? (
@@ -1127,6 +1211,7 @@ export const DeskBar = memo(function DeskBar({
                 activity={activity}
                 inputRef={inputRef}
                 insertRef={insertRef}
+                fillRef={fillRef}
                 dictateRef={dictateRef}
                 undictateRef={undictateRef}
                 fileDrag={fileDrag}
@@ -1213,6 +1298,7 @@ function BarComposer({
   activity,
   inputRef,
   insertRef,
+  fillRef,
   dictateRef,
   undictateRef,
   fileDrag,
@@ -1233,6 +1319,8 @@ function BarComposer({
   activity: string | null;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   insertRef: RefObject<((text: string) => void) | null>;
+  /** The field holds this, the caret at its end. */
+  fillRef: RefObject<((text: string) => void) | null>;
   /** Starts dictation (the nub's microphone droplet). */
   dictateRef: RefObject<(() => void) | null>;
   undictateRef: RefObject<(() => void) | null>;
@@ -1265,6 +1353,9 @@ function BarComposer({
   const [commandsDismissed, setCommandsDismissed] = useState(false);
   const webProvider = useAppStore((state) => state.settings.search.webProvider);
   const commandSettings = useMemo<CommandSettings>(() => ({ webProvider }), [webProvider]);
+  // The Bar's own commands, then each extension's (docs/extensions.md §2): the same array while the extensions stand.
+  const extensions = useAllExtensions();
+  const catalog = useMemo(() => barCommandsFor(extensions), [extensions]);
   // A list put away stays away only while what it was for is there: the field emptied, or its `/` gone, however
   // that came about (sent, a command run, edited), the next `/` or `@` opens its list.
   useEffect(() => {
@@ -1368,11 +1459,11 @@ function BarComposer({
   // The commands a `/` at the head of the field offers, while the caret is in its word (lib/desk/slash-commands.ts).
   const commandTyping = listening || commandsDismissed ? null : commandQuery(value, caret);
   const commandTyped = commandTyping?.query ?? null;
-  const commands = useMemo(() => (commandTyped === null ? [] : commandCandidates(commandTyped)), [commandTyped]);
+  const commands = useMemo(() => (commandTyped === null ? [] : commandCandidates(commandTyped, catalog)), [commandTyped, catalog]);
   const commandsOpen = commands.length > 0;
   const commandLit = Math.min(commandIndex, Math.max(0, commands.length - 1));
   /** The command the field holds, marked in the mirror, its hint after it while nothing follows it. */
-  const command = listening ? null : commandSpan(value);
+  const command = listening ? null : commandSpan(value, catalog);
   const mentionsOpen = !listening && !commandsOpen && typing !== null && candidates.length > 0;
   const lit = Math.min(mentionIndex, Math.max(0, candidates.length - 1));
 
@@ -1446,9 +1537,17 @@ function BarComposer({
     setCaret(at);
     requestAnimationFrame(() => {
       el?.focus({ preventScroll: true });
-      el?.setSelectionRange(at, at);
+      // Typed into before this frame (keys struck right after a command was chosen), the caret stays where the typing
+      // left it: put back at `at`, the rest of the words would go in ahead of the first.
+      if (el?.value === text) el.setSelectionRange(at, at);
     });
   };
+  useEffect(() => {
+    fillRef.current = (text) => fill(text, text.length);
+    return () => {
+      fillRef.current = null;
+    };
+  });
 
   /**
    * A command chosen from the menu: Enter (or a click) runs one that needs
@@ -1490,6 +1589,17 @@ function BarComposer({
     }
     setValue("");
     setCaret(0);
+    // An extension's (docs/extensions.md §2): main runs it — its declared command (a prompt or an event), or a Chrome
+    // extension's action — on this space and the window in use.
+    if (chosen.extension !== undefined) {
+      runExtensionBarCommand(chosen.extension, args, group.id);
+      // (The extension has it now: the field lets go, and the pill goes in unless something else holds it out — an
+      // answer docked on it — so the window in use is live again at once: `/record`'s page never stands frozen as its
+      // still under the pill, the person's first click on it landing on the shell.)
+      const field = inputRef.current;
+      if (field !== null && document.activeElement === field) field.blur();
+      return;
+    }
     switch (chosen.id) {
       case "search":
         void store.createTab(webSearchUrl(args, webProvider));
@@ -1538,6 +1648,15 @@ function BarComposer({
       case "terminal":
         void store.newTerminal();
         break;
+      case "extension": {
+        // A draft folder first (main makes it in the dev folder, where it will land paused for the person's approval),
+        // then the wish to Pistachio, who writes the extension there (docs/extensions.md §8).
+        const wish = args;
+        void extensionsRequest({ type: "draftFolder", name: extensionDraftName(wish) }).then((response) =>
+          send(extensionPrompt(wish, response?.type === "folder" ? response.path : null, response?.type === "folder" ? (response.author ?? null) : null)),
+        );
+        break;
+      }
       default:
         break;
     }
@@ -1562,7 +1681,7 @@ function BarComposer({
   useEffect(() => () => onFieldMenu(null), [onFieldMenu]);
 
   // The field waiting on what its command must have, there is nothing to send yet.
-  const empty = (value.trim() === "" && staged.length === 0) || commandWaiting(value);
+  const empty = (value.trim() === "" && staged.length === 0) || commandWaiting(value, catalog);
   const idle = value === "" && staged.length === 0 && drop.rejection === null && !listening && !acting;
   useEffect(() => onIdle(idle), [idle, onIdle]);
   /** Send `text` as the person's message, with the files staged and those it @mentions. */
@@ -1597,7 +1716,7 @@ function BarComposer({
   const submit = (): void => {
     if (value.trim() === "" && staged.length === 0) return;
     // A message that starts with a command's name is that command (any other `/word` is a message).
-    const parsed = parseCommand(value);
+    const parsed = parseCommand(value, catalog);
     if (parsed === null) send(value.trim());
     else runCommand(parsed.command, parsed.args);
   };
@@ -1866,7 +1985,7 @@ function FieldMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; menu:
   return menu.kind === "commands" ? <CommandMenu ref={ref} menu={menu} shown={shown} /> : <MentionMenu ref={ref} menu={menu} shown={shown} />;
 }
 
-const COMMAND_ICONS: Record<Exclude<BarCommandId, "search">, LucideIcon> = {
+const COMMAND_ICONS: Record<Exclude<BuiltinBarCommandId, "search">, LucideIcon> = {
   open: Globe,
   find: TextSearch,
   summarize: ScrollText,
@@ -1884,7 +2003,16 @@ const COMMAND_ICONS: Record<Exclude<BarCommandId, "search">, LucideIcon> = {
   note: NotebookPen,
   brief: Newspaper,
   terminal: SquareTerminal,
+  extension: Puzzle,
 };
+
+/** A row's mark: the search engine's for `/search`, an extension's own (its icon, else its monogram), else the command's. */
+function CommandMark({ entry, settings }: { entry: BarCommand; settings: CommandSettings }) {
+  if (entry.extension !== undefined) return <ExtensionMark extension={entry.extension} className="desk-command-extension-mark" />;
+  if (entry.id === "search") return <SearchProviderLogo provider={settings.webProvider} className="size-4" />;
+  const Icon = entry.id.startsWith("ext:") ? Puzzle : COMMAND_ICONS[entry.id as Exclude<BuiltinBarCommandId, "search">];
+  return <Icon className="size-4 shrink-0 text-gray-900" aria-hidden="true" />;
+}
 
 /**
  * The commands a `/` offers, over the desk above the Bar's leading end, as
@@ -1906,7 +2034,6 @@ function CommandMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; men
     listRef.current?.querySelector(`#desk-command-${String(menu.index)}`)?.scrollIntoView({ block: "nearest" });
   }, [menu.index]);
   const row = (entry: BarCommand, index: number): React.ReactNode => {
-    const Icon = entry.id === "search" ? null : COMMAND_ICONS[entry.id];
     return (
       <button
         key={entry.id}
@@ -1916,12 +2043,13 @@ function CommandMenu({ ref, menu, shown }: { ref: React.Ref<HTMLDivElement>; men
         aria-selected={index === menu.index}
         data-testid="desk-command"
         data-command={entry.name}
+        data-extension-id={entry.extension?.id}
         className="desk-mention desk-command"
         onMouseDown={(event) => event.preventDefault()}
         onPointerEnter={() => menu.point(index)}
         onClick={() => menu.pick(entry)}
       >
-        {Icon === null ? <SearchProviderLogo provider={menu.settings.webProvider} className="size-4" /> : <Icon className="size-4 shrink-0 text-gray-900" aria-hidden="true" />}
+        <CommandMark entry={entry} settings={menu.settings} />
         <span className="shrink-0 text-[13px] font-medium text-gray-1000">/{entry.name}</span>
         <span className="min-w-0 flex-1 truncate text-[13px] text-gray-700">{commandDescription(entry, menu.settings)}</span>
       </button>

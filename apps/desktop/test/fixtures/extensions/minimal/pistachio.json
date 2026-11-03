@@ -1,0 +1,18 @@
+{
+  "api": 1,
+  "id": "dev.test.minimal",
+  "name": "Minimal",
+  "version": "1.0.0",
+  "description": "The smallest extension with a panel, a page, a worker and an icon.",
+  "icon": "icon.svg",
+  "permissions": ["tabs:read"],
+  "hosts": ["https://api.example.com/*"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "panel": { "file": "panel.html", "width": 320 },
+  "pages": { "main": { "file": "page.html", "title": "Minimal" } },
+  "bar": { "commands": [{ "name": "hello", "description": "Say hello", "run": { "event": true } }] },
+  "settings": [
+    { "key": "greeting", "title": "Greeting", "type": "string", "default": "Hello" },
+    { "key": "token", "title": "Token", "type": "secret" }
+  ]
+}

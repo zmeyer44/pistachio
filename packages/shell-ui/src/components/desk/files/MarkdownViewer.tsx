@@ -38,8 +38,9 @@ export default function MarkdownViewer({ item, content, focusSignal, onEdit }: V
   const extensions = useMemo(() => [...noteExtensions({ overrides: noteNodeViews.filter((extension) => extension.name !== "image") }), Markdown], []);
   const host = useMemo<NoteEditorHost>(
     () => ({
+      // (A local file's link opens too: the document is the person's own file.)
       openLink: (href, box) => {
-        void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, true);
+        void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, true, { fileLinks: true });
       },
       ...("pistachio" in window ? { frameSrc: noteFrameUrl } : {}),
     }),
@@ -62,7 +63,7 @@ export default function MarkdownViewer({ item, content, focusSignal, onEdit }: V
           if (href === null || href === "") return false;
           event.preventDefault();
           const box = anchor.getBoundingClientRect();
-          void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, true);
+          void openLink(href, { x: Math.round(box.left), y: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) }, true, { fileLinks: true });
           return true;
         },
       },

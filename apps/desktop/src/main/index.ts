@@ -47,7 +47,12 @@ import { IntegrationService } from "./account/integration-service";
 import { ChromeOverlayView, loadChromePage } from "./chrome-view";
 import { NoticeLayer } from "./notice-layer";
 import { PointerZoneWatch } from "./pointer-zone-watch";
-import { Screenshots } from "./screenshots";
+import { Screenshots, screenshotFolder } from "./screenshots";
+import { installIpcGate, type GateIpc } from "./ipc-gate";
+import { ExtensionService } from "./extensions/service";
+import { extensionBrowserHost } from "./extensions/browser-host";
+import { EXTENSION_SCHEME_PRIVILEGES } from "./extensions/protocol";
+import { EXT_CALL_CHANNEL } from "@pistachio/extension-api/wire";
 import { submitFeedback } from "./feedback";
 import {
   demoAuthRelyingPartyHtml,
@@ -66,7 +71,7 @@ import { isShieldsRequest } from "@pistachio/shell-contracts/shields";
 import { SHIELDS_COSMETICS_CHANNEL, SHIELDS_FRAME_CHANNEL, type ShieldsDomFeatures } from "@pistachio/shell-contracts/shields-page";
 import { watchtowerRequestSchema } from "@pistachio/shell-contracts/watchtower";
 import { ReaderStore } from "./reader-store";
-import { RunController } from "./run-controller";
+import { RunController, type RunExtensions } from "./run-controller";
 import { createMemoryEmbedder } from "./memory-engine";
 import { aiProviderStatus, configuredBriefModel, configuredIntentModel, configuredTidyModel, setAiSession, workspaceEnvironmentKeys } from "./model-provider";
 import type { ReportRecord } from "@pistachio/reports/contract";
@@ -288,6 +293,9 @@ import {
   type FindState,
 } from "@pistachio/shell-contracts/browser-controls";
 
+// The process's one call: Electron takes the privileged schemes once, so every scheme is named here — an
+// extension's pages (docs/extensions.md §4) and Chrome's `crx:` icons (electron-chrome-extensions registers it at
+// import otherwise, which is why main/extensions/chrome/ is imported dynamically after ready).
 protocol.registerSchemesAsPrivileged([
   { scheme: "pistachio-app", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
   {
@@ -300,6 +308,8 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
     },
   },
+  { scheme: EXTENSION_SCHEME_PRIVILEGES.scheme, privileges: { ...EXTENSION_SCHEME_PRIVILEGES.privileges } },
+  { scheme: "crx", privileges: { bypassCSP: true } },
 ]);
 
 const currentDir = fileURLToPath(new URL(".", import.meta.url));
@@ -544,6 +554,20 @@ let shields: ShieldsService | null = null;
 let liveShare: LiveShareService | null = null;
 /** The live share's host window, while a share is live. */
 let liveHost: LiveHostWindow | null = null;
+/** Pistachio extensions (docs/extensions.md): the registry, their views, the dev folder — app-wide; the window attaches. */
+let extensions: ExtensionService | null = null;
+
+/** The extension service as the agent reaches it (docs/extensions.md §6.2 "Agent tools", §8): tools, and the author turn's drafts. */
+function extensionsForRuns(service: ExtensionService): RunExtensions {
+  return {
+    tools: (profileId) => service.agentTools(profileId),
+    call: (extensionId, tool, input, ctx) => service.callTool(extensionId, tool, input, ctx),
+    claimDraft: (slug, token) => service.claimDraft(slug, token),
+    authorHost: service.authorHost,
+    authorGuide: () => service.authorGuide(),
+    setDrafting: (folder, on) => service.setDrafting(folder, on),
+  };
+}
 
 /**
  * Where an artifact link points. The web app renders an artifact out of the
@@ -870,7 +894,10 @@ function relayChromeInput(
     relayTabSwitcherInput(event, input, source) ||
     browser?.takeDeskDockKey(event, input) === true ||
     browser?.takeDeskUndoKey(event, input, source) === true ||
-    browser?.takeDeskCycleKey(event, input, source) === true
+    browser?.takeDeskCycleKey(event, input, source) === true ||
+    // An extension's declared key (docs/extensions.md §2), from whichever view has the keyboard: a key the app holds is
+    // never one (the service asks the person's shortcuts first).
+    extensions?.takeKey(event, input) === true
   );
 }
 
@@ -2052,6 +2079,8 @@ function flushPublish(): void {
   if (tabsChanged) terminals?.retain(browser.allTabs().flatMap((tab) => terminalUrlId(tab.url) ?? []));
   // A live share ends with its space or its Profile, and follows its tabs (docs/live-share.md §6.1).
   if (tabsChanged) liveShare?.refresh();
+  // Extensions hear of their tabs once per tick, coalesced (docs/extensions.md §5 `tabs.onUpdated`).
+  if (tabsChanged) extensions?.tabsChanged();
   tabsPublishPending = false;
   runPublishPending = false;
   if (!tabsChanged && !runChanged) return;
@@ -2420,6 +2449,8 @@ async function createWindow(): Promise<void> {
     window,
     publish,
     () => {
+      // An extension's panel first: over the pages, under the find bar, the toasts and the desk's own views.
+      extensions?.raisePanel();
       if (findView.shown) findView.raise();
       if (bookmarkView.shown) bookmarkView.raise();
       if (noticeView.shown) noticeView.raise();
@@ -2461,8 +2492,10 @@ async function createWindow(): Promise<void> {
       // A spec that scripts the answer (PISTACHIO_FIND_SCRIPT) gets its script;
       // everything else gets the account's model, or none (docs/smart-find.md §9).
       findModel: () => scriptedFindModelFromEnv(process.env) ?? configuredIntentModel()?.model ?? null,
-      prepareSpaceSession: async (target, spaceId, _kind, partition) => {
+      prepareSpaceSession: async (target, spaceId, kind, partition) => {
         if (egress !== null) await egress.applyProxy(target, spaceId, partition);
+        // A Profile's Chrome extensions load before its page does, when it has any on (docs/extensions.md §4).
+        if (kind === "human") await extensions?.profileSession(target, spaceId, partition);
       },
       proxyCredentialFor: (spaceId) => egress?.proxyCredentialFor(spaceId) ?? null,
       onProxyCredentialRejected: () => void egress?.refreshCredential(),
@@ -2516,6 +2549,9 @@ async function createWindow(): Promise<void> {
       },
       // A shared window's page woken or back from a crash: the live share captures it again.
       onPageReplaced: (tabId) => liveShare?.pageReplaced(tabId),
+      // Pistachio extensions' pages are tabs (docs/extensions.md §4), and their declared items are in the page's menu.
+      // Chrome extensions hear the person's tabs (made, put in use) and add to a page's menu.
+      ...(extensions === null ? {} : { extensionPages: extensions.pageHooks, extensionMenu: extensions.menuHooks, chromeTabs: extensions.chromeTabs }),
       // A page's space whose page let go of its entry is titled after the entry.
       entryTitle: (spaceId, anchorId) => {
         if (isPresetAnchorId(anchorId)) return requireSettings().get().organization.presetLinks.find((link) => presetAnchorId(link.url) === anchorId)?.title ?? null;
@@ -2534,6 +2570,20 @@ async function createWindow(): Promise<void> {
     },
   );
   browser.onDownloadsChange = publishDownloads;
+  extensions?.attachWindow({
+    window,
+    browser: extensionBrowserHost(
+      browser,
+      window,
+      () => requireSpaces().all().map((space) => space.id),
+      () => cursorPoint(window),
+    ),
+    notice: (message) => sendShellCommand({ type: "notice", message }),
+    shell: sendShellCommand,
+    relayKeys: relayExtensionPanelKeys,
+    veiled: () => shellState.veiled,
+    placed: checkNotchCover,
+  });
   // The host at the shared desk as far as the window goes: up, the app not hidden, the Mac awake and unlocked; each change is
   // looked at again, and guests hear the host away (docs/live-share.md §6.1, §10).
   const livePresence = watchLivePresence({ window, power: powerMonitor, app }, () => liveShare?.refresh());
@@ -2615,6 +2665,8 @@ async function createWindow(): Promise<void> {
     artifactWebUrl: artifactWebOrigin,
     // Read per run: a connection made in Settings applies to the next turn.
     integrations: { hostsFor: (spaceId) => integrationService?.hostsFor(spaceId) ?? Promise.resolve([]) },
+    // The person's extensions' tools in a turn, and the author turn's draft folders (docs/extensions.md §6.2, §8).
+    ...(extensions === null ? {} : { extensions: extensionsForRuns(extensions) }),
     // Under E2E, a spec may script the model (docs/desk-agent.md §4).
     ...(scriptedAgentModel() === null ? {} : { model: scriptedAgentModel()!, stream: scriptedAgentStreams() }),
     desk: {
@@ -2777,6 +2829,7 @@ async function createWindow(): Promise<void> {
     offGroupContexts();
     deskBridge.cancelAll("the window closed");
     offSidebar();
+    extensions?.detachWindow();
     browser?.shutdown();
     sidebarController = null;
     dragView.destroy();
@@ -2874,6 +2927,17 @@ function applyWindowMaterial(
     // The notch view's own glass with it (main/desk-glass.ts): taken out, or laid in afresh as the window's is now.
     applyDeskNotch();
   }
+}
+
+/**
+ * An extension's panel (docs/extensions.md §4, "The panel"): main's own gestures, then the configured bindings go
+ * to the shell as a tab's ⌘ keys do — and the keyboard with them, so ⌘L or ⌘T types into the shell's field, not the
+ * panel. (⎋ closes the panel: the service takes it first.)
+ */
+function relayExtensionPanelKeys(event: Electron.Event, input: Electron.Input, contents: WebContents): void {
+  if (relayChromeInput(event, input, contents)) return;
+  nativeChromeShortcut(event, input);
+  if (event.defaultPrevented && shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.focus();
 }
 
 /** Configurable shortcuts for standalone chrome views that have no React host. */
@@ -3231,10 +3295,11 @@ function installIpc(): void {
     // The shell's new tabs (⌘T, New tab, the palette, the home page's links) open where the person is: the current
     // space (docs/spaces.md §1), said here since createTab's default became loose (2026-10-09). Or, asked (`group:
     // "loose"`, since 2026-10-13), a Home tab of their own: the double sidebar's Home with none to go back to.
-    const asked = typeof options === "object" && options !== null ? (options as { group?: unknown }).group : undefined;
-    const group = isShellCreateTabGroup(asked) ? asked : "current";
+    const asked = typeof options === "object" && options !== null ? (options as { group?: unknown; file?: unknown }) : {};
+    const group = isShellCreateTabGroup(asked.group) ? asked.group : "current";
+    // `file: true` is the shell's word that the person clicked a local file's link in a note or document of theirs.
     return requireBrowser()
-      .createTab(typeof url === "string" ? url : newTabUrl(), { group })
+      .createTab(typeof url === "string" ? url : newTabUrl(), { group, ...(asked.file === true ? { file: true } : {}) })
       .then(() => undefined);
   });
   ipcMain.handle(IPC.tabClose, (_event, tabId: unknown) =>
@@ -3502,6 +3567,8 @@ function installIpc(): void {
     requireBrowser().setLayout(layout);
     publishFind(requireBrowser().findState());
     syncBookmarkLayer();
+    // The windows' boxes moved: an extension's desk.changed, at most four times a second.
+    extensions?.deskChanged();
   });
   ipcMain.handle(IPC.overlayPrepare, (event, options: unknown) =>
     isShell(event.sender)
@@ -3523,6 +3590,7 @@ function installIpc(): void {
       return;
     }
     requireBrowser().setDesk(state);
+    extensions?.deskChanged();
   });
   ipcMain.handle(IPC.deskStillsCapture, (event, tabIds: unknown, width: unknown) => {
     if (!isShell(event.sender) || !Array.isArray(tabIds)) return [];
@@ -3725,6 +3793,8 @@ function installIpc(): void {
     notchLayer?.setVeiled(state.veiled);
     shelfLayer?.setVeiled(state.veiled);
     pipLayer?.setVeiled(state.veiled);
+    // An extension's panel is never over the shell's sheets, ⌘L or Settings (its veil).
+    extensions?.reveil();
     syncBookmarkLayer();
     // A utility view the screenshot selector veiled is back: its field has the keyboard again.
     settleUtilityKeyboard();
@@ -4366,6 +4436,27 @@ function installIpc(): void {
   ipcMain.handle(IPC.notes, (event, request: unknown) => {
     shellOnly(event, "the notes");
     return handleNoteRequest(request);
+  });
+  // ── Extensions (docs/extensions.md) ───────────────────────────────────────
+  // The shell's word about them, and the slot of the open panel's card.
+  ipcMain.handle(IPC.extensions, (event, request: unknown) => {
+    shellOnly(event, "the extensions");
+    if (extensions === null) throw new Error("Extensions are starting.");
+    return extensions.request(request);
+  });
+  ipcMain.on(IPC.extensionPanelBounds, (event, bounds: unknown) => {
+    if (!isShell(event.sender) || (bounds !== null && !isBounds(bounds))) return;
+    extensions?.setPanelBounds(bounds as ContentBounds | null);
+  });
+  // An extension context's call (the extension preload's one channel): who calls is read from the view and its
+  // origin, never from the message; the answer is an ExtReply, never a throw.
+  ipcMain.handle(EXT_CALL_CHANNEL, (event, method: unknown, args: unknown) =>
+    extensions === null ? { ok: false, code: "UNAVAILABLE", message: "extensions are starting" } : extensions.call(event, method, args),
+  );
+  // A tab preload's frame, while an extension watches its page's input (docs/extensions.md §5 `input`): only to the
+  // tap on that page, which checks the report's shape and drops what it does not expect.
+  ipcMain.on(IPC.extensionInput, (event, message: unknown) => {
+    extensions?.preloadInput(event, message);
   });
   /**
    * A shell-drawn page naming its own tab (docs/notes.md §4): the note's
@@ -5186,6 +5277,24 @@ app.whenReady().then(async () => {
   powerMonitor.on("unlock-screen", () => void tabTidy?.sweep());
   artifacts = new ArtifactStore(app.getPath("userData"), { webUrl: artifactWebOrigin });
   notes = new NoteStore(app.getPath("userData"));
+  // Extensions (docs/extensions.md): the registry, the bundled set and the dev folder, before the window whose tabs
+  // may be an extension's pages.
+  const extensionSettings = settings;
+  extensions = new ExtensionService({
+    userDataDir: app.getPath("userData"),
+    homeDir: app.getPath("home"),
+    isPackaged: app.isPackaged,
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    preload: join(currentDir, "../preload/extension.cjs"),
+    settings: () => extensionSettings.get().extensions,
+    setSettings: (patch) => void extensionSettings.update({ extensions: patch }),
+    onSettingsChange: (listener) => extensionSettings.onChange(listener),
+    notes: () => notes,
+    screenshotFolder,
+    shortcuts: () => extensionSettings.get().shortcuts,
+  });
+  extensions.start();
   groupContexts = new GroupContextStore(app.getPath("userData"), { convert: macDocumentConverter() });
   deskConversations = new DeskConversationStore(app.getPath("userData"));
   // A context's file no context names any more is kept a day, as a note's picture is.
@@ -5332,6 +5441,12 @@ app.whenReady().then(async () => {
     },
   });
   installMenu();
+  // Before any handler: every `pistachio:*` message from a frame inside the shell, or from an extension's context, is
+  // refused (docs/extensions.md §6.2, main/ipc-gate.ts).
+  installIpcGate(ipcMain as unknown as GateIpc, {
+    shellId: () => (shellWindow === null || shellWindow.isDestroyed() ? null : shellWindow.webContents.id),
+    isExtension: (contentsId) => extensions?.isExtensionSender(contentsId) === true,
+  });
   installIpc();
   await createWindow();
   openUrlsReady = true;
@@ -5359,6 +5474,7 @@ app.on("before-quit", (event) => {
   briefScheduler?.stop();
   watchtower?.close();
   terminals?.dispose();
+  extensions?.dispose();
   shields?.stop();
   runs?.flush();
   sidebar?.flush();

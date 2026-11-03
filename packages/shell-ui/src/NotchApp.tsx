@@ -26,14 +26,24 @@
  * alone, opaque, which the glass is cut to — the nub and the glass's cut in one
  * frame, so they move as one. The stand-in under them is what shows until the
  * picture's first frame, and if the glass steps aside.
+ *
+ * While extensions' live pills stand (docs/extensions.md §5, `ui.setStatus`),
+ * the nub is drawn out along the foot by their width (its lane, geometry's
+ * nubOutline; DeskNotchFrame.lane, read off the same clock as the swell) and
+ * the view is that much wider, its corner still the desk's: the pills lie in
+ * the lane here as the shell lays them in its own hole (StatusPillRow, at the
+ * width the shell measured), and a press on one of their actions goes back
+ * to the shell as the pill's own (`{ status }`). So a page under them never
+ * gives way to them: they are the notch's, not a cover.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DeskNotchFrame } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "./api";
 import { DeskNubMark } from "./components/desk/DeskNub";
-import { swellAt, swellDone } from "./components/desk/nub-motion";
-import { nubBetween, nubFace, nubOutline } from "./lib/desk/geometry";
+import { laneAt, swellAt, swellDone } from "./components/desk/nub-motion";
+import { StatusPillRow } from "./components/extensions/StatusPillRow";
+import { NUB_LANE_FOOT, NUB_LANE_INSET, nubBetween, nubFace, nubOutline } from "./lib/desk/geometry";
 
 /** The pointer moving on the view says it is there at most this often. */
 const ENTER_REPEAT_MS = 100;
@@ -72,20 +82,22 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
     const mark = markRef.current;
     if (frame === null || root === null || face === null || mark === null) return;
     const mask = maskRef.current;
-    const { bounds, swelling } = frame;
+    const { bounds, swelling, lane } = frame;
+    // (The nub's own box is the view's corner, as tall as the view: the lane runs left of it.)
+    const nub = bounds.height;
     let raf = 0;
     const draw = (): void => {
       const s = swellAt(swelling);
       const shape = nubBetween(frame.idle, frame.swell, s);
-      const clip = `path("${nubOutline(shape, bounds.width, bounds.height, frame.corner, 0, 0)}")`;
+      const clip = `path("${nubOutline(shape, bounds.width, bounds.height, frame.corner, 0, 0, laneAt(lane))}")`;
       root.style.clipPath = clip;
       // (The picture's: the glass's cut, in the same frame as the nub.)
       if (mask !== null) mask.style.clipPath = clip;
       const at = nubFace(shape);
-      face.style.left = `${(bounds.width + at.x).toFixed(2)}px`;
+      face.style.left = `${(nub + at.x).toFixed(2)}px`;
       face.style.top = `${(bounds.height + at.y).toFixed(2)}px`;
       mark.style.transform = `scale(${(1 + 0.08 * s).toFixed(4)})`;
-      if (!swellDone(swelling)) raf = requestAnimationFrame(draw);
+      if (!swellDone(swelling) || !swellDone(lane)) raf = requestAnimationFrame(draw);
     };
     draw();
     return () => cancelAnimationFrame(raf);
@@ -110,6 +122,17 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
       <DeskNubMark ref={markRef} acting={frame.acting} floating={frame.floating} />
     </span>
   );
+  // The extensions' pills in the lane, where the shell lays them, at the width it measured; an action pressed is the
+  // shell's to send on.
+  const pills =
+    frame.pills.length === 0 ? null : (
+      <StatusPillRow
+        pills={frame.pills}
+        onAction={(id, action) => nativeApi()?.sendDeskNotchInput({ status: { id, action } })}
+        className="desk-notch-view-pills"
+        style={{ right: NUB_LANE_INSET, bottom: NUB_LANE_FOOT, width: frame.pillsWidth }}
+      />
+    );
   const nub = (
     <div
       ref={rootRef}
@@ -123,6 +146,8 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
           "--desk-notch-ground-y": px(ground.y - bounds.y),
           "--desk-notch-ground-w": px(ground.width),
           "--desk-notch-ground-h": px(ground.height),
+          // The nub's own box, in the corner: the rest is its lane.
+          "--desk-notch-nub": px(bounds.height),
         } as React.CSSProperties
       }
     >
@@ -146,6 +171,7 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
           {face}
         </button>
       )}
+      {pills}
     </div>
   );
   if (!picture) return nub;

@@ -1415,7 +1415,11 @@
   background: var(--color-green-100);
   color: var(--color-green-900);
 }
+/* Out of the grid: as a grid item, a portrait cover's natural height sized
+   the row past 34px and the image spilled below the card. */
 .media-artwork > img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   border-radius: inherit;
@@ -4193,15 +4197,413 @@ body:not([data-chrome-view])::after {
     opacity: 0;
   }
 }
+/* The card's foot (SpaceCard): one row, LEDGE_HEIGHT tall — the Ledge leading, the footer's pills trailing. The pills
+   keep their size; the Ledge takes the rest and lets what does not fit flow into its ⋯ (ledgeCapacity: six at the
+   default width, hence the row's 2px at the leading edge — an icon's own 4px round its mark is its margin). */
+.space-card-ledge-row {
+  display: flex;
+  height: 36px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
 .space-card-foot {
   display: flex;
   flex-shrink: 0;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px 2px;
+  padding-right: 6px;
 }
 .space-card-foot:empty {
   display: none;
+}
+
+/* The Ledge (components/extensions/Ledge.tsx, docs/extensions.md X9): extensions' icons in 28px targets 4px apart
+   (LEDGE_SLOT, LEDGE_GAP), the ⋯ ending the strip. */
+.ledge {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+}
+.ledge-icon {
+  position: relative;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--color-gray-800);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    translate 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.ledge-icon:hover,
+.ledge-icon[data-open] {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.ledge-icon:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.ledge-icon > svg {
+  width: 16px;
+  height: 16px;
+}
+/* Off in this Profile: there, but quiet. */
+.ledge-icon[data-off] .ledge-mark {
+  opacity: 0.35;
+}
+/* Pistachio's agent is still writing it (docs/extensions.md §8): the mark breathes until the turn ends. */
+.ledge-icon[data-drafting] .ledge-mark {
+  animation: ledge-drafting 1.4s ease-in-out infinite;
+}
+@keyframes ledge-drafting {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ledge-icon[data-drafting] .ledge-mark {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+/* Carried along the strip: it follows the pointer, lifted; a caret stands where it would land. */
+.ledge-icon[data-carried] {
+  z-index: 1;
+  background: var(--color-alpha-200);
+  box-shadow: 0 4px 12px -4px oklch(0 0 0 / 0.3);
+  cursor: grabbing;
+  transition: none;
+}
+.ledge-icon[data-drop-before]::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: -3px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-blue-700);
+}
+/* An extension's mark: its icon, or its monogram on a hue of its id's (ExtensionMark). */
+.extension-mark {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 5px;
+  object-fit: contain;
+}
+/* On the approval sheet's head (ApprovalSheet). */
+.extension-mark.extension-sheet-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+/* A row's mark on the extensions page (ExtensionsPage). */
+.extension-mark.extension-row-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 10.5px;
+}
+/* In a menu's 14px icon place (a desk window's ⋯: its Extensions items). */
+.extension-mark.extension-menu-mark {
+  width: 14px;
+  height: 14px;
+  border-radius: 3.5px;
+  font-size: 7px;
+}
+.desk-command .desk-command-extension-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 8.5px;
+}
+.extension-monogram {
+  display: grid;
+  place-items: center;
+  background: oklch(0.62 0.12 calc(var(--extension-hue, 150) * 1deg));
+  color: white;
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+/* The badge (Chrome's setBadgeText, pistachio.ui.setBadge): a small pill at the top-trailing corner, in our shape. */
+.ledge-badge {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  min-width: 14px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--color-gray-1000);
+  box-shadow: 0 0 0 1.5px var(--color-background-100);
+  color: var(--color-background-100);
+  font-size: 8.5px;
+  font-weight: 650;
+  line-height: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+/* Amber: it needs the person (an approval, a folder to review). Red: one of their own is broken. */
+.ledge-dot {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--color-background-100);
+  pointer-events: none;
+}
+.ledge-dot[data-tone="amber"] {
+  background: var(--color-amber-700);
+}
+.ledge-dot[data-tone="red"] {
+  background: var(--color-red-700);
+}
+/* None pinned: one dashed slot and the word, the twin of the empty Stack's sheet. */
+.ledge-empty {
+  display: flex;
+  height: 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 5px;
+  border-radius: 8px;
+  color: var(--color-gray-700);
+  font-size: 12.5px;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+.ledge-empty:hover {
+  background: var(--color-alpha-200);
+  color: var(--color-gray-1000);
+}
+.ledge-empty:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.ledge-empty-slot {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  outline: 1px dashed var(--color-alpha-700);
+  outline-offset: -1px;
+}
+/* On the rail alone: a short column above New space, 24px icons, never a tile. */
+.ledge[data-variant="rail"] {
+  height: auto;
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+}
+.ledge[data-variant="rail"] .ledge-icon {
+  width: 32px;
+  height: 24px;
+  border-radius: 7px;
+}
+.ledge[data-variant="rail"] .extension-mark {
+  width: 16px;
+  height: 16px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ledge-icon {
+    transition: none;
+  }
+}
+
+/* The panel's card (components/extensions/ExtensionPanelCard.tsx): beside the sidebar, over the desk, its head the
+   shell's and its body the slot main places the extension's panel view in (setExtensionPanelBounds). */
+.extension-panel-card {
+  position: absolute;
+  z-index: 62;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--color-background-100);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-400),
+    0 16px 40px -12px oklch(0 0 0 / 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-6px);
+  transition:
+    opacity 140ms ease,
+    transform 180ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.extension-panel-card[data-shown] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+.extension-panel-head {
+  display: flex;
+  height: 40px;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--color-alpha-400);
+}
+.extension-panel-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-gray-1000);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.extension-panel-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-gray-800);
+  cursor: pointer;
+  outline: none;
+}
+.extension-panel-button:hover {
+  background: var(--color-alpha-100);
+  color: var(--color-gray-1000);
+}
+.extension-panel-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+.extension-panel-button svg {
+  width: 15px;
+  height: 15px;
+}
+/* The slot: nothing of the shell's is drawn in it; the extension's view is placed over it. */
+.extension-panel-body {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .extension-panel-card {
+    transform: none;
+    transition: none;
+  }
+}
+
+/* An extension's live pill beside the Bar's nub (pistachio.ui.setStatus; components/extensions/StatusPills.tsx): the
+   shell's own DOM, so never in a capture of a tab. It lies in the nub's lane — the nub drawn out along the desk's foot
+   by the pills' width (geometry's nubOutline), a hole down to the ground — so no page under it gives way: over a live
+   page main's notch view draws the same row (NotchApp, .desk-notch-view-pills). Its place in the lane is geometry's
+   (NUB_LANE_INSET, NUB_LANE_FOOT: --status-lane-*). While the Bar's pill or menu is out it stands left of the pill,
+   centred on it, inside the pill's cover, and shows once the pages there have given way. */
+.extension-status-pills {
+  position: absolute;
+  right: var(--status-lane-right, 34px);
+  bottom: var(--status-lane-foot, 5px);
+  z-index: 56;
+  display: flex;
+  max-width: calc(100cqw - 80px);
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 160ms ease,
+    right 220ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    bottom 220ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.extension-status-pills[data-shown] {
+  opacity: 1;
+}
+.extension-status-pills[data-shown] > * {
+  pointer-events: auto;
+}
+.extension-status-pills[data-raised] {
+  right: calc(46px + min(480px, 100cqw - 58px) + 8px);
+  bottom: 19px;
+}
+.desk-stage[data-phase="leaving"] .extension-status-pills {
+  opacity: 0;
+}
+/* The same row in main's notch view over a live page (NotchApp): laid at the width the shell measured, where the
+   shell lays it in the lane, on the Bar's fill. */
+.desk-notch-view-pills {
+  --desk-bar-fill: color-mix(in oklch, var(--color-background-100) 94%, transparent);
+  position: absolute;
+  /* (Over the view's grain, as the shell's lie over the ground's.) */
+  z-index: 1;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 6px;
+}
+.extension-status-pill {
+  display: flex;
+  height: 30px;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 8px;
+  border-radius: 999px;
+  background: var(--desk-bar-fill, var(--color-background-100));
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  backdrop-filter: blur(24px) saturate(1.5);
+  box-shadow:
+    0 0 0 1px var(--color-alpha-300),
+    0 8px 20px -10px oklch(0 0 0 / 0.36);
+  color: var(--color-gray-1000);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.extension-status-pill .extension-mark {
+  width: 16px;
+  height: 16px;
+}
+.extension-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.extension-status-action {
+  height: 22px;
+  flex: none;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--color-alpha-100);
+  color: var(--color-gray-1000);
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+  outline: none;
+}
+.extension-status-action:hover {
+  background: var(--color-alpha-200);
+}
+.extension-status-action:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
 }
 .home-view,
 .space-view {
@@ -6203,11 +6605,13 @@ body[data-chrome-view="notch-picture"] {
 :root[data-texture="off"] .desk-notch-view::after {
   display: none;
 }
-/* The whole view is the nub's (the clip takes the pointer only within its outline); its face sits where the shell's
-   does, moved with the swell. */
+/* The view's box in the corner is the nub's (the clip takes the pointer only within its outline) — the rest, drawn
+   out along the foot, its lane, where the extensions' pills lie; its face sits where the shell's does, moved with the
+   swell. */
 .desk-notch-view-hit {
   position: absolute;
-  inset: 0;
+  inset: 0 0 0 auto;
+  width: var(--desk-notch-nub, 100%);
   padding: 0;
   border: 0;
   background: transparent;

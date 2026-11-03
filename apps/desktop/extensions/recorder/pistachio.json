@@ -1,0 +1,25 @@
+{
+  "api": 1,
+  "id": "com.pistachio.recorder",
+  "name": "Recorder",
+  "version": "1.0.0",
+  "description": "Record a window, then polish it: zoom that follows your clicks, a smooth cursor, backgrounds, MP4 or GIF.",
+  "icon": "icon.svg",
+  "permissions": ["capture:tab", "input:events", "media:microphone", "media:camera", "desk", "tabs:read", "files:data", "notifications", "clipboard:write", "notes:write", "power"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "panel": { "file": "panel.html", "width": 360, "height": 480 },
+  "pages": { "editor": { "file": "editor.html", "title": "Recorder" } },
+  "bar": {
+    "commands": [
+      { "name": "record", "description": "Record the window in use", "run": { "event": true } },
+      { "name": "stop", "description": "Stop the recording", "run": { "event": true } }
+    ]
+  },
+  "contextMenus": [{ "id": "record-window", "title": "Record this window", "contexts": ["window"] }],
+  "commands": [{ "id": "toggle", "title": "Start or stop recording", "key": "Cmd+Shift+6" }],
+  "settings": [
+    { "key": "fps", "title": "Frame rate", "type": "enum", "options": ["30", "60"], "default": "60" },
+    { "key": "scale", "title": "Quality", "description": "Crisp records at twice the window's size so zoom stays sharp.", "type": "enum", "options": ["crisp", "native"], "default": "crisp" },
+    { "key": "countdown", "title": "Countdown", "type": "enum", "options": ["0", "3", "5"], "default": "3" }
+  ]
+}

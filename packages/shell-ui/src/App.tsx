@@ -7,6 +7,7 @@ import { NoticeHost } from "./components/NoticeHost";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { PistachioMark } from "./components/PistachioMark";
 import { ScreenshotOverlay } from "./components/ScreenshotOverlay";
+import { startExtensions } from "./lib/extensions/use-extensions";
 import { updatePromptWaiting } from "./lib/update-prompt";
 import { useAppStore } from "./store";
 
@@ -39,6 +40,9 @@ export function App() {
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
+    // Extensions (docs/extensions.md): main publishes their snapshot rather than being asked for it, so the window
+    // listens from the start (lib/extensions/use-extensions.ts).
+    startExtensions();
     void initialize().then((cleanup) => {
       unsubscribe = cleanup;
     });

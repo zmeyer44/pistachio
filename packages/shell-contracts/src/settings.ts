@@ -301,6 +301,16 @@ export interface DesktopSettings {
    */
   shields: ShieldsSettings;
   /**
+   * Extensions (docs/extensions.md §7): Developer mode watches the dev
+   * folder (`~/Pistachio/Extensions` unless `devFolder` names another) and
+   * hot-reloads what is there. Which extensions are installed is not a
+   * setting (main/extensions/registry.ts — its own file).
+   */
+  extensions: {
+    developerMode: boolean;
+    devFolder: string | null;
+  };
+  /**
    * Tidy (docs/tab-tidy.md): the pass that archives idle tabs, gathers
    * related ones into groups, and sends favorites home. What is archived is
    * not a setting (main/tab-archive-store.ts — its own file); these are the
@@ -423,6 +433,10 @@ export const DEFAULT_SETTINGS: DesktopSettings = {
     rememberRecents: true,
   },
   shields: DEFAULT_SHIELDS,
+  extensions: {
+    developerMode: false,
+    devFolder: null,
+  },
   tabs: {
     archiveAfterHours: DEFAULT_ARCHIVE_AFTER_HOURS,
     groupRelated: true,
@@ -630,6 +644,7 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
   const evidence = section(root["evidence"]);
   const privacy = section(root["privacy"]);
   const shields = section(root["shields"]);
+  const extensions = section(root["extensions"]);
   const tabs = section(root["tabs"]);
   const cloud = section(root["cloud"]);
   const media = section(root["media"]);
@@ -766,6 +781,10 @@ export function sanitizeSettings(input: unknown): DesktopSettings {
       ),
     },
     shields: sanitizeShields(shields),
+    extensions: {
+      developerMode: bool(extensions["developerMode"], d.extensions.developerMode),
+      devFolder: typeof extensions["devFolder"] === "string" && extensions["devFolder"].length > 0 ? extensions["devFolder"] : d.extensions.devFolder,
+    },
     tabs: {
       archiveAfterHours: oneOf(
         tabs["archiveAfterHours"],
@@ -876,6 +895,7 @@ export const SETTINGS_SECTIONS = {
   "privacy/shields": "Ads & trackers",
   "privacy/spaces": "Profiles",
   "privacy/isolation": "Agent isolation",
+  extensions: "Extensions",
   account: "Account",
   devices: "Devices",
   sync: "Sync",

@@ -168,6 +168,8 @@ export type Overlay =
    */
   | "permission"
   | "space-fork"
+  /** An extension's approval sheet (components/extensions/ApprovalSheet.tsx; lib/extensions/use-extensions.ts): never under a page or a panel. */
+  | "extension-sheet"
   | "tab-switcher"
   | "liveView"
   | "context-menu"
@@ -589,7 +591,12 @@ export interface AppState {
    * Open a link the shell rendered (console messages): a Glance above the live
    * page, or a real tab when asked for one or when no page can own a preview.
    */
-  openLink(url: string, source: ContentBounds, inNewTab: boolean): Promise<void>;
+  /**
+   * A link clicked in the shell: Glance when not `inNewTab`, else a tab. A `file:` link opens as a tab of its own
+   * (scripts off, main's `file`) only with `fileLinks` — from a note or a document of the person's own — and is
+   * otherwise left alone: a tab is sent to a local file only by the person.
+   */
+  openLink(url: string, source: ContentBounds, inNewTab: boolean, options?: { fileLinks?: boolean }): Promise<void>;
   /** The console's feedback popover; the outcome is the popover's to show. */
   submitFeedback(input: FeedbackInput): Promise<FeedbackOutcome>;
   closeGlance(): Promise<void>;
@@ -1629,8 +1636,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       return null;
     }
   },
-  openLink: (url, source, inNewTab) =>
+  openLink: (url, source, inNewTab, options) =>
     safeAction(async () => {
+      if (/^file:/iu.test(url)) {
+        if (options?.fileLinks !== true) return;
+        await shellApi().createTab(url, { file: true });
+        get().closePage();
+        return;
+      }
       const opened = inNewTab ? false : await shellApi().openGlance({ url, source });
       if (opened) return;
       await shellApi().createTab(url);

@@ -1,0 +1,26 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.bar-tool",
+  "name": "Bar tool",
+  "version": "1.0.0",
+  "description": "An e2e fixture: a Bar command of kind event and a tool the agent can call.",
+  "permissions": ["agent:tools"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "bar": {
+    "commands": [
+      { "name": "shout", "description": "Shout the text back", "arg": { "hint": "text" }, "run": { "event": true } }
+    ]
+  },
+  "tools": [
+    {
+      "name": "shout_text",
+      "description": "Upper-case a text and count its letters. Fails on the text \"fail\".",
+      "input": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } },
+        "required": ["text"]
+      },
+      "effect": "read"
+    }
+  ]
+}

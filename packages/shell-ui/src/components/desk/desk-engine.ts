@@ -128,7 +128,7 @@ import {
   uncoveredWindows,
   letGoSize,
   nubOutline,
-  nubExtent,
+  nubLaneBox,
   roundedRectPath,
   windowSize,
   type CornerRadii,
@@ -1111,6 +1111,8 @@ export class DeskEngine {
   #notch: { w: number; h: number } | null = null;
   /** The Bar's nub as it is drawn now (setNotchShape): a hole through the well and the windows under it. */
   #notchShape: NotchShape | null = null;
+  /** How far it is drawn out along the foot for the extensions' pills (setNotchShape's `lane`), px. */
+  #notchLane = 0;
   #wellHoled = false;
   /** Room kept at the desk's trailing side for the answer in the chat's place (setReserve): the windows keep out of it. */
   #reserve = 0;
@@ -3524,7 +3526,8 @@ export class DeskEngine {
 
   /**
    * The Bar's nub, idle (DeskBar): the box it may fill (swelled under the
-   * pointer), in the desk's trailing foot corner, or null. The windows fill
+   * pointer, and drawn out along the foot while the extensions' pills lie in
+   * it), in the desk's trailing foot corner, or null. The windows fill
    * the desk under it, whole: with a live page under it (the view's
    * `notchOver`), the nub is drawn over the page by main's notch view, which
    * DeskBar places.
@@ -3545,13 +3548,20 @@ export class DeskEngine {
    * surface's, the window's glass), which nothing drawn over them could
    * match — so the nub is that ground, a droplet of it in the corner,
    * whatever the theme. (A live page under the idle nub has main's notch
-   * view over it instead; what opens out of it is a cover.)
+   * view over it instead; what opens out of it is a cover.) `lane`: drawn
+   * out that far along the foot, the extensions' pills lying in it
+   * (geometry's nubOutline) — a hole as the nub is, so no window gives way.
    */
-  setNotchShape(shape: NotchShape | null): void {
+  setNotchShape(shape: NotchShape | null, lane = 0): void {
     const before = this.#notchShape;
-    if (shape === null ? before === null : before !== null && (["radius", "sink", "fillet"] as const).every((key) => Math.abs(before[key] - shape[key]) < 0.01))
+    const nextLane = shape === null ? 0 : Math.max(0, lane);
+    if (
+      Math.abs(nextLane - this.#notchLane) < 0.01 &&
+      (shape === null ? before === null : before !== null && (["radius", "sink", "fillet"] as const).every((key) => Math.abs(before[key] - shape[key]) < 0.01))
+    )
       return;
     this.#notchShape = shape === null ? null : { ...shape };
+    this.#notchLane = nextLane;
     this.#writeWell();
     for (const win of this.#wins.values()) this.#write(win);
   }
@@ -3568,7 +3578,7 @@ export class DeskEngine {
     }
     this.#wellHoled = true;
     const { width, height } = this.#stageBox;
-    stage.style.setProperty("--desk-notch-clip", `path(evenodd, "M -2 -2 H ${(width + 2).toFixed(1)} V ${(height + 2).toFixed(1)} H -2 Z ${nubOutline(shape, width, height, this.#corner, 0, 0)}")`);
+    stage.style.setProperty("--desk-notch-clip", `path(evenodd, "M -2 -2 H ${(width + 2).toFixed(1)} V ${(height + 2).toFixed(1)} H -2 Z ${nubOutline(shape, width, height, this.#corner, 0, 0, this.#notchLane)}")`);
   }
 
   /**
@@ -3584,10 +3594,10 @@ export class DeskEngine {
     if (gesture !== null && gesture.tabId === win.tabId && gesture.kind !== "resize") return null;
     const { x, w } = win.rect;
     const { width: stageW, height: stageH } = this.#stageBox;
-    const span = nubExtent(shape);
-    const hole = { x: stageW - span, y: stageH - span, w: span, h: span };
+    const span = nubLaneBox(shape, this.#notchLane);
+    const hole = { x: stageW - span.w, y: stageH - span.h, w: span.w, h: span.h };
     if (!rectsOverlap({ x: x - CLIP_MARGIN, y: y - CLIP_MARGIN, w: w + CLIP_MARGIN * 2, h: foot + CLIP_MARGIN }, hole)) return null;
-    return `path(evenodd, "${roundedRectPath(-reach.left, -reach.top, w + reach.right, foot, radii)} ${nubOutline(shape, stageW, stageH, this.#corner, -x, -y)}")`;
+    return `path(evenodd, "${roundedRectPath(-reach.left, -reach.top, w + reach.right, foot, radii)} ${nubOutline(shape, stageW, stageH, this.#corner, -x, -y, this.#notchLane)}")`;
   }
 
   /**

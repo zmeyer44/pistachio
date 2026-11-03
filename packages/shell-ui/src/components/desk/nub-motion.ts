@@ -87,6 +87,22 @@ export function swellDone(swelling: Swelling, now = Date.now()): boolean {
   return now - swelling.at >= swelling.ms;
 }
 
+/**
+ * The nub drawn out along the foot for the extensions' pills (its lane,
+ * geometry's nubOutline), and back in: px, on its way from `from` to `to`
+ * since `at` (wall-clock ms) over `ms` — DeskNotchFrame.lane, read off the
+ * clock on both sides as the swell is. A position change on transitions.dev's
+ * tokens (smooth ease-out, no overshoot: the notch view's box holds the wider
+ * of where it is and where it goes, never past them).
+ */
+export const LANE_IN_MS = 300;
+export const LANE_OUT_MS = 250;
+
+export function laneAt(lane: Swelling, now = Date.now()): number {
+  if (lane.ms <= 0) return lane.to;
+  return lane.from + (lane.to - lane.from) * EASE_SMOOTH_OUT(clamp((now - lane.at) / lane.ms, 0, 1));
+}
+
 /** How much slower than life the nub moves (a capture slows it to see the goo): `--desk-nub-time-scale`, 1 unless set. */
 export function nubTimeScale(): number {
   if (typeof document === "undefined" || typeof getComputedStyle !== "function") return 1;
@@ -179,8 +195,11 @@ export interface NubMotionHost {
   pill(): PillParts | null;
   /** The desk's corner radius, which the nub's outline rounds into. */
   corner(): number;
-  /** What of the nub is in the corner now, or none (it has let go for its menu): DeskBar has the engine cut it through the well and the windows. */
-  shape(shape: NotchShape | null): void;
+  /**
+   * What of the nub is in the corner now, or none (it has let go for its menu), and how far it is drawn out along the
+   * foot (its lane, px): DeskBar has the engine cut it through the well and the windows.
+   */
+  shape(shape: NotchShape | null, lane: number): void;
 }
 
 /** What the pill comes out of: the prompt's droplet, the microphone's, or the nub itself (⌘I, the field taking the keyboard). */
@@ -204,6 +223,8 @@ export class NubMotion {
   readonly #host: NubMotionHost;
   readonly #rests = nubDrops();
   #swelling: Swelling = { from: 0, to: 0, at: 0, ms: 0 };
+  /** How far it is drawn out along the foot for the extensions' pills (laneAt), px. */
+  #lane: Swelling = { from: 0, to: 0, at: 0, ms: 0 };
   /** The nub's way out of the corner for its menu: 0 in it, 1 free. */
   #free: Track = { from: 0, to: 0, at: 0, delay: 0, spring: FREE_CLOSE, scale: 1 };
   #drops: Track[] = this.#rests.map(() => ({ from: 0, to: 0, at: 0, delay: 0, spring: DROP_CLOSE, scale: 1 }));
@@ -240,6 +261,17 @@ export class NubMotion {
     this.#swelling = { from, to, at: now, ms: reduced() ? 0 : Math.round((to === 1 ? SWELL_IN_MS : SWELL_OUT_MS) * nubTimeScale()) };
     this.#kick();
     return this.#swelling;
+  }
+
+  /** Drawn out along the foot `to` px (the extensions' pills lie there), or back in (0); its way, for the notch view to read off the same clock. */
+  lane(to: number): Swelling {
+    const next = Math.max(0, to);
+    if (Math.abs(this.#lane.to - next) < 0.5) return this.#lane;
+    const now = Date.now();
+    const from = laneAt(this.#lane, now);
+    this.#lane = { from, to: next, at: now, ms: reduced() ? 0 : Math.round((next > from ? LANE_IN_MS : LANE_OUT_MS) * nubTimeScale()) };
+    this.#kick();
+    return this.#lane;
   }
 
   /** The nub out of the corner, a button of its own, and its droplets out of it. */
@@ -366,10 +398,13 @@ export class NubMotion {
     const freed = trackAt(this.#free, now);
     if (!trackDone(this.#free, now)) moving = true;
     const { corner, button: shape } = nubLetGo(swelled, freed);
-    const key = `${corner === null ? "-" : `${corner.radius.toFixed(2)}|${corner.sink.toFixed(2)}|${corner.fillet.toFixed(2)}`}|${shape.radius.toFixed(2)}|${shape.sink.toFixed(2)}|${this.#host.corner().toFixed(1)}`;
+    // (Drawn out along the foot for the extensions' pills: the hole's, not the goo's.)
+    const lane = laneAt(this.#lane, wall);
+    if (!swellDone(this.#lane, wall)) moving = true;
+    const key = `${corner === null ? "-" : `${corner.radius.toFixed(2)}|${corner.sink.toFixed(2)}|${corner.fillet.toFixed(2)}`}|${shape.radius.toFixed(2)}|${shape.sink.toFixed(2)}|${this.#host.corner().toFixed(1)}|${lane.toFixed(2)}`;
     if (key !== this.#shapeKey) {
       this.#shapeKey = key;
-      this.#host.shape(corner);
+      this.#host.shape(corner, lane);
       parts.base.setAttribute("d", corner === null ? "" : nubOutline(corner, 0, 0, this.#host.corner(), 0, 0));
       parts.anchor.setAttribute("cx", corner === null ? "0" : (-corner.sink).toFixed(2));
       parts.anchor.setAttribute("cy", corner === null ? "0" : (-corner.sink).toFixed(2));

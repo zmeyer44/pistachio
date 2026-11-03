@@ -134,6 +134,7 @@ import { welcomeDocumentHtml, welcomeTabFor, type WelcomePageContext } from "@pi
 import { HOME_PAGE_FAVICON, HOME_PAGE_TITLE, HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
 import { BRIEF_PAGE_FAVICON, isShellPageUrl, shellPageOf, shellPagePlaceholderHtml, type ShellPage } from "@pistachio/shell-contracts/shell-pages";
 import { TERMINAL_PAGE_FAVICON, TERMINAL_PAGE_TITLE, terminalUrl, terminalUrlId } from "@pistachio/shell-contracts/terminal";
+import { EXTENSIONS_PAGE_FAVICON, EXTENSIONS_PAGE_TITLE } from "@pistachio/shell-contracts/extensions";
 import { BRIEF_PAGE_TITLE, briefUrl, briefUrlDate } from "@pistachio/shell-contracts/reports";
 import {
   isNoteBlobId,
@@ -326,6 +327,7 @@ export const UNSUPPORTED = {
   integrationSetAccess: MANAGED_IN_WEB,
   integrationDisconnect: MANAGED_IN_WEB,
   integrationCalendarEvents: MANAGED_IN_WEB,
+  extensions: "Extensions run in Pistachio on your Mac; the web browser has none.",
 } as const satisfies Partial<Record<ShellMethodName, string>>;
 
 export type UnsupportedShellMethod = keyof typeof UNSUPPORTED;
@@ -3132,6 +3134,15 @@ export class ShellHost implements ShellApi, StreamShellApi {
     }
   }
 
+  async extensions(): Promise<never> {
+    return unsupported("extensions");
+  }
+
+  onExtensions(): () => void {
+    // No extensions here (docs/extensions.md): the shell draws an empty Ledge.
+    return () => undefined;
+  }
+
   onNotes(listener: (snapshot: NoteSnapshot) => void): () => void {
     // Metadata only, and `note-blob:` writes are silent in the store, so a
     // dropped picture does not re-serialise the library (N3, §4).
@@ -4206,6 +4217,8 @@ const SHELL_PAGE_TITLES: Record<ShellPage, string> = {
   notes: NOTES_PAGE_TITLE,
   // (A terminal is a Mac's: on the web its tab is only its name, docs/terminal.md §6.)
   terminal: TERMINAL_PAGE_TITLE,
+  // (So are extensions: docs/extensions.md; the page says they run on the Mac.)
+  extensions: EXTENSIONS_PAGE_TITLE,
 };
 
 const SHELL_PAGE_FAVICONS: Record<ShellPage, string> = {
@@ -4213,6 +4226,7 @@ const SHELL_PAGE_FAVICONS: Record<ShellPage, string> = {
   brief: BRIEF_PAGE_FAVICON,
   notes: NOTES_PAGE_FAVICON,
   terminal: TERMINAL_PAGE_FAVICON,
+  extensions: EXTENSIONS_PAGE_FAVICON,
 };
 
 /**

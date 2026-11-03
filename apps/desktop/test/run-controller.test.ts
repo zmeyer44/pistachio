@@ -13,13 +13,13 @@ import { simulateReadableStream, type ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { verifyEvidenceEntries } from "@pistachio/evidence";
 import { NotificationRouter, type NotificationAdapter, type NotificationMessage } from "@pistachio/notifications";
-import { PAGE_IN_VIEW_HEADER, TURN_CUT_SHORT, USE_BROWSER_TOOL, type TurnRouteRequest } from "@pistachio/agent-runtime";
+import { extensionToolName, PAGE_IN_VIEW_HEADER, TURN_CUT_SHORT, USE_BROWSER_TOOL, type TurnRouteRequest } from "@pistachio/agent-runtime";
 import type { RunSummary, TaskStatus } from "@pistachio/protocol";
 import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import { applyNoteEdit, noteUrl, searchNotes, summaryOf, type Note } from "@pistachio/shell-contracts/notes";
 import type { BrowserController } from "../src/main/browser-controller";
 import { ArtifactStore } from "../src/main/artifact-store";
-import { RunController, type CloudRunCommands, type NoteRecordStore, type TurnRouter } from "../src/main/run-controller";
+import { RunController, type CloudRunCommands, type NoteRecordStore, type RunExtensions, type TurnRouter } from "../src/main/run-controller";
 import { ThreadStore, type ThreadRecord } from "../src/main/thread-store";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 
@@ -277,6 +277,8 @@ function build(options: {
   router?: TurnRouter;
   /** Sees every publish, with the controller as it is at that moment. */
   observe?: (controller: RunController) => void;
+  /** The person's extensions' tools and the author turn's drafts (docs/extensions.md §6.2, §8). */
+  extensions?: RunExtensions;
 }) {
   const dir = options.dir ?? scratch();
   const threads = options.threads ?? new ThreadStore(dir);
@@ -297,6 +299,7 @@ function build(options: {
     ...(options.artifactWebUrl === undefined ? {} : { artifactWebUrl: options.artifactWebUrl }),
     ...(options.onRunEnded === undefined ? {} : { onRunEnded: options.onRunEnded }),
     ...(options.router === undefined ? {} : { router: options.router }),
+    ...(options.extensions === undefined ? {} : { extensions: options.extensions }),
     model: () => options.model,
     ...(options.stream === undefined ? {} : { stream: options.stream }),
     summarize: options.summarize ?? (async () => "SUMMARY: earlier steps"),
@@ -1878,5 +1881,108 @@ describe("a streamed reply", () => {
     await steered;
     expect(controller.snapshot()?.status).toBe("completed");
     expect(lastAssistant(controller.snapshot()!)).toBe("Here is the new answer.");
+  });
+});
+
+/* ------------------------------ extensions and the agent ------------------------------ */
+
+describe("extensions in a turn (docs/extensions.md §6.2, §8)", () => {
+  const TOKEN = "0123456789abcdef0123456789abcdef";
+  const ASK = "Build a Pistachio extension that counts words. Write it in /Users/z/Pistachio/Extensions/word-counter.";
+  const MARKED = `[pistachio:extension-author slug=word-counter token=${TOKEN}]\n${ASK}`;
+
+  function extensionsStub(): RunExtensions & { written: Array<[string, string]>; drafting: Array<[string, boolean]>; tools: ReturnType<typeof vi.fn>; call: ReturnType<typeof vi.fn> } {
+    const written: Array<[string, string]> = [];
+    const drafting: Array<[string, boolean]> = [];
+    let claimed = false;
+    return {
+      written,
+      drafting,
+      tools: vi.fn(() => [
+        {
+          extensionId: "dev.local.word-counter",
+          extensionName: "Word counter",
+          name: "word_count",
+          description: "Count the words in a text.",
+          input: { type: "object" as const, properties: { text: { type: "string" } }, required: ["text"] },
+          effect: "read" as const,
+        },
+      ]),
+      call: vi.fn(async (_id: string, _tool: string, input: unknown) => ({ words: String((input as { text: string }).text).split(/\s+/).length })),
+      claimDraft: (slug: string, token: string) => {
+        if (claimed || slug !== "word-counter" || token !== TOKEN) return null;
+        claimed = true;
+        return { slug, folder: "/Users/z/Pistachio/Extensions/word-counter" };
+      },
+      authorHost: {
+        write: async (_slug, path, content) => {
+          written.push([path, content]);
+          return { path, bytes: content.length };
+        },
+        read: async () => ({ path: null, files: [] }),
+        status: async () => JSON.stringify({ state: "needs-approval", manifestErrors: [], runtimeErrors: [] }),
+      },
+      authorGuide: () => "# Writing a Pistachio extension\nThe guide.",
+      setDrafting: (folder, on) => void drafting.push([folder, on]),
+    };
+  }
+
+  it("runs the Bar's /extension as an author turn: a thread of its own, the marker gone, the draft tools alone", async () => {
+    const { model } = scriptedModel([
+      answer("The invoice total is $120."),
+      calls({ name: "extension_draft_write", input: { slug: "word-counter", path: "pistachio.json", content: "{}" } }),
+      answer("It counts words; approve it in Pistachio."),
+    ]);
+    const extensions = extensionsStub();
+    const { controller } = build({ model, extensions });
+    // A thread was open: the author turn does not continue it.
+    await controller.start("Check the invoice total");
+    const before = controller.snapshot()?.runId;
+    extensions.tools.mockClear();
+
+    await controller.message(MARKED);
+
+    const run = controller.snapshot()!;
+    expect(run.runId).not.toBe(before);
+    expect(run.messages[0]).toMatchObject({ role: "user", content: ASK });
+    const first = model.doGenerateCalls[1]!;
+    expect((first.tools ?? []).map((tool) => tool.name).sort()).toEqual(["ask_user", "ask_user_text", "extension_draft_read", "extension_draft_write", "extension_status"]);
+    // The person's wish as they made it: no "browser task", no page in view, nothing of the thread before.
+    expect(userTexts(first.prompt)).toEqual([ASK]);
+    expect(extensions.written).toEqual([["pistachio.json", "{}"]]);
+    expect(extensions.tools).not.toHaveBeenCalled();
+    expect(extensions.drafting).toEqual([
+      ["/Users/z/Pistachio/Extensions/word-counter", true],
+      ["/Users/z/Pistachio/Extensions/word-counter", false],
+    ]);
+    expect(run.toolCalls.map((tool) => [tool.name, tool.label, tool.status])).toEqual([["ext.draft.write", "Write a file", "completed"]]);
+    expect(lastAssistant(run)).toBe("It counts words; approve it in Pistachio.");
+  });
+
+  it("a marker with a token main never handed out is an ordinary message, the marker dropped", async () => {
+    const { model } = scriptedModel([answer("I can't write files here.")]);
+    const extensions = extensionsStub();
+    const { controller } = build({ model, extensions });
+    await controller.start(MARKED.replace(TOKEN, "f".repeat(32)));
+    const run = controller.snapshot()!;
+    expect(run.messages[0]?.content).toBe(ASK);
+    const names = (model.doGenerateCalls[0]!.tools ?? []).map((tool) => tool.name);
+    expect(names).toContain("tabs_list");
+    expect(names).not.toContain("extension_draft_write");
+    expect(extensions.drafting).toEqual([]);
+  });
+
+  it("gives an ordinary turn the extensions' tools of the run's Profile, and traces a call under the extension's name", async () => {
+    const name = extensionToolName("dev.local.word-counter", "word_count");
+    const { model } = scriptedModel([calls({ name, input: { text: "one two three" } }), answer("Three words.")]);
+    const extensions = extensionsStub();
+    const { controller } = build({ model, extensions });
+    await controller.start("How many words in 'one two three'?");
+    expect(extensions.tools).toHaveBeenCalledWith("work");
+    expect((model.doGenerateCalls[0]!.tools ?? []).map((tool) => tool.name)).toContain(name);
+    const run = controller.snapshot()!;
+    expect(extensions.call).toHaveBeenCalledWith("dev.local.word-counter", "word_count", { text: "one two three" }, expect.objectContaining({ runId: run.runId, profileId: "work" }));
+    expect(run.toolCalls.map((tool) => [tool.name, tool.label, tool.status])).toEqual([["ext.call", "Word counter", "completed"]]);
+    expect(lastAssistant(run)).toBe("Three words.");
   });
 });

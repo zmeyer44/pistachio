@@ -5,6 +5,7 @@ export * from "./browser-backend.js";
 export * from "./dom-scripts.js";
 export * from "./tool-groups.js";
 export * from "./desk-tools.js";
+export * from "./extension-tools.js";
 export * from "./turn-route-contract.js";
 export * from "./integrations/index.js";
 export { DeadlineError, withDeadline, type DeadlineOptions } from "./deadline.js";

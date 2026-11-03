@@ -83,8 +83,33 @@ export const TERMINAL_MAX_ROWS = 500;
  *   snapshot: another Profile). The shell runs on; nothing more is sent, and
  *   nothing is held back for want of drawing. Opened again, it is replayed.
  */
+/**
+ * A program the shell runs in place of its prompt, its arguments as argv — never a line typed into the shell (the host
+ * starts the login shell with `exec "$0" "$@"` and these after it): *Build with Claude Code*'s `claude <wish>`.
+ */
+export interface TerminalRun {
+  program: string;
+  args: string[];
+}
+
+export const TERMINAL_RUN_PROGRAM = /^[a-z][a-z0-9._-]{0,63}$/;
+export const TERMINAL_RUN_ARGS_MAX = 8;
+export const TERMINAL_RUN_ARG_MAX_LENGTH = 4_096;
+
+export function isTerminalRun(value: unknown): value is TerminalRun {
+  if (value === null || typeof value !== "object") return false;
+  const run = value as Record<string, unknown>;
+  return (
+    typeof run["program"] === "string" &&
+    TERMINAL_RUN_PROGRAM.test(run["program"]) &&
+    Array.isArray(run["args"]) &&
+    run["args"].length <= TERMINAL_RUN_ARGS_MAX &&
+    run["args"].every((arg) => typeof arg === "string" && arg.length <= TERMINAL_RUN_ARG_MAX_LENGTH && !arg.includes("\0"))
+  );
+}
+
 export type TerminalRequest =
-  | { type: "open"; id: string; cols: number; rows: number; cwd: string | null; restart?: true }
+  | { type: "open"; id: string; cols: number; rows: number; cwd: string | null; run?: TerminalRun; restart?: true }
   | { type: "input"; id: string; data: string; binary?: true }
   | { type: "resize"; id: string; cols: number; rows: number }
   | { type: "ack"; id: string; chars: number }
@@ -200,6 +225,7 @@ export function isTerminalRequest(value: unknown): value is TerminalRequest {
       return (
         size() &&
         (request["cwd"] === null || (typeof request["cwd"] === "string" && request["cwd"].startsWith("/") && request["cwd"].length <= 4_096)) &&
+        (request["run"] === undefined || isTerminalRun(request["run"])) &&
         (request["restart"] === undefined || request["restart"] === true)
       );
     case "input":

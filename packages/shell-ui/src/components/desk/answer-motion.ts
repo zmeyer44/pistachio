@@ -56,7 +56,7 @@ import {
   type FloatArea,
   type FloatSpot,
 } from "../../lib/desk/answer-float";
-import { cellZone, nubExtent, nubOutline, rectsOverlap, thirdsCell, type NotchShape, type Rect, type ThirdsCell } from "../../lib/desk/geometry";
+import { cellZone, nubLaneBox, nubOutline, rectsOverlap, thirdsCell, type NotchShape, type Rect, type ThirdsCell } from "../../lib/desk/geometry";
 import { BOUNCE_RESTITUTION, GLIDE_STOP_SPEED, GLIDE_TAU_S, VelocityTracker, clamp, stepSpring, type SpringConfig } from "../../lib/desk/motion";
 import { startPaneDrag } from "../../lib/pane-drag";
 
@@ -193,8 +193,11 @@ export interface AnswerMotionHost {
   snapped(zone: AnswerZone | null): void;
   /** The chat's place's width while the card is in it, or null (DeskBar: the desk's windows keep out of it). */
   place(width: number | null): void;
-  /** The nub as it is cut now — its outline, and the desk's corner radius it rounds into — or null while it is not a hole. */
-  notch(): { shape: NotchShape; corner: number } | null;
+  /**
+   * The nub as it is cut now — its outline, the desk's corner radius it rounds into, and how far it is drawn out along
+   * the foot for the extensions' pills (its lane) — or null while it is not a hole.
+   */
+  notch(): { shape: NotchShape; corner: number; lane: number } | null;
   /** A card is in hand (DeskBar grows the Bar for it, the slot's home). */
   held(held: boolean): void;
   /** What the card covers on the desk, the ghost while it shows, and the zone lit (or the hint) — in lane coordinates, or null. */
@@ -1423,18 +1426,18 @@ export class AnswerMotion {
     const stage = stageOf(this.#area);
     const right = stage.x + stage.w;
     const bottom = stage.y + stage.h;
-    // (Nowhere near the corner — as it mostly is — the nub is not asked how it is cut.)
-    if (x + W < right - HOLE_NEAR || y + H < bottom - HOLE_NEAR) return "";
+    // (Nowhere near the foot — as it mostly is — the nub is not asked how it is cut; nor near the corner, past its lane.)
+    if (y + H < bottom - HOLE_NEAR) return "";
     const notch = this.#host.notch();
-    if (notch === null) return "";
-    const span = nubExtent(notch.shape);
-    if (!rectsOverlap({ x, y, w: W, h: H }, { x: right - span, y: bottom - span, w: span, h: span })) return "";
+    if (notch === null || x + W < right - HOLE_NEAR - notch.lane) return "";
+    const span = nubLaneBox(notch.shape, notch.lane);
+    if (!rectsOverlap({ x, y, w: W, h: H }, { x: right - span.w, y: bottom - span.h, w: span.w, h: span.h })) return "";
     const n = (value: number): string => value.toFixed(2);
     const reach = 120;
     const top = Math.max(-reach, stage.y - y);
     const r = Math.min(W + reach, right - x);
     const b = Math.min(H + reach, bottom - y);
-    return `path(evenodd, "M ${n(-reach)} ${n(top)} H ${n(r)} V ${n(b)} H ${n(-reach)} Z ${nubOutline(notch.shape, right - x, bottom - y, notch.corner, 0, 0)}")`;
+    return `path(evenodd, "M ${n(-reach)} ${n(top)} H ${n(r)} V ${n(b)} H ${n(-reach)} Z ${nubOutline(notch.shape, right - x, bottom - y, notch.corner, 0, 0, notch.lane)}")`;
   }
 
   /** The header's buttons stay on the frame's right edge and the grab on its centre while the frame is wider or narrower than the layout; the title gives way where they overlap it. */

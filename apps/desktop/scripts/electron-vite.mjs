@@ -29,6 +29,11 @@ if (executable === undefined) {
 
 // The desktop's own native module (scripts/build-native.mjs: rebuilt only when its source changed).
 spawnSync(process.execPath, [join(appDirectory, "scripts/build-native.mjs")], { stdio: "inherit" });
+// The app's own extensions (docs/extensions.md X8): built once, then rebuilt as their sources change while dev runs.
+spawnSync(process.execPath, [join(appDirectory, "scripts/build-extensions.mjs")], { stdio: "inherit" });
+const extensionsWatch = process.argv.includes("dev")
+  ? spawn(process.execPath, [join(appDirectory, "scripts/build-extensions.mjs"), "--watch"], { cwd: appDirectory, stdio: "inherit" })
+  : null;
 
 const cli = join(appDirectory, "node_modules/electron-vite/bin/electron-vite.js");
 // The child leads its own process group so the whole tree — electron-vite
@@ -72,6 +77,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 process.on("exit", () => reap("SIGKILL"));
 
 child.on("exit", (code, signal) => {
+  extensionsWatch?.kill();
   if (signal !== null) {
     // Restore default handling first, or the re-raise lands in the
     // forwarding handler above and the wrapper never dies.

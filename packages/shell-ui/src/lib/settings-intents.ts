@@ -319,6 +319,15 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     keywords: ["password", "credentials", "secrets", "logins", "autofill", "keychain", "saved passwords", "one-time code"],
   },
 
+  // ── Extensions ───────────────────────────────────────────────────────
+  {
+    id: "extensions",
+    section: "extensions",
+    title: "Extension settings",
+    description: "Turn developer mode on, change an extension's options, read its logs, or remove it.",
+    keywords: ["extensions", "add-ons", "addons", "plugins", "developer mode", "dev folder", "extension options", "extension logs"],
+  },
+
   // ── Keyboard shortcuts ───────────────────────────────────────────────
   {
     id: "shortcuts",

@@ -1,0 +1,16 @@
+{
+  "$schema": "../.pistachio/pistachio-extension.schema.json",
+  "api": 1,
+  "id": "dev.example.hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "description": "/hello <name> says hello, and opens a page with the name on it.",
+  "icon": "icon.svg",
+  "worker": { "type": "web", "main": "worker.js" },
+  "pages": { "hello": { "file": "hello.html", "title": "Hello" } },
+  "bar": {
+    "commands": [
+      { "name": "hello", "description": "Say hello", "arg": { "hint": "name" }, "run": { "event": true } }
+    ]
+  }
+}

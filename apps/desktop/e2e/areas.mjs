@@ -106,6 +106,24 @@ export const AREAS = [
     ],
   },
   {
+    // Extensions (docs/extensions.md): the shell's Ledge, panel card, page, sheet and Settings; main's registry, views
+    // and Chrome adapter; the API package and the first-party extensions; the specs' fixtures.
+    tag: "@extensions",
+    paths: [
+      `${UI}/components/extensions/**`,
+      `${UI}/lib/extensions/**`,
+      `${UI}/components/settings/sections/extensions.tsx`,
+      `${C}/extensions.ts`,
+      `${M}/extensions/**`,
+      `${M}/ipc-gate.ts`,
+      "apps/desktop/src/preload/extension.ts",
+      "apps/desktop/extensions/**",
+      "apps/desktop/e2e/fixtures/extensions/**",
+      "apps/desktop/e2e/fixtures/chrome/**",
+      "packages/extension-api/**",
+    ],
+  },
+  {
     tag: "@glance",
     paths: [`${UI}/components/{GlanceOverlay,ImagePreview}.tsx`, `${UI}/lib/glance.ts`],
   },

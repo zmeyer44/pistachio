@@ -23,11 +23,16 @@ import {
   NUB_FREE,
   NUB_FREE_GAP,
   NUB_IDLE,
+  NUB_LANE_FOOT,
+  NUB_LANE_INSET,
+  NUB_LANE_PILL_H,
   NUB_SWELL,
   nubBetween,
   nubDrops,
   nubExtent,
   nubFace,
+  nubLaneBox,
+  nubLaneFor,
   nubLetGo,
   nubOutline,
   nubReach,
@@ -680,6 +685,39 @@ describe("the Bar's nub in the desk's trailing foot corner", () => {
     expect(path).toContain(`${corner.x.toFixed(2)} ${(corner.y - reach).toFixed(2)} V ${(corner.y - 12).toFixed(2)} A 12.00 12.00 0 0 1 ${(corner.x - 12).toFixed(2)} ${corner.y.toFixed(2)} Z`);
     // Offset, it is the same outline moved (a window's own coordinates).
     expect(numbers(nubOutline(NUB_IDLE, corner.x, corner.y, 12, -400, -300)).slice(0, 2)).toEqual([Number((corner.x - reach - 400).toFixed(2)), corner.y - 300]);
+  });
+
+  it("is drawn out along the foot for the extensions' pills: its circle stretched into a lane they lie in, concentric with their far end", () => {
+    const corner = { x: 1000, y: 700 };
+    const width = 240;
+    const lane = nubLaneFor(width);
+    expect(nubLaneFor(0)).toBe(0);
+    // The lane's far end (the circle drawn out) is concentric with the last pill's round end, 3px round it.
+    const pillEnd = corner.x - NUB_LANE_INSET - width + NUB_LANE_PILL_H / 2;
+    expect(corner.x - NUB_IDLE.sink - lane).toBeCloseTo(pillEnd, 6);
+    expect(NUB_IDLE.radius - NUB_LANE_PILL_H / 2).toBe(3);
+    // The pills' middle is the circle's centre; their trailing edge clear of the idle circle.
+    expect(NUB_LANE_FOOT + NUB_LANE_PILL_H / 2).toBe(NUB_IDLE.sink);
+    expect(NUB_LANE_INSET).toBeGreaterThan(NUB_IDLE.sink + NUB_IDLE.radius);
+    const path = nubOutline(NUB_IDLE, corner.x, corner.y, 12, 0, 0, lane);
+    const reach = nubReach(NUB_IDLE);
+    // Off the foot that much further left, the same fillet; round the near half of the circle there, along its top,
+    // round its far half into the trailing edge, as the bare nub does.
+    expect(path.startsWith(`M ${(corner.x - reach - lane).toFixed(2)} ${corner.y.toFixed(2)} A 11.00 11.00 0 0 0 `)).toBe(true);
+    expect(path).toContain(`${(corner.x - NUB_IDLE.sink - lane).toFixed(2)} ${(corner.y - NUB_IDLE.sink - NUB_IDLE.radius).toFixed(2)} H ${(corner.x - NUB_IDLE.sink).toFixed(2)} A 18.00 18.00 0 0 1`);
+    expect([...path.matchAll(/A (\S+) (\S+) 0 (\d) (\d)/g)].map((arc) => [Number(arc[1]), arc[3], arc[4]])).toEqual([
+      [11, "0", "0"],
+      [18, "0", "1"],
+      [18, "0", "1"],
+      [11, "0", "0"],
+      [12, "0", "1"],
+    ]);
+    expect(path.endsWith(nubOutline(NUB_IDLE, corner.x, corner.y, 12, 0, 0).split(" A ").slice(3).join(" A "))).toBe(true);
+    // Its box: that much wider, no taller; none, the bare nub's.
+    expect(nubLaneBox(NUB_IDLE, lane)).toEqual({ w: reach + lane, h: nubExtent(NUB_IDLE) });
+    expect(nubLaneBox(NUB_SWELL, 0)).toEqual({ w: nubExtent(NUB_SWELL), h: nubExtent(NUB_SWELL) });
+    // No lane, the bare nub's own outline.
+    expect(nubOutline(NUB_SWELL, corner.x, corner.y, 12, 0, 0, 0)).toBe(nubOutline(NUB_SWELL, corner.x, corner.y, 12, 0, 0));
   });
 
   it("lets go of the desk's edges for its menu: a button as round as its droplets, clear of both edges, nothing left in the corner", () => {

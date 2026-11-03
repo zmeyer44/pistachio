@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESK_PIP_OUTSET, deskMaskKey, deskPipSlot, holdsDeskModifier, inDeskBox, isDeskCycleKey, isDeskGrab, isDeskMask, isDeskNotchFrame, isDeskPageInput, isDeskPipInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
+import { DESK_PIP_OUTSET, deskMaskKey, deskPipSlot, holdsDeskModifier, inDeskBox, isDeskCycleKey, isDeskGrab, isDeskMask, isDeskNotchFrame, isDeskNotchInput, isDeskPageInput, isDeskPipInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
 import { isDragCursor, isDragSample } from "../src/chrome.js";
 
 describe("the desk's contract", () => {
@@ -16,6 +16,9 @@ describe("the desk's contract", () => {
       acting: false,
       floating: false,
       ground: { x: 0, y: 0, width: 1440, height: 900 },
+      lane: { from: 0, to: 0, at: 0, ms: 0 },
+      pills: [],
+      pillsWidth: 0,
     };
     expect(isDeskNotchFrame(frame)).toBe(true);
     expect(isDeskNotchFrame({ ...frame, ground: undefined })).toBe(false);
@@ -25,6 +28,39 @@ describe("the desk's contract", () => {
     expect(isDeskNotchFrame({ ...frame, swell: { radius: 21, sink: 17 } })).toBe(false);
     expect(isDeskNotchFrame({ ...frame, swelling: { from: 0, to: 1, at: Number.NaN, ms: 350 } })).toBe(false);
     expect(isDeskNotchFrame({ ...frame, acting: undefined })).toBe(false);
+  });
+
+  it("takes the nub drawn out along the foot with the extensions' pills in it, within bounds", () => {
+    const pill = { id: "com.pistachio.recorder", name: "Recorder", iconUrl: "pistachio-ext://com.pistachio.recorder/icon.svg", text: "● 0:42 · Record me", actions: [{ id: "stop", title: "■" }] };
+    const frame = {
+      bounds: { x: 1100, y: 845, width: 332, height: 52 },
+      label: "Ask about Research",
+      shortcut: null,
+      color: "blue",
+      idle: { radius: 18, sink: 20, fillet: 11 },
+      swell: { radius: 22, sink: 27, fillet: 6 },
+      corner: 12,
+      swelling: { from: 0, to: 0, at: 0, ms: 0 },
+      acting: false,
+      floating: false,
+      ground: { x: 0, y: 0, width: 1440, height: 900 },
+      lane: { from: 0, to: 287, at: 1_760_000_000_000, ms: 300 },
+      pills: [pill],
+      pillsWidth: 280,
+    };
+    expect(isDeskNotchFrame(frame)).toBe(true);
+    // (A box wider than the bare nub's, never taller.)
+    expect(isDeskNotchFrame({ ...frame, bounds: { ...frame.bounds, width: 2049 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, lane: undefined })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, lane: { from: -1, to: 0, at: 0, ms: 0 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, pills: [{ ...pill, actions: [{ id: "stop" }] }] })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, pills: Array.from({ length: 9 }, () => pill) })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, pillsWidth: Number.NaN })).toBe(false);
+    // A press on a pill's action, from the view, is the extension's and the action's names.
+    expect(isDeskNotchInput({ status: { id: pill.id, action: "stop" } })).toBe(true);
+    expect(isDeskNotchInput({ status: { id: pill.id } })).toBe(false);
+    expect(isDeskNotchInput("press")).toBe(true);
+    expect(isDeskNotchInput("hover")).toBe(false);
   });
 
   it("accepts a desk state and refuses anything else", () => {

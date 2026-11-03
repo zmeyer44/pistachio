@@ -1,0 +1,11 @@
+{
+  "$schema": "../.pistachio/pistachio-extension.schema.json",
+  "api": 1,
+  "id": "dev.example.tab-list",
+  "name": "Tab list",
+  "version": "1.0.0",
+  "description": "Lists the tabs of the space you are in; Show brings one forward.",
+  "icon": "icon.svg",
+  "permissions": ["tabs:read", "tabs:write"],
+  "panel": { "file": "panel.html", "width": 320 }
+}

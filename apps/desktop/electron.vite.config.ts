@@ -15,6 +15,7 @@ const workspacePackages = [
   "@pistachio/documents",
   "@pistachio/egress-policy",
   "@pistachio/evidence",
+  "@pistachio/extension-api",
   // Value-imported by main (cloud/live-view-client.ts) and published as raw
   // TypeScript, so a packaged build that externalized it would ask Electron
   // to load a .ts file out of app.asar.
@@ -91,6 +92,8 @@ export default defineConfig({
           "auth-popup": "src/preload/auth-popup.ts",
           // The live share's room window (docs/live-share.md §10): sandboxed, its own members alone.
           "live-host": "src/preload/live-host.ts",
+          // Every Pistachio extension context (docs/extensions.md §4): sandboxed, the wire and `pistachio` alone.
+          extension: "src/preload/extension.ts",
         },
         // Sandboxed WebContentsViews only run CommonJS preloads. The trusted
         // shell preload works in the same format, which lets both entries be
