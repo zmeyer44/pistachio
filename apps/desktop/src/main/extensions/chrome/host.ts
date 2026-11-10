@@ -15,8 +15,9 @@
  *   sheet read from the downloaded manifest, `pendingInstall` until the person approves (or the download removed);
  *   an unpacked folder (*Load a folder…*) waits on the same sheet as a record; updates at launch, before any Profile
  *   loads, pause one that widened;
- * - **the Ledge**: each action's icon, badge and popup from the Profile in front's session; a click opens the popup at
- *   the icon (or fires `action.onClicked`).
+ * - **the Ledge**: each action's badge and popup from the Profile in front's session, its mark the manifest's logo
+ *   served from its folder (`crx://extension-logo/`); a click opens the popup at the icon (or fires
+ *   `action.onClicked`).
  *
  * Electron itself is reached only through the deps and the compat (main/extensions/chrome/compat.ts), so the tests
  * drive this with stand-ins. Content scripts run in the agent's hidden tabs too (the Profile's own session; §12).
@@ -32,7 +33,7 @@ import { NOTICE_MESSAGE_MAX } from "@pistachio/shell-contracts/notice";
 import { spacePartition } from "@pistachio/shell-contracts/spaces";
 import type { ServiceBrowser } from "../browser-host";
 import type { ExtensionGrant, ExtensionPending, ExtensionRecord, ExtensionRegistry } from "../registry";
-import { isChromeExtensionId, pickManifestIcon, type ChromeActionState } from "./actions";
+import { chromeLogoRequest, chromeLogoUrl, isChromeExtensionId, pickManifestIcon, type ChromeActionState } from "./actions";
 import { folderLinksOut } from "./folder";
 import type { ChromeCompat, ChromeCompatHooks, ChromeNotice } from "./compat";
 import { verdictFor } from "./curated";
@@ -151,10 +152,20 @@ export function chromeMessage(dir: string, manifest: ChromeManifest, raw: unknow
   return "";
 }
 
-/** The manifest's icon as a `data:` address (the shell may show one; `crx://` needs the extension loaded). */
-export function chromeIconData(dir: string, manifest: ChromeManifest): string | null {
+/** Whether a manifest names an icon at all — its `icons`, or its action's; with none, the shell draws a monogram. */
+export function chromeDeclaresLogo(manifest: ChromeManifest): boolean {
   const action = manifest.action ?? manifest.browser_action ?? manifest.page_action;
-  const relative = pickManifestIcon(manifest.icons, 32) ?? pickManifestIcon(action?.default_icon, 32);
+  return pickManifestIcon(manifest.icons) !== null || pickManifestIcon(action?.default_icon) !== null;
+}
+
+/**
+ * The manifest's logo nearest `size` from above — its `icons` first (the picture the store's listing shows), else its
+ * action's `default_icon` — as a file inside the folder, with its type; null when none is declared, it is no image,
+ * it lies outside the folder (a link) or is too big to be an icon.
+ */
+export function chromeLogoFile(dir: string, manifest: ChromeManifest, size: number): { path: string; type: string } | null {
+  const action = manifest.action ?? manifest.browser_action ?? manifest.page_action;
+  const relative = pickManifestIcon(manifest.icons, size) ?? pickManifestIcon(action?.default_icon, size);
   if (relative === null) return null;
   const type = ICON_TYPES[extname(relative).toLowerCase()];
   if (type === undefined) return null;
@@ -162,7 +173,7 @@ export function chromeIconData(dir: string, manifest: ChromeManifest): string | 
     const root = realpathSync(dir);
     const file = realpathSync(resolve(root, relative.replace(/^\/+/, "")));
     if (!file.startsWith(`${root}${sep}`) || statSync(file).size > MAX_ICON_BYTES) return null;
-    return `data:${type};base64,${readFileSync(file).toString("base64")}`;
+    return { path: file, type };
   } catch {
     return null;
   }
@@ -221,7 +232,6 @@ export type ChromeCompatPort = Pick<
   | "actions"
   | "activate"
   | "crxResponse"
-  | "iconUrl"
   | "notificationsToNotices"
   | "on"
 >;
@@ -253,8 +263,8 @@ interface ChromeFolder {
   manifest: ChromeManifest | null;
   name: string;
   description: string;
-  /** The manifest's icon as `data:`, for when the extension is not loaded in the Profile in front. */
-  icon: string | null;
+  /** When the folder was read: a logo's address carries it, so an icon a reload changed is fetched afresh. */
+  readAt: number;
   /** What failed, in words: the folder gone, its manifest, a load. */
   error: string | null;
   errorAt: number;
@@ -659,11 +669,44 @@ export class ChromeHost {
   /* --------------------------------- the Ledge --------------------------------- */
 
   /**
-   * The shell's `crx://extension-icon/…` (main's handler on the default session, registered at launch: a page keeps
-   * the protocol handlers it committed with). Nothing to answer until the libraries are loaded.
+   * The shell's `crx://…` (main's handler on the default session, registered at launch: a page keeps the protocol
+   * handlers it committed with). `extension-logo/<id>/<size>` is answered here from the extension's own folder — a
+   * record's, or the download waiting on the sheet — with the manifest's logo nearest `size` from above, whether or
+   * not the extension is loaded anywhere: the Ledge, the rows and the sheet draw it. Anything else is the library's
+   * (`extension-icon/…`, an action's icon as `setIcon` set it), and nothing until the libraries are loaded.
    */
   crxResponse(request: Request): Response {
+    const logo = chromeLogoRequest(request);
+    if (logo !== null) return this.#logoResponse(logo.id, logo.size, request.method);
     return this.#compat === null ? new Response(null, { status: 404 }) : this.#compat.crxResponse(request);
+  }
+
+  #logoResponse(id: string, size: number, method: string): Response {
+    if (method !== "GET" && method !== "HEAD") return new Response(null, { status: 405 });
+    const folder = this.#folders.get(id);
+    const pending = this.#pendingInstall;
+    const source =
+      folder !== undefined && folder.path !== null && folder.manifest !== null
+        ? { path: folder.path, manifest: folder.manifest }
+        : pending !== null && pending.cwsId === id
+          ? { path: pending.path, manifest: pending.manifest }
+          : null;
+    const file = source === null ? null : chromeLogoFile(source.path, source.manifest, size);
+    if (file === null) return new Response(null, { status: 404 });
+    try {
+      return new Response(new Uint8Array(readFileSync(file.path)), {
+        status: 200,
+        headers: { "content-type": file.type, "x-content-type-options": "nosniff", "cache-control": "no-cache" },
+      });
+    } catch {
+      return new Response(null, { status: 404 });
+    }
+  }
+
+  /** The address of a folder's logo for the shell, or null when its manifest names no icon. */
+  #logoUrl(id: string, folder: Pick<ChromeFolder, "path" | "manifest" | "readAt"> | undefined): string | null {
+    if (folder === undefined || folder.path === null || folder.manifest === null || !chromeDeclaresLogo(folder.manifest)) return null;
+    return chromeLogoUrl(id, folder.readAt);
   }
 
   #refreshActions(profileId: string): void {
@@ -695,8 +738,9 @@ export class ChromeHost {
     const enabledHere = record.profiles === "all" || (activeProfileId !== null && record.profiles.includes(activeProfileId));
     const loadedHere = activeProfileId !== null && this.#loaded.get(activeProfileId)?.has(record.id) === true;
     const action = loadedHere && activeProfileId !== null ? (this.#actions.get(activeProfileId)?.get(record.id) ?? null) : null;
-    const profile = activeProfileId === null ? undefined : this.#profiles.get(activeProfileId);
-    const crx = loadedHere && profile !== undefined && this.#compat !== null ? (action?.iconUrl ?? this.#compat.iconUrl(profile.ses, record.id)) : null;
+    // The mark: the manifest's own logo, served from the folder whether or not it is loaded — or, while `setIcon`
+    // changed the action's icon, that icon, the library's.
+    const iconUrl = action?.iconModified === true ? action.iconUrl : this.#logoUrl(record.id, folder);
     const actionKey = manifest?.action ?? manifest?.browser_action ?? manifest?.page_action;
     const failed = folder !== undefined && (folder.error !== null || manifest === null);
     const sheet = manifest !== null && (record.grants === null || record.pending !== null) ? chromeSheet(manifest) : null;
@@ -706,7 +750,7 @@ export class ChromeHost {
       name: folder?.name ?? record.id,
       version: typeof manifest?.version === "string" ? manifest.version : record.source.type === "webstore" ? record.source.version : "",
       description: folder?.description ?? "",
-      iconUrl: crx ?? folder?.icon ?? null,
+      iconUrl,
       source: record.source,
       enabled: record.enabled,
       enabledHere,
@@ -824,7 +868,7 @@ export class ChromeHost {
       cwsId,
       name: folder.name,
       description: folder.description,
-      iconUrl: folder.icon,
+      iconUrl: this.#logoUrl(cwsId, folder),
       verdict,
       sheet: chromeSheet(installed.manifest),
       path: installed.path,
@@ -1037,7 +1081,7 @@ export class ChromeHost {
       manifest,
       name: name.slice(0, 80),
       description: readable ? chromeMessage(path, manifest, manifest.description).slice(0, 300) : "",
-      icon: readable ? chromeIconData(path, manifest) : null,
+      readAt: this.#now(),
       error,
       errorAt: error === null ? 0 : this.#now(),
     };

@@ -4050,8 +4050,9 @@ function installIpc(): void {
   ipcMain.on(IPC.deskNotchInput, (event, input: unknown) => {
     if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchInput(input)) return;
     if (shellWindow === null || shellWindow.isDestroyed()) return;
-    // A press puts the keyboard in the Bar's field, which is the shell's.
-    if (input === "press") shellWindow.webContents.focus();
+    // A press puts the keyboard in the Bar's field, which is the shell's — and one of the pill's buttons pressed, as the
+    // view draws them over a live page, leaves the keys the shell's, not this view's.
+    if (input === "press" || (typeof input === "object" && "bar" in input)) shellWindow.webContents.focus();
     shellWindow.webContents.send(IPC.deskNotchInput, input);
   });
   ipcMain.on(IPC.deskShelfSet, (event, frame: unknown) => {

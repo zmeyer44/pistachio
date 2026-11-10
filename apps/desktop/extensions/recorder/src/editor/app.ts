@@ -155,9 +155,10 @@ export function mountEditor(root: HTMLElement, rec: LoadedRecording, solvers: So
 
   const back = () => {
     void editor.autosave.flush();
+    // The panel's Recent list is the way back: asked for first, since the window goes with the page — main closes
+    // the tab of a page that closed itself (docs/extensions.md §4).
+    void pistachio.ui.openPanel().catch(() => undefined);
     window.close();
-    // An extension page on the desk may not close itself: the panel's Recent list is the way back.
-    setTimeout(() => void pistachio.ui.openPanel().catch(() => undefined), 200);
   };
 
   const titlebar = h(

@@ -459,18 +459,57 @@ function fakeStream(kinds: ("audio" | "video")[]) {
   return { stream, tracks, stopped: () => tracks.every((track) => track.stop.mock.calls.length > 0) };
 }
 
-/** The members of `pistachio` a session touches, doing nothing; the capture is the test's. */
-function fakeRecorderApi(capture: Promise<MediaStream>): RecorderApi {
+/**
+ * The members of `pistachio` a session touches, doing nothing; the capture is the test's — the first tab's, and
+ * then one per `captures` entry for the tabs the person moves to. `activate` is `tabs.onActivated`'s listener.
+ */
+function fakeRecorderApi(capture: Promise<MediaStream>, more: { captures?: Record<string, () => Promise<MediaStream>>; tabs?: Record<string, Partial<Pistachio.Tab>> } = {}) {
   const release = () => undefined;
   const file = { write: async () => undefined, close: async () => undefined, abort: async () => undefined };
-  return {
+  const calls: { tab: string[]; hold: string[]; released: string[]; subscribed: string[]; stopped: string[]; status: string[] } = { tab: [], hold: [], released: [], subscribed: [], stopped: [], status: [] };
+  let activate: ((tabId: string | null) => void) | null = null;
+  let update: ((tab: Pistachio.Tab, changed: string[]) => void) | null = null;
+  const api = {
     runtime: { now: () => Date.now(), keepAlive: async () => release, log: () => undefined },
-    capture: { hold: async () => release, tab: () => capture },
-    input: { subscribe: async () => ({ onEvent: () => release, stop: async () => undefined }) },
+    capture: {
+      hold: async (tabId: string) => {
+        calls.hold.push(tabId);
+        return () => calls.released.push(tabId);
+      },
+      tab: (tabId: string) => {
+        calls.tab.push(tabId);
+        const other = more.captures?.[tabId];
+        return other === undefined ? capture : other();
+      },
+    },
+    input: {
+      subscribe: async (tabId: string) => {
+        calls.subscribed.push(tabId);
+        return { onEvent: () => release, stop: async () => void calls.stopped.push(tabId) };
+      },
+    },
+    tabs: {
+      get: async (id: string) => ({ id, spaceId: null, profileId: "p", title: `Tab ${id}`, url: `https://${id}.example/`, favIconUrl: null, active: true, loading: false, kind: "page", ...more.tabs?.[id] }),
+      onActivated: (fn: (tabId: string | null) => void) => {
+        activate = fn;
+        return release;
+      },
+      onUpdated: (fn: (tab: Pistachio.Tab, changed: string[]) => void) => {
+        update = fn;
+        return release;
+      },
+    },
     files: { data: { open: async () => file, write: async () => undefined, remove: async () => undefined, freeSpace: async () => 100e9 } },
-    ui: { setStatus: async () => undefined, toast: async () => undefined },
+    ui: { setStatus: async (status: { text: string } | null) => void calls.status.push(status?.text ?? ""), toast: async () => undefined },
     power: { preventSleep: async () => release },
   } as unknown as RecorderApi;
+  return {
+    api,
+    calls,
+    activate: (tabId: string | null) => activate?.(tabId),
+    update: (tab: Partial<Pistachio.Tab> & { id: string }, changed: string[]) =>
+      update?.({ spaceId: null, profileId: "p", title: `Tab ${tab.id}`, url: `https://${tab.id}.example/`, favIconUrl: null, active: true, loading: false, kind: "page", ...tab }, changed),
+  };
 }
 
 const recordOptions = (overrides: Partial<RecordOptions> = {}): RecordOptions => ({
@@ -512,12 +551,60 @@ describe("projectFor", () => {
   });
 });
 
+describe("a session follows the tab in front", () => {
+  it("opens the new tab's feed — its hold, its capture, its input — before letting the first go, and names it in the pill; a shell page changes nothing", async () => {
+    const first = fakeStream(["video", "audio"]);
+    const second = fakeStream(["video", "audio"]);
+    const rig = fakeRecorderApi(Promise.resolve(first.stream), {
+      captures: { t2: async () => second.stream },
+      tabs: { home: { kind: "shell", url: "pistachio://home/" } },
+    });
+    const session = new RecordingSession(rig.api, "2026-10-30T15-04-12", recordOptions({ countdown: 3 }));
+    await session.begin();
+    expect(rig.calls.tab).toEqual(["t1"]);
+    expect(rig.calls.hold).toEqual(["t1"]);
+    expect(rig.calls.subscribed).toEqual(["t1"]);
+    expect(session.snapshot().tabId).toBe("t1");
+    rig.activate("t2");
+    await vi.waitFor(() => expect(session.snapshot().tabId).toBe("t2"));
+    expect(rig.calls.tab).toEqual(["t1", "t2"]);
+    expect(rig.calls.hold).toEqual(["t1", "t2"]);
+    expect(rig.calls.subscribed).toEqual(["t1", "t2"]);
+    // The first feed went once the second was up: its tracks stopped, its input stopped, its hold released.
+    expect(first.stopped()).toBe(true);
+    expect(second.stopped()).toBe(false);
+    expect(rig.calls.stopped).toEqual(["t1"]);
+    expect(rig.calls.released).toEqual(["t1"]);
+    expect(rig.calls.status.at(-1)).toContain("Tab t2");
+    // Its page's title arrives after the switch (a tab activated as it opens is "New tab" until then): the pill follows.
+    rig.update({ id: "t2", title: "Second page" }, ["title"]);
+    expect(session.snapshot().title).toBe("Second page");
+    expect(rig.calls.status.at(-1)).toContain("Second page");
+    rig.update({ id: "t1", title: "Elsewhere" }, ["title"]);
+    expect(session.snapshot().title).toBe("Second page");
+    // Home in front: the recording stays on the page (nothing is opened, nothing let go).
+    rig.activate("home");
+    await settle();
+    await settle();
+    expect(rig.calls.tab).toEqual(["t1", "t2"]);
+    expect(session.snapshot().tabId).toBe("t2");
+    // The tab in front again is the one recorded: no new feed.
+    rig.activate("t2");
+    await settle();
+    await settle();
+    expect(rig.calls.tab).toEqual(["t1", "t2"]);
+    await session.discard();
+    expect(second.stopped()).toBe(true);
+    expect(rig.calls.released).toEqual(["t1", "t2"]);
+  });
+});
+
 describe("a session that never starts", () => {
   it("stops the mic when the window's capture fails", async () => {
     const capture = deferred<MediaStream>();
     const mic = fakeStream(["audio"]);
     const ended = vi.fn();
-    const session = new RecordingSession(fakeRecorderApi(capture.promise), "2026-10-30T15-04-12", recordOptions({ mic: "default" }), { ended }, { getUserMedia: async () => mic.stream });
+    const session = new RecordingSession(fakeRecorderApi(capture.promise).api, "2026-10-30T15-04-12", recordOptions({ mic: "default" }), { ended }, { getUserMedia: async () => mic.stream });
     const begun = session.begin();
     await settle();
     capture.reject(new Error("no frame to capture"));
@@ -531,7 +618,7 @@ describe("a session that never starts", () => {
     const micOpen = deferred<MediaStream>();
     const mic = fakeStream(["audio"]);
     const session = new RecordingSession(
-      fakeRecorderApi(Promise.reject(new Error("no frame to capture"))),
+      fakeRecorderApi(Promise.reject(new Error("no frame to capture"))).api,
       "2026-10-30T15-04-12",
       recordOptions({ mic: "default", camera: true }),
       {},
@@ -552,7 +639,7 @@ describe("a session that never starts", () => {
     const camera = fakeStream(["video"]);
     const ended = vi.fn();
     const session = new RecordingSession(
-      fakeRecorderApi(capture.promise),
+      fakeRecorderApi(capture.promise).api,
       "2026-10-30T15-04-12",
       recordOptions({ mic: "default", camera: true, countdown: 3 }),
       { ended },

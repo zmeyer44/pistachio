@@ -8,9 +8,20 @@
  *   counting   — the capture is already running (started with the countdown,
  *                so the page's switch to device-pixel ratio 2 is never
  *                recorded), its frames dropped; the pill counts 3 · 2 · 1
- *   recording  — mediabunny encodes from the next frame; t0 is that frame
- *   paused     — the sources' pause(): their timestamps close the gap
+ *   recording  — the screen encoder takes frames from the next on; t0 is
+ *                that frame
+ *   paused     — frames and chunks dropped; the media time leaves the gap out
  *   finalizing — every output finalized, thumb.jpg, project.json
+ *
+ * The recording follows the person (§2): what is captured is a *feed* — a
+ * tab's capture, its input subscription and its hold — and when another page
+ * comes in front (`tabs.onActivated`) a feed of it is opened, its first frame
+ * takes over the picture and its sound the mixer, and the old feed is let
+ * go (`Follow`). One `screen.mp4` holds it all; the new tab's input says
+ * where its view is and what page it shows (a `box`, a `nav`), so the clip's
+ * chapters and zooms follow too. A shell page in front — Home, the notes, an
+ * extension's page — is never recorded: the last picture holds until a page
+ * is in front again.
  *
  * The API comes in as `api` (the global `pistachio` in the worker, a fake in
  * the probe) so the session never reads a global but `navigator`.
@@ -21,11 +32,15 @@ import { defaultProject, solveDefaults, writeProject } from "../lib/project.js";
 import type { MetaEvent, Project, RecordingFiles, Size } from "../lib/types.js";
 import { DISK_CHECK_MS, formatBytes, watchVerdict } from "./disk.js";
 import { EventsWriter, AppendLog, type StampedEvent } from "./events-writer.js";
+import { Follow, type FollowTarget } from "./follow.js";
 import { formatClock, recordingFiles } from "./ids.js";
 import { LevelList, levelBytes, meterBars } from "./levels.js";
-import { FrameWatch, LevelWatch, Still } from "./media.js";
+import { LevelWatch, Still, TrackPump } from "./media.js";
+import { ScreenEncoder } from "./screen.js";
 import { isLive, isOver, next, type SessionAction, type SessionState } from "./state.js";
 import { appendSink, dataWritableStream, type WriteCounter } from "./writable.js";
+
+export { PAGE_AUDIO_BITRATE } from "./screen.js";
 
 type Unsubscribe = () => void;
 
@@ -34,6 +49,7 @@ export interface RecorderApi {
   runtime: Pick<Pistachio.Runtime, "now" | "keepAlive" | "log">;
   capture: Pick<Pistachio.Capture, "tab" | "hold">;
   input: Pick<Pistachio.Input, "subscribe">;
+  tabs: Pick<Pistachio.Tabs, "get" | "onActivated" | "onUpdated">;
   files: { data: Pick<Pistachio.Data, "open" | "write" | "remove" | "freeSpace"> };
   ui: Pick<Pistachio.Ui, "setStatus" | "toast">;
   power: Pick<Pistachio.Power, "preventSleep">;
@@ -57,6 +73,7 @@ export interface RecordOptions {
 export interface SessionSnapshot {
   id: string;
   state: SessionState;
+  /** The tab recorded now (the one in front: it follows the person). */
   tabId: string;
   title: string;
   /** Media time recorded so far (pauses left out). */
@@ -89,6 +106,23 @@ export interface MediaAccess {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
 }
 
+/**
+ * A tab's feed: its capture, its input subscription and its hold — what the
+ * recording is of while the tab is in front.
+ */
+export interface Feed {
+  tab: FollowTarget;
+  stream: MediaStream;
+  video: MediaStreamTrack;
+  pump: TrackPump<VideoFrame> | null;
+  subscription: Pistachio.InputSubscription | null;
+  /** The hold on the tab, once taken. */
+  release: Unsubscribe | null;
+  /** Resolved at its first frame: it shows. */
+  shown: { promise: Promise<void>; resolve: () => void };
+  closed: boolean;
+}
+
 /** ~10 Mbps for a 1080p view at 2× (3840×2160), by area; mostly static text needs little, motion is capped. */
 export function screenBitrate(width: number, height: number): number {
   const scaled = (10e6 * width * height) / (3840 * 2160);
@@ -96,7 +130,6 @@ export function screenBitrate(width: number, height: number): number {
 }
 
 export const MIC_BITRATE = 160e3;
-export const PAGE_AUDIO_BITRATE = 192e3;
 export const CAMERA_BITRATE = 3e6;
 export const CAMERA_FPS = 30;
 /**
@@ -110,6 +143,8 @@ const TARGET_OPTIONS = { chunked: false } as const;
 const SETTLE_MS = 600;
 /** How long the meta line waits for the mic's and the camera's first samples (their offsets). */
 const META_WAIT_MS = 1500;
+/** How long a new feed is given to show its first frame before it counts as open (a fresh sink gets one in ~4 ms — measured). */
+export const FEED_FIRST_FRAME_MS = 3000;
 const STATUS_TITLE_MAX = 28;
 
 /**
@@ -147,8 +182,21 @@ export async function videoAcceleration(width: number, height: number, bitrate: 
   }
 }
 
+/** Whether a tab the person brought in front is one the recording follows: a web page (a shell page or an extension's is never recorded). */
+export function followable(tab: Pick<Pistachio.Tab, "kind" | "url">): boolean {
+  return tab.kind === "page" && /^https?:/i.test(tab.url);
+}
+
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((yes) => {
+    resolve = yes;
+  });
+  return { promise, resolve };
+}
 
 /**
  * The meta line (R7): the capture's pixels, and the view the events' coordinates are in — as the input subscription
@@ -196,15 +244,18 @@ export class RecordingSession {
   #countdownLeft: number | null = null;
   #starting = false;
   readonly #releases: Unsubscribe[] = [];
-  #screen: MediaStream | null = null;
   #mic: MediaStream | null = null;
   #camera: MediaStream | null = null;
   /** The session ended: a mic or camera that opens now is stopped at once. */
   #devicesClosed = false;
   #ready: Promise<void> | null = null;
-  #frames: FrameWatch | null = null;
+  /** The feeds: the one in front is current; one being opened shows at its first frame. */
+  readonly #follow: Follow<Feed>;
+  #opening: Feed | null = null;
+  /** The feed whose picture is in the file (the current one, or the opening one from its first frame on). */
+  #shown: Feed | null = null;
+  #screen: ScreenEncoder | null = null;
   #levelWatch: LevelWatch | null = null;
-  #subscription: Pistachio.InputSubscription | null = null;
   /** The view's size as the input subscription reports it (its `box`): what the events' coordinates are in. */
   #viewBox: Size | null = null;
   readonly #encodings: Encoding[] = [];
@@ -233,6 +284,16 @@ export class RecordingSession {
       now: () => api.runtime.now(),
       onError: (error) => this.#warnOnce("events", `recorder: events.jsonl: ${messageOf(error)}`),
     });
+    this.#follow = new Follow<Feed>({
+      open: (target) => this.#openFeed(target),
+      close: (feed) => this.#closeFeed(feed),
+      switched: (feed, previous) => this.#switched(feed, previous),
+      failed: (target, error) => {
+        this.#api.runtime.log("warn", `recorder: could not record ${target.url}: ${messageOf(error)}`);
+        if (this.#state === "counting") void this.#failStart(error);
+        else void this.#api.ui.toast({ title: `Could not record ${target.title || target.url}`, body: `${messageOf(error)} The recording stays on the last page.` }).catch(() => undefined);
+      },
+    });
   }
 
   get state(): SessionState {
@@ -259,12 +320,18 @@ export class RecordingSession {
     return this.#writer.t0 === null ? 0 : this.#writer.mediaTime(this.#api.runtime.now());
   }
 
+  /** The tab recorded now: the feed in front, else the one opening, else the one the session began on. */
+  get tab(): FollowTarget {
+    return this.#follow.current?.tab ?? this.#opening?.tab ?? { id: this.options.tabId, title: this.options.title, url: this.options.url };
+  }
+
   snapshot(): SessionSnapshot {
+    const tab = this.tab;
     return {
       id: this.id,
       state: this.#state,
-      tabId: this.options.tabId,
-      title: this.options.title,
+      tabId: tab.id,
+      title: tab.title,
       elapsedMs: Math.round(this.elapsedMs),
       countdown: this.#state === "counting" ? this.#countdownLeft : null,
       mic: this.#mic !== null,
@@ -275,50 +342,44 @@ export class RecordingSession {
   }
 
   /**
-   * Start: the holds, the capture and the countdown at once. Resolves once
-   * the tab's stream is live (rejects, the session failed, when it is not);
-   * the countdown runs on and encoding begins when it ends.
+   * Start: the holds, the first feed and the countdown at once. Resolves
+   * once the tab's stream is live (rejects, the session failed, when it is
+   * not); the countdown runs on and encoding begins when it ends. From here
+   * the tab in front is followed.
    */
   async begin(): Promise<void> {
     const { options } = this;
     this.#countdownLeft = options.countdown > 0 ? options.countdown : null;
     this.#status();
     this.#changed();
-    this.#hold(this.#api.capture.hold(options.tabId), "capture.hold");
     this.#hold(this.#api.runtime.keepAlive("recording"), "runtime.keepAlive");
     this.#hold(this.#api.power.preventSleep(), "power.preventSleep");
 
-    const capture = this.#api.capture.tab(options.tabId, { audio: options.pageAudio, scale: options.scale, frameRate: options.fps });
+    const first = this.#openFeed({ id: options.tabId, title: options.title, url: options.url });
     const devices = Promise.all([
       this.#adopt(options.mic === null ? Promise.resolve(null) : this.#openMic(options.mic), "mic"),
       this.#adopt(options.camera ? this.#openCamera() : Promise.resolve(null), "camera"),
     ]);
     const ready = (async () => {
-      const stream = await capture;
+      let feed: Feed;
+      try {
+        feed = await first;
+      } catch (error) {
+        // (Cancelled while counting: the feed closed itself on the way out, and there is nothing to fail.)
+        if (isOver(this.#state)) return;
+        throw error;
+      }
       if (!isLive(this.#state)) {
-        stopAll(stream);
+        this.#closeFeed(feed);
         return;
       }
-      this.#screen = stream;
-      const video = stream.getVideoTracks()[0];
-      if (video === undefined) throw new Error("the capture has no video");
-      video.addEventListener("ended", () => this.#sourceEnded("The window went away, so the recording stopped."));
-      this.#frames = new FrameWatch(video, () => this.#api.runtime.now(), (frame, at) => this.#onFrame(frame, at));
-      if (!this.#frames.watching) this.#warnOnce("frames", "recorder: MediaStreamTrackProcessor is missing; no frame lines");
+      this.#follow.adopt(feed);
       try {
-        const subscription = await this.#api.input.subscribe(options.tabId);
-        if (!isLive(this.#state)) {
-          void subscription.stop().catch(() => undefined);
-        } else {
-          this.#subscription = subscription;
-          subscription.onEvent((event) => {
-            if (event.k === "box") this.#viewBox = { w: event.view.w, h: event.view.h };
-            this.#writer.add(event as unknown as StampedEvent);
-          });
-        }
+        const releases = [this.#api.tabs.onActivated((tabId) => void this.#activated(tabId)), this.#api.tabs.onUpdated((tab, changed) => this.#updated(tab, changed))];
+        if (isOver(this.#state)) for (const release of releases) release();
+        else this.#releases.push(...releases);
       } catch (error) {
-        this.#api.runtime.log("warn", `recorder: input.subscribe failed: ${messageOf(error)}`);
-        void this.#api.ui.toast({ title: "Recording without clicks and keys", body: "Automatic zoom needs them; the picture is still recorded." }).catch(() => undefined);
+        this.#api.runtime.log("warn", `recorder: tabs.onActivated failed, the recording stays on this window: ${messageOf(error)}`);
       }
       await devices;
     })();
@@ -375,6 +436,146 @@ export class RecordingSession {
     return this.#finishing;
   }
 
+  // ── Feeds: the tab in front ────────────────────────────────────────────
+
+  /** The tab in front changed: a web page is followed; a shell page, an extension's, or none leaves the picture where it is. */
+  async #activated(tabId: string | null): Promise<void> {
+    if (!isLive(this.#state) || tabId === null || tabId === this.#follow.wanted?.id) return;
+    let tab: Pistachio.Tab;
+    try {
+      tab = await this.#api.tabs.get(tabId);
+    } catch {
+      return;
+    }
+    if (!isLive(this.#state) || !followable(tab)) return;
+    this.#follow.want({ id: tab.id, title: tab.title || tab.url, url: tab.url });
+  }
+
+  /** A tab's title or address changed: a feed of it (in front, or opening) is named after it from here — the pill, the panel. */
+  #updated(tab: Pistachio.Tab, changed: readonly string[]): void {
+    if (!changed.includes("title") && !changed.includes("url")) return;
+    let named = false;
+    for (const feed of [this.#follow.current, this.#opening]) {
+      if (feed === null || feed.closed || feed.tab.id !== tab.id) continue;
+      feed.tab.title = tab.title || tab.url;
+      feed.tab.url = tab.url;
+      named = true;
+    }
+    if (!named) return;
+    this.#status();
+    this.#changed();
+  }
+
+  /**
+   * A tab's feed: its hold and its capture at once, then its input, then
+   * its first frame (or FEED_FIRST_FRAME_MS). The feed is the opening one
+   * meanwhile — its first frame takes the picture over (`#onFrame`).
+   */
+  async #openFeed(target: FollowTarget): Promise<Feed> {
+    const api = this.#api;
+    const { options } = this;
+    const feed: Feed = { tab: { ...target }, stream: null as unknown as MediaStream, video: null as unknown as MediaStreamTrack, pump: null, subscription: null, release: null, shown: deferred(), closed: false };
+    // (The opening one from the first moment: a title that arrives while its capture starts is its — `#updated`.)
+    this.#opening = feed;
+    const holding = api.capture.hold(target.id).then(
+      (release) => {
+        if (feed.closed || isOver(this.#state)) release();
+        else feed.release = release;
+      },
+      (error: unknown) => api.runtime.log("warn", `recorder: capture.hold failed: ${messageOf(error)}`),
+    );
+    let stream: MediaStream;
+    try {
+      stream = await api.capture.tab(target.id, { audio: options.pageAudio, scale: options.scale, frameRate: options.fps });
+    } catch (error) {
+      await holding;
+      this.#closeFeed(feed);
+      throw error;
+    }
+    feed.stream = stream;
+    const video = stream.getVideoTracks()[0];
+    if (video === undefined || isOver(this.#state)) {
+      stopAll(stream);
+      await holding;
+      this.#closeFeed(feed);
+      throw new Error(video === undefined ? "the capture has no video" : "the recording ended");
+    }
+    feed.video = video;
+    feed.pump = new TrackPump<VideoFrame>(video, () => api.runtime.now(), (frame, at) => this.#onFrame(feed, frame, at));
+    video.addEventListener("ended", () => this.#lost(feed));
+    if (!feed.pump.watching) {
+      this.#warnOnce("frames", "recorder: MediaStreamTrackProcessor is missing; nothing can be recorded");
+      feed.shown.resolve();
+    }
+    try {
+      const subscription = await api.input.subscribe(target.id);
+      if (feed.closed) void subscription.stop().catch(() => undefined);
+      else {
+        feed.subscription = subscription;
+        subscription.onEvent((event) => this.#onInput(feed, event));
+      }
+    } catch (error) {
+      api.runtime.log("warn", `recorder: input.subscribe failed: ${messageOf(error)}`);
+      void api.ui.toast({ title: "Recording without clicks and keys", body: "Automatic zoom needs them; the picture is still recorded." }).catch(() => undefined);
+    }
+    await Promise.race([feed.shown.promise, sleep(FEED_FIRST_FRAME_MS)]);
+    await holding;
+    if (this.#opening === feed) this.#opening = null;
+    if (feed.closed) throw new Error("the feed ended before it showed");
+    return feed;
+  }
+
+  /** A feed let go: its frames stop, its tracks, its input and its hold. */
+  #closeFeed(feed: Feed): void {
+    if (feed.closed) return;
+    feed.closed = true;
+    if (this.#opening === feed) this.#opening = null;
+    feed.shown.resolve();
+    feed.pump?.stop();
+    stopAll(feed.stream);
+    const subscription = feed.subscription;
+    feed.subscription = null;
+    if (subscription !== null) void subscription.stop().catch(() => undefined);
+    const release = feed.release;
+    feed.release = null;
+    if (release !== null) {
+      try {
+        release();
+      } catch {
+        // (A release that throws has nothing left to release.)
+      }
+    }
+  }
+
+  /** The feed in front changed: the pill names it, by the tab's name now (a page activated as it opened was "New tab" then). Its picture and sound took over at its first frame. */
+  #switched(feed: Feed, previous: Feed | null): void {
+    if (previous !== null) this.#api.runtime.log("info", `recorder: now recording ${feed.tab.url}`);
+    this.#status();
+    this.#changed();
+    void this.#api.tabs
+      .get(feed.tab.id)
+      .then((tab) => this.#updated(tab, ["title", "url"]))
+      .catch(() => undefined);
+  }
+
+  /** A feed's capture ended under it: while counting the start failed; recording, the follow opens the tab again if it is still in front. */
+  #lost(feed: Feed): void {
+    if (feed.closed || isOver(this.#state)) return;
+    if (this.#state === "counting" && this.#follow.current === feed) {
+      void this.#failStart(new Error("the window's capture ended before recording began"));
+      return;
+    }
+    if (this.#shown === feed) this.#shown = null;
+    this.#follow.lost(feed);
+  }
+
+  #onInput(feed: Feed, event: Pistachio.InputEvent): void {
+    // (The feed in front's events, and the opening one's from the moment it opens: the person is looking at that one.)
+    if (feed.closed || (feed !== this.#follow.current && feed !== this.#opening) || (this.#opening !== null && feed !== this.#opening)) return;
+    if (event.k === "box" && this.#viewBox === null) this.#viewBox = { w: event.view.w, h: event.view.h };
+    this.#writer.add(event as unknown as StampedEvent);
+  }
+
   // ── Counting and going ─────────────────────────────────────────────────
 
   async #count(): Promise<void> {
@@ -403,16 +604,16 @@ export class RecordingSession {
   }
 
   async #go(): Promise<void> {
-    const screen = this.#screen;
-    const video = screen?.getVideoTracks()[0];
-    if (screen === null || video === undefined || video.readyState === "ended") {
+    const feed = this.#shown ?? this.#follow.current;
+    const video = feed?.video;
+    if (feed === null || feed === undefined || video === undefined || video.readyState === "ended") {
       await this.#failStart(new Error("the window's capture ended before recording began"));
       return;
     }
     if (!this.#move("go")) return;
     const { options, files } = this;
     const settings = video.getSettings();
-    const size = this.#frames?.size ?? { w: settings.width ?? 1920, h: settings.height ?? 1080 };
+    const size = feed.pump?.size ?? { w: settings.width ?? 1920, h: settings.height ?? 1080 };
     const broke = (error: unknown): void => this.#sourceEnded(`The recording stopped: ${messageOf(error)}`);
     try {
       const cameraTrack = this.#camera?.getVideoTracks()[0];
@@ -424,31 +625,24 @@ export class RecordingSession {
       ]);
       if (this.#state !== "recording") return;
 
-      // The screen: the page's pixels, and its sound when asked.
+      // The screen: the pages' pixels, and their sound when asked — fed from whichever tab is in front.
       const screenOut = this.#encoding("screen", files.screen);
-      const videoSource = new MediaStreamVideoTrackSource(
-        video,
+      const screen = new ScreenEncoder(
+        screenOut.output,
+        { fps: options.fps, bitrate, acceleration: screenAcceleration, pageAudio: options.pageAudio },
         {
-          codec: "avc",
-          quality: new Quality({ bitrate }),
-          keyFrameInterval: 1,
-          latencyMode: "realtime",
-          hardwareAcceleration: screenAcceleration,
-          sizeChangeBehavior: "contain",
-          onEncodedSample: () => this.#firstSample("screen", screenOut.output),
+          now: () => this.#api.runtime.now(),
+          mediaTime: (at) => {
+            const t = this.#writer.rel(at);
+            return t === null || t < 0 ? null : t;
+          },
+          firstSample: (at) => this.#firstScreenSample(at),
+          broke,
+          warn: (message) => this.#warnOnce(message, message),
         },
-        { frameRate: options.fps },
       );
-      videoSource.errorPromise.catch(broke);
-      screenOut.output.addVideoTrack(videoSource, { frameRate: options.fps });
-      screenOut.sources.push(videoSource);
-      const pageAudio = options.pageAudio ? screen.getAudioTracks()[0] : undefined;
-      if (pageAudio !== undefined) {
-        const audioSource = new MediaStreamAudioTrackSource(pageAudio, { codec: "aac", quality: new Quality({ bitrate: PAGE_AUDIO_BITRATE }) });
-        audioSource.errorPromise.catch(broke);
-        screenOut.output.addAudioTrack(audioSource);
-        screenOut.sources.push(audioSource);
-      }
+      this.#screen = screen;
+      screenOut.sources.push(screen);
 
       // The mic: its own file, and its levels.
       const micTrack = this.#mic?.getAudioTracks()[0];
@@ -496,6 +690,10 @@ export class RecordingSession {
       }
 
       await Promise.all(this.#encodings.map((encoding) => encoding.output.start()));
+      if (this.#state === "recording" || this.#state === "paused") {
+        screen.start();
+        screen.setAudio(this.#shown?.stream.getAudioTracks()[0] ?? null);
+      }
     } catch (error) {
       this.#api.runtime.log("error", `recorder: the encoders did not start: ${messageOf(error)}`);
       this.#endMessage = `The recording could not start: ${messageOf(error)}`;
@@ -525,19 +723,27 @@ export class RecordingSession {
   }
 
   /**
-   * An output's first sample: its zero on the clock. The screen's sets t0 —
-   * its zero minus one frame (the capture's latency), so a click lands on
-   * the frame that shows it. The mic's and the camera's zeros go into the
-   * meta line as `offsets` (ms from t0), so the editor can line them up.
+   * The screen's first sample (a frame or a chunk, arrived at `at`): t0 is
+   * its arrival less one frame (the capture's latency), so a click lands on
+   * the frame that shows it.
    */
-  #firstSample(kind: Encoding["kind"], output: Output): void {
+  #firstScreenSample(at: number): void {
+    if (this.#firstAt.screen !== undefined) return;
+    this.#firstAt.screen = at;
+    this.#writer.start(at - 1000 / this.options.fps);
+    this.#maybeMeta(false);
+  }
+
+  /**
+   * The mic's or the camera's first sample: its zero on the clock, into the
+   * meta line as an `offset` (ms from t0), so the editor can line them up.
+   */
+  #firstSample(kind: "mic" | "camera", output: Output): void {
     if (this.#firstAt[kind] !== undefined) return;
     const now = this.#api.runtime.now();
     const zero = firstMediaStreamTime(output);
     // (mediabunny's zero is performance.now() seconds; moved onto runtime.now()'s clock.)
-    const at = zero === null ? now : now - performance.now() + zero * 1000;
-    this.#firstAt[kind] = at;
-    if (kind === "screen") this.#writer.start(at - 1000 / this.options.fps);
+    this.#firstAt[kind] = zero === null ? now : now - performance.now() + zero * 1000;
     this.#maybeMeta(false);
   }
 
@@ -553,8 +759,9 @@ export class RecordingSession {
     if (this.#metaTimer !== null) clearTimeout(this.#metaTimer);
     this.#metaTimer = null;
     const { options } = this;
-    const size = this.#frames?.size ?? (() => {
-      const settings = this.#screen?.getVideoTracks()[0]?.getSettings();
+    const feed = this.#shown ?? this.#follow.current;
+    const size = feed?.pump?.size ?? (() => {
+      const settings = feed?.video.getSettings();
       return { w: settings?.width ?? 0, h: settings?.height ?? 0 };
     })();
     const offsets: NonNullable<MetaEvent["offsets"]> = {};
@@ -563,17 +770,40 @@ export class RecordingSession {
     this.#writer.setMeta(metaFor(options, size, this.#viewBox, offsets, t0));
   }
 
-  #onFrame(frame: VideoFrame, at: number): void {
-    if (this.#state !== "recording") return;
+  /**
+   * A frame of a feed: the shown feed's go to the encoder; the opening
+   * feed's first takes the picture over (and its sound the mixer) — from
+   * then on the old feed's are dropped; any other's are dropped.
+   */
+  #onFrame(feed: Feed, frame: VideoFrame, at: number): boolean {
+    if (feed.closed || isOver(this.#state)) return false;
+    let keyFrame = false;
+    if (feed !== this.#shown) {
+      if (feed !== this.#opening && this.#shown !== null) return false;
+      this.#shown = feed;
+      keyFrame = true;
+      feed.shown.resolve();
+      this.#screen?.setAudio(feed.stream.getAudioTracks()[0] ?? null);
+    }
+    if (this.#state !== "recording") {
+      // (Counting, or paused: the picture is kept as the last one, nothing is encoded.)
+      this.#screen?.addFrame(frame, at, keyFrame);
+      return this.#screen !== null;
+    }
     // (The frame was captured about a frame before it arrived: its line sits where the file shows it.)
     this.#writer.add({ t: at - 1000 / this.options.fps, k: "frame" });
-    if (this.#writer.t0 === null) return;
-    const t = this.#writer.mediaTime(at);
-    if (!this.#still.taken) this.#still.take(frame);
-    else if (!this.#stillAtSecond && t >= 1000) {
-      this.#still.take(frame);
-      this.#stillAtSecond = true;
+    if (this.#writer.t0 !== null) {
+      const t = this.#writer.mediaTime(at);
+      if (!this.#still.taken) this.#still.take(frame);
+      else if (!this.#stillAtSecond && t >= 1000) {
+        this.#still.take(frame);
+        this.#stillAtSecond = true;
+      }
     }
+    const screen = this.#screen;
+    if (screen === null) return false;
+    screen.addFrame(frame, at, keyFrame);
+    return true;
   }
 
   // ── Streams ────────────────────────────────────────────────────────────
@@ -691,10 +921,13 @@ export class RecordingSession {
     this.#devicesClosed = true;
     if (this.#metaTimer !== null) clearTimeout(this.#metaTimer);
     this.#metaTimer = null;
-    const subscription = this.#subscription;
-    this.#subscription = null;
-    if (subscription !== null) await subscription.stop().catch(() => undefined);
-    this.#frames?.stop();
+    // (The feeds first — no frame or chunk reaches the encoders past here — then the encoders.)
+    this.#follow.stop();
+    const opening = this.#opening;
+    this.#opening = null;
+    if (opening !== null) this.#closeFeed(opening);
+    this.#shown = null;
+    this.#screen?.stop();
     this.#levelWatch?.stop();
     const failed: Encoding["kind"][] = [];
     await Promise.all(
@@ -711,7 +944,6 @@ export class RecordingSession {
       }),
     );
     if (save && !this.#encodings.some((encoding) => encoding.kind === "screen")) failed.push("screen");
-    stopAll(this.#screen);
     stopAll(this.#mic);
     stopAll(this.#camera);
     return failed;
@@ -757,9 +989,10 @@ export class RecordingSession {
 
   // ── The pill ───────────────────────────────────────────────────────────
 
-  /** `● 0:42 ▁▃▅▂ · Linear` with ⏸ ■ Discard; `3 · 2 · 1` while counting. Never in the capture: the shell draws it. */
+  /** `● 0:42 ▁▃▅▂ · Linear` with ⏸ ■ Discard; `3 · 2 · 1` while counting. Names the tab in front. Never in the capture: the shell draws it. */
   #status(): void {
-    const title = this.options.title.length > STATUS_TITLE_MAX ? `${this.options.title.slice(0, STATUS_TITLE_MAX - 1)}…` : this.options.title;
+    const name = this.tab.title;
+    const title = name.length > STATUS_TITLE_MAX ? `${name.slice(0, STATUS_TITLE_MAX - 1)}…` : name;
     let status: { text: string; actions?: { id: string; title: string }[] } | null = null;
     switch (this.#state) {
       case "counting": {

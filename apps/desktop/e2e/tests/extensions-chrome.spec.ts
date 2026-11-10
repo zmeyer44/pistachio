@@ -2,7 +2,7 @@
  * Chrome extensions (docs/extensions.md §2 "Click one" / "Approve one", §4 "Chrome extensions", §11 S1): an unpacked
  * folder with a `manifest.json` (the `mini-action` fixture: an action with a popup, a content script, a badge,
  * `chrome.storage`) loaded through *Load a folder…* waits on the approval sheet; *Turn it on* loads it into the
- * Profile's session; its action's icon stands on the Ledge (`crx://`, served by electron-chrome-extensions); a click
+ * Profile's session; its logo stands on the Ledge (`crx://extension-logo/`, served by main from its folder); a click
  * opens the library's popup at the icon; a page it matches runs its content script, which writes `chrome.storage.local`.
  *
  * The popup is a frameless child window: with the Mac's screen locked it is made but may not be shown, so what is
@@ -101,16 +101,18 @@ test.describe.serial("Chrome extensions: an unpacked folder, the sheet, the Ledg
     const sheet = shell.getByTestId("extension-sheet");
     await expect(sheet).toBeVisible();
     await expect(sheet.getByTestId("extension-sheet-name")).toHaveText("Mini Action");
+    // Its logo on the sheet's head — from its folder, before it is loaded anywhere.
+    await expect.poll(() => sheet.locator("img.extension-mark").evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { timeout: 10_000 }).toBeGreaterThan(0);
     await expect(sheet).toContainText("Read and change pages on");
     await expect(sheet.getByTestId("extension-sheet-wont")).toHaveCount(0);
     await capture(app, shell, "01-sheet.png");
     await sheet.getByTestId("extension-sheet-turn-on").click();
     await expect(sheet).toHaveCount(0);
 
-    // ── 3. On: no dot, and its action's icon served by `crx://` from the Profile's session ─
+    // ── 3. On: no dot, and its logo — the manifest's, served by main from its folder as `crx://extension-logo/` ─
     await expect(icon).not.toHaveAttribute("data-dot", /.+/, { timeout: 15_000 });
     const img = icon.locator("img");
-    await expect(img).toHaveAttribute("src", new RegExp(`^crx://extension-icon/${extensionId}/`), { timeout: 15_000 });
+    await expect(img).toHaveAttribute("src", new RegExp(`^crx://extension-logo/${extensionId}/`), { timeout: 15_000 });
     await expect.poll(() => img.evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0)), { timeout: 10_000 }).toBeGreaterThan(0);
     await capture(app, shell, "02-on-the-ledge.png");
   });

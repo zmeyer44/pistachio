@@ -5,6 +5,8 @@ import {
   chromeIconUrl,
   isChromeExtensionId,
   noticeText,
+  chromeLogoRequest,
+  chromeLogoUrl,
   pickManifestIcon,
   type RawActionState,
 } from "../src/main/extensions/chrome/actions";
@@ -49,6 +51,7 @@ describe("chromeActionStates", () => {
       badge: "3",
       badgeColor: "rgba(255, 0, 0, 1)",
       hasPopup: true,
+      iconModified: false,
       iconUrl: chromeIconUrl(MINI, PARTITION),
     });
     expect(other).toMatchObject({ extensionId: OTHER, title: "Probe NS", badge: null, badgeColor: null, hasPopup: false });
@@ -65,6 +68,17 @@ describe("chromeActionStates", () => {
     expect(state?.hasPopup).toBe(false);
     expect(state?.title).toBe(MINI);
     expect(state?.iconUrl).toBe(chromeIconUrl(MINI, PARTITION, { tabId: 4, modified: 55 }));
+    expect(state?.iconModified).toBe(true);
+  });
+
+  it("spells a logo's address, and reads one back from a request — any other address is none", () => {
+    expect(chromeLogoUrl(MINI, 1700)).toBe(`crx://extension-logo/${MINI}/64?t=1700`);
+    expect(chromeLogoRequest({ url: chromeLogoUrl(MINI, 1700, 32) })).toEqual({ id: MINI, size: 32 });
+    expect(chromeLogoRequest({ url: chromeLogoUrl(MINI, 1700, 4096) })).toEqual({ id: MINI, size: 128 });
+    expect(chromeLogoRequest({ url: `crx://extension-logo/${MINI}/nope` })).toEqual({ id: MINI, size: 64 });
+    expect(chromeLogoRequest({ url: chromeIconUrl(MINI, PARTITION) })).toBeNull();
+    expect(chromeLogoRequest({ url: "crx://extension-logo/not-an-id/64" })).toBeNull();
+    expect(chromeLogoRequest({ url: "not a url" })).toBeNull();
   });
 });
 

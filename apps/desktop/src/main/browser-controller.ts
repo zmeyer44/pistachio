@@ -659,8 +659,8 @@ export interface BrowserControllerHooks {
    * page at all (it is searched for, as any unknown text).
    */
   extensionPages?: {
-    /** The partition and preload an extension's page view is made with. */
-    view(extensionId: string): { partition: string; preload: string };
+    /** The partition and preload an extension's page view is made with, and the extension's icon: the tab's mark. */
+    view(extensionId: string): { partition: string; preload: string; iconUrl: string | null };
     /** An extension's page view was made (a tab opened, woken, restored): main maps it to its extension. */
     attach(tabId: string, contents: WebContents, extensionId: string): void;
   };
@@ -993,6 +993,16 @@ interface DeskMaskRelease {
  */
 function deskMaskMetrics(width: number, height: number): { width: number; height: number; deviceScaleFactor: 0; mobile: false; dontSetVisibleSize: true } {
   return { width: Math.round(width), height: Math.round(height), deviceScaleFactor: 0, mobile: false, dontSetVisibleSize: true };
+}
+
+/**
+ * A view's contents id, or null for a view whose page went: a `WebContentsView` whose contents was destroyed — a
+ * page that closed itself with `window.close()`, until its tab leaves the list a microtask later — reports no
+ * `webContents` at all, and a lookup that read `.id` off it threw an uncaught TypeError (the editor's Back, 2026-11-03).
+ */
+function viewContentsId(view: WebContentsView): number | null {
+  const contents = view.webContents as WebContents | undefined;
+  return contents === undefined || contents.isDestroyed() ? null : contents.id;
 }
 
 function settleViewBounds(view: WebContentsView, bounds: ContentBounds): void {
@@ -2126,7 +2136,7 @@ export class BrowserController {
   }
 
   acceptPageResume(contentsId: number, value: unknown): void {
-    const tab = [...this.#tabs.values()].find(candidate => candidate.view.webContents.id === contentsId);
+    const tab = [...this.#tabs.values()].find(candidate => viewContentsId(candidate.view) === contentsId);
     if (!tab || tab.info.kind !== "human" || tab.info.unlisted) return;
     const state = sanitizePageResume(value, tab.view.webContents.getURL());
     if (!state || JSON.stringify(state) === JSON.stringify(this.#pageResume.get(tab.info.id))) return;
@@ -3401,7 +3411,7 @@ export class BrowserController {
     const tab = [...this.#tabs.values()].find(
       (candidate) =>
         candidate.info.kind === "human" &&
-        candidate.view.webContents.id === senderId,
+        viewContentsId(candidate.view) === senderId,
     );
     const support = normalizeTabPasskeySupport(value);
     if (tab === undefined || support === null) return;
@@ -4627,6 +4637,9 @@ export class BrowserController {
             lifecycle: "live",
             ...(extensionId === null ? {} : { extensionId }),
           };
+    // An extension page's mark is its extension's icon, whatever the page declares (docs/extensions.md §4): the mark
+    // says whose the page is.
+    if (extensionView !== null) info.faviconUrl = extensionView.iconUrl;
     const tab: ManagedTab = {
       info,
       view,
@@ -4648,6 +4661,18 @@ export class BrowserController {
     this.#tabs.set(id, tab);
     // Mapped to its extension before its page loads: the page's first call finds it.
     if (extensionId !== null) extensionPages!.attach(id, view.webContents, extensionId);
+    // The page closed itself — `window.close()` from a page whose history is one document, as an extension's page may
+    // (the Recorder's editor's Back) — or its contents went some other way nobody here asked for: the tab leaves the
+    // window's state as closeTab would have had it, before anything meets a listed tab with no page behind it (a
+    // publish tick reading its history would throw, and take main down with it). A microtask later: a close of ours
+    // destroys the page a line before it deletes the tab, and is not the page's own.
+    view.webContents.once("destroyed", () => {
+      queueMicrotask(() => {
+        if (this.#tabs.get(id) !== tab || this.#closing.has(id)) return;
+        const detached = this.#detachTab(id, tab, tab.history);
+        if (detached !== null) void this.#settleClose(detached);
+      });
+    });
     // A tab of the person's, for Chrome extensions, before it is shown (its activation then finds it told).
     const chromeContents = this.#chromeTabContents(tab);
     if (chromeContents !== null) this.#hooks.chromeTabs!.added(id, chromeContents, info.url);
@@ -4937,6 +4962,8 @@ export class BrowserController {
       publish();
     });
     view.webContents.on("page-favicon-updated", (_event, favicons) => {
+      // (An extension page's mark stays its extension's icon: what the page declares is not taken.)
+      if (extensionId !== null) return;
       info.faviconUrl = favicons[0] ?? null;
       this.#refreshMediaTab(tab);
       publish();
@@ -6399,8 +6426,8 @@ export class BrowserController {
 
   #tabForWebContents(id: number): ManagedTab | undefined {
     for (const tab of this.#tabs.values())
-      if (tab.view.webContents.id === id) return tab;
-    if (this.#glance?.tab.view.webContents.id === id) return this.#glance.tab;
+      if (viewContentsId(tab.view) === id) return tab;
+    if (this.#glance !== null && viewContentsId(this.#glance.tab.view) === id) return this.#glance.tab;
     return undefined;
   }
 
@@ -6925,7 +6952,7 @@ export class BrowserController {
       (candidate) =>
         candidate.info.kind === "human" &&
         candidate.extensionId === null &&
-        candidate.view.webContents.id === senderId,
+        viewContentsId(candidate.view) === senderId,
     );
     if (
       owner === undefined ||
@@ -7063,8 +7090,9 @@ export class BrowserController {
   acceptsGlanceDismiss(senderId: number): boolean {
     const glance = this.#glance;
     if (glance === null) return false;
-    if (glance.tab.view.webContents.id === senderId) return true;
-    return this.#tabs.get(glance.ownerTabId)?.view.webContents.id === senderId;
+    if (viewContentsId(glance.tab.view) === senderId) return true;
+    const owner = this.#tabs.get(glance.ownerTabId);
+    return owner !== undefined && viewContentsId(owner.view) === senderId;
   }
 
   /**

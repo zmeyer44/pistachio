@@ -43,6 +43,8 @@ export interface ChromeActionState {
   badgeColor: string | null;
   /** A click opens a popup (else it fires `action.onClicked`). */
   hasPopup: boolean;
+  /** `setIcon` changed the icon (on this tab, or everywhere): `iconUrl` is that icon, the library's, not the manifest's logo. */
+  iconModified: boolean;
   /** `crx://extension-icon/…`, served from the default session (compat.ts `handleCRXProtocol`). */
   iconUrl: string;
 }
@@ -62,6 +64,34 @@ export function chromeIconUrl(
   if (typeof options.tabId === "number" && options.tabId >= 0) query.set("tabId", String(options.tabId));
   if (typeof options.modified === "number" && options.modified > 0) query.set("t", String(options.modified));
   return `crx://extension-icon/${extensionId}/${size}/1?${query.toString()}`;
+}
+
+/**
+ * The address of an extension's logo — the manifest's own, which host.ts serves from the extension's folder whether
+ * or not it is loaded (the Ledge, the rows, the sheet). `readAt` is when the folder was read, so an icon a reload
+ * changed is fetched afresh; `size` is the smallest the shell wants, the file nearest it from above.
+ */
+export function chromeLogoUrl(extensionId: string, readAt: number, size = 64): string {
+  return `crx://extension-logo/${extensionId}/${String(clampIconSize(size))}?t=${String(Math.max(0, Math.round(readAt)))}`;
+}
+
+/** A `crx://extension-logo/<id>/<size>` request's id and size, or null for any other address. */
+export function chromeLogoRequest(request: { url: string }): { id: string; size: number } | null {
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "crx:" || url.hostname !== "extension-logo") return null;
+  const [, id, sizeText] = url.pathname.split("/");
+  if (id === undefined || !isChromeExtensionId(id)) return null;
+  const size = Number.parseInt(sizeText ?? "", 10);
+  return { id, size: Number.isFinite(size) ? clampIconSize(size) : 64 };
+}
+
+function clampIconSize(size: number): number {
+  return Math.max(16, Math.min(128, Math.round(size)));
 }
 
 /** A badge colour as CSS: a string as given, `[r, g, b, a]` (0–255) as `rgba()`. */
@@ -90,6 +120,7 @@ export function chromeActionStates(raw: RawActionState, partition: string, tabId
         badge: typeof text === "string" && text !== "" ? text.slice(0, 8) : null,
         badgeColor: badgeColorCss(pick("color")),
         hasPopup: typeof popup === "string" && popup !== "",
+        iconModified: typeof pick("iconModified") === "number",
         iconUrl: chromeIconUrl(action.id, partition, { tabId: tab?.iconModified !== undefined ? tabId : null, modified: pick("iconModified") ?? null }),
       };
     });

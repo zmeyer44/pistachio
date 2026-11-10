@@ -49,10 +49,13 @@ export function GlanceOverlay({
   glance,
   surfaceRef,
   desk,
+  reserve = 0,
 }: {
   glance: GlanceState;
   surfaceRef: React.RefObject<HTMLDivElement | null>;
   desk?: GlanceDesk;
+  /** Room kept at the surface's trailing side (the chat in its place): the card and its actions keep clear of it. */
+  reserve?: number;
 }) {
   const [frame, setFrame] = useState<GlanceFrame | null>(null);
   const [landed, setLanded] = useState(false);
@@ -85,7 +88,7 @@ export function GlanceOverlay({
     let animationFrame = 0;
     const measure = () => {
       animationFrame = 0;
-      setFrame(glanceFrame(surface.getBoundingClientRect(), glance.source));
+      setFrame(glanceFrame(surface.getBoundingClientRect(), glance.source, reserve));
     };
     const schedule = () => {
       if (animationFrame === 0) animationFrame = window.requestAnimationFrame(measure);
@@ -99,7 +102,7 @@ export function GlanceOverlay({
       window.removeEventListener("resize", schedule);
       if (animationFrame !== 0) window.cancelAnimationFrame(animationFrame);
     };
-  }, [glance.source, surfaceRef]);
+  }, [glance.source, reserve, surfaceRef]);
 
   // Staging. Main keeps the owner's live view up until the still that stands
   // in for it (BrowserSurface's pane stills, or a desk window's) is decoded and painted beneath;

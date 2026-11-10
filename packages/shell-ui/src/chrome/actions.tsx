@@ -759,10 +759,15 @@ export function chromeIconButtonClass(state: { enabled: boolean; pressed: boolea
   );
 }
 
-/** The shared 24px button for the sidebar chrome. */
-export function ActionButton({ id, testId }: { id: ChromeActionId; testId?: string }) {
+/**
+ * The shared 24px button for the sidebar chrome. `hideDisabled` draws nothing
+ * while the action can't run, rather than a dimmed button (the toolbar's Back
+ * and Forward).
+ */
+export function ActionButton({ id, testId, hideDisabled = false }: { id: ChromeActionId; testId?: string; hideDisabled?: boolean }) {
   const bound = useAction(id);
   const { enabled, run } = bound;
+  if (hideDisabled && !enabled) return null;
   // `aria-pressed` only where there is an on-state: its mere presence makes a
   // button a toggle to assistive tech, and Back is not one.
   const active = bound.active;

@@ -411,12 +411,6 @@ export class ChromeCompat extends EventEmitter<ChromeCompatEvents> {
     return internals(attached.ece).api.browserAction.handleCRXRequest(request);
   }
 
-  /** The icon address for an extension in a Profile session (its action's icon; the Ledge's `iconUrl`). */
-  iconUrl(ses: Session, extensionId: string): string | null {
-    const attached = this.#attached.get(ses);
-    return attached === undefined ? null : chromeIconUrl(extensionId, attached.partition);
-  }
-
   /**
    * `chrome.notifications` become the host's notices instead of the library's macOS notifications, in every
    * attached session and every one attached later. The library's handlers are replaced for good: the returned

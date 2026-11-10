@@ -1,9 +1,10 @@
 /**
- * What the engine reads off live tracks besides encoding them: each captured
- * frame's arrival (the `frame` lines, the meta's capture size, the thumbnail)
- * and the mic's PCM (the level log). Both read a *clone* of the track through
- * `MediaStreamTrackProcessor` (present in Electron 43's windows — measured), so
- * the encoder's own reader is untouched; a frame costs a read and a close.
+ * What the engine reads off live tracks: the captured frames the screen
+ * encoder takes (`TrackPump`, which also feeds the `frame` lines, the meta's
+ * capture size and the thumbnail) and the mic's PCM for the level log
+ * (`LevelWatch`, on a *clone* of the track, so the mic's encoder reads its
+ * own). Both go through `MediaStreamTrackProcessor` (present in Electron 43's
+ * windows — measured).
  */
 import { LevelMeter, rms } from "./levels.js";
 
@@ -18,24 +19,29 @@ export function canWatchTracks(): boolean {
   return processorOf() !== null;
 }
 
-/** Every frame of a video track as it arrives, with the clock's time of arrival. The callback must not keep the frame. */
-export class FrameWatch {
+/**
+ * Everything a track delivers, as it arrives, with the clock's time of arrival:
+ * a video track's frames, an audio track's chunks. The callback answers
+ * `true` when it took the item (and will close it), else the pump closes it
+ * at once. The track is the pump's: `stop` cancels the read and stops it.
+ */
+export class TrackPump<T extends { close(): void }> {
   readonly #track: MediaStreamTrack;
   readonly #now: () => number;
-  readonly #onFrame: (frame: VideoFrame, at: number) => void;
-  #reader: ReadableStreamDefaultReader<VideoFrame> | null = null;
+  readonly #onItem: (item: T, at: number) => boolean;
+  #reader: ReadableStreamDefaultReader<T> | null = null;
   #stopped = false;
-  /** The last frame's size (display pixels). */
+  /** The last frame's size (display pixels); null for an audio track or before a frame. */
   size: { w: number; h: number } | null = null;
-  frames = 0;
+  items = 0;
 
-  constructor(track: MediaStreamTrack, now: () => number, onFrame: (frame: VideoFrame, at: number) => void) {
-    this.#track = track.clone();
+  constructor(track: MediaStreamTrack, now: () => number, onItem: (item: T, at: number) => boolean) {
+    this.#track = track;
     this.#now = now;
-    this.#onFrame = onFrame;
-    const Processor = processorOf<VideoFrame>();
+    this.#onItem = onItem;
+    const Processor = processorOf<T>();
     if (Processor === null) return;
-    this.#reader = new Processor({ track: this.#track }).readable.getReader();
+    this.#reader = new Processor({ track }).readable.getReader();
     void this.#pump();
   }
 
@@ -47,21 +53,23 @@ export class FrameWatch {
     const reader = this.#reader;
     if (reader === null) return;
     for (;;) {
-      let result: ReadableStreamReadResult<VideoFrame>;
+      let result: ReadableStreamReadResult<T>;
       try {
         result = await reader.read();
       } catch {
         return;
       }
       if (result.done) return;
-      const frame = result.value;
+      const item = result.value;
       const at = this.#now();
+      let taken = false;
       try {
-        this.size = { w: frame.displayWidth, h: frame.displayHeight };
-        this.frames += 1;
-        if (!this.#stopped) this.#onFrame(frame, at);
+        const frame = item as unknown as { displayWidth?: number; displayHeight?: number };
+        if (typeof frame.displayWidth === "number" && typeof frame.displayHeight === "number") this.size = { w: frame.displayWidth, h: frame.displayHeight };
+        this.items += 1;
+        if (!this.#stopped) taken = this.#onItem(item, at);
       } finally {
-        frame.close();
+        if (!taken) item.close();
       }
     }
   }

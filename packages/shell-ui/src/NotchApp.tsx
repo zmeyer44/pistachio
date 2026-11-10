@@ -38,9 +38,9 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { DeskNotchFrame } from "@pistachio/shell-contracts/desk";
+import type { DeskNotchFrame, DeskNotchInput } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "./api";
-import { DeskNubMark } from "./components/desk/DeskNub";
+import { DeskNubMark, NUB_BOX, NubPillClose, NubPillSide } from "./components/desk/DeskNub";
 import { laneAt, swellAt, swellDone } from "./components/desk/nub-motion";
 import { StatusPillRow } from "./components/extensions/StatusPillRow";
 import { NUB_LANE_FOOT, NUB_LANE_INSET, nubBetween, nubFace, nubOutline } from "./lib/desk/geometry";
@@ -83,8 +83,8 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
     if (frame === null || root === null || face === null || mark === null) return;
     const mask = maskRef.current;
     const { bounds, swelling, lane } = frame;
-    // (The nub's own box is the view's corner, as tall as the view: the lane runs left of it.)
-    const nub = bounds.height;
+    // (The nub's own box is the view's bottom-right corner: the lane runs left of it, the pill's buttons stand above it.)
+    const nub = frame.nub;
     let raf = 0;
     const draw = (): void => {
       const s = swellAt(swelling);
@@ -104,7 +104,7 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
   }, [frame]);
 
   if (frame === null) return null;
-  const send = (input: "enter" | "leave" | "press"): void => nativeApi()?.sendDeskNotchInput(input);
+  const send = (input: DeskNotchInput): void => nativeApi()?.sendDeskNotchInput(input);
   // Hidden under the pointer (once what the nub opens has made the page under it a still), the view never hears it
   // go, and shown again its page has the pointer there still: the coming it then reports may be no one's (the shell
   // checks the OS's pointer), and a real one, onto a button its page thinks is under the pointer already, would go
@@ -146,8 +146,8 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
           "--desk-notch-ground-y": px(ground.y - bounds.y),
           "--desk-notch-ground-w": px(ground.width),
           "--desk-notch-ground-h": px(ground.height),
-          // The nub's own box, in the corner: the rest is its lane.
-          "--desk-notch-nub": px(bounds.height),
+          // The nub's own box, in the corner: the rest is its lane, and the column above it.
+          "--desk-notch-nub": px(frame.nub),
         } as React.CSSProperties
       }
     >
@@ -174,7 +174,20 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
       {pills}
     </div>
   );
-  if (!picture) return nub;
+  if (!picture) {
+    // The pill's buttons above the nub, where the shell lays them (the nub's box, its corner the view's): drawn here
+    // over a live page, as the nub is; a press is the shell's, and the pointer onto one opens the shell's tooltip.
+    const { close, side } = frame.buttons;
+    return (
+      <>
+        {nub}
+        <div className="desk-notch-view-buttons" style={{ width: NUB_BOX.w, height: NUB_BOX.h }}>
+          <NubPillClose shown={close} onClose={() => send({ bar: "close" })} onHover={(on) => send({ hover: on ? "close" : null })} />
+          <NubPillSide shown={side} onSide={() => send({ bar: "side" })} onHover={(on) => send({ hover: on ? "side" : null })} />
+        </div>
+      </>
+    );
+  }
   // Offscreen, twice the view's height: the nub over its outline (main/desk-glass.ts splits them).
   return (
     <div className="desk-notch-picture" style={{ "--desk-notch-w": px(bounds.width), "--desk-notch-h": px(bounds.height) } as React.CSSProperties}>

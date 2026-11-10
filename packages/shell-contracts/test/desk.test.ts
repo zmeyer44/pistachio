@@ -19,6 +19,8 @@ describe("the desk's contract", () => {
       lane: { from: 0, to: 0, at: 0, ms: 0 },
       pills: [],
       pillsWidth: 0,
+      nub: 47,
+      buttons: { close: false, side: false },
     };
     expect(isDeskNotchFrame(frame)).toBe(true);
     expect(isDeskNotchFrame({ ...frame, ground: undefined })).toBe(false);
@@ -47,6 +49,8 @@ describe("the desk's contract", () => {
       lane: { from: 0, to: 287, at: 1_760_000_000_000, ms: 300 },
       pills: [pill],
       pillsWidth: 280,
+      nub: 52,
+      buttons: { close: false, side: false },
     };
     expect(isDeskNotchFrame(frame)).toBe(true);
     // (A box wider than the bare nub's, never taller.)
@@ -61,6 +65,40 @@ describe("the desk's contract", () => {
     expect(isDeskNotchInput({ status: { id: pill.id } })).toBe(false);
     expect(isDeskNotchInput("press")).toBe(true);
     expect(isDeskNotchInput("hover")).toBe(false);
+  });
+
+  it("takes the pill's buttons above the nub, which the view draws over a live page, and a press or the pointer on one", () => {
+    const frame = {
+      bounds: { x: 1380, y: 761, width: 52, height: 139 },
+      label: "Ask about Research",
+      shortcut: null,
+      color: "blue",
+      idle: { radius: 18, sink: 20, fillet: 11 },
+      swell: { radius: 22, sink: 27, fillet: 6 },
+      corner: 12,
+      swelling: { from: 0, to: 0, at: 0, ms: 0 },
+      acting: false,
+      floating: false,
+      ground: { x: 0, y: 0, width: 1440, height: 900 },
+      lane: { from: 0, to: 0, at: 0, ms: 0 },
+      pills: [],
+      pillsWidth: 0,
+      nub: 52,
+      buttons: { close: true, side: true },
+    };
+    expect(isDeskNotchFrame(frame)).toBe(true);
+    // (The view is as tall as the nub's box at least, and taller only over the buttons: never without a nub's box.)
+    expect(isDeskNotchFrame({ ...frame, nub: 0 })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, nub: undefined })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, buttons: { close: true } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, buttons: null })).toBe(false);
+    expect(isDeskNotchInput({ bar: "close" })).toBe(true);
+    expect(isDeskNotchInput({ bar: "side" })).toBe(true);
+    expect(isDeskNotchInput({ bar: "dock" })).toBe(false);
+    expect(isDeskNotchInput({ hover: "close" })).toBe(true);
+    expect(isDeskNotchInput({ hover: null })).toBe(true);
+    expect(isDeskNotchInput({ hover: "nub" })).toBe(false);
+    expect(isDeskNotchInput({ bar: "close", hover: null })).toBe(false);
   });
 
   it("accepts a desk state and refuses anything else", () => {

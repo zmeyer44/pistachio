@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   chromeHostPatterns,
@@ -378,6 +381,23 @@ describe("the curated slice", () => {
       if (entry.verdict.kind === "partly") expect(entry.verdict.notes.length).toBeGreaterThan(0);
       if (entry.verdict.kind === "wont") expect(entry.verdict.reason).toMatch(/\.$/);
     }
+  });
+
+  it("names each extension's logo among the shell's files — a PNG no larger than 128px — but for the two the store no longer serves", () => {
+    const dir = fileURLToPath(new URL("../src/renderer/public/extension-icons/", import.meta.url));
+    const files = new Set(readdirSync(dir));
+    for (const entry of CURATED_CHROME) {
+      if (entry.iconUrl === null) continue;
+      expect(entry.iconUrl).toBe(`/extension-icons/${entry.cwsId}.png`);
+      expect(files.has(`${entry.cwsId}.png`)).toBe(true);
+      const png = readFileSync(join(dir, `${entry.cwsId}.png`));
+      expect(png.readUInt32BE(0)).toBe(0x89504e47);
+      expect(Math.max(png.readUInt32BE(16), png.readUInt32BE(20))).toBeLessThanOrEqual(128);
+    }
+    // Every file is some entry's (scripts/fetch-curated-icons.mjs writes them, one per id).
+    const named = new Set(CURATED_CHROME.flatMap((entry) => (entry.iconUrl === null ? [] : [`${entry.cwsId}.png`])));
+    expect([...files].filter((file) => !named.has(file))).toEqual([]);
+    expect(CURATED_CHROME.filter((entry) => entry.iconUrl === null).map((entry) => entry.name)).toEqual(["Pocket", "uBlock Origin"]);
   });
 
   it("overrides the manifest's read where it knows better, and is overridden by a manifest that got worse", () => {

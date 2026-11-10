@@ -112,7 +112,11 @@ export interface ExtensionInfo {
   name: string;
   version: string;
   description: string;
-  /** `crx://extension-icon/<id>/32/1` for a Chrome extension, `pistachio-ext://<id>/<icon>` or null (a monogram) for ours. */
+  /**
+   * The mark the shell draws: `crx://extension-logo/<id>/64?t=…` for a Chrome extension (its manifest's own logo,
+   * served by main from its folder, loaded or not — or its action's `crx://extension-icon/…` while `setIcon` changed
+   * it), `pistachio-ext://<id>/<icon>` for ours, or null (a monogram).
+   */
   iconUrl: string | null;
   source: ExtensionSource;
   /** The master switch. */
@@ -165,6 +169,8 @@ export interface ExtensionCuratedEntry {
   cwsId: string;
   name: string;
   description: string;
+  /** Its logo, a file of the shell's own (`/extension-icons/<id>.png`, taken from its package), or null (a monogram). */
+  iconUrl: string | null;
   verdict: ChromeVerdict;
 }
 

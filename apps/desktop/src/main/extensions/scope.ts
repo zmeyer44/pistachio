@@ -11,7 +11,8 @@
  *   until the tab goes to another site (origin) — and, for `capture:tab` and
  *   `input:events`, the right to record that tab (§5 `capture`); so does the
  *   panel's source list (`capture.sources` from the panel) for every tab it
- *   lists, while the panel stays open;
+ *   lists, while the panel stays open; and while it records anything, the
+ *   tab in front is its to record too (a recording follows the person);
  * - how often: a token bucket per method from `EXT_RATE_LIMITS`;
  * - and what it sees of the browser: tabs, spaces, the desk, pages — each
  *   filtered to its Profiles, never an agent's hidden tab, never another
@@ -240,8 +241,10 @@ export class ExtensionScope {
 
   /**
    * Whether `method` (capture.tab, capture.hold, input.subscribe) may record this tab: a web page this extension
-   * may see, which the person granted it — an invocation on it, a pick from the panel's list — or which it records
-   * already. Null passes (a tab it may not see is NOT_FOUND, the method's to say); a sentence refuses.
+   * may see, which the person granted it — an invocation on it, a pick from the panel's list — which it records
+   * already, or which is in front while it records something (a recording follows the person: the window they
+   * bring in front while the pill is up is theirs to show, and the pill says it is recorded). Null passes (a tab it
+   * may not see is NOT_FOUND, the method's to say); a sentence refuses.
    */
   captureRefusal(method: string, tabId: string): string | null {
     let tab: BrowserTabInfo;
@@ -252,7 +255,8 @@ export class ExtensionScope {
     }
     if (isPrivateAddress(tab.url) || tab.extensionId !== undefined) return `${method} records web pages only, not ${tab.url.split(":")[0]}: addresses`;
     if (this.#live.has(tabId) || this.hasGesture(tabId)) return null;
-    return `${method} needs the person to choose that window: run it from a command, a menu item, a key or the icon while the window is in use, or from a pick in the panel's list (capture.sources) while the panel is open`;
+    if (this.#live.size > 0 && this.#deps.browser()?.activeTabId() === tabId) return null;
+    return `${method} needs the person to choose that window: run it from a command, a menu item, a key or the icon while the window is in use, or from a pick in the panel's list (capture.sources) while the panel is open — or record it while it is in front and a recording of yours already runs`;
   }
 
   /* ------------------------------ limits ------------------------------ */

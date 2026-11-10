@@ -41,7 +41,7 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
   "tabs:write": { tier: "medium", line: "Opens, moves and closes tabs." },
   desk: { tier: "medium", line: "Sees how your windows are arranged on the desk." },
   "pages:read": { tier: "high", line: "Can read pages on {hosts}." },
-  "capture:tab": { tier: "high", line: "Can record a window you choose, with its sound." },
+  "capture:tab": { tier: "high", line: "Can record a window you choose, and the pages you move to while it records, with their sound." },
   "input:events": { tier: "high", line: "Sees what you click and where you type in a recorded window (never your passwords, never the characters)." },
   "media:microphone": { tier: "high", line: "Can use the microphone." },
   "media:camera": { tier: "high", line: "Can use the camera." },

@@ -41,7 +41,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { AgentAttachment, RunSummary, ThreadListItem } from "@pistachio/protocol";
-import type { DeskNotchPill } from "@pistachio/shell-contracts/desk";
+import type { DeskNotchButton, DeskNotchPill } from "@pistachio/shell-contracts/desk";
 import { groupContextMediaTypeOf, type GroupContextFile, type GroupContextView } from "@pistachio/shell-contracts/desk-agent";
 import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
 import { webSearchUrl } from "@pistachio/shell-contracts/search";
@@ -76,7 +76,7 @@ import { screenshotView } from "../../lib/screenshot";
 import { isProbablyUrl } from "../../lib/url";
 import { agentActivity } from "../../lib/desk/agent";
 import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictation";
-import { DESK_GAP, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubDrops, nubExtent, nubLaneFor, type NotchShape, type Rect } from "../../lib/desk/geometry";
+import { DESK_GAP, NUB_CLOSE_R, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubClose, nubDrops, nubExtent, nubLaneFor, nubSide, type NotchShape, type Rect } from "../../lib/desk/geometry";
 import { readFloatSpot } from "../../lib/desk/answer-float";
 import { runFailure } from "../../lib/chat-trace";
 import { AnswerMotion, type AnswerEdge } from "./answer-motion";
@@ -155,6 +155,10 @@ const TIP_BAND_REACH = 56;
 const TIP_SIDE_W = 200;
 /** The pill's shadow, which the pages under it give way for too. */
 const PILL_SHADOW = 16;
+/** The room above the pill's box its footprint takes (its shadow reaches a few px up): the band the desk keeps clear for it ends there. */
+const PILL_ABOVE = DESK_GAP;
+/** How far one of the pill's buttons above the nub reaches past its circle (its shadow), for the notch view's box over them. */
+const BUTTON_SHADOW = 8;
 /** The view over a live page holds the nub swelled (and a little past, as the swell overshoots), its corner the desk's (NotchApp). */
 const NUB_VIEW = Math.ceil(nubExtent(NUB_SWELL)) + 3;
 /**
@@ -248,14 +252,14 @@ function useCover(engine: DeskEngine, key: string, ref: RefObject<HTMLElement | 
   }, [engine, key, ref, active, shape, rebind]);
 }
 
-/** The pill's footprint as a cover: its box and its shadow. */
+/** The pill's footprint as a cover: its box and its shadow (above it, only the room the band keeps clear: pillBand). */
 function pillFootprint(box: Rect): Rect {
-  return { x: box.x - PILL_SHADOW, y: box.y - PILL_SHADOW, w: box.w + PILL_SHADOW * 2, h: box.h + PILL_SHADOW * 2 };
+  return { x: box.x - PILL_SHADOW, y: box.y - PILL_ABOVE, w: box.w + PILL_SHADOW * 2, h: box.h + PILL_ABOVE + PILL_SHADOW };
 }
 
-/** The pill's close as a cover: its circle and its shadow (a droplet's, lower). */
-function closeFootprint(box: Rect): Rect {
-  return { x: box.x - 12, y: box.y - 10, w: box.w + 24, h: box.h + 26 };
+/** The band the desk keeps clear at its foot for the pill (DeskEngine.setBand): from the foot up to its footprint's top. */
+function pillBand(stageHeight: number, box: Rect): number {
+  return Math.max(0, Math.ceil(stageHeight - pillFootprint(box).y));
 }
 
 /** True while `on`, and for `ms` after it goes — stretched, with `slowed`, as the nub's motion is (nub-motion's nubTimeScale). */
@@ -601,6 +605,8 @@ export const DeskBar = memo(function DeskBar({
   const [hovered, setHovered] = useState(false);
   /** The pointer on the notch view over a page (not the shell's nub, whose tooltip Base UI opens itself). */
   const [viewHover, setViewHover] = useState(false);
+  /** The pointer on one of the pill's buttons above the nub as the notch view draws them (its word), for its tooltip. */
+  const [viewButtonHover, setViewButtonHover] = useState<DeskNotchButton | null>(null);
   const armed = useRef(false);
   const hoverTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
@@ -690,14 +696,40 @@ export const DeskBar = memo(function DeskBar({
   const laneTarget = useSteadyLane(statusPills.length > 0 && !statusRaised ? nubLaneFor(pillsWidth) : 0);
   // The pill's close above the nub, while the pill is out (not while the menu is: it would stand among its droplets).
   const closeUp = pillOpen && !menuWanted && !pickerOpen;
-  const closeCovering = useLinger(closeUp, NOTCH_CLOSE_MS, true) || (pillWanted && !menuWanted && !pickerOpen);
-  useCover(engine, "pill-close", closeRef, closeCovering, closeFootprint);
   // The chat's side button above it (2026-10-09), while no card floats — not out on the desk, nor at the side already.
   // (By the card up, not the way it floats: an empty chat put away from its place with × is still a floating one, and
   // nothing else brings it back — 2026-10-10.)
   const sideUp = closeUp && !inCard;
-  const sideCovering = useLinger(sideUp, NOTCH_CLOSE_MS, true) || (pillWanted && !menuWanted && !pickerOpen && !inCard);
-  useCover(engine, "pill-side", sideRef, sideCovering, closeFootprint);
+  // (Neither is a cover: over a live page main's notch view draws them, as it draws the nub — below, the view's box.)
+
+  // Out, the pill is no cover the windows freeze under for long: the desk keeps a band clear at its foot for it (the
+  // engine's setBand) — up to the pill's footprint — and the windows glide up out of it, their pages live, and back
+  // down as the pill goes in (2026-11-05: until then a page that reached the foot was its still under the pill, dead
+  // to the pointer, for as long as the pill was out). The pill lies on the ground the band leaves. Held through the
+  // pill's way back into the nub, as its cover is, so nothing comes down under it while it is still drawn. (Not for
+  // the menu, whose droplets are a cover of a moment; nor in the card, where the field is the card's.)
+  const bandWanted = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted;
+  useLayoutEffect(() => {
+    const el = barRef.current;
+    const stage = el?.closest(".desk-stage") ?? null;
+    if (!bandWanted || el === null || stage === null) {
+      engine.setBand(0);
+      return;
+    }
+    const measure = (): void => {
+      const box = stageBox(el);
+      if (box !== null) engine.setBand(pillBand(stage.getBoundingClientRect().height, box));
+    };
+    measure();
+    // (The pill grows with what it holds — lines, files — and the desk resized moves it: read again.)
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    observer.observe(stage);
+    return () => {
+      observer.disconnect();
+      engine.setBand(0);
+    };
+  }, [engine, bandWanted]);
 
   const pillParts = useCallback((): PillParts | null => {
     const bar = barRef.current;
@@ -744,10 +776,16 @@ export const DeskBar = memo(function DeskBar({
     return () => window.clearTimeout(timer);
   }, [laneWay]);
   // The idle nub's box, in the desk's trailing foot corner, and its lane left of it: the engine knows where it lies over
-  // the windows (whether a live page is under it).
+  // the windows (whether a live page is under it). And, the pill out, the pill's buttons above the nub (NubPillClose,
+  // NubPillSide): over a live page the notch view draws them, as it draws the nub, so its box reaches up over their
+  // column at the trailing edge — held there while they go back into the nub, as the lane is held.
+  const buttonsOut = useLinger(closeUp, NUB_CLOSE_MS, true);
+  const sideOut = useLinger(sideUp, NUB_CLOSE_MS, true);
+  const buttonsReach = buttonsOut ? Math.ceil(-(sideOut ? nubSide() : nubClose()).y + NUB_CLOSE_R + BUTTON_SHADOW) : 0;
+  const notchH = Math.max(NUB_VIEW, buttonsReach);
   useLayoutEffect(() => {
-    engine.setNotch({ w: NUB_VIEW + laneHeld, h: NUB_VIEW });
-  }, [engine, laneHeld]);
+    engine.setNotch({ w: NUB_VIEW + laneHeld, h: notchH });
+  }, [engine, laneHeld, notchH]);
   useEffect(() => () => engine.setNotch(null), [engine]);
 
   // Swelled while the pointer rests on it and while its droplets are out; the pill out of its droplet (or the nub),
@@ -988,9 +1026,14 @@ export const DeskBar = memo(function DeskBar({
   useEffect(
     () =>
       nativeApi()?.onDeskNotchInput((input) => {
-        // (An action of an extension's pill in the nub's lane, pressed in the view: the pill's own.)
-        if (typeof input === "object") sendStatusAction(input.status.id, input.status.action);
-        else if (input === "enter") {
+        // (An action of an extension's pill in the nub's lane, pressed in the view: the pill's own. One of the pill's
+        // buttons above the nub, as the view draws them: the Bar's, as if the shell's own were pressed — and the pointer
+        // onto one, for its tooltip.)
+        if (typeof input === "object") {
+          if ("status" in input) sendStatusAction(input.status.id, input.status.action);
+          else if ("bar" in input) (input.bar === "close" ? stowPill : toSide)();
+          else setViewButtonHover(input.hover);
+        } else if (input === "enter") {
           if (armed.current) return;
           void pointerOnNub().then((on) => {
             if (on !== false && !armed.current) {
@@ -1001,7 +1044,7 @@ export const DeskBar = memo(function DeskBar({
         } else if (input === "leave") leaveNub();
         else toggleMenu(false);
       }),
-    [enterNub, leaveNub, toggleMenu, pointerOnNub],
+    [enterNub, leaveNub, toggleMenu, pointerOnNub, stowPill, toSide],
   );
 
   const askKey = useAppStore((state) => shortcutLabel(state.settings.shortcuts.toggleConsole, PLATFORM));
@@ -1030,7 +1073,7 @@ export const DeskBar = memo(function DeskBar({
       const bottom = Math.round(stage.bottom);
       // The nub's own box in the corner (what the pointer on it is checked against), and the lane drawn out left of it.
       notchBox.current = { x: right - NUB_VIEW, y: bottom - NUB_VIEW, width: NUB_VIEW, height: NUB_VIEW };
-      const bounds = { x: right - NUB_VIEW - laneHeld, y: bottom - NUB_VIEW, width: NUB_VIEW + laneHeld, height: NUB_VIEW };
+      const bounds = { x: right - NUB_VIEW - laneHeld, y: bottom - notchH, width: NUB_VIEW + laneHeld, height: notchH };
       api.setDeskNotch({
         bounds,
         label: `Ask about ${group.title}`,
@@ -1046,6 +1089,8 @@ export const DeskBar = memo(function DeskBar({
         lane: laneWay,
         pills: lanePills,
         pillsWidth: lanePills.length === 0 ? 0 : Math.min(2048, pillsWidth),
+        nub: NUB_VIEW,
+        buttons: { close: closeUp, side: sideUp },
       });
     };
     send();
@@ -1057,7 +1102,7 @@ export const DeskBar = memo(function DeskBar({
       observer.disconnect();
       window.removeEventListener("resize", send);
     };
-  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut, laneWay, laneHeld, lanePills, pillsWidth]);
+  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut, laneWay, laneHeld, lanePills, pillsWidth, notchH, closeUp, sideUp]);
   useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
 
   // A button's tooltip is open: the band it appears in — above the pill, or beside the nub — is a cover, and stays
@@ -1120,6 +1165,20 @@ export const DeskBar = memo(function DeskBar({
       setTip((current) => (current?.label === faceLabel && current.where === "nub" ? null : current));
     };
   }, [viewHover, menuOpen, faceLabel]);
+  // The same for the pill's buttons above the nub as the view draws them: the pointer on one (the view's word) opens the
+  // shell's own button's tooltip, beside the shell's button where it stands veiled under the view's.
+  useEffect(() => {
+    if (!overPage) setViewButtonHover(null);
+  }, [overPage]);
+  useEffect(() => {
+    if (viewButtonHover === null || !closeUp) return;
+    const label = viewButtonHover === "close" ? "Close" : "Chat at the side";
+    const timer = window.setTimeout(() => setTip({ label, where: "nub" }), TIP_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+      setTip((current) => (current?.label === label && current.where === "nub" ? null : current));
+    };
+  }, [viewButtonHover, closeUp]);
 
   // The conversations stand where past chats' droplet rests, growing up and left from it.
   const chats = nubDrops()[2]!;
@@ -1282,8 +1341,9 @@ export const DeskBar = memo(function DeskBar({
               }}
             />
           ) : null}
-          <NubPillClose ref={closeRef} shown={closeUp && shownCover("pill-close")} tip={nubTip("Close")} onClose={stowPill} />
-          <NubPillSide ref={sideRef} shown={sideUp && shownCover("pill-side")} tip={nubTip("Chat at the side")} onSide={toSide} />
+          {/* Over a live page the notch view draws them (veiled here: in place for their tooltips, unseen). */}
+          <NubPillClose ref={closeRef} shown={closeUp} veiled={overPage} tip={nubTip("Close")} onClose={stowPill} />
+          <NubPillSide ref={sideRef} shown={sideUp} veiled={overPage} tip={nubTip("Chat at the side")} onSide={toSide} />
         </DeskNub>
       </TooltipProvider>
     </div>

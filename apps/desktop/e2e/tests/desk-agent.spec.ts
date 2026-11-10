@@ -10,7 +10,8 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, openTabs, openTray, reachBar, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, spaceRows, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, openTabs, openTray, pressNubButton, reachBar, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, spaceRows, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { pageAt } from "./pages-harness";
 import { shellReady } from "./windows";
 
 const capture = screenshots("desk-agent");
@@ -250,7 +251,8 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await shell.getByTestId("desk-bar-input").blur();
     await shell.waitForTimeout(400);
     await expect(shell.getByTestId("desk-bar")).not.toHaveAttribute("data-compact", "");
-    await close.click();
+    // (Over a live page — the windows give way to the pill by moving, since 2026-11-05 — main's notch view draws it.)
+    await pressNubButton(app, shell, "desk-bar-close");
     await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
     await expect(close).not.toHaveAttribute("data-shown", "");
     await reachBar(shell);
@@ -359,8 +361,9 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     const right = await box(shell, windowSelector(vendor));
     expect(left.x + left.width).toBeLessThan(right.x);
     expect(Math.abs(left.width - right.width)).toBeLessThan(4);
-    // Halves of the whole card, down to its foot under the Bar.
-    near(right.y + right.height, stage.y + stage.height, 2);
+    // Halves of the whole card, down to the band the desk keeps clear for the pill while it is out — the answer docked
+    // on it — a gap above the pill (2026-11-05: until then down to the foot under the Bar, their stills under the pill).
+    near(right.y + right.height, (await box(shell, '[data-testid="desk-bar"]')).y - 8, 2);
     const run = (await snapshot(shell)).run!;
     expect(run.groupId).toBe("desk-agent");
     expect(run.toolCalls.map((call) => call.name)).toEqual(["desk.arrange", "page.inspect", "desk.note", "context.save"]);
@@ -645,7 +648,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     expect(sideBtn.y + sideBtn.height).toBeLessThan(closeBtn.y);
     // (The windows as they stand: the room the chat's place keeps gives them back exactly once it goes — 2026-10-10.)
     const beforeSide = await box(shell, windowSelector(invoice));
-    await side.click();
+    await pressNubButton(app, shell, "desk-answer-side");
     await expect(answer).toHaveAttribute("data-mode", "detached");
     await expect(answer).toHaveAttribute("data-zone", "chat");
     await settled(shell, app);
@@ -655,6 +658,19 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     near(atSide.height, stageBox.height, 3);
     await expect(side).not.toHaveAttribute("data-shown", "");
     await expect.poll(() => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { zone?: string } | null)?.zone)).toBe("chat");
+    // A Glance opened with the chat at the side keeps clear of it: its card, and the actions beside the card, lie in
+    // what is left of the desk, never under the chat's column (2026-11-03: centered on the whole desk, the actions
+    // at the card's right were hidden behind the chat).
+    await (await pageAt(app, INVOICES)).locator("#vendor-record-link").click({ modifiers: ["Alt"] });
+    await expect(shell.getByTestId("glance-close")).toBeVisible();
+    const glanceCard = await box(shell, ".glance-frame");
+    const glanceActions = await box(shell, ".glance-actions");
+    expect(glanceCard.x + glanceCard.width).toBeLessThan(atSide.x);
+    expect(glanceActions.x + glanceActions.width).toBeLessThanOrEqual(atSide.x + 1);
+    expect(glanceActions.x).toBeGreaterThan(glanceCard.x + glanceCard.width);
+    await shell.getByTestId("glance-close").click();
+    await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
+    await settled(shell, app);
     // Its × closes it, at the side as anywhere: the windows have the desk back.
     await settled(shell, app);
     const invoiceSide = await box(shell, windowSelector(invoice));
@@ -1047,7 +1063,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
     await reachBar(shell);
     await expect(shell.getByTestId("desk-answer-side")).toHaveAttribute("data-shown", "");
-    await shell.getByTestId("desk-answer-side").click();
+    await pressNubButton(app, shell, "desk-answer-side");
     await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
     await expect(answer).toHaveAttribute("data-zone", "chat");
     await expect(shell.getByTestId("desk-answer-empty")).toBeVisible();

@@ -484,6 +484,10 @@ export interface DeskView {
   coverZ: ReadonlyMap<string, number>;
   /** A cover lies over the rail's floating player (setFloat): its picture is to come down while it does. */
   floatCovered: boolean;
+  /** Room kept at the desk's trailing side for the chat in its place (setReserve), px; 0 for none. A Glance keeps clear of it. */
+  reserve: number;
+  /** Room kept at the desk's foot for the pill while it is out (setBand), px; 0 for none. */
+  band: number;
   /**
    * A live page is under the Bar's idle nub, in the desk's trailing foot
    * corner: the nub is drawn over it by a view of main's (the "notch" chrome
@@ -647,6 +651,8 @@ export interface DeskLiveGeometry {
 
 /** A size in pixels. */
 type Size = { w: number; h: number };
+/** Room kept for the shell's own on the desk: at its trailing side for the chat's place (setReserve), at its foot for the pill (setBand), px. */
+type DeskRoom = { reserve: number; band: number };
 
 /** A saved window laid out for the desk coming up: its box, picture and minimized state, and its boxes with no room kept (SavedDeskWindow's `own`). */
 type LaidOut = { tabId: string; rect: Rect; mask: DeskMask | null; mini: Minimized | null; own?: Rect; miniOwn?: Rect; fresh?: true };
@@ -1116,6 +1122,8 @@ export class DeskEngine {
   #wellHoled = false;
   /** Room kept at the desk's trailing side for the answer in the chat's place (setReserve): the windows keep out of it. */
   #reserve = 0;
+  /** Room kept at the desk's foot for the Bar's pill while it is out (setBand): the windows keep out of it the same way. */
+  #band = 0;
   /**
    * While room is kept: each window's box as it was with none — fractions of
    * the whole desk — and the box the room last gave it. The room going, a
@@ -1147,6 +1155,8 @@ export class DeskEngine {
       clearCovers: this.#clearCovers,
       coverZ: new Map(),
       floatCovered: this.#floatCovered,
+      reserve: this.#reserve,
+      band: this.#band,
       notchOver: this.#notchOver,
       shelf: this.#shelf,
       snapping: false,
@@ -1512,29 +1522,56 @@ export class DeskEngine {
     const prev = this.#reserve;
     this.#reserve = next;
     if (this.#stageBox.width > 0) {
-      this.#reroom([...this.#wins.values()], prev, next, false);
+      this.#reroom([...this.#wins.values()], { reserve: prev, band: this.#band }, { reserve: next, band: this.#band }, false);
       this.#layShelf();
       // (Saved as the room leaves it, each window's own box with it: a relaunch with the chat in its place comes back so.)
       this.#save();
     }
-    if (next === 0) this.#unreserved.clear();
+    if (next === 0 && this.#band === 0) this.#unreserved.clear();
     this.#dirtyView = true;
     this.#render();
     this.#kick();
   }
 
   /**
-   * The windows' boxes with `from` px of room kept for the chat's place, as
-   * they are with `to` px kept instead; `still`, set as their boxes rather
-   * than as where they are going (the desk coming up). Each window's box
-   * with no room kept is remembered (#unreserved), so the room gone gives
-   * it back exactly.
+   * Room kept at the desk's foot (px up from its foot) for the Bar's pill
+   * while it is out, the desk's whole width: the windows give way to it as
+   * they do to the chat's place (setReserve) — the desk they are laid out on
+   * is shorter by it, the arrangement kept in proportion, each window
+   * gliding to its place, and they come back as it goes — rather than
+   * freezing into their stills under it, dead to the pointer (until
+   * 2026-11-05 the pill was a cover like the menu, and a page that reached
+   * the foot was its still, unclickable, for as long as the pill was out).
+   * The pill lies on the ground the band leaves, over no page. Never saved:
+   * the pill is in when the desk comes up again. 0: none.
    */
-  #reroom(wins: readonly Win[], from: number, to: number, still: boolean): void {
-    const before = this.#usableWith(from);
-    const after = this.#usableWith(to);
-    const reach = this.#usableWith(to);
-    const whole = this.#usableWith(0);
+  setBand(height: number): void {
+    const next = Math.max(0, Math.round(height));
+    if (next === this.#band) return;
+    const prev = this.#band;
+    this.#band = next;
+    if (this.#stageBox.width > 0) {
+      this.#reroom([...this.#wins.values()], { reserve: this.#reserve, band: prev }, { reserve: this.#reserve, band: next }, false);
+      this.#layShelf();
+    }
+    if (next === 0 && this.#reserve === 0) this.#unreserved.clear();
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * The windows' boxes with `from` room kept for the chat's place (px at the
+   * trailing side) and the pill's band (px at the foot), as they are with
+   * `to` kept instead; `still`, set as their boxes rather than as where they
+   * are going (the desk coming up). Each window's box with no room kept is
+   * remembered (#unreserved), so the room gone gives it back exactly.
+   */
+  #reroom(wins: readonly Win[], from: DeskRoom, to: DeskRoom, still: boolean): void {
+    const before = this.#usableWith(from.reserve, from.band);
+    const after = this.#usableWith(to.reserve, to.band);
+    const reach = after;
+    const whole = this.#usableWith(0, 0);
     // A box with no room kept, as fractions of the whole desk: remembered from when the room was first kept, while
     // nothing else has moved it since (the box the room gave it is the box it has) — else read off where it stands,
     // as if the desk were whole. And the box the room gives it now (windows a gutter apart stay a gutter apart: a
@@ -1577,7 +1614,7 @@ export class DeskEngine {
       if (restore !== null) win.restore = restore.set;
       const mini = win.mini === null ? null : roomed(win.mini.restore, kept?.mini ?? null);
       if (mini !== null && win.mini !== null) win.mini.restore = mini.set;
-      if (to === 0) this.#unreserved.delete(win.tabId);
+      if (to.reserve === 0 && to.band === 0) this.#unreserved.delete(win.tabId);
       else this.#unreserved.set(win.tabId, { base: own.base, set: own.set, ...(own.size === undefined ? {} : { size: own.size }), restore, mini });
     }
   }
@@ -2061,7 +2098,7 @@ export class DeskEngine {
     // Saved with other room kept for the chat's place than is kept now (none, or another width — the chat closed or
     // resized since): each saved window's box as the room now leaves it (2026-10-10: read against the room kept now, a
     // desk saved with none came back squeezed twice over).
-    if (reserve !== this.#reserve) this.#reroom(windows.filter((window) => window.fresh !== true).map((window) => this.#wins.get(window.tabId)!), reserve, this.#reserve, true);
+    if (reserve !== this.#reserve) this.#reroom(windows.filter((window) => window.fresh !== true).map((window) => this.#wins.get(window.tabId)!), { reserve, band: this.#band }, { reserve: this.#reserve, band: this.#band }, true);
     this.#stackShelf();
     this.#focused = entry;
     this.#phase = "open";
@@ -2166,7 +2203,7 @@ export class DeskEngine {
     });
     if (entrance !== null && coming.length > 0) this.#awaitEntrance(coming, entry, entrance, now);
     // (Saved with other room kept for the chat's place than is kept now: where each lands is where the room now leaves it.)
-    if (reserve !== this.#reserve) this.#reroom(windows.filter((window) => window.fresh !== true).map((window) => this.#wins.get(window.tabId)!), reserve, this.#reserve, false);
+    if (reserve !== this.#reserve) this.#reroom(windows.filter((window) => window.fresh !== true).map((window) => this.#wins.get(window.tabId)!), { reserve, band: this.#band }, { reserve: this.#reserve, band: this.#band }, false);
     this.#stackShelf();
     // Nothing is flying into its icon now: it is the desk's group again, with no icon in the dock.
     this.#folding.delete(next.groupId);
@@ -2434,7 +2471,7 @@ export class DeskEngine {
   #keepOwn(win: Win, saved: { own?: Rect; miniOwn?: Rect }, reserve: number): void {
     if (reserve === 0 || (saved.own === undefined && saved.miniOwn === undefined)) return;
     const usable = this.#usableWith(reserve);
-    const whole = this.#usableWith(0);
+    const whole = this.#usableWith(0, 0);
     const from = win.target ?? win.rect;
     const base =
       saved.own ??
@@ -2769,7 +2806,7 @@ export class DeskEngine {
         if (!window.fresh) placed.push(win);
       });
       // (Saved with other room kept for the chat's place than is kept now: where each lands is where the room now leaves it.)
-      if (spread.reserve !== this.#reserve) this.#reroom(placed, spread.reserve, this.#reserve, false);
+      if (spread.reserve !== this.#reserve) this.#reroom(placed, { reserve: spread.reserve, band: this.#band }, { reserve: this.#reserve, band: this.#band }, false);
       if (entry !== null) this.#order = [...this.#order.filter((id) => id !== entry), entry];
       this.#stackShelf();
       this.#layShelf();
@@ -3745,7 +3782,7 @@ export class DeskEngine {
     const then = snapshot.desk;
     const now = this.#usable();
     const reach = this.#reach();
-    const whole = this.#usableWith(0);
+    const whole = this.#usableWith(0, 0);
     const same = then === undefined || sameRect(then.usable, now);
     // Its box with no room kept: as taken (the snapshot's), else read off the box as if the desk were whole then.
     const ownOf = (rect: Rect, own: Rect | undefined, picture: boolean): Rect | null => {
@@ -6079,6 +6116,8 @@ export class DeskEngine {
       clearCovers: this.#clearCovers,
       coverZ,
       floatCovered: this.#floatCovered,
+      reserve: this.#reserve,
+      band: this.#band,
       notchOver: this.#notchOver,
       shelf: this.#shelf,
       snapping: gesture?.snapping ?? false,
@@ -6439,7 +6478,7 @@ export class DeskEngine {
     if (this.#phase !== "open" || this.#tabbed) return;
     const usable = this.#usable();
     if (usable.w <= 1 || usable.h <= 1) return;
-    const whole = this.#usableWith(0);
+    const whole = this.#usableWith(0, 0);
     const windows: SavedDeskWindow[] = [];
     for (const tabId of this.#order) {
       const win = this.#wins.get(tabId)!;
@@ -6557,10 +6596,14 @@ export class DeskEngine {
     return this.#usableWith(this.#reserve);
   }
 
-  /** The desk's card short of `reserve` at its trailing side: #usable with that much room kept (0: the whole card). */
-  #usableWith(reserve: number): Rect {
+  /**
+   * The desk's card short of `reserve` at its trailing side and `band` at its
+   * foot (the pill's, as it stands unless said): #usable with that much room
+   * kept (0 and 0: the whole card).
+   */
+  #usableWith(reserve: number, band = this.#band): Rect {
     const { width, height } = this.#stageBox;
-    return { x: 0, y: 0, w: Math.max(1, width - reserve), h: Math.max(1, height) };
+    return { x: 0, y: 0, w: Math.max(1, width - reserve), h: Math.max(1, height - band) };
   }
 
   /**

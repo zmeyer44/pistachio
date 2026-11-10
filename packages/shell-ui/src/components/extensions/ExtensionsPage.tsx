@@ -127,7 +127,7 @@ export function ExtensionsPage({ tabId }: { tabId: string | null; active: boolea
                   <Row
                     key={entry.cwsId}
                     testId="extensions-curated-row"
-                    mark={<ExtensionMark extension={{ id: entry.cwsId, name: entry.name, iconUrl: null }} className="extension-row-mark" />}
+                    mark={<ExtensionMark extension={{ id: entry.cwsId, name: entry.name, iconUrl: entry.iconUrl }} className="extension-row-mark" />}
                     title={entry.name}
                     line={entry.description}
                     meta={<Verdict verdict={entry.verdict} />}

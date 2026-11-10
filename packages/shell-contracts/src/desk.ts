@@ -424,6 +424,18 @@ export interface DeskNotchFrame {
   /** The pills in the lane, first rightmost (as the shell lays them), and their row's width as the shell measured it (px). */
   pills: DeskNotchPill[];
   pillsWidth: number;
+  /**
+   * The nub's own box in the view: its side (px), the view's bottom-right
+   * corner its own. The view is that tall at least — taller while the pill's
+   * buttons stand above the nub (`buttons`), and wider by the lane.
+   */
+  nub: number;
+  /**
+   * The pill's buttons above the nub while the pill is out (DeskNub's
+   * NubPillClose and NubPillSide): drawn by the view over a live page, as the
+   * nub is, where the shell's own would be painted over. Each is up or not.
+   */
+  buttons: { close: boolean; side: boolean };
 }
 
 /** An extension's live pill as the notch view draws it in the nub's lane: its mark, its text, its actions. */
@@ -524,7 +536,14 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
     Array.isArray(frame.pills) &&
     frame.pills.length <= DESK_NOTCH_PILLS_MAX &&
     frame.pills.every(isDeskNotchPill) &&
-    width(frame.pillsWidth)
+    width(frame.pillsWidth) &&
+    finite(frame.nub) &&
+    (frame.nub as number) >= 1 &&
+    (frame.nub as number) <= 512 &&
+    typeof frame.buttons === "object" &&
+    frame.buttons !== null &&
+    typeof frame.buttons.close === "boolean" &&
+    typeof frame.buttons.side === "boolean"
   );
 }
 
@@ -735,12 +754,21 @@ export function isDeskPipInput(value: unknown): value is DeskPipInput {
  * The pointer onto the notch view's nub and off it, and a press on it: the
  * Bar's, as if on the Bar itself. Or a press on an action of an extension's
  * pill in the nub's lane (`status`): the shell's to send on as the pill's own.
+ * Or, the pill's buttons above the nub drawn by the view (DeskNotchFrame's
+ * `buttons`): one pressed (`bar`), and the pointer onto one or off them
+ * (`hover`), for the shell's own tooltip beside it.
  */
-export type DeskNotchInput = "enter" | "leave" | "press" | { status: { id: string; action: string } };
+export type DeskNotchInput = "enter" | "leave" | "press" | { status: { id: string; action: string } } | { bar: DeskNotchButton } | { hover: DeskNotchButton | null };
+
+export type DeskNotchButton = "close" | "side";
+
+const DESK_NOTCH_BUTTONS: readonly string[] = ["close", "side"];
 
 export function isDeskNotchInput(value: unknown): value is DeskNotchInput {
   if (value === "enter" || value === "leave" || value === "press") return true;
   if (typeof value !== "object" || value === null) return false;
+  if ("bar" in value) return Object.keys(value).length === 1 && typeof value.bar === "string" && DESK_NOTCH_BUTTONS.includes(value.bar);
+  if ("hover" in value) return Object.keys(value).length === 1 && (value.hover === null || (typeof value.hover === "string" && DESK_NOTCH_BUTTONS.includes(value.hover)));
   const status = (value as { status?: unknown }).status;
   if (typeof status !== "object" || status === null) return false;
   const { id, action } = status as { id?: unknown; action?: unknown };

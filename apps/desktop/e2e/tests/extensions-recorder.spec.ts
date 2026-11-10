@@ -10,6 +10,13 @@
  * mediabunny. A second export goes on with the editor's window closed under
  * it (the engine, the extension's worker, runs it): the file lands all the
  * same, a notice says *Exported*, and the editor opened again shows it.
+ * Mid-recording the spec opens a second page beside the first (the window
+ * in use from then on): the recording follows it — the pill names it, the
+ * frames keep coming, the log says where the person went, and the clip's
+ * last picture is the second page's (read back in the editor from the
+ * recording's own file). Last, the editor's Back: the page closes itself,
+ * its tab goes with it and the panel comes up — main lives on (until
+ * 2026-11-03 a listed tab with no page behind it took main down).
  *
  * The editor is an extension page in a native view: Playwright does not
  * attach to it, so the spec drives its sheet from main through the view's
@@ -46,7 +53,7 @@ interface Mediabunny {
 }
 const mediabunny = (): Promise<Mediabunny> => import(/* @vite-ignore */ "media" + "bunny") as Promise<Mediabunny>;
 import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
-import { launchDesk, liveViews, reachBar, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
+import { createTab, launchDesk, liveViews, reachBar, screenshots, selectTab, settled, snapshot, windowSelector } from "./desk-harness";
 import { noticePage } from "./windows";
 
 const capture = screenshots("extensions-recorder", ["notch"]);
@@ -65,6 +72,24 @@ const PAGE = `<!doctype html>
       (function paint() {
         c.width = innerWidth; c.height = innerHeight; x.fillStyle = "#f6f6f9"; x.fillRect(0, 0, c.width, c.height);
         x.fillStyle = "#e5484d"; x.fillRect((n * 4) % innerWidth, innerHeight * 0.6, 60, 60); n++;
+        requestAnimationFrame(paint);
+      })();
+    </script>
+  </body>
+</html>`;
+
+/** The page the person moves to: blue all over, a light square moving so it keeps painting. */
+const PAGE_TWO = `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Second page</title>
+    <style>body{margin:0;background:#2563eb;color:#fff;font:16px system-ui}canvas{position:fixed;inset:0;width:100vw;height:100vh;z-index:-1}</style></head>
+  <body>
+    <canvas id="c"></canvas>
+    <script>
+      const c = document.getElementById("c"), x = c.getContext("2d"); let n = 0;
+      (function paint() {
+        c.width = innerWidth; c.height = innerHeight; x.fillStyle = "#2563eb"; x.fillRect(0, 0, c.width, c.height);
+        x.fillStyle = "#dbeafe"; x.fillRect((n * 4) % innerWidth, innerHeight * 0.3, 40, 40); n++;
         requestAnimationFrame(paint);
       })();
     </script>
@@ -174,6 +199,7 @@ test.describe.serial("extensions: the Recorder", { tag: ["@extensions"] }, () =>
   let userData: string;
   let server: Server;
   let pageUrl: string;
+  let twoUrl: string;
   let tabId: string;
   let shots: string;
   let recordingId: string;
@@ -181,9 +207,9 @@ test.describe.serial("extensions: the Recorder", { tag: ["@extensions"] }, () =>
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
-    server = createServer((_request, response) => {
+    server = createServer((request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(PAGE);
+      response.end(request.url === "/two" ? PAGE_TWO : PAGE);
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -192,6 +218,7 @@ test.describe.serial("extensions: the Recorder", { tag: ["@extensions"] }, () =>
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("the page's server did not bind");
     pageUrl = `http://localhost:${String(address.port)}/`;
+    twoUrl = `${pageUrl}two`;
     shots = await mkdtemp(join(tmpdir(), "pistachio-recorder-shots-"));
     ({ app, shell, userData } = await launchDesk({ name: "extensions-recorder", homeUrl: pageUrl, env: { PISTACHIO_SCREENSHOT_DIR: shots } }));
     await settled(shell, app);
@@ -272,6 +299,16 @@ test.describe.serial("extensions: the Recorder", { tag: ["@extensions"] }, () =>
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     await capture(app, shell, "02b-pressed.png");
 
+    // The person moves on: a second page, opened beside the first, is the window in use from here. The recording
+    // follows it — the pill names it — and goes on for a while on it.
+    await createTab(shell, twoUrl);
+    await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => tab.url === twoUrl)?.id ?? null).not.toBeNull();
+    const twoTab = (await snapshot(shell)).tabs.find((tab) => tab.url === twoUrl)!.id;
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).toBe(twoTab);
+    await expect(pill).toContainText("Second page", { timeout: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    await capture(app, shell, "02c-followed.png");
+
     // ■ in the pill stops it: pressed where the pill is drawn, over the page — main's notch view has it.
     const at = await notchView(app);
     expect(at?.stop).not.toBeNull();
@@ -299,18 +336,57 @@ test.describe.serial("extensions: the Recorder", { tag: ["@extensions"] }, () =>
     // The page and the view's box as they stood when the recording began (said during the countdown), at t = 0.
     expect(lines.find((line) => line["k"] === "nav")).toMatchObject({ t: 0, url: pageUrl });
     expect(lines.find((line) => line["k"] === "box")).toMatchObject({ t: 0 });
-    // Its view uncovered throughout: never its still under the pill (the input taps say `visible` with each box).
+    // Then the second page, where the recording followed the person: its input's opening `nav`, and frames after it
+    // (its own: the first page's feed was let go).
+    const navs = lines.filter((line) => line["k"] === "nav") as Array<{ t: number; url: string; title: string }>;
+    const followed = navs.find((nav) => nav.url === twoUrl);
+    console.log(`[recorder navs] ${JSON.stringify(navs)}`);
+    expect(followed).toBeDefined();
+    expect(followed!.t).toBeGreaterThan(1000);
+    expect(lines.filter((line) => line["k"] === "frame" && (line["t"] as number) > followed!.t + 500).length).toBeGreaterThan(20);
+    // The first page's view uncovered while it was the one recorded: never its still under the pill (the input taps
+    // say `visible` with each box).
     const boxes = lines.filter((line) => line["k"] === "box") as Array<{ t: number; visible: boolean }>;
     console.log(`[recorder boxes] ${JSON.stringify(boxes)}`);
-    expect(boxes.every((box) => box.visible)).toBe(true);
+    expect(boxes.filter((box) => box.t < followed!.t).every((box) => box.visible)).toBe(true);
     expect(project.zooms.length).toBeGreaterThanOrEqual(1);
 
     // The editor, a desk window on the recording.
     editorUrl = `pistachio-ext://${RECORDER}/editor.html?rec=${recordingId}`;
     await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.url === editorUrl), { timeout: 15_000 }).toBe(true);
+    // Its tab's mark is the Recorder's own icon, whatever the editor's page declares (docs/extensions.md §4).
+    expect((await snapshot(shell)).tabs.find((tab) => tab.url === editorUrl)?.faviconUrl).toBe(`pistachio-ext://${RECORDER}/icon.svg`);
     await expect.poll(() => viewEval<boolean>(app, editorUrl, `document.querySelector(".timeline-canvas") !== null`).catch(() => false), { timeout: 20_000 }).toBe(true);
     await settled(shell, app);
     await capture(app, shell, "03-editor.png");
+
+    // The file itself, read in the editor's page (a <video> on the recording's own address, which seeks): its picture
+    // half a second in is the first page's (near white), at the end the second's (blue) — one clip of both.
+    const colours = await viewEval<{ duration: number; start: number[]; end: number[] }>(
+      app,
+      editorUrl,
+      `(async () => {
+        const video = document.createElement("video");
+        video.muted = true;
+        video.src = pistachio.files.data.url("recordings/${recordingId}/screen.mp4");
+        await new Promise((ok, no) => { video.onloadedmetadata = ok; video.onerror = () => no(new Error("the recording did not load")); });
+        const canvas = document.createElement("canvas");
+        canvas.width = 4; canvas.height = 4;
+        const ctx = canvas.getContext("2d");
+        const at = async (t) => {
+          video.currentTime = t;
+          await new Promise((ok) => { video.onseeked = ok; });
+          ctx.drawImage(video, 0, 0, 4, 4);
+          const d = ctx.getImageData(1, 1, 1, 1).data;
+          return [d[0], d[1], d[2]];
+        };
+        return { duration: video.duration, start: await at(0.5), end: await at(Math.max(0, video.duration - 0.3)) };
+      })()`,
+    );
+    console.log(`[recorder colours] ${JSON.stringify(colours)}`);
+    expect(colours.duration).toBeGreaterThan(6);
+    expect(Math.min(...colours.start)).toBeGreaterThan(180);
+    expect(colours.end[2]! - colours.end[0]!).toBeGreaterThan(80);
   });
 
   test("the editor exports an MP4 at 1080p30 into the screenshots folder", async () => {
@@ -403,5 +479,20 @@ test.describe.serial("extensions: the Recorder", { tag: ["@extensions"] }, () =>
     await viewEval(app, editorUrl, `document.querySelector(".finished-close").click(), true`);
     await expect.poll(async () => (await readdir(exports).catch(() => [] as string[])).length, { timeout: 10_000 }).toBe(0);
     expect(await exists(join(shots, name))).toBe(true);
+  });
+
+  test("Back in the editor closes its window — the page closes itself — and brings the panel up; the app lives on", async () => {
+    const editorTab = (await snapshot(shell)).tabs.find((tab) => tab.url === editorUrl)!.id;
+    await viewEval(app, editorUrl, `document.querySelector('.titlebar .icon-button[title="Back to recordings"]').click(), true`);
+    await expect.poll(async () => (await snapshot(shell)).tabs.some((tab) => tab.id === editorTab), { timeout: 10_000 }).toBe(false);
+    await expect(shell.getByTestId("extension-panel-card")).toBeVisible({ timeout: 10_000 });
+    // Main is sound after it: the window's state publishes on, and a tab opens and closes.
+    const opened = await createTab(shell, pageUrl);
+    void opened;
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => tab.url === pageUrl).length).toBe(2);
+    const extra = (await snapshot(shell)).tabs.filter((tab) => tab.url === pageUrl).at(-1)!.id;
+    await shell.evaluate((id) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(id), extra);
+    await expect.poll(async () => (await snapshot(shell)).tabs.filter((tab) => tab.url === pageUrl).length).toBe(1);
+    await capture(app, shell, "06-back.png");
   });
 });

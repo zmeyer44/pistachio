@@ -115,7 +115,6 @@ function rig(options: { downloads?: Record<string, { path: string; manifest: Chr
     actions: vi.fn(async () => [...loaded.keys()].map((id) => ({ extensionId: id, title: "Mini Action", badge: "3", badgeColor: null, hasPopup: true, iconUrl: `crx://extension-icon/${id}/32/1?partition=p` }))),
     activate: vi.fn(),
     crxResponse: vi.fn(() => new Response(null, { status: 404 })),
-    iconUrl: vi.fn((_session: unknown, id: string) => `crx://extension-icon/${id}/32/1`),
     notificationsToNotices: vi.fn(() => () => undefined),
   }) as unknown as Rig["compat"];
   const downloads = options.downloads ?? {};
@@ -292,7 +291,7 @@ describe("Chrome extensions in the host", () => {
     expect(await host.install(STORE_ID)).toEqual({ type: "verdict", verdict: { kind: "works" } });
     const pending = host.pendingInstall();
     expect(pending).toMatchObject({ cwsId: STORE_ID, name: "Mini Action", description: "A test extension.", verdict: { kind: "works" } });
-    expect(pending?.iconUrl).toMatch(/^data:image\/png;base64,/);
+    expect(pending?.iconUrl).toMatch(new RegExp(`^crx://extension-logo/${STORE_ID}/64\\?t=\\d+$`));
     expect(pending?.sheet.can.map((line) => line.text)).toContain("Read and change pages on 127.0.0.1");
     expect(registry.get(STORE_ID)).toBeNull();
 
@@ -314,10 +313,40 @@ describe("Chrome extensions in the host", () => {
     expect(compat.loadExtension).toHaveBeenCalledWith(ses, path);
     expect(store.uninstallById).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(host.info(record, "work")).toMatchObject({ status: "running", badge: "3", hasPanel: true, hasAction: true }));
-    expect(host.info(record, "work").iconUrl).toMatch(/^crx:\/\/extension-icon\//);
-    // In another Profile it is off, and shows the manifest's own icon.
+    expect(host.info(record, "work").iconUrl).toMatch(/^crx:\/\/extension-logo\//);
+    // In another Profile it is off, with the same logo.
     expect(host.info(record, "home")).toMatchObject({ status: "off", enabledHere: false });
-    expect(host.info(record, "home").iconUrl).toMatch(/^data:/);
+    expect(host.info(record, "home").iconUrl).toMatch(/^crx:\/\/extension-logo\//);
+    // An icon `setIcon` set is the library's, for as long as it is set.
+    const modified = `crx://extension-icon/${STORE_ID}/32/1?partition=p&t=5`;
+    vi.mocked(compat.actions).mockResolvedValueOnce([{ extensionId: STORE_ID, title: "Mini Action", badge: null, badgeColor: null, hasPopup: true, iconModified: true, iconUrl: modified }]);
+    compat.emit("actions-changed", "work");
+    await vi.waitFor(() => expect(host.info(record, "work").iconUrl).toBe(modified));
+  });
+
+  it("serves a logo from a record's folder or the download on the sheet (crx://extension-logo), and 404 for anything else", async () => {
+    const SECOND = "ponmlkjihgfedcbaponmlkjihgfedcba";
+    const noIcon: ChromeManifest = { ...MINI, name: "No Icon", icons: undefined };
+    const path = folderWith(MINI);
+    const { host } = rig({ downloads: { [STORE_ID]: { path, manifest: MINI, version: "1.0.0" }, [SECOND]: { path: folderWith(noIcon), manifest: noIcon, version: "1.0.0" } } });
+    host.start();
+    // Nothing of it yet: no record, no download.
+    expect(host.crxResponse(new Request(`crx://extension-logo/${STORE_ID}/64`)).status).toBe(404);
+    await host.install(STORE_ID);
+    const pending = host.pendingInstall();
+    expect(pending?.iconUrl).toMatch(new RegExp(`^crx://extension-logo/${STORE_ID}/64\\?t=\\d+$`));
+    const response = host.crxResponse(new Request(pending!.iconUrl!));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG_1PX);
+    expect(host.crxResponse(new Request(pending!.iconUrl!, { method: "POST" })).status).toBe(405);
+    // The library's own addresses go to the library — nothing while it is not loaded.
+    expect(host.crxResponse(new Request(`crx://extension-icon/${STORE_ID}/32/1`)).status).toBe(404);
+    // A manifest naming no icon has no address (a monogram), and the download let go answers nothing.
+    await host.install(SECOND);
+    expect(host.pendingInstall()?.iconUrl).toBeNull();
+    expect(host.crxResponse(new Request(`crx://extension-logo/${SECOND}/64`)).status).toBe(404);
+    expect(host.crxResponse(new Request(`crx://extension-logo/${STORE_ID}/64`)).status).toBe(404);
   });
 
   it("refuses a blocker with Shields' sentence and removes its download; Not now removes one waiting", async () => {

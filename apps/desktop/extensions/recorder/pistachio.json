@@ -3,7 +3,7 @@
   "id": "com.pistachio.recorder",
   "name": "Recorder",
   "version": "1.0.0",
-  "description": "Record a window, then polish it: zoom that follows your clicks, a smooth cursor, backgrounds, MP4 or GIF.",
+  "description": "Record a window and the pages you move to, then polish it: zoom that follows your clicks, a smooth cursor, backgrounds, MP4 or GIF.",
   "icon": "icon.svg",
   "permissions": ["capture:tab", "input:events", "media:microphone", "media:camera", "desk", "tabs:read", "files:data", "notifications", "clipboard:write", "notes:write", "power"],
   "worker": { "type": "web", "main": "worker.js" },

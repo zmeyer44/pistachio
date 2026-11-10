@@ -93,7 +93,7 @@ import { ChromeHost } from "./chrome/host";
 import { checkUpdates, installById, readInstalledManifest, uninstallById } from "./chrome/store";
 import { DataFiles } from "./data-files";
 import { Ledger } from "./ledger";
-import { bundledExtensionsDir, listExtensionFolders, loadExtensionFolder, type LoadFailure, type LoadedExtension } from "./loader";
+import { bundledExtensionsDir, extensionIconUrl, listExtensionFolders, loadExtensionFolder, type LoadFailure, type LoadedExtension } from "./loader";
 import { dispatch, settingValues, type CallContext, type ExtensionNotesHost, type ExtensionRuntime } from "./methods";
 import { extensionDataDir } from "./paths";
 import { serveExtensionRequest, serveIconRequest, type ExtensionFolders } from "./protocol";
@@ -543,9 +543,10 @@ export class ExtensionService {
 
   /** BrowserController's `extensionPages` hook: an extension page's partition and preload, and its view once made. */
   readonly pageHooks = {
-    view: (extensionId: string): { partition: string; preload: string } => {
+    view: (extensionId: string): { partition: string; preload: string; iconUrl: string | null } => {
       this.#prepareSession(extensionId);
-      return { partition: extensionPartition(extensionId), preload: this.#options.preload };
+      const icon = this.#iconFor(extensionId);
+      return { partition: extensionPartition(extensionId), preload: this.#options.preload, iconUrl: icon === null ? null : extensionIconUrl({ id: extensionId, icon: icon.icon }) };
     },
     attach: (_tabId: string, contents: WebContents, extensionId: string): void => {
       this.#views.register(contents, extensionId, "page");

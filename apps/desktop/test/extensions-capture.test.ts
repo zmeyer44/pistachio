@@ -44,6 +44,23 @@ describe("capture.arm and capture.hold, input.subscribe: the person's grant", ()
     expect(await dispatch("capture.arm", { ...ARM, tabId: "t3" }, h.scope, h.ctx("worker"), h.runtime)).toMatchObject({ ok: true });
   });
 
+  it("follows the person: while it records anything, the tab in front is its to record too — not one behind", async () => {
+    // (The harness's browser says the first tab is the one in front.)
+    const tabs = [tabOf("front", "https://github.com/"), tabOf("recorded", "https://linear.app/"), tabOf("behind", "https://example.com/")];
+    const h = granted(tabs);
+    h.scope.grantTab("recorded");
+    // Nothing recorded yet: the tab in front is no more the extension's than any other.
+    expect(await dispatch("capture.arm", { ...ARM, tabId: "front" }, h.scope, h.ctx("worker"), h.runtime)).toMatchObject({ ok: false, code: "PERMISSION_DENIED", message: expect.stringContaining("in front") });
+    h.scope.noteLive(["recorded"]);
+    expect(await dispatch("capture.hold", { tabId: "front" }, h.scope, h.ctx("worker"), h.runtime)).toEqual({ ok: true, v: { holdId: 11 } });
+    expect(await dispatch("input.subscribe", { tabId: "front", kinds: null }, h.scope, h.ctx("worker"), h.runtime)).toEqual({ ok: true, v: { subscriptionId: 21 } });
+    expect(await dispatch("capture.arm", { ...ARM, tabId: "front" }, h.scope, h.ctx("worker"), h.runtime)).toMatchObject({ ok: true });
+    expect(await dispatch("capture.arm", { ...ARM, tabId: "behind" }, h.scope, h.ctx("worker"), h.runtime)).toMatchObject({ ok: false, code: "PERMISSION_DENIED" });
+    // A shell page in front is never recorded, recording or not.
+    tabs[0]!.url = "pistachio://home/";
+    expect(await dispatch("capture.arm", { ...ARM, tabId: "front" }, h.scope, h.ctx("worker"), h.runtime)).toMatchObject({ ok: false, code: "PERMISSION_DENIED", message: expect.stringContaining("web pages only") });
+  });
+
   it("lapses when the tab goes to another site", () => {
     const tabs = [tabOf("t1", "https://linear.app/a")];
     const h = granted(tabs);

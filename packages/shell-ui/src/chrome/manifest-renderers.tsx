@@ -30,12 +30,16 @@ import { useChromeTabs } from "./tabs";
 
 /* ------------------------------ navigation ------------------------------ */
 
-/** The sidebar toolbar's back / forward / reload. */
+/**
+ * The sidebar toolbar's back / forward / reload. Back and Forward are there
+ * only while the tab can go that way: the row is Reload alone on a fresh tab.
+ * (Dimmed in place until 2026-11-09.)
+ */
 function NavigationCluster() {
   return (
     <>
-      <ActionButton id="back" />
-      <ActionButton id="forward" />
+      <ActionButton id="back" hideDisabled />
+      <ActionButton id="forward" hideDisabled />
       <ActionButton id="reload" />
     </>
   );
@@ -131,7 +135,7 @@ function ScreenShareFeature() {
 function SidebarPinFeature() {
   if (deskAvailable())
     return (
-      <span className="ml-auto flex items-center gap-0.5">
+      <span className="ml-auto flex items-center gap-1">
         <DeskMoreButton />
         <DeskRailToggle />
       </span>

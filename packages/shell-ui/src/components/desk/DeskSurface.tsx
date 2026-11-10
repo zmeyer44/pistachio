@@ -1063,7 +1063,7 @@ export default function DeskSurface() {
         {engine === null || view === null || shownDeskGroup === null ? null : (
           <DeskBar group={shownDeskGroup} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} context={context} />
         )}
-        {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} desk={glanceDesk} />}
+        {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} desk={glanceDesk} reserve={view?.reserve ?? 0} />}
       </div>
     </section>
   );

@@ -4161,19 +4161,27 @@ body:not([data-chrome-view])::after {
 }
 .space-card-shoulder {
   display: flex;
-  height: 26px;
+  /* The pocket's strip: from the card's top (SIDEBAR_CARD_INSET, 8) to the sheet's edge left of the shoulder
+     (SpaceColumn's SHOULDER_Y, 36). Its buttons keep one 4px gap all round — from the card's edge above, the pocket's
+     line below, the pocket's edge beside (SpaceColumn's SHOULDER_X), the trailing edge, and each other — so they are
+     20px boxes centred in the strip, a pixel under the traffic lights' centre line (TRAFFIC_LIGHTS_CENTER_Y, 21): their
+     14px icons' tops are level with the 12px lights' tops. (Until 2026-11-09 the row was 26px on the lights' line and
+     the buttons the chrome's 24px, a pixel under the card's edge and 6–8px from the edges beside them.) */
+  height: 28px;
   flex-shrink: 0;
   align-items: center;
-  gap: 2px;
-  /* (Past the shoulder's edge, SpaceColumn's SHOULDER_X, by the same 8px.) */
-  padding: 0 6px 0 36px;
+  gap: 4px;
+  padding: 0 4px 0 32px;
+}
+.space-card-shoulder button {
+  width: 20px;
+  height: 20px;
 }
 .space-card-address {
   display: flex;
   flex-shrink: 0;
-  /* As far under the sheet's edge left of the shoulder (SpaceColumn's SHOULDER_Y, y 36: 2px under the shoulder's row)
-     as over what comes under it: 8px each. */
-  padding: 10px 10px 8px;
+  /* As far under the pocket's line, where the shoulder's row ends, as over what comes under it: 8px each. */
+  padding: 8px 10px;
 }
 .space-card-views {
   position: relative;
@@ -6502,6 +6510,23 @@ body:not([data-chrome-view])::after {
 }
 .desk-nub-pill-side[data-shown] {
   translate: 0 0;
+}
+/* Over a live page main's notch view draws the button (NotchApp): the shell's stands in place unseen, for its tooltip's
+   box (visibility, not opacity: no fade either way as the view takes it or gives it back). */
+.desk-nub-pill-close[data-veiled] {
+  visibility: hidden;
+}
+/* The pill's buttons in the notch view, in the nub's box at the view's bottom-right corner, over the page (the view's
+   own ground is clipped to the nub: nothing is painted under them). */
+.desk-notch-view-buttons {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.desk-notch-view-buttons > .desk-nub-pill-close[data-shown] {
+  pointer-events: auto;
 }
 .desk-nub-pill-close:hover {
   background: color-mix(in oklch, var(--color-background-100), var(--color-gray-1000) 6%);

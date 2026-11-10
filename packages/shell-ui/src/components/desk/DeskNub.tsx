@@ -34,34 +34,72 @@ export interface NubTip {
 }
 
 /**
+ * One of the pill's buttons above the nub (NubPillClose, NubPillSide): the
+ * shell's own, with its tooltip (`tip`) — or the notch view's copy of it over
+ * a live page (NotchApp), with none: the pointer onto it is said instead
+ * (`onHover`), and the shell opens its own button's tooltip, where it stands
+ * `veiled` under the view's (in place, unseen, so the tooltip has its box).
+ */
+interface NubPillButton {
+  ref?: React.Ref<HTMLButtonElement>;
+  shown: boolean;
+  veiled?: boolean;
+  tip?: NubTip;
+  onHover?: (on: boolean) => void;
+}
+
+function NubPillButton({
+  ref,
+  shown,
+  veiled = false,
+  tip,
+  onHover,
+  at,
+  className,
+  testId,
+  label,
+  text,
+  onPress,
+  children,
+}: NubPillButton & { at: { x: number; y: number }; className: string; testId: string; label: string; text: string; onPress: () => void; children: React.ReactNode }) {
+  const props = {
+    ref,
+    type: "button" as const,
+    className,
+    "data-testid": testId,
+    "data-shown": shown ? "" : undefined,
+    "data-veiled": veiled ? "" : undefined,
+    "aria-label": label,
+    inert: !shown,
+    style: { left: NUB_BOX.w + at.x - NUB_CLOSE_R, top: NUB_BOX.h + at.y - NUB_CLOSE_R, width: NUB_CLOSE_R * 2, height: NUB_CLOSE_R * 2 },
+    // A press leaves the keyboard where it was: the close takes it from the field itself.
+    onMouseDown: (event: React.MouseEvent) => event.preventDefault(),
+    onClick: onPress,
+    onPointerEnter: onHover === undefined ? undefined : () => onHover(true),
+    onPointerLeave: onHover === undefined ? undefined : () => onHover(false),
+  };
+  if (tip === undefined) return <button {...props}>{children}</button>;
+  return (
+    <Tooltip open={tip.open} onOpenChange={tip.onOpenChange}>
+      <TooltipTrigger {...props}>{children}</TooltipTrigger>
+      <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={tip.shown ? "" : undefined} className={tip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
+        {text}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
  * The pill's close, above the nub while the pill is out: it puts the pill
  * away whatever is in it (what was typed is kept for when it comes out
  * again), which a press elsewhere does not while it holds anything. It comes
  * up out of the nub as the pill comes out, and goes back into it.
  */
-export function NubPillClose({ ref, shown, tip, onClose }: { ref: React.Ref<HTMLButtonElement>; shown: boolean; tip: NubTip; onClose: () => void }) {
-  const at = nubClose();
+export function NubPillClose({ onClose, ...button }: NubPillButton & { onClose: () => void }) {
   return (
-    <Tooltip open={tip.open} onOpenChange={tip.onOpenChange}>
-      <TooltipTrigger
-        ref={ref}
-        type="button"
-        className="desk-nub-pill-close"
-        data-testid="desk-bar-close"
-        data-shown={shown ? "" : undefined}
-        aria-label="Put the field away"
-        inert={!shown}
-        style={{ left: NUB_BOX.w + at.x - NUB_CLOSE_R, top: NUB_BOX.h + at.y - NUB_CLOSE_R, width: NUB_CLOSE_R * 2, height: NUB_CLOSE_R * 2 }}
-        // A press leaves the keyboard where it was: the close takes it from the field itself.
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={onClose}
-      >
-        <X aria-hidden="true" />
-      </TooltipTrigger>
-      <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={tip.shown ? "" : undefined} className={tip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
-        Close
-      </TooltipContent>
-    </Tooltip>
+    <NubPillButton {...button} at={nubClose()} className="desk-nub-pill-close" testId="desk-bar-close" label="Put the field away" text="Close" onPress={onClose}>
+      <X aria-hidden="true" />
+    </NubPillButton>
   );
 }
 
@@ -73,28 +111,11 @@ export function NubPillClose({ ref, shown, tip, onClose }: { ref: React.Ref<HTML
  * comes up out of the nub with the close, a step further, and goes back
  * into it; floating or at the side already, it is not offered.
  */
-export function NubPillSide({ ref, shown, tip, onSide }: { ref: React.Ref<HTMLButtonElement>; shown: boolean; tip: NubTip; onSide: () => void }) {
-  const at = nubSide();
+export function NubPillSide({ onSide, ...button }: NubPillButton & { onSide: () => void }) {
   return (
-    <Tooltip open={tip.open} onOpenChange={tip.onOpenChange}>
-      <TooltipTrigger
-        ref={ref}
-        type="button"
-        className="desk-nub-pill-close desk-nub-pill-side"
-        data-testid="desk-answer-side"
-        data-shown={shown ? "" : undefined}
-        aria-label="Put the chat at the side"
-        inert={!shown}
-        style={{ left: NUB_BOX.w + at.x - NUB_CLOSE_R, top: NUB_BOX.h + at.y - NUB_CLOSE_R, width: NUB_CLOSE_R * 2, height: NUB_CLOSE_R * 2 }}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={onSide}
-      >
-        <PanelRight aria-hidden="true" />
-      </TooltipTrigger>
-      <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={tip.shown ? "" : undefined} className={tip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
-        Chat at the side
-      </TooltipContent>
-    </Tooltip>
+    <NubPillButton {...button} at={nubSide()} className="desk-nub-pill-close desk-nub-pill-side" testId="desk-answer-side" label="Put the chat at the side" text="Chat at the side" onPress={onSide}>
+      <PanelRight aria-hidden="true" />
+    </NubPillButton>
   );
 }
 

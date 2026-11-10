@@ -103,6 +103,10 @@ test.describe.serial("extensions: the Ledge, the page, a folder of one's own", {
     await expect(shell.getByTestId("extensions-search")).toHaveAttribute("placeholder", "Search extensions, or describe one to make");
     await expect(page.getByTestId("extensions-installed")).toBeVisible();
     await expect(page.getByTestId("extensions-yours")).toBeVisible();
+    // Works in Pistachio: each curated extension with its own logo, a file of the shell's.
+    const darkReader = page.getByTestId("extensions-curated-row").filter({ hasText: "Dark Reader" }).locator("img.extension-mark");
+    await expect(darkReader).toHaveAttribute("src", "/extension-icons/eimadpbcbfnmbkopoojfekhnkhdbieeh.png");
+    await expect.poll(() => darkReader.evaluate((el: HTMLImageElement) => (el.complete ? el.naturalWidth : 0))).toBeGreaterThan(0);
     // Something typed: the two ways on, to make it or to find it in the store.
     await shell.getByTestId("extensions-search").fill("tab counter");
     await expect(page.getByTestId("extensions-make")).toHaveText("Make “tab counter” with Pistachio");
