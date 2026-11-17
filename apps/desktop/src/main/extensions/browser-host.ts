@@ -44,6 +44,7 @@ export function extensionBrowserHost(browser: BrowserController, window: Browser
     activeTabId: () => browser.activeTab()?.id ?? null,
     spaces: (profileId) => [...browser.tabGroups(profileId), ...browser.looseTabGroups(profileId), ...browser.anchorTabGroups(profileId)],
     currentSpaceId: (profileId) => browser.currentGroupId(profileId),
+    personsSpace: (spaceId) => browser.isPersonsSpace(spaceId),
     createTab: async (url, options) => {
       if (options.space === "new") {
         // A space of its own: a Home tab, grown into a space (ownSpace) — as Make it a space of its own does.

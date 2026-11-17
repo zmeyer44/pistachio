@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import { ALL_URLS, CAPABILITIES } from "./capabilities.js";
+import { MAX_TRIGGERS, triggerIssues, triggerSchema } from "./triggers.js";
 
 export const EXTENSION_ID_PATTERN = /^[a-z0-9]+(\.[a-z0-9-]+){1,4}$/;
 export const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
@@ -40,7 +41,11 @@ export const toolSchema = z.object({
   effect: z.enum(["read", "write"]),
 });
 
-export const CONTEXT_MENU_CONTEXTS = ["page", "selection", "link", "image", "window"] as const;
+/**
+ * Where a declared item is offered: on a page (by what is under the pointer), on a desk window's ⋯ (`window`), in a
+ * tab's own menu — its row in the sidebar (`tab`) — or in a space's own menu (`space`: docs/primitives.md §4).
+ */
+export const CONTEXT_MENU_CONTEXTS = ["page", "selection", "link", "image", "window", "tab", "space"] as const;
 
 export const contextMenuSchema = z.object({
   id: z.string().regex(COMMAND_NAME_PATTERN),
@@ -88,6 +93,14 @@ export const manifestSchema = z
     contextMenus: z.array(contextMenuSchema).max(20).optional(),
     commands: z.array(keyCommandSchema).max(10).optional(),
     settings: z.array(settingSchema).max(30).optional(),
+    /**
+     * The places of the shell it fills with rows (./sites.ts; docs/primitives.md §4.5): a strip beside the Bar
+     * (`pistachio.ui.band`), a section of the sidebar (`pistachio.ui.sidebar`). Declared, so the sheet says them.
+     */
+    band: z.literal(true).optional(),
+    sidebar: z.literal(true).optional(),
+    /** When it runs by itself (./triggers.ts; docs/primitives.md §3): windows of the week and recurring instants main keeps the clock for. */
+    triggers: z.array(triggerSchema).max(MAX_TRIGGERS).optional(),
   })
   .strict()
   .superRefine((manifest, ctx) => {
@@ -111,6 +124,10 @@ export const manifestSchema = z
     if (manifest.panel !== undefined && manifest.action === true) {
       ctx.addIssue({ code: "custom", path: ["action"], message: "an extension with a panel has no separate action: the icon opens the panel" });
     }
+    for (const issue of triggerIssues(manifest.triggers ?? [])) ctx.addIssue({ code: "custom", path: ["triggers", issue.index, ...issue.path], message: issue.message });
+    if ((manifest.triggers?.length ?? 0) > 0 && manifest.worker === undefined) {
+      ctx.addIssue({ code: "custom", path: ["worker"], message: 'a trigger wakes the worker: add "worker": { "type": "web", "main": "worker.js" } and pistachio.triggers.on(id, …) in it' });
+    }
     const keys = new Set<string>();
     for (const [index, setting] of (manifest.settings ?? []).entries()) {
       if (keys.has(setting.key)) ctx.addIssue({ code: "custom", path: ["settings", index, "key"], message: `"${setting.key}" is declared twice` });
@@ -124,6 +141,12 @@ export type ToolDecl = z.infer<typeof toolSchema>;
 export type ContextMenuDecl = z.infer<typeof contextMenuSchema>;
 export type KeyCommandDecl = z.infer<typeof keyCommandSchema>;
 export type SettingDecl = z.infer<typeof settingSchema>;
+export type { TriggerDecl } from "./triggers.js";
+
+/** The places a manifest declares it fills with rows (./sites.ts), in the order the sheet says them. */
+export function manifestSites(manifest: Pick<PistachioManifest, "band" | "sidebar">): ("band" | "sidebar")[] {
+  return [...(manifest.band === true ? (["band"] as const) : []), ...(manifest.sidebar === true ? (["sidebar"] as const) : [])];
+}
 
 export interface ManifestIssue {
   path: string;

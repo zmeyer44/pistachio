@@ -6,7 +6,7 @@
  * reaches an extension's code but through main.
  */
 
-import { EXTENSIONS_PAGE_URL, type ExtensionInfo } from "@pistachio/shell-contracts/extensions";
+import { EXTENSIONS_PAGE_URL, type ExtensionInfo, type ExtensionSite } from "@pistachio/shell-contracts/extensions";
 import { extensionDraftName } from "../desk/slash-commands";
 import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
 import { newTerminalId, terminalUrl } from "@pistachio/shell-contracts/terminal";
@@ -90,6 +90,42 @@ export function reloadExtension(id: string): void {
 
 export function revealExtensionFolder(id: string): void {
   void extensionsRequest({ type: "revealFolder", id });
+}
+
+/**
+ * Pause an extension's triggers, or let them run again (docs/primitives.md §3): paused, it still runs when the
+ * person runs it — a command, its icon — and never by itself. A refusal is said in a notice (extensionsRequest).
+ */
+export function setTriggersPaused(id: string, paused: boolean): void {
+  void extensionsRequest({ type: "pauseTriggers", id, paused });
+}
+
+/** *Pause all* and its *Resume*: no extension runs by itself until it is lifted. */
+export function setAllTriggersPaused(paused: boolean): void {
+  void extensionsRequest({ type: "pauseTriggers", id: null, paused });
+}
+
+/** Undo one thing an extension did with nobody there (a journal entry): the space goes back where it was. Whether main did. */
+export async function undoJournalEntry(entry: string): Promise<boolean> {
+  return (await extensionsRequest({ type: "undoJournal", entry })) !== null;
+}
+
+/**
+ * Take off something an extension has the shell showing (docs/primitives.md §4): its mark on a space, or its theme
+ * there — `spaceId` null for the one it set for every space. A refusal is said in a notice (extensionsRequest).
+ * Whether main did.
+ */
+export async function removeShown(id: string, what: "mark" | "theme" | "tabMarks" | ExtensionSite, spaceId: string | null): Promise<boolean> {
+  return (await extensionsRequest({ type: "removeShown", id, what, spaceId })) !== null;
+}
+
+/**
+ * A row an extension has a place showing was pressed (`button` null), or one of its buttons (docs/primitives.md
+ * §4.5): main wakes the extension with it, as the person's act. `scope` is the space the rows were set for (null:
+ * every space). A failure is said in a notice.
+ */
+export function pressRow(id: string, site: ExtensionSite, scope: string | null, row: string | null, button: string | null): void {
+  void extensionsRequest({ type: "press", id, site, scope, row, button });
 }
 
 /** Its logs, newest last; null when main refused (said already). */

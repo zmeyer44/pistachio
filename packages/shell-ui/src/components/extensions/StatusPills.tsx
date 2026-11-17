@@ -1,6 +1,9 @@
 import { useLayoutEffect, useMemo, useRef, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { DESK_NOTCH_PILL_ACTIONS_MAX, DESK_NOTCH_PILLS_MAX, type DeskNotchPill } from "@pistachio/shell-contracts/desk";
+import { DESK_NOTCH_PILL_ACTIONS_MAX, DESK_NOTCH_PILLS_MAX, type DeskNotchPill, type DeskNotchRowPress } from "@pistachio/shell-contracts/desk";
+import type { ExtensionInfo, ExtensionSiteView } from "@pistachio/shell-contracts/extensions";
+import { pressRow, removeShown } from "../../lib/extensions/actions";
+import { bandPills, siteViewsFor } from "../../lib/extensions/shown";
 import { extensionsRequest, useExtensions, useExtensionsState } from "../../lib/extensions/use-extensions";
 import { DESK_GAP, NUB_LANE_FOOT, NUB_LANE_INSET } from "../../lib/desk/geometry";
 import { StatusPillRow } from "./StatusPillRow";
@@ -18,9 +21,26 @@ export function hasLivePill(extension: { statusPill: unknown; enabled: boolean; 
   return extension.statusPill !== null && extension.enabled && (extension.enabledHere || (extension.captures?.length ?? 0) > 0);
 }
 
-export function useStatusPills(): DeskNotchPill[] {
+const NO_SITES: readonly ExtensionSiteView[] = [];
+const NO_OWNERS: ExtensionInfo[] = [];
+
+/**
+ * What lies in the nub's lane for the space in front: every extension's live pill, then the rows of every
+ * extension's band there (docs/primitives.md §4.5) — its own for that space, else the one it set for every space —
+ * no more than the lane holds.
+ */
+export function useStatusPills(spaceId: string | null = null): DeskNotchPill[] {
   useExtensionsState((state) => state.loaded);
   const extensions = useExtensions(useShallow((state) => state.snapshot.extensions.filter(hasLivePill)));
+  const sites = useExtensions((state) => state.snapshot.sites ?? NO_SITES);
+  const band = useMemo(() => siteViewsFor(sites, "band", spaceId), [sites, spaceId]);
+  // (Whose rows they are, for each one's mark on its first chip.)
+  const owners = useExtensions(useShallow((state) => (band.length === 0 ? NO_OWNERS : state.snapshot.extensions.filter((extension) => band.some((view) => view.extensionId === extension.id)))));
+  const status = useStatusOnly(extensions);
+  return useMemo(() => (band.length === 0 ? status : [...status, ...bandPills(band, owners)].slice(0, DESK_NOTCH_PILLS_MAX)), [status, band, owners]);
+}
+
+function useStatusOnly(extensions: readonly ExtensionInfo[]): DeskNotchPill[] {
   return useMemo(
     () =>
       extensions.slice(0, DESK_NOTCH_PILLS_MAX).flatMap((extension) => {
@@ -46,6 +66,15 @@ export function useStatusPills(): DeskNotchPill[] {
 /** A press on a pill's action: the extension's (`statusAction`, main's), from the shell's row or the notch view's. */
 export function sendStatusAction(id: string, action: string): void {
   void extensionsRequest({ type: "statusAction", id, action });
+}
+
+/**
+ * A press on a band's chip, from the shell's row or the notch view's: its × takes the band off (the person's
+ * Remove, main's at once); anything else wakes the extension with the row and the button.
+ */
+export function sendRowPress(press: DeskNotchRowPress): void {
+  if (press.remove) void removeShown(press.id, "band", press.scope);
+  else pressRow(press.id, "band", press.scope, press.row, press.button);
 }
 
 /** Where the row lies in the nub's lane, from the Bar's lane (which stands DESK_GAP in from the desk's edges). */
@@ -82,5 +111,5 @@ export function StatusPills({ pills, raised, shown, onWidth }: { pills: readonly
   useLayoutEffect(() => () => onWidth(0), [onWidth]);
 
   if (!up) return null;
-  return <StatusPillRow ref={ref} pills={pills} onAction={sendStatusAction} className="extension-status-pills" style={LANE_PLACE} shown={shown} raised={raised} />;
+  return <StatusPillRow ref={ref} pills={pills} onAction={sendStatusAction} onRow={sendRowPress} className="extension-status-pills" style={LANE_PLACE} shown={shown} raised={raised} />;
 }

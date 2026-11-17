@@ -211,6 +211,10 @@ export interface AgentToolCall {
     | "desk.ungroup"
     | "context.read"
     | "context.save"
+    | "spaces.list"
+    | "space.sendAway"
+    | "space.bringBack"
+    | "space.close"
     | "ext.call"
     | "ext.draft.write"
     | "ext.draft.read"
@@ -339,6 +343,17 @@ export type DeskToolRequest =
   | { name: "context.read"; id: string }
   | { name: "context.save"; kind: "fact" | "snippet"; text: string };
 
+/**
+ * The agent's reach to the spaces (docs/primitives.md §2): which there are,
+ * one sent away — `until` the instant it comes back by itself, null until
+ * asked — and one brought back.
+ */
+export type SpaceToolRequest =
+  | { name: "spaces.list" }
+  | { name: "space.sendAway"; spaceId: string; until: string | null }
+  | { name: "space.bringBack"; spaceId: string }
+  | { name: "space.close"; spaceId: string };
+
 /** Secret fields the cloud agent can ask a person to supply out of band. */
 export const CREDENTIAL_FIELD_TYPES = ["text", "email", "password", "otp"] as const;
 export type CredentialFieldType = (typeof CREDENTIAL_FIELD_TYPES)[number];
@@ -430,6 +445,7 @@ export type AgentToolRequest =
   | IntegrationToolRequest
   | NotesToolRequest
   | DeskToolRequest
+  | SpaceToolRequest
   | ExtensionToolRequest
   | ExtensionAuthorToolRequest;
 

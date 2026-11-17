@@ -42,6 +42,8 @@ export interface FieldPreview {
   adopt(event: KeyboardEvent): void;
   /** The pointer left the list. True when it was showing a row — the caller puts the selection back. */
   leave(): boolean;
+  /** The person steered back to the typed text itself (the address bar's ⇥ past its tray): show it again, caret and selection where they were. */
+  release(): void;
 }
 
 export function useFieldPreview({
@@ -100,5 +102,6 @@ export function useFieldPreview({
       setBy(null);
       return true;
     },
+    release: () => setBy(null),
   };
 }

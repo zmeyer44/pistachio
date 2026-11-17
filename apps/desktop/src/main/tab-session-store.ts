@@ -79,11 +79,16 @@ export class TabSessionStore {
     this.#timer.unref();
   }
 
-  /** Flush pending state during a clean quit; the temp+rename also protects crash reads. */
-  flush(): void {
+  /**
+   * Write what is held now — a clean quit's last save; the temp+rename also
+   * protects crash reads. False when it could not be written (a full disk):
+   * the session is then in memory alone, and whoever holds another copy of
+   * something in it must keep that copy (main/away-spaces.ts).
+   */
+  flush(): boolean {
     if (this.#timer !== null) clearTimeout(this.#timer);
     this.#timer = null;
-    this.#write();
+    return this.#write();
   }
 
   #read(): DurableTabSession {
@@ -96,14 +101,16 @@ export class TabSessionStore {
     }
   }
 
-  #write(): void {
+  #write(): boolean {
     try {
       mkdirSync(dirname(this.#path), { recursive: true });
       const tmp = `${this.#path}.tmp`;
       writeFileSync(tmp, JSON.stringify(this.#current, null, 2));
       renameSync(tmp, this.#path);
+      return true;
     } catch {
       // The in-memory graph remains authoritative for this process.
+      return false;
     }
   }
 }

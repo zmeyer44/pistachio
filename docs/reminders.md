@@ -74,12 +74,23 @@ minutes late — the Mac was asleep, the app was closed — is recorded as
 then continues from _now_, so a week away does not wake to seven mornings
 of the same reminder.
 
-The console holds one run at a time. An agent task due while another run is
-live is `queued` and retried every tick and whenever a run ends; queued
-tasks run one at a time in the order they came due. One that waits more
+A reminder's agent task runs in a console of its own (docs/desk-agent.md §3,
+"Conversations stay in their space"; since 2026-11-16): it is no space's,
+takes nobody's conversation from them, and does not wait for the person's
+own to end. (Until then there was one console, a task took it, and a task
+due while any run was live waited.) They run one at a time among themselves:
+one due while another reminder's task is live is `queued` and retried every
+tick and whenever a run ends, in the order they came due. One that waits more
 than three hours is recorded as `missed` with the reason. Message reminders
 never wait: an agent task runs off the clock loop, so a message due while a
-task has the console for an hour is still delivered on time.
+task is at work for an hour is still delivered on time.
+
+A task at work is in the list of conversations (*Reminder*, *Working*), and
+choosing it there — or pressing its notification — shows it in the space the
+person is in, where it can be steered, stopped or answered like any other.
+What it produced is the reminder's card: at the head of the chat (the desk's
+answer card on the desktop, which comes up for it when *Open the agent chat*
+is on; the console on the web) and on the reminders page.
 
 On launch the scheduler picks up what the previous session left in flight:
 `queued` tasks go back in the queue (or are `missed` if their reminder was

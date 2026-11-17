@@ -14,6 +14,7 @@ import { useNowPlaying } from "../../lib/desk/now-playing";
 import { documentWindowIds, fileOf } from "../../lib/desk/documents";
 import { fileItemOf, fileWindowId, isTabWindow } from "../../lib/desk/windows";
 import { displayHost } from "../../lib/url";
+import { glanceShowing } from "../../lib/glance";
 import { lendDeskArrange, lendDeskAsk, lendDeskEngine, revealFor, takeSpaceChoice, takeSpread } from "../../lib/desk/open";
 import { useDeskChrome, type DeskMark } from "../../lib/desk/chrome";
 import type { DockItem, DockRailItem, DockTargets } from "../../lib/desk/dock-drop";
@@ -22,15 +23,18 @@ import { isHomeSpace, roomForSpace } from "../space-rail/rail-model";
 import { useLiveDeskReport } from "../live/useLiveDeskReport";
 import { useLiveShareHost } from "../live/useLiveShareHost";
 import { deskGroups, groupPageOf, passedEntry, useDeskStore, type DeskVariants } from "../../lib/desk/store";
-import { useAppStore } from "../../store";
+import { selectRunSettled, selectSpaceRun, useAppStore } from "../../store";
 import { GlanceOverlay, type GlanceDesk } from "../GlanceOverlay";
 import { DeskBar } from "./DeskBar";
 import { DeskEngine, LAYOUT_PREVIEW_COVER, takesOnInPlace, WINDOW_INSETS, type DeskLayoutSnapshot } from "./desk-engine";
 import { answerDeskRequest, type DeskAnswerDeps } from "./desk-requests";
 import { DeskDropZone } from "./DeskDropZone";
+import { DeskBackdrop } from "./DeskBackdrop";
 import { DeskEmpty } from "./DeskEmpty";
 import { DeskSideCard } from "./DeskSideCard";
 import { ExtensionPanelCard } from "../extensions/ExtensionPanelCard";
+import { backdropFor } from "../../lib/extensions/shown";
+import { useExtensionsState } from "../../lib/extensions/use-extensions";
 import { DeskWindow, holdsGrab } from "./DeskWindow";
 import { LayoutGhosts } from "./LayoutControl";
 import { SmartArranger, type WindowWords } from "./smart-arrange";
@@ -253,6 +257,10 @@ export default function DeskSurface() {
     return state.snapshot?.tabs.find((tab) => tab.id === own)?.title ?? "";
   });
   const deskGroup = useMemo(() => (group !== null && ownTitle !== null ? { ...group, title: tabGroupTitle(ownTitle) } : group), [group, ownTitle]);
+  // What an extension's theme put behind this space's windows (docs/primitives.md §4): the space's own, else the one
+  // for every space. Keyed on main's current space, which flips as a switch starts — the stage stays, the picture
+  // cross-fades (DeskBackdrop).
+  const backdrop = useExtensionsState((state) => backdropFor(state.snapshot.backdrops, groupId));
   // It shows its tabs as a browser does, one at a time filling the desk (docs/space-tabs.md), or as windows.
   const tabbed = group !== null && spaceShowsTabs(group);
   // (A space gone back to Home — a page's space down to its page, a grown one down to one tab — is no space of windows
@@ -266,7 +274,9 @@ export default function DeskSurface() {
   const glanceStaged = useAppStore((state) => state.glanceStaged);
   const glanceClosing = useAppStore((state) => state.glanceClosing);
   const setContentBounds = useAppStore((state) => state.setContentBounds);
-  const run = useAppStore((state) => state.snapshot?.run ?? null);
+  // (The space in front's own: for the moment after a change of space the store still holds the last one's.)
+  const run = useAppStore(selectSpaceRun);
+  const runSettled = useAppStore(selectRunSettled);
   const threads = useAppStore((state) => state.snapshot?.threads ?? EMPTY_THREADS);
   const drawnGroups = useAppStore((state) => state.snapshot?.tabGroups ?? EMPTY_GROUPS);
   const looseGroups = useAppStore((state) => state.snapshot?.looseGroups ?? EMPTY_GROUPS);
@@ -625,8 +635,19 @@ export default function DeskSurface() {
   // Until 2026-10-09 the desk said when it came up for a group, and when it was left — DeskConversationCommand
   // "enter" and "leave".)
 
-  // ⌘I puts the keyboard in the Bar. Before the engine is up (the first frames) there is no Bar: ⌘I opens the console.
+  // ⌘I puts the keyboard in the Bar. Before the engine is up (the first frames) there is no Bar, and ⌘I does nothing: no
+  // console is drawn beside a desk (since 2026-11-16).
   const [askSignal, setAskSignal] = useState(0);
+  // The chat wanted on screen — a reminder fired, the agent paused for the person, a notification about a conversation
+  // pressed, the activity record asked for (the shell's `openConsole`; the store's `consoleOpen`, which is the
+  // console's where there is one): on the desk it is the Bar's to answer, once, with the space in front's chat.
+  const [chatSignal, setChatSignal] = useState(0);
+  const chatWanted = useAppStore((state) => state.consoleOpen);
+  useEffect(() => {
+    if (!chatWanted) return;
+    useAppStore.getState().setConsoleOpen(false);
+    setChatSignal((count) => count + 1);
+  }, [chatWanted]);
   const barUp = engine !== null && shownDeskGroup !== null;
   useEffect(() => {
     if (!barUp) return;
@@ -1007,6 +1028,8 @@ export default function DeskSurface() {
         data-group-id={view === null ? undefined : (shownGroup.current ?? undefined)}
         data-empty={empty ? "" : undefined}
         data-group-color={group?.color}
+        // A backdrop is in force: what the desk says straight on its ground stands on a plate of the shell's own (shell.css).
+        data-backdrop={backdrop === null ? undefined : ""}
         data-glance={glance !== null && glanceStaged ? "" : undefined}
         data-glance-closing={glanceClosing ? "" : undefined}
         // A layout looked at in the space view, its ghosts up (LayoutGhosts): the windows recede under them.
@@ -1018,6 +1041,8 @@ export default function DeskSurface() {
           if (event.button === 0 && event.target === event.currentTarget) engine?.pressDesk();
         }}
       >
+        {/* First, so under everything else on the desk; it takes no pointer, and a press on the surface stays the stage's own. */}
+        <DeskBackdrop backdrop={backdrop} />
         <div ref={attachZone} className="desk-zone" aria-hidden="true" />
         <div ref={attachGuides} className="desk-guides" aria-hidden="true">
           <span />
@@ -1061,9 +1086,9 @@ export default function DeskSurface() {
           <DeskDropZone group={shownDeskGroup} engine={engine} view={view} />
         )}
         {engine === null || view === null || shownDeskGroup === null ? null : (
-          <DeskBar group={shownDeskGroup} groups={groups} engine={engine} view={view} run={run} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} context={context} />
+          <DeskBar group={shownDeskGroup} groups={groups} engine={engine} view={view} run={run} settled={runSettled} threads={threads} undo={undoShown} onUndo={onUndo} focusSignal={askSignal} chatSignal={chatSignal} context={context} />
         )}
-        {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={stageRef} desk={glanceDesk} reserve={view?.reserve ?? 0} />}
+        {glance === null ? null : <GlanceOverlay key={glanceShowing(glance)} glance={glance} surfaceRef={stageRef} desk={glanceDesk} reserve={view?.reserve ?? 0} />}
       </div>
     </section>
   );

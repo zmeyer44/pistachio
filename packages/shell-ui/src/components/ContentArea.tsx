@@ -18,6 +18,7 @@ import { useSettingsCoversConsole } from "../lib/settings-fit";
 import { deskAvailable } from "../lib/desk/open";
 import { useDeskStore } from "../lib/desk/store";
 import { displayHost } from "../lib/url";
+import { glanceShowing } from "../lib/glance";
 import { useAppStore, type AppState } from "../store";
 import { isHomeUrl } from "@pistachio/shell-contracts/home";
 import { notesUrlId } from "@pistachio/shell-contracts/notes";
@@ -381,7 +382,7 @@ function BrowserSurfaceImpl() {
           />
         )}
       </div>
-      {glance === null ? null : <GlanceOverlay key={glance.tab.id} glance={glance} surfaceRef={rootRef} />}
+      {glance === null ? null : <GlanceOverlay key={glanceShowing(glance)} glance={glance} surfaceRef={rootRef} />}
     </section>
   );
 }

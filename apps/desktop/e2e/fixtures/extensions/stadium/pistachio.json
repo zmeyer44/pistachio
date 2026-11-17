@@ -1,0 +1,11 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.stadium",
+  "name": "Stadium",
+  "version": "1.0.0",
+  "description": "An e2e fixture: the space it is given wears a field for a backdrop, a green accent and a mark on its tile on Sundays, 8:00 AM to 11:00 PM.",
+  "permissions": ["spaces:mark", "theme"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [{ "id": "sunday", "during": { "days": ["sun"], "from": "08:00", "to": "23:00" } }],
+  "contextMenus": [{ "id": "here", "title": "Game day here", "contexts": ["space"] }]
+}

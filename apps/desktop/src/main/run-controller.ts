@@ -30,6 +30,7 @@ import {
   type NoteSummary,
 } from "@pistachio/shell-contracts/notes";
 import { reminderToolView, systemTimezone, type ReminderSource } from "@pistachio/shell-contracts/reminders";
+import { AWAY_REFUSALS, formatReturn, type AwayHolder, type AwayOutcome, type AwaySpaceInfo } from "@pistachio/shell-contracts/away";
 import { DEFAULT_SETTINGS, type DesktopSettings } from "@pistachio/shell-contracts/settings";
 import {
   closeDanglingToolCalls,
@@ -58,6 +59,8 @@ import {
   type TurnRouteRequest,
   type IntegrationToolHost,
   type DeskToolHost,
+  type SpaceToolHost,
+  type SpaceToolOutcome,
   type ExtensionAuthorHost,
   type ExtensionToolCallContext,
   type ExtensionToolSpec,
@@ -67,7 +70,6 @@ import {
   deskStateLines,
   groupContextLines,
   type DeskAgentState,
-  type DeskConversationCommand,
   type DeskRequest,
   type GroupContextAuthor,
   type GroupContextItem,
@@ -163,6 +165,77 @@ export interface NoteRecordStore {
   remove(id: string): void;
 }
 
+/** A turn as it was started, and where its conversation stood then: what `retry` runs again. */
+interface TurnCheckpoint {
+  input: TurnInput;
+  /** The model history the turn started from. */
+  base: ModelMessage[];
+  /** How many messages the conversation held before the turn's. */
+  messagesBefore: number;
+}
+
+/**
+ * The last turn of each conversation, as it was started — kept by the
+ * conversation, not by the console that ran it. A console holds one
+ * conversation at a time and is given another, or let go of, as the person
+ * moves between spaces (RunHub): the turn that ended behind them, its
+ * console swept, can still be run again when they are back and its
+ * conversation is opened from the store — and a console given another
+ * conversation never runs that one's reply again from the checkpoint of the
+ * one it held before. In memory, for this run of the app (a retry does not
+ * outlive a quit, as it never did), the most recent conversations only.
+ */
+export class TurnCheckpoints {
+  static readonly MAX = 32;
+  readonly #byRun = new Map<string, TurnCheckpoint>();
+  /**
+   * The threads author turns are writing extensions in, each with its draft
+   * folder (RunController's author turns, docs/extensions.md §8) — kept here
+   * for the same reason: a paused author turn resumed once its space's
+   * console has been let go of and its thread opened in another is an author
+   * turn still, with the draft tools and nothing else.
+   */
+  readonly #authors = new Map<string, DraftClaim>();
+
+  /** @internal */
+  authorOf(runId: string): DraftClaim | null {
+    return this.#authors.get(runId) ?? null;
+  }
+
+  /** @internal The thread is an author turn's from now (`claim`), or no longer (null). */
+  author(runId: string, claim: DraftClaim | null): void {
+    if (claim === null) this.#authors.delete(runId);
+    else this.#authors.set(runId, claim);
+  }
+
+  /** @internal */
+  get(runId: string): TurnCheckpoint | null {
+    return this.#byRun.get(runId) ?? null;
+  }
+
+  /** @internal */
+  set(runId: string, checkpoint: TurnCheckpoint): void {
+    this.#byRun.delete(runId);
+    this.#byRun.set(runId, checkpoint);
+    while (this.#byRun.size > TurnCheckpoints.MAX) {
+      const oldest = this.#byRun.keys().next().value;
+      if (oldest === undefined) break;
+      this.#byRun.delete(oldest);
+    }
+  }
+
+  forget(runId: string): void {
+    this.#byRun.delete(runId);
+    this.#authors.delete(runId);
+  }
+}
+
+/** How a message is sent: whether the page in view rides with it, and the space whose Bar sent it (`RunHub.start`). */
+export interface RunTurnOptions {
+  page: boolean;
+  groupId?: string;
+}
+
 /**
  * What the desk agent needs from the rest of main (docs/desk-agent.md §3):
  * the line to the shell's desk, which conversation each group opens, the
@@ -183,8 +256,9 @@ export interface DeskAgentHost {
      */
     refreshSpaces?(): void;
     /**
-     * Make a space current, as choosing it does (BrowserController.selectGroup): main's current space follows, and so
-     * does the console (followGroup). For an answer that came from afar to a conversation put away in its space.
+     * Make a space current, as choosing it does (BrowserController.selectGroup): main's current space follows, and
+     * the hub shows that space's console (RunHub.followGroup). For going to a conversation that is at work, or
+     * waiting on the person, in a space they are not in (RunHub.reveal).
      */
     selectGroup?(groupId: string): Promise<void>;
   };
@@ -193,6 +267,25 @@ export interface DeskAgentHost {
     read(groupId: string, itemId: string): Promise<GroupContextReading>;
     addText(groupId: string, title: string, input: { kind: GroupContextText["kind"]; text: string; url?: string; title?: string }, addedBy: GroupContextAuthor): GroupContextText;
   };
+}
+
+/**
+ * The spaces as the agent's tools reach them (docs/primitives.md §2): a
+ * Profile's (Space's) drawn spaces as the rail has them (BrowserController)
+ * and the two verbs of main's away service (AwaySpaces) — the same table a
+ * space's menu and an extension reach. Structural, so a test hands in a fake.
+ */
+export interface RunSpaces {
+  /** A Profile's drawn spaces, in the rail's order. */
+  list(profileId: string): Array<{ id: string; title: string; tabCount: number }>;
+  /** The Profile's space in front, or null. */
+  current(profileId: string): string | null;
+  /** The Profile's spaces that are away, oldest first. */
+  away(profileId: string): AwaySpaceInfo[];
+  send(groupId: string, options: { by: AwayHolder; until?: number; ownTurn?: boolean }): Promise<AwayOutcome>;
+  bringBack(id: string, options: { select?: boolean }): Promise<AwayOutcome>;
+  /** Close a space into the archive (main/space-closing.ts SpaceClosing.close): its title when done, main's sentence when not. */
+  close(groupId: string, options: { by: AwayHolder; ownTurn?: boolean }): Promise<{ ok: true; title: string } | { ok: false; reason: string }>;
 }
 
 /**
@@ -216,8 +309,10 @@ export interface RunExtensions {
 type DeskRequestFor = DeskRequest extends infer Request ? (Request extends DeskRequest ? Omit<Request, "groupId"> : never) : never;
 
 /** Which surface a tool call touched, for the trace and the evidence chain. */
-function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "desk" | "integration" | "extension" {
+function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "desk" | "space" | "integration" | "extension" {
   if (name.startsWith("desk.") || name.startsWith("context.")) return "desk";
+  // The spaces themselves (docs/primitives.md §2): `spaces.list`, `space.sendAway`, `space.bringBack`.
+  if (name.startsWith("space.") || name.startsWith("spaces.")) return "space";
   // An extension's tool, or the author turn's drafting (docs/extensions.md §6.2, §8).
   if (name.startsWith("ext.")) return "extension";
   if (name.startsWith("memory.")) return "memory";
@@ -247,8 +342,9 @@ function openedTabId(data: unknown): string | null {
  * browser was handed back.
  */
 type TurnInput =
-  | { kind: "start"; text: string; attachments: AgentAttachment[]; page: boolean }
-  | { kind: "message"; text: string; attachments: AgentAttachment[]; after: "running" | "paused" | "question" | "ended"; page: boolean }
+  // (`groupId`: the space whose Bar sent it, when it said — the turn is that space's, whichever the console is at home in: RunTurnOptions.)
+  | { kind: "start"; text: string; attachments: AgentAttachment[]; page: boolean; groupId?: string }
+  | { kind: "message"; text: string; attachments: AgentAttachment[]; after: "running" | "paused" | "question" | "ended"; page: boolean; groupId?: string }
   | { kind: "answer"; text: string }
   | { kind: "takeover-done" }
   | { kind: "resume" };
@@ -330,10 +426,12 @@ function recentExchanges(messages: RunSummary["messages"]): TurnRouteExchange[] 
 }
 
 /** The non-browser abilities the answer path keeps, named for the router in plain words. */
-function answerPathTools(input: Pick<AiAgentRunInput, "memory" | "reminders" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">): string[] {
+function answerPathTools(input: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">): string[] {
   const tools: string[] = [];
   if (input.memory !== undefined) tools.push("recall and remember things about the person");
   if (input.reminders !== undefined) tools.push("set reminders");
+  // Without this line the router sends "hide this space until Sunday" to the browser to go looking for a page.
+  if (input.spaces !== undefined) tools.push("send the browser's spaces away, for now or until a time, and bring them back");
   if (input.bookmarks !== undefined) tools.push("search and save the person's bookmarks");
   // Without this line the router sends "add milk to my shopping note" to the
   // browser, which has no note tools at all (docs/notes.md §6).
@@ -433,13 +531,15 @@ export class RunController {
   #notes: NoteRecordStore | null = null;
   readonly #integrations: { hostsFor(spaceId: string): Promise<IntegrationToolHost[]> } | null;
   readonly #extensions: RunExtensions | null;
+  readonly #spaces: RunSpaces | null;
   /**
-   * The thread an author turn is writing an extension in (docs/extensions.md
-   * §8), and its draft folder: that turn, and the turns that continue it — an
-   * answer to its question, a resume, a word while it runs — are author
-   * turns. A follow-up once it ended is an ordinary turn.
+   * The threads author turns are writing extensions in (docs/extensions.md
+   * §8), each with its draft folder: that turn, and the turns that continue
+   * it — an answer to its question, a resume, a word while it runs — are
+   * author turns. A follow-up once it ended is an ordinary turn. (The
+   * conversation's, whichever console it is in: TurnCheckpoints.)
    */
-  #author: (DraftClaim & { runId: string }) | null = null;
+  readonly #checkpoints: TurnCheckpoints;
   readonly #onRunEnded: ((run: RunSummary) => void) | null;
   readonly #threads: ThreadStore | null;
   readonly #cloud: CloudRunCommands | null;
@@ -455,27 +555,26 @@ export class RunController {
   readonly #artifactWebUrl: () => string | null;
   readonly #deskHost: DeskAgentHost | null;
   /**
-   * The space (tab group) whose desk is in front, as main last said
-   * (followGroup; docs/desk-agent.md §3): the open thread is its
-   * conversation, unless a turn is still running elsewhere. Null only while
-   * main has none to name. (Until 2026-10-09 the shell said when a desk came
-   * up and went, and this kept the conversation from before it to go back
-   * to: there is no off the desk now.)
+   * The space (tab group) this console's conversation is at home in (`home`;
+   * docs/desk-agent.md §3): its turns are that space's desk turns, and a
+   * conversation started here is bound to it. Null: no space's. (Until
+   * 2026-11-16 there was one console, and this was the space in front, which
+   * it followed: a turn still running went with the person from space to
+   * space. Now each space's conversation has a console of its own while it
+   * has something going — RunHub.)
    */
   #desk: { groupId: string } | null = null;
+  /** A turn of this console ended, however it ended (RunHub's sweep). */
+  readonly #onSettled: (() => void) | null;
   /**
-   * A desk turn of this thread ended in a space no longer in front while the
-   * thread still waited on the person (or another turn of it had started):
-   * the console stayed on it, and follows the space in front once a turn of
-   * it ends idle (#refollow). The space the turn was in. (2026-10-09.)
+   * Turns of this console still in flight: begun, and not yet through
+   * everything they do as they end (#beginAiExecution's `finally`). A turn
+   * is marked complete before it has said so everywhere — the notification,
+   * the reminder's scheduler, the answer sent on by iMessage — and the hub
+   * must not hand this console another conversation, or let go of it, in
+   * between (`engaged`).
    */
-  #refollowLater: { runId: string; groupId: string } | null = null;
-  /**
-   * iMessage answers to conversations put away in their spaces that came
-   * while another conversation was acting, by run: each is taken once a turn
-   * ends with none acting (#takeQueuedAnswer). (2026-10-09.)
-   */
-  readonly #queuedAnswers = new Map<string, { questionId: string; value: string }>();
+  #inFlight = 0;
   #run: RunSummary | null = null;
   /** The open thread's model history: what the next turn continues from. */
   #history: ModelMessage[] = [];
@@ -487,8 +586,6 @@ export class RunController {
   #storedSigningKey: string | null = null;
   /** The running turn is the one a reminder started — its answer is the reminder's output. */
   #scheduledTurn = false;
-  /** The last turn as it was started, and the history it started from: what `retry` runs again. */
-  #lastTurn: { input: TurnInput; base: ModelMessage[]; messagesBefore: number } | null = null;
   #persistTimer: NodeJS.Timeout | null = null;
   /** The running turn's usage so far, so the thread total adds only the delta. */
   #turnUsage = { inputTokens: 0, outputTokens: 0 };
@@ -533,6 +630,8 @@ export class RunController {
     integrations?: { hostsFor(spaceId: string): Promise<IntegrationToolHost[]> } | null;
     /** The person's extensions' tools, and the author turn's draft folders (docs/extensions.md §6.2, §8); absent where there are none. */
     extensions?: RunExtensions | null;
+    /** The spaces and the away service, for the agent's space tools (docs/primitives.md §2); absent where a space cannot be sent away. */
+    spaces?: RunSpaces | null;
     /** Every terminal transition — the scheduler retries queued tasks on it. */
     onRunEnded?: (run: RunSummary) => void;
     /** Where threads persist. Absent in the demo and some tests: then a thread lives only in memory. */
@@ -568,6 +667,10 @@ export class RunController {
     artifactWebUrl?: () => string | null;
     /** The desk agent's pieces; absent where no desk is drawn (tests that do not need one). */
     desk?: DeskAgentHost | null;
+    /** A turn here ended, however it ended, and this console has finished with it (RunHub's sweep). */
+    onSettled?: () => void;
+    /** The conversations' retry checkpoints, shared by every console of a hub (TurnCheckpoints); its own when absent. */
+    checkpoints?: TurnCheckpoints;
   }) {
     this.#settings = options.settings ?? (() => DEFAULT_SETTINGS);
     this.#threads = options.threads ?? null;
@@ -581,6 +684,8 @@ export class RunController {
     this.#spaceId = options.spaceId ?? (() => "work");
     this.#artifactWebUrl = options.artifactWebUrl ?? (() => null);
     this.#deskHost = options.desk ?? null;
+    this.#onSettled = options.onSettled ?? null;
+    this.#checkpoints = options.checkpoints ?? new TurnCheckpoints();
     this.#memory = options.memory ?? null;
     this.#reminders = options.reminders ?? null;
     this.#artifacts = options.artifacts ?? null;
@@ -588,6 +693,7 @@ export class RunController {
     this.#bookmarks = options.bookmarks ?? null;
     this.#integrations = options.integrations ?? null;
     this.#extensions = options.extensions ?? null;
+    this.#spaces = options.spaces ?? null;
     this.#onRunEnded = options.onRunEnded ?? null;
     this.#browser = options.browser;
     // The agent's hidden tabs belong to the conversation open when it opened them.
@@ -701,103 +807,77 @@ export class RunController {
     this.#onChange();
   }
 
-  /**
-   * A command from this desktop run's iMessage watcher, never from the
-   * model. The conversation it answers may be put away in its space
-   * (#putAway: the person looked at another one), and the watcher has moved
-   * past the answer, so it is taken all the same: the space the
-   * conversation is bound to comes up — the person answered it — its
-   * conversation opens there (followGroup), and the answer runs as it would
-   * from its Bar, at its own desk. While another conversation is acting the
-   * answer waits for it (#queuedAnswers). (Until 2026-10-09 an answer to a
-   * conversation not open was dropped, and its question stayed pending.)
-   */
-  async answerIMessageQuestion(runId: string, questionId: string, value: string): Promise<void> {
-    await this.#takeAnswer(runId, questionId, value);
+  /** The conversation this console holds, by its run; null while it holds none. */
+  runId(): string | null {
+    return this.#run?.runId ?? null;
   }
 
-  /** answerIMessageQuestion, saying what came of it: the answer ran as a turn, waits for one, or had nothing left to answer. */
-  async #takeAnswer(runId: string, questionId: string, value: string): Promise<"answered" | "waiting" | "skipped"> {
-    const open = this.#run;
-    if (open !== null && open.runId === runId) {
-      if (isCloudRun(open) || open.pendingQuestion?.id !== questionId) return "skipped";
-      await this.answerQuestion(questionId, value);
-      return "answered";
-    }
-    /** The saved conversation still asking this question. */
-    const asking = (): ThreadRecord | null => {
-      const record = this.#threads?.get(runId) ?? null;
-      return record !== null && !isCloudRun(record.run) && record.run.pendingQuestion?.id === questionId ? record : null;
-    };
-    const saved = asking();
-    if (saved === null) return "skipped";
-    if (this.#active()) {
-      this.#queuedAnswers.set(runId, { questionId, value });
-      return "waiting";
-    }
-    const host = this.#deskHost;
-    const groupId = host === null ? null : this.#boundGroup(host, runId, saved.run.groupId);
-    if (host !== null && groupId !== null && host.browser.currentGroupId() !== groupId) await host.browser.selectGroup?.(groupId);
-    if (this.#run?.runId !== runId) {
-      // Its space is gone, or could not come up: the conversation opens in the console all the same.
-      if (this.#active()) {
-        this.#queuedAnswers.set(runId, { questionId, value });
-        return "waiting";
-      }
-      const record = asking();
-      if (record === null) return "skipped";
-      if (this.#awaitsPerson()) this.#putAway();
-      this.#adopt(record);
-      this.#onChange();
-    }
-    if (this.#run?.runId !== runId || this.#run.pendingQuestion?.id !== questionId) return "skipped";
-    await this.answerQuestion(questionId, value);
-    return "answered";
-  }
-
-  /** The space a conversation opens in: the one it started in while still bound to it, else the last bound to it. */
-  #boundGroup(host: DeskAgentHost, runId: string, started: string | undefined): string | null {
-    if (started !== undefined && host.bindings.get(started) === runId) return started;
-    return host.bindings.groupsOf(runId).at(-1) ?? null;
+  /** The agent is acting here right now (or about to): this console cannot be handed another conversation. */
+  acting(): boolean {
+    return this.#active();
   }
 
   /**
-   * The iMessage answers that waited while another conversation acted,
-   * taken now that none is (answerIMessageQuestion): one that has nothing
-   * left to answer (its conversation deleted, its question answered at the
-   * Mac) is passed over for the next, until one runs as a turn — whose end
-   * takes the rest — or waits again. (Until 2026-10-09 the first passed over
-   * stopped the drain, and the rest waited for a turn that never came.)
+   * Something is going on here that must not be dropped (RunHub keeps such a
+   * console while its space is not in front): a turn acting, or a question,
+   * an approval or a takeover the person has yet to answer.
    */
-  async #takeQueuedAnswers(): Promise<void> {
-    while (!this.#active()) {
-      const next = this.#queuedAnswers.entries().next();
-      if (next.done === true) return;
-      const [runId, { questionId, value }] = next.value;
-      this.#queuedAnswers.delete(runId);
-      if ((await this.#takeAnswer(runId, questionId, value)) !== "skipped") return;
-    }
+  engaged(): boolean {
+    return this.#active() || this.#awaitsPerson() || this.#inFlight > 0;
   }
 
-  /** Every saved thread, newest first, with the open one reflecting its live state. */
-  threads(): ThreadListItem[] {
-    const saved = this.#threads?.list() ?? [];
-    const open = this.#run;
-    if (open === null) return saved;
-    const live = threadListItem(open);
-    return [live, ...saved.filter((item) => item.runId !== open.runId)];
+  /** The open thread waits on the person: a question, an approval or a takeover still theirs to answer. */
+  #awaitsPerson(): boolean {
+    const run = this.#run;
+    if (run === null) return false;
+    return (
+      run.pendingQuestion !== null ||
+      run.pendingApproval !== null ||
+      run.pendingTakeover !== null ||
+      run.status === "waiting_for_approval" ||
+      run.status === "waiting_for_judgment" ||
+      run.status === "waiting_for_step_up" ||
+      run.status === "human_control"
+    );
+  }
+
+  /** A turn here is still in flight — through its work, perhaps, but not through saying so (`#inFlight`). */
+  settling(): boolean {
+    return this.#inFlight > 0;
+  }
+
+  /** The open conversation as the list of them shows it, live; null while none is open. */
+  liveThread(): ThreadListItem | null {
+    return this.#run === null ? null : threadListItem(this.#run);
   }
 
   /**
-   * On launch: reopen the thread that was open when the app last quit. A
-   * turn that was running then is marked interrupted — the model calls
-   * did not survive the restart, but the history did, so a resume picks
-   * up from the last finished step.
+   * The space (tab group) this console's conversation is at home in
+   * (docs/desk-agent.md §3): the one it was last shown in, which its turns
+   * are scoped to and a conversation started here is bound to. It stays so
+   * while the person is in another space — the console goes on in its own
+   * (RunHub). Null: no space's (a reminder's task, a host with no desk).
    */
-  restore(): void {
-    const latest = this.#threads?.latest() ?? null;
-    if (latest === null) return;
-    this.#adopt(latest);
+  home(groupId: string | null): void {
+    this.#desk = groupId === null ? null : { groupId };
+  }
+
+  homeGroup(): string | null {
+    return this.#desk?.groupId ?? null;
+  }
+
+  /**
+   * Open a saved conversation here; whatever was open is saved and set aside
+   * first. The record is read from the store only while no console holds the
+   * conversation (RunHub), so one that says a turn was under way is a turn
+   * that did not survive a quit or a crash: it comes back paused — the model
+   * calls are gone, but the history is not, so a resume picks up from the
+   * last finished step. (An approval is a decision about the page as it was:
+   * it does not come back either.)
+   */
+  open(record: ThreadRecord): void {
+    if (this.#active()) throw new Error("pause or end the current task before opening another conversation");
+    this.#adopt(record);
     const run = this.#run;
     if (run === null) return;
     // A cloud run kept running without this Mac: its status is control's
@@ -812,17 +892,6 @@ export class RunController {
       this.#activity("Restored after restart", "The thread was reopened from disk; the turn in progress was paused", "warning");
       this.#persistNow();
     }
-    this.#onChange();
-  }
-
-  /** Open a saved thread in the console. The current one must not be acting. */
-  openThread(runId: string): void {
-    if (this.#run?.runId === runId) return;
-    if (this.#active()) throw new Error("pause or end the current task before opening another conversation");
-    const record = this.#threads?.get(runId) ?? null;
-    if (record === null) throw new Error("that conversation is no longer available");
-    this.#adopt(record);
-    this.#onChange();
   }
 
   /** Clear the console for a fresh conversation. A task still acting is stopped first. */
@@ -863,6 +932,7 @@ export class RunController {
     this.#storedSigningKey = null;
     }
     this.#deskHost?.bindings.forgetRun(runId);
+    this.#checkpoints.forget(runId);
     // A cloud run keeps streaming after the row is gone: without this its
     // next folded event re-saves the thread and the conversation returns.
     this.#cloud?.forget(runId);
@@ -871,191 +941,24 @@ export class RunController {
     this.#onChange();
   }
 
-  /**
-   * The space (tab group) in front changed, as main says (BrowserController
-   * onCurrentGroupChange; docs/spaces.md §2): its conversation opens — the
-   * thread bound to it, or an empty console for a new one — unless a turn is
-   * still running, which keeps the console until it ends (#refollow); a
-   * thread waiting on the person is put away pending, not set aside
-   * (#openForDesk, #putAway). Null:
-   * main has no space to name; nothing more is the desk's. (Until 2026-10-09
-   * the shell's `enter` and `leave` did this, and leaving went back to the
-   * conversation from before the desk.)
-   */
-  followGroup(groupId: string | null): void {
-    const host = this.#deskHost;
-    if (host === null) return;
-    if (groupId === null) {
-      if (this.#desk === null) return;
-      this.#desk = null;
-      host.bridge.cancelAll();
-      this.#onChange();
-      return;
-    }
-    if (this.#desk?.groupId === groupId) return;
-    this.#desk = { groupId };
-    this.#openForDesk(host, groupId);
-    this.#onChange();
-  }
-
-  /**
-   * The conversation bound to a space (tab group) changed outside the
-   * console — a space merged into it brought its own (main's
-   * moveGroupHoldings, ./spaces moveSpaceHoldings; docs/spaces.md §1,
-   * "Merging spaces"): when that space is the one in front, its
-   * conversation opens now, as followGroup would open it — which followGroup
-   * cannot do here, since the space in front did not change and it ignores
-   * the same space. Any other space opens it when it comes to the front.
-   * (Until 2026-10-14 the console stayed on the empty conversation it
-   * showed, and the next message started a fresh thread, bound over the
-   * one just moved in.)
-   */
-  groupConversationChanged(groupId: string): void {
-    const host = this.#deskHost;
-    if (host === null || this.#desk?.groupId !== groupId) return;
-    this.#openForDesk(host, groupId);
-    this.#onChange();
-  }
-
-  /**
-   * A desk turn ended in a space no longer in front (the person moved on
-   * while it ran): the console follows them now — the conversation of the
-   * space they are in — rather than stay on the old thread, where the next
-   * message from the Bar would run unscoped.
-   */
-  #refollow(turnGroupId: string): void {
-    const host = this.#deskHost;
-    const desk = this.#desk;
-    const runId = this.#run?.runId ?? null;
-    this.#refollowLater = null;
-    if (host === null || desk === null || desk.groupId === turnGroupId || runId === null) return;
-    // Setting aside a thread waiting on the person cancels their question,
-    // approval or takeover before they ever saw it (and closes its research
-    // tabs): it keeps the console until a turn of it ends idle — the one
-    // their answer starts, which runs off this desk and so names no space of
-    // its own. (Until 2026-10-09 only #active() was checked.)
-    if (this.#active() || this.#awaitsPerson()) {
-      this.#refollowLater = { runId, groupId: turnGroupId };
-      return;
-    }
-    this.#openForDesk(host, desk.groupId);
-    this.#onChange();
-  }
-
-  /** The open thread waits on the person: a question, an approval or a takeover still theirs to answer. */
-  #awaitsPerson(): boolean {
-    const run = this.#run;
-    if (run === null) return false;
-    return (
-      run.pendingQuestion !== null ||
-      run.pendingApproval !== null ||
-      run.pendingTakeover !== null ||
-      run.status === "waiting_for_approval" ||
-      run.status === "waiting_for_judgment" ||
-      run.status === "waiting_for_step_up" ||
-      run.status === "human_control"
-    );
-  }
-
-  /**
-   * What the person chose in the Bar (docs/desk-agent.md §1,
-   * "Conversations"): a conversation to continue in this space, or a new
-   * one — checked against main's space in front. A thread still acting keeps
-   * the console through any of it — the agent is not stopped because the
-   * person moved. (`enter` and `leave` are an older shell's, and do nothing:
-   * main's current space is followed — followGroup.)
-   */
-  async deskConversation(command: DeskConversationCommand): Promise<void> {
-    const host = this.#deskHost;
-    if (host === null) return;
-    switch (command.type) {
-      case "enter":
-      case "leave":
-        console.debug(`[desk] an older shell's "${command.type}" was ignored: the desk follows main's current space`);
-        return;
-      case "choose": {
-        if (host.browser.currentGroupId() !== command.groupId) throw new Error("that desk is not open");
-        if (this.#run?.runId !== command.runId) {
-          if (this.#active()) throw new Error("pause or end the current task before continuing another conversation");
-          const record = this.#threads?.get(command.runId) ?? null;
-          if (record === null) throw new Error("that conversation is no longer available");
-          this.#adopt(record);
-        }
-        // This group's from now on; the group it came from keeps it too.
-        host.bindings.bind(command.groupId, command.runId);
-        host.browser.refreshSpaces?.();
-        break;
-      }
-      case "new": {
-        if (host.browser.currentGroupId() !== command.groupId) throw new Error("that desk is not open");
-        host.bindings.unbind(command.groupId);
-        host.browser.refreshSpaces?.();
-        // The next message from the Bar starts the group's new conversation (#startFresh binds it).
-        await this.newThread();
-        return;
-      }
-    }
-    this.#onChange();
-  }
-
   /** The group whose desk is up, when the open thread is its conversation and runs here. */
-  #deskTurn(run: RunSummary): { groupId: string; host: DeskAgentHost } | null {
-    const desk = this.#desk;
+  #deskTurn(run: RunSummary, sentFrom?: string): { groupId: string; host: DeskAgentHost } | null {
+    // The space the turn's message was sent from, when it said: a conversation may be two spaces' (chosen in a second
+    // one), and a message from the first that arrives once the person is in the second — where this console is at
+    // home by then — is still a turn at the first one's desk: its tabs, its context.
+    const groupId = sentFrom ?? this.#desk?.groupId ?? null;
     const host = this.#deskHost;
-    if (desk === null || host === null || isCloudRun(run)) return null;
-    return host.bindings.get(desk.groupId) === run.runId ? { groupId: desk.groupId, host } : null;
+    if (groupId === null || host === null || isCloudRun(run)) return null;
+    return host.bindings.get(groupId) === run.runId ? { groupId, host } : null;
   }
 
   /**
-   * A desk came up: open its group's conversation, or an empty console for a
-   * new one. Only an idle thread is set aside on the way (#adopt,
-   * #clearOpen): one acting keeps the console, its hold and its scope until
-   * its turn ends (#refollow); one waiting on the person is put away as it
-   * stands (#putAway) — its question, approval or takeover still pending,
-   * bound to its space, which opens it again with them. (Until 2026-10-09 a
-   * waiting thread was set aside, and the person looking at another space
-   * cancelled what it asked.)
+   * Nothing open here any more: the conversation that was is saved and set
+   * aside (#setAside — a question or an approval still pending is cancelled,
+   * its research tabs closed). Never while it is acting: the hub keeps a
+   * console that is (RunHub).
    */
-  #openForDesk(host: DeskAgentHost, groupId: string): void {
-    if (this.#active()) return;
-    const bound = host.bindings.get(groupId);
-    if (bound !== null && this.#run?.runId === bound) return;
-    const record = bound === null ? null : (this.#threads?.get(bound) ?? null);
-    if (this.#awaitsPerson()) this.#putAway();
-    if (record !== null) {
-      this.#adopt(record);
-      return;
-    }
-    // A thread deleted since it was bound leaves nothing to open.
-    if (bound !== null) {
-      host.bindings.unbind(groupId);
-      host.browser.refreshSpaces?.();
-    }
-    this.#clearOpen();
-  }
-
-  /**
-   * The open thread waits on the person, who moved to another space: it is
-   * saved as it stands and leaves the console — nothing cancelled, its
-   * research tabs kept, a reminder's scheduler still waiting on it — to be
-   * opened again by its space's desk (#openForDesk, #adopt) and answered
-   * there. Its turn, once answered and ended, re-follows the space in front
-   * (#refollowLater).
-   */
-  #putAway(): void {
-    if (this.#run === null) return;
-    this.#clearTimers();
-    this.#persistNow();
-    this.#run = null;
-    this.#runSpaceId = null;
-    this.#history = [];
-    this.#chain = null;
-    this.#storedEvidence = [];
-    this.#storedSigningKey = null;
-  }
-
-  /** Nothing open: the thread that was is saved and set aside. */
-  #clearOpen(): void {
+  clear(): void {
     if (this.#run === null) return;
     this.#setAside();
     this.#run = null;
@@ -1077,7 +980,7 @@ export class RunController {
     const ask = async (request: DeskRequestFor): Promise<DeskAgentState> => {
       const reply = await host.bridge.request({ ...request, groupId } as DeskRequest);
       if (!reply.ok) throw new Error(reply.error);
-      if (reply.state.groupId !== groupId) throw new Error("the desk in view is another space's now; nothing was changed");
+      if (reply.state.groupId !== groupId) throw new Error("the person is looking at another space now, so this desk cannot be read or arranged until they come back to it; nothing was changed");
       sawState(reply.state);
       return reply.state;
     };
@@ -1356,10 +1259,10 @@ export class RunController {
     return outcome;
   }
 
-  async start(intent: string, attachments: AgentAttachment[] = [], options: { page: boolean } = { page: true }): Promise<void> {
+  async start(intent: string, attachments: AgentAttachment[] = [], options: RunTurnOptions = { page: true }): Promise<void> {
     const marked = this.#authorMarker(intent);
     if (marked !== null) {
-      if (marked.claim !== null) return this.#startAuthor(marked.text, marked.claim, attachments);
+      if (marked.claim !== null) return this.#startAuthor(marked.text, marked.claim, attachments, options.groupId);
       intent = marked.text;
     }
     // A fresh intent over an open cloud run starts a conversation of its own here.
@@ -1367,8 +1270,8 @@ export class RunController {
       await this.message(intent, attachments, options);
       return;
     }
-    this.#startFresh(intent, attachments);
-    await this.#launch(options.page);
+    this.#startFresh(intent, attachments, options.groupId);
+    await this.#launch(options.page, options.groupId);
   }
 
   /**
@@ -1386,23 +1289,27 @@ export class RunController {
    * An author turn: a thread of its own, so its history holds nothing a page, a mail or a note said — an extension
    * is never written by a turn that read untrusted content — and the draft folder it may write.
    */
-  async #startAuthor(text: string, claim: DraftClaim, attachments: AgentAttachment[]): Promise<void> {
-    this.#startFresh(text, attachments);
-    this.#author = { ...claim, runId: this.#requireRun().runId };
-    await this.#launch(false);
+  async #startAuthor(text: string, claim: DraftClaim, attachments: AgentAttachment[], sentFrom?: string): Promise<void> {
+    // (Its space's conversation — the one whose Bar asked, as any message's: `sentFrom`.)
+    this.#startFresh(text, attachments, sentFrom);
+    this.#checkpoints.author(this.#requireRun().runId, claim);
+    await this.#launch(false, sentFrom);
   }
 
   /** A new thread from the composer. Any open thread is saved and set aside. */
-  #startFresh(intent: string, attachments: AgentAttachment[]): void {
+  #startFresh(intent: string, attachments: AgentAttachment[], sentFrom?: string): void {
     this.#abortAi();
     this.#setAside();
     this.#storedEvidence = [];
     this.#storedSigningKey = null;
-    const activeTab = this.#browser.activeTab();
-    // The space the Bar's message came from: the one in front as it was sent (the console's message names none, and
-    // main's current space is followed synchronously, so this is it). An empty space has no tab in use, and its Bar may
-    // start a conversation all the same (docs/spaces.md §1).
-    const groupId = this.#deskHost === null ? null : (this.#deskHost.browser.currentGroupId() ?? this.#desk?.groupId ?? null);
+    // The space the Bar's message came from: this console's (`home` — the hub hands a message to the console of the
+    // space it was sent in, RunHub.start). An empty space has no tab in use, and its Bar may start a conversation
+    // all the same (docs/spaces.md §1).
+    const groupId = this.#deskHost === null ? null : (sentFrom ?? this.#desk?.groupId ?? null);
+    // That space is in front, as a rule. When the person left as the message was on its way, the tab in view is
+    // another space's — not this conversation's to name — and the Profile is the space's own, wherever they went.
+    const elsewhere = groupId !== null && this.#deskHost !== null && this.#deskHost.browser.currentGroupId() !== groupId;
+    const activeTab = elsewhere ? null : this.#browser.activeTab();
     if (activeTab === null ? groupId === null : activeTab.kind !== "human") {
       throw new Error("select a browser tab before starting a conversation");
     }
@@ -1410,7 +1317,7 @@ export class RunController {
     const taskId = randomUUID();
     const runId = randomUUID();
     const startedAt = new Date().toISOString();
-    this.#runSpaceId = this.#spaceId();
+    this.#runSpaceId = (elsewhere && groupId !== null ? this.#deskHost?.browser.tabGroupSpaceId(groupId) : null) ?? this.#spaceId();
     this.#chain = new EvidenceChain(runId, {
       principal: "pistachio-browser-agent",
       sponsor: "local-user",
@@ -1454,7 +1361,7 @@ export class RunController {
           id: randomUUID(),
           at: startedAt,
           label: "Conversation started",
-          detail: activeTab === null ? "Started in an empty space of your browser session" : `Connected to ${activeTab.title} in your existing browser session`,
+          detail: activeTab === null ? (elsewhere ? "Started in its space of your browser session, behind the one in view" : "Started in an empty space of your browser session") : `Connected to ${activeTab.title} in your existing browser session`,
           tone: "safe",
         },
       ],
@@ -1479,7 +1386,7 @@ export class RunController {
   }
 
   /** The first turn of a fresh thread, in whichever mode applies. `page`: whether the page in view is attached. */
-  async #launch(page = true): Promise<void> {
+  async #launch(page = true, sentFrom?: string): Promise<void> {
     const run = this.#requireRun();
     const runId = run.runId;
     const purpose = run.purpose;
@@ -1531,7 +1438,7 @@ export class RunController {
     }
 
     this.#onChange();
-    if (this.#aiMode) await this.#beginAiExecution(runId, { kind: "start", text: purpose, attachments, page });
+    if (this.#aiMode) await this.#beginAiExecution(runId, { kind: "start", text: purpose, attachments, page, ...(sentFrom === undefined ? {} : { groupId: sentFrom }) });
     else await this.#beginDemoExecution(runId);
   }
 
@@ -1541,9 +1448,9 @@ export class RunController {
    * follow-up after a completed task is the same conversation, with
    * everything the agent learned still in its context and notes.
    */
-  async message(content: string, attachments: AgentAttachment[] = [], options: { page: boolean } = { page: true }): Promise<void> {
+  async message(content: string, attachments: AgentAttachment[] = [], options: RunTurnOptions = { page: true }): Promise<void> {
     const marked = this.#authorMarker(content);
-    if (marked !== null && marked.claim !== null) return this.#startAuthor(marked.text, marked.claim, attachments);
+    if (marked !== null && marked.claim !== null) return this.#startAuthor(marked.text, marked.claim, attachments, options.groupId);
     const text = (marked?.text ?? content).trim();
     // An attachment alone is a sendable turn — "what about this?" implied.
     if (text === "" && attachments.length === 0) return;
@@ -1557,8 +1464,8 @@ export class RunController {
     // No thread, or the demo's scripted flow after it ended: start over.
     // The live agent continues a finished thread below.
     if (run === null || (isTerminalStatus(run.status) && !this.#shouldUseAi())) {
-      this.#startFresh(text, attachments);
-      await this.#launch(options.page);
+      this.#startFresh(text, attachments, options.groupId);
+      await this.#launch(options.page, options.groupId);
       return;
     }
     const ended = isTerminalStatus(run.status);
@@ -1595,7 +1502,7 @@ export class RunController {
         "safe",
       );
       this.#onChange();
-      await this.#beginAiExecution(run.runId, { kind: "message", text, attachments, after, page: options.page });
+      await this.#beginAiExecution(run.runId, { kind: "message", text, attachments, after, page: options.page, ...(options.groupId === undefined ? {} : { groupId: options.groupId }) });
       return;
     }
 
@@ -1667,7 +1574,7 @@ export class RunController {
    */
   async retry(): Promise<void> {
     const run = this.#run;
-    const last = this.#lastTurn;
+    const last = run === null ? null : this.#checkpoints.get(run.runId);
     if (run === null || last === null || isCloudRun(run) || !this.#aiMode) return;
     if (run.status !== "completed" && run.status !== "failed" && run.status !== "interrupted") return;
     this.#abortAi();
@@ -1880,7 +1787,7 @@ export class RunController {
     this.#scheduledTurn = run.origin?.kind === "reminder" && turn.kind === "start";
     // The summary's messages up to and including this turn's user message,
     // and the history before it: a retry cuts back to exactly here.
-    this.#lastTurn = { input: turn, base: this.#history, messagesBefore: run.messages.length };
+    this.#checkpoints.set(runId, { input: turn, base: this.#history, messagesBefore: run.messages.length });
     this.#persistNow();
     this.#onChange();
 
@@ -1888,26 +1795,25 @@ export class RunController {
     const current = (): boolean => generation === this.#aiGeneration && this.#run?.runId === runId;
     /** The desk turn's hold on its group in the browser, released when the turn ends however it ends. */
     let releaseGroup: (() => void) | null = null;
-    /** The space (tab group) this turn is working in, if it is a desk turn: the console re-follows from it once it ends. */
-    let turnGroupId: string | null = null;
     /** An author turn's draft folder while it writes (the Ledge's shimmer), let go however the turn ends. */
     let drafting: string | null = null;
 
+    // (Counted from here, where its `finally` is sure to count it out again.)
+    this.#inFlight += 1;
     try {
       // An author turn (docs/extensions.md §8) is the `/extension` thread's,
       // and every turn that continues it; a follow-up once it ended is an
       // ordinary turn. It has the author tools and nothing else: no desk, no
       // pages, no memory, no notes, no mail, no extension's tools.
-      if (this.#author?.runId === runId && turn.kind === "message" && turn.after === "ended") this.#author = null;
-      const author = this.#author?.runId === runId && this.#extensions !== null ? this.#author : null;
+      if (turn.kind === "message" && turn.after === "ended") this.#checkpoints.author(runId, null);
+      const author = this.#extensions === null ? null : this.#checkpoints.authorOf(runId);
       // A turn at a desk works on the desk (docs/desk-agent.md §2): the
       // group's tabs only, the desk tools, and the desk as it stands now,
       // read from the shell before the model is. It holds the group for as
       // long as it runs, which may outlast the desk: a page opened from the
       // group's tabs joins the group even after the person has left it.
-      const desk = this.#deskTurn(run);
+      const desk = this.#deskTurn(run, turn.kind === "start" || turn.kind === "message" ? turn.groupId : undefined);
       if (desk !== null) releaseGroup = desk.host.browser.holdGroup(desk.groupId);
-      turnGroupId = desk?.groupId ?? null;
       let deskState: DeskAgentState | null = null;
       if (desk !== null && author === null) {
         const reply = await desk.host.bridge.request({ type: "state", groupId: desk.groupId });
@@ -1918,9 +1824,10 @@ export class RunController {
       // Read at run time, not at construction: an edit in Settings applies
       // to the next run without restarting anything. Read once for the turn:
       // the browser path that follows a hand-off works from the same inputs.
-      const extras: Pick<AiAgentRunInput, "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions" | "desk"> = author !== null ? {} : {
+      const extras: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions" | "desk"> = author !== null ? {} : {
         ...(await this.#memoryInput(run)),
         ...this.#reminderInput(run),
+        ...this.#spaceInput(run, desk?.groupId ?? null),
         ...this.#artifactInput(run),
         ...this.#bookmarkInput(run),
         ...this.#noteInput(run),
@@ -1998,7 +1905,12 @@ export class RunController {
       const deskBlock = desk === null
         ? null
         : `\n\n[${[
-            ...(deskState === null ? ["Desk: the desk's layout could not be read just now; call desk_state before arranging anything."] : deskStateLines(deskState)),
+            ...(deskState !== null
+              ? deskStateLines(deskState)
+              : desk.host.browser.currentGroupId() !== desk.groupId
+                ? // The turn goes on in its own space while the person is in another (RunHub): the shell draws one desk.
+                  ["Desk: the person is looking at another space just now, so this space's desk cannot be read or arranged until they come back to it. Work in this space's tabs (tabs_list), and say in your reply what is waiting for them here."]
+                : ["Desk: the desk's layout could not be read just now; call desk_state before arranging anything."]),
             ...groupContextLines(desk.host.context.items(desk.groupId)),
           ].join("\n")}]`;
       // (An author turn reads no page and no desk: the person's wish, as they made it.)
@@ -2233,18 +2145,13 @@ export class RunController {
       this.#turnUsage = { inputTokens: 0, outputTokens: 0 };
       await this.#failRun(runId, error);
     } finally {
+      this.#inFlight -= 1;
       releaseGroup?.();
       if (drafting !== null) this.#extensions?.setDrafting?.(drafting, false);
-      // The turn kept the space it started in; ended, the console follows the person to the space they are in.
-      // A turn off the desk (the answer to a question asked away from it) re-follows for the turn it continues.
-      const away = this.#refollowLater?.runId === runId ? this.#refollowLater.groupId : null;
-      if (turnGroupId !== null || away !== null) this.#refollow(turnGroupId ?? away!);
-      // An answer from afar that waited for this turn: taken once it has settled.
-      if (this.#queuedAnswers.size > 0) {
-        queueMicrotask(() => {
-          void this.#takeQueuedAnswers().catch((error: unknown) => console.error("[agent] a waiting iMessage answer could not be taken", error));
-        });
-      }
+      // The turn is over, however it ended: whoever keeps the consoles hears, once this one has finished with it
+      // (RunHub lets go of one nobody is looking at that has nothing left going).
+      const settled = this.#onSettled;
+      if (settled !== null) queueMicrotask(settled);
     }
   }
 
@@ -2326,7 +2233,7 @@ export class RunController {
     run: RunSummary,
     turn: TurnInput,
     attachments: AgentAttachment[],
-    extras: Pick<AiAgentRunInput, "memory" | "reminders" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">,
+    extras: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">,
     abortSignal: AbortSignal,
   ): Promise<TurnRouteDecision> {
     if (!isRoutable(turn, this.#scheduledTurn) || !turnRouterEnabled()) {
@@ -2470,6 +2377,62 @@ export class RunController {
       cancel: (id) => reminderToolView(store.cancel(id, source)),
     };
     return { reminders: { host, timezone: this.timezone() } };
+  }
+
+  /**
+   * The space tools for this turn (docs/primitives.md §2): the spaces of the
+   * run's Profile and the away service's two verbs, as the agent — `by:
+   * agent`, never in front (`select` false: the agent does not move the
+   * person). `deskGroupId`: the space a desk turn works in, which the list
+   * marks as the one in front and which that turn alone may send away from
+   * under itself (`ownTurn`: its own hold is not what "the agent is working
+   * here" refuses). None for a cloud run, nor for a turn a reminder started:
+   * nobody is there to see a space go, and a space's coming and going on a
+   * schedule is an extension's work, not a scheduled turn's.
+   */
+  #spaceInput(run: RunSummary, deskGroupId: string | null): Pick<AiAgentRunInput, "spaces"> {
+    const spaces = this.#spaces;
+    if (spaces === null || isCloudRun(run) || this.#scheduledTurn) return {};
+    const profileId = this.#runSpaceId ?? this.#spaceId();
+    const timezone = this.timezone();
+    const who = (by: AwayHolder): string => (by.kind === "agent" ? "you" : by.kind === "person" ? "the person" : by.name);
+    const refused = (outcome: Extract<AwayOutcome, { ok: false }>): SpaceToolOutcome => ({ ok: false, reason: outcome.reason });
+    const host: SpaceToolHost = {
+      list: () => {
+        const current = deskGroupId ?? spaces.current(profileId);
+        return {
+          spaces: spaces.list(profileId).map((space) => ({ id: space.id, title: space.title, tabCount: space.tabCount, current: space.id === current })),
+          away: spaces.away(profileId).map((space) => ({
+            id: space.id,
+            title: space.title,
+            tabCount: space.tabCount,
+            since: new Date(space.since).toISOString(),
+            until: space.until === undefined ? null : new Date(space.until).toISOString(),
+            by: who(space.by),
+          })),
+        };
+      },
+      sendAway: async (spaceId, until) => {
+        // (Only a space the list named: an id from anywhere else — a page's text, an extension's answer — names nothing.)
+        if (!spaces.list(profileId).some((space) => space.id === spaceId)) return { ok: false, reason: AWAY_REFUSALS.unknown };
+        const outcome = await spaces.send(spaceId, { by: { kind: "agent" }, ...(until === null ? {} : { until }), ...(deskGroupId === spaceId ? { ownTurn: true } : {}) });
+        if (!outcome.ok) return refused(outcome);
+        const due = outcome.space.until;
+        return { ok: true, title: outcome.space.title, until: due === undefined ? null : new Date(due).toISOString(), back: due === undefined ? "when asked" : formatReturn(due, Date.now(), { timeZone: timezone }) };
+      },
+      bringBack: async (spaceId) => {
+        if (!spaces.away(profileId).some((space) => space.id === spaceId)) return { ok: false, reason: AWAY_REFUSALS.notAway };
+        const outcome = await spaces.bringBack(spaceId, { select: false });
+        return outcome.ok ? { ok: true, title: outcome.space.title, until: null, back: "now" } : refused(outcome);
+      },
+      close: async (spaceId) => {
+        // (Only a space the list named, as for one sent away.)
+        if (!spaces.list(profileId).some((space) => space.id === spaceId)) return { ok: false, reason: AWAY_REFUSALS.unknown };
+        const outcome = await spaces.close(spaceId, { by: { kind: "agent" }, ...(deskGroupId === spaceId ? { ownTurn: true } : {}) });
+        return outcome.ok ? { ok: true, title: outcome.title, until: null, back: "from the archive, when the person restores it" } : { ok: false, reason: outcome.reason };
+      },
+    };
+    return { spaces: { host, timezone } };
   }
 
   /**

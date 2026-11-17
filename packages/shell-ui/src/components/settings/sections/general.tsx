@@ -340,7 +340,7 @@ export function GeneralPage() {
         <HomePageRow />
         <Row
           label="Open the agent chat on launch"
-          note="Show the conversation beside the page when Pistachio starts. ⌘I toggles it at any time."
+          note="Bring the chat out when Pistachio starts. ⌘I brings it at any time."
         >
           <Switch
             checked={general.consoleOpenOnLaunch}

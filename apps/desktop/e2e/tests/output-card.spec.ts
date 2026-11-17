@@ -3,12 +3,14 @@ import type { RunSummary, ThreadListItem } from "@pistachio/protocol";
 import { shellReady } from "./windows";
 import { launchApp } from "./app";
 import { activeTabUrl, captureShell, captureWindow } from "./agent-harness";
+import { openChats } from "./desk-harness";
 
 /**
  * Finished conversations read back from disk, as a previous session left
- * them: the newest opens in the console at launch (a note the agent wrote,
- * shown as a card), and the other is opened from the thread list (a
- * completed task's footer). One launch, both threads seeded.
+ * them, each chosen in the nub's past chats and read in the desk's answer
+ * card (the desktop's one chat): a note the agent wrote, shown as a card
+ * under its reply, and a completed task's footer. One launch, both threads
+ * seeded.
  */
 
 const NOTE_START = "2026-09-23T14:59:00.000Z";
@@ -137,8 +139,7 @@ test.describe.serial("a finished conversation read back from disk", { tag: ["@ag
     const meta = completedRun();
     ({ app } = await launchApp({
       name: "output-card",
-      // The finished conversations are read in the console, which opens closed.
-      settings: { layout: { sidebar: "pinned" }, general: { consoleOpenOnLaunch: true } },
+      settings: { layout: { sidebar: "pinned" } },
       files: {
         // Newest first: the note's thread heads the list.
         "threads/threads.json": { version: 1, threads: [listItem(note), listItem(meta)] },
@@ -154,11 +155,11 @@ test.describe.serial("a finished conversation read back from disk", { tag: ["@ag
   });
 
   test("a note the agent wrote shows as a card under the reply and opens", async () => {
-    // A conversation bound to no space comes back in the list, not open (the desk's session follows the current
-    // space: docs/spaces.md §2): it is chosen there.
-    await shell.getByTestId("thread-list-button").click();
-    await shell.getByTestId("thread-item-output-card").click();
-    const card = shell.getByTestId("output-card");
+    // A conversation bound to no space comes back in the list, not open (each space shows its own:
+    // docs/spaces.md §2): it is chosen there, and is this space's from then on.
+    await openChats(shell);
+    await shell.locator('[data-testid="desk-conversations"] [data-testid="desk-conversation"][data-run-id="output-card"]').click();
+    const card = shell.getByTestId("desk-answer").getByTestId("output-card");
     await expect(card).toHaveCount(1);
     await expect(card).toContainText("Waymo transit rewards program");
     await expect(card).toContainText("Note · Created");
@@ -171,14 +172,15 @@ test.describe.serial("a finished conversation read back from disk", { tag: ["@ag
   });
 
   test("completion metadata does not repeat the final answer", async () => {
-    await shell.getByTestId("thread-list-button").click();
-    await shell.getByTestId("thread-item-completion-meta").click();
-    await expect(shell.getByTestId("completion-meta")).toBeVisible();
-    await expect(shell.getByRole("status")).toHaveText("Task completed");
-    await expect(shell.getByText(META_ANSWER, { exact: true })).toHaveCount(1);
-    await expect(shell.getByTestId("completion-meta")).not.toContainText(META_ANSWER);
+    await openChats(shell);
+    await shell.locator('[data-testid="desk-conversations"] [data-testid="desk-conversation"][data-run-id="completion-meta"]').click();
+    const answer = shell.getByTestId("desk-answer");
+    await expect(answer.getByTestId("completion-meta")).toBeVisible();
+    await expect(answer.getByRole("status").first()).toHaveText("Answer complete");
+    await expect(answer.getByText(META_ANSWER, { exact: true })).toHaveCount(1);
+    await expect(answer.getByTestId("completion-meta")).not.toContainText(META_ANSWER);
     // The record's size comes from the stored result; the replay it opens is delegation.spec's.
-    await expect(shell.getByRole("button", { name: "View 84 activity records" })).toBeVisible();
+    await expect(answer.getByRole("button", { name: "View 84 activity records" })).toBeVisible();
     await captureShell(shell, "agent-console", "completion-meta.png");
   });
 });

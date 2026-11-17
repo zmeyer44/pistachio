@@ -4,7 +4,7 @@ import { dispatch, EXT_METHODS } from "../src/main/extensions/methods";
 import { matchesHostPattern } from "../src/main/extensions/hosts";
 import { harness, manifestOf, recordOf, tabOf } from "./extensions-harness";
 
-const EVERY_CAPABILITY = ["tabs:read", "tabs:write", "desk", "pages:read", "capture:tab", "input:events", "files:data", "clipboard:write", "clipboard:read", "notifications", "notes:read", "notes:write", "agent:tools", "agent:ask", "power"];
+const EVERY_CAPABILITY = ["tabs:read", "tabs:write", "spaces:write", "desk", "pages:read", "capture:tab", "input:events", "files:data", "clipboard:write", "clipboard:read", "notifications", "notes:read", "notes:write", "agent:tools", "agent:ask", "power"];
 
 describe("the scope", () => {
   it("has a row for every method of the API", () => {

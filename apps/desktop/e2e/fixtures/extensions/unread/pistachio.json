@@ -1,0 +1,17 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.unread",
+  "name": "Unread",
+  "version": "1.0.0",
+  "description": "An e2e fixture: a tab opened behind what you are doing is marked until you look at it.",
+  "permissions": ["tabs:read", "tabs:write", "tabs:mark"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [
+    { "id": "opened", "on": { "tab": "opened" } },
+    { "id": "shown", "on": { "tab": "shown" } },
+    { "id": "closed", "on": { "tab": "closed" } }
+  ],
+  "bar": {
+    "commands": [{ "name": "later", "description": "Open an address behind this, to read later", "run": { "event": true } }]
+  }
+}

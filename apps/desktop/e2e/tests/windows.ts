@@ -63,11 +63,13 @@ export const noticePage = (app: ElectronApplication): Promise<Page> =>
  * since 2026-10-09, always up (docs/spaces.md) — shows the current space,
  * open (its windows may still be coming to rest: desk-harness's settled).
  *
- * The agent console is NOT a launch readiness signal: `consoleOpenOnLaunch`
- * defaults to false, so a fresh profile opens with the console closed and
- * `agent-panel` unmounted. A spec that needs the console open asks for it —
- * seed `general.consoleOpenOnLaunch` in settings.json, or send the shell
- * `openConsole` (on the desk ⌘I asks the desk's Bar instead).
+ * The chat is NOT a launch readiness signal: on the desktop it is the desk's
+ * — its nub, in the trailing foot corner, nothing out of it until asked — and
+ * no panel stands beside the desk (`agent-panel` is the web's, never
+ * mounted here; since 2026-11-16). A spec that needs the chat out asks at
+ * the Bar (desk-harness's `reachBar`), or — as a reminder or a notification
+ * would — seeds `general.consoleOpenOnLaunch` or sends the shell
+ * `openConsole`: the space in front's chat comes out of its nub.
  */
 export async function shellReady(app: ElectronApplication): Promise<Page> {
   const shell = await shellPage(app);

@@ -10,6 +10,9 @@
     "./capabilities": "./src/capabilities.ts",
     "./wire": "./src/wire.ts",
     "./sheet": "./src/sheet.ts",
+    "./triggers": "./src/triggers.ts",
+    "./theme": "./src/theme.ts",
+    "./sites": "./src/sites.ts",
     "./runtime": "./src/runtime.ts",
     "./types": "./pistachio.d.ts",
     "./schema": "./schema/pistachio-extension.schema.json"

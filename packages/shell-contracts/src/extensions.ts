@@ -48,6 +48,10 @@ export interface ExtensionSheet {
   adds: string[];
   /** What it can do, broadest first; the sheet shows at most four and discloses the rest. */
   can: ExtensionSheetLine[];
+  /** When it runs by itself, a line a trigger, in the shell's words ("Sundays 8:00 AM–11:00 PM"); absent or empty when it never does. */
+  runs?: string[];
+  /** Under those lines: what it may do with nobody there, by what it asks for — and that each time is listed and can be undone. */
+  runsLimit?: string;
   /** Everything it declares, for "See everything it declares ›". */
   declares: string[];
   /** The hash of the manifest these lines describe; an approval names it. */
@@ -105,6 +109,152 @@ export interface ExtensionError {
   at: number;
 }
 
+/** A declared trigger as the extensions page lists it (docs/primitives.md §3): the shell's words for when, and where the clock has it. */
+export interface ExtensionTriggerInfo {
+  id: string;
+  /** "Sundays 8:00 AM–11:00 PM", "Weekdays at 9:00 AM", "Every 5 minutes", "While this Mac is on battery". */
+  text: string;
+  /** A window, or a signal main can read: whether it is on now. Absent for an instant and an interval. */
+  holds?: boolean;
+  /** A signal main cannot read now (§3.6): neither on nor off, and nothing runs for it. */
+  unknown?: true;
+  /** With `unknown`, what would let main read it, in the shell's words ("Connect Google Calendar in Settings"). */
+  needs?: string;
+  /** When it next changes (a window) or next comes due (an instant, an interval's mark), ms since 1970; null when never, or not the clock's to say (a signal). */
+  next: number | null;
+  /** An event (§3.7): told as it happens, so there is no on, off or next — only `last`. */
+  event?: true;
+  /** With `event`, when its handler was last run, ms since 1970; null when never yet. */
+  last?: number | null;
+}
+
+/** What an extension may do with nobody there that main writes down, each with its way back (the journal's Undo). */
+export const EXTENSION_JOURNAL_VERBS = ["sendAway", "bringBack", "setTheme", "openTab", "closeSpace"] as const;
+
+/**
+ * One thing an extension did with nobody there (docs/primitives.md §3, rule 7): main's record, never the
+ * extension's words — which trigger woke it, what it did to which space, and whether the person undid it.
+ */
+export interface ExtensionJournalEntry {
+  id: string;
+  at: number;
+  extensionId: string;
+  /** The trigger that woke it, by id; null when none was in hand. */
+  trigger: string | null;
+  verb: (typeof EXTENSION_JOURNAL_VERBS)[number];
+  /** The space (tab group), by id, and its name then; `*` for every space (a theme set for all of them). For a tab opened: the space it opened in, and `title` its address, cut short. */
+  spaceId: string;
+  title: string;
+  /** A tab opened (`openTab`): which, so Undo can close it. */
+  tabId?: string;
+  /** A space closed (`closeSpace`): the archive's entry of it, so Undo can restore it. */
+  entryId?: string;
+  /** A space brought back (`bringBack`) before it was due: when it was due, so Undo sends it away until then and not for good. */
+  until?: number;
+  /** When the person undid it. */
+  undone?: number;
+}
+
+/** The scope a journal line or a shown thing names when it is every space. */
+export const EVERY_SPACE = "*";
+
+export const EXTENSION_MARK_TONES = ["neutral", "green", "amber", "red", "blue"] as const;
+export type ExtensionMarkTone = (typeof EXTENSION_MARK_TONES)[number];
+
+/**
+ * A small mark an extension put on a space's tile (docs/primitives.md §4): drawn by the shell at the tile's corner,
+ * said as "<extension>: <label>" — the extension's words only inside the shell's frame.
+ */
+export interface ExtensionSpaceMark {
+  extensionId: string;
+  extensionName: string;
+  spaceId: string;
+  /** One or two characters; null draws a dot. */
+  glyph: string | null;
+  tone: ExtensionMarkTone;
+  label: string;
+}
+
+/** A small mark an extension put on a tab's row (docs/primitives.md §4.7): drawn by the shell beside the tab's title, said as a space's is. */
+export interface ExtensionTabMark {
+  extensionId: string;
+  extensionName: string;
+  tabId: string;
+  /** One or two characters; null draws a dot. */
+  glyph: string | null;
+  tone: ExtensionMarkTone;
+  label: string;
+}
+
+/** What a backdrop is, as the shell paints it: main has checked it and holds the picture itself. */
+export type ExtensionBackdropValue =
+  | { kind: "color"; color: string }
+  | { kind: "gradient"; colors: string[]; angle: number }
+  /** `url`: the picture as main serves it to the shell (`pistachio-ext://theme/<file>`), never the extension's own address. */
+  | { kind: "image"; url: string; fit: "cover" | "contain" | "tile" };
+
+/**
+ * A backdrop the shell draws in the desk's well for an extension: for one space (`spaceId`) or — null — for every
+ * space that has none of its own. `dim` (0–0.8) is how far the shell's ground is laid over it.
+ */
+export interface ExtensionBackdrop {
+  extensionId: string;
+  extensionName: string;
+  spaceId: string | null;
+  value: ExtensionBackdropValue;
+  dim: number;
+}
+
+/** The places of the shell an extension fills with rows (docs/primitives.md §4.5): the strip beside the Bar, a section of the sidebar. */
+export const EXTENSION_SITES = ["band", "sidebar"] as const;
+export type ExtensionSite = (typeof EXTENSION_SITES)[number];
+
+/** How many of an extension's rows the shell draws in each place, and how many sections the sidebar stacks. */
+export const EXTENSION_SITE_ROWS_MAX: Record<ExtensionSite, number> = { band: 6, sidebar: 12 };
+export const EXTENSION_SECTIONS_MAX = 4;
+
+/** One row as the shell draws it: main has checked it. A row with an `id` can be pressed; its buttons on their own. */
+export interface ExtensionRow {
+  id: string | null;
+  /** Its leading mark: a glyph (null draws a dot) in a tone; null for none. */
+  mark: { glyph: string | null; tone: ExtensionMarkTone } | null;
+  text: string;
+  detail: string;
+  value: string;
+  buttons: { id: string; title: string }[];
+}
+
+/**
+ * What one extension has one place showing: for a space (`spaceId`) or — null — for every space that has none of
+ * its own from that extension. `title` heads a sidebar section (null: the extension's name).
+ */
+export interface ExtensionSiteView {
+  extensionId: string;
+  extensionName: string;
+  site: ExtensionSite;
+  spaceId: string | null;
+  title: string | null;
+  rows: ExtensionRow[];
+}
+
+/** One thing an extension has the shell showing, as the extensions page lists it with its Remove. */
+export interface ExtensionShown {
+  /** `tabMarks`: every mark it has on a tab, as one line (`detail`: how many, and what the newest says) — removed together. */
+  what: "mark" | "theme" | "tabMarks" | ExtensionSite;
+  /** The space, by id; null for every space. */
+  spaceId: string | null;
+  /** The space's name (empty for every space, or one no longer here). */
+  space: string;
+  /**
+   * A mark's label; for a theme, what it is made of: "Backdrop", "Accent", "Backdrop and accent"; for rows, the
+   * section's title or the first row's text.
+   */
+  detail: string;
+}
+
+/** How many journal entries the snapshot carries for one extension (the newest). */
+export const JOURNAL_SHOWN = 8;
+
 /** Everything the shell draws about one extension. */
 export interface ExtensionInfo {
   id: string;
@@ -154,6 +304,14 @@ export interface ExtensionInfo {
   captures?: string[];
   /** The agent's author turn is writing its folder right now (docs/extensions.md §8): its Ledge icon shimmers. */
   drafting?: boolean;
+  /** Its declared triggers (docs/primitives.md §3); absent when it declares none. */
+  triggers?: ExtensionTriggerInfo[];
+  /** The person paused its triggers: it still runs when they run it, never by itself. */
+  triggersPaused?: boolean;
+  /** What it last did with nobody there, newest first (JOURNAL_SHOWN at most). */
+  journal?: ExtensionJournalEntry[];
+  /** What it has the shell showing now — marks on spaces, a theme — each removable by the person. Absent when nothing. */
+  shows?: ExtensionShown[];
 }
 
 /** A library (bundled) extension not yet turned on, offered on the extensions page. */
@@ -194,6 +352,16 @@ export interface ExtensionsSnapshot {
   pendingInstall: ExtensionPendingInstall | null;
   /** The extension whose panel is open beside the sidebar, if any. */
   openPanel: string | null;
+  /** *Pause all*: no extension runs by itself until it is lifted (each still runs when the person runs it). */
+  triggersPaused?: boolean;
+  /** The marks extensions put on spaces' tiles, of extensions on in the Profile in front. */
+  spaceMarks?: ExtensionSpaceMark[];
+  /** The marks extensions put on tabs' rows, of extensions on in the Profile in front. */
+  tabMarks?: ExtensionTabMark[];
+  /** The backdrops in force: at most one for each space, and one for every space. */
+  backdrops?: ExtensionBackdrop[];
+  /** The rows extensions have the band and the sidebar showing, of extensions on in the Profile in front. */
+  sites?: ExtensionSiteView[];
 }
 
 export const EMPTY_EXTENSIONS_SNAPSHOT: ExtensionsSnapshot = {
@@ -215,6 +383,10 @@ export interface ExtensionMenuClick {
   srcUrl?: string;
   /** The desk window's tab, for `window` items. */
   windowTabId?: string;
+  /** Chosen from a tab's own menu (its row in the sidebar), for `tab` items: `tabId` is that tab. */
+  fromTab?: true;
+  /** The space whose menu it was chosen from, for `space` items. */
+  spaceId?: string;
 }
 
 export type ExtensionRequest =
@@ -247,6 +419,17 @@ export type ExtensionRequest =
   | { type: "statusAction"; id: string; action: string; source?: "status" | "toast" }
   | { type: "openPage"; id: string; page: string; query?: string }
   | { type: "logs"; id: string }
+  /** Pause (or let run again) one extension's triggers, or — `id` null — every extension's (*Pause all*). */
+  | { type: "pauseTriggers"; id: string | null; paused: boolean }
+  /** Undo one thing an extension did with nobody there (a journal entry, by id): the space goes back where it was. */
+  | { type: "undoJournal"; entry: string }
+  /** Remove something an extension has the shell showing: its mark on a space, or its theme there (`spaceId` null: every space's). */
+  | { type: "removeShown"; id: string; what: "mark" | "theme" | "tabMarks" | ExtensionSite; spaceId: string | null }
+  /**
+   * A row an extension has a place showing was pressed (`button` null), or one of its buttons: `scope` is the space
+   * the rows were set for (null: every space), so main finds the very rows the person saw.
+   */
+  | { type: "press"; id: string; site: ExtensionSite; scope: string | null; row: string | null; button: string | null }
   /** The agent's drafting (docs/extensions.md §8) and the Bar's `/extension`: answers once the draft folder exists. */
   | { type: "draftFolder"; name: string };
 

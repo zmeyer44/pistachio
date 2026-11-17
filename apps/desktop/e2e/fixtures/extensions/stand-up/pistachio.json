@@ -1,0 +1,18 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.stand-up",
+  "name": "Stand-up",
+  "version": "1.0.0",
+  "description": "An e2e fixture: the space /standup is run in comes back when a calendar event named like “stand-up” starts, and goes away when it ends.",
+  "permissions": ["spaces:write"],
+  "band": true,
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [
+    { "id": "standup", "when": { "calendar": { "title": "stand-up", "early": 2 } } },
+    { "id": "minute", "every": { "minutes": 1, "while": "standup" } },
+    { "id": "unplugged", "when": { "power": "battery" } }
+  ],
+  "bar": {
+    "commands": [{ "name": "standup", "description": "Bring this space back when my stand-up starts", "run": { "event": true } }]
+  }
+}

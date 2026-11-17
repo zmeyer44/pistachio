@@ -6,7 +6,9 @@
  * ring — and only "show me…" switches the person to a page (`tab_show`).
  * Runs only with PISTACHIO_AGENT_LIVE=1 and a reachable control plane (the
  * unpackaged app dials localhost:8787), like console-routing.live. The two
- * console cases share a launch on a web page.
+ * cases asked from the desk's Bar share a launch on a web page (they were the
+ * sidebar console's until 2026-11-16: the desktop's chat is the Bar now, and
+ * a turn there works in its own space's tabs — docs/desk-agent.md §2).
  *
  *   PISTACHIO_AGENT_LIVE=1 pnpm playwright test -c e2e/playwright.config.ts background-tabs.live
  */
@@ -15,6 +17,7 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellPage } from "./windows";
 import { launchApp } from "./app";
 import { captureShell, snapshot } from "./agent-harness";
+import { reachBar } from "./desk-harness";
 
 const live = process.env["PISTACHIO_AGENT_LIVE"] === "1";
 
@@ -139,7 +142,7 @@ test("a question that needs the web is browsed in a hidden tab, and 'show me' ma
   }
 });
 
-test.describe.serial("the agent works a background tab from the console", { tag: ["@tabs", "@agent", "@live"] }, () => {
+test.describe.serial("the agent works a background tab, asked from the desk's Bar", { tag: ["@tabs", "@agent", "@live"] }, () => {
   let app: ElectronApplication;
   let shell: Page;
 
@@ -148,7 +151,7 @@ test.describe.serial("the agent works a background tab from the console", { tag:
     // The first tab is a web page with a native view, so a background tab is
     // drawn once beneath it (browser-controller #drawUnderCover) and has a
     // real size, and a picture, before the person ever sees it.
-    ({ app, shell } = await launch({ homePage: "url", homeUrl: "https://example.com/", consoleOpenOnLaunch: true }));
+    ({ app, shell } = await launch({ homePage: "url", homeUrl: "https://example.com/" }));
     await expect.poll(async () => (await snapshot(shell)).tabs[0]?.url ?? "", { timeout: 30_000 }).toMatch(/example\.com/u);
   });
 
@@ -158,9 +161,9 @@ test.describe.serial("the agent works a background tab from the console", { tag:
 
   test("a page open in the person's tab stays put while the agent works a background tab, which it can picture", async () => {
     const homeTabId = (await snapshot(shell)).activeTabId;
-    await expect(shell.getByTestId("agent-panel")).toBeVisible();
-    await shell.getByTestId("delegation-intent").fill("Open example.org in a new tab, take a screenshot of it, and tell me what its main heading says.");
-    await shell.getByTestId("delegate-button").click();
+    await reachBar(shell);
+    await shell.getByTestId("desk-bar-input").fill("Open example.org in a new tab, take a screenshot of it, and tell me what its main heading says.");
+    await shell.getByTestId("desk-bar-input").press("Enter");
 
     const activeSeen = new Set<string | null>();
     let status = "running";
@@ -199,27 +202,32 @@ test.describe.serial("the agent works a background tab from the console", { tag:
   test("a tab asleep in the background is woken and read where it is, without switching to it", async () => {
     // tabs_list names sleeping tabs too; reading one wakes it behind the
     // person's tab (browser-controller #ensureLiveTab) — it used to take a
-    // tab_focus to wake it, which is gone. A conversation of its own: the
-    // case before's tool calls are not this one's.
-    await shell.getByTestId("new-conversation").click();
-    await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
+    // tab_focus to wake it, which is gone.
     const homeTabId = (await snapshot(shell)).activeTabId!;
     expect((await snapshot(shell)).tabs.find((tab) => tab.id === homeTabId)?.url).toMatch(/example\.com/u);
     await shell.evaluate(() => (window as unknown as { pistachio: PistachioApi }).pistachio.createTab("https://en.wikipedia.org/wiki/Pistachio"));
     await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => /wikipedia\.org/u.test(tab.url))?.loading ?? true, { timeout: 30_000 }).toBe(false);
     const sleeperId = (await snapshot(shell)).tabs.find((tab) => /wikipedia\.org/u.test(tab.url))!.id;
+    // The two pages in one space, its tabs shown one at a time: a turn at a desk works in its own space's tabs
+    // (DeskScope), and each Home tab is a space of its own — the sleeper would not be the agent's to read from the
+    // other's Bar. A space of its own has a conversation of its own, too: the case before's tool calls are not
+    // this one's.
+    await shell.evaluate(
+      ({ home, sleeper }) =>
+        (window as unknown as { pistachio: PistachioApi }).pistachio.tabGroupCommand({ type: "create", id: "space-reading", tabIds: [home, sleeper], title: "Reading", select: true, windows: false }),
+      { home: homeTabId, sleeper: sleeperId },
+    );
+    await expect.poll(async () => (await snapshot(shell)).currentGroupId).toBe("space-reading");
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.selectTab(tabId), homeTabId);
     await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.suspendTab(tabId), sleeperId);
     await expect.poll(async () => (await snapshot(shell)).tabs.find((tab) => tab.id === sleeperId)?.lifecycle).toBe("suspended");
     expect((await snapshot(shell)).activeTabId).toBe(homeTabId);
+    await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
 
-    await expect(shell.getByTestId("agent-panel")).toBeVisible();
-    // The page in view goes with a message by default, and the router can
-    // answer from it alone; this request is about another tab.
-    await shell.getByTestId("composer-context-dismiss").click();
-    await expect(shell.getByTestId("composer-context")).toHaveAttribute("data-page-attached", "false");
-    await shell.getByTestId("delegation-intent").fill("Read the Wikipedia tab I already have open and tell me the botanical name of the plant it is about. Don't open any new tabs.");
-    await shell.getByTestId("delegate-button").click();
+    // (The Bar's message names no page: the desk block lists the space's tabs, the sleeping one among them.)
+    await reachBar(shell);
+    await shell.getByTestId("desk-bar-input").fill("Read the Wikipedia tab I already have open and tell me the botanical name of the plant it is about. Don't open any new tabs.");
+    await shell.getByTestId("desk-bar-input").press("Enter");
 
     const activeSeen = new Set<string | null>();
     let status = "running";

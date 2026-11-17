@@ -4,6 +4,7 @@ import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { ChromeRegion } from "../../chrome/manifest-renderers";
 import { useDockLit } from "../../lib/desk/chrome";
 import { useAppStore } from "../../store";
+import { ExtensionSections } from "../extensions/ExtensionSections";
 import { Ledge } from "../extensions/Ledge";
 import { ResizeHandle } from "../ResizeHandle";
 import { HomeView } from "./HomeView";
@@ -18,7 +19,8 @@ import { SpaceView } from "./SpaceView";
  * the traffic lights, back, forward and reload and at its trailing end the
  * desk's ⋯ and the sidebar's button (the toolbar's region); under them the
  * address (⌘L); then the chosen view, Home's or the space's, cross-faded
- * as the choice changes; and at its foot the Ledge (the extensions,
+ * as the choice changes; under it what extensions have the sidebar showing
+ * (ExtensionSections); and at its foot the Ledge (the extensions,
  * components/extensions/Ledge.tsx) and beside it the footer's pills when
  * they have something to say. Its trailing edge is the sidebar's width,
  * dragged.
@@ -51,6 +53,9 @@ export function SpaceCard({
       <ViewFade viewKey={view} reduced={reduced}>
         {view === HOME_VIEW || group === null ? <HomeView /> : <SpaceView group={group} page={page} />}
       </ViewFade>
+      {/* The extensions' sections (docs/primitives.md §4.5): what each has the sidebar showing for this space — or for
+          every space — the shell's own rows under the extension's mark, between the view and the Ledge. */}
+      <ExtensionSections spaceId={view === HOME_VIEW || group === null ? null : group.id} />
       {/* The card's foot: the Ledge (docs/extensions.md X9) leading, the footer's pills trailing — the pills win the
           room, the Ledge's icons flowing into its ⋯. (All buttons, so the row opts out of the window's drag region as
           one, as the single sidebar's footer does.) */}

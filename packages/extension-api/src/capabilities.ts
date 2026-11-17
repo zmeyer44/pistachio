@@ -9,6 +9,12 @@
 export const CAPABILITIES = [
   "tabs:read",
   "tabs:write",
+  "tabs:mark",
+  "spaces:write",
+  "spaces:close",
+  "spaces:all",
+  "spaces:mark",
+  "theme",
   "desk",
   "pages:read",
   "capture:tab",
@@ -23,6 +29,7 @@ export const CAPABILITIES = [
   "notes:write",
   "agent:tools",
   "agent:ask",
+  "ai",
   "power",
 ] as const;
 
@@ -39,6 +46,21 @@ export interface CapabilityInfo {
 export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
   "tabs:read": { tier: "medium", line: "Sees the titles and addresses of your tabs." },
   "tabs:write": { tier: "medium", line: "Opens, moves and closes tabs." },
+  // (A mark on a tab's row: the shell's own drawing, named as the extension's, taken off by the person in one press.
+  // On any tab it could see — a tab's grant by gesture lapses when the page moves on, and a mark must not. §4.7.)
+  "tabs:mark": { tier: "low", line: "Puts a small mark on your tabs." },
+  // (Reversible by its nature — a space away comes back as itself — and only for a space the person ran it in: docs/primitives.md §2.)
+  "spaces:write": { tier: "medium", line: "Sends spaces away and brings them back." },
+  // (Close space, as the person's own menu does it: filed in the archive whole, one Restore away. Its own line —
+  // an extension approved to send spaces away was not approved to close them.)
+  "spaces:close": { tier: "medium", line: "Closes spaces into the archive, where they can be restored." },
+  // (Rule 8's exception, said as one: every space is as if the person had run it there. What it may then DO to them
+  // is the other lines'. Docs/primitives.md §2.6.)
+  "spaces:all": { tier: "high", line: "Acts on any of your spaces, not only the ones you ran it in." },
+  // (What the shell draws for it, where the shell draws such things, named as its own — docs/primitives.md §4. A mark
+  // only on a space the person ran it in; a backdrop on one such space, or — with nothing named — on every space.)
+  "spaces:mark": { tier: "low", line: "Puts a small mark on the spaces you ran it in." },
+  theme: { tier: "medium", line: "Changes the backdrop and accent colour of your spaces." },
   desk: { tier: "medium", line: "Sees how your windows are arranged on the desk." },
   "pages:read": { tier: "high", line: "Can read pages on {hosts}." },
   "capture:tab": { tier: "high", line: "Can record a window you choose, and the pages you move to while it records, with their sound." },
@@ -53,6 +75,9 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
   "notes:write": { tier: "high", line: "Reads and writes your notes." },
   "agent:tools": { tier: "high", line: "The agent can call it and send it what it reads, when you let it." },
   "agent:ask": { tier: "high", line: "Can ask the agent on your behalf (spends your AI usage)." },
+  // (A plain question to a model, no tools and no turn in a conversation: what it sends is its own to choose — the
+  // other lines say what it can see — and the answer is its alone. Docs/primitives.md §3.8.)
+  ai: { tier: "high", line: "Sends what it chooses to Pistachio's AI and reads the answer (spends your AI usage)." },
   power: { tier: "low", line: "Can keep the Mac awake while it works." },
 };
 

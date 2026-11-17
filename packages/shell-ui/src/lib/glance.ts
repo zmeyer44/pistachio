@@ -1,4 +1,4 @@
-import type { ContentBounds } from "@pistachio/shell-contracts/ipc";
+import type { ContentBounds, GlanceState } from "@pistachio/shell-contracts/ipc";
 
 import { SURFACE_INSET } from "../chrome/drag-geometry";
 const PREVIEW_WIDTH_RATIO = 0.8;
@@ -43,4 +43,12 @@ export function glanceFrame(surface: DOMRect, source: ContentBounds, reserve = 0
       height: local.height,
     },
   };
+}
+
+/**
+ * A Glance's showing: its page's, and how many times it has come back with its tab (GlanceState.returns). Down and
+ * back, it is put up afresh — staged, its owner receding again — as the same page, never as the card that was up.
+ */
+export function glanceShowing(glance: Pick<GlanceState, "tab" | "returns">): string {
+  return `${glance.tab.id}:${String(glance.returns ?? 0)}`;
 }

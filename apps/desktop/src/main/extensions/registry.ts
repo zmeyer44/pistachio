@@ -15,6 +15,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ChromeVerdict, ExtensionKind, ExtensionSource } from "@pistachio/shell-contracts/extensions";
 import type { Json } from "@pistachio/extension-api";
+import { sanitizeSpaceGrants } from "./away";
 
 export const REGISTRY_FILE = "extensions.json";
 export const REGISTRY_VERSION = 1;
@@ -27,6 +28,11 @@ export interface ExtensionGrant {
   /** The manifest the person approved, by its hash (sheet.ts manifestHash). */
   manifestHash: string;
   at: number;
+  /**
+   * The triggers the person approved, each as triggerKey names it (docs/primitives.md §3): a manifest that declares
+   * one not among these — a new one, or one whose times changed — waits on the sheet. Absent: none.
+   */
+  triggers?: string[];
 }
 
 export interface ExtensionPending {
@@ -34,6 +40,8 @@ export interface ExtensionPending {
   /** What it asks for beyond the grant (all of it, for a first approval). */
   widened: string[];
   hosts: string[];
+  /** It now runs by itself at times the person has not seen (a trigger added, or its times changed). */
+  triggers?: true;
   /**
    * The agent's author turn wrote to the folder after the person approved it
    * (docs/extensions.md §6.2, "Approving"): it waits paused until they look
@@ -65,6 +73,13 @@ export interface ExtensionRecord {
    * `wont` is `incompatible`, never loaded. Absent for a Pistachio extension.
    */
   verdict?: ChromeVerdict | null;
+  /**
+   * The spaces (tab groups, by id) the person gave a Pistachio extension by running one of its commands in them
+   * (docs/primitives.md §2; ./away): the ones `spaces:write` lets it send away. Kept across launches — a schedule
+   * acts on a space long after the gesture — bounded (MAX_SPACE_GRANTS, the newest), and gone with the record.
+   * Absent: none.
+   */
+  spaces?: string[];
 }
 
 interface RegistryDocument {
@@ -331,6 +346,7 @@ function sanitizeRecord(value: unknown): ExtensionRecord | null {
           hosts: strings((grantsRaw as Record<string, unknown>)["hosts"]),
           manifestHash: (grantsRaw as Record<string, unknown>)["manifestHash"] as string,
           at: finite((grantsRaw as Record<string, unknown>)["at"], 0),
+          ...(strings((grantsRaw as Record<string, unknown>)["triggers"]).length > 0 ? { triggers: strings((grantsRaw as Record<string, unknown>)["triggers"]).slice(0, 32) } : {}),
         }
       : null;
   const pendingRaw = raw["pending"];
@@ -341,6 +357,7 @@ function sanitizeRecord(value: unknown): ExtensionRecord | null {
           widened: strings((pendingRaw as Record<string, unknown>)["widened"]),
           hosts: strings((pendingRaw as Record<string, unknown>)["hosts"]),
           ...((pendingRaw as Record<string, unknown>)["changedBy"] === "agent" ? { changedBy: "agent" as const } : {}),
+          ...((pendingRaw as Record<string, unknown>)["triggers"] === true ? { triggers: true as const } : {}),
         }
       : null;
   const profiles = raw["profiles"] === "all" ? "all" : Array.isArray(raw["profiles"]) ? strings(raw["profiles"]) : "all";
@@ -358,6 +375,7 @@ function sanitizeRecord(value: unknown): ExtensionRecord | null {
     installedAt: finite(raw["installedAt"], 0),
     updatedAt: finite(raw["updatedAt"], 0),
     ...(kind === "chrome" ? { verdict: sanitizeVerdict(raw["verdict"]) } : {}),
+    ...(kind === "pistachio" && sanitizeSpaceGrants(raw["spaces"]).length > 0 ? { spaces: sanitizeSpaceGrants(raw["spaces"]) } : {}),
   };
 }
 

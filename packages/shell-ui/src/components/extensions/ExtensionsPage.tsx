@@ -7,7 +7,11 @@
  * which narrows every list below it and, with something typed, ends them
  * with two ways on: *Make "…" with Pistachio* (the Bar, `/extension …`) and
  * *Search the Chrome Web Store for "…"*. Then **On this Mac** (installed:
- * the mark, a line, where it runs, a switch, ⋯), **Made for Pistachio** (the
+ * the mark, a line, where it runs, a switch, ⋯ — and, under one that runs by
+ * itself, when, where the clock has it, a *Pause*, and what it did with
+ * nobody there, each with *Undo*: docs/primitives.md §3; *Pause all* heads
+ * the list while any does; under one that has the shell showing something —
+ * a mark on a space, a theme — what, each with *Remove*: §4), **Made for Pistachio** (the
  * library, *Turn on*), **Works in Pistachio** (the curated store extensions
  * with their verdicts, *Add* by id with no visit to the store), **Yours**
  * (the dev folder: *New…*, *Make one with Pistachio*, *Build with Claude
@@ -16,15 +20,33 @@
  * every button a request to main.
  */
 
-import { useMemo, useState } from "react";
-import { ArrowUpRight, Check, CircleAlert, CircleSlash, FolderPlus, Hammer, MoreHorizontal, Plus, Puzzle, Search, Sparkles, SquareTerminal, Store } from "lucide-react";
-import type { ChromeVerdict, ExtensionInfo } from "@pistachio/shell-contracts/extensions";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowUpRight, Check, CircleAlert, CircleSlash, FolderPlus, Hammer, MoreHorizontal, Pause, Play, Plus, Puzzle, Search, Sparkles, SquareTerminal, Store } from "lucide-react";
+import type { ChromeVerdict, ExtensionInfo, ExtensionJournalEntry, ExtensionShown } from "@pistachio/shell-contracts/extensions";
 import { cn } from "../../lib/cn";
 import {
   buildWithClaudeCode,
   makeWithPistachio,
   openInTab,
+  removeShown,
+  setAllTriggersPaused,
+  setTriggersPaused,
+  undoJournalEntry,
 } from "../../lib/extensions/actions";
+import {
+  ALL_PAUSED_LINE,
+  JOURNAL_HEADING,
+  RUNS_HEADING,
+  TRIGGERS_PAUSED_LINE,
+  anyTriggers,
+  hasRunsBlock,
+  hasTriggers,
+  journalNewestFirst,
+  journalVerbLine,
+  formatWhen,
+  triggerStateLine,
+} from "../../lib/extensions/triggers";
+import { SHOWS_HEADING, scopeOf, shownLine } from "../../lib/extensions/shown";
 import {
   CHROME_WEB_STORE_URL,
   chromeWebStoreSearchUrl,
@@ -98,6 +120,7 @@ export function ExtensionsPage({ tabId }: { tabId: string | null; active: boolea
         ) : (
           <>
             <Section title="On this Mac" testId="extensions-installed">
+              {anyTriggers(snapshot.extensions) ? <PauseAll paused={snapshot.triggersPaused === true} /> : null}
               {!loaded ? (
                 <Quiet>Reading what is installed…</Quiet>
               ) : installed.length === 0 ? (
@@ -246,41 +269,233 @@ function InstalledRow({ extension }: { extension: ExtensionInfo }) {
     );
   const source = extension.source.type === "dev" ? "Yours" : extension.source.type === "unpacked" ? "Loaded folder" : extension.source.type === "bundled" ? "Made by Pistachio" : "Chrome Web Store";
   return (
-    <Row
-      testId="extensions-installed-row"
-      extensionId={extension.id}
-      mark={<ExtensionMark extension={extension} className="extension-row-mark" />}
-      title={extension.name}
-      line={line}
-      meta={`${whereItRuns(extension)} · ${source}${extension.version === "" ? "" : ` · ${extension.version}`}`}
-    >
-      {extension.pending !== null ? (
-        <button type="button" className={cn(PILL, "bg-amber-100 text-amber-1000 hover:bg-amber-400")} data-testid="extensions-review" onClick={() => openExtensionSheet({ kind: "extension", id: extension.id })}>
-          <CircleAlert className="size-3.5" aria-hidden="true" />
-          Review
+    <>
+      <Row
+        testId="extensions-installed-row"
+        extensionId={extension.id}
+        mark={<ExtensionMark extension={extension} className="extension-row-mark" />}
+        title={extension.name}
+        line={line}
+        meta={`${whereItRuns(extension)} · ${source}${extension.version === "" ? "" : ` · ${extension.version}`}`}
+      >
+        {extension.pending !== null ? (
+          <button type="button" className={cn(PILL, "bg-amber-100 text-amber-1000 hover:bg-amber-400")} data-testid="extensions-review" onClick={() => openExtensionSheet({ kind: "extension", id: extension.id })}>
+            <CircleAlert className="size-3.5" aria-hidden="true" />
+            Review
+          </button>
+        ) : (
+          <Switch
+            checked={extension.enabled}
+            label={`${extension.name} on`}
+            disabled={extension.status === "incompatible"}
+            onChange={(enabled) => void extensionsRequest({ type: "setEnabled", id: extension.id, enabled })}
+          />
+        )}
+        <button
+          type="button"
+          aria-label={`${extension.name} menu`}
+          data-testid="extensions-row-menu"
+          className={cn("grid size-7 cursor-pointer place-items-center rounded-md text-gray-800 hover:bg-alpha-200 hover:text-gray-1000", FOCUS)}
+          onClick={(event) => {
+            const box = event.currentTarget.getBoundingClientRect();
+            menu.open({ clientX: box.right - CONTEXT_MENU_W, clientY: box.bottom + 4 }, extensionMenuEntries(extension));
+          }}
+        >
+          <MoreHorizontal className="size-4" aria-hidden="true" />
         </button>
-      ) : (
-        <Switch
-          checked={extension.enabled}
-          label={`${extension.name} on`}
-          disabled={extension.status === "incompatible"}
-          onChange={(enabled) => void extensionsRequest({ type: "setEnabled", id: extension.id, enabled })}
-        />
+        {menu.menu}
+      </Row>
+      {hasRunsBlock(extension) ? <RunsByItself extension={extension} /> : null}
+      {(extension.shows?.length ?? 0) > 0 ? <WhatItShows extension={extension} /> : null}
+    </>
+  );
+}
+
+/** A clock for lines that say "today" and "Next …": read again each minute, so a row left open does not go stale. */
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
+/**
+ * *Pause all* (docs/primitives.md §3), heading the installed list while anything there runs by itself: one press and
+ * no extension does, until *Resume* — each still runs when the person runs it. Paused, it is a banner, not a button
+ * that reads the same as before: the state must be seen.
+ */
+function PauseAll({ paused }: { paused: boolean }) {
+  if (paused)
+    return (
+      <li className="mx-3 mb-1 flex items-center justify-between gap-3 rounded-xl bg-amber-100 px-3 py-2 text-amber-1000" data-testid="extensions-paused-all" role="status">
+        <span className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium">
+          <Pause className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="truncate">{ALL_PAUSED_LINE}</span>
+        </span>
+        <button type="button" className={cn(PILL, "bg-background-100 text-gray-1000")} data-testid="extensions-resume-all" onClick={() => setAllTriggersPaused(false)}>
+          <Play className="size-3.5" aria-hidden="true" />
+          Resume
+        </button>
+      </li>
+    );
+  return (
+    <li className="flex items-center justify-between gap-3 px-3 pb-1">
+      <span className="min-w-0 truncate text-[12.5px] text-gray-700">Some of these run by themselves.</span>
+      <button type="button" className={PILL} data-testid="extensions-pause-all" onClick={() => setAllTriggersPaused(true)}>
+        <Pause className="size-3.5" aria-hidden="true" />
+        Pause all
+      </button>
+    </li>
+  );
+}
+
+/**
+ * Under an extension that declares triggers (docs/primitives.md §3): when it runs by itself — main's line for each,
+ * and where the clock has it — a *Pause* of its own, and what it did with nobody there: main's journal, in the
+ * shell's words, each with the way back. Nothing here is the extension's own text.
+ */
+function RunsByItself({ extension }: { extension: ExtensionInfo }) {
+  const now = useNow();
+  const paused = extension.triggersPaused === true;
+  // (Under *Pause all* nothing is "next": the banner above says why, and the lines say only when it would.)
+  const quiet = useExtensionsState((state) => state.snapshot.triggersPaused === true) || paused;
+  const journal = journalNewestFirst(extension.journal);
+  // (An update took its triggers out: nothing runs by itself any more, and nothing is left to pause — what it did
+  // stays, each line with its Undo. hasRunsBlock.)
+  if (!hasTriggers(extension))
+    return (
+      <li data-testid="extension-triggers" data-extension-id={extension.id} data-paused="false" className="mb-2 ml-[60px] mr-3 rounded-xl bg-alpha-100 px-3 py-2.5 @max-[481px]:ml-3">
+        <div data-testid="extension-journal">
+          <h3 className="text-[12.5px] font-semibold text-gray-900">{JOURNAL_HEADING}</h3>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {journal.map((entry) => (
+              <JournalRow key={entry.id} entry={entry} now={now} />
+            ))}
+          </ul>
+        </div>
+      </li>
+    );
+  return (
+    <li data-testid="extension-triggers" data-extension-id={extension.id} data-paused={paused ? "true" : "false"} className="mb-2 ml-[60px] mr-3 rounded-xl bg-alpha-100 px-3 py-2.5 @max-[481px]:ml-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-[12.5px] font-semibold text-gray-900">{RUNS_HEADING}</h3>
+        <label className="flex cursor-pointer items-center gap-2 text-[12.5px] text-gray-800">
+          Pause
+          <span className="inline-flex" data-testid="extension-triggers-pause">
+            <Switch checked={paused} label={`Pause ${extension.name}`} onChange={(value) => setTriggersPaused(extension.id, value)} />
+          </span>
+        </label>
+      </div>
+      <ul className="mt-1.5 flex flex-col gap-1">
+        {(extension.triggers ?? []).map((trigger) => {
+          const state = quiet ? null : triggerStateLine(trigger, now);
+          return (
+            <li key={trigger.id} data-testid="extension-trigger-line" data-trigger-id={trigger.id} data-holds={trigger.holds === undefined ? undefined : String(trigger.holds)} data-unknown={trigger.unknown === true ? "true" : undefined} className="flex flex-wrap items-baseline justify-between gap-x-3">
+              <span className={cn("text-[13.5px]", quiet ? "text-gray-700" : "text-gray-1000")}>{trigger.text}</span>
+              {state === null ? null : (
+                <span className="text-[12.5px] text-gray-700" data-testid="extension-trigger-state">
+                  {state}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {paused ? (
+        <p className="mt-1.5 text-[12.5px] text-amber-900" data-testid="extension-triggers-paused">
+          {TRIGGERS_PAUSED_LINE}
+        </p>
+      ) : null}
+      {journal.length === 0 ? null : (
+        <div className="mt-2.5 border-t border-alpha-300 pt-2" data-testid="extension-journal">
+          <h4 className="text-[12px] font-medium text-gray-700">{JOURNAL_HEADING}</h4>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {journal.map((entry) => (
+              <JournalRow key={entry.id} entry={entry} now={now} />
+            ))}
+          </ul>
+        </div>
       )}
+    </li>
+  );
+}
+
+/** One thing it did with nobody there, and the way back — *Undo*, once; undone, the line says so. */
+function JournalRow({ entry, now }: { entry: ExtensionJournalEntry; now: number }) {
+  const [busy, setBusy] = useState(false);
+  const undone = entry.undone !== undefined;
+  const undo = async (): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    await undoJournalEntry(entry.id);
+    setBusy(false);
+  };
+  return (
+    <li data-testid="extension-journal-entry" data-entry-id={entry.id} data-verb={entry.verb} data-undone={undone ? "true" : "false"} className="flex min-h-[26px] items-center justify-between gap-3">
+      <span className={cn("min-w-0 truncate text-[13px]", undone ? "text-gray-700" : "text-gray-1000")}>
+        {journalVerbLine(entry)}
+        <span className="text-gray-700"> · {formatWhen(entry.at, now)}</span>
+      </span>
+      {undone ? (
+        <span className="shrink-0 text-[12.5px] text-gray-700" data-testid="extension-journal-undone">
+          Undone
+        </span>
+      ) : (
+        <button
+          type="button"
+          disabled={busy}
+          data-testid="extension-journal-undo"
+          className={cn("shrink-0 cursor-pointer rounded-md px-1.5 py-0.5 text-[12.5px] font-medium text-gray-900 hover:bg-alpha-200 hover:text-gray-1000 disabled:cursor-default disabled:opacity-60", FOCUS)}
+          onClick={() => void undo()}
+        >
+          Undo
+        </button>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Under an extension that has the shell showing something (docs/primitives.md §4): its marks on spaces and its
+ * themes, each in the shell's words with what the extension called it, and the one press that takes it off.
+ */
+function WhatItShows({ extension }: { extension: ExtensionInfo }) {
+  return (
+    <li data-testid="extension-shows" data-extension-id={extension.id} className="mb-2 ml-[60px] mr-3 rounded-xl bg-alpha-100 px-3 py-2.5 @max-[481px]:ml-3">
+      <h3 className="text-[12.5px] font-semibold text-gray-900">{SHOWS_HEADING}</h3>
+      <ul className="mt-1 flex flex-col gap-0.5">
+        {(extension.shows ?? []).map((shown) => (
+          <ShownRow key={`${shown.what} ${scopeOf(shown.spaceId)}`} extensionId={extension.id} shown={shown} />
+        ))}
+      </ul>
+    </li>
+  );
+}
+
+/** One thing it shows, and *Remove*: the mark comes off the tile, the theme off the space (or off every space). */
+function ShownRow({ extensionId, shown }: { extensionId: string; shown: ExtensionShown }) {
+  const [busy, setBusy] = useState(false);
+  const remove = async (): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    await removeShown(extensionId, shown.what, shown.spaceId);
+    setBusy(false);
+  };
+  return (
+    <li data-testid="extension-shown" data-what={shown.what} data-space-id={scopeOf(shown.spaceId)} className="flex min-h-[26px] items-center justify-between gap-3">
+      <span className="min-w-0 truncate text-[13px] text-gray-1000">{shownLine(shown)}</span>
       <button
         type="button"
-        aria-label={`${extension.name} menu`}
-        data-testid="extensions-row-menu"
-        className={cn("grid size-7 cursor-pointer place-items-center rounded-md text-gray-800 hover:bg-alpha-200 hover:text-gray-1000", FOCUS)}
-        onClick={(event) => {
-          const box = event.currentTarget.getBoundingClientRect();
-          menu.open({ clientX: box.right - CONTEXT_MENU_W, clientY: box.bottom + 4 }, extensionMenuEntries(extension));
-        }}
+        disabled={busy}
+        data-testid="extension-shown-remove"
+        className={cn("shrink-0 cursor-pointer rounded-md px-1.5 py-0.5 text-[12.5px] font-medium text-gray-900 hover:bg-alpha-200 hover:text-gray-1000 disabled:cursor-default disabled:opacity-60", FOCUS)}
+        onClick={() => void remove()}
       >
-        <MoreHorizontal className="size-4" aria-hidden="true" />
+        Remove
       </button>
-      {menu.menu}
-    </Row>
+    </li>
   );
 }
 

@@ -56,6 +56,11 @@ export const AREAS = [
       `${UI}/lib/{sidebar,sidebar-mode,sidebar-tree,tab-selection,chrome-tabs,chrome-status}.ts`,
       `${C}/{sidebar,sidebar-controller,chrome,page-context-menu}.ts`,
       `${M}/{sidebar-store,pointer-zone-watch,page-context-menu}.ts`,
+      // Spaces that are away (docs/primitives.md §2; spaces-away.spec.ts): sent from a space's menu, listed on the rail's
+      // Away tile (space-rail/AwayCard.tsx, above), kept and brought back by main.
+      `${UI}/lib/{away-spaces,away-actions}.ts`,
+      `${C}/away.ts`,
+      `${M}/{away-store,away-spaces}.ts`,
     ],
   },
   {
@@ -71,11 +76,11 @@ export const AREAS = [
   {
     tag: "@address",
     paths: [
-      `${UI}/components/{UrlBar,address-palette,SearchProviderLogo}.tsx`,
-      `${UI}/lib/{destination,search-suggestions,intent-ranking,use-address-intent,use-field-preview,recents,settings-intents,action-intents,url}.ts`,
+      `${UI}/components/{UrlBar,address-palette,SearchProviderLogo,LocalTray}.tsx`,
+      `${UI}/lib/{destination,search-suggestions,intent-ranking,use-address-intent,use-field-preview,use-local-apps,local-tray,recents,settings-intents,action-intents,url}.ts`,
       `${C}/fuzzy.ts`,
-      `${C}/{address-intent,search,url,page-link}.ts`,
-      `${M}/address-intent.ts`,
+      `${C}/{address-intent,search,url,page-link,local-apps}.ts`,
+      `${M}/{address-intent,local-apps}.ts`,
     ],
   },
   {
@@ -125,7 +130,7 @@ export const AREAS = [
   },
   {
     tag: "@glance",
-    paths: [`${UI}/components/{GlanceOverlay,ImagePreview}.tsx`, `${UI}/lib/glance.ts`],
+    paths: [`${UI}/components/{GlanceOverlay,ImagePreview}.tsx`, `${UI}/lib/glance.ts`, `${M}/glance-scope.ts`],
   },
   {
     tag: "@agent",
@@ -135,7 +140,7 @@ export const AREAS = [
       `${UI}/components/chat/**`,
       `${UI}/lib/{chat-attachments,chat-sources,chat-trace,run,linkify,markdown,smooth-text,panel,share}.ts`,
       `${C}/{chat-insert,run-fold,agent-glow,memory,artifacts,read-aloud}.ts`,
-      `${M}/{run-controller,model-provider,scripted-agent-model,agent-browser-tools,thread-store,memory-engine,memory-store,artifact-builder,artifact-store,chat-attach,feedback,read-aloud,capsule-broker,demo-page}.ts`,
+      `${M}/{run-controller,run-hub,run-scope,model-provider,scripted-agent-model,agent-browser-tools,thread-store,memory-engine,memory-store,artifact-builder,artifact-store,chat-attach,feedback,read-aloud,capsule-broker,demo-page}.ts`,
       "packages/{agent-runtime,protocol,runtime,evidence,adapters,run-view}/**",
     ],
   },

@@ -5,6 +5,16 @@
 Status: implemented on `main` (September 2026), desktop only. The cloud
 executor runs every turn on the browser path (§9).
 
+(Since 2026-11-16 the desktop draws no sidebar console: its chat is the
+desk's, each space's own (docs/desk-agent.md §1). A turn at a desk is always
+the browser's — the space is its subject, and the Bar's message names no page
+(§5.1's chip is the console's) — and every conversation a person starts on
+the desktop is some space's (a Home tab is a space too, its home page's
+question included, since 2026-10-09), so the router decides only where a
+host has no desk. Its decisions are checked by the unit tests in §10's
+table; the live check drives the desk's chat. The console, and with it the
+chip, is the web's chat.)
+
 ## 1. What this is
 
 Every message sent to the sidebar console started the browser-operating
@@ -280,8 +290,14 @@ a manipulated title can do is send a turn down the slower path.
 
 `console-routing.live.spec.ts` launches the built app on a scratch profile
 — NOT under `PISTACHIO_E2E`, which keeps the account services and every
-model off — and drives the console against the real router and the real
-agent model. The profile gets an anonymous account from whatever control
+model off — and drives the chat against the real agent model. Since
+2026-11-17 that chat is the desk's Bar and card (the desktop has no console),
+where the router is skipped: the spec checks a question answered in the
+space's card, the reply's footer, a follow-up on the same conversation, web
+work done with tool steps, and a question about the page in the window in
+use answered by reading it — and that none of them took a quick path. (The
+port was made without a live run: the timings below are the console's, from
+before.) The profile gets an anonymous account from whatever control
 `PISTACHIO_CONTROL_URL` names, so run control locally first (the root
 `.env` has the gateway key; never let a dev boot touch the remote DB):
 

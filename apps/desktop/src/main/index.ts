@@ -48,8 +48,10 @@ import { ChromeOverlayView, loadChromePage } from "./chrome-view";
 import { NoticeLayer } from "./notice-layer";
 import { PointerZoneWatch } from "./pointer-zone-watch";
 import { Screenshots, screenshotFolder } from "./screenshots";
+import { LocalApps } from "./local-apps";
 import { installIpcGate, type GateIpc } from "./ipc-gate";
 import { ExtensionService } from "./extensions/service";
+import { calendarAnswer, type CalendarAnswer, type SignalSources } from "./extensions/signals";
 import { extensionBrowserHost } from "./extensions/browser-host";
 import { EXTENSION_SCHEME_PRIVILEGES } from "./extensions/protocol";
 import { EXT_CALL_CHANNEL } from "@pistachio/extension-api/wire";
@@ -71,7 +73,8 @@ import { isShieldsRequest } from "@pistachio/shell-contracts/shields";
 import { SHIELDS_COSMETICS_CHANNEL, SHIELDS_FRAME_CHANNEL, type ShieldsDomFeatures } from "@pistachio/shell-contracts/shields-page";
 import { watchtowerRequestSchema } from "@pistachio/shell-contracts/watchtower";
 import { ReaderStore } from "./reader-store";
-import { RunController, type RunExtensions } from "./run-controller";
+import type { RunExtensions } from "./run-controller";
+import { RunHub } from "./run-hub";
 import { createMemoryEmbedder } from "./memory-engine";
 import { aiProviderStatus, configuredBriefModel, configuredIntentModel, configuredTidyModel, setAiSession, workspaceEnvironmentKeys } from "./model-provider";
 import type { ReportRecord } from "@pistachio/reports/contract";
@@ -79,6 +82,12 @@ import { BriefScheduler } from "./brief-scheduler";
 import { BriefService, scriptedBriefMaterials } from "./brief-service";
 import { restoreArchiveEntry } from "./archive-restore";
 import { TabArchiveStore } from "./tab-archive-store";
+import { AwayStore } from "./away-store";
+import { AwaySpaces } from "./away-spaces";
+import { SpaceClosing } from "./space-closing";
+import { CLOCK_MOMENTS, MainClock } from "./main-clock";
+import { HeldNotices } from "./held-notices";
+import { completeWith, scriptedComplete } from "./extensions/complete";
 import { scriptedGroupNamer, scriptedTidyJudge, TabTidy } from "./tab-tidy";
 import { judgeTidy, nameTabGroup } from "@pistachio/agent-runtime/tab-tidy";
 import { archiveEntryView, isTabArchiveRequest, type TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
@@ -316,7 +325,7 @@ const currentDir = fileURLToPath(new URL(".", import.meta.url));
 let shellWindow: BrowserWindow | null = null;
 let updates: UpdateService | null = null;
 let browser: BrowserController | null = null;
-let runs: RunController | null = null;
+let runs: RunHub | null = null;
 let settings: SettingsStore | null = null;
 let memory: MemoryStore | null = null;
 /** Every write from the settings page is the person's own word. */
@@ -523,6 +532,18 @@ let sidebar: SidebarStore | null = null;
 let tabArchive: TabArchiveStore | null = null;
 /** The Tidy pass over the window's tabs; it goes with the window, as the controller does. */
 let tabTidy: TabTidy<Awaited<ReturnType<BrowserController["resetFavoriteTabs"]>>[number]> | null = null;
+/** The file of spaces that are away (docs/primitives.md §2). */
+let awayStore: AwayStore | null = null;
+/** Sending spaces away and bringing them back, and the clock that does the latter; it goes with the window, as the controller does. */
+let awaySpaces: AwaySpaces | null = null;
+/**
+ * The moments everything that keeps time is asked again (./main-clock.ts; docs/primitives.md §5, stage 6): the Mac
+ * waking, its screen unlocking — and, for what cares, its screen locking, its power and its displays changing. Each
+ * service joins it where it is made; the power monitor is wired to it once.
+ */
+const mainClock = new MainClock({ onError: (name, error) => console.error(`[clock] ${name}`, error) });
+/** The one verb that closes a space into the archive (./space-closing.ts): the window's, like the away spaces. */
+let spaceClosing: SpaceClosing | null = null;
 let sidebarController: SidebarController | null = null;
 let spaces: SpaceStore | null = null;
 let tabSessions: TabSessionStore | null = null;
@@ -769,6 +790,8 @@ function openTabSwitcher(input: TabSwitcherInput): void {
     const shell = shellWindow.webContents;
     // A switcher still landing the gesture before may be why the shell has it.
     if (!shellState.tabSwitcherOpen) tabSwitcherBorrowedKeyboard = !shell.isFocused();
+    // (A Glance that has it is noted as having had it, while it still does.)
+    browser?.noteKeyboardBorrowed();
     shell.focus();
   }
   publishTabSwitcherInput(input);
@@ -1338,6 +1361,200 @@ function nameTabGroupHook(tabs: ReadonlyArray<{ title: string; url: string }>, e
  * offline; otherwise it is the account's, and null — the clock alone — when
  * signed out or switched off.
  */
+/**
+ * Away spaces for this window's tabs (docs/primitives.md §2). A space sent — by the person, the agent or an extension —
+ * and one the clock brought back are said in a notice the shell raises (it carries the way back, an action); like
+ * Tidy's, a notice nobody is there to see is held until the window is next in front.
+ */
+/** How lately a key or the pointer must have been touched for somebody to be taken as there to read a notice. */
+const SOMEONE_THERE_IDLE_S = 30;
+
+/** What main reads of the Mac for extensions' signals — and for whether anybody is there (a spec's, under its seam). */
+let signalSources: SignalSources | null = null;
+function extensionSignals(): SignalSources {
+  return (signalSources ??= e2eSignals() ?? macSignals());
+}
+
+/**
+ * What waits to be said until somebody is there to read it (./held-notices.ts): a space an extension took from in
+ * front while the Mac sat idle or locked (docs/primitives.md §3.6), one it closed overnight. The window in front, the
+ * screen not locked, a key or the pointer touched in the last half minute. (Under Playwright with no signals seam the
+ * window in front is all that is asked: the spec's own Mac may be locked.)
+ */
+const heldNotices = new HeldNotices({
+  // (No window, or one whose shell is still loading, is in front of nobody: a notice sent then would be heard by nothing.)
+  focused: () => shellWindow !== null && !shellWindow.isDestroyed() && shellWindow.isFocused() && !shellWindow.webContents.isLoadingMainFrame(),
+  // (A window that closes first never says so; the next one takes the wait over — createWindow, `windowChanged`.)
+  onceFocused: (listener) => {
+    const window = shellWindow;
+    if (window !== null && !window.isDestroyed()) window.once("focus", listener);
+  },
+  someoneThere: () => {
+    if (process.env["PISTACHIO_E2E"] === "1" && e2eSignals() === null) return true;
+    try {
+      const sources = extensionSignals();
+      return sources.locked?.() !== true && (sources.idleSeconds() ?? 0) < SOMEONE_THERE_IDLE_S;
+    } catch {
+      return true;
+    }
+  },
+});
+
+/** Say what the person themselves just did, where they are: the window in front is all that is waited for. */
+function whenInFront(say: () => void): void {
+  const window = shellWindow;
+  if (window === null || window.isDestroyed() || window.isFocused()) say();
+  else window.once("focus", say);
+}
+
+function startAwaySpaces(controller: BrowserController): void {
+  if (awayStore === null) return;
+  const service = new AwaySpaces({ store: awayStore, host: controller, profileExists: (spaceId) => spaces?.get(spaceId) !== null });
+  service.onChange((change) => {
+    // A return somebody asked for is said only when an extension asked: the person sees their own, and the agent's answer says its.
+    const broughtBy = change.event === "returned" && change.by?.kind === "extension" ? change.by.name : undefined;
+    if (change.event === "returned" && change.cause !== "clock" && broughtBy === undefined) return;
+    const say = (): void => sendShellCommand({ type: "spaceAway", event: change.event, space: change.space, ...(broughtBy === undefined || broughtBy === "" ? {} : { broughtBy }) });
+    // The person's own Send away is said to them where they are. Anyone else's, and the clock's, once somebody is
+    // there — one notice a space (its latest coming or going takes the place of an earlier one still waiting), and
+    // only if it is still so by then: away still, or here still.
+    const id = change.space.id;
+    if (change.event === "sent" && change.space.by.kind === "person") whenInFront(say);
+    else heldNotices.hold(`away:${id}`, say, () => (change.event === "sent" ? service.get(id) !== null : controller.hasTabGroup(id)));
+  });
+  awaySpaces = service;
+  // (Then the triggers: a handler acts on away spaces, so the clock is looked at once they are up.)
+  void service.start().then(() => extensions?.tickTriggers());
+}
+
+/**
+ * Closing a space into the archive, for this window's tabs (docs/primitives.md §2.6): one verb for the space's menu
+ * the agent's `space_close` and an extension's `pistachio.spaces.close`. The person's own close is said by the shell,
+ * which asked for it; one the agent or an extension made is said from here — who, and Undo — held, like the others,
+ * until the window is next in front.
+ */
+function startSpaceClosing(controller: BrowserController): void {
+  if (tabArchive === null) return;
+  const service = new SpaceClosing({ host: controller, archive: tabArchive, profileExists: (spaceId) => spaces?.get(spaceId) !== null });
+  service.onChange((closed) => {
+    // The person's own close is said by the shell, which asked for it. Anyone else's — an extension, by its name on
+    // the sheet; the agent, as Pistachio — is said from here.
+    if (closed.by.kind === "person") return;
+    const by = closed.by.kind === "extension" ? closed.by.name : "Pistachio";
+    // (Said once somebody is there, and only while the archive still holds it: restored meanwhile, there is nothing to undo.)
+    const entryId = closed.entryId;
+    heldNotices.hold(`closed:${closed.groupId}`, () => sendShellCommand({ type: "spaceClosed", title: closed.title, tabCount: closed.tabCount, entryId, by }), () => entryId === null || service.filed(entryId));
+  });
+  spaceClosing = service;
+}
+
+/**
+ * `pistachio.ai.complete` (docs/primitives.md §3.8): the account's fast model — Tidy's — asked one question. Under
+ * Playwright it is a spec's script or nobody, as Tidy's judge is; null whenever no model can be asked.
+ */
+function extensionComplete(request: { prompt: string; system: string | null; maxTokens: number }, limits: { timeoutMs: number; signal: AbortSignal }): Promise<string | null> {
+  const scripted = scriptedComplete();
+  if (scripted !== null) return scripted(request);
+  if (process.env["PISTACHIO_E2E"] === "1" && process.env["PISTACHIO_AGENT_LIVE"] !== "1") return Promise.resolve(null);
+  const model = configuredTidyModel();
+  // (Within the time the handler that asked has left, and stopped if whoever asked goes: ./extensions/complete.)
+  return model === null ? Promise.resolve(null) : completeWith(model.model, request, limits);
+}
+
+/** Tell the window's views the settings again (createWindow's tellSettings); null while no window is up. */
+let sendSettings: ((settings: DesktopSettings) => void) | null = null;
+
+/**
+ * The settings as a view is told them: the person's own, with the accent an extension's theme sets for the space in
+ * front laid over the appearance (docs/primitives.md §4; AppearanceSettings.accentOverride). Never stored: what the
+ * person set is untouched, and comes back the moment the theme is gone.
+ */
+function shownSettings(settings: DesktopSettings): DesktopSettings {
+  const accent = extensions?.hostAccent() ?? null;
+  return accent === null ? settings : { ...settings, appearance: { ...settings.appearance, accentOverride: accent } };
+}
+
+/**
+ * A spec's clock for extensions' triggers (docs/primitives.md §3): under PISTACHIO_E2E, the file
+ * PISTACHIO_E2E_TRIGGER_CLOCK names holds the instant the triggers are read against, in ms — a spec writes it to
+ * make it Sunday morning — and the clock is looked at every quarter second. Null anywhere else: the Mac's clock.
+ */
+function e2eTriggerClock(): { triggerClock: { now(): number; tickMs: number } } | null {
+  const file = process.env["PISTACHIO_E2E"] === "1" ? process.env["PISTACHIO_E2E_TRIGGER_CLOCK"] : undefined;
+  if (file === undefined || file === "") return null;
+  return {
+    triggerClock: {
+      now: () => {
+        try {
+          const at = Number(readFileSync(file, "utf8").trim());
+          return Number.isFinite(at) && at > 0 ? at : Date.now();
+        } catch {
+          return Date.now();
+        }
+      },
+      tickMs: 250,
+    },
+  };
+}
+
+/**
+ * What main can see for extensions' signals (docs/primitives.md §3.6): the power monitor, the network, the screens,
+ * and a Profile's connected Google Calendar — asked for only the Profiles an extension is on in. An extension is
+ * told only whether what it declared holds.
+ */
+function macSignals(): SignalSources {
+  return {
+    battery: () => powerMonitor.isOnBatteryPower(),
+    online: () => net.isOnline(),
+    displays: () => screen.getAllDisplays().length,
+    idleSeconds: () => powerMonitor.getSystemIdleTime(),
+    // (The idle state says "locked" whatever threshold is asked; anything else is a screen that is not.)
+    locked: () => {
+      const state = powerMonitor.getSystemIdleState(1);
+      return state === "unknown" ? null : state === "locked";
+    },
+    calendar: async (profileId, from, to): Promise<CalendarAnswer> => {
+      const service = integrationService;
+      if (service === null) return calendarAnswer({ status: "not_connected", events: [] });
+      return calendarAnswer(await service.calendarAgenda(profileId, new Date(from).toISOString(), new Date(to).toISOString()).catch(() => null));
+    },
+  };
+}
+
+/**
+ * A spec's signals (docs/primitives.md §3.6): under PISTACHIO_E2E, the file PISTACHIO_E2E_SIGNALS names holds what
+ * main reads — `{ battery, online, displays, idleSeconds, locked, calendar }`, `calendar` the events (`{ title, start, end }`
+ * in ms; every Profile's the same) or left out for a calendar that is not connected — read afresh at every look.
+ * Null anywhere else.
+ */
+function e2eSignals(): SignalSources | null {
+  const file = process.env["PISTACHIO_E2E"] === "1" ? process.env["PISTACHIO_E2E_SIGNALS"] : undefined;
+  if (file === undefined || file === "") return null;
+  const read = (): Record<string, unknown> => {
+    try {
+      const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+      return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  };
+  const flag = (key: string): boolean | null => (typeof read()[key] === "boolean" ? (read()[key] as boolean) : null);
+  const count = (key: string): number | null => (typeof read()[key] === "number" ? (read()[key] as number) : null);
+  return {
+    battery: () => flag("battery"),
+    online: () => flag("online"),
+    displays: () => count("displays"),
+    idleSeconds: () => count("idleSeconds"),
+    locked: () => flag("locked"),
+    calendar: (): Promise<CalendarAnswer> => {
+      const events = read()["calendar"];
+      if (!Array.isArray(events)) return Promise.resolve(calendarAnswer({ status: "not_connected", events: [] }));
+      return Promise.resolve({ status: "ok", events: events.flatMap((event: { title?: unknown; start?: unknown; end?: unknown }) => (typeof event.title === "string" && typeof event.start === "number" && typeof event.end === "number" ? [{ title: event.title, start: event.start, end: event.end }] : [])) });
+    },
+    calendarRefreshMs: 250,
+  };
+}
+
 function startTabTidy(controller: BrowserController): void {
   const archive = tabArchive;
   if (archive === null) return;
@@ -1750,8 +1967,13 @@ async function initializeAccountServices(): Promise<void> {
         console.error("[notes] could not read what is shared", error);
       });
       publishCloudStatus();
+      // (Another account's calendar, or the first: what extensions' signals read of the last is not this one's.)
+      extensions?.calendarChanged();
     },
     onSignedOut: async (reason) => {
+      // What extensions' calendar signals read was that account's: dropped at once, not at the next paced read
+      // (docs/primitives.md §3.6).
+      extensions?.calendarChanged();
       // A live share ended as the account left (beforeAccountChange); a Mac control stopped honouring could tell control
       // nothing, so its share stops here and control's sweep ends it (docs/live-share.md §5, §6.1).
       void liveShare?.accountChanging();
@@ -1838,6 +2060,8 @@ async function initializeAccountServices(): Promise<void> {
   requireSpaces().onChange((change) => {
     if (!change.remote && change.kind === "created") void authService.ensureSpaceSecrets();
     if (change.kind === "created" || change.kind === "removed" || change.kind === "updated") publishCloudStatus();
+    // (A Profile gone — on another device — leaves its away spaces to the Profile in front: AwaySpaces.list. Said now.)
+    if (change.kind === "removed") browser?.refreshSpaces();
   });
   // The gateway's proxy challenge, and nothing else, is answered with the
   // egress credential (§10.3). Installed before createWindow.
@@ -2090,6 +2314,8 @@ function flushPublish(): void {
     runs?.peek() ?? null,
     shelf.get(browser.activeSpaceId()),
     runChanged ? (runs?.threads() ?? []) : [],
+    // (The conversation of the space in front, as the hub has it: shown there whatever tab it started on.)
+    (runs?.frontGroup() ?? null) !== null,
   );
   if (tabsChanged) shellWindow.webContents.send(IPC.snapshotChanged, tabs);
   // A Space switch can scope the same run in or out of view: that is a run
@@ -2100,6 +2326,10 @@ function flushPublish(): void {
     shellWindow.webContents.send(IPC.runChanged, {
       run,
       threads: runChanged ? threads : (runs?.threads() ?? []),
+      // What goes on in the spaces nobody is looking at (docs/desk-agent.md §3, "Conversations stay in their space"),
+      // and which space this conversation is the one of.
+      spaceAgents: runs?.spaceAgents() ?? {},
+      runSpace: runs?.frontGroup() ?? null,
     });
   }
   // The very tab the shell puts the highlight ring around: the ring is
@@ -2181,7 +2411,7 @@ function requireBrowser(): BrowserController {
   return browser;
 }
 
-function requireRuns(): RunController {
+function requireRuns(): RunHub {
   if (runs === null) throw new Error("run controller is not ready");
   return runs;
 }
@@ -2218,9 +2448,14 @@ function desktopAdapter(
         if (window.isDestroyed()) return;
         window.show();
         window.focus();
-        // A reminder lands in the console; that is where the click should go.
-        if (message.kind === "reminder")
-          sendShellCommand({ type: "openConsole" });
+        // What it is about is a conversation, which may be another space's (or a reminder's task, no space's): the
+        // click goes to it — its space comes to the front, or it opens in the one the person is in — and the chat
+        // comes out there (RunHub.reveal; the shell's `openConsole`).
+        void (runs?.reveal(message.runId) ?? Promise.resolve(false))
+          .catch(() => false)
+          .then((shown) => {
+            if (shown || message.kind === "reminder") sendShellCommand({ type: "openConsole" });
+          });
       });
       notice.show();
     },
@@ -2534,6 +2769,7 @@ async function createWindow(): Promise<void> {
       // something in it (an entry may stand empty, never deleted), and a conversation bound to it whose thread is
       // still there (a binding outlives a thread the store pruned). Read from memory, on every reconcile.
       groupHolds: (groupId) => spaceHolds({ contexts: groupContexts, conversations: deskConversations, threads })(groupId),
+      awaySpaces: (spaceId) => awaySpaces?.list(spaceId) ?? [],
       // A space going into another (a merge on the rail, a page's space brought whole into one) takes what it holds with
       // its tabs: its Stack's items, and its conversation when the other has none (docs/spaces.md §1, "Merging spaces").
       // The other given a conversation may be the space in front, which stays in front: the session hears it, and opens it.
@@ -2541,7 +2777,7 @@ async function createWindow(): Promise<void> {
         if (moveSpaceHoldings({ contexts: groupContexts, conversations: deskConversations, threads }, fromGroupId, intoGroupId, title))
           runs?.groupConversationChanged(intoGroupId);
       },
-      // The agent's session follows the space in front (RunController.followGroup); there is no desk to enter or leave.
+      // The space in front shows its own conversation (RunHub.followGroup); the one left goes on in its own space.
       onCurrentGroupChange: (_spaceId, groupId) => {
         runs?.followGroup(groupId);
         // (After the step that changed it: a share ending here closes a window mid-activation otherwise.)
@@ -2552,6 +2788,11 @@ async function createWindow(): Promise<void> {
       // Pistachio extensions' pages are tabs (docs/extensions.md §4), and their declared items are in the page's menu.
       // Chrome extensions hear the person's tabs (made, put in use) and add to a page's menu.
       ...(extensions === null ? {} : { extensionPages: extensions.pageHooks, extensionMenu: extensions.menuHooks, chromeTabs: extensions.chromeTabs }),
+      // What is away is not a restore point's to bring in again (applyDurableSession; ./spaces withoutAway).
+      awayHeld: () => {
+        const held = awayStore?.all() ?? [];
+        return { groupIds: new Set(held.map((space) => space.id)), tabIds: new Set(held.flatMap((space) => space.held.tabs.map((tab) => tab.id))) };
+      },
       // A page's space whose page let go of its entry is titled after the entry.
       entryTitle: (spaceId, anchorId) => {
         if (isPresetAnchorId(anchorId)) return requireSettings().get().organization.presetLinks.find((link) => presetAnchorId(link.url) === anchorId)?.title ?? null;
@@ -2569,7 +2810,11 @@ async function createWindow(): Promise<void> {
       },
     },
   );
-  browser.onDownloadsChange = publishDownloads;
+  browser.onDownloadsChange = (downloads) => {
+    publishDownloads(downloads);
+    // (A download that has just finished is an event an extension may declare: docs/primitives.md §3.7.)
+    extensions?.downloadsChanged(downloads);
+  };
   extensions?.attachWindow({
     window,
     browser: extensionBrowserHost(
@@ -2648,7 +2893,7 @@ async function createWindow(): Promise<void> {
   window.on("enter-full-screen", () => applyWindowButtons());
   window.on("leave-full-screen", () => applyWindowButtons(true));
   notifications = new NotificationRouter([desktopAdapter(window, store)]);
-  runs = new RunController({
+  runs = new RunHub({
     browser,
     notifications,
     onChange: publishRun,
@@ -2667,6 +2912,17 @@ async function createWindow(): Promise<void> {
     integrations: { hostsFor: (spaceId) => integrationService?.hostsFor(spaceId) ?? Promise.resolve([]) },
     // The person's extensions' tools in a turn, and the author turn's draft folders (docs/extensions.md §6.2, §8).
     ...(extensions === null ? {} : { extensions: extensionsForRuns(extensions) }),
+    // The agent's space tools (docs/primitives.md §2): the rail's spaces, and the away service's two verbs — read as each
+    // is called, since the service starts once the session is restored, after this controller is made.
+    spaces: {
+      list: (profileId) => (browser?.tabGroups(profileId) ?? []).map((group) => ({ id: group.id, title: group.title, tabCount: group.tabIds.length })),
+      current: (profileId) => browser?.currentGroupId(profileId) ?? null,
+      away: (profileId) => awaySpaces?.list(profileId) ?? [],
+      send: (groupId, options) => awaySpaces?.send(groupId, options) ?? Promise.resolve({ ok: false, refusal: "failed", reason: "Spaces cannot be sent away here." }),
+      bringBack: (id, options) => awaySpaces?.bringBack(id, options) ?? Promise.resolve({ ok: false, refusal: "failed", reason: "Spaces cannot be brought back here." }),
+      // And the one that closes a space into the archive (./space-closing.ts), as the space's own menu does.
+      close: (groupId, options) => spaceClosing?.close(groupId, options) ?? Promise.resolve({ ok: false as const, reason: "Spaces cannot be closed here." }),
+    },
     // Under E2E, a spec may script the model (docs/desk-agent.md §4).
     ...(scriptedAgentModel() === null ? {} : { model: scriptedAgentModel()!, stream: scriptedAgentStreams() }),
     desk: {
@@ -2679,9 +2935,11 @@ async function createWindow(): Promise<void> {
       // The turn is over and its answer is out: take the light off the pages
       // here rather than leave it to the publish that follows. The glow is
       // injected INTO each page, so a run that ends without one reaching it
-      // would strand a lit page with no agent behind it.
-      browser?.setAgentGlow(null);
-      // The console freed up: a queued scheduled task can take it.
+      // would strand a lit page with no agent behind it. (The light is the
+      // conversation in front's: a turn that ended in another space leaves
+      // the one still running here lit.)
+      browser?.setAgentGlow(agentDrivenTabId(runs?.peek() ?? null));
+      // A reminder's task ended: a queued one can run.
       void reminderScheduler?.tick();
     },
   });
@@ -2741,13 +2999,20 @@ async function createWindow(): Promise<void> {
   let paneMaterialSignature = nativePaneMaterialSignature(store.get());
   let windowMaterialSignature = nativeWindowMaterialSignature(store.get());
   let shortcutsSignature = JSON.stringify(store.get().shortcuts);
+  // The settings as the views are told them (shownSettings): the shell, and every chrome view — each runs the theme
+  // (ThemeRuntime) and hears the appearance as it changes, or as an extension's theme changes the accent in force.
+  const tellSettings = (next: DesktopSettings): void => {
+    if (window.isDestroyed()) return;
+    const shown = shownSettings(next);
+    window.webContents.send(IPC.settingsChanged, shown);
+    for (const view of [dragView, findView, bookmarkView, noticeView, notchView, shelfView, pipView])
+      if (!view.webContents.isDestroyed()) view.webContents.send(IPC.settingsChanged, shown);
+    deskGlass?.picture?.send(IPC.settingsChanged, shown);
+  };
+  sendSettings = tellSettings;
   const offSettings = store.onChange((next) => {
     if (window.isDestroyed()) return;
-    window.webContents.send(IPC.settingsChanged, next);
-    // Every chrome view runs the theme (ThemeRuntime): each hears the appearance as it changes.
-    for (const view of [dragView, findView, bookmarkView, noticeView, notchView, shelfView, pipView])
-      if (!view.webContents.isDestroyed()) view.webContents.send(IPC.settingsChanged, next);
-    deskGlass?.picture?.send(IPC.settingsChanged, next);
+    tellSettings(next);
     const nextPaneMaterialSignature = nativePaneMaterialSignature(next);
     if (nextPaneMaterialSignature !== paneMaterialSignature) {
       paneMaterialSignature = nextPaneMaterialSignature;
@@ -2798,6 +3063,10 @@ async function createWindow(): Promise<void> {
     findView.load(rendererUrl, rendererFile),
   ]);
   await browser.initialize();
+  startAwaySpaces(browser);
+  startSpaceClosing(browser);
+  // (This window's shell is loaded and can hear: what waited for somebody at a window since closed is this one's to say.)
+  heldNotices.windowChanged();
   startTabTidy(browser);
   publish();
   publishBrowserControls(browser.browserControls());
@@ -2830,6 +3099,7 @@ async function createWindow(): Promise<void> {
     deskBridge.cancelAll("the window closed");
     offSidebar();
     extensions?.detachWindow();
+    sendSettings = null;
     browser?.shutdown();
     sidebarController = null;
     dragView.destroy();
@@ -2862,6 +3132,10 @@ async function createWindow(): Promise<void> {
     shellWindow = null;
     tabTidy?.stop();
     tabTidy = null;
+    awaySpaces?.stop();
+    awaySpaces = null;
+    spaceClosing?.stop();
+    spaceClosing = null;
     browser = null;
     // The controller goes with the window; the thread it held is written
     // and marked paused so the next window restores exactly that.
@@ -3166,6 +3440,9 @@ const screenshots = new Screenshots({
   leftOut: (contents) => chromeViewOf(contents) === "notice" || chromeViewOf(contents) === "notch",
 });
 
+/** The web apps on this Mac's ports, for the address bar's chips (docs/local-apps.md). */
+const localApps = new LocalApps();
+
 /** A utility view to have the keyboard back once it is on screen again (the screenshot selector veiled it), and until when. */
 let utilityKeyboardBack: { layer: ChromeOverlayView; until: number } | null = null;
 const UTILITY_KEYBOARD_WAIT_MS = 1_500;
@@ -3246,11 +3523,16 @@ function installIpc(): void {
   });
   ipcMain.handle(IPC.snapshot, () => {
     const browser = requireBrowser();
-    return browser.snapshot(
-      runs?.snapshot() ?? null,
-      requireSidebar().get(browser.activeSpaceId()),
-      runs?.threads() ?? [],
-    );
+    return {
+      ...browser.snapshot(
+        runs?.snapshot() ?? null,
+        requireSidebar().get(browser.activeSpaceId()),
+        runs?.threads() ?? [],
+        (runs?.frontGroup() ?? null) !== null,
+      ),
+      spaceAgents: runs?.spaceAgents() ?? {},
+      runSpace: runs?.frontGroup() ?? null,
+    };
   });
   ipcMain.handle(IPC.commandPaletteGet, (event) => {
     if (!isShell(event.sender))
@@ -3515,22 +3797,30 @@ function installIpc(): void {
   ipcMain.handle(IPC.tabGroupCommand, async (event, command: unknown): Promise<TabGroupCommandResult> => {
     if (!isShell(event.sender)) throw new Error("Tab groups are shell-only.");
     if (!isTabGroupCommand(command)) throw new Error("invalid tab group command");
+    // Away and back (docs/primitives.md §2) are the away service's: the same two verbs the agent and an extension reach.
+    if (command.type === "sendAway" || command.type === "bringBack") {
+      if (awaySpaces === null) return { archivedEntryId: null, refused: "Spaces cannot be sent away here." };
+      const outcome =
+        command.type === "sendAway"
+          ? await awaySpaces.send(command.groupId, { by: { kind: "person" }, ...(command.until === undefined ? {} : { until: command.until }) })
+          : await awaySpaces.bringBack(command.groupId, { select: true });
+      return { archivedEntryId: null, ...(outcome.ok ? {} : { refused: outcome.reason }) };
+    }
     if (command.type !== "close") {
       await requireBrowser().tabGroupCommand(command);
       return { archivedEntryId: null };
     }
     // Closing a space files it whole, so it is one Restore away (docs/tab-tidy.md §3.5) — an empty one too, as the
     // space alone (since 2026-10-09): the entry keeps its id, and restoring it brings its Stack and conversation back.
-    const closed = await requireBrowser().closeTabGroup(command.groupId);
-    if (closed === null || tabArchive === null) return { archivedEntryId: null };
-    // Nothing to bring back — no page, no Stack, no conversation (main's own fresh space, closed empty): no entry, which
-    // would only restore an empty "New space".
-    if (closed.tabs.length === 0 && !closed.persons) return { archivedEntryId: null };
-    const { id: groupId, title, color, origin, windows } = closed.group;
-    // (A space of windows comes back one: docs/space-tabs.md.)
-    const group = { title, color, origin, ...(windows === true ? { windows } : {}) };
-    const [entry] = tabArchive.add([{ kind: "group", spaceId: closed.spaceId, reason: "closed", runId: null, groupId, group, tabs: closed.tabs }]);
-    return { archivedEntryId: entry?.id ?? null };
+    // The one verb an extension's `spaces.close` reaches too (./space-closing.ts; docs/primitives.md §2.6): the
+    // person's own press is refused nothing.
+    if (spaceClosing === null) {
+      // (No archive to file it in: closed all the same, as before there was one.)
+      await requireBrowser().closeTabGroup(command.groupId);
+      return { archivedEntryId: null };
+    }
+    const closed = await spaceClosing.close(command.groupId, { by: { kind: "person" } });
+    return { archivedEntryId: closed.ok ? closed.entryId : null };
   });
   ipcMain.handle(IPC.tabArchive, async (event, request: unknown): Promise<TabArchiveResponse> => {
     if (!isShell(event.sender)) throw new Error("The tab archive is shell-only.");
@@ -3773,6 +4063,10 @@ function installIpc(): void {
     if (!isScreenshotRequest(request)) throw new Error("That is not a screenshot request.");
     return screenshots.request(request);
   });
+  ipcMain.handle(IPC.localApps, (event) => {
+    if (!isShell(event.sender) || event.senderFrame !== event.sender.mainFrame) throw new Error("Local apps are shell-only.");
+    return localApps.list();
+  });
   ipcMain.on(IPC.shellStateSet, (event, state: unknown) => {
     if (!isShell(event.sender) || !isShellState(state)) return;
     const switcherEnded = shellState.tabSwitcherOpen && !state.tabSwitcherOpen;
@@ -3883,7 +4177,7 @@ function installIpc(): void {
       });
     },
   );
-  ipcMain.handle(IPC.settingsGet, () => requireSettings().get());
+  ipcMain.handle(IPC.settingsGet, () => shownSettings(requireSettings().get()));
   ipcMain.handle(IPC.aiStatusGet, (event) => {
     if (!isShell(event.sender)) throw new Error("not the shell");
     return aiProviderStatus();
@@ -3893,10 +4187,13 @@ function installIpc(): void {
     // An anonymous account has a meter too: its allowance is the cap it reports.
     return auth === null || !auth.modelsAvailable() ? null : auth.controlClient().aiUsage();
   });
+  // (Answered as the views were just told them — shownSettings: the shell keeps the answer as its settings, after
+  // the event, and the two should not differ by a theme's accent. What is drawn never did: ThemeRuntime listens to
+  // the event alone.)
   ipcMain.handle(IPC.settingsUpdate, (_event, patch: unknown) =>
-    requireSettings().update(patch),
+    shownSettings(requireSettings().update(patch)),
   );
-  ipcMain.handle(IPC.settingsReset, () => requireSettings().reset());
+  ipcMain.handle(IPC.settingsReset, () => shownSettings(requireSettings().reset()));
   ipcMain.handle(IPC.memoryGet, () => requireMemory().snapshot());
   ipcMain.handle(IPC.memoryAdd, (_event, input: unknown) => {
     const sanitized = sanitizeMemoryAddInput(input);
@@ -4218,7 +4515,7 @@ function installIpc(): void {
     await requireAuth().disableCloud(requireString(spaceId, "spaceId"));
     return cloudStatus();
   });
-  ipcMain.handle(IPC.cloudStartRun, (event, request: unknown) => {
+  ipcMain.handle(IPC.cloudStartRun, async (event, request: unknown) => {
     shellOnly(event, "a cloud run");
     if (typeof request !== "object" || request === null) throw new Error("invalid run request");
     const raw = request as Record<string, unknown>;
@@ -4228,7 +4525,12 @@ function installIpc(): void {
       ...(typeof raw["startUrl"] === "string" ? { startUrl: raw["startUrl"] } : {}),
       ...(raw["attachments"] === undefined ? {} : { attachments: requireAttachments(raw["attachments"]) }),
     };
-    return featureHandlers.cloud.startRun(input);
+    const started = await featureHandlers.cloud.startRun(input);
+    // Asked from a space's Bar: that space's conversation from now (RunHub.cloudStarted), wherever the person is by
+    // the time control has made it.
+    const groupId = raw["groupId"];
+    if (typeof groupId === "string" && groupId !== "") runs?.cloudStarted(started.runId, groupId);
+    return started;
   });
   ipcMain.handle(IPC.cloudLiveOpen, async (event, runId: unknown) => {
     shellOnly(event, "the live view");
@@ -4352,7 +4654,8 @@ function installIpc(): void {
     shellOnly(event, "connecting an integration");
     if (!isIntegrationProvider(provider)) throw new Error("unknown integration");
     if (!isIntegrationAccess(access)) throw new Error("unknown access level");
-    return integrations.connect(requireString(spaceId, "spaceId"), provider, access);
+    // (A calendar connected is one an extension's signal can now read: §3.6.)
+    return integrations.connect(requireString(spaceId, "spaceId"), provider, access).finally(() => extensions?.calendarChanged());
   });
   ipcMain.handle(IPC.integrationSetAccess, (event, spaceId: unknown, connectionId: unknown, access: unknown) => {
     shellOnly(event, "changing an integration");
@@ -4361,7 +4664,7 @@ function installIpc(): void {
   });
   ipcMain.handle(IPC.integrationDisconnect, (event, spaceId: unknown, connectionId: unknown) => {
     shellOnly(event, "disconnecting an integration");
-    return integrations.disconnect(requireString(spaceId, "spaceId"), requireString(connectionId, "connectionId"));
+    return integrations.disconnect(requireString(spaceId, "spaceId"), requireString(connectionId, "connectionId")).finally(() => extensions?.calendarChanged());
   });
   ipcMain.handle(IPC.integrationCalendarEvents, (event, spaceId: unknown, from: unknown, to: unknown) => {
     shellOnly(event, "reading the calendar");
@@ -4426,8 +4729,8 @@ function installIpc(): void {
   });
   briefScheduler = scheduler;
   // A Mac asleep at the hour makes the brief on waking; turning the schedule on, or moving it earlier, is looked at at once.
-  powerMonitor.on("resume", () => scheduler.tick());
-  powerMonitor.on("unlock-screen", () => scheduler.tick());
+  // (A Mac asleep at the hour makes the brief as it wakes: the same moments everything else is asked at.)
+  mainClock.onLook("brief", () => scheduler.tick());
   requireSettings().onChange(() => scheduler.tick());
   ipcMain.handle(IPC.reports, (event, request: unknown) => {
     shellOnly(event, "reading the daily brief");
@@ -4862,9 +5165,10 @@ const MAX_ATTACHMENTS_PER_MESSAGE = 6;
 const MAX_ATTACHMENT_URL_LENGTH = 6 * 1024 * 1024;
 
 /** A console turn's options from the renderer; anything malformed is the default (page attached). */
-function turnOptions(value: unknown): { page: boolean } {
-  const page = typeof value === "object" && value !== null ? (value as { page?: unknown }).page : undefined;
-  return { page: page !== false };
+function turnOptions(value: unknown): { page: boolean; groupId?: string } {
+  const options = typeof value === "object" && value !== null ? (value as { page?: unknown; groupId?: unknown }) : {};
+  // (The space whose Bar sent it: a message is that space's, though the person has gone on — RunHub.start.)
+  return { page: options.page !== false, ...(typeof options.groupId === "string" && options.groupId !== "" ? { groupId: options.groupId } : {}) };
 }
 
 function requireAttachments(value: unknown): AgentAttachment[] {
@@ -5269,13 +5573,26 @@ app.whenReady().then(async () => {
   settings.onChange((next) => {
     if (next.reminders.enabled) void reminderScheduler?.tick();
   });
-  // A Mac that slept through a fire catches up on waking, not a tick later.
-  powerMonitor.on("resume", () => void reminderScheduler?.tick());
-  powerMonitor.on("unlock-screen", () => void reminderScheduler?.tick());
+  // One clock (./main-clock.ts): what keeps time here is asked, not fired, and asked at the same moments.
+  // A Mac that slept through a reminder's fire catches up on waking, not a tick later.
+  mainClock.onLook("reminders", () => reminderScheduler?.tick());
   // The morning case: tabs went idle while the Mac slept, and Tidy should
   // not wait out another minute of the sweep to notice (docs/tab-tidy.md §3.1).
-  powerMonitor.on("resume", () => void tabTidy?.sweep());
-  powerMonitor.on("unlock-screen", () => void tabTidy?.sweep());
+  mainClock.onLook("tidy", () => tabTidy?.sweep());
+  // A space due back while the Mac slept is back as it wakes (docs/primitives.md §2: the clock asks, it is not told).
+  mainClock.onLook("away", () => awaySpaces?.tick());
+  // And an extension's trigger whose answer changed meanwhile is heard as it wakes (docs/primitives.md §3) — as is a
+  // signal the Mac says the moment it changes (§3.6): the screen locked, the charger, a display. The rest are read at
+  // each look.
+  mainClock.onLook("triggers", () => extensions?.tickTriggers(), CLOCK_MOMENTS);
+  // The one place the Mac is wired to it.
+  powerMonitor.on("resume", () => mainClock.look("wake"));
+  powerMonitor.on("unlock-screen", () => mainClock.look("unlock"));
+  powerMonitor.on("lock-screen", () => mainClock.look("lock"));
+  powerMonitor.on("on-ac", () => mainClock.look("power"));
+  powerMonitor.on("on-battery", () => mainClock.look("power"));
+  screen.on("display-added", () => mainClock.look("display"));
+  screen.on("display-removed", () => mainClock.look("display"));
   artifacts = new ArtifactStore(app.getPath("userData"), { webUrl: artifactWebOrigin });
   notes = new NoteStore(app.getPath("userData"));
   // Extensions (docs/extensions.md): the registry, the bundled set and the dev folder, before the window whose tabs
@@ -5294,6 +5611,15 @@ app.whenReady().then(async () => {
     notes: () => notes,
     screenshotFolder,
     shortcuts: () => extensionSettings.get().shortcuts,
+    // Away spaces go with the window (startAwaySpaces): an extension reaches the two verbs the space's menu does.
+    away: () => awaySpaces,
+    // So does the verb that closes a space into the archive (startSpaceClosing), and the account's model for one question.
+    closing: () => spaceClosing,
+    complete: extensionComplete,
+    ...(e2eTriggerClock() ?? {}),
+    signals: extensionSignals(),
+    // The accent an extension's theme sets for the space in front changed: every view that runs the theme is told.
+    themeChanged: () => sendSettings?.(requireSettings().get()),
   });
   extensions.start();
   groupContexts = new GroupContextStore(app.getPath("userData"), { convert: macDocumentConverter() });
@@ -5396,6 +5722,7 @@ app.whenReady().then(async () => {
   });
   sidebar = new SidebarStore(app.getPath("userData"));
   tabArchive = new TabArchiveStore(app.getPath("userData"), () => requireSettings().get().tabs.archiveRetentionDays);
+  awayStore = new AwayStore(app.getPath("userData"));
   spaces = new SpaceStore(app.getPath("userData"));
   setWelcomeContext(() => ({
     name: memory?.profile().name ?? "",

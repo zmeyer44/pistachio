@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { FileClock, Globe, Search, X } from "lucide-react";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
+import { localPortOf } from "@pistachio/shell-contracts/local-apps";
 import { isShellPageUrl } from "@pistachio/shell-contracts/shell-pages";
 import type { ShortcutPlatform } from "@pistachio/shell-contracts/shortcuts";
 import { DEFAULT_SIDEBAR_STATE, favoriteOf, isPresetAnchorId } from "@pistachio/shell-contracts/sidebar";
@@ -12,14 +14,17 @@ import { Favicon, TabMark } from "./Favicon";
 import { Kbd } from "./ui/kbd";
 import { useIntentOrder } from "../lib/use-address-intent";
 import { useFieldPreview } from "../lib/use-field-preview";
+import { useLocalApps } from "../lib/use-local-apps";
+import { localAppDetail, localAppMatches, trayGroups } from "../lib/local-tray";
 import { deskAvailable, newSpaceAt, openEntry } from "../lib/desk/open";
-import { PALETTE_DETAIL_CLASS, PALETTE_FAVICON_CLASS, PALETTE_ROW_CLASS, PALETTE_TITLE_CLASS, PaletteResultRow, primaryItemFor, routeInSpace, usePaletteInventory, useShelfRows, useTypedEntries, enterDestination, type Entry, type NewDestination } from "./address-palette";
+import { PALETTE_DETAIL_CLASS, PALETTE_FAVICON_CLASS, PALETTE_ROW_CLASS, PALETTE_TITLE_CLASS, PaletteResultRow, primaryItemFor, routeInSpace, tabsInSpace, usePaletteInventory, useShelfRows, useTypedEntries, enterDestination, type Entry, type NewDestination } from "./address-palette";
+import { LocalTray, type LocalEntry, type TrayPill } from "./LocalTray";
 
 import { shellApi } from "../api";
 import { useSurface } from "../surface";
 import type { WatchtowerHit } from "@pistachio/shell-contracts/watchtower";
 
-const HORIZONTAL_KINDS: ReadonlySet<Entry["kind"]> = new Set(["recent"]);
+const HORIZONTAL_KINDS: ReadonlySet<Entry["kind"]> = new Set(["recent", "local"]);
 
 /** A run of same-kind entries — the unit ↑/↓ jump between. */
 interface Zone {
@@ -89,6 +94,12 @@ function chipWidthEstimate(label: string): number {
  * TYPING — the classic suggestion list: go-to/search for what was typed,
  * plus matching recents.
  *
+ * On both faces the web apps running on this Mac (docs/local-apps.md) sit in
+ * a tray fastened under the field (LocalTray), the first stop below it:
+ * browsing, ↓ reaches it first; typing, it keeps the apps the text reaches
+ * ("51", ":3000", "story") and folds away when none, while ↵ stays the
+ * typed text's — ⇥ (or ↑ from the first row) is the way in.
+ *
  * On either face the field shows where the active row goes once the person
  * has steered to it, by arrow or by pointer, and the next edit works on that
  * text (lib/use-field-preview.ts); until then `query` stays what they typed.
@@ -139,6 +150,22 @@ function UrlBarDialog() {
   const prefillRef = useRef("");
 
   const { palette, paletteTabs } = usePaletteInventory(open);
+
+  // The web apps on this Mac's ports, for the tray under the field (LocalTray).
+  // The bar opens with the last answer and settles on the fresh one, so the
+  // tray only unfolds — and a dot only breathes — for what was not there as
+  // the bar opened: a reopen with the same servers up is still.
+  const localApps = useLocalApps(open);
+  const [openedWith] = useState<ReadonlySet<number>>(() => new Set(localApps.map((app) => app.port)));
+  const [openedAt] = useState(() => Date.now());
+  const [breathed, setBreathed] = useState<ReadonlySet<number>>(new Set());
+  const freshPorts = useMemo(
+    () => new Set(localApps.filter((app) => !openedWith.has(app.port) && !breathed.has(app.port)).map((app) => app.port)),
+    [localApps, openedWith, breathed],
+  );
+  const localGroups = useMemo(() => trayGroups(localApps), [localApps]);
+  // An app already open in a tab of the space in use is switched to, as an open tab's row is (routeInSpace).
+  const inSpaceTabIds = useAppStore(useShallow((s) => tabsInSpace(tab?.id ?? null, s.snapshot)));
 
   const currentUrl = tab?.url ?? "";
   useEffect(() => {
@@ -256,7 +283,38 @@ function UrlBarDialog() {
     run: (into) => openAt(`pistachio://watchtower/v/${hit.observationId}`, into ?? newDestination),
   }))], [order.entries, savedHits, openAt, newDestination]);
 
-  const entries = useMemo<Entry[]>(() => {
+  /**
+   * The tray's pills (LocalTray) and their stops, which LEAD the bar's list on
+   * both faces: they sit between the field and the list, so they are the
+   * first stop below the field. Browsing it has them all; typing, the ones
+   * the text reaches. ↵ never lands on one unasked — typing's default row is
+   * the first one AFTER them (`home`).
+   */
+  const tray = useMemo(() => {
+    const inSpace = new Set(inSpaceTabIds);
+    const pills: TrayPill[] = [];
+    const stops: LocalEntry[] = [];
+    for (const group of localGroups) {
+      const ports: TrayPill["ports"] = [];
+      for (const app of group.apps) {
+        if (!browsing && !localAppMatches(app, q)) continue;
+        // The tab being edited is where ↵ already goes, so it is no other tab to switch to.
+        const openIn = tabs.find((candidate) => candidate.id !== tab?.id && inSpace.has(candidate.id) && localPortOf(candidate.url) === app.port);
+        // Over a page, ↵ switches to that tab, so the field shows where it lands; composing a new tab, it opens the app afresh.
+        const url = openIn !== undefined && tab !== null ? openIn.url : app.url;
+        const entry: LocalEntry = { kind: "local", id: `local:${app.port}`, url, title: group.name, app, tabId: openIn?.id ?? null };
+        ports.push({ entry, index: stops.length });
+        stops.push(entry);
+      }
+      if (ports.length > 0) pills.push({ key: group.key, name: group.name, ports });
+    }
+    return { pills, stops };
+  }, [localGroups, browsing, q, tabs, tab, inSpaceTabIds]);
+  const lead = tray.stops.length;
+  /** Where the selection rests when nobody has steered: the field browsing, the first row after the tray typing. */
+  const home = browsing ? -1 : lead;
+
+  const listEntries = useMemo<Entry[]>(() => {
     if (!browsing) return typedEntries;
     return [
       ...(pasteRow === null ? [] : [pasteRow]),
@@ -275,12 +333,32 @@ function UrlBarDialog() {
     ];
   }, [browsing, typedEntries, pasteRow, recents, shelfRows, historyRows, tabRows]);
 
+  const entries = useMemo<Entry[]>(() => (lead === 0 ? listEntries : [...tray.stops, ...listEntries]), [lead, tray.stops, listEntries]);
+
+  // The tray changes under the selection — the first scan lands, a server
+  // starts or stops — without the person doing anything: the selection stays
+  // on the pill or row it was on, rather than on whatever its index now holds.
+  const trayIds = tray.stops.map((stop) => stop.id);
+  const trayKey = trayIds.join(" ");
+  const [trayWas, setTrayWas] = useState({ key: trayKey, ids: trayIds });
+  if (trayWas.key !== trayKey) {
+    setTrayWas({ key: trayKey, ids: trayIds });
+    const was = trayWas.ids;
+    setSelected((i) => {
+      if (i < 0) return i;
+      if (i >= was.length) return i - was.length + trayIds.length;
+      const kept = trayIds.indexOf(was[i] ?? "");
+      if (kept >= 0) return kept;
+      return trayIds.length > 0 ? Math.min(i, trayIds.length - 1) : browsing ? -1 : 0;
+    });
+  }
+
   const zones = useMemo(() => zonesOf(entries), [entries]);
   const total = entries.length;
   const preview = useFieldPreview({ inputRef, typed: query, entries, selected });
 
   useEffect(() => {
-    setSelected(browsing ? -1 : 0);
+    setSelected(home);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
@@ -288,7 +366,14 @@ function UrlBarDialog() {
     setSelected((i) => Math.min(i, total - 1));
   }, [total]);
 
+  /**
+   * A tray pill the POINTER reached is not scrolled to: the strip would slide
+   * under a still pointer, which would then rest on the next pill, and scroll
+   * to that — running the strip to its end from a hover at its edge.
+   */
+  const pointedAtPill = useRef(false);
   useEffect(() => {
+    if (pointedAtPill.current) return;
     dialogRef.current?.querySelector(`[data-index="${selected}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [selected]);
 
@@ -317,6 +402,18 @@ function UrlBarDialog() {
     if (entry.kind === "action") {
       close();
       entry.run(into);
+      return;
+    }
+    // A local app open in a tab of this space is switched to over a page, as
+    // an open tab's row is; anywhere else — composing a new tab, or asked to
+    // by ⌥↵ / ⌘⇧↵ — the app opens afresh at its own address.
+    if (entry.kind === "local") {
+      if (entry.tabId !== null && tab !== null && into === undefined) {
+        close();
+        void selectTab(entry.tabId);
+      } else {
+        commit(entry.app.url, into);
+      }
       return;
     }
     // In the dedicated new-tab flow every result is an address source. An
@@ -352,18 +449,20 @@ function UrlBarDialog() {
   const selectResult = (index: number) => {
     if (!browsing) order.moved(index, selected);
     preview.steer("pointer", index);
+    pointedAtPill.current = index < lead;
     setSelected(index);
   };
 
   /** ↑/↓/←/→ landed on `index` (-1: back in the field, which shows the typed text again). */
   const stepTo = (index: number) => {
     preview.steer("keys", index);
+    pointedAtPill.current = false;
     setSelected(index);
   };
 
   /** The pointer left the list: a row it was only looking at is no longer the active one. */
   const endHover = () => {
-    if (preview.leave()) setSelected(browsing ? -1 : 0);
+    if (preview.leave()) setSelected(home);
   };
 
   const zoneAt = (index: number): Zone | undefined => zones.find((z) => index >= z.start && index < z.end);
@@ -403,7 +502,8 @@ function UrlBarDialog() {
       // Typing: ↵ acts on the row that was under it when they decided to
       // press it, which is not the same thing as the row that is under it
       // now if the model reordered the list a moment ago.
-      const entry = browsing ? entries[selected] : order.entryFor(selected);
+      // (The tray's pills lead the list and are never reordered: they are read as they stand.)
+      const entry = browsing || selected < lead ? entries[selected] : order.entryFor(selected - lead);
       if (entry !== undefined) {
         act(entry, into);
         return;
@@ -415,6 +515,22 @@ function UrlBarDialog() {
     if (e.key === "Escape") {
       e.preventDefault();
       close();
+      return;
+    }
+    // ⇥ jumps from anywhere in the field into the tray of local apps and on
+    // along it, ⇧⇥ back; past either end it comes round to the typed text —
+    // a shell's completion cycle, which is where a port is usually typed.
+    // (Nothing else in the bar takes ⇥; without a tray it is left alone.)
+    if (e.key === "Tab" && lead > 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const inTray = selected >= 0 && selected < lead;
+      const next = e.shiftKey ? (inTray ? selected - 1 : lead - 1) : inTray ? selected + 1 : 0;
+      if (next >= 0 && next < lead) {
+        stepTo(next);
+      } else {
+        preview.release();
+        setSelected(home);
+      }
       return;
     }
     const zone = zoneAt(selected);
@@ -458,6 +574,9 @@ function UrlBarDialog() {
 
   const indexOfKind = (kind: Entry["kind"], offset: number): number =>
     entries.findIndex((entry) => entry.kind === kind) + offset;
+
+  /** The tray's pill the person has steered to (no face rests on one by itself), whose field line says what it is. */
+  const steeredApp = selected >= 0 && selected < lead ? tray.stops[selected] : undefined;
 
   return (
     <div
@@ -505,6 +624,17 @@ function UrlBarDialog() {
             onKeyDown={onKeyDown}
             className="h-full min-w-0 flex-1 border-0 bg-transparent text-[16px] text-gray-1000 outline-none placeholder:text-gray-700"
           />
+          {/* A local app steered to: the field shows its address, and this what
+              the pill has no room for — its server, a title that is not its
+              name, how long it has been up — and whether ↵ switches to its tab. */}
+          {steeredApp === undefined ? null : (
+            <span data-testid="local-app-detail" className="flex min-w-0 shrink items-center gap-2 text-[12px] text-gray-700">
+              <span className="truncate">{localAppDetail(steeredApp.app, openedAt)}</span>
+              {steeredApp.tabId !== null && tab !== null ? (
+                <span className="shrink-0 rounded-full bg-alpha-100 px-2 py-0.5 font-medium text-gray-1000">Switch to tab</span>
+              ) : null}
+            </span>
+          )}
           {/* Where ↵ goes, when it is not the page in use (⌥L, ⌘⇧L). */}
           {urlBarNew === false ? null : (
             <span className="shrink-0 text-[12px] text-gray-700" data-testid="url-bar-destination">
@@ -514,13 +644,30 @@ function UrlBarDialog() {
           <Kbd>esc</Kbd>
         </div>
 
+        {/* The local apps (docs/local-apps.md), fastened under the field on
+            both faces; nothing at all when there are none, as on the web. */}
+        {localApps.length > 0 ? (
+          <LocalTray
+            pills={tray.pills}
+            shown={lead > 0}
+            arriving={openedWith.size === 0}
+            selected={selected}
+            hint={!browsing && lead > 0 && steeredApp === undefined}
+            fresh={freshPorts}
+            onBreathed={(ports) => setBreathed((was) => new Set([...was, ...ports]))}
+            onSelect={selectResult}
+            onActivate={(entry, e) => act(entry, enterDestination(e, PLATFORM, deskAvailable()))}
+            onLeave={endHover}
+          />
+        ) : null}
+
         {/* Browse mode: one column under the field, as the home search lists —
             the clipboard's address, the recent sites as chips, then each group
             under its label. */}
-        {browsing && total > 0 ? (
+        {browsing && listEntries.length > 0 ? (
           <div className={LIST_CLASS} onMouseLeave={endHover}>
             {pasteRow !== null ? (
-              <PaletteResultRow entry={pasteRow} index={0} selected={selected === 0} onSelect={selectResult} onActivate={act} />
+              <PaletteResultRow entry={pasteRow} index={lead} selected={selected === lead} onSelect={selectResult} onActivate={act} />
             ) : null}
 
             {/* Recently-visited sites, as chips. Hovering a chip crossfades its icon
@@ -667,10 +814,10 @@ function UrlBarDialog() {
         {/* Typing mode: one fuzzy-ranked inventory, regardless of where an
             item lives. The right-hand source label keeps unlike results
             scannable without breaking relevance into separate lists. */}
-        {!browsing && entries.length > 0 ? (
+        {!browsing && listEntries.length > 0 ? (
           <div className={LIST_CLASS} data-testid="command-results" data-intent-ranked={order.intentState} onMouseLeave={endHover}>
-            {entries.map((entry, i) => (
-              <PaletteResultRow key={entry.id} entry={entry} index={i} selected={i === selected} onSelect={selectResult} onActivate={act} />
+            {listEntries.map((entry, i) => (
+              <PaletteResultRow key={entry.id} entry={entry} index={lead + i} selected={lead + i === selected} onSelect={selectResult} onActivate={act} />
             ))}
           </div>
         ) : null}

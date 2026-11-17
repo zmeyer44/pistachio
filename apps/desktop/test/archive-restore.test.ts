@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_TAB_GROUPS_PER_SPACE, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import type { ArchivedTab } from "@pistachio/shell-contracts/tab-archive";
-import { restoreArchiveEntry, type ArchiveRestoreHost } from "../src/main/archive-restore";
+import { NO_ROOM_FOR_TABS, restoreArchiveEntry, type ArchiveRestoreHost } from "../src/main/archive-restore";
 import { TabArchiveStore } from "../src/main/tab-archive-store";
 
 const dirs: string[] = [];
@@ -30,9 +30,12 @@ function archive(): TabArchiveStore {
 function browser(spaces: number) {
   let made = 0;
   const groups: TabGroupInfo[] = Array.from({ length: spaces }, (_, index) => ({ id: `other-${String(index)}`, title: "Other", color: "blue", tabIds: [], origin: "manual", open: false, createdAt: index }));
+  const state = { tabRoom: true };
   const host = {
     activeSpaceId: () => "work",
     hasRoomForSpace: () => groups.length < MAX_TAB_GROUPS_PER_SPACE,
+    /** Whether the Profile's session would keep that many more tabs (two hundred of a Profile are read back). */
+    hasRoomForTabs: vi.fn((_spaceId: string, _coming: number) => state.tabRoom),
     restoreArchivedTabs: vi.fn((_spaceId: string, tabs: readonly ArchivedTab[]) => tabs.map(() => `tab-${String(++made)}`)),
     createTabGroup: vi.fn((options: { id?: string; title?: string; tabIds: readonly string[]; origin: TabGroupInfo["origin"] }) => {
       const id = options.id ?? `space-${String(++made)}`;
@@ -45,7 +48,7 @@ function browser(spaces: number) {
     selectTab: vi.fn(async () => undefined),
     selectGroup: vi.fn(async () => undefined),
   };
-  return { groups, host, restoring: host as unknown as ArchiveRestoreHost };
+  return { groups, state, host, restoring: host as unknown as ArchiveRestoreHost };
 }
 
 const page = (url: string): ArchivedTab => ({ title: url, url, faviconUrl: null, lastActiveAt: 1 });
@@ -67,6 +70,24 @@ describe("restoring a space from the archive", () => {
     expect(restored.ok).toBe(true);
     expect(groups.some((group) => group.id === "lisbon" && group.title === "Lisbon")).toBe(true);
     expect(host.selectGroup).toHaveBeenCalledWith("lisbon");
+    expect(store.get(entry!.id)).toBeNull();
+  });
+
+  it("keeps a filed space's entry while the Profile's session has no room for its tabs: restored, the session would drop them and the entry be spent", async () => {
+    const store = archive();
+    const [entry] = store.add([{ kind: "group", spaceId: "work", reason: "closed", runId: null, groupId: "trip", group: { title: "Trip", color: "blue", origin: "manual" }, tabs: [page("https://a.example/"), page("https://b.example/")] }]);
+    const { groups, state, host, restoring } = browser(0);
+    state.tabRoom = false;
+    const refused = await restoreArchiveEntry(store, restoring, { entryId: entry!.id }, () => true);
+    expect(refused).toEqual({ ok: false, reason: NO_ROOM_FOR_TABS });
+    expect(host.hasRoomForTabs).toHaveBeenLastCalledWith("work", 2);
+    expect(host.restoreArchivedTabs).not.toHaveBeenCalled();
+    expect(groups).toEqual([]);
+    expect(store.get(entry!.id)?.kind).toBe("group");
+    // Tabs closed, it comes back whole.
+    state.tabRoom = true;
+    expect((await restoreArchiveEntry(store, restoring, { entryId: entry!.id }, () => true)).ok).toBe(true);
+    expect(groups.find((group) => group.id === "trip")?.tabIds).toHaveLength(2);
     expect(store.get(entry!.id)).toBeNull();
   });
 

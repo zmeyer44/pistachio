@@ -42,6 +42,12 @@
         "enum": [
           "tabs:read",
           "tabs:write",
+          "tabs:mark",
+          "spaces:write",
+          "spaces:close",
+          "spaces:all",
+          "spaces:mark",
+          "theme",
           "desk",
           "pages:read",
           "capture:tab",
@@ -56,6 +62,7 @@
           "notes:write",
           "agent:tools",
           "agent:ask",
+          "ai",
           "power"
         ]
       }
@@ -310,7 +317,9 @@
                 "selection",
                 "link",
                 "image",
-                "window"
+                "window",
+                "tab",
+                "space"
               ]
             }
           },
@@ -537,6 +546,254 @@
             ]
           }
         ]
+      }
+    },
+    "band": {
+      "type": "boolean",
+      "const": true
+    },
+    "sidebar": {
+      "type": "boolean",
+      "const": true
+    },
+    "triggers": {
+      "maxItems": 8,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,23}$"
+          },
+          "during": {
+            "type": "object",
+            "properties": {
+              "days": {
+                "minItems": 1,
+                "maxItems": 7,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "sun",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat"
+                  ]
+                }
+              },
+              "from": {
+                "type": "string",
+                "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+              },
+              "to": {
+                "type": "string",
+                "pattern": "^(([01]\\d|2[0-3]):[0-5]\\d|24:00)$"
+              },
+              "zone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "additionalProperties": false
+          },
+          "at": {
+            "type": "object",
+            "properties": {
+              "days": {
+                "minItems": 1,
+                "maxItems": 7,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "sun",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat"
+                  ]
+                }
+              },
+              "time": {
+                "type": "string",
+                "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+              },
+              "zone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "time"
+            ],
+            "additionalProperties": false
+          },
+          "every": {
+            "type": "object",
+            "properties": {
+              "minutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1440
+              },
+              "while": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,23}$"
+              }
+            },
+            "required": [
+              "minutes"
+            ],
+            "additionalProperties": false
+          },
+          "when": {
+            "type": "object",
+            "properties": {
+              "power": {
+                "type": "string",
+                "enum": [
+                  "battery",
+                  "plugged"
+                ]
+              },
+              "network": {
+                "type": "string",
+                "enum": [
+                  "offline",
+                  "online"
+                ]
+              },
+              "display": {
+                "type": "string",
+                "const": "external"
+              },
+              "idle": {
+                "type": "object",
+                "properties": {
+                  "minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 240
+                  }
+                },
+                "required": [
+                  "minutes"
+                ],
+                "additionalProperties": false
+              },
+              "calendar": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 40
+                  },
+                  "early": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 30
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "additionalProperties": false
+              },
+              "screen": {
+                "type": "string",
+                "const": "locked"
+              },
+              "page": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "pattern": "^(?:\\*\\.)?[a-z0-9-]+(?:\\.[a-z0-9-]+)*$"
+                  },
+                  "path": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "pattern": "^\\/[^\\s?#*]*$"
+                  }
+                },
+                "required": [
+                  "host"
+                ],
+                "additionalProperties": false
+              },
+              "space": {
+                "type": "string",
+                "const": "front"
+              },
+              "tabs": {
+                "type": "object",
+                "properties": {
+                  "over": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500
+                  }
+                },
+                "required": [
+                  "over"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "on": {
+            "type": "object",
+            "properties": {
+              "tab": {
+                "type": "string",
+                "enum": [
+                  "opened",
+                  "closed",
+                  "shown"
+                ]
+              },
+              "page": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "pattern": "^(?:\\*\\.)?[a-z0-9-]+(?:\\.[a-z0-9-]+)*$"
+                  },
+                  "path": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "pattern": "^\\/[^\\s?#*]*$"
+                  }
+                },
+                "required": [
+                  "host"
+                ],
+                "additionalProperties": false
+              },
+              "download": {
+                "type": "string",
+                "const": "finished"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
       }
     }
   },

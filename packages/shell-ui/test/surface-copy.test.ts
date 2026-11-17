@@ -222,6 +222,10 @@ const NATIVE_ONLY: Record<string, string> = {
   // ContentArea's one line), and the host refuses Settings → Extensions whole, so its body renders Unavailable.
   "components/extensions/ExtensionsPage.tsx": "drawn on the desk alone; a tab shows ContentArea's line instead",
   "components/settings/sections/extensions.tsx": "the host refuses extensions whole; renders Unavailable",
+  // The address bar's tray of local apps (docs/local-apps.md) mounts only with
+  // apps to show, which come from `localApps()`, a NativeSurfaceApi member no
+  // tab has: useLocalApps answers a stream surface with none.
+  "components/LocalTray.tsx": "mounts only with local apps, which only the desktop can list",
   // The module itself: the Mac's own wording is the point.
   "lib/surface-copy.ts": "the copy module",
 };

@@ -4,6 +4,7 @@ import type { ChromeVerdict, ExtensionSheet, ExtensionSheetLine } from "@pistach
 import { cn } from "../../lib/cn";
 import { revealExtensionFolder } from "../../lib/extensions/actions";
 import { sheetIsCritical, sheetLines, sourceLine } from "../../lib/extensions/ledge";
+import { RUNS_HEADING, RUNS_LIMIT } from "../../lib/extensions/triggers";
 import { closeExtensionSheet, extensionsRequest, useExtensionsState, dismissExtensionSheet } from "../../lib/extensions/use-extensions";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -32,8 +33,10 @@ interface SheetSubject {
  * The approval sheet (docs/extensions.md §2, *Approve one*): every install,
  * and every reload that asks for more, is this one sheet. The mark and name;
  * where it came from ("Yours · ~/Pistachio/Extensions/gh-inbox", "Chrome Web
- * Store", "Made by Pistachio"); *Adds*, what it puts in the window; *Can*, at
- * most four lines broadest first — main's fixed phrases per capability, never
+ * Store", "Made by Pistachio"); *Adds*, what it puts in the window; *Runs by
+ * itself*, when it declares triggers — main's line for each, from the
+ * declared times alone, and what code may do with nobody there
+ * (docs/primitives.md §3); *Can*, at most four lines broadest first — main's fixed phrases per capability, never
  * the extension's own words — a filled dot for a broad reach, Critical ones in
  * red, which ask a second time; *See everything it declares ›*; *Agent can
  * use it* when it declares tools; *Not now* and *Turn it on*, which names the
@@ -155,6 +158,23 @@ export function ApprovalSheet() {
               <h2 className="text-label-12 font-medium text-gray-700">Adds</h2>
               <p className="mt-1 text-copy-14 text-gray-1000" data-testid="extension-sheet-adds">
                 {subject.sheet.adds.join(" · ")}
+              </p>
+            </section>
+          )}
+          {(subject.sheet.runs?.length ?? 0) === 0 ? null : (
+            // When it runs with nobody there (docs/primitives.md §3): the times, in main's words — a first approval's and
+            // a changed trigger's alike, since this sheet is how the person sees the new ones.
+            <section data-testid="approval-runs">
+              <h2 className="text-label-12 font-medium text-gray-700">{RUNS_HEADING}</h2>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {(subject.sheet.runs ?? []).map((line, index) => (
+                  <li key={index} className="text-copy-14 text-gray-1000" data-testid="approval-runs-line">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-copy-13 text-gray-900" data-testid="approval-runs-limit">
+                {subject.sheet.runsLimit ?? RUNS_LIMIT}
               </p>
             </section>
           )}

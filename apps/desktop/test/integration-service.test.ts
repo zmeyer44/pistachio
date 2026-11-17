@@ -443,7 +443,7 @@ describe("the home page's schedule", () => {
   });
 
   /** Google with a calendar list and events behind the token endpoint the other tests use. */
-  function calendarProvider(options: { listFails?: boolean; eventsFail?: boolean } = {}) {
+  function calendarProvider(options: { listFails?: boolean; eventsFail?: boolean; teamFails?: boolean; morePages?: boolean; extraCalendars?: number } = {}) {
     const base = fakeProvider({ scope: "https://www.googleapis.com/auth/calendar" });
     const reads: Array<{ path: string; query: URLSearchParams; token: string | null }> = [];
     const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -460,10 +460,13 @@ describe("the home page's schedule", () => {
             { id: "alex@example.com", summary: "alex@example.com", primary: true, selected: true },
             { id: "holidays@group.v.calendar.google.com", summary: "Holidays" },
             { id: "old@group.calendar.google.com", summary: "Old", selected: true, hidden: true },
+            ...Array.from({ length: options.extraCalendars ?? 0 }, (_unused, index) => ({ id: `extra-${String(index)}@group.calendar.google.com`, summary: `Extra ${String(index)}`, selected: true })),
           ],
         });
       }
       if (options.eventsFail === true) return json({ error: { message: "backend error" } }, 500);
+      if (options.teamFails === true && path === "/calendars/team@group.calendar.google.com/events") return json({ error: { message: "rate limited" } }, 429);
+      if (path.startsWith("/calendars/extra-")) return json({ items: [] });
       if (path === "/calendars/alex@example.com/events" || path === "/calendars/primary/events") {
         return json({
           items: [
@@ -477,6 +480,7 @@ describe("the home page's schedule", () => {
       if (path === "/calendars/team@group.calendar.google.com/events") {
         // The standup again, as the team calendar's copy, and one of the team's own.
         return json({
+          ...(options.morePages === true ? { nextPageToken: "page-2" } : {}),
           items: [
             timed("standup-team-copy", "09", { iCalUID: "standup@google.com" }),
             timed("demo", "15", { location: "Room 4" }),
@@ -540,6 +544,27 @@ describe("the home page's schedule", () => {
     expect(agenda.status).toBe("ok");
     expect(partial.provider.reads.map((read) => read.path)).toEqual(["/users/me/calendarList", "/calendars/primary/events"]);
     expect(agenda.events.map((event) => event.id)).toEqual(["primary:standup", "primary:offsite"]);
+    // Their own calendar alone is not their day, and it says so: the home page shows it all the same, and whoever
+    // must know an event is NOT on (an extension's calendar signal) does not take it for the whole.
+    expect(agenda.partial).toBe(true);
+    // A day read whole says nothing of the kind.
+    expect((await (await withCalendar()).integrations.calendarAgenda("work", FROM, TO)).partial).toBeUndefined();
+  });
+
+  it("says a day is not whole in every way it can fall short: one calendar unread, more calendars than are read, more events than a page holds", async () => {
+    // One of the ticked calendars could not be read this time: the rest is shown, and it is not the day.
+    const oneDown = await withCalendar({ teamFails: true });
+    const agenda = await oneDown.integrations.calendarAgenda("work", FROM, TO);
+    expect(agenda.status).toBe("ok");
+    expect(agenda.events.map((event) => event.id)).toEqual(["alex@example.com:standup", "alex@example.com:offsite"]);
+    expect(agenda.partial).toBe(true);
+    // More ticked calendars than the eight that are read: what is on the ninth is not here.
+    const many = await withCalendar({ extraCalendars: 7 });
+    expect((await many.integrations.calendarAgenda("work", FROM, TO)).partial).toBe(true);
+    expect((await (await withCalendar({ extraCalendars: 6 })).integrations.calendarAgenda("work", FROM, TO)).partial).toBeUndefined();
+    // A calendar with more events in the window than one page holds.
+    const long = await withCalendar({ morePages: true });
+    expect((await long.integrations.calendarAgenda("work", FROM, TO)).partial).toBe(true);
 
     const down = await withCalendar({ eventsFail: true });
     await expect(down.integrations.calendarAgenda("work", FROM, TO)).resolves.toEqual({ status: "unreachable", connectable: false, accountLabel: "alex@example.com", events: [] });

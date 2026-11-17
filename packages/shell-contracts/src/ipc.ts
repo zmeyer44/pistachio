@@ -1,9 +1,11 @@
+import type { SpaceAgentState } from "./desk-agent.js";
 import type { ArtifactListing } from "./artifacts.js";
 import type { NoteRequest, NoteResponse, NoteSnapshot } from "./notes.js";
 import type { ReportRequest, ReportResponse } from "./reports.js";
 import type { WatchtowerRequest, WatchtowerResponse } from "./watchtower.js";
 import type { ShieldsRequest, ShieldsStatus } from "./shields.js";
 import type { TabArchiveRequest, TabArchiveResponse } from "./tab-archive.js";
+import type { AwaySpaceInfo } from "./away.js";
 import type { TabGroupCommand, TabGroupCommandResult, TabGroupInfo } from "./tab-groups.js";
 import type { TidyRequest, TidyResponse } from "./tidy.js";
 import type { TabSwitcherInput } from "./tab-switcher.js";
@@ -53,6 +55,7 @@ import type {
   ReminderSnapshot,
 } from "./reminders.js";
 import type { ScreenshotReplies, ScreenshotRequest } from "./screenshot.js";
+import type { LocalApp } from "./local-apps.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
 import type { DeskGrab, DeskHover, DeskNotchFrame, DeskNotchInput, DeskPageInput, DeskPipFrame, DeskPipInput, DeskShelfFrame, DeskShelfInput, DeskState } from "./desk.js";
 import type { DeskLayoutEvaluation, DeskLayoutRequest } from "./desk-layout.js";
@@ -306,9 +309,29 @@ export interface ShellSnapshot {
    * from the groups among the day's tabs. Absent where no desk can be.
    */
   anchorGroups?: TabGroupInfo[];
+  /**
+   * The active Profile's (Space's) spaces that are away (@pistachio/shell-contracts/away; docs/primitives.md §2), oldest
+   * first: off the rail, none of their tabs among `tabs`, each to come back as itself. Absent where a space cannot be
+   * sent away (the web shell).
+   */
+  awaySpaces?: AwaySpaceInfo[];
   run: RunSummary | null;
   /** Every saved conversation, newest first, the open one included (main/thread-store.ts). */
   threads: ThreadListItem[];
+  /**
+   * What the agent is doing in each space (tab group) it has something going in, by the space's id
+   * (@pistachio/shell-contracts/desk-agent SpaceAgentState; docs/desk-agent.md §3, "Conversations stay in their space"):
+   * `run` is the conversation of the space in front alone, and a turn goes on in the space it was asked in while the
+   * person is in another — the rail's tiles say so. Absent where no desk can be (the web shell).
+   */
+  spaceAgents?: Record<string, SpaceAgentState>;
+  /**
+   * The space (tab group) `run` is the conversation of: the one in front as main had it when it published the run. The
+   * tabs and the run travel apart (ShellTabsSnapshot, ShellRunSnapshot), so for a moment after a change of space the
+   * shell may hold the new `currentGroupId` beside the last space's `run`: a desk draws a run only as its own space's
+   * (the shell's selectSpaceRun). Null while main has no space to name; absent where no desk can be.
+   */
+  runSpace?: string | null;
   /** The shelf — favorites, pins, folders — main keeps for the sidebar (@pistachio/shell-contracts/sidebar). */
   sidebar: SidebarState;
   /**
@@ -326,12 +349,16 @@ export interface ShellSnapshot {
  * separate channels; the renderer's store folds them back into one
  * ShellSnapshot (renderer/src/store.ts).
  */
-export type ShellTabsSnapshot = Omit<ShellSnapshot, "run" | "threads">;
+export type ShellTabsSnapshot = Omit<ShellSnapshot, "run" | "threads" | "spaceAgents" | "runSpace">;
 
-/** What a run change publishes: the conversation, already scoped to the active Space. */
+/** What a run change publishes: the conversation of the space in front, already scoped to the active Space. */
 export interface ShellRunSnapshot {
   run: RunSummary | null;
   threads: ThreadListItem[];
+  /** ShellSnapshot.spaceAgents, when the host has spaces. */
+  spaceAgents?: Record<string, SpaceAgentState>;
+  /** ShellSnapshot.runSpace, when the host has spaces. */
+  runSpace?: string | null;
 }
 
 export interface BrowserLayout {
@@ -427,6 +454,8 @@ export type FeedbackOutcome = { ok: true } | { ok: false; error: string };
 /**
  * The ephemeral page hovering above its owner tab. It is deliberately not in
  * ShellSnapshot.tabs until the person promotes it to a tab or split pane.
+ * It is its owner tab's: down (null here) while another tab is in use, and
+ * back, the same page, when its owner is again.
  */
 export interface GlanceState {
   tab: BrowserTabInfo;
@@ -435,6 +464,12 @@ export interface GlanceState {
   source: ContentBounds;
   /** The owner pane(s), frozen while their native views are recessed. */
   backgroundStills: PaneStill[];
+  /**
+   * How many times it has come back with its owner tab (0, or unsaid, as it
+   * opens): each is a showing of its own, put up where it was with no flight
+   * out of the link.
+   */
+  returns?: number;
 }
 
 /** The pointer, in the window's content box — the shell page's viewport. */
@@ -675,6 +710,13 @@ export interface CloudStartRunRequest {
   attachments?: AgentAttachment[];
   /** The active tab's address when omitted. */
   startUrl?: string;
+  /**
+   * The space (tab group) whose Bar asked for it (docs/desk-agent.md §1):
+   * the conversation is that space's from then on — bound to it, shown in
+   * it, continued by its next message. Left out (the web's console), it is
+   * in the list of conversations, as ever.
+   */
+  groupId?: string;
 }
 
 /** An authenticated webhook bound to one Space (§7.3 channels). */
@@ -790,6 +832,12 @@ export interface CalendarAgenda {
   connectable: boolean;
   accountLabel: string | null;
   events: CalendarAgendaEvent[];
+  /**
+   * With `ok`: some of it was not read — the list of calendars, one calendar's events, calendars past the eight
+   * that are read, events past a calendar's first page — so `events` is what the rest hold, not the whole day. The home page shows it all the same; whoever needs to know that an event is
+   * NOT on (an extension's calendar signal, docs/primitives.md §3.6) must not take it for the day.
+   */
+  partial?: true;
 }
 
 export interface IMessageLinkStatus {
@@ -853,6 +901,13 @@ export interface AiUsageSummary {
 export interface AgentTurnOptions {
   /** Whether the web page in view is attached to this message. Default true. */
   page?: boolean;
+  /**
+   * The space (tab group) whose Bar sent the message (docs/desk-agent.md §3,
+   * "Conversations stay in their space"): it is that space's, and runs in
+   * its conversation, though the person has gone to another while it was on
+   * its way. Left out, the message is the space in front's.
+   */
+  groupId?: string;
 }
 
 /**
@@ -1488,6 +1543,11 @@ export interface NativeSurfaceApi {
    * over it, then keep that area.
    */
   screenshot<R extends ScreenshotRequest>(request: R): Promise<ScreenshotReplies[R["type"]]>;
+  /**
+   * Shell only: the web apps running on this Mac's local ports, newest first
+   * (@pistachio/shell-contracts/local-apps) — for the address bar's chips.
+   */
+  localApps(): Promise<LocalApp[]>;
   /** Shell → main: state needed for native window and utility-view coordination. */
   setShellState(state: ShellState): void;
   dismissBookmarkToast(): void;
@@ -1630,6 +1690,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   onPaneToolbarPointerLeft: "Fires from main's OS cursor poll leaving the pane toolbar.",
   getCursorPoint: "Reads the OS cursor position, which only a native window knows.",
   screenshot: "Composites the shell page with the native views over it, which only main can capture.",
+  localApps: "Reads which of this Mac's ports serve a web app, which only a process on this Mac can see.",
   setShellState: "Drives the native window chrome and the utility view placement.",
   dismissBookmarkToast: "Takes the native bookmark card view down over the page.",
   resizeBookmarkToast: "Sizes the native bookmark card view to its rendered height.",
@@ -1848,6 +1909,7 @@ export const IPC = {
   paneToolbarPointerLeft: "pistachio:pane-toolbar-pointer-left",
   cursorPoint: "pistachio:cursor-point",
   screenshot: "pistachio:screenshot",
+  localApps: "pistachio:local-apps",
   shellStateSet: "pistachio:shell-state-set",
   shellCommand: "pistachio:shell-command",
   runStart: "pistachio:run-start",

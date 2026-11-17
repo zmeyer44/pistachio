@@ -1,7 +1,8 @@
-import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MessageScroller } from "@shadcn/react/message-scroller";
 import {
+  AlarmClock,
   Archive,
   ArrowDown,
   ArrowDownToLine,
@@ -10,8 +11,11 @@ import {
   Camera,
   Check,
   ChevronDown,
+  CircleStop,
+  Cloud,
   ChevronUp,
   Columns2,
+  FileClock,
   FileText,
   Globe,
   History,
@@ -19,8 +23,10 @@ import {
   LayoutGrid,
   Lightbulb,
   Loader2,
+  Megaphone,
   MessagesSquare,
   Mic,
+  Monitor,
   Newspaper,
   NotebookPen,
   Paperclip,
@@ -29,6 +35,7 @@ import {
   Plus,
   Puzzle,
   Radio,
+  RotateCcw,
   ScrollText,
   Square,
   SquarePen,
@@ -47,7 +54,7 @@ import { shortcutLabel } from "@pistachio/shell-contracts/shortcuts";
 import { webSearchUrl } from "@pistachio/shell-contracts/search";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { nativeApi, shellApi } from "../../api";
-import { composerAccepts, formatAttachmentText, formatSelectionText, selectionChipLabel, toAgentAttachments } from "../../lib/chat-attachments";
+import { composerAccepts, formatAttachmentText, formatSelectionText, selectionChipLabel, toAgentAttachments, type ComposerAttachment } from "../../lib/chat-attachments";
 import { useDeskFileDrag } from "../../lib/desk/file-drag";
 import { addContextFiles } from "../../lib/desk/group-context";
 import { activeMention, insertMention, mentionCandidates, mentionQuery, mentionsIn } from "../../lib/desk/mentions";
@@ -77,15 +84,23 @@ import { isProbablyUrl } from "../../lib/url";
 import { agentActivity } from "../../lib/desk/agent";
 import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictation";
 import { DESK_GAP, NUB_CLOSE_R, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubClose, nubDrops, nubExtent, nubLaneFor, nubSide, type NotchShape, type Rect } from "../../lib/desk/geometry";
-import { readFloatSpot } from "../../lib/desk/answer-float";
+import { readFloatSpot, writeFloatSpot } from "../../lib/desk/answer-float";
+import { beginCloudStart, cloudStartArrived, cloudStartContext, cloudStarting, cloudStartTaken, hearCloudStart, settleCloudStart, watchCloudStarts, type CloudStart } from "../../lib/desk/cloud-start";
+import { insertInSpace, keepSpaceChat, queueSpaceSend, spaceChat, stageInSpace, takeStagedFor, takeTextFor } from "../../lib/desk/space-chat";
+import { isHomeSpace } from "../space-rail/rail-model";
+import { useChatInbox } from "../chat/chat-inbox";
+import { EvidenceReplay } from "../chat/EvidenceReplay";
+import { FeedbackPopover } from "../FeedbackPopover";
+import { ReminderInbox } from "../reminders/ReminderInbox";
 import { runFailure } from "../../lib/chat-trace";
 import { AnswerMotion, type AnswerEdge } from "./answer-motion";
 import { useDeskStore } from "../../lib/desk/store";
-import { agentIsActing, relativeTime, sortThreads } from "../../lib/run";
+import { agentHoldsChat, cloudReadiness, isCloudRun } from "../../lib/cloud";
+import { agentIsActing, contextMeter, endTaskLabel, relativeTime, sortThreads } from "../../lib/run";
 import { useAppStore } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
-import { ApprovalCard, ClarificationCard, CompletionMeta, MessageActions, MessageRow, TERMINAL } from "../chat/parts";
+import { ApprovalCard, ClarificationCard, CompletionMeta, MessageActions, MessageRow, TaskNotes, TERMINAL, formatTime } from "../chat/parts";
 import { useReplyBegun } from "../chat/SmoothHeight";
 import { FailureTrace, TurnTrace } from "../chat/trace";
 import { useThreadLayout } from "../chat/use-thread-layout";
@@ -98,7 +113,7 @@ import type { DeskEngine, DeskView } from "./desk-engine";
 import { DeskNub, NubPillClose, NubPillSide, type NubTip } from "./DeskNub";
 import { DictationWave } from "./DictationWave";
 import { ExtensionMark } from "../extensions/LedgeIcon";
-import { sendStatusAction, StatusPills, useStatusPills } from "../extensions/StatusPills";
+import { sendRowPress, sendStatusAction, StatusPills, useStatusPills } from "../extensions/StatusPills";
 import { FileGlyph, fileKindLabel } from "./files/FileGlyph";
 import { nubTimeScale, type NubMotion, type PillParts, type PillSource, type Swelling } from "./nub-motion";
 
@@ -331,10 +346,12 @@ export const DeskBar = memo(function DeskBar({
   engine,
   view,
   run,
+  settled,
   threads,
   undo,
   onUndo,
   focusSignal,
+  chatSignal,
   context,
 }: {
   group: TabGroupInfo;
@@ -342,12 +359,17 @@ export const DeskBar = memo(function DeskBar({
   groups: readonly TabGroupInfo[];
   engine: DeskEngine;
   view: DeskView;
+  /** This space's conversation (the store's selectSpaceRun): never another space's. */
   run: RunSummary | null;
+  /** `run` is what main says of THIS space: false for the moment after the desk passed here, while main's word of its conversation is on its way. */
+  settled: boolean;
   threads: readonly ThreadListItem[];
   undo: boolean;
   onUndo: () => void;
   /** Changes when the keyboard should come to the field (⌘I on a desk). */
   focusSignal: number;
+  /** Changes when the chat is wanted on screen (a reminder fired, the agent paused for the person, the activity record asked for: DeskSurface). */
+  chatSignal: number;
   /** The group's context: its files can be @mentioned. */
   context: GroupContextView | null;
 }) {
@@ -389,16 +411,57 @@ export const DeskBar = memo(function DeskBar({
     const target = groupRef.current;
     void addContextFiles(target.id, target.title, elsewhere).then((result) => {
       const names = (result.added ?? []).map((added) => `@${added.name} `).join("");
-      if (names !== "") insertRef.current?.(names);
+      // (Its space's message mentions it: the field of the composer up for that space — this Bar's, or the one made
+      // since — and otherwise the words that space was left with: never the field of the space the person went on
+      // to. lib/desk/space-chat.ts.)
+      if (names !== "") insertInSpace(target.id, names);
       if (result.rejected.length > 0) useAppStore.getState().showNotice(result.rejected.map((entry) => `${entry.name}: ${entry.reason}`).join(" · "), { tone: "warning" });
     });
     return files.filter((file) => !elsewhere.includes(file));
   }, []);
-  const drop = useAttachmentDrop(focusInput, { divert });
+  // (A file still being read as the desk passes on is its own space's: kept with what that space was left with.)
+  // And what the space was left with is staged as the Bar comes up: the Bar itself is made anew when the Profile
+  // changes (ContentArea's DeskMount), which no passing of the desk (below) ever sees.
+  const drop = useAttachmentDrop(focusInput, { divert, owner: group.id, keepFor: keepStagedFor, initial: () => spaceChat(group.id).staged });
+  // This Bar is the one up for its space: a file staged for the space from elsewhere — one a Bar that has gone was
+  // still reading (the person away in another Profile, and back) — joins the list on screen (takeStagedFor), as
+  // does anything kept for it between this Bar's first reading of what the space was left with and now.
+  const stageHere = drop.setStaged;
+  useEffect(() => {
+    const kept = spaceChat(group.id).staged;
+    if (kept.length > 0) {
+      stageHere((prev) => {
+        const have = new Set(prev.map((attachment) => attachment.id));
+        const late = kept.filter((attachment) => !have.has(attachment.id));
+        return late.length === 0 ? prev : [...prev, ...late];
+      });
+    }
+    return takeStagedFor(group.id, (attachment) => stageHere((prev) => [...prev, attachment]));
+  }, [group.id, stageHere]);
   const fileDrag = useDeskFileDrag((state) => state.active);
   const [fieldMenu, setFieldMenu] = useState<FieldMenuState | null>(null);
-  const [answerOpen, setAnswerOpen] = useState(false);
-  const [whole, setWhole] = useState(false);
+  // Whose place the chat stands in (answer-float.ts's spots): this space's own — and, for Home, Home's. Home's tabs
+  // are each a space of their own under the hood (a loose tab's, a favorite's page's: docs/double-sidebar.md §1), but
+  // Home is one place to the person: the chat taken to the side there is at the side for every one of its tabs, as
+  // it shows each tab's own conversation.
+  const place = useAppStore((state) => (isHomeSpace(group.id, state.snapshot) ? `home:${state.snapshot?.activeSpaceId ?? ""}` : group.id));
+  const placeNow = useRef(place);
+  placeNow.current = place;
+  // (The card's motion is made for a place, and made anew only when the desk passes to a space of another place
+  // than the one it keeps its spot for — counted here: never between Home's tabs, nor when the space in front changes
+  // place where it stands, below. Counted, not named by the place: a Home tab that became a space of its own took
+  // the motion with it, and the next Home tab the desk passes to is Home's place again — the same name as before it
+  // left, and another place than the motion's all the same.)
+  const [motionKey, setMotionKey] = useState(0);
+  /**
+   * The place the card's motion keeps its spot for: its own for as long as it lives. A motion on its way out — the
+   * desk passed to a space of another place while the card was docking, and its last word is written as it goes —
+   * still writes to the place it was made for, never to the one being drawn by then. (It follows its space only
+   * where the space itself changes place: below.)
+   */
+  const motionOwner = useRef<{ place: string } | null>(null);
+  const [answerOpen, setAnswerOpen] = useState(() => spaceChat(place).open || spotAtSide(place));
+  const [whole, setWhole] = useState(() => spaceChat(group.id).whole);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   // The desk passed to another group: what was out of the nub for this one goes back in.
@@ -408,17 +471,19 @@ export const DeskBar = memo(function DeskBar({
   }, [group.id]);
   // The card taken off the Bar (answer-motion.ts): whether it floats now, whether it is in the chat's own place (the
   // message field then the card's), and whether it is in hand.
-  const [floating, setFloating] = useState(() => readFloatSpot()?.floating === true);
-  const [chat, setChat] = useState(() => {
-    const spot = readFloatSpot();
-    return spot?.floating === true && spot.zone === "chat";
-  });
-  const [cardHeld, setCardHeld] = useState(false);
-  // (Until 2026-10-09 everything below also stood down while the desk was leaving: it never is now.)
-  // Floating and up, it is a window, and stays with no conversation to show (a new one, a space with none yet) — though
-  // it does not come up for none; in the chat's place it is always up, the message field in it.
   const cardWasUp = useRef(false);
-  const cardShown = answerOpen && (run !== null || chat || (floating && cardWasUp.current));
+  const [floating, setFloating] = useState(() => readFloatSpot(place)?.floating === true);
+  const [chat, setChat] = useState(() => spotAtSide(place));
+  const [cardHeld, setCardHeld] = useState(false);
+  // The chat is its space's (docs/desk-agent.md §1; since 2026-11-16). The Bar is one, drawn for whichever space is in
+  // front: the desk passed to another, this space's chat is put away as it stands — its card up or not, the whole
+  // conversation or the last turn, the files staged (the field's words are the composer's, which is the space's own
+  // too) — and the other's taken out as IT was left, standing where it stood there: docked, floating, at the side
+  // (answer-float.ts keeps each space's place). Nothing goes with the person. Done while rendering, so no frame draws
+  // one space's chat in another.
+  // (Reminders that fired and wait to be seen are the chat's to show, conversation or none: reminders/ReminderInbox.)
+  const reminding = useAppStore((state) => state.reminders.occurrences.some((occurrence) => occurrence.acknowledgedAt === null && occurrence.status !== "queued" && occurrence.status !== "running"));
+  const cardShown = answerOpen && (run !== null || chat || reminding || (floating && cardWasUp.current));
   useLayoutEffect(() => {
     cardWasUp.current = cardShown;
   });
@@ -433,6 +498,8 @@ export const DeskBar = memo(function DeskBar({
     const zone = zoneRef.current;
     const hint = hintRef.current;
     if (!cardShown || card === null || lane === null || ghost === null || zone === null || hint === null) return;
+    const owner = { place: placeNow.current };
+    motionOwner.current = owner;
     // Covers are the stage's: the lane stands in it at its gutter.
     const origin = stageBox(lane) ?? { x: DESK_GAP, y: 0, w: 0, h: 0 };
     const atStage = (rect: Rect | null): Rect | null => (rect === null ? null : { x: rect.x + origin.x, y: rect.y + origin.y, w: rect.w, h: rect.h });
@@ -458,8 +525,9 @@ export const DeskBar = memo(function DeskBar({
           engine.setCover("answer-slot", atStage(slot));
           engine.setCover("answer-zone", atStage(lit));
         },
+        keep: (spot) => writeFloatSpot(owner.place, spot),
       },
-      readFloatSpot(),
+      readFloatSpot(owner.place),
     );
     motionRef.current = motion;
     // Asked for the side before it was up (NubPillSide with no card out): it goes there now, from the Bar.
@@ -470,9 +538,11 @@ export const DeskBar = memo(function DeskBar({
     return () => {
       motion.destroy();
       motionRef.current = null;
+      if (motionOwner.current === owner) motionOwner.current = null;
       setCardHeld(false);
     };
-  }, [cardShown, engine]);
+    // (Its place's own: where it stands, and where that is kept — the space's, or Home's for every tab of Home.)
+  }, [cardShown, engine, motionKey]);
   // Floating, it is a window among the desk's: one the person brings up comes in front of it, its page live again,
   // and a press on the card (or its button on the pill) brings it back in front of them all.
   useLayoutEffect(() => {
@@ -537,9 +607,34 @@ export const DeskBar = memo(function DeskBar({
   // The conversation just picked in the picker, until it is the one open: set on the click, so it is in place
   // whichever comes first, the picker's answer from main or the run it publishes.
   const chosen = useRef<string | null>(null);
+  // The conversation is a home page's (docs/home-chat.md): the tab in use draws it whole, and the card does not come up
+  // over it by itself to say the same again — it is there when asked for (its button, ⌘I's field, a reminder).
+  // (Asked there a moment ago, its run not named yet — main's answer on its way — it is the page's already.)
+  const onPage = useAppStore((state) => {
+    const tabId = state.snapshot?.activeTabId ?? null;
+    const asked = tabId === null ? undefined : state.homeChats[tabId];
+    return asked !== undefined && (asked.runId === null || asked.runId === run?.runId);
+  });
+  const onPageNow = useRef(onPage);
+  onPageNow.current = onPage;
   useEffect(() => {
+    // (The desk has just passed here, and main's word of this space's conversation is on its way: nothing is known yet.)
+    if (!settled) return;
     const before = seen.current;
     seen.current = { runId: run?.runId ?? null, userMessages, asking };
+    left.current = run === null ? null : { runId: run.runId, messages: run.messages.length };
+    // Back in a space: its chat is as it was left (above) — unless the agent went on meanwhile, in the background.
+    // More said since, or something asked of the person, and the card comes up to show it.
+    const arrival = arrived.current;
+    arrived.current = null;
+    if (arrival !== null && run !== null) {
+      const more = arrival.was !== null && arrival.was.runId === run.runId && run.messages.length > arrival.was.messages;
+      if (asking !== null || more) {
+        setAnswerOpen(true);
+        raiseAnswer();
+      }
+      return;
+    }
     if (run === null) {
       // (Floating, it is a window: it stays, with nothing in it yet.)
       if (!floatingNow.current) setAnswerOpen(false);
@@ -547,18 +642,24 @@ export const DeskBar = memo(function DeskBar({
     }
     if (before.runId !== run.runId) {
       setWhole(false);
-      if (chosen.current === run.runId) {
+      // Another conversation in this space's chat. The one the person just picked is shown — so is one asked for on
+      // screen a moment ago, before it was known (a notification pressed: `wanted`), and one that has only now begun
+      // by another hand than the Bar's (the brief's ask, a command of the shell's): its first turn, still going.
+      const begun = run.turns === 1 && !TERMINAL.has(run.status) && !onPageNow.current;
+      if (chosen.current === run.runId || wanted.current || begun) {
         chosen.current = null;
+        wanted.current = false;
         setAnswerOpen(true);
         raiseAnswer();
       }
       return;
     }
+    if (onPageNow.current) return;
     if (userMessages > before.userMessages || (asking !== null && asking !== before.asking)) {
       setAnswerOpen(true);
       raiseAnswer();
     }
-  }, [run, userMessages, asking, raiseAnswer]);
+  }, [run, settled, userMessages, asking, raiseAnswer]);
 
   const activity = agentActivity(run);
   const shownCover = (key: string): boolean => view.clearCovers.has(key);
@@ -572,6 +673,68 @@ export const DeskBar = memo(function DeskBar({
   const [focusWithin, setFocusWithin] = useState(false);
   const [asked, setAsked] = useState(false);
   const [stowed, setStowed] = useState(false);
+  /** The chat was wanted on screen (`chatSignal`) with no conversation to show yet: the one that comes is shown. */
+  const wanted = useRef(false);
+  const [chatOf, setChatOf] = useState({ group: group.id, place });
+  /** This space's conversation as main last said it was (which, and how much said), for when the person leaves. */
+  const left = useRef<{ runId: string; messages: number } | null | undefined>(undefined);
+  /** The desk has just passed here: how this space's conversation was left, until main's word of it now is in (`settled`). */
+  // (The Bar come up anew for a space left earlier — back from another Profile — has arrived there too.)
+  const arrived = useRef<{ was: { runId: string; messages: number } | null } | null>(spaceChat(group.id).left === undefined ? null : { was: spaceChat(group.id).left ?? null });
+  if (chatOf.group === group.id && chatOf.place !== place) {
+    // The space in front changed place where it stands — a Home tab given a second tab is a space of its own from
+    // here on (and one back to a single tab is Home's again): its chat stays exactly as it is, on screen and in the
+    // conversation, and where it stands is its new place's from now.
+    const stands = readFloatSpot(chatOf.place);
+    if (stands !== null) writeFloatSpot(place, stands);
+    keepSpaceChat(place, { open: answerOpen });
+    // (The card's motion goes on as it is, and keeps its spot for the space's new place.)
+    if (motionOwner.current !== null) motionOwner.current.place = place;
+    setChatOf({ group: group.id, place });
+  } else if (chatOf.group !== group.id) {
+    // (This space's card and pill go, in this very commit, before the desk has passed — its effect runs after the
+    // Bar's: the window they covered is not handed the keyboard on its way out. DeskEngine.leaving.)
+    engine.leaving();
+    // (Whether the card is up goes with where it stands — the place: Home's, for all of Home's tabs — and the rest
+    // with the conversation's own space.)
+    keepSpaceChat(chatOf.place, { open: answerOpen });
+    keepSpaceChat(chatOf.group, { whole, staged: drop.staged, ...(left.current === undefined ? {} : { left: left.current }) });
+    const next = spaceChat(group.id);
+    const up = spaceChat(place).open;
+    const spot = readFloatSpot(place);
+    const atSide = spot?.floating === true && spot.zone === "chat";
+    arrived.current = { was: next.left ?? null };
+    left.current = undefined;
+    // (A floating card that was up is a window, and is up again though it has nothing to show yet.)
+    cardWasUp.current = up;
+    setChatOf({ group: group.id, place });
+    if (chatOf.place !== place) setMotionKey((key) => key + 1);
+    setAnswerOpen(up || atSide);
+    setWhole(next.whole);
+    setFloating(spot?.floating === true);
+    setChat(atSide);
+    drop.setStaged(next.staged);
+    // (What held the pill out was the space left's: the keyboard in its field — gone with that field, which says no
+    // goodbye — a droplet just pressed, its close's word that it stay away.)
+    setFocusWithin(false);
+    setAsked(false);
+    setStowed(false);
+    setComposerIdle(true);
+    setFieldMenu(null);
+    wanted.current = false;
+  }
+  // The Bar going altogether is a leaving like any other — the Profile changed, and the desk is mounted anew for each
+  // (ContentArea's DeskMount): what this space's chat held is kept as it is when the desk passes on, and taken up
+  // when the Bar next comes up for it (the state above starts from it; the staged files, useAttachmentDrop's `initial`).
+  const keepOnLeave = useRef<() => void>(() => undefined);
+  keepOnLeave.current = () => {
+    keepSpaceChat(place, { open: answerOpen });
+    keepSpaceChat(group.id, { whole, staged: drop.staged, ...(left.current === undefined ? {} : { left: left.current }) });
+  };
+  useEffect(() => () => keepOnLeave.current(), []);
+  // (Until 2026-10-09 everything below also stood down while the desk was leaving: it never is now.)
+  // Floating and up, it is a window, and stays with no conversation to show (a new one, a space with none yet) — though
+  // it does not come up for none; in the chat's place it is always up, the message field in it.
   useEffect(() => {
     if (focusWithin || !composerIdle) setAsked(false);
   }, [focusWithin, composerIdle]);
@@ -678,7 +841,8 @@ export const DeskBar = memo(function DeskBar({
   // page main's notch view draws them in it (below). Until 2026-10-30 they were a cover of their own, and a page being
   // recorded under them froze into its still for the whole recording. While the Bar's pill or menu is out, the foot is
   // the Bar's: the lane closes and they stand left of the pill, in its cover (its footprint reaches over them).
-  const statusPills = useStatusPills();
+  // (And the rows of extensions' bands for this space — docs/primitives.md §4.5 — chips in the same lane.)
+  const statusPills = useStatusPills(group.id);
   const [pillsWidth, setPillsWidth] = useState(0);
   const statusRaised = statusPills.length > 0 && (pillWanted || menuWanted);
   const raisedWidth = useLinger(statusRaised, NOTCH_CLOSE_MS, true) && statusPills.length > 0 ? pillsWidth : 0;
@@ -983,6 +1147,65 @@ export const DeskBar = memo(function DeskBar({
     if (text !== null) fillRef.current?.(text);
   }, [focusSignal, focusInput, callAnswer]);
 
+  // The chat wanted on screen, by something other than the person at the Bar (DeskSurface's `chatSignal`): this
+  // space's answer comes up, in front. With nothing to show yet, what it is wanted for is shown as it comes — the
+  // conversation main's word of is a moment behind, a reminder's card not yet recorded (`wanted`, below) — and the
+  // keyboard is NOT taken: a reminder fires while the person is typing in a page. Only as the app starts (Settings'
+  // "Open the agent chat on launch", nothing else on screen yet) does the pill come out for it, the keyboard in it.
+  const cardable = useRef(false);
+  cardable.current = run !== null || chat || reminding;
+  const [mountedAt] = useState(() => performance.now());
+  useEffect(() => {
+    if (chatSignal === 0) return;
+    if (cardable.current) {
+      setMenuOpen(false);
+      setPickerOpen(false);
+      setStowed(false);
+      setAnswerOpen(true);
+      raiseAnswer();
+      motionRef.current?.flash();
+      return;
+    }
+    wanted.current = true;
+    const forget = window.setTimeout(() => (wanted.current = false), CHAT_WANTED_MS);
+    if (performance.now() - mountedAt < CHAT_LAUNCH_MS) {
+      setMenuOpen(false);
+      setPickerOpen(false);
+      setStowed(false);
+      focusInput();
+    }
+    return () => window.clearTimeout(forget);
+  }, [chatSignal, focusInput, raiseAnswer, mountedAt]);
+  // (A reminder that fired is the chat's to show: wanted for it a moment ago, the card comes up as its card is there.)
+  useEffect(() => {
+    if (!reminding || !wanted.current) return;
+    wanted.current = false;
+    setStowed(false);
+    setAnswerOpen(true);
+    raiseAnswer();
+  }, [reminding, raiseAnswer]);
+
+  // The activity record shown is one conversation's (⌘E, the card's button): another conversation in the card — a new
+  // one, the next space's — and it is put away, never drawn over a conversation it is not the record of.
+  const replayOf = useRef(run?.runId ?? null);
+  useEffect(() => {
+    const now = run?.runId ?? null;
+    if (replayOf.current === now) return;
+    replayOf.current = now;
+    const store = useAppStore.getState();
+    if (store.evidence !== null) store.closeEvidence();
+  }, [run?.runId]);
+
+  // "Add … to Chat" from a page's right-click menu (chat/chat-inbox.ts): staged in this space's field, the pill out
+  // for it with the keyboard — as ⌘I brings it.
+  useChatInbox(drop, () => {
+    setStowed(false);
+    setMenuOpen(false);
+    setPickerOpen(false);
+    if (inCardNow.current) callAnswer();
+    focusInput();
+  });
+
   /** The nub pressed (or the notch view over a page): its menu out, or back in — opened from the keys, the keys go to its first droplet. */
   const menuNow = useRef(menuOpen);
   menuNow.current = menuOpen;
@@ -1031,6 +1254,7 @@ export const DeskBar = memo(function DeskBar({
         // onto one, for its tooltip.)
         if (typeof input === "object") {
           if ("status" in input) sendStatusAction(input.status.id, input.status.action);
+          else if ("row" in input) sendRowPress(input.row);
           else if ("bar" in input) (input.bar === "close" ? stowPill : toSide)();
           else setViewButtonHover(input.hover);
         } else if (input === "enter") {
@@ -1264,6 +1488,8 @@ export const DeskBar = memo(function DeskBar({
                   behind a window, it comes back in front (2026-10-10). */}
               <div className="contents" onPointerDownCapture={() => { if (inCardNow.current) raiseAnswer(); }}>
               <BarComposer
+                // (Each space's own field: its words kept, and taken up again, as the desk passes — space-chat.ts.)
+                key={group.id}
                 group={group}
                 context={context}
                 run={run}
@@ -1351,6 +1577,22 @@ export const DeskBar = memo(function DeskBar({
 });
 
 /** The pill's own row: the field and its buttons; files staged for the message above them. In the pill, or in the card while it floats. */
+/** The chat asked for on screen with nothing to show yet: a conversation that comes within this long is the one it was asked for. */
+const CHAT_WANTED_MS = 3000;
+/** Asked for this soon after the Bar first came up, it was asked for by the launch ("Open the agent chat on launch"). */
+const CHAT_LAUNCH_MS = 4000;
+
+/** A file read for a space the person has left meanwhile: staged there, for when they are back (useAttachmentDrop's `keepFor`). */
+function keepStagedFor(groupId: string, attachment: ComposerAttachment): void {
+  stageInSpace(groupId, attachment);
+}
+
+/** A place's chat stands at its desk's trailing side (the chat's place): up whenever a space of that place is in front. */
+function spotAtSide(place: string): boolean {
+  const spot = readFloatSpot(place);
+  return spot?.floating === true && spot.zone === "chat";
+}
+
 function BarComposer({
   group,
   context,
@@ -1403,7 +1645,31 @@ function BarComposer({
 }) {
   const sendMessage = useAppStore((state) => state.sendAgentMessage);
   const interrupt = useAppStore((state) => state.interruptAgent);
-  const [value, setValue] = useState("");
+  // Where the NEXT conversation runs (docs/cloud-sync-design.md §10.4; the sidebar console's toggle until 2026-11-16):
+  // on this Mac, at this desk — or, the tray's cloud button pressed, in the cloud browser, in its own copy of the
+  // Profile's sessions. Seeded from the stored preference; only a fresh conversation can choose (an open one already
+  // runs somewhere), and a cloud run has no desk: it is not scoped to this space's windows.
+  const startCloudRun = useAppStore((state) => state.startCloudRun);
+  const cloud = useAppStore((state) => state.cloud);
+  const profileId = useAppStore((state) => state.snapshot?.activeSpaceId ?? null);
+  const runByDefault = useAppStore((state) => state.settings.cloud.runByDefault);
+  const [cloudMode, setCloudMode] = useState(runByDefault);
+  useEffect(() => setCloudMode(runByDefault), [runByDefault]);
+  const readiness = cloudReadiness(cloud, profileId);
+  const toCloud = run === null && cloudMode && readiness.ready;
+  /** This composer is up: one left behind by a change of space touches nothing the Bar shares with the next. */
+  const here = useRef(false);
+  useEffect(() => {
+    here.current = true;
+    return () => {
+      here.current = false;
+    };
+  }, []);
+  // (The space's own words: the composer is made anew for each space — DeskBar keys it — and takes up what was left.)
+  const [value, setValue] = useState(() => spaceChat(group.id).draft);
+  useEffect(() => {
+    keepSpaceChat(group.id, { draft: value });
+  }, [group.id, value]);
   const [caret, setCaret] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
   /** A mention menu the person dismissed (Escape) stays away until the next `@`. */
@@ -1424,9 +1690,9 @@ function BarComposer({
   }, [value]);
   const fileRef = useRef<HTMLInputElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
-  /** Messages go out in the order they were sent, however long a mention takes to read. */
-  const sending = useRef<Promise<void>>(Promise.resolve());
   const acting = agentIsActing(run);
+  /** The conversation cannot be left for a new one until its turn here is stopped (never so a cloud run: lib/cloud.ts). */
+  const held = agentHoldsChat(run);
   const { staged, setStaged } = drop;
   const doneRef = useRef<HTMLButtonElement>(null);
 
@@ -1569,10 +1835,13 @@ function BarComposer({
   );
   useEffect(() => {
     insertRef.current = insertText;
+    // (And for whatever is put into this space's field from outside the Bar that is up: insertInSpace.)
+    const stop = takeTextFor(group.id, insertText);
     return () => {
       insertRef.current = null;
+      stop();
     };
-  }, [insertRef, insertText]);
+  }, [group.id, insertRef, insertText]);
 
   const pick = useCallback(
     (file: MentionFile) => {
@@ -1643,7 +1912,7 @@ function BarComposer({
       return;
     }
     const store = useAppStore.getState();
-    if (chosen.id === "new" && acting) {
+    if (chosen.id === "new" && held) {
       store.showNotice("Stop the agent first, then start a new conversation", { tone: "warning" });
       return;
     }
@@ -1676,6 +1945,12 @@ function BarComposer({
         break;
       case "new":
         startNewConversation();
+        break;
+      case "feedback":
+        // (Main attaches the conversation open here, as it does for the form: a report is enough to see what the person saw.)
+        void store.submitFeedback({ message: args, reaction: null }).then((outcome) =>
+          store.showNotice(outcome.ok ? "Your feedback has been received. Thank you." : outcome.error, { tone: outcome.ok ? "success" : "warning" }),
+        );
         break;
       case "arrange":
         if (!arrangeDesk("smart")) store.showNotice("The desk can't be arranged just now", { tone: "warning" });
@@ -1713,7 +1988,9 @@ function BarComposer({
         // then the wish to Pistachio, who writes the extension there (docs/extensions.md §8).
         const wish = args;
         void extensionsRequest({ type: "draftFolder", name: extensionDraftName(wish) }).then((response) =>
-          send(extensionPrompt(wish, response?.type === "folder" ? response.path : null, response?.type === "folder" ? (response.author ?? null) : null)),
+          // (Always at this desk: the draft is a folder on this Mac, written by main's author turn — the cloud browser
+          // has neither the folder nor the tools, whatever the next conversation is set to run in.)
+          send(extensionPrompt(wish, response?.type === "folder" ? response.path : null, response?.type === "folder" ? (response.author ?? null) : null), { local: true }),
         );
         break;
       }
@@ -1744,8 +2021,41 @@ function BarComposer({
   const empty = (value.trim() === "" && staged.length === 0) || commandWaiting(value, catalog);
   const idle = value === "" && staged.length === 0 && drop.rejection === null && !listening && !acting;
   useEffect(() => onIdle(idle), [idle, onIdle]);
+  // How this space's cloud start went, heard by whichever composer of the space is up when it answers.
+  const cloudStarted = useRef<(result: CloudStart) => void>(() => undefined);
+  cloudStarted.current = (result) => {
+    if (!result.ok) {
+      drop.reject(result.error);
+      return;
+    }
+    setValue("");
+    setCaret(0);
+    setStaged([]);
+    onSent();
+  };
+  useEffect(() => hearCloudStart(group.id, (result) => cloudStarted.current(result)), [group.id]);
+  /** A cloud start from this space is under way: where the next conversation runs is not to be changed meanwhile. */
+  const cloudBusy = useSyncExternalStore(
+    watchCloudStarts,
+    () => cloudStarting(group.id),
+    () => false,
+  );
+  // The conversation a cloud start made is in this space: what is sent from here on continues it.
+  const hasRun = run !== null;
+  useEffect(() => {
+    if (hasRun) cloudStartArrived(group.id);
+  }, [group.id, hasRun]);
   /** Send `text` as the person's message, with the files staged and those it @mentions. */
-  const send = (text: string): void => {
+  const send = (text: string, where: { local?: boolean } = {}): void => {
+    const origin = group.id;
+    // A cloud conversation asked for from this space is still on its way (control has yet to answer, or its first
+    // word to arrive): nothing more goes from here meanwhile — to the cloud, where it would be a second conversation,
+    // or to this Mac, where the same words would run twice. The field keeps what it holds, and says why once there
+    // is something new in it to say it about.
+    if (cloudStarting(origin)) {
+      if (here.current && (cloudStartTaken(origin) || where.local === true)) drop.reject("The cloud browser is starting this conversation. Send this once it has begun.");
+      return;
+    }
     const mentioned = [...new Set(mentionsIn(text, names).map((span) => span.name))].flatMap((name) => files.filter((file) => file.name === name).slice(0, 1));
     const textBlocks = staged.flatMap((file) => {
       if (file.kind === "text") return [formatAttachmentText(file.name, file.text ?? "")];
@@ -1753,25 +2063,71 @@ function BarComposer({
       return [];
     });
     const attachments = toAgentAttachments(staged);
-    setValue("");
-    setCaret(0);
-    setStaged([]);
-    drop.dismissRejection();
-    onSent();
-    const go = async (): Promise<void> => {
-      // Each file @mentioned rides with the message, as the agent would read it: its text, or the file itself.
+    /**
+     * Each file @mentioned rides with the message, as the agent would read it: its text, or the file itself. One that
+     * cannot (too large, a kind no model reads) is named: at this desk the agent reads it with its own tool, and in
+     * the cloud — which has no desk, and none of this space's context — it is told the file stayed behind.
+     */
+    const withMentions = async (cloud: boolean): Promise<string[]> => {
       const mentionBlocks: string[] = [];
       const api = nativeApi();
       for (const file of mentioned) {
-        const reading = api === null ? null : await api.groupFileForMessage(group.id, file.id).catch(() => null);
+        const reading = api === null ? null : await api.groupFileForMessage(origin, file.id).catch(() => null);
         if (reading?.kind === "text") mentionBlocks.push(formatAttachmentText(file.name, reading.text));
         else if (reading?.kind === "file" && attachments.length < MAX_MESSAGE_FILES) attachments.push({ id: crypto.randomUUID(), name: file.name, mediaType: reading.mediaType, url: reading.dataUrl } satisfies AgentAttachment);
+        else if (cloud) mentionBlocks.push(`“${file.name}” is a file in the person's browser that could not be sent along${reading?.kind === "reference" ? ` (${reading.reason})` : ""}: say so if the answer needs it.`);
         else mentionBlocks.push(`“${file.name}” is in this space's context as ${file.id}${reading?.kind === "reference" ? ` (${reading.reason})` : ""}: read it with context_read.`);
       }
-      // The desk is the subject, not the page in view: the desk block tells the agent what is on it.
-      await sendMessage([text, ...mentionBlocks, ...textBlocks].filter((block) => block !== "").join("\n\n"), attachments, { page: false });
+      return mentionBlocks;
     };
-    sending.current = sending.current.then(go, go).catch(() => undefined);
+    // To the cloud browser: the one send that can be refused where it stands (the Profile lost its key, control is
+    // unreachable), so the field keeps what was typed until control has taken it, and says the refusal in its banner.
+    if (toCloud && where.local !== true) {
+      // (One start at a time from a space: checked above, and taken here.)
+      if (!beginCloudStart(origin)) return;
+      drop.dismissRejection();
+      // How it went is this space's to hear (lib/desk/cloud-start.ts): its composer when one is up — this one, or the
+      // one made when the person came back — and otherwise where its field is kept. A refusal with the person in
+      // another space is said there, since the banner is the field's.
+      const title = group.title;
+      // Where it runs is read now, as it is sent: the Profile and the page in view (cloudStartContext), not whichever
+      // are in view once the files it mentions have been read.
+      const where = cloudStartContext(useAppStore.getState().snapshot);
+      const settle = (result: CloudStart): void =>
+        settleCloudStart(origin, result, (error) => useAppStore.getState().showNotice(`${title}'s message was not sent to the cloud browser: ${error}`, { tone: "warning" }));
+      const go = async (): Promise<void> => {
+        const mentionBlocks = await withMentions(true);
+        // (Named with its space: the conversation control makes is this space's from then on — main binds it, and
+        // shows it here as its first word comes, or when the person is back. RunHub.cloudStarted.)
+        settle(await startCloudRun({ ...where, groupId: origin, intent: [text, ...mentionBlocks, ...textBlocks].filter((block) => block !== "").join("\n\n"), ...(attachments.length === 0 ? {} : { attachments }) }));
+      };
+      void go().catch(() => settle({ ok: false, error: "The cloud browser could not be reached" }));
+      return;
+    }
+    if (here.current) {
+      setValue("");
+      setCaret(0);
+      setStaged([]);
+      drop.dismissRejection();
+      onSent();
+    } else if (staged.length > 0) {
+      // (Sent from a composer the person has left — a command that had something to fetch first: what it took along is
+      // no longer staged in its space, and the Bar's own list is the next space's by now.)
+      keepSpaceChat(origin, { staged: [] });
+    }
+    const go = async (): Promise<void> => {
+      const mentionBlocks = await withMentions(false);
+      // The desk is the subject, not the page in view: the desk block tells the agent what is on it. And the message
+      // is this space's, though the person has gone on while a file was read (main: RunHub.start).
+      //
+      // Handed to main, not waited on: main answers a message when the turn it started has ended, and one sent
+      // meanwhile is a steer of that very turn — held in line behind main's answer, it would reach the agent only
+      // once there was nothing left to steer. The line (queueSpaceSend) is for the reading of files alone: the
+      // messages reach main in the order they were sent, which is the order main takes them in.
+      void sendMessage([text, ...mentionBlocks, ...textBlocks].filter((block) => block !== "").join("\n\n"), attachments, { page: false, groupId: origin });
+    };
+    // (In the order sent, whichever composer of this space sent each: lib/desk/space-chat.ts.)
+    void queueSpaceSend(origin, go);
   };
   const submit = (): void => {
     if (value.trim() === "" && staged.length === 0) return;
@@ -1865,7 +2221,7 @@ function BarComposer({
               {file.kind === "image" ? (
                 <img src={file.url} alt={file.name} title={file.name} draggable={false} className="block h-9 w-auto max-w-20 rounded-sm object-cover shadow-border" />
               ) : (
-                <span title={file.name} className="flex h-7 max-w-44 items-center gap-1.5 rounded-sm bg-background-200 px-2 text-label-12 text-gray-900 shadow-border">
+                <span title={file.kind === "selection" ? `Selected on ${file.name}` : file.name} data-testid={file.kind === "selection" ? "staged-selection" : undefined} className="flex h-7 max-w-44 items-center gap-1.5 rounded-sm bg-background-200 px-2 text-label-12 text-gray-900 shadow-border">
                   {file.kind === "selection" ? <TextQuote className="size-3 shrink-0 text-gray-700" aria-hidden="true" /> : <FileText className="size-3 shrink-0 text-gray-700" aria-hidden="true" />}
                   <span className="truncate">{file.kind === "selection" ? selectionChipLabel(file.text ?? "") : file.name}</span>
                 </span>
@@ -1873,7 +2229,7 @@ function BarComposer({
               <button
                 type="button"
                 title="Remove"
-                aria-label={`Remove ${file.name}`}
+                aria-label={file.kind === "selection" ? "Remove selection" : `Remove ${file.name}`}
                 onClick={() => setStaged((prev) => prev.filter((entry) => entry.id !== file.id))}
                 className="absolute -top-1.5 -right-1.5 grid size-4 cursor-pointer place-items-center rounded-full bg-gray-1000 text-background-100 opacity-0 transition-opacity group-hover/chip:opacity-100 focus-visible:opacity-100"
               >
@@ -1913,12 +2269,32 @@ function BarComposer({
             <BarButton
               label="New conversation"
               testId="desk-bar-new-conversation"
-              unavailable={acting || run === null}
-              tip={tip(acting ? "Stop the agent first" : "New conversation")}
+              unavailable={held || run === null}
+              tip={tip(held ? "Stop the agent first" : "New conversation")}
               onClick={startNewConversation}
             >
               <SquarePen aria-hidden="true" />
             </BarButton>
+            {cloud.available ? (
+              <BarButton
+                label="Run in cloud"
+                testId="desk-bar-cloud"
+                pressed={toCloud}
+                unavailable={run !== null || !readiness.ready || cloudBusy}
+                tip={tip(
+                  cloudBusy
+                    ? "The cloud browser is starting this conversation"
+                    : run !== null
+                      ? isCloudRun(run)
+                        ? "This conversation is already running in the cloud browser"
+                        : "This conversation runs at this desk. Start a new one to run in the cloud"
+                      : (readiness.reason ?? (toCloud ? "The next conversation runs in the cloud browser" : "Run the next conversation in the cloud browser")),
+                )}
+                onClick={() => setCloudMode((mode) => !mode)}
+              >
+                <Cloud aria-hidden="true" />
+              </BarButton>
+            ) : null}
           </BarTray>
         )}
         <div className="desk-bar-field" hidden={listening}>
@@ -2054,6 +2430,7 @@ const COMMAND_ICONS: Record<Exclude<BuiltinBarCommandId, "search">, LucideIcon> 
   translate: Languages,
   research: Telescope,
   new: SquarePen,
+  feedback: Megaphone,
   arrange: LayoutGrid,
   tidy: Archive,
   remember: Lightbulb,
@@ -2407,7 +2784,14 @@ function AnswerCard({
       window.removeEventListener("keydown", onKey, true);
     };
   }, [picking]);
-  const acting = run !== null && agentIsActing(run);
+  const held = agentHoldsChat(run);
+  const evidence = useAppStore((state) => state.evidence);
+  const replaying = evidence !== null;
+  const loadEvidence = useAppStore((state) => state.loadEvidence);
+  const closeEvidence = useAppStore((state) => state.closeEvidence);
+  const openLiveView = useAppStore((state) => state.openLiveView);
+  // (A host that cannot open a live view keeps the button off the header: the store remembers the refusal.)
+  const liveViewUnavailable = useAppStore((state) => state.unavailable["openLiveView"] ?? null);
   const newConversation = (): void => {
     nativeApi()
       ?.deskConversation({ type: "new", groupId: conversations.groupId })
@@ -2466,6 +2850,41 @@ function AnswerCard({
                   {whole ? "Latest" : "Whole conversation"}
                 </button>
               ) : null}
+              {/* What the sidebar's console had at its head (until 2026-11-16, when the desk's chat became the only
+                  one): the conversation's activity record, a cloud run's live view — and, in the chat's place, where
+                  there is the room of a column, the feedback form. (Few, and none in a narrow column: what is left of
+                  the header beside the name is what the chat is taken out of its place by — shell.css.) */}
+              {run === null ? null : (
+                <button
+                  type="button"
+                  aria-label="Activity record"
+                  title={replaying ? "Back to the conversation" : "Activity record"}
+                  aria-pressed={replaying}
+                  data-testid="desk-answer-evidence"
+                  className="desk-bar-button desk-answer-tool"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => (replaying ? closeEvidence() : void loadEvidence())}
+                >
+                  <FileClock aria-hidden="true" />
+                </button>
+              )}
+              {run === null || run.executor?.kind !== "cloud" || liveViewUnavailable !== null ? null : (
+                <button
+                  type="button"
+                  aria-label="Watch this run in the cloud browser"
+                  title="This run works in the cloud browser — watch it live"
+                  data-testid="desk-answer-live-view"
+                  className="desk-bar-button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void openLiveView(run.runId)}
+                >
+                  <Monitor aria-hidden="true" />
+                </button>
+              )}
+              {/* (Its form is its own: a press in it is never the card taken in hand.) */}
+              <span className="desk-answer-chat-tool" data-testid="desk-chat-feedback" onPointerDown={(event) => event.stopPropagation()}>
+                <FeedbackPopover />
+              </span>
               {/* The chat's actions: its layout undone, a new conversation (and, as floating, back onto the pill). */}
               {undo && run !== null ? (
                 <button type="button" aria-label="Undo layout" title="Undo layout" data-testid="desk-chat-undo" className="desk-bar-button desk-answer-chat-only" onMouseDown={(event) => event.preventDefault()} onClick={onUndo}>
@@ -2475,13 +2894,13 @@ function AnswerCard({
               <button
                 type="button"
                 aria-label="New conversation"
-                title={acting ? "Stop the agent first" : "New conversation"}
+                title={held ? "Stop the agent first" : "New conversation"}
                 data-testid="desk-chat-new"
                 className="desk-bar-button desk-answer-chat-only"
-                aria-disabled={acting || run === null ? "true" : undefined}
+                aria-disabled={held || run === null ? "true" : undefined}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
-                  if (!acting && run !== null) newConversation();
+                  if (!held && run !== null) newConversation();
                 }}
               >
                 <SquarePen aria-hidden="true" />
@@ -2512,10 +2931,21 @@ function AnswerCard({
           ) : null}
           {/* (A wrapper that stays whatever is in it: answer-motion.ts fades it as the card morphs.) */}
           <div className="desk-answer-body relative flex min-h-0 min-w-0 flex-1 flex-col">
-            {run === null ? (
-              <p className="desk-answer-empty" data-testid="desk-answer-empty">
-                Ask about {space} — the conversation shows here.
-              </p>
+            {run !== null && replaying ? (
+              // The conversation's activity record, in its place until closed (⌘E, the header's button).
+              <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
+                <EvidenceReplay entries={evidence} onClose={closeEvidence} />
+              </div>
+            ) : run === null ? (
+              <div className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto">
+                {/* Reminders that fired and wait to be seen are the chat's to show, with no conversation too. */}
+                <div className="px-3.5 pt-1 empty:hidden">
+                  <ReminderInbox />
+                </div>
+                <p className="desk-answer-empty" data-testid="desk-answer-empty">
+                  Ask about {space} — the conversation shows here.
+                </p>
+              </div>
             ) : (
               <AnswerThread run={run} from={from} />
             )}
@@ -2560,6 +2990,16 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
   // stays running between two steps.
   const replyBegun = useReplyBegun(run);
   const working = run.status === "running" && !replyBegun;
+  // Paused with nothing asked of the person — stopped by them, by the turn's own allowance, by a restart; or theirs to
+  // drive, taken without being asked (a takeover asked for has its own card): Resume hands it back, and the turn picks
+  // up from its last finished step (the sidebar console's button until 2026-11-16; main's releaseControl).
+  const releaseControl = useAppStore((state) => state.releaseControl);
+  const paused = (run.status === "interrupted" || run.status === "human_control") && run.pendingTakeover === null && run.pendingQuestion === null && run.pendingApproval === null;
+  // And a conversation not over yet can be ended while the agent is not at it — paused, or waiting on the person —
+  // as the console let it be (main's revoke): the only way to end a cloud run from here, which goes on without this
+  // Mac. (While it acts, Stop pauses it first.)
+  const revoke = useAppStore((state) => state.revokeRun);
+  const endable = !TERMINAL.has(run.status) && !agentIsActing(run);
   return (
     <MessageScroller.Provider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={48}>
       <MessageScroller.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -2568,6 +3008,15 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
             <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
               {run.result === null ? "" : "Answer complete"}
             </span>
+            <ReminderInbox />
+            {/* From its head (the whole conversation, the chat's place): what started it, when a reminder did, and the task's notes. */}
+            {from === 0 && run.origin?.kind === "reminder" ? (
+              <div className="mb-3 flex min-w-0 items-center gap-1 text-[11px] font-medium text-gray-700" data-testid="run-origin" title={`Scheduled for ${formatTime(run.origin.scheduledFor)}`}>
+                <AlarmClock className="size-3 shrink-0" aria-hidden="true" />
+                <span className="truncate">Scheduled · {run.origin.title}</span>
+              </div>
+            ) : null}
+            {from === 0 && run.notes.trim() !== "" ? <TaskNotes run={run} /> : null}
             {run.messages.map((message, index) => {
               if (index < from) return null;
               const canRetry =
@@ -2622,6 +3071,30 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
                 <ApprovalCard run={run} />
               </MessageScroller.Item>
             )}
+            {paused || endable ? (
+              <MessageScroller.Item messageId={`paused-${run.runId}`} className="mb-4 flex min-w-0 items-center gap-3">
+                {paused ? (
+                  <button
+                    type="button"
+                    data-testid="desk-answer-resume"
+                    className="flex cursor-pointer items-center gap-1 text-[11px] font-medium text-blue-900"
+                    onClick={() => void releaseControl()}
+                  >
+                    <RotateCcw className="size-3" aria-hidden="true" /> Resume
+                  </button>
+                ) : null}
+                {endable ? (
+                  <button
+                    type="button"
+                    data-testid="desk-answer-end"
+                    className="flex cursor-pointer items-center gap-1 text-[11px] text-gray-700 hover:text-red-900"
+                    onClick={() => void revoke()}
+                  >
+                    <CircleStop className="size-3" aria-hidden="true" /> {endTaskLabel(run)}
+                  </button>
+                ) : null}
+              </MessageScroller.Item>
+            ) : null}
             {run.result === null ? null : (
               <MessageScroller.Item messageId={`result-${run.runId}`} className="mb-1 min-w-0">
                 <CompletionMeta run={run} />
@@ -2629,7 +3102,18 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
             )}
             {run.status === "running" ? (
               <MessageScroller.Item messageId={`working-${run.runId}`} className="mb-4 min-w-0">
-                <LiveReply run={run} sources={pendingSources} links="glance" tabChip={false} trace />
+                <LiveReply
+                  run={run}
+                  sources={pendingSources}
+                  links="glance"
+                  tabChip={false}
+                  trace
+                  trailing={
+                    <span data-testid="context-meter" className="ml-auto shrink-0 text-[11px] text-gray-700 tabular-nums">
+                      {contextMeter(run.context)}
+                    </span>
+                  }
+                />
               </MessageScroller.Item>
             ) : null}
           </MessageScroller.Content>
@@ -2644,6 +3128,13 @@ function AnswerThread({ run, from }: { run: RunSummary; from: number }) {
     </MessageScroller.Provider>
   );
 }
+
+/** An armed delete waits this long for its second press before standing down (the sidebar's thread list's). */
+const CONVERSATION_DELETE_ARM_MS = 4000;
+/** A thread's turn is running (main's ACTIVE_STATUSES). */
+const ACTING_STATUSES: ReadonlySet<string> = new Set(["capturing", "ready", "running"]);
+/** A thread waits on the person: a question, an approval, a takeover. */
+const WAITING_STATUSES: ReadonlySet<string> = new Set(["waiting_for_approval", "waiting_for_judgment", "waiting_for_step_up", "human_control"]);
 
 /** Where a conversation started: this group, another of the Space's, one no longer here, or elsewhere in the browser. */
 function startedIn(thread: ThreadListItem, groupId: string, groups: readonly TabGroupInfo[]): { label: string; color: TabGroupInfo["color"] | null } {
@@ -2745,7 +3236,8 @@ function ConversationList({
   onClose: () => void;
   firstRef?: React.Ref<HTMLButtonElement>;
 }) {
-  const acting = agentIsActing(run);
+  // (Held by a turn at work on this Mac — not by a cloud run, which goes on without it: lib/cloud.ts.)
+  const acting = agentHoldsChat(run);
   const [error, setError] = useState<string | null>(null);
   const act = (command: Parameters<NonNullable<ReturnType<typeof nativeApi>>["deskConversation"]>[0]): void => {
     const api = nativeApi();
@@ -2760,6 +3252,15 @@ function ConversationList({
     );
   };
   const sorted = sortThreads([...threads]);
+  // Deleting takes two presses of a row's ×: the first arms it (it says so), the second deletes — and it stands down
+  // by itself. One the agent is acting in cannot go (main refuses it; here it is not offered).
+  const deleteThread = useAppStore((state) => state.deleteThread);
+  const [armed, setArmed] = useState<string | null>(null);
+  useEffect(() => {
+    if (armed === null) return;
+    const timer = window.setTimeout(() => setArmed(null), CONVERSATION_DELETE_ARM_MS);
+    return () => window.clearTimeout(timer);
+  }, [armed]);
   return (
     <>
       <div className="p-1 pb-0">
@@ -2788,27 +3289,56 @@ function ConversationList({
         {sorted.map((thread) => {
           const current = run?.runId === thread.runId;
           const where = startedIn(thread, groupId, groups);
+          // What goes on in it now, where something does: a turn running (in this space, or the one it is at home in),
+          // or the person waited on. Otherwise when it was last touched.
+          const working = thread.executor?.kind !== "cloud" && ACTING_STATUSES.has(thread.status);
+          const waiting = WAITING_STATUSES.has(thread.status);
+          const title = thread.title.trim() === "" ? "Untitled conversation" : thread.title;
           return (
-            <button
-              key={thread.runId}
-              type="button"
-              role="listitem"
-              data-testid="desk-conversation"
-              data-run-id={thread.runId}
-              data-open={current ? "" : undefined}
-              aria-current={current ? "true" : undefined}
-              disabled={acting && !current}
-              title={acting && !current ? "Stop the agent first" : current ? "Open in this space" : "Continue here"}
-              className="desk-conversation"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => (current ? onClose() : act({ type: "choose", groupId, runId: thread.runId }))}
-            >
-              <span className={`min-w-0 flex-1 truncate text-[12.5px] text-gray-1000${current ? " font-medium" : ""}`}>{thread.title.trim() === "" ? "Untitled conversation" : thread.title}</span>
-              <span className="desk-conversation-group tab-group-tone" data-group-color={where.color ?? undefined} data-toned={where.color === null ? undefined : ""}>
-                {where.label}
-              </span>
-              <span className="w-12 shrink-0 text-right text-[10.5px] text-gray-700 tabular-nums">{relativeTime(thread.updatedAt)}</span>
-            </button>
+            <div key={thread.runId} role="listitem" className="desk-conversation-row" data-armed={armed === thread.runId ? "" : undefined}>
+              <button
+                type="button"
+                data-testid="desk-conversation"
+                data-run-id={thread.runId}
+                data-open={current ? "" : undefined}
+                data-status={thread.status}
+                aria-current={current ? "true" : undefined}
+                disabled={acting && !current}
+                title={acting && !current ? "Stop the agent first" : current ? "Open in this space" : "Continue here"}
+                className="desk-conversation"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => (current ? onClose() : act({ type: "choose", groupId, runId: thread.runId }))}
+              >
+                <span className={`min-w-0 flex-1 truncate text-[12.5px] text-gray-1000${current ? " font-medium" : ""}`}>{title}</span>
+                <span className="desk-conversation-group tab-group-tone" data-group-color={where.color ?? undefined} data-toned={where.color === null ? undefined : ""}>
+                  {where.label}
+                </span>
+                <span className="desk-conversation-when w-12 shrink-0 text-right text-[10.5px] text-gray-700 tabular-nums" data-live={working || waiting ? "" : undefined}>
+                  {working ? "Working" : waiting ? "Needs you" : relativeTime(thread.updatedAt)}
+                </span>
+              </button>
+              {working ? null : (
+                <button
+                  type="button"
+                  data-testid="desk-conversation-delete"
+                  data-run-id={thread.runId}
+                  aria-label={armed === thread.runId ? `Click again to delete ${title}` : `Delete ${title}`}
+                  title={armed === thread.runId ? "Click again to delete" : "Delete conversation"}
+                  className="desk-conversation-delete"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    if (armed !== thread.runId) {
+                      setArmed(thread.runId);
+                      return;
+                    }
+                    setArmed(null);
+                    void deleteThread(thread.runId);
+                  }}
+                >
+                  <X aria-hidden="true" />
+                </button>
+              )}
+            </div>
           );
         })}
       </div>

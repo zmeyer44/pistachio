@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RunSummary } from "@pistachio/protocol";
 import { profileView } from "@pistachio/shell-contracts/memory";
 import { cn } from "../../lib/cn";
 import { greeting, keyGoesToHomeSearch } from "../../lib/home";
 import { agentIsActing } from "../../lib/run";
-import { TABLESS_HOME_KEY, useAppStore } from "../../store";
+import { selectRunIsOfTab, TABLESS_HOME_KEY, useAppStore } from "../../store";
 import { PistachioMark } from "../PistachioMark";
 import { HomeApps } from "./HomeApps";
 import { HomeChat } from "./HomeChat";
@@ -64,13 +65,26 @@ export function HomePage({
   const closeHomeChat = useAppStore((s) => s.closeHomeChat);
   const setConsoleOpen = useAppStore((s) => s.setConsoleOpen);
   // The chat this tab shows: its pending question, or its run while that
-  // is still the console's open thread. A run the console moved on from is
+  // is still its space's conversation. A run that space moved on from is
   // not this tab's any more, and the page comes back.
-  const chatRun = chat === null || chat.runId === null ? null : run !== null && run.runId === chat.runId ? run : null;
-  const showChat = chat !== null && (chat.runId === null || chatRun !== null);
+  //
+  // Each space has its own conversation (docs/desk-agent.md §3), so the
+  // run in view is this tab's word only while it is this tab's space's
+  // (`mine`). With the person gone to another space — this page still
+  // drawn, on its way out — the run in view is that space's, and says
+  // nothing of this tab's: its chat stays as it was last seen (`seen`),
+  // and is here, going on, when they come back. (Until 2026-11-17 any
+  // other run in view closed the chat: a conversation left running was the
+  // home page again on return.)
+  const mine = useAppStore((s) => selectRunIsOfTab(s, tabId));
+  const live = chat === null || chat.runId === null || !mine ? null : run !== null && run.runId === chat.runId ? run : null;
+  const seen = useRef<RunSummary | null>(null);
+  if (live !== null) seen.current = live;
+  const chatRun = live ?? (!mine && chat !== null && seen.current?.runId === chat.runId ? seen.current : null);
+  const showChat = chat !== null && (chat.runId === null || chatRun !== null || !mine);
   useEffect(() => {
-    if (chat !== null && chat.runId !== null && chatRun === null) closeHomeChat(tabKey);
-  }, [chat, chatRun, closeHomeChat, tabKey]);
+    if (mine && chat !== null && chat.runId !== null && chatRun === null) closeHomeChat(tabKey);
+  }, [chat, chatRun, closeHomeChat, mine, tabKey]);
 
   // The transition: the page keeps drawing while it steps aside, so the
   // chat can fly its composer out of the pill; and it fades back in when

@@ -10,7 +10,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { api, box, createGroup, fromFrameMenu, INVOICES, launchDesk, openChats, openNubMenu, openTabs, openTray, pressNubButton, reachBar, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, spaceRows, VENDOR, windowSelector, type Box } from "./desk-harness";
+import { api, box, chatSpot, createGroup, fromFrameMenu, keepChatSpot, INVOICES, launchDesk, openChats, openNubMenu, openTabs, openTray, pressNubButton, reachBar, screenshots, selectSpace, selectTab, settled, showFrame, snapshot, spaceRows, VENDOR, windowSelector, type Box } from "./desk-harness";
 import { pageAt } from "./pages-harness";
 import { shellReady } from "./windows";
 
@@ -533,7 +533,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     near(resized.x, floating.x, 3);
     near(resized.y, floating.y, 3);
     // A resize called off with Escape: back to its size — and kept at it, not at the size it was being pulled to.
-    const kept = (): Promise<number | null> => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { w: number } | null)?.w ?? null);
+    const kept = (): Promise<number | null> => chatSpot(shell).then((spot) => spot?.w ?? null);
     const pulled = await box(shell, '[data-testid="desk-answer"] .desk-answer-edge[data-edge="se"]');
     await drag({ x: pulled.x + pulled.width / 2, y: pulled.y + pulled.height / 2 }, { x: pulled.x + pulled.width / 2 + 120, y: pulled.y + pulled.height / 2 + 80 }, 10, false);
     await shell.keyboard.press("Escape");
@@ -657,7 +657,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     near(atSide.x + atSide.width, stageBox.x + stageBox.width, 3);
     near(atSide.height, stageBox.height, 3);
     await expect(side).not.toHaveAttribute("data-shown", "");
-    await expect.poll(() => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { zone?: string } | null)?.zone)).toBe("chat");
+    await expect.poll(() => chatSpot(shell).then((spot) => spot?.zone)).toBe("chat");
     // A Glance opened with the chat at the side keeps clear of it: its card, and the actions beside the card, lie in
     // what is left of the desk, never under the chat's column (2026-11-03: centered on the whole desk, the actions
     // at the card's right were hidden behind the chat).
@@ -733,7 +733,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
     // Left floating just over the Bar (in reach of its slot), it opens there; a press on its header that never moves
     // only takes it up — it stays a window.
-    await shell.evaluate(() => localStorage.setItem("pistachio.desk.answer.v1", JSON.stringify({ floating: true, fx: 0.3, fy: 1, w: 440, h: 240 })));
+    await keepChatSpot(shell, { floating: true, fx: 0.3, fy: 1, w: 440, h: 240 });
     await reachBar(shell);
     await answerButton.click();
     await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
@@ -761,7 +761,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
     await expect.poll(() => shell.getByTestId("desk-answer-ghost").evaluate((el) => Number(getComputedStyle(el).opacity))).toBe(0);
     // (And it opens docked next time: going home is what it was asked.)
-    await expect.poll(() => shell.evaluate(() => (JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { floating: boolean } | null)?.floating)).toBe(false);
+    await expect.poll(() => chatSpot(shell).then((spot) => spot?.floating)).toBe(false);
 
     // ── 8. A page the agent's click opens — from a tab in the dock — is hidden: nowhere on the desk, in no group ─
     await showFrame(shell, windowSelector(invoice));
@@ -851,7 +851,7 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
       await expect.poll(() => shell.locator('[data-testid="desk-answer"] .desk-answer-vis').evaluate((el) => (el as HTMLElement).style.willChange)).toBe("");
       return box(shell, '[data-testid="desk-answer"]');
     };
-    const spot = (): Promise<{ floating: boolean; w: number; zone?: string; cw?: number } | null> => shell.evaluate(() => JSON.parse(localStorage.getItem("pistachio.desk.answer.v1") ?? "null") as { floating: boolean; w: number; zone?: string; cw?: number } | null);
+    const spot = (): Promise<{ floating: boolean; w: number; zone?: string; cw?: number } | null> => chatSpot(shell);
     await openChats(shell);
     await shell.locator(`[data-testid="desk-conversation"][data-run-id="${runId}"]`).click();
     await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);

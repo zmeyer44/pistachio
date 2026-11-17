@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Paperclip } from "lucide-react";
-import { MAX_COMPOSER_ATTACHMENTS, readComposerAttachment, type ComposerAttachment } from "../../lib/chat-attachments";
+import { attachmentSink, MAX_COMPOSER_ATTACHMENTS, readComposerAttachment, type ComposerAttachment } from "../../lib/chat-attachments";
 import { cn } from "../../lib/cn";
 
 /**
@@ -28,10 +28,32 @@ export function useAttachmentDrop(
      * Pass a stable function.
      */
     divert?: (files: File[]) => File[];
+    /**
+     * Whose files these are, where one composer serves several owners in
+     * turn (the desk's Bar: the space in front). A file still being read
+     * when the owner served changes is the first owner's all the same:
+     * handed to `keepFor` with it, never added to the list on screen
+     * (lib/chat-attachments.ts `attachmentSink`). Pass a stable `keepFor`.
+     */
+    owner?: string;
+    keepFor?: (owner: string, attachment: ComposerAttachment) => void;
+    /** What is staged as the composer comes up (the Bar: what its space was left with). Read once. */
+    initial?: () => ComposerAttachment[];
   } = {},
 ) {
   const divert = options.divert;
-  const [staged, setStaged] = useState<ComposerAttachment[]>([]);
+  const keepFor = options.keepFor;
+  const served = useRef(options.owner);
+  served.current = options.owner;
+  // (A composer that has gone serves nobody: a file read after it is kept for its owner, as one read after the owner changed.)
+  const up = useRef(true);
+  useEffect(() => {
+    up.current = true;
+    return () => {
+      up.current = false;
+    };
+  }, []);
+  const [staged, setStaged] = useState<ComposerAttachment[]>(() => options.initial?.() ?? []);
   const [rejection, setRejection] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const depth = useRef(0);
@@ -46,6 +68,15 @@ export function useAttachmentDrop(
         focusComposer();
         return;
       }
+      // Whose they are is settled now, as they are dropped: read later, they are that owner's still.
+      const owner = served.current;
+      const sink = attachmentSink<string | undefined | null>(
+        owner,
+        // (With one owner — none named — the list is the only place there is, gone or not.)
+        () => (up.current || owner === undefined ? served.current : null),
+        { add: (attachment) => setStaged((prev) => [...prev, attachment]), reject: setRejection },
+        keepFor === undefined ? undefined : (kept, attachment) => (typeof kept === "string" ? keepFor(kept, attachment) : undefined),
+      );
       // Read against the count at drop time; `staged` is stale inside the loop.
       let room = MAX_COMPOSER_ATTACHMENTS - staged.length;
       if (room <= 0) {
@@ -61,17 +92,17 @@ export function useAttachmentDrop(
           const result = await readComposerAttachment(file);
           if (result.ok) {
             room -= 1;
-            setStaged((prev) => [...prev, result.attachment]);
+            sink.add(result.attachment);
           } else {
-            setRejection(result.reason);
+            sink.reject(result.reason);
           }
         } catch {
-          setRejection(`Could not read ${file.name}`);
+          sink.reject(`Could not read ${file.name}`);
         }
       }
-      focusComposer();
+      if (sink.here()) focusComposer();
     },
-    [staged.length, focusComposer, divert],
+    [staged.length, focusComposer, divert, keepFor],
   );
 
   const handlers = useMemo(() => {

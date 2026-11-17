@@ -473,6 +473,32 @@ export function drawnSpacesBroughtDown(place: BringDownPlace, led: number | null
 /* ------------------------- a restore point merged in ------------------------- */
 
 /**
+ * A restore point as it may be applied while spaces are away (BrowserController.applyDurableSession): without the
+ * spaces that are away here, and without their tabs — the ones the away file holds (`tabIds`), and the ones the
+ * restore point itself lists in such a space. An away space is in no restore point this Mac publishes, but another
+ * device's — or an older one — may still have it, under the same id: applied whole, the space would be here AND
+ * away, and bringing it back would find it "here already" and let the file's copy, the newer one, go. What is away
+ * is not touched by a restore point, nor doubled. The same object when nothing of it is away.
+ */
+export function withoutAway(saved: DurableSpaceSession, away: { groupIds: ReadonlySet<string>; tabIds: ReadonlySet<string> }): DurableSpaceSession {
+  const groups = saved.tabGroups ?? [];
+  const gone = new Set<string>(groups.filter((group) => away.groupIds.has(group.id)).flatMap((group) => group.tabIds));
+  for (const tab of saved.tabs) if (away.tabIds.has(tab.id)) gone.add(tab.id);
+  if (gone.size === 0 && !groups.some((group) => away.groupIds.has(group.id))) return saved;
+  const tabs = saved.tabs.filter((tab) => !gone.has(tab.id));
+  const tabGroups = groups.filter((group) => !away.groupIds.has(group.id)).map((group) => (group.tabIds.some((tabId) => gone.has(tabId)) ? { ...group, tabIds: group.tabIds.filter((tabId) => !gone.has(tabId)) } : group));
+  const { currentGroupId, ...rest } = saved;
+  return {
+    ...rest,
+    tabs,
+    activeTabId: saved.activeTabId !== null && !gone.has(saved.activeTabId) ? saved.activeTabId : (tabs[0]?.id ?? null),
+    recentTabIds: saved.recentTabIds.filter((tabId) => !gone.has(tabId)),
+    ...(saved.tabGroups === undefined ? {} : { tabGroups }),
+    ...(currentGroupId === undefined || away.groupIds.has(currentGroupId) ? {} : { currentGroupId }),
+  };
+}
+
+/**
  * The tabs a restore point brings into a Profile it is merged into
  * (BrowserController.applyDurableSession's "merge"), each one's claim on an
  * entry — a favorite or a pin — settled: one page per entry, anchored or

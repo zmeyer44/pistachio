@@ -7,12 +7,16 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellReady } from "./windows";
 import { launchApp } from "./app";
 import { captureShell, pageAt } from "./agent-harness";
+import { pressNubButton, settled } from "./desk-harness";
 
 /**
- * The console around a conversation, on one launch: its feedback popover
- * posts a report to the API, and a link in a message previews as a Glance.
- * The owner page is the window's only tab, so it is the home page: launch
- * opens on `general.homeUrl` and nothing else.
+ * The chat around a conversation, on one launch — the desk's, the desktop's
+ * one chat: asked for at launch, it comes out of its nub for the reminder
+ * that fired and waits to be seen (its card, with no conversation at all);
+ * at the desk's side its header has the feedback form, which posts a report
+ * to the API, as `/feedback` in the Bar does from anywhere; and a link in a
+ * message previews as a Glance. The owner page is the window's only tab, so
+ * it is the home page: launch opens on `general.homeUrl` and nothing else.
  */
 
 const OWNER_URL = "pistachio://demo/invoices";
@@ -110,7 +114,7 @@ function remindersDocument(): unknown {
   };
 }
 
-test.describe.serial("the console's feedback and links", { tag: ["@glance", "@agent"] }, () => {
+test.describe.serial("the chat's feedback and links", { tag: ["@glance", "@agent"] }, () => {
   test.describe.configure({ timeout: 45_000 });
 
   let app: ElectronApplication;
@@ -135,9 +139,20 @@ test.describe.serial("the console's feedback and links", { tag: ["@glance", "@ag
     sink?.server.close();
   });
 
-  test("the console's feedback popover posts the message, reaction, and context to the API", async () => {
-    // The trigger sits in the console header; the popover is Geist's: field, emoji row, Send.
+  test("the chat's feedback form posts the message, reaction, and context to the API — and so does /feedback", async () => {
+    // "Open the agent chat on launch": the chat came out of its nub — for the reminder that fired, its card, though
+    // there is no conversation — and no panel stands beside the desk.
+    const answer = shell.getByTestId("desk-answer");
+    await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
+    await expect(answer.getByTestId("reminder-inbox")).toBeVisible();
+    await expect(shell.getByTestId("agent-panel")).toHaveCount(0);
+    // Docked on the pill its header is a drawer's: the form is the chat's at the desk's side, where a column has room.
     const trigger = shell.getByTestId("console-feedback");
+    await expect(trigger).toBeHidden();
+    await pressNubButton(app, shell, "desk-answer-side");
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await settled(shell, app);
+    // The trigger sits in the chat's header; the popover is Geist's: field, emoji row, Send.
     await trigger.click();
     const popover = shell.getByRole("dialog", { name: "Feedback" });
     await expect(popover).toBeVisible();
@@ -183,9 +198,16 @@ test.describe.serial("the console's feedback and links", { tag: ["@glance", "@ag
     await shell.keyboard.press("Escape");
     await expect(shell.getByRole("dialog", { name: "Feedback" })).toHaveCount(0);
     await expect(trigger).toBeFocused();
+
+    // From the message field, wherever the chat stands (at the side it is the card's): /feedback and the words.
+    await shell.getByTestId("desk-bar-input").fill("/feedback The nub is easy to miss.");
+    await shell.getByTestId("desk-bar-input").press("Enter");
+    await expect.poll(() => sink.received.length).toBe(2);
+    expect(sink.received[1]?.body).toEqual(expect.objectContaining({ version: 1, message: "The nub is easy to miss.", run: null }));
+    await expect(shell.getByTestId("desk-bar-input")).toHaveValue("");
   });
 
-  test("a link in a console message previews as a Glance; ⌘-click opens a tab instead", async () => {
+  test("a link in a chat message previews as a Glance; ⌘-click opens a tab instead", async () => {
     // The URL in the report is a real link; the prose around it is not.
     const link = shell.getByRole("link", { name: PREVIEW_URL });
     await expect(link).toBeVisible();

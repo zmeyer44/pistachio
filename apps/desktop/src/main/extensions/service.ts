@@ -15,7 +15,11 @@
  *   permission handlers (./capture.ts), the input taps on a tab's page and
  *   the tab preload's reports (./input.ts), the declared key commands
  *   (./keys.ts, `takeKey` from main's key relay), and the status pill main
- *   draws while an extension records.
+ *   draws while an extension records;
+ * - the clock for declared triggers (docs/primitives.md §3): what each last
+ *   heard, the pauses and the journal of what was done with nobody there
+ *   (./automation.ts), delivered by ./trigger-runner.ts as a `trigger`
+ *   invocation — the one kind nobody's hand is behind.
  *
  * Chrome extensions (`kind: "chrome"` rows) are run by ./chrome/host.ts —
  * their Profile sessions, tabs, installs, popups and Ledge state; the
@@ -57,21 +61,33 @@ import {
   type ExtInvokeKind,
   type ExtReply,
   type ExtStatus,
+  type ExtTriggerState,
   type Json,
 } from "@pistachio/extension-api";
 import { manifestAsks, widenedAsks, type PistachioManifest } from "@pistachio/extension-api/manifest";
 import { sheetFor } from "@pistachio/extension-api/sheet";
+import { isBrowserSignal, pageMatches, triggerInWords, triggerKey, triggerKeys, widenedTriggers, type TriggerDecl } from "@pistachio/extension-api/triggers";
+import { systemTimezone } from "@pistachio/agent-runtime/reminders";
 import {
   EMPTY_EXTENSIONS_SNAPSHOT,
   EXTENSION_SCHEME,
+  EVERY_SPACE,
+  EXTENSION_SITES,
+  JOURNAL_SHOWN,
+  type ExtensionBackdrop,
   type ExtensionError,
   type ExtensionInfo,
   type ExtensionLibraryEntry,
   type ExtensionRequest,
   type ExtensionResponse,
   type ExtensionSettingInfo,
+  type ExtensionShown,
+  type ExtensionSite,
+  type ExtensionSiteView,
   type ExtensionSource,
+  type ExtensionSpaceMark,
   type ExtensionStatus,
+  type ExtensionTabMark,
   type ExtensionsSnapshot,
 } from "@pistachio/shell-contracts/extensions";
 import type { ShellCommand } from "@pistachio/shell-contracts/chrome";
@@ -98,6 +114,14 @@ import { dispatch, settingValues, type CallContext, type ExtensionNotesHost, typ
 import { extensionDataDir } from "./paths";
 import { serveExtensionRequest, serveIconRequest, type ExtensionFolders } from "./protocol";
 import { ExtensionRegistry, RESERVED_ID_PREFIX, type ExtensionPending, type ExtensionRecord, onInAnyProfile } from "./registry";
+import { returnStranded, strandedOnSend, withSpaceGrant, type ExtensionAwayHost, type ExtensionClosingHost } from "./away";
+import { AutomationStore, JOURNAL_MAX, undoOfBringBack, undoOfOpenTab } from "./automation";
+import { adoptThemeImage, backdropValue, offersPress, serveThemeRequest, shownRow, ShownStore, siteDetail, themeDetail, type ShownHost, type StoredTheme } from "./shown";
+import { CalendarKeeper, NO_READINGS, signalHolds, signalNeeds, signalSaysNobody, type BrowserReading, type SignalReadings, type SignalSources } from "./signals";
+import { TriggerEvents, newlyFinished } from "./trigger-events";
+import { RUNAWAY_COUNT, TriggerRunner, attendedInvocation, staysInHand, staysWoken, stopsWhenSettled, type TriggerSubject } from "./trigger-runner";
+import { CompleteCalls } from "./complete";
+import { triggerNext, triggerState, triggerStatus, type TriggerWorld } from "./triggers";
 import { ExtensionScope, isPrivateAddress } from "./scope";
 import { StatusWriter, type LogLine } from "./status";
 import { ExtensionStorage } from "./storage";
@@ -169,6 +193,21 @@ export interface ExtensionServiceOptions {
   screenshotFolder(): Promise<string>;
   /** The person's shortcuts (settings.shortcuts): an extension's key never takes one of theirs (./keys.ts). */
   shortcuts?(): ShortcutSettings;
+  /** Main's away spaces (main/away-spaces.ts; docs/primitives.md §2): the window's, so null while none is open. */
+  away?(): ExtensionAwayHost | null;
+  /** Main's verb for closing a space into the archive (main/space-closing.ts; docs/primitives.md §2.6): the window's too. */
+  closing?(): ExtensionClosingHost | null;
+  /**
+   * One question to the account's fast model, for `ai.complete` (docs/primitives.md §3.8): the answer's text, or null
+   * when no model can be asked — signed out, offline, switched off. Never throws. Left out, no extension can ask.
+   */
+  complete?(request: { prompt: string; system: string | null; maxTokens: number }, limits: { timeoutMs: number; signal: AbortSignal }): Promise<string | null>;
+  /** The clock the triggers are read against, and how often at most it is looked at (a test's; the Mac's when unsaid). */
+  triggerClock?: { now(): number; tickMs?: number };
+  /** What main can see of the Mac and of the person's day, for declared signals (./signals.ts; docs/primitives.md §3.6). Left out, no signal is known. */
+  signals?: SignalSources;
+  /** The accent an extension's theme sets for the space in front may have changed (`hostAccent`): main tells every view that runs the theme. */
+  themeChanged?(): void;
 }
 
 interface Subscription {
@@ -208,6 +247,18 @@ interface Entry {
   inputs: Map<number, number>;
   /** The actions its latest toasts offered (a toast's button answers only those). */
   toastActions: string[];
+  /** When a handler nobody's trigger started last began (a command, a tool, a message): a worker a trigger started is stopped after it only if none has since. */
+  attendedAt: number;
+  /** How many triggers' handlers are in hand now (the clock's and the events' are not one queue: they overlap). */
+  triggersInFlight: number;
+  /** When a trigger's delivery started a worker that was not running; null for a worker something of the person's started, or none. */
+  wokenAt: number | null;
+  /** How many things written down it has done with nobody there, this launch (the runner's `acted`: a run that acted, told from one that looked). */
+  acted: number;
+  /** What its views are asking a model now (`ai.complete`), each by the view that asked: stopped when that view goes. */
+  asking: CompleteCalls;
+  /** Triggers' handlers main stopped waiting for and the worker has not answered: still in hand in the scope (./trigger-runner staysInHand). */
+  lingering: Set<number>;
 }
 
 interface Pending {
@@ -230,7 +281,14 @@ interface WindowParts {
   relayKeys(event: Electron.Event, input: Electron.Input, contents: WebContents): void;
 }
 
-type TabFacts = { title: string; url: string; loading: boolean; favIconUrl: string | null; profileId: string };
+/** A tab as the last tick had it, with the space it was in (`groupId`). */
+type TabFacts = { title: string; url: string; loading: boolean; favIconUrl: string | null; profileId: string; groupId: string | null; extension: boolean };
+
+/** A page as an event knows it: its address without the fragment (a jump within a page is not a page arriving). */
+function pageKey(url: string): string {
+  const hash = url.indexOf("#");
+  return hash < 0 ? url : url.slice(0, hash);
+}
 
 const requestSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("approve"), id: z.string(), manifestHash: z.string(), agentAllowed: z.boolean().optional() }),
@@ -276,11 +334,24 @@ const requestSchema = z.discriminatedUnion("type", [
       selectionText: z.string().optional(),
       srcUrl: z.string().optional(),
       windowTabId: z.string().optional(),
+      fromTab: z.literal(true).optional(),
+      spaceId: z.string().min(1).max(128).optional(),
     }),
   }),
   z.object({ type: z.literal("statusAction"), id: z.string(), action: z.string(), source: z.enum(["status", "toast"]).optional() }),
   z.object({ type: z.literal("openPage"), id: z.string(), page: z.string(), query: z.string().optional() }),
   z.object({ type: z.literal("logs"), id: z.string() }),
+  z.object({ type: z.literal("pauseTriggers"), id: z.string().nullable(), paused: z.boolean() }),
+  z.object({ type: z.literal("undoJournal"), entry: z.string().min(1).max(64) }),
+  z.object({ type: z.literal("removeShown"), id: z.string(), what: z.enum(["mark", "theme", "tabMarks", ...EXTENSION_SITES]), spaceId: z.string().min(1).max(128).nullable() }),
+  z.object({
+    type: z.literal("press"),
+    id: z.string(),
+    site: z.enum(EXTENSION_SITES),
+    scope: z.string().min(1).max(128).nullable(),
+    row: z.string().min(1).max(64).nullable(),
+    button: z.string().min(1).max(64).nullable(),
+  }),
   z.object({ type: z.literal("draftFolder"), name: z.string().min(1).max(80) }),
 ]);
 
@@ -334,6 +405,9 @@ export class ExtensionService {
   #tabsPrimed = false;
   #lastActiveTab: string | null = null;
   #lastCurrentSpace: string | null = null;
+  /** The window's away service as last met, and the way to stop hearing it (#followAway). */
+  #awayFollowed: ExtensionAwayHost | null = null;
+  #awayUnfollow: (() => void) | null = null;
   /** The Profile in front at the last tick: a switch changes what the snapshot says of each extension (on here, its status). */
   #lastProfile: string | null = null;
   #deskTimer: NodeJS.Timeout | null = null;
@@ -358,6 +432,26 @@ export class ExtensionService {
   readonly #loadedAt = new Map<string, number>();
   /** Whether the Mac's keychain seals secrets here (safeStorage): without it a secret setting is refused, never written in the clear. */
   #secretsKept = false;
+  /** What triggers last heard, the pauses, and the journal of what was done with nobody there (./automation.ts). */
+  readonly #automation: AutomationStore;
+  /** The clock that delivers declared triggers (./trigger-runner.ts). */
+  readonly #triggers: TriggerRunner;
+  /** What happened, for the triggers that declare an event (./trigger-events.ts). */
+  readonly #events: TriggerEvents;
+  /** What each browser signal answered at the last tab tick: the clock is looked at when one moved. */
+  #lastBrowserKey = "";
+  /** The spaces that were away at the last tab tick: a tab that appears in one of them came back, it was not opened. */
+  #lastAwayIds = new Set<string>();
+  /** The away service's count of moves at the last tab tick (AwaySpaces.moves): a space that moved since took its tabs with it. */
+  #lastAwayMoves = 0;
+  /** Each download's state as last told (null before the first telling: what had finished by then is no event). */
+  #lastDownloads: Map<string, string> | null = null;
+  /** What was last read of the person's calendar, for the signals that ask of it (./signals.ts). */
+  readonly #calendar: CalendarKeeper;
+  /** What extensions have the shell showing: marks on spaces, themes (./shown.ts). */
+  readonly #shown: ShownStore;
+  /** The accent in force for the space in front, as main was last told (themeChanged is said when it differs). */
+  #lastAccent: string | null = null;
 
   constructor(options: ExtensionServiceOptions) {
     this.#options = options;
@@ -378,7 +472,7 @@ export class ExtensionService {
     this.#registry = new ExtensionRegistry(options.userDataDir, { codec });
     this.#views = new ViewRegistry({
       console: (identity, level, message, file, line) => this.#consoleLine(identity, level, message, file, line),
-      gesture: (identity) => this.#entries.get(identity.extensionId)?.scope.noteGesture(),
+      gesture: (identity) => this.#entries.get(identity.extensionId)?.scope.noteGesture(true),
       dropped: (contentsId, identity) => this.#viewDropped(contentsId, identity),
       renewed: (contentsId, identity) => this.#viewDropped(contentsId, identity),
       framed: (identity) => {
@@ -445,6 +539,51 @@ export class ExtensionService {
       loadCompat: (hooks) => loadChromeCompat(hooks, { extensionsPath: chromePath }),
       store: { installById, uninstallById, readInstalledManifest, checkUpdates: (check) => checkUpdates(check) },
     });
+    this.#automation = new AutomationStore(options.userDataDir);
+    this.#shown = new ShownStore(options.userDataDir);
+    this.#calendar = new CalendarKeeper({
+      read: (profileId, from, to) => options.signals?.calendar(profileId, from, to) ?? Promise.resolve({ status: "unreachable" }),
+      // Read only for an extension that may run and says it wants it, and only the Profiles it is on in: nobody's
+      // calendar is asked for on a draft's word, and a Profile's is not read for an extension that is off there.
+      wanted: () =>
+        this.#ordered()
+          .filter((entry) => this.#runnable(entry) && (entry.loaded?.manifest.triggers ?? []).some((trigger) => "when" in trigger && "calendar" in trigger.when))
+          .flatMap((entry) => this.#profilesOf(entry.id)),
+      // (What the page says of a signal — not known, and why — changes with the reading even when no answer does.)
+      changed: () => {
+        this.#publish();
+        void this.#triggers.tick();
+      },
+      now: () => this.#triggerNow(),
+      ...(options.signals?.calendarRefreshMs === undefined ? {} : { refreshMs: options.signals.calendarRefreshMs }),
+    });
+    this.#triggers = new TriggerRunner({
+      subjects: () => this.#triggerSubjects(),
+      deliver: (extensionId, state) => this.#deliverTrigger(extensionId, state),
+      store: this.#automation,
+      zone: systemTimezone,
+      readings: (extensionId) => this.#readings(extensionId),
+      ...(options.triggerClock === undefined ? {} : { now: options.triggerClock.now }),
+      ...(options.triggerClock?.tickMs === undefined ? {} : { tickMs: options.triggerClock.tickMs }),
+      changed: () => this.#publish(),
+      runaway: (extensionId) => this.#runaway(extensionId),
+      acted: (extensionId) => this.#entries.get(extensionId)?.acted ?? 0,
+      log: (extensionId, level, message) => {
+        const entry = this.#entries.get(extensionId);
+        if (entry !== undefined) this.#log(entry, { at: Date.now(), context: "main", level, message });
+      },
+    });
+    this.#events = new TriggerEvents({
+      subjects: () => this.#triggerSubjects(),
+      deliver: (extensionId, state) => this.#deliverTrigger(extensionId, state),
+      store: this.#automation,
+      now: () => this.#triggerNow(),
+      changed: () => this.#publish(),
+      log: (extensionId, level, message) => {
+        const entry = this.#entries.get(extensionId);
+        if (entry !== undefined) this.#log(entry, { at: Date.now(), context: "main", level, message });
+      },
+    });
   }
 
   /* ------------------------------- startup ------------------------------- */
@@ -468,7 +607,9 @@ export class ExtensionService {
     // The Ledge's icons: the shell draws from the default session, which serves icons and nothing else.
     const defaultSession = session.defaultSession;
     if (defaultSession.protocol.isProtocolHandled(EXTENSION_SCHEME)) defaultSession.protocol.unhandle(EXTENSION_SCHEME);
-    defaultSession.protocol.handle(EXTENSION_SCHEME, (request) => serveIconRequest(request, (id) => this.#iconFor(id)));
+    // And main's own copies of backdrops' pictures (./shown.ts): `pistachio-ext://theme/<file>`, no extension's address.
+    defaultSession.protocol.handle(EXTENSION_SCHEME, (request) => serveThemeRequest(request, this.#shown.themeDir) ?? serveIconRequest(request, (id) => this.#iconFor(id)));
+    this.#shown.sweep();
     // And Chrome's action icons (`crx://`), here and now although the libraries come later: the shell's page keeps the
     // handlers it committed with (./chrome/host.ts crxResponse).
     if (defaultSession.protocol.isProtocolHandled("crx")) defaultSession.protocol.unhandle("crx");
@@ -486,6 +627,8 @@ export class ExtensionService {
     }
     // Chrome's: their folders read and the store's updates checked, before any Profile session loads one.
     this.#chrome.start();
+    // The triggers' clock: nothing is delivered until a window is up (#triggerSubjects), which looks again itself.
+    void this.#triggers.start();
     this.#publish();
   }
 
@@ -509,6 +652,7 @@ export class ExtensionService {
     this.#lastTabs = new Map();
     this.#tabsPrimed = false;
     this.#publish();
+    void this.#triggers.tick();
   }
 
   detachWindow(): void {
@@ -517,12 +661,18 @@ export class ExtensionService {
     this.#window?.panel.destroy();
     this.#window = null;
     this.#openPanel = null;
+    // Its away service goes with it: the next window's is met afresh (#followAway).
+    this.#awayUnfollow?.();
+    this.#awayUnfollow = null;
+    this.#awayFollowed = null;
     if (this.#deskTimer !== null) clearTimeout(this.#deskTimer);
     this.#deskTimer = null;
   }
 
   dispose(): void {
     this.#disposed = true;
+    this.#triggers.stop();
+    this.#events.stop();
     this.#offSettings?.();
     this.#watcher.dispose();
     this.detachWindow();
@@ -562,7 +712,7 @@ export class ExtensionService {
         if (!this.#runnable(entry) || !entry.scope.onIn(tab.spaceId)) continue;
         const manifest = entry.loaded!.manifest;
         for (const item of manifest.contextMenus ?? []) {
-          if (!item.contexts.some((context) => context !== "window")) continue;
+          if (!item.contexts.some((context) => context !== "window" && context !== "tab" && context !== "space")) continue;
           if (!ExtensionScope.menuHostAllowed(item.hosts, tab.url)) continue;
           items.push({ extensionId: entry.id, extensionName: manifest.name, itemId: item.id, title: item.title, contexts: item.contexts });
         }
@@ -601,13 +751,36 @@ export class ExtensionService {
   tabsChanged(): void {
     const browser = this.#window?.browser;
     if (browser === undefined) return;
+    this.#followAway();
     const tabs = browser.tabs();
-    const next = new Map<string, TabFacts>(tabs.map((tab) => [tab.id, { title: tab.title, url: tab.url, loading: tab.loading, favIconUrl: tab.faviconUrl, profileId: tab.spaceId }]));
+    const eventful = [...this.#entries.values()].filter((entry) => this.#runnable(entry) && (entry.loaded?.manifest.triggers ?? []).some((trigger) => "on" in trigger && !("download" in trigger.on)));
+    // Which space each tab is in, at every tick: a tab that goes is judged by the space it was in a tick ago — closed,
+    // or only moved with its space — and an event declared, or a mark set, since that tick must find it written down.
+    const groupOf = new Map<string, string>();
+    for (const profileId of browser.profileIds()) for (const group of browser.spaces(profileId)) for (const tabId of group.tabIds) groupOf.set(tabId, group.id);
+    const next = new Map<string, TabFacts>(
+      tabs.map((tab) => [tab.id, { title: tab.title, url: tab.url, loading: tab.loading, favIconUrl: tab.faviconUrl, profileId: tab.spaceId, groupId: groupOf.get(tab.id) ?? null, extension: tab.extensionId !== undefined }]),
+    );
     const previous = this.#lastTabs;
     this.#lastTabs = next;
     // (The window's first tick is the tabs as they are: no event says they were all just made.)
     const primed = this.#tabsPrimed;
     this.#tabsPrimed = true;
+    const awayNow = new Set((this.#options.away?.() ?? null)?.all().map((space) => space.id) ?? []);
+    if (primed && eventful.length > 0) this.#tabEvents(eventful, tabs, previous, next, awayNow);
+    // A tab that closed takes the marks on it along (docs/primitives.md §4.7) — never one whose space only moved.
+    if (primed && this.#shown.hasTabMarks) {
+      const closed = [...previous].filter(([tabId, facts]) => !next.has(tabId) && !this.#spaceMoved(facts.groupId, awayNow)).map(([tabId]) => tabId);
+      this.#said(this.#shown.dropTabs(closed));
+    }
+    this.#lastAwayIds = awayNow;
+    this.#lastAwayMoves = (this.#options.away?.() ?? null)?.moves?.() ?? 0;
+    // The browser's own signals (a page open, a space in front, the tabs' count): the clock is looked at when one's answer moved.
+    const browserKey = this.#browserSignalKey();
+    if (browserKey !== this.#lastBrowserKey) {
+      this.#lastBrowserKey = browserKey;
+      void this.#triggers.tick();
+    }
     for (const entry of this.#entries.values()) for (const tabId of previous.keys()) entry.scope.tabNavigated(tabId, next.get(tabId)?.url ?? null);
     const listening = [...this.#entries.values()].filter((entry) => [...entry.subscriptions.values()].some((sub) => sub.event.startsWith("tabs.") || sub.event === "spaces.currentChanged"));
     const active = browser.activeTabId();
@@ -654,11 +827,129 @@ export class ExtensionService {
     }
     this.#lastActiveTab = active;
     this.#lastCurrentSpace = current;
+    // (The space in front may have changed, and with it the accent an extension's theme sets there.)
+    this.#accentMoved();
     this.#endForbidden();
     if (profile !== this.#lastProfile) {
       this.#lastProfile = profile;
       this.#publish();
     }
+  }
+
+  /**
+   * What happened to the tabs since the last tick, for the extensions that declare an event of it (docs/primitives.md
+   * §3.7): a tab opened or closed, a tab arrived at a page a trigger names. Each extension is told only of tabs it
+   * could see, and only that it happened and to which tab — never an address. A space going away or coming back
+   * takes its tabs with it: none of them was closed, none opened.
+   */
+  #tabEvents(eventful: readonly Entry[], tabs: readonly BrowserTabInfo[], previous: ReadonlyMap<string, TabFacts>, next: ReadonlyMap<string, TabFacts>, awayNow: ReadonlySet<string>): void {
+    const at = this.#triggerNow();
+    const moved = (groupId: string | null): boolean => this.#spaceMoved(groupId, awayNow);
+    // (The tab in front changed since the last tick: it was shown.)
+    const active = this.#window?.browser.activeTabId() ?? null;
+    const shown = active !== null && active !== this.#lastActiveTab ? (tabs.find((tab) => tab.id === active) ?? null) : null;
+    for (const entry of eventful) {
+      const declared = (entry.loaded?.manifest.triggers ?? []).flatMap((trigger) => ("on" in trigger ? [{ id: trigger.id, on: trigger.on }] : []));
+      for (const tab of tabs) {
+        if (tab.extensionId !== undefined || !entry.scope.sees(tab)) continue;
+        const before = previous.get(tab.id);
+        if (before === undefined && moved(next.get(tab.id)?.groupId ?? null)) continue;
+        for (const trigger of declared) {
+          if ("tab" in trigger.on) {
+            if (trigger.on.tab === "opened" && before === undefined) this.#events.note(entry.id, trigger.id, { at, tabId: tab.id });
+          } else if ("page" in trigger.on && pageMatches(trigger.on.page, tab.url) && (before === undefined || pageKey(before.url) !== pageKey(tab.url))) {
+            this.#events.note(entry.id, trigger.id, { at, tabId: tab.id });
+          }
+        }
+      }
+      for (const [tabId, facts] of previous) {
+        if (next.has(tabId) || facts.extension || !entry.scope.onIn(facts.profileId) || moved(facts.groupId)) continue;
+        for (const trigger of declared) if ("tab" in trigger.on && trigger.on.tab === "closed") this.#events.note(entry.id, trigger.id, { at, tabId });
+      }
+      if (shown !== null && shown.extensionId === undefined && entry.scope.sees(shown)) {
+        for (const trigger of declared) if ("tab" in trigger.on && trigger.on.tab === "shown") this.#events.note(entry.id, trigger.id, { at, tabId: shown.id });
+      }
+    }
+  }
+
+  /**
+   * Whether a space is on its way out or back, away now, or was away a tick ago — whichever side of the away file's
+   * own writing this tick fell on: its tabs moved with it, they were not closed or opened.
+   */
+  #spaceMoved(groupId: string | null, awayNow: ReadonlySet<string>): boolean {
+    if (groupId === null) return false;
+    const away = this.#options.away?.() ?? null;
+    // (Moved since the last tick by the away service's own count — which holds at a launch, when a space due back
+    // returns before any tick has seen it away — or on its way now, or away now, or away a tick ago.)
+    return away?.movedSince?.(groupId, this.#lastAwayMoves) === true || away?.moving?.(groupId) === true || awayNow.has(groupId) || this.#lastAwayIds.has(groupId);
+  }
+
+  /**
+   * The downloads changed (main's hook): one that has just finished is an event for the extensions that declare it,
+   * on in the Profile it was made in. They are told that one finished — not its name, nor where it came from.
+   */
+  downloadsChanged(downloads: readonly { id: string; tabId: string; state: string }[]): void {
+    const previous = this.#lastDownloads;
+    this.#lastDownloads = new Map(downloads.map((download) => [download.id, download.state]));
+    const browser = this.#window?.browser;
+    if (browser === undefined) return;
+    const finished = new Set(newlyFinished(previous, downloads));
+    const at = this.#triggerNow();
+    for (const download of downloads) {
+      if (!finished.has(download.id)) continue;
+      const profileId = browser.tab(download.tabId)?.spaceId ?? null;
+      for (const entry of this.#entries.values()) {
+        if (!this.#runnable(entry)) continue;
+        // (Its tab gone already — a link that only downloads closes at once: heard by an extension that is on everywhere.)
+        if (profileId === null ? entry.scope.profiles() !== "all" : !entry.scope.onIn(profileId)) continue;
+        for (const trigger of entry.loaded?.manifest.triggers ?? []) if ("on" in trigger && "download" in trigger.on) this.#events.note(entry.id, trigger.id, { at });
+      }
+    }
+  }
+
+  /**
+   * Main's away spaces go with the window, as the browser does (main/away-spaces.ts): whichever service is the
+   * window's now is the one heard — `spaces.awayChanged` to every extension listening, each told only of spaces in
+   * Profiles it is on in — and, as it is first met, whatever an extension no longer here left away comes back.
+   */
+  #followAway(): void {
+    const away = this.#options.away?.() ?? null;
+    if (away === this.#awayFollowed) return;
+    this.#awayUnfollow?.();
+    this.#awayFollowed = away;
+    // (Another window's service counts its own moves from nothing.)
+    this.#lastAwayMoves = 0;
+    this.#awayUnfollow =
+      away === null
+        ? null
+        : away.onChange((change) => {
+            // (Sent by an extension turned off or removed while the send waited its turn: it comes straight back.)
+            if (strandedOnSend(change, (extensionId, profileId) => this.#runsIn(extensionId, profileId))) this.#returnStranded();
+            for (const entry of this.#entries.values()) {
+              if (![...entry.subscriptions.values()].some((sub) => sub.event === "spaces.awayChanged")) continue;
+              const space = entry.scope.describeAway(change.space);
+              if (space !== null) this.#deliver(entry, "spaces.awayChanged", { event: change.event, space });
+            }
+          });
+    this.#returnStranded();
+  }
+
+  /**
+   * Spaces an extension sent away come back once it is removed, turned off, or off in their Profile (./away
+   * strandedSpaces): nothing stays away behind an extension that will never bring it back. Asked whenever one of
+   * those may have just become true, and of a window's away service as it is first met — a space sent away in a
+   * window since closed, by an extension removed while none was open.
+   */
+  #returnStranded(): void {
+    const away = this.#options.away?.() ?? null;
+    if (away === null) return;
+    void returnStranded(away, (extensionId, profileId) => this.#runsIn(extensionId, profileId)).catch((error: unknown) => console.warn("[extensions] an away space could not be brought back", error));
+  }
+
+  /** Whether an extension is there and on in a Profile: what it sent away there is its own to bring back. */
+  #runsIn(extensionId: string, profileId: string): boolean {
+    const record = this.#registry.get(extensionId);
+    return record !== null && record.kind === "pistachio" && record.enabled && (record.profiles === "all" || record.profiles.includes(profileId));
   }
 
   /**
@@ -710,6 +1001,7 @@ export class ExtensionService {
     event.preventDefault();
     const tabId = browser.activeTabId();
     entry.scope.grantTab(tabId);
+    entry.scope.grantSpace(this.#spaceOf(tabId));
     void this.#invokeForShell(entry, "key", bound.commandId, { tabId, spaceId: this.#spaceOf(tabId) }, this.#profileOf(tabId)).catch((error: unknown) =>
       this.#window?.notice(error instanceof Error ? error.message : String(error)),
     );
@@ -739,6 +1031,379 @@ export class ExtensionService {
   /** Raise the panel over the tab views (main's raise order, before the notices). */
   raisePanel(): void {
     this.#window?.panel.raise();
+  }
+
+  /* --------------------------- what extensions show --------------------------- */
+
+  /**
+   * The accent an extension's theme sets for the space in front (docs/primitives.md §4): that space's own theme's,
+   * else the every-space theme's; null for none. Main lays it over the person's own appearance for every view that
+   * runs the theme, so the shell, the Bar's nub and the notices agree.
+   */
+  hostAccent(): string | null {
+    const browser = this.#window?.browser;
+    if (browser === undefined) return null;
+    const current = browser.currentSpaceId(browser.activeProfileId());
+    const themes = this.#shown.themes().filter((theme) => this.#shows(theme.extensionId, "theme"));
+    const own = current === null ? undefined : themes.find((theme) => theme.spaceId === current);
+    return own?.accent ?? themes.find((theme) => theme.spaceId === null)?.accent ?? null;
+  }
+
+  #accentMoved(): void {
+    const accent = this.hostAccent();
+    if (accent === this.#lastAccent) return;
+    this.#lastAccent = accent;
+    this.#options.themeChanged?.();
+  }
+
+  /**
+   * Whether what an extension has shown is drawn now: it runs, the capability is still its — or, for rows, its
+   * manifest still declares the place — and it is on in the Profile in front.
+   */
+  #shows(extensionId: string, what: "theme" | "spaces:mark" | "tabs:mark" | ExtensionSite): boolean {
+    const entry = this.#entries.get(extensionId);
+    const profileId = this.#window?.browser.activeProfileId() ?? null;
+    if (entry === undefined || !this.#runnable(entry) || (profileId !== null && !entry.scope.onIn(profileId))) return false;
+    return what === "band" || what === "sidebar" ? entry.scope.declaresSite(what) : entry.scope.can(what);
+  }
+
+  /** Something shown changed: the snapshot, and the accent with it. */
+  #shownChanged(): void {
+    this.#publish();
+    this.#accentMoved();
+  }
+
+  /** The store as the scopes reach it: every change is published. */
+  readonly #shownHost: ShownHost = {
+    setMark: (mark) => this.#said(this.#shown.setMark(mark, Date.now())),
+    clearMark: (extensionId, spaceId) => this.#said(this.#shown.clearMark(extensionId, spaceId)),
+    setTabMark: (mark) => this.#said(this.#shown.setTabMark(mark, Date.now())),
+    clearTabMark: (extensionId, tabId) => this.#said(this.#shown.clearTabMark(extensionId, tabId)),
+    setTheme: (theme) => this.#said(this.#shown.setTheme(theme, Date.now())),
+    clearTheme: (extensionId, spaceId) => this.#said(this.#shown.clearTheme(extensionId, spaceId)),
+    themeOf: (extensionId, spaceId) => this.#shown.themeOf(extensionId, spaceId),
+    setSite: (view) => this.#said(this.#shown.setSite(view, Date.now())),
+    clearSite: (extensionId, site, spaceId) => this.#said(this.#shown.clearSite(extensionId, site, spaceId)),
+    siteOf: (extensionId, site, spaceId) => this.#shown.siteOf(extensionId, site, spaceId),
+    adoptImage: (extensionId, path) => {
+      const root = this.#entries.get(extensionId)?.root ?? null;
+      if (root === null) throw new ExtError("UNAVAILABLE", "this extension has no folder on this Mac");
+      return adoptThemeImage(root, path, this.#shown.themeDir);
+    },
+  };
+
+  #said(changed: boolean): boolean {
+    if (changed) this.#shownChanged();
+    return changed;
+  }
+
+  #nameOf(extensionId: string): string {
+    return this.#entries.get(extensionId)?.loaded?.manifest.name ?? extensionId;
+  }
+
+  /** A space's name as the person has it, here or away; empty when it is neither. */
+  #spaceName(spaceId: string): string {
+    const browser = this.#window?.browser;
+    for (const profileId of browser?.profileIds() ?? []) {
+      const group = browser!.spaces(profileId).find((candidate) => candidate.id === spaceId);
+      if (group !== undefined) return group.title;
+    }
+    return this.#options.away?.()?.get(spaceId)?.title ?? "";
+  }
+
+  #spaceMarks(): ExtensionSpaceMark[] {
+    return this.#shown
+      .marks()
+      .filter((mark) => this.#shows(mark.extensionId, "spaces:mark"))
+      .map((mark) => ({ extensionId: mark.extensionId, extensionName: this.#nameOf(mark.extensionId), spaceId: mark.spaceId, glyph: mark.glyph, tone: mark.tone, label: mark.label }));
+  }
+
+  /** The marks on tabs' rows (docs/primitives.md §4.7), of extensions that may show them now. */
+  #tabMarks(): ExtensionTabMark[] {
+    return this.#shown
+      .tabMarks()
+      .filter((mark) => this.#shows(mark.extensionId, "tabs:mark"))
+      .map((mark) => ({ extensionId: mark.extensionId, extensionName: this.#nameOf(mark.extensionId), tabId: mark.tabId, glyph: mark.glyph, tone: mark.tone, label: mark.label }));
+  }
+
+  #backdrops(): ExtensionBackdrop[] {
+    return this.#shown.themes().flatMap((theme): ExtensionBackdrop[] => {
+      if (theme.backdrop === null || !this.#shows(theme.extensionId, "theme")) return [];
+      return [{ extensionId: theme.extensionId, extensionName: this.#nameOf(theme.extensionId), spaceId: theme.spaceId, ...backdropValue(theme.backdrop) }];
+    });
+  }
+
+  /** The rows extensions have the band and the sidebar showing (docs/primitives.md §4.5), in the order the extensions stand in. */
+  #sites(): ExtensionSiteView[] {
+    const order = new Map(this.#ordered().map((entry, index) => [entry.id, index]));
+    return this.#shown
+      .sites()
+      .filter((view) => this.#shows(view.extensionId, view.site))
+      .sort((a, b) => (order.get(a.extensionId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.extensionId) ?? Number.MAX_SAFE_INTEGER))
+      .map((view) => ({ extensionId: view.extensionId, extensionName: this.#nameOf(view.extensionId), site: view.site, spaceId: view.spaceId, title: view.title, rows: view.rows.map(shownRow) }));
+  }
+
+  /** What one extension has the shell showing, for its row on the extensions page: whether or not it is drawn just now. */
+  #showsOf(extensionId: string): ExtensionShown[] {
+    const themes = this.#shown.themes().filter((theme: StoredTheme) => theme.extensionId === extensionId);
+    const marks = this.#shown.marks().filter((mark) => mark.extensionId === extensionId);
+    const sites = this.#shown.sites().filter((view) => view.extensionId === extensionId);
+    const tabMarks = this.#shown.tabMarks().filter((mark) => mark.extensionId === extensionId).sort((a, b) => b.at - a.at);
+    return [
+      ...themes.map((theme): ExtensionShown => ({ what: "theme", spaceId: theme.spaceId, space: theme.spaceId === null ? "" : this.#spaceName(theme.spaceId), detail: themeDetail(theme) })),
+      ...marks.map((mark): ExtensionShown => ({ what: "mark", spaceId: mark.spaceId, space: this.#spaceName(mark.spaceId), detail: mark.label })),
+      // (Its marks on tabs are one line — how many, and what the newest says — taken off together.)
+      ...(tabMarks.length === 0 ? [] : [{ what: "tabMarks" as const, spaceId: null, space: "", detail: `${String(tabMarks.length)} ${tabMarks.length === 1 ? "tab" : "tabs"} · ${tabMarks[0]!.label}` }]),
+      ...sites.map((view): ExtensionShown => ({ what: view.site, spaceId: view.spaceId, space: view.spaceId === null ? "" : this.#spaceName(view.spaceId), detail: siteDetail(view) })),
+    ];
+  }
+
+  /**
+   * A row an extension has a place showing was pressed, or one of its buttons (docs/primitives.md §4.5): the
+   * person's own act, so the worker is woken attended. Only what the kept rows offer is answered — a press names a
+   * row the person saw, and main looks it up in the very rows it keeps, never in what the shell says they were.
+   * It gives the extension nothing: not the space in front, not a tab.
+   */
+  async #press(id: string, site: ExtensionSite, scope: string | null, row: string | null, button: string | null): Promise<void> {
+    const entry = this.#requireRunnable(id);
+    const held = this.#shows(id, site) ? this.#shown.siteOf(id, site, scope) : null;
+    // (Rows that changed under the pointer: the press was for what is no longer there. Nothing happens, quietly.)
+    if (held === null || !offersPress(held, row, button)) return;
+    const browser = this.#window?.browser;
+    const profileId = browser?.activeProfileId() ?? null;
+    entry.scope.noteGesture();
+    await this.#invokeForShell(entry, "press", site, { site, row, button, spaceId: profileId === null ? null : (browser?.currentSpaceId(profileId) ?? null) }, profileId);
+  }
+
+  /* ------------------------------- triggers ------------------------------- */
+
+  /**
+   * Look at the triggers' clock now (docs/primitives.md §3): main calls this when the Mac wakes or is unlocked and
+   * once a window's away spaces are up; the runner's own timer is never more than thirty seconds behind.
+   */
+  tickTriggers(): Promise<void> {
+    return this.#triggers.tick();
+  }
+
+  #triggerNow(): number {
+    return this.#options.triggerClock?.now() ?? Date.now();
+  }
+
+  /**
+   * The person's calendar is no longer what was read (an account signed in or out, a calendar connected or
+   * disconnected): what was known is dropped, and read afresh at the look this starts.
+   */
+  calendarChanged(): void {
+    this.#calendar.forget();
+    void this.#triggers.tick();
+  }
+
+  /** The Profiles an extension is on in (every one, for one that is on everywhere), of those the window has. */
+  #profilesOf(extensionId: string): string[] {
+    const record = this.#registry.get(extensionId);
+    const all = this.#window?.browser.profileIds() ?? [];
+    if (record === null) return [];
+    return record.profiles === "all" ? all : all.filter((profileId) => record.profiles.includes(profileId));
+  }
+
+  /**
+   * What main reads of the signals now, for one extension (./signals.ts): each source asked, one that throws or is
+   * missing not known; the calendar is that of the Profiles the extension is on in.
+   */
+  #readings(extensionId: string): SignalReadings {
+    const sources = this.#options.signals;
+    const entry = this.#entries.get(extensionId);
+    // (The tabs are walked only for an extension that declares a signal of the browser's own.)
+    const browser = entry !== undefined && (entry.loaded?.manifest.triggers ?? []).some((trigger) => "when" in trigger && isBrowserSignal(trigger.when)) ? this.#browserReading(entry) : null;
+    if (sources === undefined) return { ...NO_READINGS, browser };
+    const read = <T>(source: () => T | null): T | null => {
+      try {
+        return source();
+      } catch {
+        return null;
+      }
+    };
+    return {
+      battery: read(() => sources.battery()),
+      online: read(() => sources.online()),
+      displays: read(() => sources.displays()),
+      idleSeconds: read(() => sources.idleSeconds()),
+      locked: read(() => sources.locked?.() ?? null),
+      ...this.#calendar.current(this.#profilesOf(extensionId)),
+      browser,
+    };
+  }
+
+  /**
+   * The browser as one extension's signals read it (./signals.ts BrowserReading): the person's listed tabs it could
+   * see, and whether the space in front is one they gave it. Null while no window is up: not known.
+   */
+  #browserReading(entry: Entry): BrowserReading | null {
+    const browser = this.#window?.browser;
+    if (browser === undefined) return null;
+    const tabs = browser.tabs().filter((tab) => tab.extensionId === undefined && entry.scope.sees(tab));
+    const profileId = browser.activeProfileId();
+    const front = browser.currentSpaceId(profileId);
+    return {
+      urls: tabs.map((tab) => tab.url).filter((url) => /^https?:/i.test(url)),
+      tabs: tabs.length,
+      frontHeld: front !== null && entry.scope.onIn(profileId) && entry.scope.holdsSpace(front),
+    };
+  }
+
+  /** What every runnable extension's browser signals answer now, as one string: a tab tick that changes it is a look at the clock. */
+  #browserSignalKey(): string {
+    const now = this.#triggerNow();
+    const parts: string[] = [];
+    for (const entry of this.#ordered()) {
+      const declared = (entry.loaded?.manifest.triggers ?? []).flatMap((trigger) => ("when" in trigger && isBrowserSignal(trigger.when) ? [trigger.when] : []));
+      if (declared.length === 0 || !this.#runnable(entry)) continue;
+      const readings = { ...NO_READINGS, browser: this.#browserReading(entry) };
+      parts.push(`${entry.id}:${declared.map((when) => String(signalHolds(when, readings, now))).join(",")}`);
+    }
+    return parts.join("|");
+  }
+
+  /**
+   * Whether main can see that nobody is at the Mac (docs/primitives.md §3.6), for a call made from the handlers of
+   * `triggers`: its screen is locked — or one of those triggers is a signal that says so (the screen, idle; or an
+   * interval that runs while one holds) and holds as read this moment. Then the space in front is in front of no one.
+   */
+  #nobodyThere(extensionId: string, triggers: readonly string[]): boolean {
+    const readings = this.#readings(extensionId);
+    if (readings.locked === true) return true;
+    const declared = this.#entries.get(extensionId)?.loaded?.manifest.triggers ?? [];
+    const now = this.#triggerNow();
+    return triggers.some((id) => {
+      const trigger = declared.find((candidate) => candidate.id === id);
+      const named = trigger !== undefined && "every" in trigger && trigger.every.while !== undefined ? declared.find((candidate) => candidate.id === trigger.every.while) : trigger;
+      return named !== undefined && "when" in named && signalSaysNobody(named.when, readings, now);
+    });
+  }
+
+  /**
+   * What an extension's triggers are read against besides the clock. The signals are read only for one that may run
+   * (`entry` runnable): a draft nobody has approved is told nothing of the Mac or the calendar — not in its status
+   * file either — and the Mac is not asked anything for a manifest that declares no signal.
+   */
+  #triggerWorld(entry: Entry | undefined, triggers: readonly TriggerDecl[]): TriggerWorld {
+    const told = entry !== undefined && this.#runnable(entry) && triggers.some((trigger) => "when" in trigger);
+    return { triggers, readings: told ? this.#readings(entry.id) : NO_READINGS };
+  }
+
+  /**
+   * The extensions whose triggers may be delivered now: runnable, declaring some — and only while a window is up
+   * with its away spaces, since what a trigger's handler does it does to the browser.
+   */
+  #triggerSubjects(): TriggerSubject[] {
+    if (this.#window === null || (this.#options.away?.() ?? null) === null) return [];
+    return this.#ordered().flatMap((entry) => {
+      const triggers = entry.loaded?.manifest.triggers ?? [];
+      return triggers.length > 0 && this.#runnable(entry) ? [{ id: entry.id, triggers }] : [];
+    });
+  }
+
+  /**
+   * One delivery: the worker woken with the state, its handler awaited (a failure rejects, and the runner tries
+   * again later). A worker the trigger itself started is stopped once the handler has answered, unless the person
+   * has since run something of the extension's or something keeps it up — code woken with nobody there runs for a
+   * moment, decides, and stops; its timers are not a way to stay.
+   */
+  async #deliverTrigger(extensionId: string, state: ExtTriggerState): Promise<void> {
+    const entry = this.#entries.get(extensionId);
+    if (entry === undefined || !this.#runnable(entry)) throw new Error("the extension is off");
+    // (Deliveries overlap — the clock's queue and each event trigger's are not one — so what is asked at the end is
+    // asked of them all: who started the worker, and whether any handler of a trigger is still in hand.)
+    if (entry.worker?.running !== true) entry.wokenAt = Date.now();
+    entry.triggersInFlight += 1;
+    try {
+      await this.#invoke(entry, "trigger", state.id, state, null);
+    } finally {
+      entry.triggersInFlight -= 1;
+      if (entry.triggersInFlight === 0) this.#settleWoken(entry);
+    }
+  }
+
+  /**
+   * No trigger's handler is in hand any more: woken code does not stay (docs/primitives.md §3.3). A worker a trigger
+   * started is stopped unless something of the person's has it by now — a handler of theirs begun since, a page or
+   * the panel open, a hold. One the person started is left as it was: a trigger does not count as use of it
+   * (#ensureWorker's `quiet`, and the calls its handler makes), so it idles out when it would have.
+   */
+  #settleWoken(entry: Entry): void {
+    if (entry.worker?.running !== true) {
+      entry.wokenAt = null;
+      return;
+    }
+    const busy = [...this.#pending.values()].some((pending) => pending.extensionId === entry.id);
+    const keptUp = entry.holds.size > 0 || this.#views.of(entry.id, "page").length > 0 || this.#views.of(entry.id, "panel").length > 0;
+    const settled = { wokenAt: entry.wokenAt, attendedAt: entry.attendedAt, busy, keptUp };
+    // (Stopped, its origin goes with it — the worker's `stopped`. Kept up by a page or a hold with nothing of the
+    // person's run in it, it is still the trigger's: a timer its handler set is asked as with nobody there.)
+    if (stopsWhenSettled(settled)) entry.worker.stop();
+    else if (!staysWoken(settled)) entry.wokenAt = null;
+  }
+
+  /**
+   * An extension's signal kept running a handler that kept acting (./trigger-runner RUNAWAY_COUNT): most likely what
+   * it does changes what it is told — it sends away the space whose tab its signal counts, and brings it back when
+   * the count falls. Its triggers are paused, as the person's own Pause would, and they are told what it did: the
+   * journal has each thing, with Undo, and the Extensions page the switch to let it run again.
+   */
+  #runaway(extensionId: string): void {
+    if (this.#automation.paused(extensionId)) return;
+    this.#automation.setPaused(extensionId, true);
+    this.#triggers.forgive(extensionId);
+    this.#events.forget(extensionId);
+    // (Said as what happened, not why: most often what it does keeps changing what it is told — and now and then it
+    // is the person's own quick comings and goings it was keeping up with.)
+    this.#window?.notice(`“${this.#nameOf(extensionId)}” was paused: it changed your spaces or tabs ${String(RUNAWAY_COUNT)} times in two minutes. See what it did, and let it run again, on the Extensions page.`);
+    this.#publish();
+  }
+
+  /** Take back one thing an extension did with nobody there (the journal's Undo): the space goes back where it was. */
+  async #undoJournal(entryId: string): Promise<void> {
+    const line = this.#automation.entry(entryId);
+    if (line === null) throw new Error("That is not listed any more.");
+    if (line.undone !== undefined) return;
+    const away = this.#options.away?.() ?? null;
+    if (away === null) throw new Error("Open a window first.");
+    const isAway = away.get(line.spaceId) !== null;
+    // (Already where the undo would put it — the person got there first: nothing to do but say so.)
+    if (line.verb === "sendAway" && isAway) {
+      const outcome = await away.bringBack(line.spaceId);
+      if (!outcome.ok) throw new Error(outcome.reason);
+    } else if (line.verb === "bringBack" && !isAway) {
+      // (Away again as it was: until the time it was due, when it had one — and not at all once that has passed.)
+      const again = undoOfBringBack(line, Date.now());
+      if (again.send) {
+        const outcome = await away.send(line.spaceId, { by: { kind: "person" }, ...(again.until === undefined ? {} : { until: again.until }) });
+        if (!outcome.ok) throw new Error(outcome.reason);
+      }
+    } else if (line.verb === "setTheme") {
+      // The theme it set there is taken off (quietly, if it is off already).
+      this.#said(this.#shown.clearTheme(line.extensionId, line.spaceId === EVERY_SPACE ? null : line.spaceId));
+    } else if (line.verb === "closeSpace") {
+      // The space it closed is restored from the archive as itself, not in front (gone from there since — restored by
+      // the person, removed, lapsed — there is nothing left to undo).
+      const closing = this.#options.closing?.() ?? null;
+      if (closing === null) throw new Error("Open a window first.");
+      if (line.entryId !== undefined) {
+        const outcome = await closing.reopen(line.entryId);
+        if (!outcome.ok) throw new Error(outcome.reason ?? "That could not be restored.");
+      }
+    } else if (line.verb === "openTab") {
+      // The tab it opened is closed, if it is still here (closed by the person since, there is nothing left to undo).
+      const browser = this.#window?.browser;
+      if (line.tabId !== undefined && browser !== undefined) {
+        // (Where the tab is now, not where it opened: moved to another space since, it went away with that one.)
+        const undo = undoOfOpenTab({ here: browser.tab(line.tabId) !== null, away: isAway || away.holdsTab?.(line.tabId) === true });
+        if (undo === "close") await browser.closeTab(line.tabId);
+        // Away with a space, it comes back with it. Said, and the line left as it is — "Undone" would be untrue.
+        else if (undo === "away") throw new Error("That tab is in a space that is away. Bring the space back, then undo this.");
+      }
+    }
+    this.#automation.markUndone(entryId, Date.now());
   }
 
   /* ------------------------------- the agent ------------------------------- */
@@ -866,7 +1531,13 @@ export class ExtensionService {
       page: identity.context === "page" ? pageNameOf(entry.loaded?.manifest.pages, entry.id, url) : null,
       senderId: event.sender.id,
     };
-    if (identity.context === "worker") entry.worker?.touch();
+    if (identity.context === "worker") {
+      // A worker that has been stopped is answered nothing: a call it sent as it went (a handler that answered and
+      // called on) arrives after its handlers are over, and would be judged as nobody's trigger at all.
+      if (entry.worker?.contents?.id !== event.sender.id) return { ok: false, code: "UNAVAILABLE", message: "the worker has stopped" };
+      // (What it calls with nobody there is not use of it: triggers are never what keeps a worker up.)
+      if (!entry.scope.unattended()) entry.worker.touch();
+    }
     return dispatch(method, args, entry.scope, ctx, entry.runtime);
   }
 
@@ -995,6 +1666,39 @@ export class ExtensionService {
         const entry = this.#entries.get(request.id);
         return { type: "logs", lines: entry?.status.lines() ?? [] };
       }
+      case "pauseTriggers":
+        if (request.id === null) {
+          this.#automation.setPausedAll(request.paused);
+          // (As one extension's pause: a failed trigger is tried afresh when it is lifted, not when its retry would
+          // have come; and what was waiting to be told goes with it, however soon everything is let run again.)
+          this.#triggers.forgiveAll();
+          if (request.paused) this.#events.forgetAll();
+        } else {
+          this.#requireRecord(request.id);
+          this.#automation.setPaused(request.id, request.paused);
+          this.#triggers.forgive(request.id);
+          // (What happened while it is paused is missed, and what was waiting to be told goes with the pause.)
+          if (request.paused) this.#events.forget(request.id);
+        }
+        // Let run again, a trigger whose answer changed meanwhile is heard now: nothing was missed, it was only late.
+        if (!request.paused) void this.#triggers.tick();
+        return { type: "ok" };
+      case "undoJournal":
+        await this.#undoJournal(request.entry);
+        return { type: "ok" };
+      case "removeShown":
+        // The person's Remove: gone at once, whatever the extension is doing. (It may set it again; Pause and Off are beside it.)
+        this.#requireRecord(request.id);
+        if (request.what === "mark") {
+          if (request.spaceId !== null) this.#said(this.#shown.clearMark(request.id, request.spaceId));
+        } else if (request.what === "theme") this.#said(this.#shown.clearTheme(request.id, request.spaceId));
+        // (Its marks on tabs go together: one line on the page, one press.)
+        else if (request.what === "tabMarks") this.#said(this.#shown.clearTabMark(request.id, null));
+        else this.#said(this.#shown.clearSite(request.id, request.what, request.spaceId));
+        return { type: "ok" };
+      case "press":
+        await this.#press(request.id, request.site, request.scope, request.row, request.button);
+        return { type: "ok" };
       case "draftFolder":
         return this.#draftFolder(request.name);
     }
@@ -1031,6 +1735,11 @@ export class ExtensionService {
       curated: CURATED_CHROME,
       pendingInstall: this.#chrome.pendingInstall(),
       openPanel: this.#openPanel,
+      ...(this.#automation.pausedAll ? { triggersPaused: true } : {}),
+      spaceMarks: this.#spaceMarks(),
+      tabMarks: this.#tabMarks(),
+      backdrops: this.#backdrops(),
+      sites: this.#sites(),
     };
   }
 
@@ -1055,6 +1764,24 @@ export class ExtensionService {
       };
     });
     const needsSheet = manifest !== null && (record.grants === null || record.pending !== null);
+    const now = this.#triggerNow();
+    const zone = systemTimezone();
+    const world = this.#triggerWorld(this.#entries.get(record.id), manifest?.triggers ?? []);
+    const triggers = (manifest?.triggers ?? []).map((trigger) => {
+      const state = triggerState(trigger, now, zone, world);
+      const needs = "when" in trigger ? signalNeeds(trigger.when, world.readings ?? NO_READINGS, now) : null;
+      return {
+        id: trigger.id,
+        text: triggerInWords(trigger, manifest?.triggers),
+        ...(state.kind === "during" || (state.kind === "when" && state.known) ? { holds: state.holds } : {}),
+        ...(state.kind === "when" && !state.known ? { unknown: true as const } : {}),
+        ...(needs === null ? {} : { needs }),
+        next: triggerNext(state),
+        ...(state.kind === "on" ? { event: true as const, last: this.#automation.delivered(record.id, trigger.id)?.at ?? null } : {}),
+      };
+    });
+    const journal = this.#automation.journalOf(record.id, JOURNAL_SHOWN);
+    const shows = this.#showsOf(record.id);
     return {
       id: record.id,
       kind: record.kind,
@@ -1087,6 +1814,9 @@ export class ExtensionService {
       devPath: record.source.type === "dev" || record.source.type === "unpacked" ? record.source.path : null,
       captures: entry === undefined ? [] : this.#liveTabs(entry),
       ...(entry?.root !== null && entry?.root !== undefined && this.#drafting.has(entry.root) ? { drafting: true } : {}),
+      ...(triggers.length > 0 ? { triggers, ...(this.#automation.paused(record.id) ? { triggersPaused: true } : {}) } : {}),
+      ...(journal.length > 0 ? { journal } : {}),
+      ...(shows.length > 0 ? { shows } : {}),
     };
   }
 
@@ -1107,6 +1837,8 @@ export class ExtensionService {
       this.#keys = null;
       // (The status files are the folders', window or not: an agent writing a draft reads them.)
       for (const entry of this.#entries.values()) this.#writeStatus(entry);
+      // (Approved, paused, turned off, off here: what it shows is drawn or not, and the accent in force with it.)
+      this.#accentMoved();
       const window = this.#window?.window;
       if (window === undefined || window.isDestroyed()) return;
       window.webContents.send(IPC.extensionsChanged, this.snapshot());
@@ -1204,11 +1936,37 @@ export class ExtensionService {
         subscriptions: new Map(),
         inputs: new Map(),
         toastActions: [],
+        attendedAt: 0,
+        triggersInFlight: 0,
+        wokenAt: null,
+        acted: 0,
+        asking: new CompleteCalls(),
+        lingering: new Set(),
       };
       created.scope = new ExtensionScope(id, {
         record: () => this.#registry.get(id),
         manifest: () => this.#entries.get(id)?.loaded?.manifest ?? null,
         browser: () => this.#window?.browser ?? null,
+        away: () => this.#options.away?.() ?? null,
+        closing: () => this.#options.closing?.() ?? null,
+        // The person ran it in a space: that space is its to send away, for good (./away) — on its record, so it goes with it.
+        rememberSpace: (spaceId) => {
+          const record = this.#registry.get(id);
+          if (record !== null) this.#registry.update(id, { spaces: withSpaceGrant(record.spaces ?? [], spaceId) });
+        },
+        // What it did with nobody there, written down as it happens: main's record, with the way back (#undoJournal).
+        journal: (line) => {
+          this.#automation.record({ ...line, at: Date.now(), extensionId: id });
+          const acting = this.#entries.get(id);
+          if (acting !== undefined) acting.acted += 1;
+          this.#publish();
+        },
+        absent: (triggers) => this.#nobodyThere(id, triggers),
+        woken: () => {
+          const woken = this.#entries.get(id);
+          return woken !== undefined && woken.wokenAt !== null && woken.attendedAt < woken.wokenAt;
+        },
+        shown: () => this.#shownHost,
         ledger,
       });
       created.runtime = this.#runtimeFor(created);
@@ -1256,6 +2014,8 @@ export class ExtensionService {
           unbound: bound?.unbound ?? (command.key === undefined || bound !== undefined ? null : "bound once the extension is on and approved"),
         };
       }),
+      // When it would run by itself, read from the manifest alone (no code run): the next seven days, for whoever wrote it to check.
+      triggers: ((world) => (manifest?.triggers ?? []).map((trigger) => triggerStatus(trigger, this.#triggerNow(), systemTimezone(), world)))(this.#triggerWorld(entry, manifest?.triggers ?? [])),
     });
   }
 
@@ -1318,12 +2078,17 @@ export class ExtensionService {
     return ses;
   }
 
-  /** The microphone or the camera for one of the extension's own contexts, as its grants say. */
+  /**
+   * The microphone or the camera for one of the extension's own contexts, as its grants say — and never for its
+   * worker with nobody there (ExtensionScope.mediaAllowed): `getUserMedia` is the page's own call, which the list of
+   * what a trigger's handler may call never sees.
+   */
   #mediaAllowed(id: string, contentsId: number, mediaTypes: readonly string[]): boolean {
     const entry = this.#entries.get(id);
-    if (entry === undefined || !this.#runnable(entry) || mediaTypes.length === 0) return false;
-    const own = this.#views.get(contentsId)?.extensionId === id || entry.worker?.contents?.id === contentsId;
-    return own && mediaTypes.every((type) => (type === "audio" ? entry.scope.can("media:microphone") : type === "video" ? entry.scope.can("media:camera") : false));
+    if (entry === undefined || !this.#runnable(entry)) return false;
+    const view = this.#views.get(contentsId);
+    const context = entry.worker?.contents?.id === contentsId ? "worker" : view?.extensionId === id ? view.context : null;
+    return context !== null && entry.scope.mediaAllowed(context, mediaTypes);
   }
 
   /** `net.fetch`'s partition: its one filter holds every hop — redirects too — to the hosts granted. */
@@ -1413,6 +2178,8 @@ export class ExtensionService {
       entry.sleep.delete(id);
     }
     void entry.data.closeOwned(contentsId);
+    // (What it was asking a model goes with it: nothing is asked on, and paid for, on behalf of a view that is gone.)
+    entry.asking.abortOwned(contentsId);
   }
 
   #consoleLine(identity: ViewIdentity, level: "debug" | "info" | "warn" | "error", message: string, file: string, line: number): void {
@@ -1447,6 +2214,11 @@ export class ExtensionService {
           pending.reject(new ExtError("CANCELLED", "the worker stopped"));
         }
         entry.holds.clear();
+        // (Whatever woke it, it is not that worker any more: the next one is judged by what starts it.)
+        entry.wokenAt = null;
+        // (And the handlers it never answered went with it.)
+        for (const id of entry.lingering) entry.scope.endInvocation(id);
+        entry.lingering.clear();
         // What it held goes with it: its streams, its power-save blockers, its open data files (a page's stay).
         this.#stopRecording(entry, "worker", true);
         const workerId = entry.workerId;
@@ -1464,10 +2236,11 @@ export class ExtensionService {
     return worker;
   }
 
-  async #ensureWorker(entry: Entry): Promise<WebContents> {
+  /** `quiet`: a trigger is waking it, which is not use of a worker already running (WorkerHost.start). */
+  async #ensureWorker(entry: Entry, quiet = false): Promise<WebContents> {
     if (entry.loaded?.manifest.worker === undefined) throw new ExtError("UNAVAILABLE", 'this extension has no worker: add "worker": { "type": "web", "main": "worker.js" } to pistachio.json');
     this.#prepareSession(entry.id);
-    const contents = await this.#worker(entry).start();
+    const contents = await this.#worker(entry).start({ quiet });
     this.#publish();
     return contents;
   }
@@ -1481,11 +2254,17 @@ export class ExtensionService {
    * in; the Profile in front when null).
    */
   async #invoke(entry: Entry, kind: ExtInvokeKind, name: string, value: unknown, profileId: string | null): Promise<Json | undefined> {
-    const contents = await this.#ensureWorker(entry);
     const id = this.#nextId++;
     const profile = profileId ?? this.#window?.browser.activeProfileId() ?? null;
-    if (profile !== null) entry.scope.beginInvocation(id, profile);
+    // (The person's hand on it — never a trigger, and never the extension's own page writing to its worker by itself:
+    // a worker a trigger woke stays the trigger's through that. ./trigger-runner attendedInvocation.)
+    if (attendedInvocation(kind, entry.scope.recentViewGesture())) entry.attendedAt = Date.now();
+    // In hand before the worker is so much as started: its module's own top level runs as it loads, and what that
+    // calls is judged by the invocation that woke it — a trigger's, with nobody there. (A trigger is always in hand
+    // by its kind, whatever Profile there is to act in.)
+    if (profile !== null || kind === "trigger") entry.scope.beginInvocation(id, profile ?? "", kind, name);
     try {
+      const contents = await this.#ensureWorker(entry, kind === "trigger");
       return await new Promise<Json | undefined>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.#pending.delete(id);
@@ -1499,12 +2278,20 @@ export class ExtensionService {
         const message: ExtEventMessage = { kind: "invoke", id, invoke: kind, name, v: value };
         contents.send(EXT_EVENT_CHANNEL, message);
       });
+    } catch (error) {
+      // A trigger's handler main has stopped waiting for is still running in the worker: it stays in hand — what it
+      // goes on to call is asked as with nobody there — until its answer comes (#done) or the worker stops.
+      if (staysInHand(kind, error instanceof ExtError ? error.code : null) && entry.worker?.running === true) entry.lingering.add(id);
+      throw error;
     } finally {
-      entry.scope.endInvocation(id);
+      if (!entry.lingering.has(id)) entry.scope.endInvocation(id);
     }
   }
 
   #done(ctx: CallContext, id: number, value: Json | undefined, error: string | undefined): void {
+    // (The late answer of a trigger's handler that had timed out: it is out of hand now.)
+    const late = this.#entries.get(ctx.extensionId);
+    if (late !== undefined && late.lingering.delete(id)) late.scope.endInvocation(id);
     const pending = this.#pending.get(id);
     if (pending === undefined || pending.extensionId !== ctx.extensionId) return;
     pending.answered += 1;
@@ -1723,6 +2510,22 @@ export class ExtensionService {
         if (entry.inputs.get(subscriptionId) === ctx.senderId) this.#stopInput(subscriptionId);
       },
       agentAsk: (prompt, place) => this.#agentAsk(entry, prompt, place),
+      aiComplete: async (request, { timeoutMs, owner }) => {
+        // (Its own, by the view that asked: a worker stopped or a page closed meanwhile stops the request — #releaseOwned.)
+        const asked = entry.asking.begin(owner);
+        try {
+          return (await this.#options.complete?.(request, { timeoutMs, signal: asked.signal })) ?? null;
+        } catch {
+          return null;
+        } finally {
+          asked.done();
+        }
+      },
+      triggers: () => {
+        const declared = manifest().triggers ?? [];
+        const world = this.#triggerWorld(entry, declared);
+        return declared.map((trigger) => triggerState(trigger, this.#triggerNow(), systemTimezone(), world));
+      },
     };
   }
 
@@ -2101,6 +2904,9 @@ export class ExtensionService {
     if (parts === null || panel === undefined) throw new ExtError("UNAVAILABLE", "the window is not open");
     this.#prepareSession(entry.id);
     if (tabId !== null) entry.scope.grantTab(tabId);
+    // Opened by the person in a space (its icon, a key, the Bar), the panel is their gesture there as a command is; one
+    // the extension opened itself (`ctx`) gives it nothing.
+    if (ctx === null) entry.scope.grantSpace(this.#spaceOf(tabId));
     // Another extension's panel gives way: what its source list granted goes with it, as a close takes it.
     if (this.#openPanel !== null && this.#openPanel !== entry.id) this.#entries.get(this.#openPanel)?.scope.panelClosed();
     this.#openPanel = entry.id;
@@ -2166,6 +2972,7 @@ export class ExtensionService {
     }
     if (manifest.action === true) {
       entry.scope.grantTab(tabId);
+      entry.scope.grantSpace(this.#spaceOf(tabId));
       await this.#invokeForShell(entry, "action", "action", { tabId, spaceId: this.#spaceOf(tabId) }, this.#profileOf(tabId));
     }
   }
@@ -2177,6 +2984,8 @@ export class ExtensionService {
     if (declared === undefined) throw new Error(`${manifest.name} has no /${command}.`);
     if (declared.arg?.required === true && arg.trim() === "") throw new Error(`/${command} needs ${declared.arg.hint}.`);
     entry.scope.grantTab(tabId);
+    // Run in a space, the command gives the extension that space (docs/primitives.md §2: the one it may send away).
+    entry.scope.grantSpace(spaceId ?? this.#spaceOf(tabId));
     if ("prompt" in declared.run) {
       // A prompt command is a request to the agent (docs/extensions.md §2): that wiring is a later stage.
       this.#log(entry, { at: Date.now(), context: "main", level: "info", message: `/${command} is a prompt for the agent, which extensions reach in a later stage` });
@@ -2194,12 +3003,43 @@ export class ExtensionService {
     }
   }
 
-  async #menu(id: string, item: string, click: { tabId: string | null; pageUrl: string | null; linkUrl?: string; selectionText?: string; srcUrl?: string; windowTabId?: string }): Promise<void> {
+  async #menu(
+    id: string,
+    item: string,
+    click: { tabId: string | null; pageUrl: string | null; linkUrl?: string; selectionText?: string; srcUrl?: string; windowTabId?: string; fromTab?: true; spaceId?: string },
+  ): Promise<void> {
     const entry = this.#requireRunnable(id);
     const manifest = entry.loaded!.manifest;
-    if (!(manifest.contextMenus ?? []).some((candidate) => candidate.id === item)) throw new Error(`${manifest.name} has no menu item "${item}".`);
+    const declared = (manifest.contextMenus ?? []).find((candidate) => candidate.id === item);
+    if (declared === undefined) throw new Error(`${manifest.name} has no menu item "${item}".`);
+    if (click.spaceId !== undefined) {
+      // Chosen from a space's own menu (docs/primitives.md §4): the press gives the extension that space, no tab of it.
+      if (!declared.contexts.includes("space")) throw new Error(`${manifest.name}'s "${declared.title}" is not for a space's menu.`);
+      const browser = this.#window?.browser;
+      const profileId = browser?.profileIds().find((profile) => browser.spaces(profile).some((group) => group.id === click.spaceId)) ?? null;
+      if (profileId === null || !entry.scope.onIn(profileId)) throw new Error(`${manifest.name} is off in this Profile.`);
+      entry.scope.grantTab(null);
+      entry.scope.grantSpace(click.spaceId);
+      await this.#invokeForShell(entry, "menu", item, { tabId: null, pageUrl: null, spaceId: click.spaceId }, profileId);
+      return;
+    }
     const tabId = click.windowTabId ?? click.tabId;
+    if (click.fromTab === true) {
+      // Chosen from a tab's own menu, its row in the sidebar (docs/primitives.md §4.6): the item must be one declared
+      // for there, for a tab that is here, in a Profile the extension is on in — and its hosts are the tab's own
+      // address as main has it, never the one the shell sent.
+      if (!declared.contexts.includes("tab")) throw new Error(`${manifest.name}'s "${declared.title}" is not for a tab's menu.`);
+      const tab = tabId === null ? null : (this.#window?.browser.tab(tabId) ?? null);
+      const profileId = this.#profileOf(tabId);
+      if (tab === null || profileId === null || !entry.scope.onIn(profileId)) throw new Error(`${manifest.name} cannot be run on that tab.`);
+      if (!ExtensionScope.menuHostAllowed(declared.hosts, tab.url)) throw new Error(`${manifest.name}'s "${declared.title}" is not for this page.`);
+      entry.scope.grantTab(tabId);
+      entry.scope.grantSpace(this.#spaceOf(tabId));
+      await this.#invokeForShell(entry, "menu", item, { tabId, pageUrl: tab.url, fromTab: true }, profileId);
+      return;
+    }
     entry.scope.grantTab(tabId);
+    entry.scope.grantSpace(this.#spaceOf(tabId));
     await this.#invokeForShell(entry, "menu", item, { ...click }, this.#profileOf(tabId));
   }
 
@@ -2232,8 +3072,9 @@ export class ExtensionService {
     const asks = manifestAsks(manifest);
     const first = record.grants === null;
     const hasTools = (manifest.tools?.length ?? 0) > 0;
+    const approved = triggerKeys(manifest.triggers);
     this.#registry.update(id, {
-      grants: { capabilities: asks.capabilities, hosts: asks.hosts, manifestHash, at: Date.now() },
+      grants: { capabilities: asks.capabilities, hosts: asks.hosts, manifestHash, at: Date.now(), ...(approved.length > 0 ? { triggers: approved } : {}) },
       pending: null,
       enabled: true,
       pinned: true,
@@ -2248,6 +3089,15 @@ export class ExtensionService {
       );
     }
     this.#reloadViews(entry);
+    this.#triggersChanged(entry);
+  }
+
+  /** An extension's triggers may run again, or differently (approved, reloaded, turned on): what is no longer declared is forgotten, and the clock is looked at now. */
+  #triggersChanged(entry: Entry): void {
+    this.#automation.keepTriggers(entry.id, (entry.loaded?.manifest.triggers ?? []).map((trigger) => ({ id: trigger.id, key: triggerKey(trigger) })));
+    this.#triggers.forgive(entry.id);
+    this.#events.forget(entry.id);
+    void this.#triggers.tick();
   }
 
   /** The sheet's *Not now*: nothing changes — a never-approved extension stays waiting on approval, a paused one stays paused. */
@@ -2287,16 +3137,26 @@ export class ExtensionService {
     }
     const entry = this.#entries.get(id);
     if (entry !== undefined && (!record.enabled || !this.#runnable(entry))) this.#stop(entry);
-    if (entry !== undefined && this.#runnable(entry)) this.#reloadViews(entry);
+    if (entry !== undefined && this.#runnable(entry)) {
+      this.#reloadViews(entry);
+      this.#triggersChanged(entry);
+    }
     // Off in a Profile: what it watches or captures there ends now, not at the next tab change.
     this.#endForbidden();
-    this.#publish();
+    // And what it sent away there comes back: an extension that is off brings nothing back itself.
+    this.#returnStranded();
+    // Turned off altogether, its marks and its theme go: nothing of it is left to take them down. (Off in one Profile,
+    // they are only not drawn there: #shows.)
+    if (!record.enabled) this.#shown.forget(id);
+    this.#shownChanged();
   }
 
   /** Everything of an extension that runs, stopped (it was turned off, paused, removed). */
   #stop(entry: Entry): void {
     this.#stopRecording(entry, "off", true);
     entry.worker?.stop();
+    // (What was waiting to be told is missed, as what happens while it is off is.)
+    this.#events.forget(entry.id);
     // Its passing state goes with it: a pill, a badge or a toast's buttons of an extension that is off would say what is not so.
     entry.statusPill = null;
     entry.badge = null;
@@ -2306,6 +3166,8 @@ export class ExtensionService {
     entry.sleep.clear();
     entry.holds.clear();
     void entry.data.closeAll();
+    // (Off: whatever any view of it was asking a model is asked no more.)
+    entry.asking.abortAll();
     this.#reloadViews(entry);
   }
 
@@ -2339,6 +3201,13 @@ export class ExtensionService {
 
   #forget(id: string, options: { data: boolean }): void {
     const entry = this.#entries.get(id);
+    // The spaces it closed with nobody there stay closed — each in the archive, one Restore away — and the journal
+    // that listed them goes with it. So it is said how many there are and where: removing an extension that
+    // misbehaved must not be losing track of what it filed. (Read before anything of it is forgotten.)
+    const name = this.#nameOf(id);
+    const closing = this.#options.closing?.() ?? null;
+    const filed =
+      closing === null ? 0 : this.#automation.journalOf(id, JOURNAL_MAX).filter((line) => line.verb === "closeSpace" && line.undone === undefined && line.entryId !== undefined && closing.filed?.(line.entryId) === true).length;
     if (entry !== undefined) {
       this.#stop(entry);
       entry.worker?.dispose();
@@ -2346,6 +3215,14 @@ export class ExtensionService {
       this.#entries.delete(id);
     }
     this.#registry.remove(id);
+    // What its triggers heard, its pause and its lines of the journal go with it — and what it had the shell showing.
+    this.#automation.forget(id);
+    this.#said(this.#shown.forget(id));
+    this.#triggers.forgive(id);
+    this.#events.forget(id);
+    // The spaces it sent away come back with nobody left to bring them (its grants went with its record).
+    this.#returnStranded();
+    if (filed > 0) this.#window?.notice(`${name} had closed ${String(filed)} ${filed === 1 ? "space that is" : "spaces that are"} still in the archive. Restore ${filed === 1 ? "it" : "them"} from Archived tabs.`);
     if (options.data) {
       // Its data, its partitions' storage, its ledger: gone with it (the person confirmed in the shell).
       try {
@@ -2400,12 +3277,14 @@ export class ExtensionService {
 
   #pendingOf(manifest: PistachioManifest, grants: ExtensionRecord["grants"]): ExtensionPending | null {
     const hash = sheetFor(manifest).manifestHash;
+    // (Running by itself at times the person has not seen is asking for more, as a capability is: a trigger added, or its times changed.)
+    const runs = widenedTriggers(grants?.triggers, manifest.triggers).length > 0 ? { triggers: true as const } : {};
     if (grants === null) {
       const asks = manifestAsks(manifest);
-      return { manifestHash: hash, widened: asks.capabilities, hosts: asks.hosts };
+      return { manifestHash: hash, widened: asks.capabilities, hosts: asks.hosts, ...runs };
     }
     const widened = widenedAsks(grants, manifest);
-    return widened.capabilities.length === 0 && widened.hosts.length === 0 ? null : { manifestHash: hash, widened: widened.capabilities, hosts: widened.hosts };
+    return widened.capabilities.length === 0 && widened.hosts.length === 0 && runs.triggers === undefined ? null : { manifestHash: hash, widened: widened.capabilities, hosts: widened.hosts, ...runs };
   }
 
   /**
@@ -2457,7 +3336,8 @@ export class ExtensionService {
       this.#registry.update(id, { pending });
       this.#stop(entry);
       // (The Ledge's amber dot says it; the shell offers the sheet.)
-      this.#log(entry, { at: Date.now(), context: "main", level: "warn", message: `paused: it now asks for ${[...pending.widened, ...pending.hosts].join(", ")}` });
+      const asks = [...pending.widened, ...pending.hosts, ...(pending.triggers === true ? ["to run by itself at times not yet approved"] : [])];
+      this.#log(entry, { at: Date.now(), context: "main", level: "warn", message: `paused: it now asks for ${asks.join(", ")}` });
       this.#publish();
       return;
     }
@@ -2470,6 +3350,7 @@ export class ExtensionService {
     entry.worker?.stop();
     if (!this.#runnable(entry)) return;
     this.#reloadViews(entry);
+    this.#triggersChanged(entry);
     const dev = record.source.type === "dev" || record.source.type === "unpacked";
     if (manifest.worker !== undefined && (wasRunning || why === "dev-reload")) {
       void this.#invoke(entry, "installed", "installed", { reason: dev ? "dev-reload" : "update" }, null).catch((error: unknown) =>

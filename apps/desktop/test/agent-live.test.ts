@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import { NotificationRouter } from "@pistachio/notifications";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import type { BrowserController } from "../src/main/browser-controller";
-import { RunController } from "../src/main/run-controller";
+import { RunHub } from "../src/main/run-hub";
 import { ThreadStore } from "../src/main/thread-store";
 
 const LIVE = process.env["PISTACHIO_AGENT_LIVE"] === "1";
@@ -246,8 +246,8 @@ function controllerFor(
   threads: ThreadStore,
   log: string[],
   tuning: { compactAt: number; stepsPerCall: number; continuations: number } = { compactAt: 30_000, stepsPerCall: 8, continuations: 6 },
-): RunController {
-  return new RunController({
+): RunHub {
+  return new RunHub({
     browser: browser as unknown as BrowserController,
     notifications: new NotificationRouter([]),
     onChange: () => {},
@@ -262,7 +262,7 @@ function controllerFor(
 const LONG_TASK =
   "Visit these three Wikipedia articles: https://en.wikipedia.org/wiki/Electron_(software_framework), https://en.wikipedia.org/wiki/Chromium_(web_browser), and https://en.wikipedia.org/wiki/V8_(JavaScript_engine). For each one, record the initial release year and the original developer from the article's infobox. Keep notes as you go. Finally report a three-row list: name — initial release — developer.";
 
-function transcript(controller: RunController): string {
+function transcript(controller: RunHub): string {
   const run = controller.snapshot();
   if (run === null) return "(no run)";
   const lines = run.messages.map((message) => `${message.role.toUpperCase()} [t${String(message.turn ?? 0)}]: ${message.content}`);

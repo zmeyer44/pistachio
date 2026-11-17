@@ -460,5 +460,6 @@ describe("an author turn in the service", () => {
     await approve(service, WORD_COUNTER.id);
     expect(infoOf(service, WORD_COUNTER.id)?.pending).toBeNull();
     expect(service.agentTools("profile-a")).toHaveLength(1);
-  });
+    // (Four seconds of a real folder watcher's waits on a quiet machine: more than the default five under a full run.)
+  }, 20_000);
 });

@@ -531,6 +531,8 @@ function withEmptySpaces(units: DayRowUnit[], tabGroups: readonly TabGroupInfo[]
 /** What a command gave back: closing a group files it, and Undo needs to know where. */
 export interface TabGroupCommandResult {
   archivedEntryId: string | null;
+  /** `sendAway` or `bringBack` refused, in a sentence to show (./away AWAY_REFUSALS); absent when it was done, and on every other command. */
+  refused?: string;
 }
 
 
@@ -600,7 +602,15 @@ export type TabGroupCommand =
    * canMergeSpaces says yes; refused with an error, nothing changed, when the two Stacks together would hold more than
    * a Stack may (MAX_GROUP_CONTEXT_ITEMS).
    */
-  | { type: "merge"; groupId: string; into: string };
+  | { type: "merge"; groupId: string; into: string }
+  /**
+   * Send the space away (docs/primitives.md §2; ./away): off the rail whole, its tabs asleep and kept as they are, to
+   * come back as itself — at `until` (an instant) by main's own clock, or when asked. A drawn space only. The space in
+   * front passes the desk on first, as a closed one does. Refused with a sentence (TabGroupCommandResult.refused).
+   */
+  | { type: "sendAway"; groupId: string; until?: number }
+  /** Bring an away space back (`groupId`: the id it went under), and make it current: the person asked for it. */
+  | { type: "bringBack"; groupId: string };
 
 /**
  * Whether the space `source` may be merged into `target` (TabGroupCommand `merge`): two different spaces, the one
@@ -632,6 +642,8 @@ const COMMAND_TYPES: ReadonlySet<string> = new Set([
   "openAsSplit",
   "move",
   "merge",
+  "sendAway",
+  "bringBack",
 ]);
 
 /** What `create`'s `url` may be: what was typed or pasted in the address bar — a pasted link can run long. */
@@ -688,6 +700,8 @@ export function isTabGroupCommand(value: unknown): value is TabGroupCommand {
       return isTabGroupId(raw["groupId"]) && isTabGroupId(raw["into"]) && raw["groupId"] !== raw["into"];
     case "setWindows":
       return isTabGroupId(raw["groupId"]) && typeof raw["windows"] === "boolean";
+    case "sendAway":
+      return isTabGroupId(raw["groupId"]) && (raw["until"] === undefined || (typeof raw["until"] === "number" && Number.isFinite(raw["until"]) && raw["until"] > 0));
     default:
       return isTabGroupId(raw["groupId"]);
   }

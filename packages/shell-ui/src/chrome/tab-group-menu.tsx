@@ -1,11 +1,16 @@
 import { useEffect, useRef } from "react";
-import { Columns2, Pencil, Plus, Ungroup, X } from "lucide-react";
+import { Columns2, ImageOff, MoonStar, Pencil, Plus, Ungroup, X } from "lucide-react";
 import { DEFAULT_TAB_GROUP_TITLE, type TabGroupColor, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { shellApi } from "../api";
 import type { MenuEntry } from "../components/ContextMenu";
 import { liveSpaceEntries } from "../components/live/menu-entries";
+import { extensionSpaceEntries } from "../components/extensions/menu";
 import { spaceModeEntries } from "../components/space-rail/SpaceModeControl";
 import { useAppStore } from "../store";
+import { sendSpaceAway } from "../lib/away-actions";
+import { removeShown } from "../lib/extensions/actions";
+import { backdropFor, removeBackdropLabel } from "../lib/extensions/shown";
+import { useExtensions } from "../lib/extensions/use-extensions";
 import { deskAvailable, splitAvailable } from "../lib/desk/open";
 
 /**
@@ -62,6 +67,20 @@ export function useNewGroupNaming(startRenaming: (groupId: string) => void): (gr
     waiting.current.set(groupId, { seen: false });
     settle(useAppStore.getState().snapshot?.tabGroups ?? NO_GROUPS);
   };
+}
+
+/** *Remove backdrop · <extension>*, while one is in force for the space (docs/primitives.md §4): the person's way out of an extension's theme, where it shows. */
+function backdropEntries(spaceId: string): MenuEntry[] {
+  const backdrop = backdropFor(useExtensions.getState().snapshot.backdrops, spaceId);
+  if (backdrop === null) return [];
+  return [
+    {
+      label: removeBackdropLabel(backdrop),
+      icon: <ImageOff aria-hidden="true" />,
+      testId: "space-remove-backdrop",
+      onSelect: () => void removeShown(backdrop.extensionId, "theme", backdrop.spaceId),
+    },
+  ];
 }
 
 export function useTabGroupMenu(options: {
@@ -130,6 +149,11 @@ export function useTabGroupMenu(options: {
             onSelect: () => void tabGroupCommand({ type: "setOpen", groupId: group.id, open: !group.open }),
           },
         ]),
+    // What extensions declared for a space's menu (docs/primitives.md §4), each a press that gives the extension this space.
+    ...(deskAvailable() ? extensionSpaceEntries(group.id) : []),
+    // A backdrop an extension's theme put behind this space (its own, or the one for every space): whose it is, and
+    // the one press that takes it off. Read as the menu opens.
+    ...(deskAvailable() ? backdropEntries(group.id) : []),
     { separator: true },
     {
       // Each tab its own space again; the space itself stays, empty, if it holds a Stack or a conversation (main's).
@@ -138,6 +162,17 @@ export function useTabGroupMenu(options: {
       disabled: group.tabIds.length === 0,
       onSelect: () => void tabGroupCommand({ type: "ungroup", groupId: group.id }),
     },
+    // Off the rail whole, its tabs asleep, to come back as itself (docs/primitives.md §2): the desktop's — main keeps it,
+    // and says where it went in a notice that brings it back. With no time to choose: "until Sunday" is asked of the agent.
+    ...(deskAvailable()
+      ? [
+          {
+            label: "Send away",
+            icon: <MoonStar aria-hidden="true" />,
+            onSelect: () => sendSpaceAway(group.id),
+          },
+        ]
+      : []),
     {
       label: "Close space",
       icon: <X aria-hidden="true" />,

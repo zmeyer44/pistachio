@@ -1,0 +1,14 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.idle-spaces",
+  "name": "Idle spaces",
+  "version": "1.0.0",
+  "description": "An e2e fixture: Tidy's filing of idle spaces, on the public API — a space Pistachio gathered that nobody has used for a while is closed into the archive.",
+  "permissions": ["tabs:read", "spaces:close", "spaces:all", "ai"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [{ "id": "sweep", "every": { "minutes": 30 } }],
+  "settings": [{ "key": "hours", "title": "File a space nobody has used for this many hours", "type": "number", "default": 12, "min": 1, "max": 720 }],
+  "bar": {
+    "commands": [{ "name": "idle-spaces", "description": "File the spaces nobody is using, now", "run": { "event": true } }]
+  }
+}

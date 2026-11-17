@@ -45,6 +45,12 @@ export interface AppearanceSettings {
   radius: number;
   /** Where the notice stack stands over the page (./notice.ts). */
   toastPosition: NoticePosition;
+  /**
+   * Main's, never the person's and never stored (sanitizeAppearance drops it): the accent an extension's theme set
+   * for the space in front (docs/primitives.md §4), `#rrggbb`. Every view that runs the theme draws with it in place
+   * of `colors[0]` — so the Bar's nub, the notices and the shell agree — and the person's own palette is untouched.
+   */
+  accentOverride?: string;
 }
 
 export const APPEARANCE_SCHEMES: readonly AppearanceScheme[] = ["system", "light", "dark"];

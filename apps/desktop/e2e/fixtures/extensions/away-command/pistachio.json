@@ -1,0 +1,16 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.away-command",
+  "name": "Game day",
+  "version": "1.0.0",
+  "description": "An e2e fixture: /gameday sends the space it is run in away for two seconds; /benched until asked; /sendother a space it was never given.",
+  "permissions": ["tabs:read", "spaces:write"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "bar": {
+    "commands": [
+      { "name": "gameday", "description": "Send this space away for two seconds", "run": { "event": true } },
+      { "name": "benched", "description": "Send this space away until asked", "run": { "event": true } },
+      { "name": "sendother", "description": "Try to send away a space this was not run in", "arg": { "hint": "a space's id", "required": true }, "run": { "event": true } }
+    ]
+  }
+}

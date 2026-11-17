@@ -1,0 +1,15 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.scoreboard",
+  "name": "Scoreboard",
+  "version": "1.0.0",
+  "description": "An e2e fixture: today's games in a strip beside the Bar and in a section of the sidebar on Sundays, 8:00 AM to 11:00 PM.",
+  "band": true,
+  "sidebar": true,
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [{ "id": "sunday", "during": { "days": ["sun"], "from": "08:00", "to": "23:00" } }],
+  "contextMenus": [
+    { "id": "here", "title": "Games here", "contexts": ["space"] },
+    { "id": "follow", "title": "Follow this game", "contexts": ["tab"] }
+  ]
+}

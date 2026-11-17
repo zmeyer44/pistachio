@@ -19,6 +19,9 @@ const CARD_W = 236;
 const PAD = 8;
 /** Its name and window count under the desk. */
 const CAPTION_H = 32;
+/** A line under the caption for each mark an extension put on the space (docs/primitives.md §4). */
+const MARK_LINE_H = 18;
+const MARKS_FOOT = 6;
 /** How wide main draws a page for the card (device px): the drawn window is a fraction of that. */
 const STILL_WIDTH = 480;
 /** A page asleep is woken for its picture once in this long; the picture it gave is drawn until then. */
@@ -59,7 +62,7 @@ function forgetTaken(): void {
  * over the desk past the card column (all of it, the rail alone), so it is a
  * cover: shown once the live pages under it have given way.
  */
-export function RailSpaceCard({ group, name, windows, anchor }: { group: TabGroupInfo; name: string; windows: string; anchor: DeskAnchor }) {
+export function RailSpaceCard({ group, name, windows, marks = [], anchor }: { group: TabGroupInfo; name: string; windows: string; marks?: readonly string[]; anchor: DeskAnchor }) {
   const engine = useDeskEngine();
   const tabs = useAppStore((state) => state.snapshot?.tabs);
   const tabsById = useMemo(() => new Map((tabs ?? []).map((tab) => [tab.id, tab])), [tabs]);
@@ -118,7 +121,7 @@ export function RailSpaceCard({ group, name, windows, anchor }: { group: TabGrou
 
   const scale = sketch === null || sketch.width <= 0 ? 0 : (CARD_W - PAD * 2) / sketch.width;
   const deskH = sketch === null ? 0 : Math.round(sketch.height * scale);
-  const height = (sketch === null ? PAD : deskH + PAD) + CAPTION_H;
+  const height = (sketch === null ? PAD : deskH + PAD) + CAPTION_H + (marks.length === 0 ? 0 : marks.length * MARK_LINE_H + MARKS_FOOT);
   const top = Math.max(8, Math.min(anchor.y + anchor.h / 2 - height / 2, window.innerHeight - height - 8));
   return createPortal(
     <div
@@ -159,6 +162,16 @@ export function RailSpaceCard({ group, name, windows, anchor }: { group: TabGrou
         <span className="rail-space-card-name">{name}</span>
         <span className="rail-space-card-count">{windows}</span>
       </div>
+      {/* What extensions marked it with, each said as its own: "Game day: Games on". */}
+      {marks.length === 0 ? null : (
+        <ul className="rail-space-card-marks">
+          {marks.map((line) => (
+            <li key={line} data-testid="rail-card-mark" className="rail-space-card-mark">
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>,
     document.body,
   );

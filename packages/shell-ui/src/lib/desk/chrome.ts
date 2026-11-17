@@ -9,7 +9,9 @@
  *   Stack's (`card`): the desk draws them, over its own windows, beside the
  *   button that opened them (`anchor`, in the window's coordinates). The
  *   live share's card is drawn the same way, opened by its entries and the
- *   Live pill beside the shared space's tile (lib/live/actions.ts).
+ *   Live pill beside the shared space's tile (lib/live/actions.ts); and
+ *   the card of spaces that are away, opened by the rail's Away tile
+ *   (docs/primitives.md §2).
  * - The sidebar says which of the group's rows is under the pointer
  *   (`hovered`): ⇧⌫ closes that tab, wherever the keyboard is.
  * - The desk says which tab its agent is working in (`agentTab`), for that
@@ -49,8 +51,11 @@ export interface DeskDockLit {
 }
 
 export interface DeskCard {
-  /** The desk's (More), the Stack's, or the live share's (components/live/LiveCard.tsx: opened by its entries and the Live pill, not a sidebar button). */
-  kind: "more" | "stack" | "live";
+  /**
+   * The desk's (More), the Stack's, the live share's (components/live/LiveCard.tsx: opened by its entries and the Live
+   * pill, not a sidebar button), or the spaces that are away (components/space-rail/AwayCard.tsx: the rail's Away tile).
+   */
+  kind: "more" | "stack" | "live" | "away";
   anchor: DeskAnchor;
   /** Opened by a click: it stays until a press elsewhere or Escape (the More card otherwise goes once the pointer leaves). */
   pinned: boolean;

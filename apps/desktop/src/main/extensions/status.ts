@@ -12,6 +12,7 @@ import { appendFileSync, mkdirSync, renameSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import type { ExtContext } from "@pistachio/extension-api";
 import type { ExtensionStatus } from "@pistachio/shell-contracts/extensions";
+import type { TriggerStatus } from "./triggers";
 
 export const LOG_MAX_BYTES = 1024 * 1024;
 export const LOG_MEMORY_LINES = 500;
@@ -39,6 +40,12 @@ export interface StatusFile {
    * `unbound` saying why (a key the app holds, or another extension earlier in the person's order).
    */
   keys: { id: string; key: string | null; binding: string | null; unbound: string | null }[];
+  /**
+   * Its declared triggers as main's clock reads them (./triggers.ts triggerStatus; docs/primitives.md §3): the words
+   * the sheet will say, the zone, and every change of the next seven days — read from the manifest, no code run, so
+   * whoever wrote it can check the schedule is the one that was asked for before the person approves it.
+   */
+  triggers: TriggerStatus[];
 }
 
 export interface LogLine {
@@ -61,7 +68,7 @@ export class StatusWriter {
 
   constructor(folder: string | null, id: string | null) {
     this.#folder = folder;
-    this.#status = { id, state: "idle", loadedAt: null, api: null, manifestErrors: [], pendingGrants: null, runtimeErrors: [], surfaces: { bar: [], tools: [], pages: [] }, keys: [] };
+    this.#status = { id, state: "idle", loadedAt: null, api: null, manifestErrors: [], pendingGrants: null, runtimeErrors: [], surfaces: { bar: [], tools: [], pages: [] }, keys: [], triggers: [] };
   }
 
   get status(): StatusFile {

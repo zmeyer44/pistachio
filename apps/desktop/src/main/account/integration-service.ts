@@ -351,19 +351,25 @@ export class IntegrationService {
     const window = { timeMin: new Date(min).toISOString(), timeMax: new Date(max).toISOString(), query: "", maxResults: MAX_AGENDA_EVENTS_PER_CALENDAR };
     // The calendars shown in Google Calendar, the person's own first; if the
     // list cannot be read, their own calendar alone is still their day.
+    let partial = false;
     const calendars = await client
       .listCalendars()
-      .then((entries) =>
-        entries
-          .filter((entry) => entry.selected === true && entry.hidden !== true)
-          .sort((a, b) => Number(b.primary === true) - Number(a.primary === true))
-          .slice(0, MAX_AGENDA_CALENDARS)
-          .map((entry) => entry.id),
-      )
-      .catch(() => [] as string[]);
+      .then((entries) => {
+        const ticked = entries.filter((entry) => entry.selected === true && entry.hidden !== true).sort((a, b) => Number(b.primary === true) - Number(a.primary === true));
+        // (More calendars than are read: the rest of the day is on the ones left out.)
+        if (ticked.length > MAX_AGENDA_CALENDARS) partial = true;
+        return ticked.slice(0, MAX_AGENDA_CALENDARS).map((entry) => entry.id);
+      })
+      .catch(() => {
+        // (Their own calendar alone is not their day: said so, for whoever must not take it for the whole.)
+        partial = true;
+        return [] as string[];
+      });
     const pages = await Promise.allSettled((calendars.length === 0 ? ["primary"] : calendars).map(async (id) => ({ id, page: await client.listEvents(id, window) })));
     // A grant that died mid-read is flagged by the host itself; the next read says so.
     if (pages.every((page) => page.status === "rejected")) return { status: "unreachable", connectable: false, accountLabel, events: [] };
+    // (One calendar unread, or one with more events in the window than a page holds: not the whole day.)
+    if (pages.some((page) => page.status === "rejected" || page.value.page.nextPageToken !== null)) partial = true;
 
     const seen = new Set<string>();
     const events: CalendarAgendaEvent[] = [];
@@ -379,7 +385,7 @@ export class IntegrationService {
         events.push({ id: `${settled.value.id}:${view.id}`, title: view.title, start: view.start, end: view.end, allDay: view.allDay, location: view.location, meetingUrl: view.meetingUrl, webUrl: view.webUrl });
       }
     }
-    return { status: "ok", connectable: false, accountLabel, events };
+    return { status: "ok", connectable: false, accountLabel, events, ...(partial ? { partial: true as const } : {}) };
   }
 
   /**

@@ -13,12 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAX_TAB_GROUPS_PER_SPACE, dayRowUnits, isPersonsGroup, sanitizeTabGroups, withoutTabs, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
-import { TAB_SESSION_VERSION, type DurableSpaceSession, type DurableTab } from "@pistachio/shell-contracts/tab-session";
+import { TAB_SESSION_VERSION, type DurableSpaceSession, type DurableTab, type DurableTabSession } from "@pistachio/shell-contracts/tab-session";
 import { DeskConversationStore } from "../src/main/desk-conversations";
 import { GroupContextStore } from "../src/main/group-context-store";
 import {
   chooseCurrentGroup,
   claimIncomingEntries,
+  withoutAway,
   drawnSpacesBroughtDown,
   foldSplitGroups,
   keepWithRoom,
@@ -648,6 +649,39 @@ describe("moveSpaceHoldings (a space merged into another, 2026-10-14)", () => {
 
 /* ------------------------------- the session file ------------------------- */
 
+describe("a restore point applied while a space is away", () => {
+  const away = { groupIds: new Set(["football"]), tabIds: new Set(["espn", "league"]) };
+  const point = (): DurableSpaceSession => ({
+    tabs: [tab("mail"), tab("espn"), tab("old-scores"), tab("league"), tab("docs")],
+    activeTabId: "espn",
+    recentTabIds: ["espn", "docs", "old-scores"],
+    splitGroups: [],
+    // (Football as another device last saw it: one of the tabs it has here, and one it has since lost.)
+    tabGroups: [space("football", ["espn", "old-scores"]), space("work", ["docs", "league"]), space("loose-mail", ["mail"], { loose: true, color: "gray" })],
+    currentGroupId: "football",
+  });
+
+  it("leaves out the space that is away and every tab of it — the file's, and the restore point's own — so the away copy is not doubled", () => {
+    const applied = withoutAway(point(), away);
+    // The away file's copy is the newer: nothing of the restore point's Football comes in under its id, or as stray tabs.
+    expect(applied.tabGroups?.map((group) => [group.id, group.tabIds])).toEqual([
+      ["work", ["docs"]],
+      ["loose-mail", ["mail"]],
+    ]);
+    expect(applied.tabs.map((entry) => entry.id)).toEqual(["mail", "docs"]);
+    // What pointed at them points at what is left.
+    expect(applied.activeTabId).toBe("mail");
+    expect(applied.recentTabIds).toEqual(["docs"]);
+    expect(applied.currentGroupId).toBeUndefined();
+  });
+
+  it("is the restore point itself when nothing of it is away", () => {
+    const whole = point();
+    expect(withoutAway(whole, { groupIds: new Set(), tabIds: new Set() })).toBe(whole);
+    expect(withoutAway(whole, { groupIds: new Set(["elsewhere"]), tabIds: new Set(["other"]) })).toBe(whole);
+  });
+});
+
 describe("a session with spaces across a launch", () => {
   it("keeps empty spaces with their place, the current space, and a Profile with no tabs", () => {
     const dir = scratch();
@@ -701,5 +735,20 @@ describe("a session with spaces across a launch", () => {
     writeFileSync(join(broken, "tab-session.json"), "{ not json");
     // A file that cannot be read counts as none: that launch is a fresh install's, with its home tab.
     expect(new TabSessionStore(broken, () => new Set(["work"])).existed()).toBe(false);
+  });
+
+  it("says whether a flush reached the disk: a session that could not be written is in memory alone", () => {
+    const session: DurableTabSession = { version: TAB_SESSION_VERSION, spaces: { work: { tabs: [tab("a")], activeTabId: "a", recentTabIds: [], splitGroups: [] } } };
+    const store = new TabSessionStore(scratch(), () => new Set(["work"]));
+    store.save(session);
+    expect(store.flush()).toBe(true);
+    // (Where the folder should be there is a file: nothing can be written under it, as nothing can to a disk that is full.)
+    const blocked = join(scratch(), "not-a-folder");
+    writeFileSync(blocked, "");
+    const stuck = new TabSessionStore(blocked, () => new Set(["work"]));
+    stuck.save(session);
+    expect(stuck.flush()).toBe(false);
+    // Memory still holds it: whoever has another copy of something in it keeps that copy meanwhile (main/away-spaces.ts).
+    expect(stuck.get().spaces["work"]?.tabs.map((entry) => entry.id)).toEqual(["a"]);
   });
 });

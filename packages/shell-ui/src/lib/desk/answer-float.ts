@@ -316,28 +316,71 @@ export interface FloatSpot {
   inStage?: boolean;
 }
 
-const SPOT_KEY = "pistachio.desk.answer.v1";
+/** Until 2026-11-16: one place, every space's. */
+const LEGACY_SPOT_KEY = "pistachio.desk.answer.v1";
+/**
+ * Each space's (tab group's) own, by its id (docs/desk-agent.md §1, "The
+ * chat is its space's"): the chat taken to the side in one space is at the
+ * side there, and where it was in every other.
+ */
+export const SPOTS_KEY = "pistachio.desk.answer.v2";
+/** Spaces come and go; the places of the most recently kept stay. */
+const MAX_SPOTS = 200;
 
-export function readFloatSpot(): FloatSpot | null {
+function spotFrom(raw: unknown): FloatSpot | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const { floating, fx, fy, w, h, zone, cw, inStage } = raw as Record<string, unknown>;
+  if (typeof floating !== "boolean") return null;
+  for (const n of [fx, fy, w, h]) if (typeof n !== "number" || !Number.isFinite(n)) return null;
+  const spot: FloatSpot = { floating, fx: fx as number, fy: fy as number, w: w as number, h: h as number };
+  if (typeof zone === "string" && ZONES.has(zone)) spot.zone = zone as AnswerZone;
+  if (typeof cw === "number" && Number.isFinite(cw) && cw > 0) spot.cw = cw;
+  if (inStage === true && spot.zone === undefined) spot.inStage = true;
+  return spot;
+}
+
+/** What is stored under a key, read as JSON; null for nothing, or for what is no JSON (never thrown: a place that cannot be read is no place). */
+function stored(key: string): unknown {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return null;
   try {
-    const raw: unknown = JSON.parse(localStorage.getItem(SPOT_KEY) ?? "null");
-    if (typeof raw !== "object" || raw === null) return null;
-    const { floating, fx, fy, w, h, zone, cw, inStage } = raw as Record<string, unknown>;
-    if (typeof floating !== "boolean") return null;
-    for (const n of [fx, fy, w, h]) if (typeof n !== "number" || !Number.isFinite(n)) return null;
-    const spot: FloatSpot = { floating, fx: fx as number, fy: fy as number, w: w as number, h: h as number };
-    if (typeof zone === "string" && ZONES.has(zone)) spot.zone = zone as AnswerZone;
-    if (typeof cw === "number" && Number.isFinite(cw) && cw > 0) spot.cw = cw;
-    if (inStage === true && spot.zone === undefined) spot.inStage = true;
-    return spot;
+    return JSON.parse(raw) as unknown;
   } catch {
     return null;
   }
 }
 
-export function writeFloatSpot(spot: FloatSpot): void {
+/** Every space's place as kept; the one place there was before goes to the space that asks first, and is no other's. */
+function readSpots(firstFor: string): Record<string, unknown> {
+  if (localStorage.getItem(SPOTS_KEY) !== null) {
+    const raw = stored(SPOTS_KEY);
+    return typeof raw === "object" && raw !== null && !Array.isArray(raw) ? { ...(raw as Record<string, unknown>) } : {};
+  }
+  const legacy = spotFrom(stored(LEGACY_SPOT_KEY));
+  const spots: Record<string, unknown> = legacy === null ? {} : { [firstFor]: legacy };
+  localStorage.setItem(SPOTS_KEY, JSON.stringify(spots));
+  localStorage.removeItem(LEGACY_SPOT_KEY);
+  return spots;
+}
+
+/** Where a space's answer was last left; null for one never taken off its Bar. */
+export function readFloatSpot(groupId: string): FloatSpot | null {
   try {
-    localStorage.setItem(SPOT_KEY, JSON.stringify(spot));
+    return spotFrom(readSpots(groupId)[groupId]);
+  } catch {
+    return null;
+  }
+}
+
+export function writeFloatSpot(groupId: string, spot: FloatSpot): void {
+  try {
+    const spots = readSpots(groupId);
+    // (Kept last: the bound drops the places longest untouched.)
+    delete spots[groupId];
+    spots[groupId] = spot;
+    const ids = Object.keys(spots);
+    for (const id of ids.slice(0, Math.max(0, ids.length - MAX_SPOTS))) delete spots[id];
+    localStorage.setItem(SPOTS_KEY, JSON.stringify(spots));
   } catch {
     // (Kept for this session only.)
   }

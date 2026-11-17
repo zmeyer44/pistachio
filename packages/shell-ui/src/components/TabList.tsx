@@ -54,6 +54,8 @@ import {
   type RowItem,
 } from "../chrome/tabs";
 import { cn } from "../lib/cn";
+import { markLine, tabMarksFor } from "../lib/extensions/shown";
+import { useExtensionsState } from "../lib/extensions/use-extensions";
 import { pinnedRows } from "../lib/sidebar-tree";
 import { updateTabSelection } from "../lib/tab-selection";
 import { prettyUrl } from "../lib/url";
@@ -261,9 +263,29 @@ function TabRow({
           </span>
         </span>
       )}
+      <TabExtensionMark tabId={tab.id} />
       <TabTrailing tab={tab} />
       <DeskRowMark tabId={tab.id} />
     </div>
+  );
+}
+
+/**
+ * An extension's mark on a tab's row (docs/primitives.md §4.7): a glyph, or a dot, in its tone, drawn by the shell
+ * after the title. What it means is its tooltip and what a screen reader says — the extension's words inside the
+ * shell's: "Unread: Not read yet". Two extensions marking one tab are both said; the row draws the first.
+ */
+function TabExtensionMark({ tabId }: { tabId: string }) {
+  const tabMarks = useExtensionsState((state) => state.snapshot.tabMarks);
+  const extensions = useExtensionsState((state) => state.snapshot.extensions);
+  const marks = tabMarksFor(tabMarks, extensions, tabId);
+  const mark = marks[0];
+  if (mark === undefined) return null;
+  const says = marks.map(markLine).join("\n");
+  return (
+    <span role="img" aria-label={says} title={says} data-testid="tab-row-mark" data-extension-id={mark.extensionId} data-tone={mark.tone} data-dot={mark.glyph === null ? "" : undefined} className="tab-row-mark">
+      {mark.glyph}
+    </span>
   );
 }
 

@@ -297,8 +297,10 @@ export const CHROME_ACTIONS: Record<ChromeActionId, ChromeAction> = {
   },
   toggleConsole: {
     id: "toggleConsole",
-    label: ({ shell }) => (shell.consoleOpen ? "Close agent panel" : "Open agent panel"),
-    icon: ({ shell }) => (shell.consoleOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />),
+    // On the desktop the chat is the desk's — its nub, in the space in front (docs/desk-agent.md): there is no panel
+    // to open or close, and the action puts the keyboard in its field. The panel is the web's.
+    label: ({ shell }) => (nativeApi() !== null ? "Chat with Pistachio" : shell.consoleOpen ? "Close agent panel" : "Open agent panel"),
+    icon: ({ shell }) => (nativeApi() !== null ? <Sparkles aria-hidden="true" /> : shell.consoleOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />),
     shortcutId: "toggleConsole",
     active: ({ shell }) => shell.consoleOpen,
     run: ({ run }) => run({ type: "toggleConsole" }),

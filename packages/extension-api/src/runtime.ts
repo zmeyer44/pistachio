@@ -29,6 +29,7 @@
  */
 
 import type {
+  ExtAwaySpace,
   ExtBarCommandContext,
   ExtCaptureSource,
   ExtContext,
@@ -39,13 +40,19 @@ import type {
   ExtInputEventKind,
   ExtInvokeMap,
   ExtMenuClick,
+  ExtMethodArgs,
   ExtMethodMap,
   ExtNoteSummary,
+  ExtRowPress,
   ExtRuntimeInfo,
+  ExtSiteView,
   ExtSpace,
+  ExtSpaceMark,
   ExtStatus,
   ExtTab,
+  ExtTheme,
   ExtToast,
+  ExtTriggerState,
   Json,
 } from "./api-types.js";
 import type { ExtErrorCode, ExtEvent, ExtEventMessage, ExtInvokeKind, ExtReply } from "./wire.js";
@@ -147,7 +154,9 @@ export function buildPistachio(options: BuildPistachioOptions) {
     action: 5_000,
     message: 10_000,
     statusAction: 5_000,
+    press: 5_000,
     installed: 5_000,
+    trigger: 10_000,
     ...options.timeouts,
   };
   const codes: readonly ExtErrorCode[] = ["PERMISSION_DENIED", "NOT_FOUND", "INVALID_ARGUMENT", "UNAVAILABLE", "TIMEOUT", "RATE_LIMITED", "CANCELLED"];
@@ -352,7 +361,10 @@ export function buildPistachio(options: BuildPistachioOptions) {
     action: () => `the Ledge icon: add pistachio.runtime.onAction(…) to the worker`,
     message: () => "",
     statusAction: () => "",
+    press: (name) => `a press on ${name === "band" ? "the band" : "the sidebar section"}: add pistachio.ui.${name === "band" ? "band" : "sidebar"}.onPress(…) to the worker`,
     installed: () => "",
+    // (An error, not silence: a trigger nobody handles is one Pistachio runs again later, and the status file says why.)
+    trigger: (name) => `the trigger "${name}": add pistachio.triggers.on("${name}", …) to the worker`,
   };
   const giveUp = (entry: Waiting): void => {
     const index = waiting.indexOf(entry);
@@ -831,6 +843,20 @@ export function buildPistachio(options: BuildPistachioOptions) {
     onChanged: (fn: (key: string, value: Json | undefined) => void): Unsubscribe => on("settings.changed", (v) => fn(v.key, v.value)),
   };
 
+  // One place the shell fills with rows. `set` replaces what the extension had there (for every space, or for
+  // `spaceId`) — a value main checks and keeps, drawn after the worker has stopped and after a restart; saying it
+  // twice is saying it once. A press on a row with an `id`, or on one of its buttons, wakes the worker.
+  const rowsAt = (site: "band" | "sidebar") => ({
+    set: async (view: ExtSiteView): Promise<void> => {
+      await call("sites.set", defined({ site, title: view?.title, rows: view?.rows, spaceId: view?.spaceId }) as ExtMethodArgs<"sites.set">);
+    },
+    clear: async (options?: { spaceId?: string }): Promise<void> => {
+      await call("sites.clear", defined({ site, spaceId: options?.spaceId }));
+    },
+    get: (options?: { spaceId?: string }): Promise<ExtSiteView | null> => call("sites.get", defined({ site, spaceId: options?.spaceId })),
+    onPress: (fn: (press: ExtRowPress) => void): Unsubscribe => handle("press", site, each(fn)),
+  });
+
   const ui = {
     openPanel: async (): Promise<void> => {
       await call("ui.openPanel", {});
@@ -851,6 +877,10 @@ export function buildPistachio(options: BuildPistachioOptions) {
     },
     onStatusAction: (fn: (action: string) => void): Unsubscribe => handle("statusAction", "status", each((v) => fn(v.action))),
     onToastAction: (fn: (action: string) => void): Unsubscribe => handle("statusAction", "toast", each((v) => fn(v.action))),
+    // The places the shell fills with this extension's rows (docs/primitives.md §4.5; pistachio.json "band" /
+    // "sidebar"): a strip beside the Bar, a section of the sidebar. The same four verbs for each.
+    band: rowsAt("band"),
+    sidebar: rowsAt("sidebar"),
   };
 
   const bar = {
@@ -878,6 +908,10 @@ export function buildPistachio(options: BuildPistachioOptions) {
     close: async (id: string): Promise<void> => {
       await call("tabs.close", { id });
     },
+    // A mark on a tab's row, or (null) this extension's taken off: a value main keeps and the shell draws.
+    setMark: async (id: string, mark: ExtSpaceMark | null): Promise<void> => {
+      await call("tabs.setMark", { tabId: id, mark: mark === null || mark === undefined ? null : defined({ glyph: mark.glyph, tone: mark.tone, label: mark.label }) });
+    },
     onCreated: (fn: (tab: ExtTab) => void): Unsubscribe => on("tabs.created", (v) => fn(v.tab)),
     onUpdated: (fn: (tab: ExtTab, changed: ("title" | "url" | "loading" | "favIconUrl")[]) => void): Unsubscribe => on("tabs.updated", (v) => fn(v.tab, v.changed)),
     onRemoved: (fn: (tabId: string) => void): Unsubscribe => on("tabs.removed", (v) => fn(v.tabId)),
@@ -888,6 +922,52 @@ export function buildPistachio(options: BuildPistachioOptions) {
     list: (): Promise<ExtSpace[]> => call("spaces.list", {}),
     current: (): Promise<ExtSpace | null> => call("spaces.current", {}),
     onCurrentChanged: (fn: (space: ExtSpace | null) => void): Unsubscribe => on("spaces.currentChanged", (v) => fn(v.space)),
+    // `until` is an instant however it is written — ms, a Date, an ISO string — and goes over the wire as ms. One that
+    // is no time at all is refused here, where the line that wrote it is; one in the past is main's to refuse (its clock).
+    sendAway: (spaceId: string, options: { until?: number | string | Date } = {}): Promise<ExtAwaySpace> => {
+      const until = options.until;
+      if (until === undefined || until === null) return call("spaces.sendAway", { spaceId });
+      const at = until instanceof Date ? until.getTime() : typeof until === "string" ? Date.parse(until) : until;
+      if (typeof at !== "number" || !Number.isFinite(at)) {
+        return Promise.reject(new ExtError("INVALID_ARGUMENT", "spaces.sendAway: `until` is a time — ms since 1970 (Date.now() + …), a Date, or an ISO string like \"2026-11-22T08:00:00-06:00\""));
+      }
+      return call("spaces.sendAway", { spaceId, until: Math.round(at) });
+    },
+    bringBack: async (spaceId: string): Promise<void> => {
+      await call("spaces.bringBack", { spaceId });
+    },
+    // Close space, as the person's own menu does it: into the archive, whole.
+    close: async (spaceId: string): Promise<void> => {
+      await call("spaces.close", { spaceId });
+    },
+    away: (): Promise<ExtAwaySpace[]> => call("spaces.away", {}),
+    onAwayChanged: (fn: (change: { event: "sent" | "returned"; space: ExtAwaySpace }) => void): Unsubscribe => on("spaces.awayChanged", (v) => fn({ event: v.event, space: v.space })),
+    // A mark on a space's tile, or (null) this extension's taken off: a value main keeps and the shell draws.
+    setMark: async (spaceId: string, mark: ExtSpaceMark | null): Promise<void> => {
+      await call("spaces.setMark", { spaceId, mark: mark === null || mark === undefined ? null : defined({ glyph: mark.glyph, tone: mark.tone, label: mark.label }) });
+    },
+  };
+
+  // Main keeps the clock (pistachio.json → triggers): a handler is run when a declared trigger's answer is not the
+  // one it last heard, and it is awaited — what it returns is not an answer, what it throws is the invocation's
+  // failure, which main takes as "not delivered" and runs again later. Every handler of the trigger runs.
+  const triggers = {
+    on: (id: string, fn: (state: ExtTriggerState) => unknown): Unsubscribe => handle("trigger", id, each(fn)),
+    get: (id: string): Promise<ExtTriggerState> => call("triggers.get", { id }),
+    list: (): Promise<ExtTriggerState[]> => call("triggers.list", {}),
+  };
+
+  // What the shell draws for the extension (docs/primitives.md §4): a backdrop and an accent, for every space or
+  // for one. A value main checks, keeps and the shell paints — `set` replaces what was there, so saying it twice is
+  // saying it once. Nothing is checked here: main's refusal is the one the author reads.
+  const theme = {
+    set: async (value: ExtTheme): Promise<void> => {
+      await call("theme.set", defined({ backdrop: value?.backdrop, colors: value?.colors, spaceId: value?.spaceId }));
+    },
+    clear: async (options?: { spaceId?: string }): Promise<void> => {
+      await call("theme.clear", defined({ spaceId: options?.spaceId }));
+    },
+    get: (options?: { spaceId?: string }): Promise<ExtTheme | null> => call("theme.get", defined({ spaceId: options?.spaceId })),
   };
 
   const desk = {
@@ -1075,6 +1155,14 @@ export function buildPistachio(options: BuildPistachioOptions) {
     },
   };
 
+  // One question to a model — no tools, no turn in anyone's conversation: the text of its answer.
+  const ai = {
+    complete: async (request: { prompt: string; system?: string; maxTokens?: number }): Promise<string> => {
+      const { text } = await call("ai.complete", defined({ prompt: request.prompt, system: request.system, maxTokens: request.maxTokens }));
+      return text;
+    },
+  };
+
   const power = {
     preventSleep: async (): Promise<Unsubscribe> => {
       const { holdId } = await call("power.preventSleep", {});
@@ -1083,7 +1171,7 @@ export function buildPistachio(options: BuildPistachioOptions) {
   };
 
   const storage = { local };
-  const api = { runtime, storage, settings, ui, bar, contextMenus, commands, tabs, spaces, desk, pages, capture, input, files, clipboard, notifications, net, notes, agent, power };
+  const api = { runtime, storage, settings, ui, bar, contextMenus, commands, tabs, spaces, triggers, theme, desk, pages, capture, input, files, clipboard, notifications, net, notes, agent, ai, power };
   for (const part of [local, data, ...Object.values(api)]) Object.freeze(part);
   Object.freeze(api);
 

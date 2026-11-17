@@ -53,6 +53,56 @@ describe("sheetFor", () => {
     for (const capability of Object.keys(CAPABILITY_INFO) as Capability[]) expect(CAPABILITY_INFO[capability].line).toMatch(/\.$/);
   });
 
+  it("says what spaces:write does in the sheet's own sentence, among the medium lines", () => {
+    const sheet = sheetFor(parse({ ...BASE, permissions: ["spaces:write", "notes:write", "notifications"] }));
+    expect(sheet.can).toEqual([
+      { tier: "high", text: CAPABILITY_INFO["notes:write"].line },
+      { tier: "medium", text: "Sends spaces away and brings them back." },
+      { tier: "low", text: CAPABILITY_INFO.notifications.line },
+    ]);
+    // Asking for it is a wider manifest: the approval names another hash, and the extension waits on the person.
+    expect(manifestHash(parse({ ...BASE, permissions: ["spaces:write"] }))).not.toBe(manifestHash(parse({ ...BASE })));
+  });
+
+  it("says what the shell draws for it in the sheet's own sentences: a theme among the medium lines, a mark among the low", () => {
+    const sheet = sheetFor(parse({ ...BASE, permissions: ["spaces:mark", "theme", "notes:write"] }));
+    expect(sheet.can).toEqual([
+      { tier: "high", text: CAPABILITY_INFO["notes:write"].line },
+      { tier: "medium", text: "Changes the backdrop and accent colour of your spaces." },
+      { tier: "low", text: "Puts a small mark on the spaces you ran it in." },
+    ]);
+    expect(CAPABILITY_INFO.theme.tier).toBe("medium");
+    expect(CAPABILITY_INFO["spaces:mark"].tier).toBe("low");
+    expect(sheet.declares).toEqual(["permission spaces:mark", "permission theme", "permission notes:write"]);
+    // Asking for either is a wider manifest: another hash, and the extension waits on the person.
+    expect(manifestHash(parse({ ...BASE, permissions: ["theme"] }))).not.toBe(manifestHash(parse({ ...BASE })));
+    expect(manifestHash(parse({ ...BASE, permissions: ["spaces:mark"] }))).not.toBe(manifestHash(parse({ ...BASE, permissions: ["theme"] })));
+  });
+
+  it("counts an item in a space's menu among the right-click items it adds", () => {
+    const worker = { type: "web", main: "worker.js" };
+    const sheet = sheetFor(parse({ ...BASE, worker, contextMenus: [{ id: "here", title: "Game day here", contexts: ["space"] }] }));
+    expect(sheet.adds).toEqual(["an item in the right-click menu"]);
+  });
+
+  it("counts an item in a tab's menu the same way", () => {
+    const worker = { type: "web", main: "worker.js" };
+    const sheet = sheetFor(parse({ ...BASE, worker, contextMenus: [{ id: "save", title: "Save for later", contexts: ["tab"] }, { id: "here", title: "Here", contexts: ["space", "tab"] }] }));
+    expect(sheet.adds).toEqual(["2 items in the right-click menu"]);
+  });
+
+  it("says the places it fills with rows, in the shell's words, and an approval names them", () => {
+    expect(sheetFor(parse({ ...BASE, band: true })).adds).toEqual(["a strip beside the Bar"]);
+    expect(sheetFor(parse({ ...BASE, sidebar: true, band: true, panel: { file: "panel.html" } })).adds).toEqual(["a panel on the Ledge", "a strip beside the Bar", "a section in the sidebar"]);
+    // A place is no capability: nothing is added to what it can do.
+    expect(sheetFor(parse({ ...BASE, band: true })).can).toEqual([]);
+    const plain = manifestHash(parse({ ...BASE }));
+    expect(manifestHash(parse({ ...BASE, band: true }))).not.toBe(plain);
+    expect(manifestHash(parse({ ...BASE, sidebar: true }))).not.toBe(manifestHash(parse({ ...BASE, band: true })));
+    // One that declares none hashes as it did before there were places: nobody is asked again for nothing.
+    expect(plain).toBe(manifestHash(parse({ ...BASE, description: "the same asks" })));
+  });
+
   it("declares every permission, host and tool in full", () => {
     const sheet = sheetFor(
       parse({
@@ -64,6 +114,33 @@ describe("sheetFor", () => {
       }),
     );
     expect(sheet.declares).toEqual(["permission agent:tools", "host https://api.github.com/*", "tool close_pr (write): Close a pull request"]);
+  });
+});
+
+describe("what runs by itself", () => {
+  const WORKER = { worker: { type: "web", main: "worker.js" } };
+
+  it("says each trigger in the shell's words, from the declared data alone, in the manifest's order", () => {
+    const sheet = sheetFor(
+      parse({
+        ...BASE,
+        ...WORKER,
+        permissions: ["spaces:write"],
+        triggers: [
+          { id: "sunday", during: { days: ["sun"], from: "08:00", to: "23:00" } },
+          { id: "standup", at: { days: ["mon", "tue", "wed", "thu", "fri"], time: "09:00" } },
+        ],
+      }),
+    );
+    expect(sheet.runs).toEqual(["Sundays 8:00 AM–11:00 PM", "Weekdays at 9:00 AM"]);
+    // A trigger is no capability: it adds no line of its own to what the extension can do.
+    expect(sheet.can).toEqual([{ tier: "medium", text: CAPABILITY_INFO["spaces:write"].line }]);
+    expect(sheet.declares).toEqual(["permission spaces:write", "trigger sunday: Sundays 8:00 AM–11:00 PM", "trigger standup: Weekdays at 9:00 AM"]);
+  });
+
+  it("says nothing for an extension that only runs when the person runs it", () => {
+    expect(sheetFor(parse({ ...BASE, permissions: ["tabs:read"] })).runs).toEqual([]);
+    expect(sheetFor(parse({ ...BASE, ...WORKER, triggers: [] })).runs).toEqual([]);
   });
 });
 
@@ -105,5 +182,25 @@ describe("manifestHash", () => {
     const base = parse({ ...BASE, permissions: ["tabs:read"] });
     expect(manifestHash(parse({ ...BASE, permissions: ["tabs:read", "tabs:write"] }))).not.toBe(manifestHash(base));
     expect(manifestHash(parse({ ...BASE, permissions: ["tabs:read"], description: "New words" }))).toBe(manifestHash(base));
+  });
+
+  it("is what it was before there were triggers, for a manifest that declares none", () => {
+    // (The value an approval made before triggers existed holds: computed from sheet.ts as it was then.)
+    expect(manifestHash(parse({ ...BASE, permissions: ["tabs:read"] }))).toBe("f192afb9686cd3cd04de08e2d7a09402");
+    expect(manifestHash(parse({ ...BASE, permissions: ["tabs:read"], worker: { type: "web", main: "worker.js" }, triggers: [] }))).toBe(
+      manifestHash(parse({ ...BASE, permissions: ["tabs:read"], worker: { type: "web", main: "worker.js" } })),
+    );
+  });
+
+  it("names the triggers: another hash when one is added or its time changes, the same when only their order or their days' order does", () => {
+    const withTriggers = (triggers: unknown[]): string => manifestHash(parse({ ...BASE, worker: { type: "web", main: "worker.js" }, triggers }));
+    const sunday = { id: "sunday", during: { days: ["sun", "sat"], from: "08:00", to: "23:00" } };
+    const standup = { id: "standup", at: { time: "09:00" } };
+    const none = manifestHash(parse({ ...BASE, worker: { type: "web", main: "worker.js" } }));
+    expect(withTriggers([sunday])).not.toBe(none);
+    expect(withTriggers([sunday, standup])).not.toBe(withTriggers([sunday]));
+    expect(withTriggers([{ ...sunday, during: { ...sunday.during, to: "23:30" } }])).not.toBe(withTriggers([sunday]));
+    expect(withTriggers([standup, sunday])).toBe(withTriggers([sunday, standup]));
+    expect(withTriggers([{ ...sunday, during: { ...sunday.during, days: ["sat", "sun"] } }])).toBe(withTriggers([sunday]));
   });
 });

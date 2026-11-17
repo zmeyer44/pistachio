@@ -129,6 +129,7 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
       <StatusPillRow
         pills={frame.pills}
         onAction={(id, action) => nativeApi()?.sendDeskNotchInput({ status: { id, action } })}
+        onRow={(row) => nativeApi()?.sendDeskNotchInput({ row })}
         className="desk-notch-view-pills"
         style={{ right: NUB_LANE_INSET, bottom: NUB_LANE_FOOT, width: frame.pillsWidth }}
       />

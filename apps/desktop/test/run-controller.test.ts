@@ -19,7 +19,8 @@ import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import { applyNoteEdit, noteUrl, searchNotes, summaryOf, type Note } from "@pistachio/shell-contracts/notes";
 import type { BrowserController } from "../src/main/browser-controller";
 import { ArtifactStore } from "../src/main/artifact-store";
-import { RunController, type CloudRunCommands, type NoteRecordStore, type RunExtensions, type TurnRouter } from "../src/main/run-controller";
+import { type CloudRunCommands, type NoteRecordStore, type RunExtensions, type TurnRouter } from "../src/main/run-controller";
+import { RunHub } from "../src/main/run-hub";
 import { ThreadStore, type ThreadRecord } from "../src/main/thread-store";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 
@@ -276,7 +277,7 @@ function build(options: {
   /** The router's opinion of every new request; absent, nothing is asked and every turn is browser work. */
   router?: TurnRouter;
   /** Sees every publish, with the controller as it is at that moment. */
-  observe?: (controller: RunController) => void;
+  observe?: (controller: RunHub) => void;
   /** The person's extensions' tools and the author turn's drafts (docs/extensions.md §6.2, §8). */
   extensions?: RunExtensions;
 }) {
@@ -288,7 +289,7 @@ function build(options: {
     statuses.push(controller.snapshot()?.status ?? null);
     options.observe?.(controller);
   });
-  const controller = new RunController({
+  const controller = new RunHub({
     browser: browser as unknown as BrowserController,
     notifications: options.notifications ?? new NotificationRouter([]),
     onChange,
@@ -859,26 +860,85 @@ describe("what the thread keeps", () => {
   });
 });
 
+describe("a turn that is still saying it has ended", () => {
+  it("is left to, though the person has moved on to a new conversation: its answer is still sent on", async () => {
+    // (A turn is marked complete before it has told everyone — the notification first, then the answer sent on by
+    // iMessage. A console handed another conversation in between lost the second: RunController's `settling`.)
+    const delivered = deferred<void>();
+    const adapter = { id: "slow", deliver: vi.fn(() => delivered.promise) };
+    // What is sent on by iMessage, and for which conversation it says it is.
+    const sent: Array<{ runId: string; text: string }> = [];
+    const cloud: CloudRunCommands = {
+      ...iMessageCloud().cloud,
+      notifyIMessage: (record, event) => {
+        if (event.kind === "completion") sent.push({ runId: record.run.runId, text: event.text });
+      },
+    };
+    const { model, script } = scriptedModel([answer("First is done.")]);
+    const { controller, threads } = build({ model, notifications: new NotificationRouter([adapter]), cloud });
+
+    const turn = controller.start("First");
+    await expect.poll(() => adapter.deliver.mock.calls.length).toBe(1);
+    const first = controller.snapshot()!;
+    expect(first.status).toBe("completed");
+    expect(sent).toEqual([]);
+
+    // A new conversation, at once: the space has an empty chat, and the first is not cut off.
+    await controller.newThread();
+    expect(controller.snapshot()).toBeNull();
+    script.push(answer("Second is done."));
+    const second = controller.start("Second");
+    await expect.poll(() => controller.snapshot()?.messages.length ?? 0).toBeGreaterThan(0);
+    expect(controller.snapshot()?.runId).not.toBe(first.runId);
+
+    delivered.resolve();
+    await turn;
+    await second;
+    // Each answer went on as its own conversation's. (Handed the second in between, the one console sent the first
+    // conversation's answer as the second's.)
+    const secondId = controller.snapshot()!.runId;
+    expect([...sent].sort((a, b) => a.text.localeCompare(b.text))).toEqual([
+      { runId: first.runId, text: "First is done." },
+      { runId: secondId, text: "Second is done." },
+    ]);
+    expect(threads.get(first.runId)?.run.status).toBe("completed");
+    expect(lastAssistant(threads.get(first.runId)!.run)).toBe("First is done.");
+    // Nothing of it lingers: the list has both, the chat the second.
+    expect(controller.snapshot()?.status).toBe("completed");
+    expect(lastAssistant(controller.snapshot()!)).toBe("Second is done.");
+    expect(controller.threads().map((item) => item.status)).toEqual(["completed", "completed"]);
+  });
+});
+
 describe("scheduled runs", () => {
-  const request = (onStarted = vi.fn()) => ({
-    reminderId: "reminder-1",
-    occurrenceId: "occurrence-1",
+  const request = (onStarted = vi.fn(), id = "1") => ({
+    reminderId: `reminder-${id}`,
+    occurrenceId: `occurrence-${id}`,
     title: "Morning invoice check",
     prompt: "Summarize the invoice page",
     scheduledFor: "2026-08-29T09:00:00.000Z",
     onStarted,
   });
+  /** The reminder's task, once it has started: chosen in the list of conversations, which shows it (RunHub.openThread). */
+  const show = async (controller: RunHub, onStarted: ReturnType<typeof vi.fn>): Promise<string> => {
+    await expect.poll(() => onStarted.mock.calls.length).toBe(1);
+    const runId = onStarted.mock.calls[0]![0] as string;
+    controller.openThread(runId);
+    return runId;
+  };
 
-  it("runs a reminder's task as a thread and reports its answer", async () => {
+  it("runs a reminder's task as a thread of its own, takes nobody's conversation, and reports its answer", async () => {
     const { model } = scriptedModel([tabsList, answer("Digest: one invoice, $120, nothing overdue.")]);
-    const { controller } = build({ model });
+    const { controller, threads } = build({ model });
     const onStarted = vi.fn();
 
     const outcome = await controller.startScheduled(request(onStarted));
 
-    const run = controller.snapshot()!;
-    expect(onStarted).toHaveBeenCalledWith(run.runId);
-    expect(outcome).toEqual({ status: "completed", output: "Digest: one invoice, $120, nothing overdue.", runId: run.runId });
+    const runId = onStarted.mock.calls[0]![0] as string;
+    expect(outcome).toEqual({ status: "completed", output: "Digest: one invoice, $120, nothing overdue.", runId });
+    // Never in front by itself: the person's console is as it was (nothing open).
+    expect(controller.snapshot()).toBeNull();
+    const run = threads.get(runId)!.run;
     expect(run.status).toBe("completed");
     expect(run.origin).toMatchObject({ kind: "reminder", reminderId: "reminder-1", title: "Morning invoice check" });
     expect(run.title).toBe("Morning invoice check");
@@ -890,23 +950,37 @@ describe("scheduled runs", () => {
     expect(controller.threads()[0]?.origin?.kind).toBe("reminder");
   });
 
-  it("is turned away while a thread is running", async () => {
+  it("runs beside the person's own conversation, and is turned away only while another reminder's task is running", async () => {
     const browser = fakeBrowser();
     const blocked = deferred<Page>();
-    browser.inspectPage.mockImplementation(() => blocked.promise);
-    const { model } = scriptedModel([inspect], answer("Done."));
+    browser.inspectPage.mockImplementationOnce(() => blocked.promise);
+    const { model } = scriptedModel([inspect, tabsList, answer("Mine is done."), answer("Digest.")]);
     const { controller } = build({ model, browser });
+    const onStarted = vi.fn();
 
-    const started = controller.start("Read the page");
-    await expect.poll(() => controller.snapshot()?.status).toBe("running");
-    await expect(controller.startScheduled(request())).resolves.toEqual({ status: "busy" });
+    // The reminder's task is at work ...
+    const scheduled = controller.startScheduled(request(onStarted));
+    await expect.poll(() => browser.inspectPage.mock.calls.length).toBe(1);
+    const runId = onStarted.mock.calls[0]![0] as string;
+    expect(controller.threads().map((item) => [item.runId, item.status])).toEqual([[runId, "running"]]);
+    // ... a second one waits its turn ...
+    await expect(controller.startScheduled(request(vi.fn(), "2"))).resolves.toEqual({ status: "busy" });
+    // ... and the person's own conversation runs meanwhile, start to finish, in front.
+    expect(controller.snapshot()).toBeNull();
+    await controller.start("Read my tabs");
+    const mine = controller.snapshot()!;
+    expect(mine.runId).not.toBe(runId);
+    expect(mine.origin).toBeUndefined();
+    expect(mine.status).toBe("completed");
+    expect(lastAssistant(mine)).toBe("Mine is done.");
 
     blocked.resolve(page());
-    await started;
-    expect(controller.snapshot()?.status).toBe("completed");
+    await expect(scheduled).resolves.toEqual({ status: "completed", output: "Digest.", runId });
+    expect(controller.snapshot()?.runId).toBe(mine.runId);
+    expect(controller.threads().map((item) => [item.runId, item.status]).sort()).toEqual([[mine.runId, "completed"], [runId, "completed"]].sort());
   });
 
-  it("takes the console from a paused thread, which waits in the list", async () => {
+  it("leaves a paused thread in the console, and is shown in its place only when chosen", async () => {
     const { model, script } = scriptedModel([], tabsList);
     const { controller } = build({ model, limits: { stepsPerCall: 1, continuations: 0 } });
     await controller.start("Reconcile every invoice in the queue");
@@ -914,36 +988,43 @@ describe("scheduled runs", () => {
     expect(paused.status).toBe("interrupted");
 
     script.push(answer("Digest: nothing overdue."));
-    const outcome = await controller.startScheduled(request());
+    const onStarted = vi.fn();
+    const outcome = await controller.startScheduled(request(onStarted));
     expect(outcome).toMatchObject({ status: "completed", output: "Digest: nothing overdue." });
-    const scheduled = controller.snapshot()!;
-    expect(scheduled.runId).not.toBe(paused.runId);
-    expect(scheduled.origin?.kind).toBe("reminder");
+    const scheduledId = onStarted.mock.calls[0]![0] as string;
+    expect(controller.snapshot()?.runId).toBe(paused.runId);
     expect(controller.threads().map((item) => [item.runId, item.status])).toEqual([
-      [scheduled.runId, "completed"],
       [paused.runId, "interrupted"],
+      [scheduledId, "completed"],
     ]);
 
+    controller.openThread(scheduledId);
+    expect(controller.snapshot()?.origin?.kind).toBe("reminder");
+    expect(controller.snapshot()?.status).toBe("completed");
     controller.openThread(paused.runId);
     expect(controller.snapshot()?.status).toBe("interrupted");
     expect(controller.snapshot()?.toolCalls.map((tool) => tool.name)).toEqual(["tabs.list"]);
   });
-  it("reports a budget pause as a failure and keeps the thread open in the list", async () => {
+
+  it("reports a budget pause as a failure and keeps the thread in the list", async () => {
     const { model } = scriptedModel([], tabsList);
     const onRunEnded = vi.fn();
     const { controller, threads } = build({ model, limits: { stepsPerCall: 1, continuations: 0 }, onRunEnded });
+    const onStarted = vi.fn();
 
-    const outcome = await controller.startScheduled(request());
+    const outcome = await controller.startScheduled(request(onStarted));
 
-    const run = controller.snapshot()!;
-    expect(outcome).toEqual({ status: "failed", error: expect.stringMatching(/after 1 steps/), runId: run.runId });
+    const runId = onStarted.mock.calls[0]![0] as string;
+    expect(outcome).toEqual({ status: "failed", error: expect.stringMatching(/after 1 steps/), runId });
+    const run = threads.get(runId)!.run;
     expect(run.status).toBe("interrupted");
     expect(run.result).toBeNull();
     expect(onRunEnded).toHaveBeenCalledTimes(1);
-    expect(onRunEnded.mock.calls[0]![0]).toMatchObject({ runId: run.runId, status: "interrupted" });
-    expect(controller.threads().map((item) => [item.runId, item.status])).toEqual([[run.runId, "interrupted"]]);
-    expect(threads.get(run.runId)?.run.status).toBe("interrupted");
+    expect(onRunEnded.mock.calls[0]![0]).toMatchObject({ runId, status: "interrupted" });
+    expect(controller.threads().map((item) => [item.runId, item.status])).toEqual([[runId, "interrupted"]]);
     expect(controller.busy()).toBe(false);
+    // Paused, it no longer keeps the next reminder's task waiting.
+    await expect(controller.startScheduled(request(vi.fn(), "2"))).resolves.not.toEqual({ status: "busy" });
   });
 
   it("reports an interruption as a failure the moment the person interrupts", async () => {
@@ -953,10 +1034,12 @@ describe("scheduled runs", () => {
     const { model } = scriptedModel([inspect], answer("Digest."));
     const onRunEnded = vi.fn();
     const { controller } = build({ model, browser, onRunEnded });
+    const onStarted = vi.fn();
 
-    const started = controller.startScheduled(request());
+    const started = controller.startScheduled(request(onStarted));
+    const runId = await show(controller, onStarted);
     await expect.poll(() => controller.snapshot()?.toolCalls.some((tool) => tool.name === "page.inspect" && tool.status === "running")).toBe(true);
-    const runId = controller.snapshot()!.runId;
+    expect(controller.snapshot()?.runId).toBe(runId);
 
     controller.interrupt();
     expect(controller.snapshot()?.status).toBe("interrupted");
@@ -973,10 +1056,11 @@ describe("scheduled runs", () => {
     const { model } = scriptedModel([takeover]);
     const onRunEnded = vi.fn();
     const { controller, threads } = build({ model, onRunEnded });
+    const onStarted = vi.fn();
 
-    const started = controller.startScheduled(request());
+    const started = controller.startScheduled(request(onStarted));
+    const runId = await show(controller, onStarted);
     await expect.poll(() => controller.snapshot()?.status).toBe("human_control");
-    const runId = controller.snapshot()!.runId;
     expect(controller.snapshot()?.pendingTakeover?.reason).toBe("Please sign in.");
     // In the person's hands the run is neither over nor paused by them: the scheduler keeps waiting.
     expect(await settledWithin(started)).toBe(false);
@@ -990,14 +1074,16 @@ describe("scheduled runs", () => {
     expect(threads.get(runId)?.run.status).toBe("human_control");
   });
 
-  it("releases the scheduler when a thread waiting on a question is deleted", async () => {
+  it("keeps a reminder's task that waits on a question, out of sight, and releases the scheduler when it is deleted", async () => {
     const { model } = scriptedModel([question]);
     const onRunEnded = vi.fn();
     const { controller, threads } = build({ model, onRunEnded });
+    const onStarted = vi.fn();
 
-    const started = controller.startScheduled(request());
-    await expect.poll(() => controller.snapshot()?.status).toBe("waiting_for_judgment");
-    const runId = controller.snapshot()!.runId;
+    const started = controller.startScheduled(request(onStarted));
+    await expect.poll(() => controller.threads()[0]?.status).toBe("waiting_for_judgment");
+    const runId = onStarted.mock.calls[0]![0] as string;
+    expect(controller.snapshot()).toBeNull();
     expect(await settledWithin(started)).toBe(false);
 
     // Waiting on the person is not acting: the thread may go.
@@ -1017,32 +1103,33 @@ describe("scheduled runs", () => {
     const { model } = scriptedModel([inspect], answer("Digest."));
     const onRunEnded = vi.fn();
     const { controller, dir } = build({ model, browser, onRunEnded });
+    const onStarted = vi.fn();
 
-    const started = controller.startScheduled(request());
-    await expect.poll(() => controller.snapshot()?.toolCalls.some((tool) => tool.name === "page.inspect" && tool.status === "running")).toBe(true);
-    const runId = controller.snapshot()!.runId;
+    // (Out of sight, as it runs: every console is paused with the window, not only the one in front.)
+    const started = controller.startScheduled(request(onStarted));
+    await expect.poll(() => browser.inspectPage.mock.calls.length).toBe(1);
+    const runId = onStarted.mock.calls[0]![0] as string;
+    expect(controller.snapshot()).toBeNull();
 
     controller.shutdown();
 
-    const run = controller.snapshot()!;
+    // Written synchronously: a store opened right now reads the paused thread.
+    const written = new ThreadStore(dir).get(runId);
+    const run = written!.run;
     expect(run.status).toBe("interrupted");
     expect(run.control).toBe("human");
     expect(run.toolCalls.map((tool) => tool.status)).toEqual(["paused"]);
     expect(run.messages.at(-1)?.role).toBe("system");
     expect(run.messages.at(-1)?.content).toContain("window");
     expect(run.activity.at(-1)?.label).toBe("Paused with the window");
-    // Written synchronously: a store opened right now reads the paused thread.
-    const written = new ThreadStore(dir).get(runId);
-    expect(written?.run.status).toBe("interrupted");
-    expect(written?.run.toolCalls[0]?.status).toBe("paused");
     expect(written?.model.at(-1)).toMatchObject({ role: "user" });
     expect(onRunEnded).toHaveBeenCalledTimes(1);
 
     // The tool that was in flight finishing later changes nothing.
     blocked.resolve(page());
     await expect(started).resolves.toEqual({ status: "failed", error: expect.stringMatching(/window/), runId });
-    expect(controller.snapshot()?.status).toBe("interrupted");
-    expect(controller.snapshot()?.result).toBeNull();
+    expect(new ThreadStore(dir).get(runId)?.run.status).toBe("interrupted");
+    expect(new ThreadStore(dir).get(runId)?.run.result).toBeNull();
     expect(onRunEnded).toHaveBeenCalledTimes(1);
   });
 
@@ -1051,15 +1138,18 @@ describe("scheduled runs", () => {
     const adapter = recordingAdapter();
     const onRunEnded = vi.fn();
     const { controller } = build({ model, notifications: new NotificationRouter([adapter]), onRunEnded });
+    const onStarted = vi.fn();
 
-    const outcome = await controller.startScheduled(request());
+    const outcome = await controller.startScheduled(request(onStarted));
     expect(outcome).toMatchObject({ status: "completed" });
-    const runId = controller.snapshot()!.runId;
+    const runId = onStarted.mock.calls[0]![0] as string;
     expect(systemText(model.doGenerateCalls[0]!.prompt)).toContain("Scheduled-run rules");
     // The reminder announces its own run; the controller stays quiet.
     expect(adapter.messages).toEqual([]);
     expect(onRunEnded).toHaveBeenCalledTimes(1);
 
+    // Chosen in the list, it is the conversation in front, and a message goes on in it.
+    controller.openThread(runId);
     script.push(answer("It is still $120."));
     await controller.message("Is the total still the same?");
 
@@ -1143,7 +1233,7 @@ describe("what the record carries", () => {
 });
 
 describe("review follow-ups", () => {
-  it("cancels a pending approval when the thread is set aside, and reopens it paused", () => {
+  it("does not bring an approval back from the store: the thread reopens paused", () => {
     const dir = scratch();
     const saved = new ThreadStore(dir);
     const approval = {
@@ -1153,20 +1243,18 @@ describe("review follow-ups", () => {
       expiresAt: "2026-08-29T10:30:00.000Z",
       evidence: { action: "Submit", resource: "Invoice", summary: "Submit it", before: {}, after: {}, dataLeaving: [], reversible: false },
     };
+    // (A thread waiting on an approval is kept by its console for as long as the app runs — RunHub — so one read from
+    // the store was cut short by a quit or a crash: the approval was a decision about the page as it was then.)
     saved.saveNow({ version: 1, run: savedRun({ status: "waiting_for_approval", pendingApproval: approval }), model: [] });
     const { controller, threads } = build({ model: scriptedModel([answer("unused")]).model, threads: new ThreadStore(dir) });
     controller.openThread("run-restore-1");
-    expect(controller.snapshot()?.pendingApproval).not.toBeNull();
-    // Not acting, so it can be set aside — but the approval does not survive it.
-    void controller.newThread();
+    expect(controller.snapshot()?.status).toBe("interrupted");
+    expect(controller.snapshot()?.pendingApproval).toBeNull();
+    expect(controller.snapshot()?.control).toBe("human");
+    expect(controller.snapshot()?.messages.at(-1)?.content).toContain("restarted");
     const record = threads.get("run-restore-1");
     expect(record?.run.status).toBe("interrupted");
     expect(record?.run.pendingApproval).toBeNull();
-    expect(record?.run.control).toBe("human");
-    expect(record?.run.messages.at(-1)?.content).toContain("approval was cancelled");
-    controller.openThread("run-restore-1");
-    expect(controller.snapshot()?.status).toBe("interrupted");
-    expect(controller.snapshot()?.pendingApproval).toBeNull();
   });
 
   it("keeps signing evidence after a thread is reopened", async () => {

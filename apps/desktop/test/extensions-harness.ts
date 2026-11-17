@@ -7,12 +7,15 @@ import { vi } from "vitest";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { validateManifest, type PistachioManifest } from "@pistachio/extension-api/manifest";
+import { withSpaceGrant, type ExtensionAwayHost, type ExtensionClosingHost } from "../src/main/extensions/away";
 import { DataFiles } from "../src/main/extensions/data-files";
 import { Ledger } from "../src/main/extensions/ledger";
 import type { CallContext, ExtensionNotesHost, ExtensionRuntime } from "../src/main/extensions/methods";
 import type { ExtensionRecord } from "../src/main/extensions/registry";
 import { ExtensionScope, type ExtensionBrowserHost } from "../src/main/extensions/scope";
+import type { ShownHost } from "../src/main/extensions/shown";
 import { ExtensionStorage } from "../src/main/extensions/storage";
+import { triggerState } from "../src/main/extensions/triggers";
 
 export const EXTENSION_ID = "dev.test.harness";
 
@@ -93,6 +96,7 @@ export interface Harness {
     captureHold: ReturnType<typeof vi.fn>;
     inputSubscribe: ReturnType<typeof vi.fn>;
     agentAsk: ReturnType<typeof vi.fn>;
+    aiComplete: ReturnType<typeof vi.fn>;
   };
   ledger: Ledger;
   ctx(context?: CallContext["context"]): CallContext;
@@ -100,16 +104,50 @@ export interface Harness {
   notes: ExtensionNotesHost & { edit: ReturnType<typeof vi.fn> };
   browser: ReturnType<typeof fakeBrowser>;
   dataRoot: string;
+  /** What the scope wrote to the journal: a space sent away or brought back, a theme set, a tab opened — with nobody there. */
+  journal: { trigger: string | null; verb: "sendAway" | "bringBack" | "setTheme" | "openTab" | "closeSpace"; spaceId: string; title: string; tabId?: string; entryId?: string; until?: number }[];
 }
 
-export function harness(options: { manifest?: PistachioManifest; record?: ExtensionRecord; tabs?: BrowserTabInfo[]; stored?: Record<string, unknown> } = {}): Harness {
+export function harness(
+  options: {
+    manifest?: PistachioManifest;
+    record?: ExtensionRecord;
+    tabs?: BrowserTabInfo[];
+    stored?: Record<string, unknown>;
+    away?: ExtensionAwayHost;
+    closing?: ExtensionClosingHost;
+    shown?: ShownHost;
+    absent?: (triggers: readonly string[]) => boolean;
+    /** Whether the worker running was started by a trigger, with nothing of the person's run in it since. */
+    woken?: () => boolean;
+    /** What `ai.complete` is answered (null: no model can be asked). */
+    answer?: string | null;
+  } = {},
+): Harness {
   const dir = mkdtempSync(join(tmpdir(), "pistachio-ext-harness-"));
   const manifest = options.manifest ?? manifestOf();
   const record = options.record ?? recordOf(null);
   const browser = fakeBrowser(options.tabs ?? []);
   const ledger = new Ledger(join(dir, "ledger.ndjson"));
   let now = 1_000_000;
-  const scope = new ExtensionScope(EXTENSION_ID, { record: () => record, manifest: () => manifest, browser: () => browser, ledger, now: () => now });
+  const journal: Harness["journal"] = [];
+  const scope = new ExtensionScope(EXTENSION_ID, {
+    record: () => record,
+    manifest: () => manifest,
+    browser: () => browser,
+    away: () => options.away ?? null,
+    closing: () => options.closing ?? null,
+    // (As the service keeps it: on the record, ./away withSpaceGrant.)
+    rememberSpace: (spaceId) => {
+      record.spaces = withSpaceGrant(record.spaces ?? [], spaceId);
+    },
+    journal: (line) => journal.push(line),
+    ...(options.absent === undefined ? {} : { absent: options.absent }),
+    ...(options.woken === undefined ? {} : { woken: options.woken }),
+    shown: () => options.shown ?? null,
+    ledger,
+    now: () => now,
+  });
   const notes = {
     list: () => [{ id: "n1", title: "One", updatedAt: "2026-10-30T00:00:00.000Z" }],
     search: () => [],
@@ -156,9 +194,11 @@ export function harness(options: { manifest?: PistachioManifest; record?: Extens
     captureArm: vi.fn(async () => ({ width: 1600, height: 1200 })),
     captureHold: vi.fn(() => 11),
     captureRelease: vi.fn(),
+    triggers: () => (manifest.triggers ?? []).map((trigger) => triggerState(trigger, now, "America/New_York")),
     inputSubscribe: vi.fn(() => 21),
     inputStop: vi.fn(),
     agentAsk: vi.fn(async () => undefined),
+    aiComplete: vi.fn(async () => (options.answer === undefined ? "an answer" : options.answer)),
   };
   return {
     scope,
@@ -171,5 +211,6 @@ export function harness(options: { manifest?: PistachioManifest; record?: Extens
     notes,
     browser,
     dataRoot,
+    journal,
   };
 }

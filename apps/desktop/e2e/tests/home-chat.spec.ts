@@ -13,6 +13,7 @@ import { HOME_PAGE_URL } from "@pistachio/shell-contracts/home";
 import type { PistachioApi, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { shellReady } from "./windows";
 import { launchApp } from "./app";
+import { api, reachBar, selectTab } from "./desk-harness";
 import { captureShell as captureWindow } from "./pages-harness";
 
 /** capturePage right after a change returns the frame before it: let it paint first. */
@@ -89,25 +90,38 @@ test("a question asked of Pistachio turns the home page into the conversation, a
     await expect(shell.getByTestId("home-chat-title")).toHaveText(QUESTION);
     await captureShell(app, "02-conversation.png");
 
-    // The sidebar shows the very same conversation.
-    await shell.getByTestId("home-chat-sidebar").click();
-    const panel = shell.getByTestId("agent-panel");
-    await expect(panel).toBeVisible();
-    await expect(panel.getByTestId("approval-card")).toBeVisible();
-    await expect(panel.getByTestId("assistant-message").first()).toContainText("I’m on it");
-    await captureShell(app, "03-with-sidebar.png");
+    // The conversation is this tab's space's, so its nub has it too — but the card does not come up over the page by
+    // itself to say the same again, and no panel stands beside the desk to open it in. Asked for (the pill's answer
+    // button), the card shows the very same conversation.
+    await expect(shell.getByTestId("home-chat-sidebar")).toHaveCount(0);
+    await expect(shell.getByTestId("agent-panel")).toHaveCount(0);
+    await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
+    await reachBar(shell);
+    await shell.getByTestId("desk-bar-answer").click();
+    const card = shell.getByTestId("desk-answer");
+    await expect(card.getByTestId("approval-card")).toBeVisible();
+    await expect(card.getByTestId("assistant-message").first()).toContainText("I’m on it");
+    await captureShell(app, "03-with-card.png");
+    await shell.getByTestId("desk-answer-dismiss").click();
+    await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
 
-    // The panel is a drop zone of its own, on the same hook: files let go
-    // over its thread are staged in the console's composer, not the page's.
-    const report = await fileDrag(shell, [{ name: "report.md", type: "text/markdown", base64: Buffer.from("# Report").toString("base64") }]);
-    await dragEvents(panel.getByTestId("assistant-message").first(), report, ["dragenter", "dragover"]);
-    await expect(panel.getByTestId("attachment-drop-veil")).toBeVisible();
-    await expect(shell.getByTestId("home-chat-drop-veil")).toHaveCount(0);
-    await dragEvents(panel.getByTestId("assistant-message").first(), report, ["drop"]);
-    await expect(panel.getByTestId("attachment-drop-veil")).toHaveCount(0);
-    await expect(panel.getByTestId("staged-attachments")).toContainText("report.md");
-    await expect(shell.getByTestId("home-staged-attachments")).toHaveCount(0);
-    await shell.getByTestId("console-close").click();
+    // Away to another Home tab — a space of its own, with no conversation — and back, while this one waits on the
+    // person: the tab is its conversation still, as it was left. (The run in view while they were away was the other
+    // tab's space's: none. 2026-11-17: that closed this tab's chat, and the home page was back on return.)
+    const asked = (await snapshot(shell)).activeTabId!;
+    await api(shell, (pistachio) => pistachio.createTab("pistachio://home/"));
+    await expect.poll(async () => (await snapshot(shell)).activeTabId).not.toBe(asked);
+    const other = (await snapshot(shell)).activeTabId!;
+    expect((await snapshot(shell)).tabs.find((tab) => tab.id === other)?.url).toBe(HOME_PAGE_URL);
+    await expect(shell.locator(`[data-testid="home-page"][data-tab-id="${other}"]`)).toHaveAttribute("data-mode", "home");
+    await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
+    await selectTab(shell, asked);
+    await expect.poll(async () => (await snapshot(shell)).run?.purpose).toBe(QUESTION);
+    await expect(shell.locator(`[data-testid="home-page"][data-tab-id="${asked}"]`)).toHaveAttribute("data-mode", "chat");
+    await expect(shell.locator(`[data-testid="home-page"][data-tab-id="${asked}"]`).getByTestId("approval-card")).toBeVisible();
+    await shell.evaluate((tabId) => (window as unknown as { pistachio: PistachioApi }).pistachio.closeTab(tabId), other);
+    await expect.poll(async () => (await snapshot(shell)).tabs.map((tab) => tab.id)).toEqual([asked]);
+    await expect(home).toHaveCount(1);
 
     // Declining the approval ends the run; the page still shows the thread.
     await chat.getByTestId("reject-button").click();

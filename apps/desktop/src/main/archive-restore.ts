@@ -12,11 +12,13 @@ import type { TabArchiveStore } from "./tab-archive-store";
 
 export type ArchiveRestoreHost = Pick<
   BrowserController,
-  "activeSpaceId" | "hasRoomForSpace" | "restoreArchivedTabs" | "createTabGroup" | "commitTidy" | "selectTab" | "selectGroup"
+  "activeSpaceId" | "hasRoomForSpace" | "hasRoomForTabs" | "restoreArchivedTabs" | "createTabGroup" | "commitTidy" | "selectTab" | "selectGroup"
 >;
 
 /** Why a filed space did not come back: the Profile holds as many spaces as it may. */
 export const NO_ROOM_FOR_SPACE = "There is no room for another space here. Close one, then restore this again.";
+/** Why a filed space did not come back: the Profile's session would not keep its tabs beside the ones open (BrowserController.hasRoomForTabs). */
+export const NO_ROOM_FOR_TABS = "There are too many tabs open here for that space to come back. Close some, then restore this again.";
 
 /**
  * Restore `entryId` (`tabIndex`: that one tab of a filed space) into its
@@ -25,12 +27,19 @@ export const NO_ROOM_FOR_SPACE = "There is no room for another space here. Close
  * no room for (MAX_TAB_GROUPS_PER_SPACE) is refused before anything is
  * restored, and its entry stays to be restored once a space is freed. (Until
  * 2026-10-09 the entry went first: an empty space restored at the cap was
- * lost with it, and one with tabs came back as loose tabs.)
+ * lost with it, and one with tabs came back as loose tabs.) So is a space
+ * whose tabs the Profile's session would not keep beside the ones open
+ * (hasRoomForTabs): restored, they would be dropped at the next save and
+ * gone at the next launch, the entry spent.
+ *
+ * `quiet`: back, and nothing brought in front — the Undo of a close nobody
+ * pressed (an extension's, docs/primitives.md §2.6) puts the space back where
+ * it was, which was not in front.
  */
 export async function restoreArchiveEntry(
   archive: Pick<TabArchiveStore, "get" | "remove" | "removeGroupTab">,
   host: ArchiveRestoreHost,
-  request: { entryId: string; tabIndex?: number },
+  request: { entryId: string; tabIndex?: number; quiet?: boolean },
   profileExists: (spaceId: string) => boolean,
 ): Promise<{ ok: boolean; reason?: string }> {
   const entry = archive.get(request.entryId);
@@ -49,6 +58,7 @@ export async function restoreArchiveEntry(
     if (tabIds.length > 0) archive.remove(entry.id);
   } else {
     if (!host.hasRoomForSpace(spaceId)) return { ok: false, reason: NO_ROOM_FOR_SPACE };
+    if (!host.hasRoomForTabs(spaceId, entry.tabs.length)) return { ok: false, reason: NO_ROOM_FOR_TABS };
     tabIds = host.restoreArchivedTabs(spaceId, entry.tabs);
     // The space comes back as itself — its id when that is free, so its Stack and conversation are there with it
     // (since 2026-10-09; an entry filed before has no id, and gets a new one).
@@ -59,7 +69,7 @@ export async function restoreArchiveEntry(
   }
   host.commitTidy();
   const [first] = tabIds;
-  if (spaceId === host.activeSpaceId()) {
+  if (request.quiet !== true && spaceId === host.activeSpaceId()) {
     if (first !== undefined) await host.selectTab(first);
     // A space filed empty comes back empty, in front.
     else if (space !== null) await host.selectGroup(space.id);

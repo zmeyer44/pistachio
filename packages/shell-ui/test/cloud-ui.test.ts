@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { ThreadListItem } from "@pistachio/protocol";
+import type { ThreadListItem, RunSummary } from "@pistachio/protocol";
 import type { AccountState, ChannelInfo, CloudStatus, EgressStatus, SyncStatus, WorkspaceSyncStatus } from "@pistachio/shell-contracts/ipc";
 import { DEFAULT_ACCOUNT } from "../src/lib/account";
 import {
+  agentHoldsChat,
   channelNameError,
   channelSeenLabel,
   cloudEnabledSpaceIds,
@@ -62,6 +63,19 @@ describe("cloud runs", () => {
     // Absent means this desktop runs it (packages/protocol).
     expect(isCloudRun(thread())).toBe(false);
     expect(isCloudRun(null)).toBe(false);
+  });
+
+  it("hold no chat: a turn at work on this device does, until it is stopped; a cloud run goes on without it", () => {
+    const working = { control: "agent", status: "running" } as unknown as RunSummary;
+    // At work here: another conversation cannot be chosen, nor a new one begun (main refuses it too).
+    expect(agentHoldsChat({ ...working, executor: { kind: "desktop" } } as RunSummary)).toBe(true);
+    expect(agentHoldsChat(working)).toBe(true);
+    // In the cloud browser: the chat may take up another conversation while it runs (the console's switcher let
+    // it; the desk Bar's is the desktop's only one now).
+    expect(agentHoldsChat({ ...working, executor: { kind: "cloud", deviceId: "d", workerId: "w" } } as RunSummary)).toBe(false);
+    // Paused, or none: nothing holds it.
+    expect(agentHoldsChat({ ...working, status: "interrupted", control: "human" } as RunSummary)).toBe(false);
+    expect(agentHoldsChat(null)).toBe(false);
   });
 
   it("lists the cloud runs still going, newest first", () => {

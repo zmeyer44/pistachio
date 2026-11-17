@@ -51,6 +51,63 @@ export function extensionWindowEntries(tab: { id: string; url: string }): MenuEn
   ];
 }
 
+/**
+ * A tab's own menu — its row in the sidebar (chrome/tab-menu.tsx): the `tab` items the extensions on in this Profile
+ * declared (docs/primitives.md §4.6), for a page their hosts allow, under the same caption. A click goes to main
+ * (`menu`, `fromTab`), which checks the item against the tab as it has it and wakes the extension with that tab.
+ */
+export function extensionTabEntries(tab: { id: string; url: string }): MenuEntry[] {
+  const owners = useExtensions
+    .getState()
+    .snapshot.extensions.filter((extension) => extension.enabled && extension.enabledHere && extension.pending === null)
+    .map((extension) => ({ extension, items: extension.menuItems.filter((item) => item.contexts.includes("tab") && urlMatchesHosts(tab.url, item.hosts)) }))
+    .filter((owner) => owner.items.length > 0);
+  if (owners.length === 0) return [];
+  const named = owners.length > 1;
+  return [
+    { separator: true },
+    { note: "Extensions" },
+    ...owners.flatMap(({ extension, items }) =>
+      items.map(
+        (item): MenuEntry => ({
+          label: named ? `${extension.name}: ${item.title}` : item.title,
+          icon: <ExtensionMark extension={extension} className="extension-menu-mark" />,
+          testId: "tab-extension-item",
+          onSelect: () => void extensionsRequest({ type: "menu", id: extension.id, item: item.id, click: { tabId: tab.id, pageUrl: tab.url, fromTab: true } }),
+        }),
+      ),
+    ),
+  ];
+}
+
+/**
+ * A space's own menu (chrome/tab-group-menu.tsx): the `space` items the extensions on in this Profile declared
+ * (docs/primitives.md §4), under the same caption. A click goes to main (`menu`) with the space, which wakes the
+ * extension and gives it that space — the press is the person's hand in it.
+ */
+export function extensionSpaceEntries(spaceId: string): MenuEntry[] {
+  const owners = useExtensions
+    .getState()
+    .snapshot.extensions.filter((extension) => extension.enabled && extension.enabledHere && extension.pending === null)
+    .map((extension) => ({ extension, items: extension.menuItems.filter((item) => item.contexts.includes("space")) }))
+    .filter((owner) => owner.items.length > 0);
+  if (owners.length === 0) return [];
+  const named = owners.length > 1;
+  return [
+    { note: "Extensions" },
+    ...owners.flatMap(({ extension, items }) =>
+      items.map(
+        (item): MenuEntry => ({
+          label: named ? `${extension.name}: ${item.title}` : item.title,
+          icon: <ExtensionMark extension={extension} className="extension-menu-mark" />,
+          testId: "space-extension-item",
+          onSelect: () => void extensionsRequest({ type: "menu", id: extension.id, item: item.id, click: { tabId: null, pageUrl: null, spaceId } }),
+        }),
+      ),
+    ),
+  ];
+}
+
 export function extensionMenuEntries(extension: ExtensionInfo, options: { pin?: boolean } = {}): MenuEntry[] {
   const entries: MenuEntry[] = [
     { label: "Options", icon: <Settings2 aria-hidden="true" />, testId: "extension-menu-options", onSelect: () => openExtensionSettings({ id: extension.id }) },

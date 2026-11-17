@@ -1482,6 +1482,17 @@ export class DeskEngine {
   }
 
   /**
+   * The desk is about to pass to another space, and what the shell drew over this one's windows goes first (the
+   * Bar's answer and pill: the chat is its space's, DeskBar). A window uncovered so, on its way out, must not be
+   * handed the keyboard it was waiting for (#pendingFocus, #focusPending): main would make its tab the one in use
+   * again, over the tab just chosen in the space the desk is passing to. The pass names who takes the keyboard next
+   * (switchGroup).
+   */
+  leaving(): void {
+    this.#pendingFocus = null;
+  }
+
+  /**
    * Something the shell draws over the desk — a card beside the sidebar, the
    * Bar's answer — or null to take it away. A live page is a native view and would
    * paint over it, so the windows under it give way to their stills; the

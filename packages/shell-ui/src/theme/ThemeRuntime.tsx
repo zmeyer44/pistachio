@@ -28,6 +28,7 @@ function sameAppearance(a: AppearanceSettings, b: AppearanceSettings): boolean {
     a.contrast === b.contrast &&
     a.surfaceOpacity === b.surfaceOpacity &&
     a.radius === b.radius &&
+    a.accentOverride === b.accentOverride &&
     a.colors.length === b.colors.length &&
     a.colors.every((color, index) => color === b.colors[index])
   );
@@ -36,7 +37,10 @@ function sameAppearance(a: AppearanceSettings, b: AppearanceSettings): boolean {
 function applyAppearance(appearance: AppearanceSettings, prefersDark: boolean): void {
   const dark = appearance.scheme === "dark" || (appearance.scheme === "system" && prefersDark);
   const root = document.documentElement;
-  const accent = appearance.colors[0] ?? DEFAULT_APPEARANCE.colors[0]!;
+  const own = appearance.colors[0] ?? DEFAULT_APPEARANCE.colors[0]!;
+  // Main's, for the space in front: an extension's theme (docs/primitives.md §4) sets the accent the surfaces are
+  // tinted with and the ring drawn in. The palette's own colours — the gradient, the second and third — stay the person's.
+  const accent = appearance.accentOverride ?? own;
   const tint = Math.round(appearance.intensity * (dark ? 14 : 9));
   const contrast = Math.round(appearance.contrast * (dark ? 9 : 5));
   const raised = dark ? "#242629" : "#FFFFFF";
@@ -55,7 +59,7 @@ function applyAppearance(appearance: AppearanceSettings, prefersDark: boolean): 
   // palette (the agent ring in styles.css) need the whole theme, and a theme
   // set to one or two colours repeats its last rather than falling to a
   // hard-coded hue.
-  const [, second = accent, third = second] = appearance.colors;
+  const [, second = own, third = second] = appearance.colors;
   root.style.setProperty("--theme-accent", accent);
   root.style.setProperty("--theme-accent-2", second);
   root.style.setProperty("--theme-accent-3", third);

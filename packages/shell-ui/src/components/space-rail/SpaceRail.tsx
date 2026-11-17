@@ -1,12 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { House, Plus } from "lucide-react";
+import { House, MoonStar, Plus } from "lucide-react";
 import { canMergeSpaces, tabGroupTitle } from "@pistachio/shell-contracts/tab-groups";
 import { ChromeRegion } from "../../chrome/manifest-renderers";
 import { useShelfDrag } from "../../chrome/shelf-drag";
+import { awayTileCount, awayTileLabel } from "../../lib/away-spaces";
 import { anchorOf, useDeskChrome, type DeskAnchor } from "../../lib/desk/chrome";
 import { useGroupContexts } from "../../lib/desk/group-context";
 import { NEW_SPACE_EVENT, newSpace, selectSpace } from "../../lib/desk/open";
 import { groupPageOf } from "../../lib/desk/store";
+import { markLine, marksFor, marksLabel } from "../../lib/extensions/shown";
+import { useExtensionsState } from "../../lib/extensions/use-extensions";
 import { sharedSpace } from "../../lib/live/entries";
 import { useLiveShare } from "../../lib/live/store";
 import { useAppStore } from "../../store";
@@ -17,6 +20,8 @@ import { DeskMoreButton, DeskRailToggle } from "../desk/DeskSidebarControls";
 import { Ledge } from "../extensions/Ledge";
 import { SidebarRailContext } from "../sidebar-rail";
 import { FaviconCluster, type ClusterTab } from "../TabGroupRow";
+import { SPACE_AGENT_LABELS, type SpaceAgentState } from "@pistachio/shell-contracts/desk-agent";
+import type { ShellSnapshot } from "@pistachio/shell-contracts/ipc";
 import { chooseHome } from "./actions";
 import { bounceRailItem, railTileOf } from "./bounce";
 import { renameSpace } from "./column-state";
@@ -50,7 +55,8 @@ function windowsLabel(count: number): string {
  * window's own ground, top to bottom Home, a hairline, every rail space as a
  * tile — its mark (TabGroupRow's FaviconCluster, a size up, on its colour)
  * with its count on the corner past four tabs — scrolling without a scrollbar when they
- * outgrow it, and at the foot New space and the Profile's menu. On the rail
+ * outgrow it, and at the foot — while any space is away — the Away tile
+ * (docs/primitives.md §2), then New space and the Profile's menu. On the rail
  * alone (SidebarMode "rail") its head holds the button that brings the card
  * back and the desk's ⋯, where the traffic lights were (main hides them),
  * and background media is the desk's now playing.
@@ -96,7 +102,17 @@ export function SpaceRail({
   const shared = useLiveShare(sharedSpace);
   const guests = useLiveShare((state) => state.participants.length);
   const homeShared = useAppStore((state) => shared !== null && isHomeSpace(shared, state.snapshot));
+  // What the agent has going in the spaces nobody is looking at (docs/desk-agent.md §3, "Conversations stay in their
+  // space"): the space in front says it at its nub, so its own tile says nothing.
+  const agents = useAppStore((state) => state.snapshot?.spaceAgents);
+  const homeAgent = useAppStore((state) => homeAgentOf(state.snapshot));
   const liveNote = ` · ${liveMarkLabel(guests)}`;
+  // The spaces that are away: none of them a tile here — one mark for them all, at the foot, while there are any.
+  const awayCount = useAppStore((state) => state.snapshot?.awaySpaces?.length ?? 0);
+  // The marks extensions put on spaces' tiles (docs/primitives.md §4), and the order the extensions stand in: a tile
+  // draws the first of its marks, and says every one.
+  const spaceMarks = useExtensionsState((state) => state.snapshot.spaceMarks);
+  const extensions = useExtensionsState((state) => state.snapshot.extensions);
   const mergingInto = moving.carry?.kind === "merge" ? moving.carry.into : null;
   /** A carried tile's own place: following the pointer (a hair larger, or shrunk over a tile it would merge into), or on its way where it was let go. */
   const carriedStyle = (): CSSProperties =>
@@ -167,7 +183,7 @@ export function SpaceRail({
         data-rail-key={HOME_VIEW}
         data-rail-drop="home"
         data-dropping={railDrop?.target === "home" || deskDrop?.item === "home" ? "" : undefined}
-        aria-label={homeShared ? `Home${liveNote}` : "Home"}
+        aria-label={`Home${homeShared ? liveNote : ""}${view !== HOME_VIEW && homeAgent !== null ? `, ${SPACE_AGENT_LABELS[homeAgent]}` : ""}`}
         aria-current={view === HOME_VIEW ? "true" : undefined}
         title={homeShared ? `Home${liveNote}` : "Home"}
         data-live={homeShared ? "" : undefined}
@@ -177,6 +193,7 @@ export function SpaceRail({
       >
         <House aria-hidden="true" />
         {homeShared ? <LiveMark /> : null}
+        {view !== HOME_VIEW && homeAgent !== null ? <AgentMark state={homeAgent} /> : null}
       </button>
       <span className="space-rail-rule" aria-hidden="true" />
       {/* (Out of the window's drag region, as the single sidebar's list was: a press between its tiles is the list's.) */}
@@ -188,6 +205,9 @@ export function SpaceRail({
           const windows = windowsLabel(count);
           const stack = count === 0 ? (contexts.find((context) => context.groupId === space.group.id)?.items.length ?? 0) : 0;
           const live = shared === space.group.id;
+          const marks = marksFor(spaceMarks, extensions, space.group.id);
+          const mark = marks[0];
+          const agent = view === space.group.id ? undefined : agents?.[space.group.id];
           return (
             <button
               key={space.group.id}
@@ -210,7 +230,8 @@ export function SpaceRail({
               data-moving={moving.id === space.group.id && moving.settling === null ? "" : undefined}
               data-settling={moving.id === space.group.id && moving.settling !== null ? moving.settling : undefined}
               data-live={live ? "" : undefined}
-              aria-label={`${name}, ${windows}${live ? liveNote : ""}`}
+              data-agent={agent}
+              aria-label={`${name}, ${windows}${live ? liveNote : ""}${agent === undefined ? "" : `, ${SPACE_AGENT_LABELS[agent]}`}${marksLabel(marks)}`}
               aria-current={view === space.group.id ? "true" : undefined}
               style={
                 moving.id === space.group.id
@@ -242,6 +263,21 @@ export function SpaceRail({
             >
               <FaviconCluster tabs={members} stack={stack} />
               {live ? <LiveMark /> : null}
+              {agent === undefined ? null : <AgentMark state={agent} />}
+              {/* An extension's mark, drawn by the shell at the corner the live mark is not in: a glyph, or a dot, in its
+                  tone. What it means is the tile's name and its card's line — the extension's words inside the shell's. */}
+              {mark === undefined ? null : (
+                <span
+                  aria-hidden="true"
+                  data-testid="rail-space-mark"
+                  data-extension-id={mark.extensionId}
+                  data-tone={mark.tone}
+                  data-dot={mark.glyph === null ? "" : undefined}
+                  className="space-rail-mark"
+                >
+                  {mark.glyph}
+                </span>
+              )}
             </button>
           );
         })}
@@ -251,6 +287,7 @@ export function SpaceRail({
         {/* The Ledge on the rail alone (docs/extensions.md X9): a short column of the first pinned extensions and its ⋯,
             above New space. Beside the card, the card's foot holds it. */}
         {railOnly ? <Ledge variant="rail" /> : null}
+        {awayCount > 0 ? <AwayTile count={awayCount} /> : null}
         <button
           type="button"
           data-testid="rail-new-space"
@@ -286,10 +323,74 @@ export function SpaceRail({
           group={cardSpace.group}
           name={nameOf(cardSpace, tabsOf(cardSpace))}
           windows={windowsLabel(tabsOf(cardSpace).length)}
+          marks={marksFor(spaceMarks, extensions, cardSpace.group.id).map(markLine)}
           anchor={card.anchor}
         />
       ) : null}
     </nav>
+  );
+}
+
+/**
+ * The rail's Away tile (docs/primitives.md §2): there only while a space is
+ * away, a quiet mark with how many are — never a space's tile, so nothing is
+ * carried onto it and the card's tab never sits on it. A press opens the
+ * card that lists them, beside it over the desk (AwayCard, a desk side card:
+ * lib/desk/chrome.ts), and another puts it away; from the keyboard the
+ * card's first Bring back takes it.
+ */
+/** What the agent has going in Home's spaces (each Home tab's own, a favorite's or a pin's page's): the most pressing of them. */
+function homeAgentOf(snapshot: ShellSnapshot | null): SpaceAgentState | null {
+  const agents = snapshot?.spaceAgents;
+  if (agents === undefined) return null;
+  let found: SpaceAgentState | null = null;
+  for (const [groupId, state] of Object.entries(agents)) {
+    if (!isHomeSpace(groupId, snapshot)) continue;
+    if (state === "asking") return state;
+    if (state === "working" || found === null) found = state;
+  }
+  return found;
+}
+
+/**
+ * The agent's mark on a space's tile, while the person is in another: a ring
+ * turning while a turn runs there, a dot once it waits on them (amber) or has
+ * answered (green). What it means is the tile's name.
+ */
+function AgentMark({ state }: { state: SpaceAgentState }) {
+  return <span aria-hidden="true" data-testid="rail-space-agent" data-state={state} className="space-rail-agent" />;
+}
+
+function AwayTile({ count }: { count: number }) {
+  const open = useDeskChrome((state) => state.card?.kind === "away");
+  const ref = useRef<HTMLButtonElement>(null);
+  const label = awayTileLabel(count);
+  return (
+    <button
+      ref={ref}
+      type="button"
+      data-testid="rail-away"
+      data-count={count}
+      aria-label={label}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      title={label}
+      // A press leaves the keyboard where it was (a window's page).
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => {
+        const el = ref.current;
+        if (el === null) return;
+        const chrome = useDeskChrome.getState();
+        if (chrome.card?.kind === "away") chrome.closeCard("away");
+        else chrome.openCard({ kind: "away", anchor: anchorOf(el), pinned: true });
+      }}
+      className="space-rail-away no-drag"
+    >
+      <MoonStar aria-hidden="true" />
+      <span className="space-rail-away-count" aria-hidden="true">
+        {awayTileCount(count)}
+      </span>
+    </button>
   );
 }
 

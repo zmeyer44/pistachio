@@ -438,7 +438,11 @@ export interface DeskNotchFrame {
   buttons: { close: boolean; side: boolean };
 }
 
-/** An extension's live pill as the notch view draws it in the nub's lane: its mark, its text, its actions. */
+/**
+ * What lies in the nub's lane, as the notch view draws it: an extension's live pill (`ui.setStatus`: its mark, its
+ * text, its actions) — or, with `row`, one row of its band (docs/primitives.md §4.5), drawn as a chip: `text` is
+ * the row's, `actions` its buttons. An extension's rows follow one another, and are drawn together under its mark.
+ */
 export interface DeskNotchPill {
   /** The extension's id. */
   id: string;
@@ -446,6 +450,20 @@ export interface DeskNotchPill {
   iconUrl: string | null;
   text: string;
   actions: { id: string; title: string }[];
+  row?: DeskNotchRow;
+}
+
+/** A band's row in the lane: what a chip has beyond a pill's text and buttons, and what a press on it names. */
+export interface DeskNotchRow {
+  /** Its place among the extension's rows: with the extension's id, the chip's key. */
+  index: number;
+  /** The space the band was set for; null for every space. */
+  scope: string | null;
+  /** The row's id — it can be pressed — or null. */
+  id: string | null;
+  mark: { glyph: string | null; tone: string } | null;
+  detail: string;
+  value: string;
 }
 
 /** At most this many pills, and actions on one, travel to the notch view (the shell lays no more in the lane). */
@@ -463,7 +481,26 @@ function isDeskNotchPill(value: unknown): value is DeskNotchPill {
     text(pill.text, 400) &&
     Array.isArray(pill.actions) &&
     pill.actions.length <= DESK_NOTCH_PILL_ACTIONS_MAX &&
-    pill.actions.every((action: unknown) => typeof action === "object" && action !== null && text((action as { id?: unknown }).id, 64) && text((action as { title?: unknown }).title, 64))
+    pill.actions.every((action: unknown) => typeof action === "object" && action !== null && text((action as { id?: unknown }).id, 64) && text((action as { title?: unknown }).title, 64)) &&
+    (pill.row === undefined || isDeskNotchRow(pill.row))
+  );
+}
+
+function isDeskNotchRow(value: unknown): value is DeskNotchRow {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Partial<DeskNotchRow>;
+  const text = (s: unknown, max: number): boolean => typeof s === "string" && s.length <= max;
+  const mark = row.mark as { glyph?: unknown; tone?: unknown } | null | undefined;
+  return (
+    typeof row.index === "number" &&
+    Number.isInteger(row.index) &&
+    row.index >= 0 &&
+    row.index < 64 &&
+    (row.scope === null || text(row.scope, 128)) &&
+    (row.id === null || text(row.id, 64)) &&
+    (mark === null || (typeof mark === "object" && mark !== undefined && (mark.glyph === null || text(mark.glyph, 16)) && text(mark.tone, 16))) &&
+    text(row.detail, 200) &&
+    text(row.value, 64)
   );
 }
 
@@ -758,7 +795,24 @@ export function isDeskPipInput(value: unknown): value is DeskPipInput {
  * `buttons`): one pressed (`bar`), and the pointer onto one or off them
  * (`hover`), for the shell's own tooltip beside it.
  */
-export type DeskNotchInput = "enter" | "leave" | "press" | { status: { id: string; action: string } } | { bar: DeskNotchButton } | { hover: DeskNotchButton | null };
+export type DeskNotchInput =
+  | "enter"
+  | "leave"
+  | "press"
+  | { status: { id: string; action: string } }
+  /** A band's chip in the lane was pressed (`button` null), one of its buttons, or — `remove` — its ×. */
+  | { row: DeskNotchRowPress }
+  | { bar: DeskNotchButton }
+  | { hover: DeskNotchButton | null };
+
+export interface DeskNotchRowPress {
+  /** The extension's id. */
+  id: string;
+  scope: string | null;
+  row: string | null;
+  button: string | null;
+  remove: boolean;
+}
 
 export type DeskNotchButton = "close" | "side";
 
@@ -769,6 +823,22 @@ export function isDeskNotchInput(value: unknown): value is DeskNotchInput {
   if (typeof value !== "object" || value === null) return false;
   if ("bar" in value) return Object.keys(value).length === 1 && typeof value.bar === "string" && DESK_NOTCH_BUTTONS.includes(value.bar);
   if ("hover" in value) return Object.keys(value).length === 1 && (value.hover === null || (typeof value.hover === "string" && DESK_NOTCH_BUTTONS.includes(value.hover)));
+  if ("row" in value) {
+    const press = value.row as Partial<DeskNotchRowPress> | null;
+    const named = (s: unknown, max: number): boolean => s === null || (typeof s === "string" && s.length > 0 && s.length <= max);
+    return (
+      Object.keys(value).length === 1 &&
+      typeof press === "object" &&
+      press !== null &&
+      typeof press.id === "string" &&
+      press.id.length > 0 &&
+      press.id.length <= 128 &&
+      named(press.scope, 128) &&
+      named(press.row, 64) &&
+      named(press.button, 64) &&
+      typeof press.remove === "boolean"
+    );
+  }
   const status = (value as { status?: unknown }).status;
   if (typeof status !== "object" || status === null) return false;
   const { id, action } = status as { id?: unknown; action?: unknown };

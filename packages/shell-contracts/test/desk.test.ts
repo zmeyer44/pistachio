@@ -63,6 +63,20 @@ describe("the desk's contract", () => {
     // A press on a pill's action, from the view, is the extension's and the action's names.
     expect(isDeskNotchInput({ status: { id: pill.id, action: "stop" } })).toBe(true);
     expect(isDeskNotchInput({ status: { id: pill.id } })).toBe(false);
+    // A band's row in the lane (docs/primitives.md §4.5): a chip with the row's own parts, and what a press on it names.
+    const row = { index: 0, scope: null, id: "game:1", mark: { glyph: "🏈", tone: "green" }, detail: "3rd quarter", value: "4:12" };
+    expect(isDeskNotchFrame({ ...frame, pills: [{ ...pill, row }] })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, pills: [{ ...pill, row: { ...row, scope: "football", id: null, mark: null } }] })).toBe(true);
+    for (const bad of [{ index: -1 }, { index: 1.5 }, { scope: 7 }, { id: "x".repeat(65) }, { mark: { glyph: "x".repeat(17), tone: "green" } }, { mark: { glyph: null } }, { detail: null }, { value: "x".repeat(65) }]) {
+      expect(isDeskNotchFrame({ ...frame, pills: [{ ...pill, row: { ...row, ...bad } }] }), JSON.stringify(bad)).toBe(false);
+    }
+    const press = { id: pill.id, scope: null, row: "game:1", button: null, remove: false };
+    expect(isDeskNotchInput({ row: press })).toBe(true);
+    expect(isDeskNotchInput({ row: { ...press, scope: "football", row: null, button: "open" } })).toBe(true);
+    expect(isDeskNotchInput({ row: { ...press, remove: true } })).toBe(true);
+    for (const bad of [{ id: "" }, { scope: "" }, { row: 7 }, { button: "x".repeat(65) }, { remove: undefined }]) expect(isDeskNotchInput({ row: { ...press, ...bad } }), JSON.stringify(bad)).toBe(false);
+    expect(isDeskNotchInput({ row: press, status: { id: pill.id, action: "stop" } })).toBe(false);
+    expect(isDeskNotchInput({ row: null })).toBe(false);
     expect(isDeskNotchInput("press")).toBe(true);
     expect(isDeskNotchInput("hover")).toBe(false);
   });

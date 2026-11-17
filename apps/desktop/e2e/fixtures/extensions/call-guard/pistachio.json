@@ -1,0 +1,21 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.call-guard",
+  "name": "Call guard",
+  "version": "1.0.0",
+  "description": "An e2e fixture: the space /guard is run in goes away while a call page is open and while the screen is locked, and a page opens at nine.",
+  "permissions": ["spaces:write", "tabs:read", "tabs:write", "media:microphone"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [
+    { "id": "call", "when": { "page": { "host": "127.0.0.1", "path": "/call" } } },
+    { "id": "locked", "when": { "screen": "locked" } },
+    { "id": "opened", "on": { "tab": "opened" } },
+    { "id": "closed", "on": { "tab": "closed" } },
+    { "id": "arrived", "on": { "page": { "host": "127.0.0.1", "path": "/call" } } },
+    { "id": "nine", "at": { "time": "09:00" } },
+    { "id": "ten", "at": { "time": "10:00" } }
+  ],
+  "bar": {
+    "commands": [{ "name": "guard", "description": "Send this space away while a call is open", "run": { "event": true } }]
+  }
+}

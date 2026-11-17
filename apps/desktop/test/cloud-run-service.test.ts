@@ -18,7 +18,8 @@ import { deriveSpaceKeys, runEventSealAad, seal, toBase64, utf8 } from "@pistach
 import type { ControlClient } from "../src/main/account/control-client";
 import type { BrowserController } from "../src/main/browser-controller";
 import { CloudRunService, parseStoredRunEvent, webStartUrl } from "../src/main/cloud/cloud-run-service";
-import { RunController, type CloudRunCommands } from "../src/main/run-controller";
+import { type CloudRunCommands } from "../src/main/run-controller";
+import { RunHub } from "../src/main/run-hub";
 import { ThreadStore } from "../src/main/thread-store";
 
 const dirs: string[] = [];
@@ -557,6 +558,18 @@ describe("starting a cloud run", () => {
     expect(h.service.liveRunIds()).toEqual(["run-new"]);
   });
 
+  it("runs where the request says — its Profile, its page, and no page at all for one that names none — never whichever tab is in view by then", async () => {
+    // (The Bar reads both as the message is sent; the request is made once the files it mentions have been read.)
+    const h = harness();
+    h.service.start();
+    await h.service.startRun({ intent: "Go", spaceId: "work", startUrl: "https://example.com/invoices" });
+    await h.service.startRun({ intent: "Go", spaceId: "work", startUrl: "" });
+    expect(h.control.created).toEqual([
+      { spaceId: "work", intent: "Go", attachments: [], startUrl: "https://example.com/invoices" },
+      { spaceId: "work", intent: "Go", attachments: [] },
+    ]);
+  });
+
   it("omits a start address that is not a web page and refuses an unknown Space or an empty intent", async () => {
     const h = harness({ activeTabUrl: "pistachio://welcome" });
     h.service.start();
@@ -700,10 +713,10 @@ function fakeBrowser(): BrowserController {
   } as unknown as BrowserController;
 }
 
-function controller(threads: ThreadStore, cloud: CloudRunCommands | null): { controller: RunController; onChange: ReturnType<typeof vi.fn> } {
+function controller(threads: ThreadStore, cloud: CloudRunCommands | null): { controller: RunHub; onChange: ReturnType<typeof vi.fn> } {
   const onChange = vi.fn();
   return {
-    controller: new RunController({ browser: fakeBrowser(), notifications: new NotificationRouter([]), onChange, threads, cloud }),
+    controller: new RunHub({ browser: fakeBrowser(), notifications: new NotificationRouter([]), onChange, threads, cloud }),
     onChange,
   };
 }

@@ -65,9 +65,13 @@ export class WorkerHost {
     return this.#view === null || this.#view.webContents.isDestroyed() ? null : this.#view.webContents;
   }
 
-  /** The worker, started if need be; resolves once its page has loaded (its handlers registered). */
-  start(): Promise<WebContents> {
-    this.touch();
+  /**
+   * The worker, started if need be; resolves once its page has loaded (its handlers registered). `quiet`: a worker
+   * already running is not counted as used by this — a trigger arriving is not the person's hand, and triggers that
+   * keep arriving are not what keeps a worker up (docs/primitives.md §3.3).
+   */
+  start(options: { quiet?: boolean } = {}): Promise<WebContents> {
+    if (!(options.quiet === true && this.running)) this.touch();
     if (this.#looping) return Promise.reject(new Error("the worker crashed three times in a minute; it starts again once its files change"));
     if (this.#ready !== null && this.running) return this.#ready;
     const window = new BaseWindow({ show: false, frame: false, focusable: false, skipTaskbar: true, width: 1, height: 1 });

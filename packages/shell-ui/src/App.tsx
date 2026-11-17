@@ -89,7 +89,13 @@ export function App() {
   const paused = useAppStore((state) => state.snapshot?.run?.status === "waiting_for_approval");
   useEffect(() => {
     const state = useAppStore.getState();
-    if (paused && state.settings.approvals.focusConsoleOnPause) state.setConsoleOpen(true);
+    if (!paused || !state.settings.approvals.focusConsoleOnPause) return;
+    // (On the desktop the chat brought out is the desk's card, over the page: not over a home page that IS the
+    // conversation, where the approval already stands — docs/home-chat.md. The web's console opens beside it.)
+    const tabId = state.snapshot?.activeTabId ?? null;
+    const runId = state.snapshot?.run?.runId;
+    if (nativeApi() !== null && tabId !== null && runId !== undefined && state.homeChats[tabId]?.runId === runId) return;
+    state.setConsoleOpen(true);
   }, [paused]);
 
   // A newer Pistachio nobody has put off is offered over the page, as soon

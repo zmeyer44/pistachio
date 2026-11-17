@@ -92,7 +92,7 @@ export interface PageContextMenuExtensionItem {
   extensionName: string;
   itemId: string;
   title: string;
-  contexts: readonly ("page" | "selection" | "link" | "image" | "window")[];
+  contexts: readonly ("page" | "selection" | "link" | "image" | "window" | "tab" | "space")[];
 }
 
 /**
@@ -540,7 +540,7 @@ function extensionSection(
   const applies = extensionMenuContexts(params);
   const byExtension = new Map<string, PageContextMenuExtensionItem[]>();
   for (const item of items) {
-    if (!item.contexts.some((context) => context !== "window" && applies.has(context))) continue;
+    if (!item.contexts.some((context) => context !== "window" && context !== "tab" && context !== "space" && applies.has(context))) continue;
     byExtension.set(item.extensionId, [...(byExtension.get(item.extensionId) ?? []), item]);
   }
   const section: Section = [];

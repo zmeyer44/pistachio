@@ -74,6 +74,7 @@ import { integrationRules, integrationTools } from "./integrations/index.js";
 import type { IntegrationToolDeps, IntegrationToolHost } from "./integrations/host.js";
 import { ALL_TOOL_GROUPS, EXTENSION_AUTHOR_TOOL_GROUP, filterToolSet } from "./tool-groups.js";
 import { DESK_RULES, deskTools, type DeskToolHost } from "./desk-tools.js";
+import { SPACE_RULES, spaceTools, type SpaceToolHost } from "./space-tools.js";
 import {
   authorInstructions,
   EXTENSION_RULES,
@@ -359,6 +360,13 @@ export interface AiAgentRunInput {
    */
   desk?: { host: DeskToolHost };
   /**
+   * The spaces themselves (docs/primitives.md §2): listed, sent away,
+   * brought back. Absent where a space cannot be sent away, and on a turn
+   * nobody is there for (the cloud, one a reminder started); `timezone` is
+   * the zone a time given without an offset is read in, as a reminder's is.
+   */
+  spaces?: { host: SpaceToolHost; timezone: string };
+  /**
    * The dedicated integrations the person connected for this run's Space —
    * one host per provider, each minting API tokens from its sealed grant
    * (integrations/index.ts). Absent, or empty, when nothing is connected:
@@ -602,7 +610,7 @@ Notes and long tasks:
 
 export const MAX_TASK_NOTES = 12_000;
 
-type InstructionInput = Pick<AiAgentRunInput, "browser" | "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "desk" | "integrations" | "extensions" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
+type InstructionInput = Pick<AiAgentRunInput, "browser" | "mode" | "memory" | "reminders" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "desk" | "spaces" | "integrations" | "extensions" | "credentials" | "purchaseApproval" | "scheduled" | "now">;
 
 /** The extensions' paragraph, when this turn has any of their tools. */
 function extensionRules(input: Pick<AiAgentRunInput, "extensions">): string {
@@ -623,10 +631,10 @@ function instructions(input: InstructionInput, notes: string): string {
 function answerInstructions(input: InstructionInput, notes: string): string {
   const now = (input.now ?? (() => new Date()))();
   const today = now.toISOString().slice(0, 10);
-  const timezone = input.reminders?.timezone ?? "UTC";
+  const timezone = input.reminders?.timezone ?? input.spaces?.timezone ?? "UTC";
   const memory = input.memory;
   const integrations = input.integrations === undefined ? "" : integrationRules(input.integrations.hosts);
-  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("answer")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${integrations}${extensionRules(input)}${input.scheduled === undefined ? "" : SCHEDULED_RULES}`;
+  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.spaces === undefined ? "" : SPACE_RULES}${input.artifacts === undefined ? "" : artifactRules("answer")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${integrations}${extensionRules(input)}${input.scheduled === undefined ? "" : SCHEDULED_RULES}`;
   const trimmedNotes = notes.trim();
   const context = `${memory === undefined || memory.prompt === "" ? "" : `\n\n${memory.prompt}`}${trimmedNotes === "" ? "" : `\n\nYour notes from earlier in this thread:\n${trimmedNotes}`}`;
   return `You are Pistachio, an assistant in the sidebar of the person's web browser, replying in conversation.
@@ -672,7 +680,7 @@ const CLOUD_TAB_RULES = `- Reuse relevant tabs, bringing one to the front with t
 function browseInstructions(input: InstructionInput, notes: string): string {
   const now = (input.now ?? (() => new Date()))();
   const today = now.toISOString().slice(0, 10);
-  const timezone = input.reminders?.timezone ?? "UTC";
+  const timezone = input.reminders?.timezone ?? input.spaces?.timezone ?? "UTC";
   // Memory goes after the rules it must not override: it is context the
   // person wrote about themselves, and the block says so in its own words
   // as well as by where it sits. The notes go last of all: they change most
@@ -694,7 +702,7 @@ function browseInstructions(input: InstructionInput, notes: string): string {
     : `- For passwords, authentication codes, payment details, recovery secrets, and other sensitive editable fields on a cloud tab, use request_credentials. Include only the minimum fields needed and copy each target from page_inspect. The encrypted values are inserted without being shown to you; inspect the page after the run resumes and continue the task. When the person's vault already holds those fields for the site, they are entered at once and the run does not pause; if the site rejects them, call request_credentials again and the person is asked for fresh values.
 - Do not request takeover merely because a step involves login, MFA, or a consent you can give with a page control. Operate every usable page control yourself. Use request_takeover only when the page requires a person-bound action that the available tools technically cannot perform, such as a CAPTCHA, hardware passkey, or bot check with no operable control${lastStep}. Explain the specific technical blocker and stop interacting until they resume you.`;
   const integrations = input.integrations === undefined ? "" : integrationRules(input.integrations.hosts);
-  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.artifacts === undefined ? "" : artifactRules("browse")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${input.desk === undefined ? "" : DESK_RULES}${integrations}${extensionRules(input)}${input.scheduled === undefined ? "" : SCHEDULED_RULES}${NOTES_RULES}`;
+  const rules = `${memory === undefined ? "" : MEMORY_RULES}${input.reminders === undefined ? "" : REMINDER_RULES}${input.spaces === undefined ? "" : SPACE_RULES}${input.artifacts === undefined ? "" : artifactRules("browse")}${input.bookmarks === undefined ? "" : BOOKMARK_RULES}${input.userNotes === undefined ? "" : NOTE_RULES}${input.watchtower === undefined ? "" : WATCHTOWER_RULES}${input.desk === undefined ? "" : DESK_RULES}${integrations}${extensionRules(input)}${input.scheduled === undefined ? "" : SCHEDULED_RULES}${NOTES_RULES}`;
   const context = `${memory === undefined || memory.prompt === "" ? "" : `\n\n${memory.prompt}`}\n\nYour notes for this thread:\n${notes.trim() === "" ? "(none yet — write them with task_notes once you have a plan)" : notes.trim()}`;
   return `You are Pistachio, a browser-operating agent working collaboratively in the person's real browser.
 
@@ -1795,6 +1803,7 @@ export async function runAiBrowserAgent(input: AiAgentRunInput): Promise<AiAgent
           : deskTools(input.desk.host, input.callbacks, (toolCallId, file) => {
               pictures.set(toolCallId, { dataUrl: file.dataUrl, mediaType: file.mediaType, label: `File “${file.name}” from context_read`, filename: file.name });
             })),
+        ...(input.spaces === undefined ? {} : spaceTools(input.spaces.host, input.spaces.timezone, now, input.callbacks)),
         ...(input.integrations === undefined
           ? {}
           : integrationTools(input.integrations.hosts, input.callbacks, {

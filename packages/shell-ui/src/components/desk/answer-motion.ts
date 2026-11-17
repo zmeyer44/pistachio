@@ -50,7 +50,6 @@ import {
   snapZone,
   spotFromBox,
   stageOf,
-  writeFloatSpot,
   zoneBox,
   type AnswerZone,
   type FloatArea,
@@ -202,6 +201,8 @@ export interface AnswerMotionHost {
   held(held: boolean): void;
   /** What the card covers on the desk, the ghost while it shows, and the zone lit (or the hint) — in lane coordinates, or null. */
   cover(card: Rect | null, ghost: Rect | null, zone: Rect | null): void;
+  /** Where the card stands now, to keep: its space's own place (answer-float.ts's writeFloatSpot, by the space). */
+  keep(spot: FloatSpot): void;
 }
 
 function scalar(): Scalar {
@@ -1221,7 +1222,7 @@ export class AnswerMotion {
 
   /** Docked: kept so on this device, with the size it floats at next. */
   #keepDocked(): void {
-    writeFloatSpot({ floating: false, fx: 0, fy: 0, w: this.#floatSize?.w ?? FLOAT_W, h: this.#floatSize?.h ?? 0, cw: Math.round(this.#chatW) });
+    this.#host.keep({ floating: false, fx: 0, fy: 0, w: this.#floatSize?.w ?? FLOAT_W, h: this.#floatSize?.h ?? 0, cw: Math.round(this.#chatW) });
   }
 
   /** A floating card at rest: kept where it is on this device — in a zone, the zone, with its own size for when it is taken out. */
@@ -1230,7 +1231,7 @@ export class AnswerMotion {
     const rect = this.#rect();
     if (this.#zone === null) this.#floatSize = { w: rect.w, h: rect.h };
     const own = this.#zone === null ? rect : { ...rect, ...this.#freeSize() };
-    writeFloatSpot({
+    this.#host.keep({
       ...spotFromBox(this.#area, own, true),
       ...(this.#zone !== null ? { zone: this.#zone } : this.#inStage ? { inStage: true } : {}),
       cw: Math.round(this.#chatW),

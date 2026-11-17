@@ -38,6 +38,7 @@ import { isNoticeTone, NOTICE_MESSAGE_MAX, type NoticeTone } from "./notice.js";
 // (Types only from settings: the shell's preload imports this module, and settings' own imports would ride in with it.)
 import type { SettingsSection, SidebarMode } from "./settings.js";
 import type { TidySummary } from "./tidy.js";
+import type { AwaySpaceInfo } from "./away.js";
 
 /**
  * The utility chrome views main hosts beside the shell window's page: the
@@ -482,6 +483,18 @@ export type ShellCommand =
    * that carries Undo — an action, which a plain `notice` cannot (§3.1).
    */
   | { type: "tidyFinished"; summary: TidySummary }
+  /**
+   * A space went away, or main brought one back on its own clock (docs/primitives.md §2; ./away). The shell says so in a
+   * notice that carries the way back — Bring back for one sent, Show for one returned — whoever sent it: the person,
+   * the agent, an extension. `broughtBy`: the extension that brought it back, by its name on the sheet.
+   */
+  | { type: "spaceAway"; event: "sent" | "returned"; space: AwaySpaceInfo; broughtBy?: string }
+  /**
+   * A space was closed into the archive by something other than the person's own press — an extension, by its name on
+   * the sheet (`by`; docs/primitives.md §2.6). The shell says so in a notice that carries the way back: Undo restores
+   * the archive's entry (`entryId`; null when there was nothing worth filing).
+   */
+  | { type: "spaceClosed"; title: string; tabCount: number; entryId: string | null; by: string }
   /** The downloads list (components/DownloadsPopover.tsx), a popover under its chip. */
   | { type: "openDownloads" }
   | { type: "toggleDownloads" }
@@ -514,10 +527,15 @@ export type ShellCommand =
    * just did with no visible result of its own — "URL copied" after ⌘⇧C.
    */
   | { type: "notice"; message: string; tone?: NoticeTone }
-  /** Stage an image or selected words from a page in the console's composer. */
-  | { type: "attachToChat"; insert: ChatInsert }
+  /**
+   * Stage an image or selected words from a page in the chat's composer.
+   * `groupId`: the space (tab group) in front as the menu's item was chosen
+   * — a picture takes its time to read, and it is that space's chat it was
+   * added to, whichever is in front by the time it arrives.
+   */
+  | { type: "attachToChat"; insert: ChatInsert; groupId?: string }
   /** The page's menu offered it, but the image could not be read. */
-  | { type: "attachToChatFailed"; reason: string }
+  | { type: "attachToChatFailed"; reason: string; groupId?: string }
   /** The live share's pill was pressed over the desk (docs/live-share.md §1): the Live card. */
   | { type: "openLiveCard" }
   /**
@@ -530,6 +548,11 @@ export type ShellCommand =
    * `extensions({ type: "statusAction", id, action, source: "toast" })`.
    */
   | { type: "extensionToast"; id: string; message: string; action: { id: string; title: string } | null };
+
+/** A command's optional space (tab group) id: absent, or a string of a sane length. */
+function optionalGroupId(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && value.length > 0 && value.length <= 128);
+}
 
 export function isShellCommand(value: unknown): value is ShellCommand {
   if (typeof value !== "object" || value === null) return false;
@@ -601,10 +624,10 @@ export function isShellCommand(value: unknown): value is ShellCommand {
       return typeof section === "string" && section.length <= 128;
     }
     case "attachToChat":
-      return isChatInsert((value as { insert?: unknown }).insert);
+      return isChatInsert((value as { insert?: unknown }).insert) && optionalGroupId((value as { groupId?: unknown }).groupId);
     case "attachToChatFailed": {
       const reason = (value as { reason?: unknown }).reason;
-      return typeof reason === "string" && reason.length > 0 && reason.length <= 256;
+      return typeof reason === "string" && reason.length > 0 && reason.length <= 256 && optionalGroupId((value as { groupId?: unknown }).groupId);
     }
     case "prepareBrief": {
       const spaceId = (value as { spaceId?: unknown }).spaceId;
@@ -613,6 +636,34 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "briefReady": {
       const title = (value as { title?: unknown }).title;
       return typeof title === "string" && title.length > 0 && title.length <= 80;
+    }
+    case "spaceAway": {
+      // (Its shape alone, checked here: ./away at runtime would ride into the shell's preload with the session's reading.)
+      const { event, space, broughtBy } = value as { event?: unknown; space?: unknown; broughtBy?: unknown };
+      if ((event !== "sent" && event !== "returned") || typeof space !== "object" || space === null) return false;
+      if (broughtBy !== undefined && (typeof broughtBy !== "string" || broughtBy.length === 0 || broughtBy.length > 80)) return false;
+      const raw = space as Record<string, unknown>;
+      const by = raw["by"];
+      return (
+        typeof raw["id"] === "string" && raw["id"].length > 0 && raw["id"].length <= 128 &&
+        typeof raw["spaceId"] === "string" &&
+        typeof raw["title"] === "string" && raw["title"].length <= 240 &&
+        typeof raw["color"] === "string" &&
+        typeof raw["tabCount"] === "number" &&
+        Array.isArray(raw["favicons"]) &&
+        typeof by === "object" && by !== null && typeof (by as { kind?: unknown }).kind === "string" &&
+        typeof raw["since"] === "number" &&
+        (raw["until"] === undefined || typeof raw["until"] === "number")
+      );
+    }
+    case "spaceClosed": {
+      const { title, tabCount, entryId, by } = value as { title?: unknown; tabCount?: unknown; entryId?: unknown; by?: unknown };
+      return (
+        typeof title === "string" && title.length <= 240 &&
+        typeof tabCount === "number" && Number.isInteger(tabCount) && tabCount >= 0 &&
+        (entryId === null || (typeof entryId === "string" && entryId.length > 0 && entryId.length <= 128)) &&
+        typeof by === "string" && by.length > 0 && by.length <= 80
+      );
     }
     case "tidyFinished": {
       const summary = (value as { summary?: unknown }).summary;

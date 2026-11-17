@@ -18,6 +18,8 @@ export interface ExtTab {
   active: boolean;
   loading: boolean;
   kind: "page" | "shell" | "extension";
+  /** When it was last in use, ms since 1970 — for a tab opened behind others and not looked at yet, when it was opened. */
+  lastActiveAt: number;
 }
 
 export interface ExtSpace {
@@ -25,6 +27,125 @@ export interface ExtSpace {
   name: string;
   color: string | null;
   tabIds: string[];
+  /** When any tab of it was last in use, ms since 1970; 0 for a space with no tabs. */
+  lastActiveAt: number;
+  /**
+   * The person's: they made it or made it theirs (named it, moved a tab into it, keep a Stack or a conversation in
+   * it), or it grew from a tab of their own — and a Home tab's or a favorite's page's always is. False only for a
+   * space Pistachio gathered by itself (Tidy) that nobody has touched since: what Tidy itself may file when idle.
+   */
+  byPerson: boolean;
+}
+
+/**
+ * A space that is away (docs/primitives.md §2): off the rail, its tabs asleep, to come back as itself — at `until`
+ * by Pistachio's own clock, or when asked. `mine`: this extension sent it.
+ */
+export interface ExtAwaySpace {
+  id: string;
+  name: string;
+  color: string | null;
+  tabCount: number;
+  /** When it went, ms since 1970. */
+  since: number;
+  /** When it is due back, ms since 1970; absent, it stays away until someone brings it back. */
+  until?: number;
+  mine: boolean;
+}
+
+/** What lies behind a space's windows (./theme.ts backdropSchema): a colour, a gradient, or a picture of the extension's folder. */
+export type ExtBackdrop =
+  | { color: string }
+  | { gradient: { colors: string[]; angle?: number } }
+  | { image: string; fit?: "cover" | "contain" | "tile"; dim?: number };
+
+/**
+ * A theme the shell draws for an extension (docs/primitives.md §4): a backdrop for the desk and an accent colour,
+ * for every space or — `spaceId` — for one the person gave it. Main keeps it; nothing of the extension's runs to
+ * keep it there.
+ */
+export interface ExtTheme {
+  backdrop?: ExtBackdrop | null;
+  colors?: { accent?: string };
+  spaceId?: string;
+}
+
+/** A small mark on a space's tile (./theme.ts markSchema). */
+export interface ExtSpaceMark {
+  glyph?: string;
+  tone?: "neutral" | "green" | "amber" | "red" | "blue";
+  label: string;
+}
+
+/** A row's leading mark (./sites.ts rowMarkSchema): a glyph — a dot when left out — in a tone. */
+export interface ExtRowMark {
+  glyph?: string;
+  tone?: "neutral" | "green" | "amber" | "red" | "blue";
+}
+
+/**
+ * One row of the band or of a sidebar section (./sites.ts rowSchema): the shell's own row, filled by the extension.
+ * With an `id` it can be pressed; its `buttons` are pressed on their own.
+ */
+export interface ExtRow {
+  id?: string;
+  mark?: ExtRowMark;
+  text: string;
+  /** Said after the text, quieter. */
+  detail?: string;
+  /** At the row's trailing end, in figures that line up: a score, a count, a time. */
+  value?: string;
+  buttons?: { id: string; title: string }[];
+}
+
+/**
+ * What an extension has a place showing (docs/primitives.md §4.5): for every space or — `spaceId` — for one the
+ * person gave it. `title` heads a sidebar section. Main keeps it; nothing of the extension's runs to keep it there.
+ */
+export interface ExtSiteView {
+  title?: string;
+  rows: ExtRow[];
+  spaceId?: string;
+}
+
+/** A press on a row the shell draws for the extension: which row (null for one with no id whose button was pressed), which button (null: the row itself), and the space in front. */
+export interface ExtRowPress {
+  site: "band" | "sidebar";
+  row: string | null;
+  button: string | null;
+  spaceId: string | null;
+}
+
+/**
+ * A declared trigger as main's clock has it now (docs/primitives.md §3; pistachio.json → triggers).
+ *
+ * - `during` (a window): `holds` — whether the window is on now — and `changesAt`, when that next changes (ms since
+ *   1970; null when it never does).
+ * - `at` (an instant): `at`, the latest one that came due (null when none has yet), and `next`, the one to come.
+ * - `every` (an interval): `at`, the latest mark that came due — null while the trigger its `while` names does not
+ *   hold — and `next`, the mark to come.
+ * - `when` (a signal): `holds` — whether what it names is so now — and `known`: false while main cannot tell (a
+ *   calendar not connected), and then `holds` is false and no handler is run.
+ * - `on` (an event): `events` — what happened since the handler last ran, oldest first, at most twenty; empty from
+ *   `triggers.get`, which has nothing to say of an event but that it is declared.
+ *
+ * A handler is handed the same shape when the answer is not the one it last heard: it reconciles to it, it does
+ * not count on having heard the one before. An event's handler is the exception: it is told what happened, once.
+ */
+export type ExtTriggerState =
+  | { id: string; kind: "during"; holds: boolean; changesAt: number | null }
+  | { id: string; kind: "at"; at: number | null; next: number | null }
+  | { id: string; kind: "every"; at: number | null; next: number | null }
+  | { id: string; kind: "when"; holds: boolean; known: boolean }
+  | { id: string; kind: "on"; events: ExtTriggerEvent[] };
+
+/**
+ * One thing that happened (an `on` trigger): when, and — for a tab's and a page's — which tab. Never an address:
+ * reading the tab is `tabs:read`'s to allow (`tabs.get`).
+ */
+export interface ExtTriggerEvent {
+  at: number;
+  tabId?: string;
 }
 
 export interface ExtDeskWindow {
@@ -105,6 +226,10 @@ export interface ExtMenuClick {
   selectionText?: string;
   srcUrl?: string;
   windowTabId?: string;
+  /** The item was chosen from a tab's own menu — its row in the sidebar (a `tab` item): `tabId` is that tab. */
+  fromTab?: true;
+  /** The space whose menu the item was chosen from (a `space` item): the choice gives the extension that space. */
+  spaceId?: string;
 }
 
 export interface ExtBarCommandContext {
@@ -171,6 +296,29 @@ export interface ExtMethodMap {
   "tabs.close": { args: { id: string }; result: null };
   "spaces.list": { args: Record<string, never>; result: ExtSpace[] };
   "spaces.current": { args: Record<string, never>; result: ExtSpace | null };
+  /** `until`: an instant in ms (the runtime turns a Date or an ISO string into one). */
+  "spaces.sendAway": { args: { spaceId: string; until?: number }; result: ExtAwaySpace };
+  "spaces.bringBack": { args: { spaceId: string }; result: null };
+  "spaces.away": { args: Record<string, never>; result: ExtAwaySpace[] };
+  /** Put a mark on a space's tile, or (null) take this extension's off: a space the person gave it. */
+  /** Close a space into the archive, whole (the person's own *Close space*): restored from there as itself. */
+  "spaces.close": { args: { spaceId: string }; result: null };
+  "spaces.setMark": { args: { spaceId: string; mark: ExtSpaceMark | null }; result: null };
+  /** A small mark on a tab's row, or — null — this extension's taken off: any tab it could see. */
+  "tabs.setMark": { args: { tabId: string; mark: ExtSpaceMark | null }; result: null };
+  /** Replace this extension's theme for every space, or for `spaceId`. */
+  "theme.set": { args: ExtTheme; result: null };
+  "theme.clear": { args: { spaceId?: string }; result: null };
+  /** This extension's theme there, as it set it; null when it has none (never set, cleared, removed by the person, or another's put in its place). */
+  "theme.get": { args: { spaceId?: string }; result: ExtTheme | null };
+  /** Replace what this extension has a place showing — the band, a sidebar section — for every space, or for `spaceId`. No rows takes it off. */
+  "sites.set": { args: { site: "band" | "sidebar" } & ExtSiteView; result: null };
+  "sites.clear": { args: { site: "band" | "sidebar"; spaceId?: string }; result: null };
+  /** What it has there, as it set it; null when it has nothing (never set, cleared, removed by the person). */
+  "sites.get": { args: { site: "band" | "sidebar"; spaceId?: string }; result: ExtSiteView | null };
+  /** A declared trigger as the clock has it now; NOT_FOUND for an id pistachio.json does not declare. */
+  "triggers.get": { args: { id: string }; result: ExtTriggerState };
+  "triggers.list": { args: Record<string, never>; result: ExtTriggerState[] };
   "desk.state": { args: { spaceId?: string }; result: ExtDeskState };
   "pages.read": { args: { tabId: string; format: "text" | "markdown" | "elements" }; result: { text: string } };
   "pages.screenshot": { args: { tabId: string }; result: { png: ArrayBuffer } };
@@ -205,6 +353,8 @@ export interface ExtMethodMap {
   "notes.create": { args: { title: string; markdown: string }; result: { id: string } };
   "notes.update": { args: { id: string; mode: "replace" | "append" | "section"; markdown: string; section?: string }; result: null };
   "agent.ask": { args: { prompt: string; spaceId?: string }; result: null };
+  /** One question to a model, no tools: `system` says how to answer, `prompt` is the question. The answer's text. */
+  "ai.complete": { args: { prompt: string; system?: string; maxTokens?: number }; result: { text: string } };
   "power.preventSleep": { args: Record<string, never>; result: { holdId: number } };
   "power.release": { args: { holdId: number }; result: null };
 
@@ -225,6 +375,7 @@ export interface ExtEventMap {
   "tabs.removed": { tabId: string };
   "tabs.activated": { tabId: string | null };
   "spaces.currentChanged": { space: ExtSpace | null };
+  "spaces.awayChanged": { event: "sent" | "returned"; space: ExtAwaySpace };
   "desk.changed": { state: ExtDeskState };
   "input.event": { subscriptionId: number; events: ExtInputEvent[] };
   "capture.ended": { tabId: string; reason: string };
@@ -243,5 +394,9 @@ export interface ExtInvokeMap {
   message: { message: Json; from: ExtContext };
   /** A status pill's or a toast's or a notification's action was chosen. */
   statusAction: { action: string; source: "status" | "toast" | "notification" };
+  /** A row the shell draws for it was pressed, or one of the row's buttons (`name` is the place: "band", "sidebar"). */
+  press: ExtRowPress;
   installed: { reason: "install" | "update" | "dev-reload" };
+  /** A declared trigger's answer changed (`name` is its id): the state to reconcile to. */
+  trigger: ExtTriggerState;
 }

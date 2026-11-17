@@ -193,6 +193,22 @@ export function deskStateLines(state: DeskAgentState): string[] {
  * (RunController.followGroup), and those two are kept only so an older
  * shell's command is not refused.
  */
+/**
+ * What the agent is doing in a space (tab group), as its tile on the rail
+ * says while the person is in another (docs/desk-agent.md §3, "Conversations
+ * stay in their space"; main's RunHub.spaceAgents): `working`, a turn is
+ * running there; `asking`, it waits on the person — a question, an approval,
+ * a takeover; `answered`, a turn ended there that they have not looked at
+ * since. A space with nothing going has none.
+ */
+export type SpaceAgentState = "working" | "asking" | "answered";
+
+export const SPACE_AGENT_LABELS: Record<SpaceAgentState, string> = {
+  working: "Pistachio is working here",
+  asking: "Pistachio is waiting for you here",
+  answered: "Pistachio has answered here",
+};
+
 export type DeskConversationCommand =
   /** @deprecated Main follows its own current space (runs.followGroup); nothing need say a desk came up. */
   | { type: "enter"; groupId: string }

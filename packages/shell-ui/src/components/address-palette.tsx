@@ -15,6 +15,7 @@ import { ArrowRight, Boxes, ClipboardPaste, ListX, MoveRight, NotebookPen, Rotat
 import type { LucideIcon } from "lucide-react";
 import { ADDRESS_INTENT_LIMITS, type AddressIntentPage } from "@pistachio/shell-contracts/address-intent";
 import type { BrowserTabInfo, CommandPaletteSnapshot, ShellSnapshot } from "@pistachio/shell-contracts/ipc";
+import type { LocalApp } from "@pistachio/shell-contracts/local-apps";
 import { NOTE_UNTITLED, searchNotes, type NoteSummary } from "@pistachio/shell-contracts/notes";
 import { SETTINGS_SECTIONS, type SettingsSection } from "@pistachio/shell-contracts/settings";
 import { DEFAULT_SIDEBAR_STATE, entryPageOf, presetAnchorId } from "@pistachio/shell-contracts/sidebar";
@@ -55,6 +56,13 @@ export type Entry =
   | { kind: "tab"; id: string; url: string; tabId: string; title: string; tab: BrowserTabInfo; note: string }
   /** A kept page — a preset, a favorite, a pin — opened by its anchor (@pistachio/shell-contracts/sidebar). */
   | { kind: "shelf"; id: string; url: string; anchorId: string; title: string; faviconUrl: string | null; note: string }
+  /**
+   * A web app on one of this Mac's ports (docs/local-apps.md), a pill in the
+   * address bar's tray. `tabId`: its tab in the space in use, which choosing
+   * it goes to rather than loading it again — and then `url` is that tab's
+   * address, where ↵ lands; else the app's own.
+   */
+  | { kind: "local"; id: string; url: string; title: string; app: LocalApp; tabId: string | null }
   /** A non-URL operation surfaced by the unified palette. */
   | {
       kind: "action";
@@ -796,6 +804,8 @@ export function PaletteResultRow({
         <Favicon src={entry.faviconUrl} seed={displayHost(entry.url) || entry.title} className={PALETTE_FAVICON_CLASS} />
       ) : entry.kind === "recent" ? (
         <Favicon src={entry.faviconUrl} seed={entry.host} className={PALETTE_FAVICON_CLASS} />
+      ) : entry.kind === "local" ? (
+        <Favicon src={entry.app.iconUrl} seed={entry.title} className={PALETTE_FAVICON_CLASS} />
       ) : (
         <span className={PALETTE_GLYPH_CLASS}>
           {entry.kind === "action" ? (

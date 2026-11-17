@@ -25,6 +25,7 @@ import {
   Mail,
   MousePointerClick,
   MoveVertical,
+  MoonStar,
   NotebookPen,
   Paperclip,
   PanelsTopLeft,
@@ -110,6 +111,8 @@ function toolIcon(name: AgentToolCall["name"] | null): LucideIcon {
   if (name.startsWith("gmail.")) return Mail;
   if (name.startsWith("google_calendar.")) return Calendar;
   if (name.startsWith("desk.")) return LayoutGrid;
+  // A space sent away, brought back, or the spaces listed (docs/primitives.md §2.4): the menu's own mark for Send away.
+  if (name.startsWith("space.") || name.startsWith("spaces.")) return MoonStar;
   if (name.startsWith("context.")) return Paperclip;
   // An extension's tool (its label is the extension's name) and the author turn's drafting (docs/extensions.md §6.2, §8).
   if (name.startsWith("ext.")) return Puzzle;

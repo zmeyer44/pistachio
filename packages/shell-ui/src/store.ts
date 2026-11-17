@@ -3,7 +3,7 @@ import type { EvidenceEntry } from "@pistachio/evidence";
 import type { MemoryAddInput, MemoryReview, MemorySnapshot, MemoryUpdateInput } from "@pistachio/shell-contracts/memory";
 import type { ReminderInput, ReminderPatch, ReminderSnapshot } from "@pistachio/shell-contracts/reminders";
 import type { BookmarkInput, BookmarkPatch, BookmarkSnapshot, BookmarkToast } from "@pistachio/shell-contracts/bookmarks";
-import { isTerminalStatus, type AgentAttachment, type FeedbackInput } from "@pistachio/protocol";
+import { isTerminalStatus, type AgentAttachment, type FeedbackInput, type RunSummary } from "@pistachio/protocol";
 import type { ChatInsert } from "@pistachio/shell-contracts/chat-insert";
 import type {
   AccountEnrollResult,
@@ -130,7 +130,10 @@ import { share } from "./lib/share";
 import { startTerminalIn, terminalFolder } from "./lib/terminal/places";
 import { clampPanelWidth, getStoredPanelWidth, storePanelWidth } from "./lib/panel";
 import { permissionPromptOverlay } from "./lib/permission-prompt";
+import { glanceShowing } from "./lib/glance";
 import { updatePromptShows } from "./lib/update-prompt";
+import { composerAttachmentFromInsert, MAX_COMPOSER_ATTACHMENTS } from "./lib/chat-attachments";
+import { stageInSpace } from "./lib/desk/space-chat";
 import { homeChatLeftHome } from "./lib/home";
 import { pushNotice, type NoticeOptions, type ShellNotice } from "./lib/notices";
 import { clampSidebarWidth, getStoredSidebarWidth, storeSidebarWidth } from "./lib/sidebar";
@@ -557,9 +560,13 @@ export interface AppState {
   /** A home tab is back to being the home page; the conversation itself goes on in the console. */
   closeHomeChat(tabKey: string): void;
   /** Queue an insert for the composer and bring the composer into view. */
-  receiveChatInsert(insert: ChatInsert): void;
-  /** The page's menu offered an insert that could not be read; the composer says so. */
-  rejectChatInsert(reason: string): void;
+  /**
+   * `groupId`: the space it was added in (main's word, as the menu's item was chosen). At a desk, one that is not
+   * the space in front by now is staged for that space — with what it was left with — not in the field on screen.
+   */
+  receiveChatInsert(insert: ChatInsert, groupId?: string): void;
+  /** The page's menu offered an insert that could not be read; the composer says so (or a notice, for a space no longer in front). */
+  rejectChatInsert(reason: string, groupId?: string): void;
   /** The composer draining what it was sent. */
   takeChatInbox(): ChatInbox;
   setConsoleWidth(px: number): void;
@@ -876,13 +883,26 @@ function recordSnapshot(
 
 /** Fold a tab-side publish into the snapshot, keeping the run side and every unchanged reference. */
 function mergeTabs(current: ShellSnapshot | null, tabs: ShellTabsSnapshot): ShellSnapshot {
-  const next: ShellSnapshot = { ...tabs, run: current?.run ?? null, threads: current?.threads ?? [] };
+  // (The run side — the conversation, the list of them, what goes on in the other spaces — is the run publish's.)
+  const next: ShellSnapshot = {
+    ...tabs,
+    run: current?.run ?? null,
+    threads: current?.threads ?? [],
+    ...(current?.spaceAgents === undefined ? {} : { spaceAgents: current.spaceAgents }),
+    ...(current?.runSpace === undefined ? {} : { runSpace: current.runSpace }),
+  };
   return current === null ? next : share(current, next);
 }
 
 /** Fold a run-side publish into the snapshot, keeping the tab side and every unchanged message. */
 function mergeRun(current: ShellSnapshot, run: ShellRunSnapshot): ShellSnapshot {
-  return share(current, { ...current, run: run.run, threads: run.threads });
+  return share(current, {
+    ...current,
+    run: run.run,
+    threads: run.threads,
+    ...(run.spaceAgents === undefined ? {} : { spaceAgents: run.spaceAgents }),
+    ...(run.runSpace === undefined ? {} : { runSpace: run.runSpace }),
+  });
 }
 
 type SetState = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void;
@@ -1117,7 +1137,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
     const offGlance = shellApi().onGlanceChanged((next) =>
       set((state) => {
-        const same = next !== null && next.tab.id === state.glance?.tab.id;
+        // (Back with its tab, a Glance is a showing of its own: staged afresh.)
+        const same = next !== null && state.glance !== null && glanceShowing(next) === glanceShowing(state.glance);
         return {
           glance: next,
           glanceClosing: same ? state.glanceClosing : false,
@@ -1445,14 +1466,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       delete homeChats[tabKey];
       return { homeChats };
     }),
-  receiveChatInsert: (insert) =>
+  // (On the desktop the desk's Bar takes the inbox, and its pill comes out for it: chat/chat-inbox.ts. The console
+  // is opened for it only where the console is the chat.)
+  receiveChatInsert: (insert, groupId) => {
+    // Added in a space the person has left since (a picture takes its time to read): that space's chat has it, for
+    // when they are back — never the field on screen, which is another space's.
+    if (chatInsertElsewhere(get().snapshot, groupId)) {
+      if (!stageInSpace(groupId, composerAttachmentFromInsert(insert), MAX_COMPOSER_ATTACHMENTS)) {
+        get().showNotice(`At most ${String(MAX_COMPOSER_ATTACHMENTS)} files per message`, { tone: "warning" });
+      }
+      return;
+    }
     set((state) => ({
-      consoleOpen: true,
+      consoleOpen: nativeApi() === null ? true : state.consoleOpen,
       evidence: null,
       chatInbox: { inserts: [...state.chatInbox.inserts, insert], rejection: state.chatInbox.rejection },
-    })),
-  rejectChatInsert: (reason) =>
-    set((state) => ({ consoleOpen: true, evidence: null, chatInbox: { inserts: state.chatInbox.inserts, rejection: reason } })),
+    }));
+  },
+  rejectChatInsert: (reason, groupId) => {
+    if (chatInsertElsewhere(get().snapshot, groupId)) {
+      get().showNotice(reason, { tone: "warning" });
+      return;
+    }
+    set((state) => ({ consoleOpen: nativeApi() === null ? true : state.consoleOpen, evidence: null, chatInbox: { inserts: state.chatInbox.inserts, rejection: reason } }));
+  },
   takeChatInbox: () => {
     const inbox = get().chatInbox;
     if (inbox !== EMPTY_CHAT_INBOX) set({ chatInbox: EMPTY_CHAT_INBOX });
@@ -1779,7 +1816,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   newThread: () => safeAction(() => shellApi().newThread(), set),
   deleteThread: (runId) => safeAction(() => shellApi().deleteThread(runId), set),
   loadEvidence: async () => {
+    // The record is a conversation's: asked for in one space and answered once the person is in another (or the
+    // conversation here is another by then), it is not shown over the one in view.
+    const asked = selectSpaceRun(get())?.runId ?? null;
     const evidence = await shellApi().getEvidence();
+    if ((selectSpaceRun(get())?.runId ?? null) !== asked) return;
     set({ evidence, consoleOpen: true });
   },
   closeEvidence: () => set({ evidence: null }),
@@ -1921,6 +1962,55 @@ export const useAppStore = create<AppState>((set, get) => ({
 function stripSecret(created: ChannelCreated): ChannelInfo {
   const { secret: _secret, ...channel } = created;
   return channel;
+}
+
+/**
+ * Whether the run the snapshot holds is the conversation of the space in
+ * front (ShellSnapshot.runSpace): true once main's run publish has caught up
+ * with a change of space, and wherever a host names no space for it.
+ */
+export function selectRunSettled(state: AppState): boolean {
+  const snapshot = state.snapshot;
+  if (snapshot === null || snapshot.runSpace === undefined || snapshot.runSpace === null) return true;
+  return snapshot.currentGroupId === undefined || snapshot.currentGroupId === null || snapshot.runSpace === snapshot.currentGroupId;
+}
+
+/**
+ * The conversation of the space in front, for a desk (docs/desk-agent.md §3,
+ * "Conversations stay in their space"): the snapshot's run once it is that
+ * space's, and none for the moment after a change of space in which the
+ * shell still holds the last one's — never another space's chat on this one.
+ */
+export function selectSpaceRun(state: AppState): RunSummary | null {
+  return selectRunSettled(state) ? (state.snapshot?.run ?? null) : null;
+}
+
+/**
+ * Whether something added to the chat in `groupId` (a page's "Add … to Chat", main's word of the space it was chosen
+ * in) is for a space that is not the one in front any more: then it is that space's, not the field's on screen.
+ * Never where no space is named, or none is in front (the web).
+ */
+export function chatInsertElsewhere(snapshot: Pick<ShellSnapshot, "currentGroupId"> | null, groupId: string | undefined): groupId is string {
+  const current = snapshot?.currentGroupId ?? null;
+  return groupId !== undefined && current !== null && groupId !== current;
+}
+
+/**
+ * Whether the snapshot's conversation is the one of the space a tab is in
+ * (docs/desk-agent.md §3, "Conversations stay in their space"): main says
+ * whose it is (`runSpace`), and a page that shows its tab's conversation —
+ * the home page's chat — must not take another space's for a word about its
+ * own: with the person gone to another space, the run in view says nothing
+ * of the tab left behind. A host that names no space for the run (the web)
+ * has one conversation, every tab's; a tab in no space is asked of the
+ * space in front.
+ */
+export function selectRunIsOfTab(state: AppState, tabId: string | null): boolean {
+  const snapshot = state.snapshot;
+  if (snapshot === null || snapshot.runSpace === undefined || snapshot.runSpace === null) return true;
+  const group =
+    tabId === null ? undefined : [...snapshot.tabGroups, ...(snapshot.looseGroups ?? []), ...(snapshot.anchorGroups ?? [])].find((candidate) => candidate.tabIds.includes(tabId));
+  return group === undefined ? selectRunSettled(state) : group.id === snapshot.runSpace;
 }
 
 export function selectActiveTab(state: AppState): BrowserTabInfo | null {

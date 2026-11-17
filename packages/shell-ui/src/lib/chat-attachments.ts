@@ -166,3 +166,32 @@ export function toAgentAttachments(staged: ComposerAttachment[]): AgentAttachmen
     .filter((file) => file.kind === "image" || file.kind === "pdf")
     .map(({ id, name, mediaType, url }) => ({ id, name, mediaType, url }));
 }
+
+/**
+ * Where the files being read for one owner go as each is read, when one
+ * composer serves several owners in turn (the desk's Bar: one for whichever
+ * space is in front, docs/desk-agent.md §1 "The chat is its space's").
+ * Reading takes its time, and the person may have gone to another space
+ * meanwhile: a file read then is its own space's still — kept for it
+ * (`elsewhere`), never added to the list on screen, which is another's by
+ * now. Back before the reading is done, the rest go to the list again. What
+ * was refused is said only to the owner while it is the one served.
+ */
+export function attachmentSink<Owner>(
+  owner: Owner,
+  served: () => Owner,
+  here: { add(attachment: ComposerAttachment): void; reject(reason: string): void },
+  elsewhere: ((owner: Owner, attachment: ComposerAttachment) => void) | undefined,
+): { add(attachment: ComposerAttachment): void; reject(reason: string): void; here(): boolean } {
+  const isHere = (): boolean => Object.is(served(), owner);
+  return {
+    add: (attachment) => {
+      if (isHere()) here.add(attachment);
+      else elsewhere?.(owner, attachment);
+    },
+    reject: (reason) => {
+      if (isHere()) here.reject(reason);
+    },
+    here: isHere,
+  };
+}

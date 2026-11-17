@@ -32,11 +32,14 @@ import {
   type ExtRuntimeInfo,
   type ExtStatus,
   type ExtToast,
+  type ExtTriggerState,
   type Json,
 } from "@pistachio/extension-api";
-import { EXT_ERROR_CODES } from "@pistachio/extension-api/wire";
+import { AI_COMPLETE_MIN_MS, AI_COMPLETE_TIMEOUT_MS, AI_HANDLER_MARGIN_MS, AI_PROMPT_MAX, AI_SYSTEM_MAX, AI_TOKENS_DEFAULT, AI_TOKENS_MAX, AI_TOKENS_MIN, EXT_ERROR_CODES } from "@pistachio/extension-api/wire";
 import type { Capability } from "@pistachio/extension-api/capabilities";
 import type { PistachioManifest } from "@pistachio/extension-api/manifest";
+import { markSchema, themeSchema } from "@pistachio/extension-api/theme";
+import { SITES, siteViewSchema } from "@pistachio/extension-api/sites";
 import { INPUT_EVENT_KINDS } from "./input";
 import { ExtensionScope, permissionDenied } from "./scope";
 import type { DataFiles } from "./data-files";
@@ -108,8 +111,16 @@ export interface ExtensionRuntime {
   captureRelease(holdId: number): void;
   inputSubscribe(ctx: CallContext, tabId: string, kinds: ExtInputEventKind[] | null): number;
   inputStop(ctx: CallContext, subscriptionId: number): void;
+  /** The declared triggers as the clock has them now (./triggers triggerState). */
+  triggers(): ExtTriggerState[];
   /** Fill a space's Bar with the prompt for the person to send (agent.ask). */
   agentAsk(prompt: string, place: { profileId: string; space: string }): Promise<void>;
+  /**
+   * One question to the account's fast model (docs/primitives.md §3.8): the answer's text, or null when no model can
+   * be asked or none answered within `timeoutMs`. `owner`: the view that asks (its webContents id) — a view that
+   * goes takes its question with it, the request stopped.
+   */
+  aiComplete(request: { prompt: string; system: string | null; maxTokens: number }, options: { timeoutMs: number; owner: number }): Promise<string | null>;
 }
 
 /** What a row asks before it runs: a capability, nothing, or a judgement (null passes; a sentence refuses). */
@@ -178,6 +189,7 @@ export const EVENT_NEEDS: Record<ExtEvent, Capability | null> = {
   "tabs.removed": "tabs:read",
   "tabs.activated": "tabs:read",
   "spaces.currentChanged": "tabs:read",
+  "spaces.awayChanged": "tabs:read",
   "desk.changed": "desk",
   "input.event": "input:events",
   "capture.ended": "capture:tab",
@@ -378,8 +390,98 @@ export const EXT_METHODS = {
       return null;
     },
   },
+  // A mark on a tab's row (docs/primitives.md §4.7): what the shell draws for it, on any tab it could see.
+  "tabs.setMark": {
+    needs: "tabs:mark",
+    input: z.object({ tabId: id, mark: markSchema.nullable() }),
+    run: (scope, _ctx, args) => {
+      scope.tabs.setMark(args.tabId, args.mark);
+      return null;
+    },
+  },
   "spaces.list": { needs: "tabs:read", input: empty, run: (scope) => scope.spaces.list() },
   "spaces.current": { needs: "tabs:read", input: empty, run: (scope) => scope.spaces.current() },
+  // Away and back (docs/primitives.md §2): which space is the scope's to judge (the person's gesture in it), whether
+  // it can go the away service's — the same rules the space's own menu and the agent's tool meet.
+  "spaces.sendAway": {
+    needs: "spaces:write",
+    input: z.object({ spaceId: z.string().min(1).max(200), until: z.number().finite().positive().optional() }),
+    run: (scope, _ctx, args) => scope.spaces.sendAway(args.spaceId, args.until),
+  },
+  "spaces.bringBack": {
+    needs: "spaces:write",
+    input: z.object({ spaceId: z.string().min(1).max(200) }),
+    run: async (scope, _ctx, args) => {
+      await scope.spaces.bringBack(args.spaceId);
+      return null;
+    },
+  },
+  // Close space, as its own menu does it (docs/primitives.md §2.6): into the archive, whole — its own capability.
+  "spaces.close": {
+    needs: "spaces:close",
+    input: z.object({ spaceId: z.string().min(1).max(200) }),
+    run: async (scope, _ctx, args) => {
+      await scope.spaces.close(args.spaceId);
+      return null;
+    },
+  },
+  "spaces.away": { needs: "tabs:read", input: empty, run: (scope) => scope.spaces.away() },
+  // What the shell draws for it (docs/primitives.md §4): a mark on a space it was given, a theme for one or for all.
+  "spaces.setMark": {
+    needs: "spaces:mark",
+    input: z.object({ spaceId: z.string().min(1).max(200), mark: markSchema.nullable() }),
+    run: (scope, _ctx, args) => {
+      scope.spaces.setMark(args.spaceId, args.mark);
+      return null;
+    },
+  },
+  "theme.set": {
+    needs: "theme",
+    input: themeSchema,
+    run: (scope, _ctx, args) => {
+      scope.theme.set(args);
+      return null;
+    },
+  },
+  "theme.clear": {
+    needs: "theme",
+    input: z.object({ spaceId: z.string().min(1).max(128).optional() }),
+    run: (scope, _ctx, args) => {
+      scope.theme.clear(args.spaceId);
+      return null;
+    },
+  },
+  "theme.get": { needs: "theme", input: z.object({ spaceId: z.string().min(1).max(128).optional() }), run: (scope, _ctx, args) => scope.theme.get(args.spaceId) },
+  // The places it fills with rows (docs/primitives.md §4.5): no capability — a place is declared in the manifest, as a
+  // panel is, and the scope refuses one that is not.
+  "sites.set": {
+    needs: null,
+    input: siteViewSchema.extend({ site: z.enum(SITES) }),
+    run: (scope, _ctx, { site, ...view }) => {
+      scope.sites.set(site, view);
+      return null;
+    },
+  },
+  "sites.clear": {
+    needs: null,
+    input: z.object({ site: z.enum(SITES), spaceId: z.string().min(1).max(128).optional() }),
+    run: (scope, _ctx, args) => {
+      scope.sites.clear(args.site, args.spaceId);
+      return null;
+    },
+  },
+  "sites.get": { needs: null, input: z.object({ site: z.enum(SITES), spaceId: z.string().min(1).max(128).optional() }), run: (scope, _ctx, args) => scope.sites.get(args.site, args.spaceId) },
+  // The declared triggers as main's clock has them (docs/primitives.md §3): nothing to grant — they are the extension's own.
+  "triggers.get": {
+    needs: null,
+    input: z.object({ id: z.string().min(1).max(64) }),
+    run: (_scope, _ctx, args, runtime) => {
+      const state = runtime.triggers().find((candidate) => candidate.id === args.id);
+      if (state === undefined) throw new ExtError("NOT_FOUND", `triggers.get: pistachio.json declares no trigger "${args.id}" (pistachio.json → triggers)`);
+      return state;
+    },
+  },
+  "triggers.list": { needs: null, input: empty, run: (_scope, _ctx, _args, runtime) => runtime.triggers() },
   "desk.state": {
     needs: "desk",
     input: z.object({ spaceId: z.string().max(200).optional() }),
@@ -651,6 +753,32 @@ export const EXT_METHODS = {
     },
   },
 
+  /* ---------------------------------- ai ---------------------------------- */
+
+  // One question to a model, no tools (docs/primitives.md §3.8). What is asked is the extension's own to choose; the
+  // ledger notes that it asked, and how much it sent.
+  "ai.complete": {
+    needs: "ai",
+    input: z.object({ prompt: z.string().min(1).max(AI_PROMPT_MAX), system: z.string().max(AI_SYSTEM_MAX).optional(), maxTokens: z.number().int().min(AI_TOKENS_MIN).max(AI_TOKENS_MAX).optional() }),
+    run: async (scope, ctx, args, runtime) => {
+      if (args.prompt.trim() === "") throw new ExtError("INVALID_ARGUMENT", "ai.complete takes a prompt with words in it");
+      // The wait fits inside the handler that asks: main gives up on a handler at its own time (ten seconds for a
+      // trigger's), and an answer — or UNAVAILABLE — that came after would find nobody to act on it, the usage spent.
+      // A page or the panel asks for itself, and a worker with no handler in hand has only the model's own bound.
+      const left = ctx.context === "worker" ? scope.handlerTimeLeft() : null;
+      const timeoutMs = left === null ? AI_COMPLETE_TIMEOUT_MS : Math.min(AI_COMPLETE_TIMEOUT_MS, left - AI_HANDLER_MARGIN_MS);
+      if (timeoutMs < AI_COMPLETE_MIN_MS) throw new ExtError("UNAVAILABLE", "ai.complete: this handler has too little time left to wait for a model — ask first thing in a handler, and have something to do without it");
+      // (With nobody there, a dozen an hour: read before anything is awaited.)
+      scope.aiAsked();
+      const system = args.system?.trim() ?? "";
+      const text = await runtime.aiComplete({ prompt: args.prompt, system: system === "" ? null : system, maxTokens: args.maxTokens ?? AI_TOKENS_DEFAULT }, { timeoutMs, owner: ctx.senderId });
+      // What left for the model is on the ledger as a request out is: how much, never what.
+      scope.ledger.record({ at: Date.now(), method: "AI", host: "pistachio", path: "/complete", status: text === null ? null : 200, sent: args.prompt.length + system.length, received: text?.length ?? 0 });
+      if (text === null) throw new ExtError("UNAVAILABLE", "ai.complete: no model can be asked now, or none answered in time (signed out, offline, switched off, slow) — have something to do without it");
+      return { text };
+    },
+  },
+
   /* -------------------------------- power -------------------------------- */
   "power.preventSleep": { needs: "power", input: empty, run: (_scope, ctx, _args, runtime) => ({ holdId: runtime.preventSleep(ctx) }) },
   "power.release": {
@@ -737,6 +865,9 @@ export async function dispatch(method: unknown, args: unknown, scope: ExtensionS
         throw new ExtError("PERMISSION_DENIED", refusal);
       }
     }
+    // With nobody there (a trigger's handler, no command of the person's in hand) only what is safe then is answered.
+    const alone = scope.unattendedRefusal(method, ctx.context);
+    if (alone !== null) throw new ExtError("PERMISSION_DENIED", alone);
     if (!scope.take(method)) throw new ExtError("RATE_LIMITED", `${method} is limited to a number of calls a minute: wait a moment and try again`);
     const value = await spec.run(scope, ctx, input, runtime);
     return { ok: true, v: value };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { glanceFrame } from "../src/lib/glance";
+import type { GlanceState } from "@pistachio/shell-contracts/ipc";
+import { glanceFrame, glanceShowing } from "../src/lib/glance";
 
 describe("Glance frame", () => {
   it("centers an 80% preview inside the browser surface gutter", () => {
@@ -22,5 +23,16 @@ describe("Glance frame", () => {
     expect(frame.window.x).toBe(300);
     // (Nothing kept: as before.)
     expect(glanceFrame(surface, { x: 450, y: 210, width: 120, height: 24 }, 0).local).toEqual({ x: 107, y: 8, width: 787, height: 684 });
+  });
+});
+
+describe("Glance showing", () => {
+  const tab = { id: "preview" } as GlanceState["tab"];
+
+  it("is a showing of its own each time it comes back with its tab, and the same one while it is up", () => {
+    expect(glanceShowing({ tab })).toBe(glanceShowing({ tab, returns: 0 }));
+    expect(glanceShowing({ tab, returns: 1 })).not.toBe(glanceShowing({ tab, returns: 0 }));
+    expect(glanceShowing({ tab, returns: 2 })).not.toBe(glanceShowing({ tab, returns: 1 }));
+    expect(glanceShowing({ tab: { ...tab, id: "another" }, returns: 1 })).not.toBe(glanceShowing({ tab, returns: 1 }));
   });
 });

@@ -68,13 +68,12 @@ async function nativeVibrancyChanges(app: ElectronApplication): Promise<Array<st
 }
 
 test("themes and shortcut bindings customize the live Electron window", { tag: ["@settings"] }, async () => {
-  // Glass is a property of every chrome surface, the agent console included,
-  // and the console opens closed by default — so ask for it on launch. The
-  // home page is the demo site: the last step needs a native page WebContents
-  // to send a key to, and this one is local and always there. Its pages are
-  // left to the app's scheme, not Playwright's light, for the scheme step.
+  // Glass is a property of every chrome surface. The home page is the demo
+  // site: the last step needs a native page WebContents to send a key to,
+  // and this one is local and always there. Its pages are left to the app's
+  // scheme, not Playwright's light, for the scheme step.
   const { app, userData } = await launchApp({
-    settings: pageFirst({ general: { consoleOpenOnLaunch: true, homeUrl: "pistachio://demo/invoices" } }),
+    settings: pageFirst({ general: { homeUrl: "pistachio://demo/invoices" } }),
     name: "customization",
     colorScheme: null,
   });
@@ -105,7 +104,6 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
     await expect(shell.getByTestId("desk-surface")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("sidebar-chrome")).toHaveCSS("backdrop-filter", "none");
     await expect(shell.getByTestId("sidebar-chrome")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(shell.getByTestId("agent-panel-surface")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("side-rail")).toHaveCount(0);
     await expect(shell.getByTestId("status-footer")).toHaveCount(0);
     await captureWindow(app, "01-desktop-glass-on.png", settings);
@@ -120,7 +118,6 @@ test("themes and shortcut bindings customize the live Electron window", { tag: [
     await expect(shell.getByTestId("chrome-content-row")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("desk-surface")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(shell.getByTestId("sidebar-chrome")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(shell.getByTestId("agent-panel-surface")).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect.poll(() => nativeVibrancyChanges(app)).toEqual([null]);
     await captureWindow(app, "02-desktop-glass-off.png", settings);
     await desktopGlass.click();

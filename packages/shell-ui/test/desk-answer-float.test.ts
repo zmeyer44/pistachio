@@ -17,6 +17,7 @@ import {
   fitFloatSize,
   nearestAnchor,
   readFloatSpot,
+  SPOTS_KEY,
   resizedBox,
   restFor,
   restInStage,
@@ -174,18 +175,20 @@ describe("where the answer snaps", () => {
   });
 });
 
-describe("the answer's spot, kept on this device", () => {
+describe("the answer's spot, kept on this device for each space", () => {
   const store = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => void store.set(key, value),
+    removeItem: (key: string) => void store.delete(key),
   });
   afterEach(() => store.clear());
+  const LEGACY = "pistachio.desk.answer.v1";
 
   it("is kept as a share of the lane, and comes back whole in a lane of another size", () => {
     const box = { x: 600, y: 100, w: 440, h: 360 };
-    writeFloatSpot(spotFromBox(AREA, box, true));
-    const spot = readFloatSpot();
+    writeFloatSpot("g1", spotFromBox(AREA, box, true));
+    const spot = readFloatSpot("g1");
     expect(spot).toEqual({ floating: true, fx: 0.5, fy: 0.125, w: 440, h: 360 });
     expect(boxFromSpot(AREA, spot!)).toEqual(box);
     // A smaller lane: same share of it, and whole in it.
@@ -195,34 +198,79 @@ describe("the answer's spot, kept on this device", () => {
     expect(back.y).toBe(75);
   });
 
+  it("is each space's own: the chat taken to the side in one space is where it was in every other", () => {
+    writeFloatSpot("g1", { floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 });
+    expect(readFloatSpot("g1")?.zone).toBe("chat");
+    // A space it was never taken off the Bar in has no place of its own: docked.
+    expect(readFloatSpot("g2")).toBeNull();
+    writeFloatSpot("g2", { floating: true, fx: 0.2, fy: 0.2, w: 400, h: 300 });
+    expect(readFloatSpot("g2")).toEqual({ floating: true, fx: 0.2, fy: 0.2, w: 400, h: 300 });
+    expect(readFloatSpot("g1")?.zone).toBe("chat");
+    // Docked again in g1: g2's stays as it is.
+    writeFloatSpot("g1", { floating: false, fx: 0, fy: 0, w: 440, h: 0, cw: 420 });
+    expect(readFloatSpot("g1")?.floating).toBe(false);
+    expect(readFloatSpot("g2")?.floating).toBe(true);
+  });
+
+  it("gives the one place there was before to the first space that asks, and to no other", () => {
+    store.set(LEGACY, JSON.stringify({ floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 }));
+    expect(readFloatSpot("g1")).toEqual({ floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 });
+    expect(readFloatSpot("g2")).toBeNull();
+    expect(readFloatSpot("g1")?.zone).toBe("chat");
+    expect(store.has(LEGACY)).toBe(false);
+    expect(JSON.parse(store.get(SPOTS_KEY)!)).toEqual({ g1: { floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 } });
+  });
+
+  it("keeps the places of the spaces kept most recently, however many came and went", () => {
+    for (let index = 0; index < 205; index += 1) writeFloatSpot(`g${String(index)}`, { floating: true, fx: 0, fy: 0, w: 400, h: 300 });
+    // (Kept again: g1 is among the latest, and stays.)
+    writeFloatSpot("g1", { floating: true, fx: 0, fy: 0, w: 400, h: 300 });
+    const kept = Object.keys(JSON.parse(store.get(SPOTS_KEY)!) as Record<string, unknown>);
+    expect(kept).toHaveLength(200);
+    expect(kept.at(-1)).toBe("g1");
+    expect(readFloatSpot("g0")).toBeNull();
+    expect(readFloatSpot("g204")).not.toBeNull();
+  });
+
   it("keeps a card left in the desk's frame by a resize there: flush with the desk, not moved in to the lane's corner", () => {
     // A left tile resized: flush with the desk's leading edge (a gutter out of the lane), the desk's full height.
     const box = { x: -DESK_GAP, y: 0, w: 634, h: 800 };
-    writeFloatSpot({ ...spotFromBox(DESK, box, true), inStage: true });
-    const spot = readFloatSpot();
+    writeFloatSpot("g1", { ...spotFromBox(DESK, box, true), inStage: true });
+    const spot = readFloatSpot("g1");
     expect(spot?.inStage).toBe(true);
     expect(boxFromSpot(DESK, spot!)).toEqual(box);
     // (As a floating card it would be moved in to the lane's corner and cut short of its edges: 12, 12, 634×776.)
     expect(boxFromSpot(DESK, { ...spot!, inStage: undefined })).toEqual({ x: FLOAT_EDGE, y: FLOAT_EDGE, w: 634, h: 776 });
     // In a zone it is the zone's, never the frame's.
-    writeFloatSpot({ floating: true, fx: 0, fy: 0, w: 634, h: 800, zone: "left", inStage: true });
-    expect(readFloatSpot()?.inStage).toBeUndefined();
+    writeFloatSpot("g1", { floating: true, fx: 0, fy: 0, w: 634, h: 800, zone: "left", inStage: true });
+    expect(readFloatSpot("g1")?.inStage).toBeUndefined();
   });
 
   it("keeps the zone it is snapped in and the chat's width, and comes back in that zone", () => {
-    writeFloatSpot({ floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 });
-    const spot = readFloatSpot();
+    writeFloatSpot("g1", { floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 });
+    const spot = readFloatSpot("g1");
     expect(spot).toEqual({ floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 });
     expect(boxFromSpot(DESK, spot!)).toEqual(chatBox(DESK, 420));
     // (A zone it does not know is no zone.)
-    store.set("pistachio.desk.answer.v1", JSON.stringify({ floating: true, fx: 0, fy: 0, w: 440, h: 360, zone: "sideways" }));
-    expect(readFloatSpot()?.zone).toBeUndefined();
+    store.set(SPOTS_KEY, JSON.stringify({ g1: { floating: true, fx: 0, fy: 0, w: 440, h: 360, zone: "sideways" } }));
+    expect(readFloatSpot("g1")?.zone).toBeUndefined();
   });
 
   it("reads nothing from what is not a spot", () => {
-    store.set("pistachio.desk.answer.v1", JSON.stringify({ floating: "yes" }));
-    expect(readFloatSpot()).toBeNull();
-    store.set("pistachio.desk.answer.v1", "{");
-    expect(readFloatSpot()).toBeNull();
+    store.set(SPOTS_KEY, JSON.stringify({ g1: { floating: "yes" } }));
+    expect(readFloatSpot("g1")).toBeNull();
+    store.set(SPOTS_KEY, JSON.stringify(["g1"]));
+    expect(readFloatSpot("g1")).toBeNull();
+    store.set(SPOTS_KEY, "{");
+    expect(readFloatSpot("g1")).toBeNull();
+    // What cannot be read is no place — and never in the way of keeping one.
+    writeFloatSpot("g1", { floating: true, fx: 0, fy: 0, w: 400, h: 300 });
+    expect(readFloatSpot("g1")?.floating).toBe(true);
+    store.delete(SPOTS_KEY);
+    store.set(LEGACY, "{");
+    expect(readFloatSpot("g1")).toBeNull();
+    writeFloatSpot("g1", { floating: true, fx: 0, fy: 0, w: 400, h: 300 });
+    expect(readFloatSpot("g1")?.floating).toBe(true);
+    expect(store.has(LEGACY)).toBe(false);
   });
 });

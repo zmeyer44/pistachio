@@ -48,6 +48,8 @@ describe("appearance customization", () => {
       radius: 18,
     });
     expect(sanitizeAppearance({ glassTint: 2 }).glassTint).toBe(1);
+    // Main's own, laid over what the views are told (an extension's theme, docs/primitives.md §4): never the person's to store.
+    expect("accentOverride" in sanitizeAppearance({ accentOverride: "#1f8a4c" })).toBe(false);
   });
 
   it("keeps a toast position it knows, and falls back to the foot for one it does not", () => {

@@ -34,8 +34,8 @@ import { nativeApi } from "../api";
 
 /**
  * The sidebar layout is one full-height content row. It begins with the
- * sidebar's persistent column (SidebarColumn), then the content and the
- * console.
+ * sidebar's persistent column (SidebarColumn), then the content — and, where
+ * there is no desk (the web), the console.
  *
  * The column has three modes (lib/sidebar-mode.ts, docs/spaces.md §3): the
  * whole sidebar or its rail alone, in the layout with the page (or the
@@ -65,7 +65,10 @@ export function SidebarLayout() {
       <div data-testid="chrome-content-row" className="chrome-layout-ground flex min-h-0 min-w-0">
         <SidebarColumn />
         <ContentArea />
-        <AgentConsole />
+        {/* The chat: on the desktop it is the desk's — its nub, its pill and the answer card, each space's own
+            (docs/desk-agent.md) — and no panel stands beside the desk (since 2026-11-16). Where there is no desk (the
+            web), the console is the chat. */}
+        {deskAvailable() ? null : <AgentConsole />}
       </div>
     </div>
   );

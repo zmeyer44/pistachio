@@ -5,6 +5,7 @@ import { nativeApi } from "../../api";
 import { useDeskChrome } from "../../lib/desk/chrome";
 import { arrangeDesk } from "../../lib/desk/open";
 import { LiveCard } from "../live/LiveCard";
+import { AWAY_OPENER, AwayCard } from "../space-rail/AwayCard";
 import { holdDeskMore, lingerDeskMore } from "./DeskSidebarControls";
 import type { DeskEngine, DeskView } from "./desk-engine";
 import { DeskMoreCard } from "./DeskMoreCard";
@@ -17,9 +18,10 @@ const CARD_GAP = 10;
  * The card a control in the sidebar opened (lib/desk/chrome.ts) — the
  * desk's (DeskMoreButton) or the Stack's (DeskContextRow) — drawn over the
  * desk beside it; or the live share's (components/live/LiveCard.tsx), which
- * its entries and the Live pill open beside the shared space's tile. It is
- * a cover: the live pages under it give way to their stills, and it shows
- * once they have (`clearCovers`).
+ * its entries and the Live pill open beside the shared space's tile; or
+ * the spaces that are away (components/space-rail/AwayCard.tsx), which the
+ * rail's Away tile opens. It is a cover: the live pages under it give way to
+ * their stills, and it shows once they have (`clearCovers`).
  *
  * It goes on a press anywhere else — on a live page too, which main relays;
  * not on a menu it opened itself (the Live card's ⋯ on a guest) — or Escape,
@@ -77,7 +79,7 @@ export function DeskSideCard({
   // A press anywhere else (a live page's too), or Escape.
   useEffect(() => {
     if (kind === null) return;
-    const opener = kind === "more" ? "[data-testid='desk-more']" : kind === "stack" ? "[data-testid='desk-stack']" : "[data-live-opener]";
+    const opener = kind === "more" ? "[data-testid='desk-more']" : kind === "stack" ? "[data-testid='desk-stack']" : kind === "away" ? AWAY_OPENER : "[data-live-opener]";
     const offPage = nativeApi()?.onDeskPageInput((input) => {
       if (input === "press" || input === "escape") useDeskChrome.getState().closeCard();
     });
@@ -107,12 +109,16 @@ export function DeskSideCard({
   }, [kind]);
 
   const closeLive = useCallback(() => useDeskChrome.getState().closeCard("live"), []);
+  const closeAway = useCallback(() => useDeskChrome.getState().closeCard("away"), []);
   const stage = stageRef.current?.getBoundingClientRect() ?? null;
   if (card === null || stage === null) return null;
   const left = Math.max(CARD_GAP, card.anchor.x + card.anchor.w - stage.left + CARD_GAP);
   const shown = view.clearCovers.has("card");
   if (card.kind === "live") {
     return <LiveCard ref={cardRef} left={left} anchorTop={card.anchor.y - stage.top} stageHeight={stage.height} shown={shown} onClose={closeLive} />;
+  }
+  if (card.kind === "away") {
+    return <AwayCard ref={cardRef} left={left} anchorBottom={card.anchor.y + card.anchor.h - stage.top} stageHeight={stage.height} shown={shown} onClose={closeAway} />;
   }
   if (card.kind === "stack") {
     if (group === null) return null;

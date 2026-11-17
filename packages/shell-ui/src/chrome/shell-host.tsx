@@ -12,6 +12,7 @@ import { RUN_SHORTCUT_EVENT } from "@pistachio/shell-contracts/shortcuts";
 import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
+import { announceAway, announceClosed } from "../lib/away-actions";
 import { askDesk, deskAvailable, newTabAsChosen } from "../lib/desk/open";
 import { extensionsRequest } from "../lib/extensions/use-extensions";
 import { openLiveCard } from "../lib/live/actions";
@@ -132,11 +133,14 @@ export function runShellCommand(command: ShellCommand): void {
   const s = useAppStore.getState();
   switch (command.type) {
     case "toggleConsole":
-      // On the desk, the agent is in its Bar (the console only before the desk's engine is up, or on the web).
+      // On the desk, the agent is in its Bar; the console is the web's (the desktop draws none: before the desk's
+      // engine is up, in its first frames, ⌘I does nothing).
       if (askDesk()) break;
-      s.toggleConsole();
+      if (!deskAvailable()) s.toggleConsole();
       break;
     case "openConsole":
+      // The chat, on screen: the console where there is one — on the desk, the store's word that it is wanted is
+      // the Bar's to answer (DeskSurface: the space in front's chat comes out).
       s.setConsoleOpen(true);
       break;
     case "toggleEvidence":
@@ -222,6 +226,14 @@ export function runShellCommand(command: ShellCommand): void {
     case "tidyFinished":
       s.announceTidy(command.summary);
       break;
+    case "spaceAway":
+      // A space went away, or came back by main's clock or an extension's asking (docs/primitives.md §2, §3): said with the way back.
+      announceAway(command.event, command.space, command.broughtBy);
+      break;
+    case "spaceClosed":
+      // A space an extension closed into the archive (§2.6): said with who did it, and Undo.
+      announceClosed(command.title, command.tabCount, command.entryId, command.by);
+      break;
     case "openBookmarks":
       s.openBookmarks(command.bookmarkId);
       break;
@@ -271,10 +283,20 @@ export function runShellCommand(command: ShellCommand): void {
       else void s.createTab(general.homeUrl);
       break;
     }
-    case "delegate":
-      if (command.tabId !== undefined && command.tabId !== s.snapshot?.activeTabId) void s.selectTab(command.tabId);
-      s.setConsoleOpen(true);
+    case "delegate": {
+      // (On the desk: the Bar's field, in the tab's space.)
+      const ask = (): void => {
+        if (!askDesk()) useAppStore.getState().setConsoleOpen(true);
+      };
+      // A tab of another space is chosen first, and the Bar asked once the desk has passed to its space: asked at
+      // once, it is the field of the space being left that takes the keyboard — and goes with that space, the one
+      // arrived at never hearing of it. (Main's word of the new space is in before its answer to the choice.)
+      // (The web has no Bar to pass: its panel opens as the tab is chosen, as ever.)
+      const chosen = command.tabId !== undefined && command.tabId !== s.snapshot?.activeTabId ? s.selectTab(command.tabId) : null;
+      if (chosen !== null && deskAvailable()) void chosen.then(ask, ask);
+      else ask();
       break;
+    }
     case "toggleSidebarPinned":
       // ⌘S: the next mode — whole → rail → hidden → whole, or whole ⇄ hidden where the rail is not offered (the web).
       setSidebarMode(nextSidebarMode(sidebarModeOf(s.settings), railOffered()));
@@ -287,10 +309,10 @@ export function runShellCommand(command: ShellCommand): void {
       break;
     case "attachToChat":
       // Crossed a process boundary: only the shapes the composer stages.
-      if (isChatInsert(command.insert)) s.receiveChatInsert(command.insert);
+      if (isChatInsert(command.insert)) s.receiveChatInsert(command.insert, command.groupId);
       break;
     case "attachToChatFailed":
-      s.rejectChatInsert(command.reason);
+      s.rejectChatInsert(command.reason, command.groupId);
       break;
     case "notice":
       s.showNotice(command.message, command.tone === undefined ? {} : { tone: command.tone });

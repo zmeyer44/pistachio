@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  attachmentSink,
   composerAttachmentFromInsert,
   formatAttachmentText,
   formatSelectionText,
@@ -99,3 +100,54 @@ describe("composer attachments", () => {
     expect(selectionChipLabel("word ".repeat(20))).toBe("word word word word word word word word…");
   });
 });
+
+describe("files being read for one owner of a composer that serves several", () => {
+  const attachment = (name: string): ComposerAttachment => ({ id: name, name, kind: "text", text: name }) as ComposerAttachment;
+
+  it("go to the list on screen while their owner is the one served, and are kept for it when it is not", () => {
+    // The desk's Bar: one composer, for whichever space is in front. A file dropped in g1 is still being read when
+    // the person goes to g2, and another is read once they are back.
+    let served = "g1";
+    const here: string[] = [];
+    const rejected: string[] = [];
+    const kept: Array<[string, string]> = [];
+    const sink = attachmentSink(
+      "g1",
+      () => served,
+      { add: (file) => here.push(file.name), reject: (reason) => rejected.push(reason) },
+      (owner, file) => kept.push([owner, file.name]),
+    );
+    sink.add(attachment("first.txt"));
+    expect(sink.here()).toBe(true);
+    served = "g2";
+    // Read with g2 in front: g1's still, kept for it — g2's list is handed nothing, and hears no refusal of g1's.
+    sink.add(attachment("second.txt"));
+    sink.reject("third.png is over 4 MB");
+    expect(sink.here()).toBe(false);
+    served = "g1";
+    sink.add(attachment("fourth.txt"));
+    sink.reject("fifth.png is empty");
+    expect(here).toEqual(["first.txt", "fourth.txt"]);
+    expect(kept).toEqual([["g1", "second.txt"]]);
+    expect(rejected).toEqual(["fifth.png is empty"]);
+  });
+
+  it("are kept for their owner once the composer itself has gone (the Bar, made anew for another Profile)", () => {
+    const here: string[] = [];
+    const kept: Array<[string, string]> = [];
+    // (useAttachmentDrop serves nobody — null — once it is unmounted.)
+    const sink = attachmentSink<string | null>("g1", () => null, { add: (file) => here.push(file.name), reject: () => undefined }, (owner, file) => kept.push([owner ?? "", file.name]));
+    sink.add(attachment("late.txt"));
+    expect(here).toEqual([]);
+    expect(kept).toEqual([["g1", "late.txt"]]);
+  });
+
+  it("are the list's as ever where the composer has one owner (the console, the home chat)", () => {
+    const here: string[] = [];
+    const sink = attachmentSink(undefined, () => undefined, { add: (file) => here.push(file.name), reject: () => undefined }, undefined);
+    sink.add(attachment("only.txt"));
+    expect(here).toEqual(["only.txt"]);
+    expect(sink.here()).toBe(true);
+  });
+});
+

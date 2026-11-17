@@ -11,7 +11,7 @@
 import { isTerminalStatus, type RunSummary, type ThreadListItem } from "@pistachio/protocol";
 import { agentIsDriving } from "@pistachio/shell-contracts/agent-glow";
 import type { ChannelInfo, CloudStatus } from "@pistachio/shell-contracts/ipc";
-import { relativeTime } from "./run";
+import { agentIsActing, relativeTime } from "./run";
 
 /** Statuses that leave a cloud run with nothing in flight. */
 
@@ -40,6 +40,18 @@ export function cloudAgentIsDriving(
 
 export function isCloudRun(run: Pick<RunSummary, "executor"> | Pick<ThreadListItem, "executor"> | null | undefined): boolean {
   return run?.executor?.kind === "cloud";
+}
+
+/**
+ * The agent is at work in this conversation on this device, so the chat it
+ * is in cannot leave it — choose another, begin a new one — until it is
+ * stopped (main refuses: RunController.acting). A cloud run holds nothing:
+ * it goes on in the cloud browser without this device, and the chat may
+ * take up another conversation meanwhile (the console's switcher, and the
+ * desk Bar's, which is the desktop's only one since 2026-11-16).
+ */
+export function agentHoldsChat(run: RunSummary | null): boolean {
+  return run !== null && agentIsActing(run) && !isCloudRun(run);
 }
 
 /** The cloud runs that are still going, newest first: what a live view can open on. */

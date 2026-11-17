@@ -75,6 +75,10 @@ describe("what the menu offers", () => {
     expect(names("tab")).toContain("open");
     expect(names("new tab")).toEqual(["search", "open"]);
     expect(names("context")).toEqual(["remember"]);
+    // (To Pistachio's makers: found by what it is for, and by `/bug`.)
+    expect(names("feed")).toEqual(["feedback"]);
+    expect(names("bug")).toEqual(["feedback"]);
+    expect(names("suggest")).toEqual(["feedback"]);
     expect(names("zzz")).toEqual([]);
   });
 });

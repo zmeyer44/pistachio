@@ -130,6 +130,33 @@ describe("calls", () => {
     expect(argsOf("runtime.release")).toEqual([{ holdId: 3 }]);
   });
 
+  it("spaces.sendAway sends `until` as ms however it was written, and refuses what is no time at all", async () => {
+    const away = { id: "s1", name: "Football", color: "green", tabCount: 2, since: 1, until: 1_800_000_000_000, mine: true };
+    const { api, argsOf } = harness({ "spaces.sendAway": () => ok(away), "spaces.away": () => ok([away]) });
+    expect(await api.spaces.sendAway("s1")).toEqual(away);
+    await api.spaces.sendAway("s1", { until: 1_800_000_000_000.4 });
+    await api.spaces.sendAway("s1", { until: new Date(1_800_000_000_000) });
+    await api.spaces.sendAway("s1", { until: "2027-01-15T08:00:00.000Z" });
+    expect(argsOf("spaces.sendAway")).toEqual([{ spaceId: "s1" }, { spaceId: "s1", until: 1_800_000_000_000 }, { spaceId: "s1", until: 1_800_000_000_000 }, { spaceId: "s1", until: Date.parse("2027-01-15T08:00:00.000Z") }]);
+    await expect(api.spaces.sendAway("s1", { until: "next Sunday" })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    await expect(api.spaces.sendAway("s1", { until: Number.NaN })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(argsOf("spaces.sendAway")).toHaveLength(4);
+    expect(await api.spaces.bringBack("s1")).toBeUndefined();
+    expect(argsOf("spaces.bringBack")).toEqual([{ spaceId: "s1" }]);
+    expect(await api.spaces.away()).toEqual([away]);
+  });
+
+  it("spaces.onAwayChanged hears a space go and come back", async () => {
+    const { api, emit, argsOf } = harness();
+    const heard: unknown[] = [];
+    api.spaces.onAwayChanged((change) => heard.push(change));
+    await settle();
+    expect(argsOf("events.on")).toEqual([{ event: "spaces.awayChanged" }]);
+    const space = { id: "s1", name: "Football", color: "green", tabCount: 2, since: 1, mine: false };
+    emit({ kind: "event", subscription: 2, e: "spaces.awayChanged", v: { event: "returned", space } });
+    expect(heard).toEqual([{ event: "returned", space }]);
+  });
+
   it("net.fetch decodes the body main sends as base64", async () => {
     const body = Buffer.from(JSON.stringify({ login: "ada", emoji: "🌰" })).toString("base64");
     const { api, argsOf } = harness({ "net.fetch": () => ok({ status: 200, headers: { "content-type": "application/json" }, body }) });
@@ -222,6 +249,150 @@ describe("invocations", () => {
       { id: 1, error: "no such repository" },
       { id: 2, error: expect.stringContaining("not JSON") },
     ]);
+  });
+
+  it("run a trigger's handler with the state to reconcile to, wait for what it does, and answer nothing of it", async () => {
+    const { api, emit, argsOf } = harness();
+    const done = deferred<void>();
+    const heard: unknown[] = [];
+    api.triggers.on("sunday", async (state) => {
+      heard.push(state);
+      await done.promise;
+      // (What a handler returns is not an answer: a space, a Response, anything.)
+      return { id: "football", mine: true };
+    });
+    api.triggers.on("other", () => heard.push("other"));
+    emit({ kind: "invoke", id: 11, invoke: "trigger", name: "sunday", v: { id: "sunday", kind: "during", holds: true, changesAt: 1_800_000_000_000 } });
+    await settle();
+    expect(heard).toEqual([{ id: "sunday", kind: "during", holds: true, changesAt: 1_800_000_000_000 }]);
+    // Not answered while the handler still works: main counts it delivered only once it has.
+    expect(argsOf("runtime.done")).toEqual([]);
+    done.resolve();
+    await settle();
+    expect(argsOf("runtime.done")).toEqual([{ id: 11 }]);
+  });
+
+  it("answer a trigger's handler that throws or rejects as its error, so Pistachio runs it again — every handler of it having run", async () => {
+    const { api, emit, argsOf } = harness({ "spaces.sendAway": () => ({ ok: false, code: "UNAVAILABLE", message: "spaces.sendAway: That space is in front. It can go once another is." }) });
+    const ran: string[] = [];
+    api.triggers.on("sunday", () => {
+      ran.push("first");
+    });
+    api.triggers.on("sunday", ({ id }) => {
+      ran.push("second");
+      return api.spaces.sendAway(id);
+    });
+    api.triggers.on("standup", () => {
+      throw new Error("no space yet");
+    });
+    emit({ kind: "invoke", id: 1, invoke: "trigger", name: "sunday", v: { id: "sunday", kind: "during", holds: false, changesAt: null } });
+    emit({ kind: "invoke", id: 2, invoke: "trigger", name: "standup", v: { id: "standup", kind: "at", at: 1_800_000_000_000, next: 1_800_086_400_000 } });
+    await settle();
+    expect(ran).toEqual(["first", "second"]);
+    expect(argsOf("runtime.done")).toEqual([
+      { id: 2, error: "no space yet" },
+      { id: 1, error: expect.stringContaining("That space is in front") },
+    ]);
+  });
+
+  it("answer a trigger nothing handles as an error that says what to add — never as done", async () => {
+    vi.useFakeTimers();
+    const { emit, argsOf } = harness();
+    emit({ kind: "invoke", id: 9, invoke: "trigger", name: "sunday", v: { id: "sunday", kind: "during", holds: true, changesAt: null } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(argsOf("runtime.done")).toEqual([]);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(argsOf("runtime.done")).toEqual([{ id: 9, error: expect.stringContaining('pistachio.triggers.on("sunday", …)') }]);
+  });
+
+  it("ask the clock for a declared trigger, and for all of them", async () => {
+    const state = { id: "sunday", kind: "during" as const, holds: false, changesAt: 1_800_000_000_000 };
+    const { api, argsOf } = harness({ "triggers.get": () => ok(state), "triggers.list": () => ok([state]) });
+    expect(await api.triggers.get("sunday")).toEqual(state);
+    expect(await api.triggers.list()).toEqual([state]);
+    expect(argsOf("triggers.get")).toEqual([{ id: "sunday" }]);
+    expect(argsOf("triggers.list")).toEqual([{}]);
+  });
+
+  it("hand the shell a theme and a mark as they were written, and nothing they did not say", async () => {
+    const stadium = { spaceId: "football", backdrop: { image: "field.svg", dim: 0.2 }, colors: { accent: "#1f8a4c" } };
+    const { api, argsOf } = harness({ "theme.get": () => ok(stadium) });
+    await api.theme.set(stadium);
+    // For every space: no space is named. No backdrop, said: null goes as null (main takes it as none).
+    await api.theme.set({ backdrop: { gradient: { colors: ["#0b3d2e", "#145c43"], angle: 160 } } });
+    await api.theme.set({ backdrop: null, colors: { accent: "#1f8a4c" } });
+    expect(argsOf("theme.set")).toEqual([stadium, { backdrop: { gradient: { colors: ["#0b3d2e", "#145c43"], angle: 160 } } }, { backdrop: null, colors: { accent: "#1f8a4c" } }]);
+    expect(await api.theme.get({ spaceId: "football" })).toEqual(stadium);
+    await api.theme.get();
+    expect(argsOf("theme.get")).toEqual([{ spaceId: "football" }, {}]);
+    await api.theme.clear({ spaceId: "football" });
+    await api.theme.clear();
+    expect(argsOf("theme.clear")).toEqual([{ spaceId: "football" }, {}]);
+    expect(await api.spaces.setMark("football", { glyph: "🏈", tone: "green", label: "Games on" })).toBeUndefined();
+    await api.spaces.setMark("football", { label: "Games on" });
+    await api.spaces.setMark("football", null);
+    expect(argsOf("spaces.setMark")).toEqual([
+      { spaceId: "football", mark: { glyph: "🏈", tone: "green", label: "Games on" } },
+      { spaceId: "football", mark: { label: "Games on" } },
+      { spaceId: "football", mark: null },
+    ]);
+  });
+
+  it("hand the shell rows for the band and the sidebar as they were written, each place its own", async () => {
+    const games = { rows: [{ id: "game:1", mark: { glyph: "🏈", tone: "green" as const }, text: "KC 21 – BUF 17", detail: "3rd quarter", value: "4:12", buttons: [{ id: "open", title: "Open" }] }] };
+    const { api, argsOf } = harness({ "sites.get": () => ok({ ...games, spaceId: "football" }) });
+    await api.ui.band.set(games);
+    await api.ui.sidebar.set({ title: "Today’s games", ...games, spaceId: "football" });
+    expect(argsOf("sites.set")).toEqual([
+      { site: "band", ...games },
+      { site: "sidebar", title: "Today’s games", ...games, spaceId: "football" },
+    ]);
+    expect(await api.ui.sidebar.get({ spaceId: "football" })).toEqual({ ...games, spaceId: "football" });
+    await api.ui.band.get();
+    expect(argsOf("sites.get")).toEqual([{ site: "sidebar", spaceId: "football" }, { site: "band" }]);
+    await api.ui.band.clear();
+    await api.ui.sidebar.clear({ spaceId: "football" });
+    expect(argsOf("sites.clear")).toEqual([{ site: "band" }, { site: "sidebar", spaceId: "football" }]);
+  });
+
+  it("hear a press on a row in the place it was pressed, and nowhere else", async () => {
+    const { api, emit, argsOf } = harness();
+    const band: unknown[] = [];
+    const sidebar: unknown[] = [];
+    api.ui.band.onPress((press) => void band.push(press));
+    api.ui.sidebar.onPress((press) => void sidebar.push(press));
+    const press = { site: "band", row: "game:1", button: null, spaceId: "football" };
+    emit({ kind: "invoke", id: 21, invoke: "press", name: "band", v: press });
+    emit({ kind: "invoke", id: 22, invoke: "press", name: "sidebar", v: { ...press, site: "sidebar", button: "open" } });
+    await settle();
+    expect(band).toEqual([press]);
+    expect(sidebar).toEqual([{ ...press, site: "sidebar", button: "open" }]);
+    expect(argsOf("runtime.done")).toEqual([{ id: 21 }, { id: 22 }]);
+  });
+
+  it("say what to add when a press has nothing to hear it", async () => {
+    vi.useFakeTimers();
+    const { emit, argsOf } = harness();
+    emit({ kind: "invoke", id: 23, invoke: "press", name: "sidebar", v: { site: "sidebar", row: "game:1", button: null, spaceId: null } });
+    await vi.advanceTimersByTimeAsync(1_600);
+    expect(argsOf("runtime.done")).toEqual([{ id: 23, error: expect.stringContaining("pistachio.ui.sidebar.onPress(…)") }]);
+  });
+
+  it("leave a theme's refusal to main: its sentence is the one the author reads", async () => {
+    const refusal = "theme.set: the accent #ffff66 is too light: 1.1:1 against Pistachio's light ground";
+    const { api } = harness({ "theme.set": () => ({ ok: false, code: "INVALID_ARGUMENT", message: refusal }), "spaces.setMark": () => ({ ok: false, code: "PERMISSION_DENIED", message: "not given" }) });
+    await expect(api.theme.set({ colors: { accent: "#ffff66" } })).rejects.toMatchObject({ code: "INVALID_ARGUMENT", message: refusal });
+    await expect(api.spaces.setMark("taxes", { label: "x" })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+  });
+
+  it("hand a space menu item's click its space", async () => {
+    const { api, emit, argsOf } = harness();
+    const heard: unknown[] = [];
+    api.contextMenus.onClicked("here", (info) => heard.push(info));
+    emit({ kind: "invoke", id: 21, invoke: "menu", name: "here", v: { tabId: null, pageUrl: null, spaceId: "football" } });
+    await settle();
+    expect(heard).toEqual([{ tabId: null, pageUrl: null, spaceId: "football" }]);
+    expect(argsOf("runtime.done")).toEqual([{ id: 21 }]);
   });
 
   it("say what to add when nothing handles an invocation", async () => {
@@ -548,8 +719,8 @@ describe("capture and input", () => {
 describe("the object", () => {
   it("has exactly the API's namespaces, frozen", () => {
     const { api } = harness();
-    expect(Object.keys(api)).toEqual(["runtime", "storage", "settings", "ui", "bar", "contextMenus", "commands", "tabs", "spaces", "desk", "pages", "capture", "input", "files", "clipboard", "notifications", "net", "notes", "agent", "power"]);
-    expect(Object.isFrozen(api) && Object.isFrozen(api.tabs) && Object.isFrozen(api.files.data) && Object.isFrozen(api.storage.local)).toBe(true);
+    expect(Object.keys(api)).toEqual(["runtime", "storage", "settings", "ui", "bar", "contextMenus", "commands", "tabs", "spaces", "triggers", "theme", "desk", "pages", "capture", "input", "files", "clipboard", "notifications", "net", "notes", "agent", "ai", "power"]);
+    expect(Object.isFrozen(api) && Object.isFrozen(api.tabs) && Object.isFrozen(api.files.data) && Object.isFrozen(api.storage.local) && Object.isFrozen(api.theme)).toBe(true);
     expect(Math.abs(api.runtime.now() - Date.now())).toBeLessThan(1_000);
   });
 

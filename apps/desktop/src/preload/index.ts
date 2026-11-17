@@ -52,6 +52,7 @@ import type {
   AddressIntentRanking,
 } from "@pistachio/shell-contracts/address-intent";
 import type { ScreenshotReplies, ScreenshotRequest } from "@pistachio/shell-contracts/screenshot";
+import type { LocalApp } from "@pistachio/shell-contracts/local-apps";
 import type { DesktopSettings, SettingsPatch } from "@pistachio/shell-contracts/settings";
 import type { UpdateState } from "@pistachio/shell-contracts/updates";
 import type {
@@ -612,6 +613,7 @@ const api: PistachioApi = {
     ipcRenderer.invoke(IPC.cursorPoint) as Promise<CursorPoint | null>,
   screenshot: <R extends ScreenshotRequest>(request: R) =>
     ipcRenderer.invoke(IPC.screenshot, request) as Promise<ScreenshotReplies[R["type"]]>,
+  localApps: () => ipcRenderer.invoke(IPC.localApps) as Promise<LocalApp[]>,
   setShellState: (state: ShellState) =>
     ipcRenderer.send(IPC.shellStateSet, state),
   onShellCommand(listener) {

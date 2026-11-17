@@ -345,6 +345,39 @@ export async function openFeel(shell: Page): Promise<void> {
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
 }
 
+/** Where a space's chat stands, as kept on this device (the shell's answer-float.ts: each space's own place, by its id). */
+export interface ChatSpot {
+  floating: boolean;
+  fx: number;
+  fy: number;
+  w: number;
+  h: number;
+  zone?: string;
+  cw?: number;
+}
+
+/** The kept place of the chat of the space in front (or of `groupId`): null for one never taken off its Bar. */
+export function chatSpot(shell: Page, groupId?: string): Promise<ChatSpot | null> {
+  return shell.evaluate(async (id) => {
+    const space = id ?? (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).currentGroupId ?? "";
+    const spots = JSON.parse(localStorage.getItem("pistachio.desk.answer.v2") ?? "{}") as Record<string, ChatSpot | undefined>;
+    return spots[space] ?? null;
+  }, groupId ?? null);
+}
+
+/** Keep a place for the chat of the space in front (or of `groupId`), as if it had been left there: read the next time its card comes up. */
+export function keepChatSpot(shell: Page, spot: ChatSpot, groupId?: string): Promise<void> {
+  return shell.evaluate(
+    async ({ id, spot }) => {
+      const space = id ?? (await (window as unknown as { pistachio: PistachioApi }).pistachio.getSnapshot()).currentGroupId ?? "";
+      const spots = JSON.parse(localStorage.getItem("pistachio.desk.answer.v2") ?? "{}") as Record<string, ChatSpot>;
+      spots[space] = spot;
+      localStorage.setItem("pistachio.desk.answer.v2", JSON.stringify(spots));
+    },
+    { id: groupId ?? null, spot },
+  );
+}
+
 /** The nub's menu let out, as a click on the nub lets it out: its droplets (the prompt, the microphone, past chats), drawn once the pages under them have given way. */
 export async function openNubMenu(shell: Page): Promise<void> {
   const nub = shell.getByTestId("desk-nub");

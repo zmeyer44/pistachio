@@ -22,6 +22,7 @@ export type BuiltinBarCommandId =
   | "translate"
   | "research"
   | "new"
+  | "feedback"
   | "arrange"
   | "tidy"
   | "remember"
@@ -168,6 +169,18 @@ export const BAR_COMMANDS: readonly BarCommand[] = [
     description: "Start a new conversation",
     group: "Ask Pistachio",
     arg: null,
+    kind: "action",
+  },
+  {
+    // (To the people who make Pistachio, with the conversation attached, as the feedback form sends it — the form
+    // itself is in the chat's header only at the desk's side, where a column has the room: docs/desk-agent.md §1.)
+    id: "feedback",
+    name: "feedback",
+    aliases: ["bug"],
+    keywords: ["suggestion", "complain", "praise", "makers", "tell"],
+    description: "Tell Pistachio's makers what worked, or didn't",
+    group: "Ask Pistachio",
+    arg: { hint: "what you want them to know", required: true },
     kind: "action",
   },
   {

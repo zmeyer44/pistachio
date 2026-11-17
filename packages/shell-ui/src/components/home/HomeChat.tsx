@@ -5,6 +5,7 @@ import type { RunSummary } from "@pistachio/protocol";
 import { formatAttachmentText, formatSelectionText, selectionChipLabel, toAgentAttachments, type ComposerAttachment } from "../../lib/chat-attachments";
 import { cn } from "../../lib/cn";
 import { agentIsActing } from "../../lib/run";
+import { nativeApi } from "../../api";
 import { useAppStore, type HomeChat as HomeChatState } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
@@ -111,9 +112,12 @@ export function HomeChat({
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="tertiary" size="xs" svgOnly aria-label="Open in the sidebar" title="Open in the sidebar" data-testid="home-chat-sidebar" onClick={() => setConsoleOpen(true)}>
-            <PanelRight aria-hidden="true" />
-          </Button>
+          {/* (Where there is a console — the web. On the desktop the conversation is this tab's space's, and its nub has it.) */}
+          {nativeApi() === null ? (
+            <Button variant="tertiary" size="xs" svgOnly aria-label="Open in the sidebar" title="Open in the sidebar" data-testid="home-chat-sidebar" onClick={() => setConsoleOpen(true)}>
+              <PanelRight aria-hidden="true" />
+            </Button>
+          ) : null}
           <Button
             variant="tertiary"
             size="xs"

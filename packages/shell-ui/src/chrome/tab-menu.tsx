@@ -4,6 +4,7 @@ import { canReadUrl, isReaderUrl } from "@pistachio/shell-contracts/reader";
 import { DEFAULT_SIDEBAR_STATE, isKeepableUrl, type SidebarFolder } from "@pistachio/shell-contracts/sidebar";
 import { tabGroupOf, type TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import type { MenuEntry } from "../components/ContextMenu";
+import { extensionTabEntries } from "../components/extensions/menu";
 import { splitAvailable } from "../lib/desk/open";
 import { useAppStore } from "../store";
 import { useShell } from "./shell-host";
@@ -194,6 +195,9 @@ export function useTabMenu(options: TabMenuOptions = {}): (tab: ChromeTab) => Me
             onSelect: () => void setForcedFocus(tab.id, !tab.forcedFocus),
           },
         ]),
+    // What extensions declared for a tab's menu (docs/primitives.md §4.6), read as the menu opens. A page of the
+    // person's only: an agent's tab is not theirs to hand over.
+    ...(tab.kind === "human" ? extensionTabEntries(tab) : []),
     { separator: true },
     {
       label: "Close tab",

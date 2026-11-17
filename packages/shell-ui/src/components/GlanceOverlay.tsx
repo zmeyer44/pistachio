@@ -58,7 +58,8 @@ export function GlanceOverlay({
   reserve?: number;
 }) {
   const [frame, setFrame] = useState<GlanceFrame | null>(null);
-  const [landed, setLanded] = useState(false);
+  // Back with its tab (GlanceState.returns), the card is where it was: it is staged again, but flies out of no link.
+  const [landed, setLanded] = useState(() => (glance.returns ?? 0) > 0);
   const [leaving, setLeaving] = useState(false);
   const [exit, setExit] = useState<GlanceExit | null>(null);
   const [promotionTarget, setPromotionTarget] = useState<GlancePromotionTarget | null>(null);
@@ -150,10 +151,11 @@ export function GlanceOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staged, frame === null, glance.tab.id]);
 
+  // (Staged first: a Glance back with its tab has landed from the start, and goes up only over its owner's still.)
   useLayoutEffect(() => {
-    if (!landed || closing || frame === null) return;
+    if (!landed || !staged || closing || frame === null) return;
     nativeApi()?.setGlanceBounds(frame.window);
-  }, [closing, frame, landed]);
+  }, [closing, frame, landed, staged]);
 
   // The decoded frame goes into the card as the very element that was
   // decoded, so nothing has to be fetched or decoded again on first paint.

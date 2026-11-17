@@ -1,0 +1,13 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.game-day",
+  "name": "Game day",
+  "version": "1.0.0",
+  "description": "An e2e fixture: the space /gameday is run in is here on Sundays, 8:00 AM to 11:00 PM, and away the rest of the week.",
+  "permissions": ["spaces:write"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [{ "id": "sunday", "during": { "days": ["sun"], "from": "08:00", "to": "23:00" } }],
+  "bar": {
+    "commands": [{ "name": "gameday", "description": "Show this space only on Sundays", "run": { "event": true } }]
+  }
+}

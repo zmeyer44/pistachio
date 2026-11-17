@@ -95,10 +95,12 @@ import type { Experimental_EvaluationModel } from "ai";
 import { smartFindPageFor } from "./smart-find";
 import { focusEmulationAttached, setFocusEmulation } from "./forced-focus";
 import { holdDebugger, releaseDebugger } from "./debugger-hold";
+import { freshenStills, glanceMoves } from "./glance-scope";
 import { CrashReloads, crashKind, DragWatch, pageSite, readPageDragReport, type PageDrag, type PageHealthEvent } from "./page-health";
 import { APP_ICON_SCRIPT, APP_ICON_WORLD, pickAppIcon } from "./app-icon";
 import { PAGE_CORNERS_WORLD, pageCorners, pageCornersScript } from "./page-corners";
 import { ReaderStore, type ReaderActions } from "./reader-store";
+import { runInView } from "./run-scope";
 import { readerSpeechText, readerUrl, type ReaderArticle } from "@pistachio/shell-contracts/reader";
 import {
   buildPageContextMenu,
@@ -211,12 +213,16 @@ import { BrowserPolicyStore } from "./browser-policy-store";
 import { SpaceStore } from "./space-store";
 import { TabSessionStore } from "./tab-session-store";
 import {
+  MAX_RESTORED_TABS_PER_SPACE,
   TAB_SESSION_VERSION,
   sanitizeTabSession,
   trimTabHistory,
+  type DurableSpaceSession,
+  type DurableTab,
   type DurableTabHistory,
   type DurableTabSession,
 } from "@pistachio/shell-contracts/tab-session";
+import { MAX_TABS_KEPT_OF_A_SPACE, firstUnkept, heldSpace, type AwayRefusal, type AwaySpaceInfo } from "@pistachio/shell-contracts/away";
 import {
   anchorGroupTabIds,
   asPersons,
@@ -241,6 +247,7 @@ import {
 import {
   chooseCurrentGroup,
   claimIncomingEntries,
+  withoutAway,
   drawnSpacesBroughtDown,
   foldSplitGroups,
   keepWithRoom,
@@ -254,7 +261,7 @@ import {
   tidyReach,
   unitsInHand,
 } from "./spaces";
-import type { ArchivedTab } from "@pistachio/shell-contracts/tab-archive";
+import { sanitizeArchivedTab, type ArchivedTab } from "@pistachio/shell-contracts/tab-archive";
 import type { BringDownPlace } from "@pistachio/shell-contracts/sidebar-controller";
 import type { TidyGroupCandidate, TidyTabCandidate } from "@pistachio/shell-contracts/tidy";
 import { SessionGate } from "./session-gate";
@@ -278,6 +285,14 @@ const CAPTURE_PERMISSIONS: ReadonlySet<BrowserPermission> = new Set([
  * request first; short enough that an unrelated popup rarely inherits it.
  */
 const GLANCE_INTENT_TTL_MS = 1_000;
+/**
+ * How long a Glance back with its tab waits for that tab's page to be on
+ * screen, to take its backdrop afresh (#settleBackdrop), before it takes
+ * whatever is up and is put up all the same.
+ */
+const GLANCE_BACKDROP_WAIT_MS = 800;
+/** No Glance down to bring back: #settleGlances for the paths that only take one down. */
+const NO_GLANCES: ReadonlyMap<string, never> = new Map<string, never>();
 /** How long a released presentation keeps the page's viewport pinned. */
 const PRESENTATION_RELEASE_MS = 400;
 /** How long a failed "Read aloud" toast stays before clearing itself. */
@@ -456,8 +471,24 @@ interface ManagedGlance {
   ownerRecessed: boolean;
   /** The shell holds the page's last frame; ignore any further placement. */
   preparedForClose: boolean;
+  /**
+   * Its close has been asked for: set the moment prepareGlanceClose is
+   * called, before its last frame is taken, so its tab left meanwhile
+   * closes it rather than keeping it (./glance-scope).
+   */
+  dismissed: boolean;
   /** The same live preview is expanding toward its full-tab bounds. */
   promotionStaged: boolean;
+  /** How many times it has come back with its tab (#settleGlances): back, the shell puts it up where it was, with no flight. */
+  returns: number;
+  /** It had the keyboard as it went down with its tab, and has it back once it is up again. */
+  keyboard: boolean;
+  /**
+   * Back with its tab, its backdrop being taken afresh (#settleBackdrop):
+   * the pages under it may have changed while it was down. Until it is,
+   * the Glance is its tab's but not yet published (glance() is null).
+   */
+  refreshing: { taking: boolean; timer: NodeJS.Timeout } | null;
 }
 
 interface HeldPermission {
@@ -625,6 +656,8 @@ export interface BrowserControllerHooks {
    * stays only if a person made it.
    */
   groupHolds?: (groupId: string) => { context: boolean; conversation: boolean };
+  /** A Profile's (Space's) spaces that are away, for the snapshot (main/away-spaces.ts; docs/primitives.md §2). */
+  awaySpaces?: (spaceId: string) => AwaySpaceInfo[];
   /**
    * A space (tab group) is going into another — merged (TabGroupCommand `merge`), or a page's space brought whole into
    * one (bringDownPage) — and what it holds of the person's goes with its tabs (docs/spaces.md §1, "Merging spaces";
@@ -647,6 +680,11 @@ export interface BrowserControllerHooks {
    * page let go of its entry is titled after it (docs/spaces.md §1).
    */
   entryTitle?: (spaceId: string, anchorId: string) => string | null;
+  /**
+   * What is away now, by id: the spaces, and the tabs their file holds (main/away-store.ts). A restore point applied
+   * here leaves them out (./spaces withoutAway): what is away is not touched by one, nor doubled.
+   */
+  awayHeld?: () => { groupIds: ReadonlySet<string>; tabIds: ReadonlySet<string> };
   /**
    * A tab's page has a new document after its view was made or its renderer
    * went (a wake, a crash), or a live share's page was laid out afresh while
@@ -1228,6 +1266,8 @@ export class BrowserController {
   #lifecycleTimer: NodeJS.Timeout | null = null;
   /** The window has closed (shutdown): its pages are gone and the session written is the last. */
   #shutDown = false;
+  /** Whether the session's last write, at shutdown, reached the disk (sessionWritten). */
+  #writtenAtShutDown = false;
   #activeTabId: string | null = null;
   #layout: BrowserLayout = { views: [] };
   /** The live pages of a stacked layout, bottom to top, as last restacked (#restackViews). */
@@ -1336,7 +1376,14 @@ export class BrowserController {
    */
   #fullscreenTookWindow = false;
   #windowReleasePending = false;
+  /** The Glance up: the one of the tab in use (#settleGlances). */
   #glance: ManagedGlance | null = null;
+  /**
+   * The Glances whose tab is not the one in use, by that tab's id (one to a
+   * tab): down, their pages kept as they were, until the tab is in use again
+   * (#settleGlances) — or goes, and its Glance with it (#dropGlanceOf).
+   */
+  readonly #hiddenGlances = new Map<string, ManagedGlance>();
   /**
    * The last trusted modifier click that no anchor claimed, held briefly so
    * the window.open it causes Glances instead of spawning a tab.
@@ -1547,7 +1594,7 @@ export class BrowserController {
     this.#lifecycleTimer = null;
     this.#gate.dispose();
     this.persistSession();
-    this.#tabSessionStore.flush();
+    this.#writtenAtShutDown = this.#tabSessionStore.flush();
     // The pages go with the window — the next one restores them from the
     // session just written, which nothing after this may write over. A page
     // left running would keep playing, and keep reporting to a controller
@@ -1560,8 +1607,14 @@ export class BrowserController {
       if (release.timer !== null) clearTimeout(release.timer);
     const pages = [...this.#tabs.values()].map((tab) => tab.view.webContents);
     if (this.#glance !== null) pages.push(this.#glance.tab.view.webContents);
+    // (A Glance down may have had its page close itself meanwhile: its view then has none.)
+    for (const glance of this.#hiddenGlances.values()) {
+      const page = glance.tab.view.webContents as WebContents | undefined;
+      if (page !== undefined) pages.push(page);
+    }
     this.#tabs.clear();
     this.#glance = null;
+    this.#hiddenGlances.clear();
     for (const page of pages) if (!page.isDestroyed()) page.close();
   }
 
@@ -1578,9 +1631,10 @@ export class BrowserController {
         tab.view.setBorderRadius(appearance.radius);
       tab.view.setBackgroundColor(background);
     }
-    if (this.#glance !== null) {
-      this.#glance.tab.view.setBorderRadius(appearance.radius);
-      this.#glance.tab.view.setBackgroundColor(background);
+    for (const glance of [this.#glance, ...this.#hiddenGlances.values()]) {
+      if (glance === null) continue;
+      glance.tab.view.setBorderRadius(appearance.radius);
+      glance.tab.view.setBackgroundColor(background);
     }
     // The glow is painted from the same palette and stops at the same corner
     // radius, so a theme change has to relight rather than wait for the run.
@@ -1729,16 +1783,13 @@ export class BrowserController {
     }));
   }
 
-  snapshot(run: ShellSnapshot["run"], sidebar: SidebarState, threads: ThreadListItem[] = []): ShellSnapshot {
+  /** `runIsHere`: the run is the conversation of the space in front, as the hub has it — shown whatever tab it started on (run-scope.ts). */
+  snapshot(run: ShellSnapshot["run"], sidebar: SidebarState, threads: ThreadListItem[] = [], runIsHere = false): ShellSnapshot {
     // While the agent is driving a tab the run belongs to that tab's space;
     // a thread that is paused, waiting, or finished is a conversation, not a
     // tab, and shows wherever the person is (including after its tab closed).
     const runTab = run === null || run.humanTabId === null ? undefined : this.#tabs.get(run.humanTabId);
-    const driving = run !== null && run.control === "agent" && run.status === "running";
-    const scopedRun =
-      run !== null && (!driving || runTab === undefined || runTab.info.spaceId === this.activeSpaceId())
-        ? run
-        : null;
+    const scopedRun = runInView(run, runTab?.info.spaceId ?? null, this.activeSpaceId(), runIsHere) ? run : null;
     return {
       spaces: this.#spaceStore.all(),
       activeSpaceId: this.activeSpaceId(),
@@ -1760,6 +1811,7 @@ export class BrowserController {
       tabGroups: this.tabGroups(),
       looseGroups: this.looseTabGroups(),
       anchorGroups: this.anchorTabGroups(),
+      awaySpaces: this.#hooks.awaySpaces?.(this.activeSpaceId()) ?? [],
       run: scopedRun,
       threads,
       sidebar,
@@ -1978,7 +2030,7 @@ export class BrowserController {
     mode: DurableSessionApplyMode = "replace",
   ): Promise<void> {
     if (this.#spaceStore.get(spaceId) === null) throw new Error("unknown Space");
-    const saved = foldSplitGroups(
+    const read = foldSplitGroups(
       sanitizeTabSession(durable, new Set([spaceId])).spaces[spaceId] ?? {
         tabs: [],
         activeTabId: null,
@@ -1987,6 +2039,11 @@ export class BrowserController {
       },
       { keep: (groupId) => this.#holdsWhatIsTheirs(groupId) },
     );
+    // A space that is away here stays in its file, the newer copy: the restore point's own of it — another device's,
+    // or an older one — is left out, tabs and all. Brought in, the space would be here and away at once, and
+    // bringing it back would find it "here already" and let the file's copy go (main/away-spaces.ts #back).
+    const away = this.#hooks.awayHeld?.();
+    const saved = away === undefined ? read : withoutAway(read, away);
     const activeSpace = this.activeSpaceId() === spaceId;
     if (mode === "replace") {
       if (activeSpace && this.#glance !== null) this.#discardGlance();
@@ -2096,7 +2153,7 @@ export class BrowserController {
     const tab = this.#tabs.get(tabId);
     const info = tab?.info ?? this.#dormantTabs.get(tabId)?.info;
     if (info === undefined) return;
-    if (this.#glance?.ownerTabId === tabId) this.#discardGlance();
+    this.#dropGlanceOf(tabId);
     if (tab !== undefined) {
       this.#cancelPermissionsForTab(tabId);
       this.#cancelPasskeysForTab(tabId);
@@ -2150,27 +2207,8 @@ export class BrowserController {
     const spaces: DurableTabSession["spaces"] = {};
     for (const space of this.#spaceStore.all()) {
       const tabs = this.#spaceTabIds(space.id).flatMap((tabId) => {
-        const info = this.#tabInfo(tabId);
-        if (info === null || info.kind !== "human" || info.unlisted) return [];
-        const history = durableTabHistory(
-          this.#tabs.get(tabId)?.history ?? this.#dormantTabs.get(tabId)?.history ?? null,
-        );
-        return [
-          {
-            id: info.id,
-            spaceId: info.spaceId,
-            title: info.title,
-            url: info.url,
-            faviconUrl: info.faviconUrl,
-            anchorId: info.anchorId,
-            ...(info.linkedAnchorId === undefined ? {} : { linkedAnchorId: info.linkedAnchorId }),
-            // (This Mac's file alone keeps it: the synced restore point drops an extension's page.)
-            ...(info.extensionId === undefined ? {} : { extensionId: info.extensionId }),
-            lastActiveAt: info.lastActiveAt,
-            ...(history === null ? {} : { history }),
-            ...(this.#pageResume.get(info.id)?.url === info.url ? { resume: this.#pageResume.get(info.id)! } : {}),
-          },
-        ];
+        const tab = this.#durableTabOf(tabId);
+        return tab === null ? [] : [tab];
       });
       const tabGroups = [...this.tabGroups(space.id), ...this.looseTabGroups(space.id), ...this.anchorTabGroups(space.id)];
       // A Profile with spaces is kept even with no tabs (since 2026-10-09): an empty space is the person's.
@@ -2519,7 +2557,8 @@ export class BrowserController {
     if (previousSpaceId === spaceId) return;
     if (this.#activeTabId !== null)
       this.#lastActiveTabBySpace.set(previousSpaceId, this.#activeTabId);
-    this.#discardGlance();
+    // Its tab's page goes with the Profile, and its Glance down with it: back with the Profile, the tab is again.
+    this.#settleGlances(null, false);
     if (this.#findState.open) this.find({ type: "close" });
     this.#layout = { views: [] };
     this.#applyLayout();
@@ -3227,9 +3266,21 @@ export class BrowserController {
    * Give the keyboard back to the active tab's page, if its view is on
    * screen to take it. False when it is not (no tab, or a shell overlay has
    * the views hidden) — the caller hands the keyboard to the shell instead.
+   * A Glance up over the tab is the page in front of it, and takes it in
+   * the tab's place: now, or once the shell has put it up (#glanceInFront).
    */
   focusActivePage(): boolean {
     if (this.#overlayActive || this.#activeTabId === null) return false;
+    const glance = this.#glanceInFront();
+    if (glance !== null) {
+      // (A page that closed itself — window.close() — leaves its view with none.)
+      const contents = glance.tab.view.webContents as WebContents | undefined;
+      if (contents === undefined || contents.isDestroyed()) return false;
+      glance.keyboard = false;
+      if (glance.tab.view.getVisible()) contents.focus();
+      else this.#keyboardBack = { contents, until: Date.now() + PAGE_FOCUS_WAIT_MS };
+      return true;
+    }
     const tab = this.#tabs.get(this.#activeTabId);
     if (tab === undefined || tab.view.webContents.isDestroyed()) return false;
     if (!tab.view.getVisible()) return false;
@@ -3250,15 +3301,46 @@ export class BrowserController {
   }
 
   /**
+   * The tab switcher is taking the keyboard for its gesture (index.ts
+   * openTabSwitcher), before it has it: a Glance that has it now is noted to
+   * have had it, so that a gesture taking it down with its tab leaves it
+   * the keyboard to have back when it is up again (#hideGlance). Read once
+   * the shell has the keyboard, it would say it never had it.
+   */
+  noteKeyboardBorrowed(): void {
+    const glance = this.#glance;
+    const contents = glance?.tab.view.webContents as WebContents | undefined;
+    if (glance !== null && contents !== undefined && !contents.isDestroyed() && contents.isFocused()) glance.keyboard = true;
+  }
+
+  /**
    * Hand the waiting keyboard to the page in front once it is on screen:
    * the overlay down, and the shell's layout placing the tab the switcher
-   * chose — which follows the selection by a round trip.
+   * chose — which follows the selection by a round trip. A Glance up over
+   * that tab is the page in front: it takes the keyboard and the key passed
+   * on once the shell has put it up, never the page receded under it.
    */
   #settlePageFocus(): void {
     if (this.#focusPageUntil === 0) return;
     if (Date.now() > this.#focusPageUntil) {
       this.#focusPageUntil = 0;
       this.#passedKeystroke = null;
+      return;
+    }
+    const glance = this.#glanceInFront();
+    if (glance !== null) {
+      const contents = glance.tab.view.webContents as WebContents | undefined;
+      if (contents === undefined || contents.isDestroyed()) {
+        this.#focusPageUntil = 0;
+        this.#passedKeystroke = null;
+        return;
+      }
+      // (Up again, setGlanceBounds settles this once more.)
+      if (this.#overlayActive || !glance.tab.view.getVisible()) return;
+      this.#focusPageUntil = 0;
+      glance.keyboard = false;
+      contents.focus();
+      this.#pressPassedKey(contents, glance.tab);
       return;
     }
     const tabId = this.#activeTabId;
@@ -3873,12 +3955,14 @@ export class BrowserController {
 
   glance(): GlanceState | null {
     const glance = this.#glance;
-    if (glance === null) return null;
+    // (Back with its tab, it is published once its backdrop is taken afresh: #settleBackdrop.)
+    if (glance === null || glance.refreshing !== null) return null;
     return {
       tab: { ...glance.tab.info },
       ownerTabId: glance.ownerTabId,
       source: { ...glance.source },
       backgroundStills: glance.backgroundStills.map((still) => ({ ...still })),
+      returns: glance.returns,
     };
   }
 
@@ -5219,9 +5303,11 @@ export class BrowserController {
       url: tab.info.url,
     });
     if (insert === null) return;
+    const groupId = this.currentGroupId();
     this.#window.webContents.send(IPC.shellCommand, {
       type: "attachToChat",
       insert,
+      ...(groupId === null ? {} : { groupId }),
     });
   }
 
@@ -5233,14 +5319,18 @@ export class BrowserController {
     tab: ManagedTab,
     params: ContextMenuParams,
   ): Promise<void> {
+    // The space in front as the item is chosen: the chat it is added to (docs/desk-agent.md §1, "The chat is its
+    // space's"). The picture takes its time to read, and the person may be in another space when it has been.
+    const groupId = this.currentGroupId();
+    const space = groupId === null ? {} : { groupId };
     const result = await this.#chatImageInsert(tab, params);
     if (this.#tabs.get(tab.info.id) !== tab && this.#glance?.tab !== tab)
       return;
     this.#window.webContents.send(
       IPC.shellCommand,
       result.ok
-        ? { type: "attachToChat", insert: result.insert }
-        : { type: "attachToChatFailed", reason: result.reason },
+        ? { type: "attachToChat", insert: result.insert, ...space }
+        : { type: "attachToChatFailed", reason: result.reason, ...space },
     );
   }
 
@@ -5311,6 +5401,9 @@ export class BrowserController {
     contents.setWindowOpenHandler((details: HandlerDetails) => {
       // (Nor does it open one: docs/terminal.md §5. Nor an extension's page: it opens tabs with pistachio.tabs.create.)
       if (tab.info.kind === "agent" || isTerminalUrl(details.url) || tab.extensionId !== null) return { action: "deny" };
+      // Nor a Glance down with its tab: no window, tab, sign-in or app comes up over the page the person is on from a
+      // page they cannot see.
+      if (this.#isGlanceDown(tab)) return { action: "deny" };
       // (Never from a tab of files: a popup takes its opener's preferences, scripts off — a sign-in that could not run.
       // Its web links open a tab of their own, with scripts.)
       const preservePopup = !tab.files && shouldPreserveAuthenticationPopup(details);
@@ -5937,8 +6030,10 @@ export class BrowserController {
         }
         // A page out of the person's sight gets nothing that reaches them —
         // a camera, a notification, the screen, another app — whatever its
-        // site may do in their own tabs. Nor is there anyone to ask.
-        if (tab?.info.hiddenFor !== undefined) {
+        // site may do in their own tabs. Nor is there anyone to ask. So for
+        // a Glance down with its tab: what it asks is never put to them over
+        // another tab (one asked while it was up waits for it to come back).
+        if (tab?.info.hiddenFor !== undefined || this.#isGlanceDown(tab)) {
           callback(false);
           return;
         }
@@ -6071,7 +6166,9 @@ export class BrowserController {
         normalizeElectronPermissions(rawPermission, [
           details.mediaType === "audio" ? "audio" : "video",
         ])[0] ?? null;
-      if (tab === undefined || permission === null || tab.info.hiddenFor !== undefined) return false;
+      // (Nor for a page out of the person's sight, a hidden tab or a Glance down with its tab: some calls act on a
+      // check alone, never asking, so a check is refused as a request would be.)
+      if (tab === undefined || permission === null || tab.info.hiddenFor !== undefined || this.#isGlanceDown(tab)) return false;
       const clipboardAction =
         permission === "clipboard-read"
           ? "paste"
@@ -6353,7 +6450,8 @@ export class BrowserController {
         : electronWebContents.fromFrame(frame);
     const tab =
       contents === undefined ? undefined : this.#tabForWebContents(contents.id);
-    if (tab === undefined || !request.userGesture || !request.videoRequested) {
+    // (Never from a Glance down with its tab: the screen is not shared from a page out of sight.)
+    if (tab === undefined || this.#isGlanceDown(tab) || !request.userGesture || !request.videoRequested) {
       callback({});
       return;
     }
@@ -6424,10 +6522,17 @@ export class BrowserController {
     return tab.info.id === this.#fullscreenTabId ? 0 : this.#settings().appearance.radius;
   }
 
+  /**
+   * The page of a contents: a tab's, the Glance's up — or a Glance's down
+   * with its tab, still a page of the person's for the session's handlers
+   * (an upload or a download it began goes on, judged by its site). What
+   * needs the person's eye asks #isGlanceDown of it.
+   */
   #tabForWebContents(id: number): ManagedTab | undefined {
     for (const tab of this.#tabs.values())
       if (viewContentsId(tab.view) === id) return tab;
     if (this.#glance !== null && viewContentsId(this.#glance.tab.view) === id) return this.#glance.tab;
+    for (const glance of this.#hiddenGlances.values()) if (viewContentsId(glance.tab.view) === id) return glance.tab;
     return undefined;
   }
 
@@ -6509,7 +6614,8 @@ export class BrowserController {
   /**
    * Decide whether `url` may leave the browser for another app, calling
    * `settle` exactly once. Only a person's own tab may ask; a task tab never
-   * reaches another app. A scheme nothing on this computer answers is
+   * reaches another app, nor does a page out of their sight (a hidden tab, a
+   * Glance down with its tab). A scheme nothing on this computer answers is
    * dropped without a prompt — there would be nothing to open.
    */
   #requestExternalApp(
@@ -6523,7 +6629,8 @@ export class BrowserController {
       url === undefined ||
       scheme === null ||
       tab.info.kind !== "human" ||
-      tab.info.hiddenFor !== undefined
+      tab.info.hiddenFor !== undefined ||
+      this.#isGlanceDown(tab)
     ) {
       settle(false);
       return;
@@ -7017,6 +7124,12 @@ export class BrowserController {
     source: ContentBounds,
     backgroundStills: PaneStill[],
   ): void {
+    // A tab has one Glance: a new one takes the place of one it had down (a console link previewed over it).
+    const replaced = this.#hiddenGlances.get(owner.info.id);
+    if (replaced !== undefined) {
+      this.#hiddenGlances.delete(owner.info.id);
+      this.#closeGlancePage(replaced);
+    }
     const view = new WebContentsView({
       webPreferences: {
         partition: owner.partition,
@@ -7075,7 +7188,11 @@ export class BrowserController {
       bounds: null,
       ownerRecessed: false,
       preparedForClose: false,
+      dismissed: false,
       promotionStaged: false,
+      returns: 0,
+      keyboard: false,
+      refreshing: null,
     };
     const refresh = this.#wireManagedTab(tab);
     this.#applyLayout();
@@ -7089,7 +7206,8 @@ export class BrowserController {
   /** True when Escape came from the preview or its owner page. */
   acceptsGlanceDismiss(senderId: number): boolean {
     const glance = this.#glance;
-    if (glance === null) return false;
+    // (Not yet published, back with its tab: there is no card to close.)
+    if (glance === null || glance.refreshing !== null) return false;
     if (viewContentsId(glance.tab.view) === senderId) return true;
     const owner = this.#tabs.get(glance.ownerTabId);
     return owner !== undefined && viewContentsId(owner.view) === senderId;
@@ -7102,12 +7220,13 @@ export class BrowserController {
    */
   recedeGlanceOwner(): void {
     const glance = this.#glance;
-    if (glance === null || glance.ownerRecessed) return;
+    // (A card that was up before its tab was left may still be heard from: nothing is staged until it is published.)
+    if (glance === null || glance.ownerRecessed || glance.refreshing !== null) return;
     glance.ownerRecessed = true;
     this.#applyLayout();
   }
 
-  /** Position the live native preview after the shell's opening flight lands. */
+  /** Position the live native preview after the shell's opening flight lands (or, back with its tab, as it is put up). */
   setGlanceBounds(bounds: ContentBounds | null): void {
     const glance = this.#glance;
     if (glance === null) return;
@@ -7116,10 +7235,14 @@ export class BrowserController {
       glance.tab.view.setVisible(false);
       return;
     }
-    if (glance.preparedForClose) return;
+    if (glance.preparedForClose || glance.refreshing !== null) return;
     glance.bounds = this.#clampWindowBounds(bounds);
     glance.tab.view.setBounds(glance.bounds);
     glance.tab.view.setVisible(!this.#overlayActive);
+    // Back with its tab, the keyboard it had as it went down (#showGlance), or the one the tab switcher hands the page
+    // in front (#settlePageFocus), now that it is on screen to take it.
+    this.#settleKeyboardBack();
+    this.#settlePageFocus();
   }
 
   /**
@@ -7130,6 +7253,8 @@ export class BrowserController {
   async prepareGlanceClose(): Promise<string | null> {
     const glance = this.#glance;
     if (glance === null || glance.preparedForClose) return null;
+    // Closing from now, before the capture yields: its tab left while the frame is taken closes it, never keeps it.
+    glance.dismissed = true;
     let dataUrl: string | null = null;
     if (
       glance.tab.view.getVisible() &&
@@ -7150,7 +7275,7 @@ export class BrowserController {
   /** Keep the same native preview live while the shell advances its bounds. */
   stageGlancePromotion(bounds: ContentBounds): void {
     const glance = this.#glance;
-    if (glance === null || glance.preparedForClose) return;
+    if (glance === null || glance.preparedForClose || glance.refreshing !== null) return;
     glance.promotionStaged = true;
     glance.bounds = this.#clampWindowBounds(bounds);
     glance.tab.view.setBounds(glance.bounds);
@@ -7210,14 +7335,154 @@ export class BrowserController {
     const glance = this.#glance;
     if (glance === null) return;
     this.#glance = null;
-    // Whatever the preview was waiting to be told goes with it.
+    this.#closeGlancePage(glance);
+    this.#applyLayout();
+    this.#emitGlance();
+  }
+
+  /** Close a Glance's page for good: its view out of the window, and whatever the preview was waiting to be told with it. */
+  #closeGlancePage(glance: ManagedGlance): void {
+    this.#stopRefreshing(glance);
     this.#cancelPermissionsForTab(glance.tab.info.id);
     glance.tab.view.setVisible(false);
     this.#window.contentView.removeChildView(glance.tab.view);
-    if (!glance.tab.view.webContents.isDestroyed())
-      glance.tab.view.webContents.close();
+    // (A page that closed itself — window.close() — leaves its view with none.)
+    const contents = glance.tab.view.webContents as WebContents | undefined;
+    if (contents !== undefined && !contents.isDestroyed()) contents.close();
+  }
+
+  /**
+   * The Glance up over the tab in use, unless it is on its way out: the page
+   * in front of that tab, which the keyboard handed to the tab goes to.
+   */
+  #glanceInFront(): ManagedGlance | null {
+    const glance = this.#glance;
+    return glance !== null && glance.ownerTabId === this.#activeTabId && !glance.dismissed ? glance : null;
+  }
+
+  /**
+   * Whether a page is a Glance down with its tab (#hiddenGlances): a page of
+   * the person's, found by the session's handlers as any is (its uploads and
+   * downloads judged by its site), but out of their sight — nothing it asks
+   * for is put to them over another tab, and nothing opens from it.
+   */
+  #isGlanceDown(tab: ManagedTab | undefined): boolean {
+    if (tab === undefined) return false;
+    for (const glance of this.#hiddenGlances.values()) if (glance.tab === tab) return true;
+    return false;
+  }
+
+  /** A tab going — closed, dropped, moved to another Profile — takes its Glance with it, up or down: its page is closed. */
+  #dropGlanceOf(tabId: string): void {
+    if (this.#glance?.ownerTabId === tabId) this.#discardGlance();
+    const hidden = this.#hiddenGlances.get(tabId);
+    if (hidden === undefined) return;
+    this.#hiddenGlances.delete(tabId);
+    this.#closeGlancePage(hidden);
+  }
+
+  /**
+   * A Glance is the tab's it was opened from (./glance-scope): up while that
+   * tab is the one in use, down while another is — its page kept as it was,
+   * hidden, not closed — and back, as it was, when that tab is in use again.
+   * On a desk that is its window's page being the one in use: another window
+   * chosen, or another space, takes it down; its window in use again, as its
+   * space comes back, brings it back. Run as the tab in use changes
+   * (#activateTab, #deactivate); and, `bringBack` false, by the paths that
+   * leave a tab before the next has woken (selectTab, a space or a Profile
+   * chosen), so a Glance goes down with its page at once.
+   */
+  #settleGlances(inUse: string | null = this.#activeTabId, bringBack = true): void {
+    const { hide, close, show } = glanceMoves(this.#glance, bringBack ? this.#hiddenGlances : NO_GLANCES, inUse);
+    if (close !== null) this.#discardGlance();
+    if (hide !== null) this.#hideGlance(hide);
+    if (show !== null) this.#showGlance(show);
+  }
+
+  /** Take the Glance up down with its tab, no longer in use: its view hidden, its page kept as it was, to come back. */
+  #hideGlance(glance: ManagedGlance): void {
+    this.#glance = null;
+    this.#stopRefreshing(glance);
+    // Back, it is put up and staged afresh (its owner recedes under the shell's still again); a promotion it was flying
+    // into goes with the shell's card, and it comes back a Glance.
+    glance.bounds = null;
+    glance.ownerRecessed = false;
+    glance.promotionStaged = false;
+    const contents = glance.tab.view.webContents as WebContents | undefined;
+    const live = contents !== undefined && !contents.isDestroyed();
+    // (Or had it when the tab switcher borrowed it for the gesture taking it down: noteKeyboardBorrowed.)
+    glance.keyboard = live && (glance.keyboard || contents.isFocused());
+    glance.tab.view.setVisible(false);
+    // Nothing the person cannot see plays to them, as for a hidden tab; nor does a page out of sight keep the keyboard.
+    if (live) contents.setAudioMuted(true);
+    if (glance.keyboard) this.#hooks.focusShell?.();
+    const before = this.#hiddenGlances.get(glance.ownerTabId);
+    if (before !== undefined && before !== glance) this.#closeGlancePage(before);
+    this.#hiddenGlances.set(glance.ownerTabId, glance);
     this.#applyLayout();
     this.#emitGlance();
+  }
+
+  /**
+   * Bring a tab's Glance back as the tab is in use again: the same page, as
+   * it was, which the shell stages and puts up where it was — and, if it had
+   * the keyboard as it went down, the keyboard once it is on screen.
+   */
+  #showGlance(glance: ManagedGlance): void {
+    this.#hiddenGlances.delete(glance.ownerTabId);
+    const contents = glance.tab.view.webContents as WebContents | undefined;
+    // (Its page closed itself while it was down: there is nothing to bring back.)
+    if (contents === undefined || contents.isDestroyed()) {
+      this.#closeGlancePage(glance);
+      return;
+    }
+    this.#glance = glance;
+    glance.returns += 1;
+    contents.setAudioMuted(false);
+    // Its page died while it was down (nothing brings a Glance's back, as a tab's is): it comes back at its address.
+    if (contents.isCrashed()) contents.reload();
+    // Over every page again (one made or raised while it was down went above it), and the chrome's views over it.
+    this.#window.contentView.addChildView(glance.tab.view);
+    this.#onViewAdded();
+    if (glance.keyboard) this.#keyboardBack = { contents, until: Date.now() + PAGE_FOCUS_WAIT_MS };
+    glance.keyboard = false;
+    // The pages under it may have changed while it was down (its owner's, another window's on its desk): it is put up
+    // over pictures of them taken afresh, as when it opened, never the ones it opened over (#settleBackdrop).
+    const timer = setTimeout(() => this.#settleBackdrop(true), GLANCE_BACKDROP_WAIT_MS);
+    timer.unref?.();
+    glance.refreshing = { taking: false, timer };
+    this.#settleBackdrop();
+  }
+
+  /**
+   * Take a returning Glance's backdrop afresh — the pages on screen, as
+   * openGlance takes them — once its tab's page is up to be taken (the
+   * shell lays the tab out a round trip after it comes into use), or,
+   * `force`d, whatever is up after GLANCE_BACKDROP_WAIT_MS; then publish it,
+   * for the shell to stage over those pictures. Run from #applyLayout.
+   */
+  #settleBackdrop(force = false): void {
+    const glance = this.#glance;
+    const refreshing = glance?.refreshing ?? null;
+    if (glance === null || refreshing === null || refreshing.taking) return;
+    if (!force) {
+      const owner = this.#tabs.get(glance.ownerTabId);
+      if (owner === undefined || !owner.view.getVisible()) return;
+    }
+    refreshing.taking = true;
+    const publish = (fresh: PaneStill[]): void => {
+      if (this.#glance !== glance || glance.refreshing !== refreshing) return;
+      this.#stopRefreshing(glance);
+      glance.backgroundStills = freshenStills(glance.backgroundStills, fresh);
+      this.#emitGlance();
+    };
+    this.#captureVisibleStills("jpeg").then(publish, () => publish([]));
+  }
+
+  #stopRefreshing(glance: ManagedGlance): void {
+    if (glance.refreshing === null) return;
+    clearTimeout(glance.refreshing.timer);
+    glance.refreshing = null;
   }
 
   #clampWindowBounds(bounds: ContentBounds): ContentBounds {
@@ -7329,7 +7594,7 @@ export class BrowserController {
     } else {
       this.#dormantTabs.delete(tabId);
     }
-    if (this.#glance?.ownerTabId === tabId) this.#discardGlance();
+    this.#dropGlanceOf(tabId);
     const orderIndex = this.#tabOrder.indexOf(tabId);
     if (orderIndex >= 0) this.#tabOrder.splice(orderIndex, 1);
     this.#tabThumbnails.delete(tabId);
@@ -7520,7 +7785,7 @@ export class BrowserController {
 
     const sourceSpaceId = info.spaceId;
     const movingActiveTab = this.#activeTabId === tabId;
-    if (this.#glance?.ownerTabId === tabId) this.#discardGlance();
+    this.#dropGlanceOf(tabId);
     if (movingActiveTab && this.#findState.open) this.find({ type: "close" });
 
     const live = this.#tabs.get(tabId);
@@ -7665,8 +7930,8 @@ export class BrowserController {
       this.#applyLayout();
       this.#spaceStore.setActive(info.spaceId);
     }
-    if (this.#glance !== null && this.#glance.ownerTabId !== tabId)
-      this.#discardGlance();
+    // Another tab's Glance goes down at once, not once this one has woken; this one's comes back as it is in use.
+    this.#settleGlances(tabId, false);
     const serial = ++this.#activationSerial;
     this.#entering += 1;
     try {
@@ -7943,6 +8208,16 @@ export class BrowserController {
     return isPersonsGroup(group, this.#holdsOf(group.id));
   }
 
+  /**
+   * Whether a space is the person's as an extension is told it (`pistachio.spaces.list` → `byPerson`,
+   * docs/primitives.md §2.6): anything but one Tidy may file whole — Tidy's own (isTidysGroup) that holds nothing
+   * of the person's. A space that is not here is taken as theirs: nothing is filed on a guess.
+   */
+  isPersonsSpace(groupId: string): boolean {
+    const group = this.#tabGroups.get(groupId);
+    return group === undefined || !isTidysGroup(group) || this.#isPersons(group);
+  }
+
   /* -------------------------- the current space -------------------------- */
 
   /**
@@ -8101,8 +8376,10 @@ export class BrowserController {
       this.#applyLayout();
       this.#spaceStore.setActive(spaceId);
     }
+    // A Glance of another space's tab goes down with its desk at once; one of this space's stays unless another of its
+    // tabs comes into use (#activateTab).
     const glance = this.#glance;
-    if (glance !== null && !(this.#tabGroups.get(groupId)?.tabIds.includes(glance.ownerTabId) ?? false)) this.#discardGlance();
+    if (glance !== null && !(this.#tabGroups.get(groupId)?.tabIds.includes(glance.ownerTabId) ?? false)) this.#settleGlances(null, false);
     await this.#enterGroup(spaceId, groupId, tabId);
   }
 
@@ -8133,6 +8410,7 @@ export class BrowserController {
     // (Find closes while the tab is still the one in use: its matches come off its page.)
     if (this.#findState.open) this.find({ type: "close" });
     this.#activeTabId = null;
+    this.#settleGlances();
     this.#cancelPasskeysForTab(previous);
     if (this.#fullscreenTabId !== null) this.#exitHtmlFullscreen();
     this.#settleBackgroundVideos();
@@ -8376,7 +8654,10 @@ export class BrowserController {
   }): TabGroupInfo | null {
     const id = options.id ?? randomUUID();
     const windows = options.windows === true ? { windows: true as const } : {};
-    if (!isTabGroupId(id) || this.#tabGroups.has(id)) return null;
+    // (An id a space that is away goes by is not free: made here under it — an archive entry of an older copy
+    // restored "as itself" — the space would be here and away at once, and its return would find it "here already"
+    // and let the away file's copy go. The caller asks again with no id, as it does for one taken.)
+    if (!isTabGroupId(id) || this.#tabGroups.has(id) || this.#hooks.awayHeld?.().groupIds.has(id) === true) return null;
     if (options.anchored === true) return this.#createPageGroup(id, options.tabIds);
     if (options.tabIds.length === 0) {
       const spaceId = options.spaceId ?? this.activeSpaceId();
@@ -8675,7 +8956,7 @@ export class BrowserController {
   }
 
   /** Apply one of the chrome's group commands ("close" is the caller's: it files the group in the archive). */
-  async tabGroupCommand(command: Exclude<TabGroupCommand, { type: "close" }>): Promise<void> {
+  async tabGroupCommand(command: Exclude<TabGroupCommand, { type: "close" | "sendAway" | "bringBack" }>): Promise<void> {
     switch (command.type) {
       case "create": {
         // (No tabs: the person's New space, in the active Profile — the shell opens its name field.)
@@ -9085,12 +9366,23 @@ export class BrowserController {
    * (`grown`) is handed back as theirs (`manual`): filed so, it comes back
    * from the archive theirs, not as one Tidy made and may archive.
    */
-  async closeTabGroup(groupId: string): Promise<{ group: TabGroupInfo; spaceId: string; tabs: ArchivedTab[]; persons: boolean } | null> {
-    const group = this.#tabGroups.get(groupId);
+  async closeTabGroup(
+    groupId: string,
+    guard?: { ownTurn?: boolean; unattended?: boolean; absent?: boolean },
+  ): Promise<{ group: TabGroupInfo; spaceId: string; tabs: ArchivedTab[]; persons: boolean } | null> {
+    let group = this.#tabGroups.get(groupId);
     const spaceId = this.#spaceOf(groupId);
     if (group === undefined || spaceId === null) return null;
     const persons = this.#isPersons(group);
     if (this.currentGroupId(spaceId) === groupId) await this.#passFrom(spaceId, groupId);
+    // `guard`: a close nobody pressed (main/space-closing.ts), asked again now that the desk has passed on — a page
+    // may have gone to an address the archive does not keep, or begun to be recorded, meanwhile. Refused here,
+    // nothing is closed: null, as takeGroupAway answers. (The person's own close is asked nothing.)
+    if (guard !== undefined) {
+      const now = this.#tabGroups.get(groupId);
+      if (this.#shutDown || now === undefined || this.awayBlock(groupId, guard) !== null || this.closeUnkept(groupId) !== null) return null;
+      group = now;
+    }
     this.#dropGroup(groupId);
     const members = group.tabIds.filter((tabId) => this.#tabInfo(tabId) !== null);
     const tabs = members.flatMap((tabId) => {
@@ -9102,6 +9394,268 @@ export class BrowserController {
     for (const tabId of members) if (visible.has(tabId)) await this.closeTab(tabId, { force: true });
     this.#onChange();
     return { group: group.grown === true ? asPersons(group) : group, spaceId, tabs, persons };
+  }
+
+  /**
+   * The tab of a space the archive would not keep were the space closed now — its title, "" when it has none — or
+   * null when it keeps them all. The archive's file reads a tab back by its own rule (sanitizeArchivedTab): an
+   * address longer than it keeps, a blank page, a `blob:` one is dropped there, its page long closed, and Undo
+   * could not return it. So a close nobody pressed asks first (main/space-closing.ts); the person's own is theirs.
+   * (A shell page — Home, a note — is no page to keep: closeTabGroup leaves it out, and nothing of it is lost.)
+   */
+  closeUnkept(groupId: string): string | null {
+    const group = this.#tabGroups.get(groupId);
+    if (group === undefined) return null;
+    for (const tabId of group.tabIds) {
+      const info = this.#tabInfo(tabId);
+      if (info === null || isShellPageUrl(info.url)) continue;
+      if (sanitizeArchivedTab({ title: info.title, url: info.url, faviconUrl: info.faviconUrl, lastActiveAt: info.lastActiveAt }, { files: true }) === null) return info.title;
+    }
+    return null;
+  }
+
+  /* --------------------------------- away --------------------------------- */
+  // docs/primitives.md §2 — which spaces are away, who sent them and when they
+  // are due back is main/away-spaces.ts; these are the two things only the
+  // owner of the tabs can do for it.
+
+  /** A space (tab group) of some Profile is here, on the rail or in Home: an away one is not. */
+  hasTabGroup(groupId: string): boolean {
+    return this.#tabGroups.has(groupId);
+  }
+
+  /** The Profile (Space) a space here is in, or null. */
+  profileOfTabGroup(groupId: string): string | null {
+    return this.#spaceOf(groupId);
+  }
+
+  /**
+   * Why a space cannot be sent away now, or null: it is not a drawn space
+   * (a Home tab's, a page's), guests are watching it, or one of its pages
+   * shares the screen or is being recorded — each would end without a word
+   * to whoever is on the other side of it — or the agent is at work in it.
+   */
+  awayBlock(groupId: string, options: { ownTurn?: boolean; unattended?: boolean; absent?: boolean } = {}): AwayRefusal | null {
+    const group = this.#tabGroups.get(groupId);
+    if (group === undefined || this.#spaceOf(groupId) === null) return "unknown";
+    if (group.loose === true || group.anchorId !== undefined) return "notASpace";
+    // A desk turn works in it (holdGroup): its pages are not taken from under the agent — unless the turn asking is
+    // that one (`ownTurn`: the agent sending away the space it was asked to, from inside it).
+    if ((this.#heldGroups.get(groupId) ?? 0) > (options.ownTurn === true ? 1 : 0)) return "working";
+    if (this.#liveGroupId === groupId || group.tabIds.some((tabId) => this.#liveHeld.has(tabId))) return "live";
+    if (group.tabIds.some((tabId) => this.#screenShares.has(tabId))) return "sharing";
+    if (group.tabIds.some((tabId) => this.#extensionHeld.has(tabId))) return "recording";
+    // More tabs than are read back of one space, from the away file as from the archive: the rest would be dropped as
+    // the space was filed, their pages already gone. Refused before anything moves.
+    if (group.tabIds.length > MAX_TABS_KEPT_OF_A_SPACE) return "tooMany";
+    // Code asking with nobody there (an extension's trigger, docs/primitives.md §3) is refused what the person's own
+    // press is not: the space they are in, one that is playing, and one whose terminal would end with it. (`absent`:
+    // main can see that nobody is at the Mac — its screen locked, or idle as the trigger in hand says — so the space
+    // in front is in front of no one.)
+    if (options.unattended === true) {
+      const spaceId = this.#spaceOf(groupId);
+      if (options.absent !== true && spaceId !== null && spaceId === this.activeSpaceId() && this.currentGroupId(spaceId) === groupId) return "inFront";
+      if (group.tabIds.some((tabId) => this.#media.has(tabId))) return "playing";
+      if (group.tabIds.some((tabId) => isTerminalUrl(this.#tabInfo(tabId)?.url ?? ""))) return "terminal";
+    }
+    return null;
+  }
+
+  /**
+   * Take a space out of the window whole and hand back what it was, as the
+   * session would have kept it (a DurableSpaceSession of that one space):
+   * its tabs under their own ids, in its order, with their stacks, their
+   * checkpoints and their links to favorites — so putGroupBack makes it the
+   * same space again. The space in front passes the desk on first
+   * (#passFrom), as a closed one does; its pages then go quietly: no
+   * "recently closed" (they are not closed), no successor to choose. It is
+   * handed back as the person's (asPersons): a space someone sent away is
+   * one they keep, and Tidy must not file it the minute it is back for
+   * having been idle all the while. Null when it cannot go (awayBlock).
+   */
+  async takeGroupAway(groupId: string, options: { ownTurn?: boolean; unattended?: boolean; absent?: boolean } = {}): Promise<{ spaceId: string; held: DurableSpaceSession } | null> {
+    // (A window that has closed writes its session no more: nothing is taken out of one, or put back into it.)
+    if (this.#shutDown || this.awayBlock(groupId, options) !== null) return null;
+    const spaceId = this.#spaceOf(groupId);
+    if (spaceId === null) return null;
+    if (this.currentGroupId(spaceId) === groupId) await this.#passFrom(spaceId, groupId);
+    // (Read again: the desk passing woke a page, and anything may have moved meanwhile.)
+    const group = this.#tabGroups.get(groupId);
+    if (this.#shutDown || group === undefined || this.awayBlock(groupId, options) !== null) return null;
+    const { members, held } = this.#heldOf(group, spaceId, true);
+    // (Every tab of it, or none: one the file would not read back is not taken with the rest — awayUnkept.)
+    if (firstUnkept(held, heldSpace(held, spaceId, groupId)) !== null) return null;
+    // Nowhere for the desk to pass to (no other tab, no room for a fresh space): nothing is left in use, and the
+    // reconcile that follows settles a current space now that this one has made room.
+    if (this.#activeTabId !== null && members.includes(this.#activeTabId)) {
+      this.#deactivate();
+      this.#layout = { views: [] };
+      this.#applyLayout();
+    }
+    this.#dropGroup(groupId);
+    for (const tabId of members) this.#discardTab(tabId);
+    this.#onChange();
+    this.persistSession();
+    return { spaceId, held };
+  }
+
+  /**
+   * A space as the session would keep it — the slice takeGroupAway hands over: its tabs under their own ids, in its
+   * order, with their stacks (`fresh`: read from their pages now, as a close reads them), and the space itself as
+   * the person's. `members`: the tabs it is made of here.
+   */
+  #heldOf(group: TabGroupInfo, spaceId: string, fresh: boolean): { members: string[]; held: DurableSpaceSession } {
+    const members = group.tabIds.filter((tabId) => {
+      const info = this.#tabInfo(tabId);
+      return this.#canHold(group, info) && info.spaceId === spaceId;
+    });
+    const tabs = members.flatMap((tabId) => {
+      const tab = this.#durableTabOf(tabId, fresh);
+      return tab === null ? [] : [tab];
+    });
+    const kept = new Set(tabs.map((tab) => tab.id));
+    const recentTabIds = (this.#recentTabIdsBySpace.get(spaceId) ?? []).filter((tabId) => kept.has(tabId));
+    const { beforeUnit: _beforeUnit, naming: _naming, ...rest } = asPersons(group);
+    const held: DurableSpaceSession = {
+      tabs,
+      activeTabId: mostRecentTab([...kept], recentTabIds, (tabId) => this.#tabInfo(tabId)?.lastActiveAt ?? 0) ?? null,
+      recentTabIds,
+      splitGroups: [],
+      tabGroups: [{ ...rest, tabIds: tabs.map((tab) => tab.id), open: false }],
+    };
+    return { members, held };
+  }
+
+  /**
+   * The tab of a space that would not be kept were the space sent away now — its title, "" when it has none — or
+   * null when every tab would be. The away file reads a space back as the session reads one (heldSpace): a page no
+   * relaunch reopens (an address longer than the session keeps, a blank page, a `blob:` one) is dropped there, and
+   * its page would be closed already. So a send asks first, and says which tab.
+   */
+  awayUnkept(groupId: string): string | null {
+    const group = this.#tabGroups.get(groupId);
+    const spaceId = this.#spaceOf(groupId);
+    if (group === undefined || spaceId === null) return null;
+    const { held } = this.#heldOf(group, spaceId, false);
+    return firstUnkept(held, heldSpace(held, spaceId, groupId))?.title ?? null;
+  }
+
+  /**
+   * Put a space taken away back in its Profile, as itself: its tabs asleep
+   * under the ids they had (each wakes with its stack and checkpoint when it
+   * is next shown), the space under its own id, at the end of the rail. An
+   * entry's page that the entry has since opened elsewhere comes back a
+   * plain tab (./spaces claimIncomingEntries: one page per entry). Nothing
+   * is brought in front: whoever asked chooses that. The session's save is
+   * only scheduled: a caller holding the one other copy asks `sessionWritten`
+   * before it forgets that copy. Null, nothing changed, when the Profile is
+   * gone, has no room for another space (hasRoomForSpace), or a space of
+   * that id is here already.
+   */
+  putGroupBack(spaceId: string, held: DurableSpaceSession): TabGroupInfo | null {
+    const group = held.tabGroups?.[0];
+    // (Shut down: this window's session has had its last write, and what was put back now would be in no file.)
+    if (this.#shutDown || group === undefined || this.#tabGroups.has(group.id) || !this.hasRoomForSpace(spaceId)) return null;
+    const entriesOpen = new Set(
+      this.#spaceTabIds(spaceId).flatMap((tabId) => {
+        const info = this.#tabInfo(tabId);
+        return [info?.anchorId ?? null, info?.linkedAnchorId ?? null].filter((anchorId): anchorId is string => anchorId !== null);
+      }),
+    );
+    const incoming = claimIncomingEntries(
+      held.tabs.filter((tab) => this.#tabInfo(tab.id) === null && tab.anchorId === null),
+      entriesOpen,
+    );
+    const added = new Set<string>();
+    for (const tab of incoming) {
+      added.add(tab.id);
+      if (tab.resume) this.#pageResume.set(tab.id, tab.resume);
+      this.#dormantTabs.set(tab.id, {
+        info: {
+          id: tab.id,
+          spaceId,
+          title: tab.title,
+          url: tab.url,
+          faviconUrl: tab.faviconUrl,
+          loading: false,
+          canGoBack: false,
+          canGoForward: false,
+          kind: "human",
+          runId: null,
+          anchorId: null,
+          ...(tab.linkedAnchorId === undefined ? {} : { linkedAnchorId: tab.linkedAnchorId }),
+          ...(tab.extensionId === undefined ? {} : { extensionId: tab.extensionId }),
+          lifecycle: "suspended",
+          lastActiveAt: tab.lastActiveAt,
+          unlisted: false,
+        },
+        history: tab.history ?? null,
+      });
+      this.#tabOrder.push(tab.id);
+    }
+    const back: TabGroupInfo = { ...group, tabIds: group.tabIds.filter((tabId) => added.has(tabId)) };
+    this.#putGroup(back, spaceId);
+    // Used before whatever the Profile has used since: they join the end of its recents.
+    const recents = this.#recentTabIdsBySpace.get(spaceId) ?? [];
+    this.#recentTabIdsBySpace.set(spaceId, [...recents, ...held.recentTabIds.filter((tabId) => added.has(tabId) && !recents.includes(tabId))]);
+    this.#onChange();
+    this.persistSession();
+    return this.#tabGroups.get(back.id) ?? null;
+  }
+
+  /**
+   * Whether a Profile's session would keep `coming` more tabs beside the ones it has: a Profile's tabs are read back
+   * two hundred at most (MAX_RESTORED_TABS_PER_SPACE — a save is read as a launch reads it), the first two hundred
+   * in their order, and a space put back joins the end. Past that its tabs would be written nowhere, and gone at
+   * the next launch with the copy they came from let go: a space away stays away, and one filed stays filed, until
+   * tabs are closed. False once shut down: this window's session has had its last write.
+   */
+  hasRoomForTabs(spaceId: string, coming: number): boolean {
+    if (this.#shutDown) return false;
+    const here = this.#spaceTabIds(spaceId).filter((tabId) => {
+      const info = this.#tabInfo(tabId);
+      return info !== null && info.kind === "human" && !info.unlisted;
+    }).length;
+    return here + coming <= MAX_RESTORED_TABS_PER_SPACE;
+  }
+
+  /**
+   * Write the session as it is now, and say whether it reached the disk.
+   * False — a disk that is full, a folder that cannot be written — means
+   * what the window holds is in memory alone: a restart would read the last
+   * session that was written, so whoever keeps another copy of something now
+   * in the session (an away space just put back) keeps it until this says yes.
+   * After shutdown: whether the session's last write did.
+   */
+  sessionWritten(): boolean {
+    if (this.#shutDown) return this.#writtenAtShutDown;
+    this.persistSession();
+    return this.#tabSessionStore.flush();
+  }
+
+  /** A listed tab as the session keeps it — `fresh`: its stack read from its page now, if it has one, as a close reads it. */
+  #durableTabOf(tabId: string, fresh = false): DurableTab | null {
+    const info = this.#tabInfo(tabId);
+    if (info === null || info.kind !== "human" || info.unlisted) return null;
+    const live = this.#tabs.get(tabId);
+    const history = durableTabHistory(
+      fresh && live !== undefined ? (captureTabHistory(live.view.webContents, false) ?? live.history) : (live?.history ?? this.#dormantTabs.get(tabId)?.history ?? null),
+    );
+    const resume = this.#pageResume.get(info.id);
+    return {
+      id: info.id,
+      spaceId: info.spaceId,
+      title: info.title,
+      url: info.url,
+      faviconUrl: info.faviconUrl,
+      anchorId: info.anchorId,
+      ...(info.linkedAnchorId === undefined ? {} : { linkedAnchorId: info.linkedAnchorId }),
+      // (This Mac's file alone keeps it: the synced restore point drops an extension's page.)
+      ...(info.extensionId === undefined ? {} : { extensionId: info.extensionId }),
+      lastActiveAt: info.lastActiveAt,
+      ...(history === null ? {} : { history }),
+      ...(resume?.url === info.url ? { resume } : {}),
+    };
   }
 
   /* --------------------------------- tidy --------------------------------- */
@@ -9428,6 +9982,8 @@ export class BrowserController {
       this.#exitHtmlFullscreen();
     this.#activeTabId = tabId;
     this.#lastActiveTabBySpace.set(target.info.spaceId, tabId);
+    // A Glance is its tab's: another tab's goes down, this one's comes back.
+    this.#settleGlances();
     // Chrome extensions hear `tabs.onActivated` (a Glance promoted, a hidden tab shown: told now, as a tab of the person's).
     const chromeContents = this.#chromeTabContents(target);
     if (chromeContents !== null) this.#hooks.chromeTabs!.selected(tabId, chromeContents);
@@ -11109,6 +11665,8 @@ export class BrowserController {
       );
     }
     this.#settleKeyboardBack();
+    // (A Glance back with its tab, once that tab's page is up: its backdrop taken afresh.)
+    this.#settleBackdrop();
   }
 
   /** Show or hide a page's native view only on a real transition, as settleViewBounds. */

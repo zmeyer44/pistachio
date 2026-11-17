@@ -18,6 +18,16 @@ conversation with the whole pane, drawn from the same components.
 
 ## 2. The conversation is the console's
 
+(On the desktop, since 2026-11-16: "the console" below is the conversation of
+the home tab's own space — each space has its own, and no panel stands
+beside the desk (docs/desk-agent.md §1, "The chat is its space's"). The same
+run is in that space's nub; its answer card does not come up over the page by
+itself to say the same again, and there is no "Open in the sidebar" — the
+pill's answer button shows it. "The sidebar opens" below reads "the space's
+chat comes out of its nub". A question from a new home tab is never refused
+for another space's agent being at work: that one goes on in its own space.
+On the web, where the console is the chat, it is as written.)
+
 There is one open thread (docs/threads.md), and a home tab that asks a
 question makes it that thread: `askHome` (shell-ui `store.ts`) sets the
 console's thread aside with `newThread`, starts a fresh one with
@@ -39,7 +49,15 @@ Consequences that follow from that one fact:
   (the console still holds the thread).
 - **The console moving on ends the chat.** Reopening another thread or
   starting one in the sidebar replaces the open run; a home tab whose run
-  is no longer the open one goes back to being the home page.
+  is no longer the open one goes back to being the home page. On the
+  desktop each space has its own conversation (docs/desk-agent.md §3), a
+  Home tab being a space of its own, so "the open one" is the tab's own
+  space's: the run in view is the tab's word only while it is that space's
+  (`selectRunIsOfTab`, by main's `runSpace`). With the person gone to
+  another space — the page still drawn, on its way out — the run in view
+  is that space's and says nothing of this tab: its chat stays as it was
+  last seen, and is there, going on, when they come back. (Until
+  2026-11-17 any other run in view closed the chat.)
 - **A browse turn may take the tab.** The run works in the person's tab
   (`humanTabId` is the home tab), so a task routed to the browser can
   navigate it away. The store opens the sidebar when that happens while the
@@ -106,8 +124,8 @@ is off under `prefers-reduced-motion`.
   `apps/desktop/test/run-controller.test.ts` ("a streamed reply").
 - App: `apps/desktop/e2e/tests/home-chat.spec.ts` drives the demo
   executor from the home page — the row, the flight, the trace, the
-  approval, the sidebar mirror, files dropped on the page and on the
-  panel, and the way back. `search-providers.spec.ts`
+  approval, the same conversation in the space's answer card (asked for,
+  never by itself), files dropped on the page, and the way back. `search-providers.spec.ts`
   covers the row's wording beside the address bar's.
 - Live: the same journey with a model, from a new tab — a knowledge
   question streams with a reasoning block; "find the cheapest …" goes to

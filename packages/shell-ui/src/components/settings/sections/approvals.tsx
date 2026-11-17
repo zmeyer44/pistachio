@@ -40,12 +40,12 @@ export function ApprovalsPage() {
           />
         </Row>
         <Row
-          label="Open the console on a pause"
+          label="Open the chat on a pause"
           note="Bring the agent chat into view when work stops for approval, so the decision is on screen without a click."
         >
           <Switch
             checked={approvals.focusConsoleOnPause}
-            label="Open the console on a pause"
+            label="Open the chat on a pause"
             onChange={(focusConsoleOnPause) => void updateSettings({ approvals: { focusConsoleOnPause } })}
           />
         </Row>
