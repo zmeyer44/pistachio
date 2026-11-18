@@ -124,6 +124,17 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
     await expect(shell.getByTestId("desk-stack")).toHaveAttribute("data-count", "2");
     // One window above the other: the upper clear of the pill and of the short @ list, but not of the whole command
     // list once the field is a few lines tall (the list stands on the pill, as tall as it can be).
+    // On a shorter desk, so that holds at rest: the pill out, the windows give way to its band (2026-11-05), and at the
+    // desk's usual height the upper one's foot is above the whole list's top as well. (Until 2026-11-17 this step
+    // passed all the same, on the moment the list lay over the window as it glided up out of the band — a tenth of a
+    // second, which the nub's menu no longer being a cover was enough to miss.)
+    const usual = await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]!;
+      const size = window.getContentSize();
+      window.setContentSize(size[0]!, 700);
+      return size;
+    });
+    await settled(shell, app);
     await layoutOption(shell, "stack").click();
     await settled(shell, app);
     const boxes = await Promise.all([invoice, searched.activeTabId!].map((id) => box(shell, windowSelector(id))));
@@ -133,6 +144,8 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
     await reachBar(shell);
     await input.fill("/summarize\n\n\n@");
     await expect(shell.locator('[data-testid="desk-mentions"][data-shown]')).toBeVisible();
+    // (At rest: the windows up out of the pill's band, the @ list standing on the pill.)
+    await settled(shell, app);
     await expect.poll(upperLive).toBe(true);
     // The caret put just after the slash, as a click there puts it: the whole list, at once.
     await input.evaluate((field: HTMLTextAreaElement) => {
@@ -142,8 +155,16 @@ test("the desk's Bar: / lists the commands, and they search, save a fact, ask Pi
     await expect(menu).toBeVisible();
     await expect(rows).toHaveCount(20);
     await expect.poll(upperLive).toBe(false);
+    // And stays one for as long as the list is over it: the list's top is well up the upper window, at rest.
+    await settled(shell, app);
+    const list = await box(shell, '[data-testid="desk-commands"]');
+    const upper = (await Promise.all([invoice, searched.activeTabId!].map((id) => box(shell, windowSelector(id))))).sort((a, b) => a.y - b.y)[0]!;
+    expect(list.y).toBeLessThan(upper.y + upper.height - 24);
+    expect(await upperLive()).toBe(false);
     await input.fill("");
     await expect(shell.getByTestId("desk-commands")).toHaveCount(0);
+    await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]!.setContentSize(size[0]!, size[1]!), usual);
+    await settled(shell, app);
 
     // ── 8. A list put away with Escape comes back for the next message's `/`, however the last one went ─
     await input.fill("/remember");

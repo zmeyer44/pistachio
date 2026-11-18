@@ -62,6 +62,20 @@ describe("what the run is doing", () => {
     expect(statusIndicator({ ...runWith("running"), toolCalls: [tool("reminder.create")] }).tooltip).toBe("Working on your request");
   });
 
+  it("names Pistachio itself as its own surface: a setting changed is not browser activity", () => {
+    // docs/agent-pistachio.md: `settings.*` and `app.open` are the app's; a build and the list are the extensions'.
+    expect(toolFamily("settings.read")).toBe("app");
+    expect(toolFamily("settings.change")).toBe("app");
+    expect(toolFamily("app.open")).toBe("app");
+    expect(toolFamily("ext.build")).toBe("extension");
+    expect(toolFamily("ext.list")).toBe("extension");
+    expect(runHeadline(calls(tool("settings.change")))).toBe("Changing Pistachio");
+    expect(traceLabel(calls(tool("settings.read")))).toBe("Pistachio activity");
+    expect(traceLabel(calls(tool("settings.change", "running")))).toBe("1 Pistachio change running");
+    expect(workingText(calls(tool("settings.change", "running")))).toBe("Changing Pistachio…");
+    expect(endTaskLabel(calls(tool("settings.change")))).toBe("End task");
+  });
+
   it("keeps the person's notes and the agent's scratchpad apart", () => {
     // `note.*` is docs/notes.md; `notes.update` is the run's own working
     // notes. Two prefixes one character apart, so the split is pinned here.

@@ -63,7 +63,7 @@ Space rules:
 - With a time (at or inMinutes) the space comes back by itself, so never pair it with a reminder. A reminder is for telling the person something or doing work at a time, not for a space's coming and going. A relative time uses inMinutes; a specific one uses at as an ISO instant with the offset shown in the current time above.
 - space_bring_back returns an away space to the rail without taking the person to it; say that it is back.
 - space_close is for a space the person is done with: its tabs close and it is filed in the archive, from which they can restore it for about a month. For "out of the way for now" or "until later", send it away instead — an away space never lapses. Say where it went and that it can be restored.
-- A recurring wish ("every Sunday", "weekdays after six") is not this tool's: do the first one if asked, and say that keeping it up needs an extension, which they can have made with /extension. Never fake it with reminders.
+- A recurring wish ("every Sunday", "weekdays after six") is not this tool's: do the first one if asked, and keep it up with an extension — build it with extension_build when you have that tool, and otherwise say they can have one made with /extension. Never fake it with reminders.
 - If a space cannot go or come back, the tool says why in a sentence: tell the person that, and do not work around it.
 `;
 

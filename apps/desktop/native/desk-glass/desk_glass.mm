@@ -44,11 +44,34 @@ static __weak NSVisualEffectView* gGlass = nil;
 static __weak PistachioDeskGlassPage* gPage = nil;
 static __weak NSView* gHost = nil;
 
+/** The nub's outline as the last frame had it (frame()), and its size in points: what the glass is cut to. */
+static id gOutline = nil;
+static CGFloat gOutlineW = 0;
+static CGFloat gOutlineH = 0;
+
 /** A glass cut to nothing: none of it shows until a frame says where the nub is. */
 static NSImage* noMask(NSSize size) {
   return [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect) {
     return YES;
   }];
+}
+
+/**
+ * The glass's cut for a box of this size: the outline at the box's bottom-right corner, as the nub is, at the nub's own
+ * size. Drawn for the box it is the cut of — a cut drawn for another box is stretched to this one.
+ */
+static NSImage* cutMask(NSSize size) {
+  id outline = gOutline;
+  CGFloat w = gOutlineW;
+  CGFloat h = gOutlineH;
+  if (outline == nil) return noMask(size);
+  return [NSImage imageWithSize:size
+                        flipped:NO
+                 drawingHandler:^BOOL(NSRect rect) {
+                   CGContextDrawImage(NSGraphicsContext.currentContext.CGContext, CGRectMake(NSMaxX(rect) - w, NSMinY(rect), w, h),
+                                      (__bridge CGImageRef)outline);
+                   return YES;
+                 }];
 }
 
 static NSView* contentViewOf(napi_env env, napi_value handle) {
@@ -96,6 +119,7 @@ static void detachGlass() {
   gGlass = nil;
   gPage = nil;
   gHost = nil;
+  gOutline = nil;
 }
 
 static bool numberAt(napi_env env, napi_value object, const char* key, double* out) {
@@ -157,6 +181,11 @@ static napi_value Attach(napi_env env, napi_callback_info info) {
     gPage = page;
     gHost = host;
   }
+  // The view's box changed under the glass (the nub's menu out, its droplets' fan the view's box; the pill's buttons
+  // above the nub): the cut was drawn for the box as it was, and stretched to this one the nub's outline is a blob
+  // until the next frame comes. Drawn again for this box, the outline where the nub is and at its size — as the nub
+  // over it lies (its layer's gravity).
+  if (gOutline != nil && glass.maskImage != nil && !NSEqualSizes(glass.maskImage.size, glass.bounds.size)) glass.maskImage = cutMask(glass.bounds.size);
   // As the window's own is now (it may have been made afresh since: the glass turned off and on).
   glass.material = source.material;
   glass.blendingMode = source.blendingMode;
@@ -207,19 +236,14 @@ static napi_value Frame(napi_env env, napi_callback_info info) {
   // (Held by the cut's drawing, which runs whenever AppKit draws it.)
   id outline = (__bridge_transfer id)imageOf(bytes + size_t(width) * half * 4, width, half, srgb);
   CGColorSpaceRelease(srgb);
-  CGFloat w = width / scale;
-  CGFloat h = half / scale;
   page.layer.contents = (__bridge id)nub;
   page.layer.contentsScale = scale;
   CGImageRelease(nub);
-  glass.maskImage = [NSImage imageWithSize:glass.bounds.size
-                                   flipped:NO
-                            drawingHandler:^BOOL(NSRect rect) {
-                              // At the box's bottom-right corner, as the nub is.
-                              CGContextDrawImage(NSGraphicsContext.currentContext.CGContext, CGRectMake(NSMaxX(rect) - w, NSMinY(rect), w, h),
-                                                 (__bridge CGImageRef)outline);
-                              return YES;
-                            }];
+  // At the box's bottom-right corner, as the nub is (cutMask) — kept, for the box changing before the next frame.
+  gOutline = outline;
+  gOutlineW = width / scale;
+  gOutlineH = half / scale;
+  glass.maskImage = cutMask(glass.bounds.size);
   return nullptr;
 }
 

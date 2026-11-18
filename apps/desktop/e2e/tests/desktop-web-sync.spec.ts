@@ -72,11 +72,20 @@ test("desktop signup hands its active tab and signed-in session to a fresh web b
     shell.on("console", message => { desktopLog += `\n[renderer] ${message.text()}`; });
     shell.on("pageerror", error => { desktopLog += `\n[renderer error] ${error.message}`; });
     const wizard = shell.getByTestId("onboarding");
-    // The walkthrough never makes an account (it only offers "Or sign in" to
-    // one that exists), so this Mac walks it signed out and signs up in
-    // Settings → Account afterwards.
-    await expect(wizard).toHaveAttribute("data-step", "about", { timeout: 30_000 });
-    await expect(shell.getByTestId("onboarding-sign-in")).toBeVisible();
+    // An account is required, so the walkthrough opens on it: this Mac makes
+    // one there, enrolls in the same pass, and is shown its recovery code
+    // once before the introduction.
+    await expect(wizard).toHaveAttribute("data-step", "account", { timeout: 30_000 });
+    await expect(shell.getByTestId("onboarding-skip")).toHaveCount(0);
+    await shell.getByTestId("onboarding-account-email").fill(email);
+    await shell.getByTestId("onboarding-account-password").fill(password);
+    await shell.getByTestId("onboarding-account-confirm").fill(password);
+    await shell.getByTestId("onboarding-primary").click();
+    await expect(shell.getByTestId("onboarding-account-done")).toBeVisible({ timeout: 60_000 });
+    await expect(shell.getByTestId("onboarding-recovery-code")).not.toBeEmpty();
+    console.info("[handoff] Desktop account enrolled");
+    await shell.getByTestId("onboarding-primary").click();
+    await expect(wizard).toHaveAttribute("data-step", "about");
     const typeInstead = shell.getByTestId("onboarding-type-instead");
     if (await typeInstead.isVisible()) await typeInstead.click();
     await shell.getByTestId("onboarding-name").fill("Desktop Handoff");
@@ -90,20 +99,6 @@ test("desktop signup hands its active tab and signed-in session to a fresh web b
     await shell.getByTestId("onboarding-primary").click();
     await expect(wizard).toHaveCount(0, { timeout: 30_000 });
     console.info("[handoff] Desktop onboarding complete");
-    await shell.keyboard.press("Meta+,");
-    const settings = shell.getByTestId("settings-page");
-    await settings.getByRole("button", { name: "Account", exact: true }).click();
-    await settings.getByRole("button", { name: "Create an account", exact: true }).click();
-    await settings.getByTestId("account-email").fill(email);
-    await settings.getByTestId("account-password").fill(password);
-    await settings.getByTestId("account-confirm").fill(password);
-    await settings.getByTestId("account-submit").click();
-    await settings.getByTestId("account-enroll").click({ timeout: 60_000 });
-    await expect(settings.getByTestId("account-sign-out")).toBeVisible({ timeout: 60_000 });
-    await expect(settings.getByTestId("account-enroll")).toHaveCount(0, { timeout: 60_000 });
-    console.info("[handoff] Desktop account enrolled");
-    await shell.keyboard.press("Escape");
-    await expect(settings).toHaveCount(0);
     await expect(shell.getByTestId("linked-controls")).toHaveCount(0);
     await expect(shell.getByTestId("streamed-pane-frame")).toHaveCount(0);
 

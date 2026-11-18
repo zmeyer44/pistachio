@@ -64,6 +64,7 @@ import {
   type ExtensionAuthorHost,
   type ExtensionToolCallContext,
   type ExtensionToolSpec,
+  type PistachioToolHost,
 } from "@pistachio/agent-runtime";
 import { parseAuthorMarker, type DraftClaim } from "./extensions/agent";
 import {
@@ -94,6 +95,8 @@ import {
   modelName,
   turnRouterEnabled,
 } from "./model-provider";
+import { PISTACHIO_MODELS, portableHistory } from "./ai-plans/history";
+import { findPlanError } from "./ai-plans/plan-request";
 import { BrowserController } from "./browser-controller";
 import { describeChanges, learnFromConversation } from "./memory-engine";
 import type { MemoryStore } from "./memory-store";
@@ -118,6 +121,11 @@ const DRAFT_PUBLISH_MS = 40;
  * own key, so the same object is sent whichever model is configured.
  */
 const MODEL_PROVIDER_OPTIONS = { openai: { reasoningSummary: "auto" } } as const;
+
+/** What the person's own plan answers for a turn (main's ai-plans/service `turn()`): its model, or why it cannot serve one. */
+export type OwnModelTurn =
+  | { model: LanguageModel; name: string; source: string; providerOptions?: NonNullable<AiAgentRunInput["providerOptions"]> }
+  | { blocked: Error };
 
 /**
  * A run the cloud browser drives (docs/cloud-sync-design.md §10.4). Its
@@ -309,8 +317,10 @@ export interface RunExtensions {
 type DeskRequestFor = DeskRequest extends infer Request ? (Request extends DeskRequest ? Omit<Request, "groupId"> : never) : never;
 
 /** Which surface a tool call touched, for the trace and the evidence chain. */
-function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "desk" | "space" | "integration" | "extension" {
+function toolFamily(name: string): "browser" | "memory" | "reminder" | "artifact" | "bookmark" | "watchtower" | "note" | "notes" | "desk" | "space" | "integration" | "extension" | "app" {
   if (name.startsWith("desk.") || name.startsWith("context.")) return "desk";
+  // Pistachio itself (docs/agent-pistachio.md): a setting read or changed, one of its own pages shown.
+  if (name.startsWith("settings.") || name.startsWith("app.")) return "app";
   // The spaces themselves (docs/primitives.md §2): `spaces.list`, `space.sendAway`, `space.bringBack`.
   if (name.startsWith("space.") || name.startsWith("spaces.")) return "space";
   // An extension's tool, or the author turn's drafting (docs/extensions.md §6.2, §8).
@@ -426,8 +436,11 @@ function recentExchanges(messages: RunSummary["messages"]): TurnRouteExchange[] 
 }
 
 /** The non-browser abilities the answer path keeps, named for the router in plain words. */
-function answerPathTools(input: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">): string[] {
+function answerPathTools(input: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions" | "pistachio">): string[] {
   const tools: string[] = [];
+  // Without this line the router sends "how do I change the theme?" to the web to go looking for a manual
+  // (docs/agent-pistachio.md §6): the app is the assistant's own to explain and to change.
+  if (input.pistachio !== undefined) tools.push("explain how this browser, Pistachio, works, and change its settings, its look, its keyboard shortcuts and its extensions");
   if (input.memory !== undefined) tools.push("recall and remember things about the person");
   if (input.reminders !== undefined) tools.push("set reminders");
   // Without this line the router sends "hide this space until Sunday" to the browser to go looking for a page.
@@ -532,6 +545,7 @@ export class RunController {
   readonly #integrations: { hostsFor(spaceId: string): Promise<IntegrationToolHost[]> } | null;
   readonly #extensions: RunExtensions | null;
   readonly #spaces: RunSpaces | null;
+  readonly #pistachio: PistachioToolHost | null;
   /**
    * The threads author turns are writing extensions in (docs/extensions.md
    * §8), each with its draft folder: that turn, and the turns that continue
@@ -545,6 +559,9 @@ export class RunController {
   readonly #cloud: CloudRunCommands | null;
   readonly #model: (() => LanguageModel) | null;
   /** Turns stream their reply (see the constructor's `stream`). */
+  readonly #ownModel: (() => OwnModelTurn | null) | null;
+  /** Whose models wrote the open thread's history last (ThreadRecord.source). */
+  #historySource: string = PISTACHIO_MODELS;
   readonly #stream: boolean;
   readonly #router: TurnRouter;
   readonly #summarize: ((prompt: string) => Promise<string>) | null;
@@ -632,6 +649,8 @@ export class RunController {
     extensions?: RunExtensions | null;
     /** The spaces and the away service, for the agent's space tools (docs/primitives.md §2); absent where a space cannot be sent away. */
     spaces?: RunSpaces | null;
+    /** Pistachio itself as the agent reaches it (docs/agent-pistachio.md): its settings, its own pages, its extensions listed and built; absent where there is no such app around the run. */
+    pistachio?: PistachioToolHost | null;
     /** Every terminal transition — the scheduler retries queued tasks on it. */
     onRunEnded?: (run: RunSummary) => void;
     /** Where threads persist. Absent in the demo and some tests: then a thread lives only in memory. */
@@ -640,6 +659,12 @@ export class RunController {
     cloud?: CloudRunCommands | null;
     /** The model to run turns on; the configured one when absent. Tests inject a mock. */
     model?: () => LanguageModel;
+    /**
+     * The person's own AI plan (docs/ai-plans.md), asked as each turn begins: the model the turn runs on while the
+     * chat is on the plan, or why the plan cannot serve it — the turn then stops on that sentence, never falling
+     * back by itself. Null (or absent): Pistachio's models, as ever.
+     */
+    ownModel?: () => OwnModelTurn | null;
     /**
      * Whether a turn streams its reply word by word (AgentDraft). On for
      * the configured model; off by default for an injected one, whose
@@ -676,6 +701,7 @@ export class RunController {
     this.#threads = options.threads ?? null;
     this.#cloud = options.cloud ?? null;
     this.#model = options.model ?? null;
+    this.#ownModel = options.ownModel ?? null;
     this.#stream = options.stream ?? options.model === undefined;
     this.#router = options.router ?? defaultTurnRouter;
     this.#summarize = options.summarize ?? null;
@@ -694,6 +720,7 @@ export class RunController {
     this.#integrations = options.integrations ?? null;
     this.#extensions = options.extensions ?? null;
     this.#spaces = options.spaces ?? null;
+    this.#pistachio = options.pistachio ?? null;
     this.#onRunEnded = options.onRunEnded ?? null;
     this.#browser = options.browser;
     // The agent's hidden tabs belong to the conversation open when it opened them.
@@ -1081,6 +1108,7 @@ export class RunController {
     this.#abortAi();
     this.#run = record.run;
     this.#history = closeDanglingToolCalls(record.model, TURN_CUT_SHORT);
+    this.#historySource = record.source ?? PISTACHIO_MODELS;
     this.#runSpaceId = record.spaceId ?? (isCloudRun(record.run) ? null : this.#spaceId());
     this.#learnedThrough.set(record.run.runId, record.learnedThrough ?? 0);
     this.#aiMode = this.#shouldUseAi();
@@ -1119,6 +1147,7 @@ export class RunController {
       model: this.#history,
       evidence: this.#chain?.entries() ?? this.#storedEvidence,
       learnedThrough: this.#learnedThrough.get(this.#run.runId) ?? 0,
+      ...(this.#historySource === PISTACHIO_MODELS ? {} : { source: this.#historySource }),
       ...(signingKey === null ? {} : { signingKey }),
     };
   }
@@ -1824,7 +1853,7 @@ export class RunController {
       // Read at run time, not at construction: an edit in Settings applies
       // to the next run without restarting anything. Read once for the turn:
       // the browser path that follows a hand-off works from the same inputs.
-      const extras: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions" | "desk"> = author !== null ? {} : {
+      const extras: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "artifacts" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions" | "pistachio" | "desk"> = author !== null ? {} : {
         ...(await this.#memoryInput(run)),
         ...this.#reminderInput(run),
         ...this.#spaceInput(run, desk?.groupId ?? null),
@@ -1834,6 +1863,7 @@ export class RunController {
         ...this.#watchtowerInput(),
         ...(await this.#integrationInput()),
         ...this.#extensionInput(runId, desk?.groupId ?? run.groupId ?? null),
+        ...this.#pistachioInput(run),
         ...(desk === null
           ? {}
           : {
@@ -1845,6 +1875,12 @@ export class RunController {
             }),
       };
       if (!current() || abort.signal.aborted) return;
+
+      // The person's own plan, when the chat is on it (docs/ai-plans.md §3): asked once, so a turn that hands off
+      // to the browser path stays on what it began on. A plan that cannot serve the turn stops it here, on why —
+      // before the router or a model step is spent, and never by running on Pistachio's models instead.
+      const own = this.#ownModel?.() ?? null;
+      if (own !== null && "blocked" in own) throw own.blocked;
 
       // Which path: the router's call for a new request, the browser's for
       // everything else — and always the browser's at a desk, whose tools
@@ -1899,6 +1935,10 @@ export class RunController {
       // read for this turn, plus their attachments as file parts. `base` is
       // the thread before this turn — what a hand-off restarts from, with
       // no page carried: the browser path reads pages itself.
+      // A thread taken up on another source than wrote it carries neither that one's reasoning nor its item ids.
+      const source = own === null ? PISTACHIO_MODELS : own.source;
+      if (source !== this.#historySource && this.#history.length > 0) this.#history = portableHistory(this.#history);
+      this.#historySource = source;
       const base = this.#history;
       // At a desk the desk block takes the pointer's place: it names every
       // window and which is in use, on every turn, since the desk moves.
@@ -1947,8 +1987,8 @@ export class RunController {
         notes,
         budget: this.#budget,
         limits: this.#limits,
-        model: this.#model === null ? (turnMode === "answer" ? configuredAnswerModel() : configuredModel()) : this.#model(),
-        modelName: turnMode === "answer" ? answerModelName() : modelName(),
+        model: own !== null ? own.model : this.#model === null ? (turnMode === "answer" ? configuredAnswerModel() : configuredModel()) : this.#model(),
+        modelName: own !== null ? own.name : turnMode === "answer" ? answerModelName() : modelName(),
         ...(this.#summarize === null ? {} : { summarize: this.#summarize }),
         ...extras,
         ...(author === null || this.#extensions === null
@@ -1956,7 +1996,7 @@ export class RunController {
           : { author: { host: this.#extensions.authorHost, slug: author.slug, guide: this.#extensions.authorGuide() } }),
         timezone: this.timezone(),
         ...(this.#scheduledTurn && run.origin?.kind === "reminder" ? { scheduled: { title: run.origin.title, scheduledFor: run.origin.scheduledFor } } : {}),
-        ...(this.#stream ? { providerOptions: MODEL_PROVIDER_OPTIONS } : {}),
+        ...(own?.providerOptions !== undefined ? { providerOptions: own.providerOptions } : this.#stream ? { providerOptions: MODEL_PROVIDER_OPTIONS } : {}),
         callbacks: {
           // Present only when the turn streams: their presence is what asks
           // the runner for a stream rather than one answer at the end.
@@ -2233,7 +2273,7 @@ export class RunController {
     run: RunSummary,
     turn: TurnInput,
     attachments: AgentAttachment[],
-    extras: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions">,
+    extras: Pick<AiAgentRunInput, "memory" | "reminders" | "spaces" | "bookmarks" | "userNotes" | "watchtower" | "integrations" | "extensions" | "pistachio">,
     abortSignal: AbortSignal,
   ): Promise<TurnRouteDecision> {
     if (!isRoutable(turn, this.#scheduledTurn) || !turnRouterEnabled()) {
@@ -2633,6 +2673,17 @@ export class RunController {
     };
   }
 
+  /**
+   * Pistachio itself for this turn (docs/agent-pistachio.md): the guide and the tools that read and change the app.
+   * None for a cloud run — there is no such app around it — nor for a turn a reminder started: a change to the
+   * person's browser is made while they are there to ask for it.
+   */
+  #pistachioInput(run: RunSummary): Pick<AiAgentRunInput, "pistachio"> {
+    const host = this.#pistachio;
+    if (host === null || isCloudRun(run) || this.#scheduledTurn) return {};
+    return { pistachio: { host } };
+  }
+
   /** The zone the person keeps time in: their profile's, else this Mac's. */
   timezone(): string {
     const store = this.#memory;
@@ -2900,7 +2951,10 @@ export class RunController {
   async #failRun(runId: string, error: unknown): Promise<void> {
     const run = this.#run;
     if (run?.runId !== runId || isTerminalStatus(run.status)) return;
-    const message = error instanceof Error ? error.message : String(error);
+    // (The person's plan says its own piece — a limit reached, a sign-in that lapsed — and what to do about it; the
+    // provider library may have wrapped it on the way here.)
+    const ownPlan = findPlanError(error);
+    const message = ownPlan !== null ? ownPlan.message : error instanceof Error ? error.message : String(error);
     this.#clearTimers();
     this.#clearDraft();
     run.pendingApproval = null;
@@ -2910,7 +2964,7 @@ export class RunController {
     run.completedAt = new Date().toISOString();
     const failedTool = [...run.toolCalls].reverse().find((tool) => tool.status === "failed");
     const what = failedTool === undefined ? "something" : `the ${toolFamily(failedTool.name) === "browser" ? "browser action" : failedTool.label.toLowerCase()} step`;
-    this.#message("assistant", `I stopped because ${what} failed: ${message}`);
+    this.#message("assistant", ownPlan !== null ? message : `I stopped because ${what} failed: ${message}`);
     this.#activity("Task failed", message, "blocked");
     this.#chain?.append("run.failed", { message });
     this.#onChange();

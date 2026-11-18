@@ -736,6 +736,45 @@ describe("anonymous accounts", () => {
     expect(store.enrollment().state).toBe("unenrolled");
   });
 
+  it("requires an account wherever anonymous accounts are not asked for", async () => {
+    // What the shell's sign-in screen reads (docs/onboarding.md, "The account").
+    expect((await harness()).auth.state().required).toBe(true);
+    expect((await harness(fakeControl(), { anonymousAccounts: true })).auth.state().required).toBe(false);
+  });
+
+  it("keeps an anonymous account left from before one was required only to bring it along", async () => {
+    // A Mac that was given an anonymous account, opened now that it has to sign in.
+    const control = fakeControl();
+    const first = await harness(control, { anonymousAccounts: true });
+    await first.auth.ensureAnonymous();
+    const token = first.store.enrollment().token;
+    const auth = new AuthService({
+      store: first.store,
+      spaces: first.spaces,
+      controlUrl: "http://control.test",
+      fetchImpl: control.fetch,
+      kdfIterations: KDF_ITERATIONS,
+      publish: () => undefined,
+    });
+    auth.start();
+
+    // Its token is no way round the sign-in: the models do not run under it.
+    expect(auth.state()).toMatchObject({ state: "anonymous", required: true });
+    expect(auth.modelsAvailable()).toBe(false);
+    expect(await auth.getModelToken()).toBeNull();
+
+    // Signing up is still that same account, upgraded: same user, same device, same token.
+    const state = await auth.signUp("pat@example.com", PASSWORD);
+    expect(paths(control)).toContain("POST /v1/account/upgrade");
+    expect(paths(control)).not.toContain("POST /v1/accounts");
+    expect(state).toMatchObject({ state: "signed-up", userId: "anon-1", required: true });
+    const enrolled = await auth.enroll();
+    expect(paths(control)).not.toContain("POST /v1/devices/enroll");
+    expect(enrolled.state.state).toBe("enrolled");
+    expect(first.store.enrollment().token).toBe(token);
+    expect(auth.modelsAvailable()).toBe(true);
+  });
+
   it("gives a Mac nobody signed in on an account of its own, for the models alone", async () => {
     const { auth, control, store, states, events } = await harness(fakeControl(), { anonymousAccounts: true });
     expect(auth.modelsAvailable()).toBe(false);

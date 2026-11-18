@@ -156,7 +156,7 @@ const NATIVE: SurfaceCopy = {
     betweenDevicesTitle: "Between your machines",
     betweenDevices: "What a Profile carries to your other devices, and what never leaves this one.",
     sessions:
-      "With an account, a Profile's sign-ins converge across your enrolled devices, sealed under a key derived for that Profile alone — the hub stores ciphertext. Without an account, nothing leaves this Mac. Settings → Sync says which sites take part.",
+      "A Profile's sign-ins converge across your enrolled devices, sealed under a key derived for that Profile alone — the hub stores ciphertext. Settings → Sync says which sites take part.",
     preferencesLabel: "Preferences stay on this Mac",
     preferences:
       "Settings, shortcuts, and appearance are per-machine. Organization policies and preset links may be shared; your preferences are not.",

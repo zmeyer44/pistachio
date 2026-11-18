@@ -27,6 +27,7 @@ import { SETTINGS_DIALOG_HOST_ID } from "./dialogs";
 import { SettingsNav } from "./SettingsNav";
 import { AboutPage } from "./sections/about";
 import { AccountPage } from "./sections/account";
+import { AiPlanPage } from "./sections/ai-plan";
 import { ApprovalsPage } from "./sections/approvals";
 import { AppearancePage } from "./sections/appearance";
 import { BookmarksSettingsPage } from "./sections/bookmarks";
@@ -58,6 +59,7 @@ const PAGES: Record<SettingsSection, () => React.ReactElement> = {
   bookmarks: BookmarksSettingsPage,
   watchtower: WatchtowerSettingsPage,
   integrations: IntegrationsPage,
+  plan: AiPlanPage,
   approvals: ApprovalsPage,
   evidence: EvidencePage,
   privacy: SiteDataPage,

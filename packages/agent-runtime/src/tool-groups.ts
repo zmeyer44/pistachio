@@ -36,6 +36,8 @@ export const TOOL_GROUPS = {
   // provider, so a policy can allow the browser and memory but not mail.
   gmail: GMAIL_TOOL_NAMES,
   google_calendar: GOOGLE_CALENDAR_TOOL_NAMES,
+  /** Pistachio itself (docs/agent-pistachio.md): its settings, its own pages, its extensions listed and built; host-supplied, desktop only. */
+  pistachio: ["settings_read", "settings_change", "pistachio_open", "extensions_list", "extension_build"],
   /**
    * The tools of the extensions the person installed (docs/extensions.md §6.2,
    * "Agent tools"). Their names are minted per extension at run time
@@ -58,6 +60,23 @@ export const ALL_TOOL_GROUPS: readonly ToolGroup[] = Object.keys(TOOL_GROUPS) as
  */
 export const EXTENSION_AUTHOR_TOOL_GROUP = "extension_author";
 export const EXTENSION_AUTHOR_TOOLS = ["extension_draft_write", "extension_draft_read", "extension_status"] as const;
+
+/**
+ * The groups whose tools hand the model text the person did not write — a
+ * page, mail, a calendar's invitations, a note, a saved page, an extension's
+ * answer — and the one desk tool that reads a file or a snippet. A turn that
+ * has called one has read untrusted content, and what changes Pistachio then
+ * holds back (docs/agent-pistachio.md §5; runner.ts marks it).
+ */
+export const UNTRUSTED_READING_GROUPS: readonly string[] = ["read", "screenshot", "watchtower", "bookmarks", "user_notes", "gmail", "google_calendar", "extensions"];
+export const UNTRUSTED_READING_TOOLS: readonly string[] = ["context_read"];
+
+/** Whether calling `toolName` reads untrusted content into the turn. */
+export function readsUntrusted(toolName: string): boolean {
+  if (UNTRUSTED_READING_TOOLS.includes(toolName)) return true;
+  const group = toolGroupOf(toolName);
+  return group !== null && UNTRUSTED_READING_GROUPS.includes(group);
+}
 
 /** The prefix of every extension tool's model-facing name (`x_<hex>_<tool>`). */
 export const EXTENSION_TOOL_PREFIX = "x_";

@@ -3,16 +3,67 @@
 (Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
 
 The first time Pistachio opens it does not show the browser. It shows a
-four-step walkthrough, and only when that is done —
-or skipped — does the chrome appear, already furnished with what the
+walkthrough — the account, then four steps — and only when that is done
+does the chrome appear, already furnished with what the
 person chose: a Space named after them, their apps in the favorites grid,
 their old browser's sessions and bookmarks, the agent's memory seeded, and
-a set of welcome tabs open.
+a set of welcome tabs open. The four steps can each be skipped. The account
+cannot.
+
+## The account
+
+Pistachio is not used without an account (since 2026-11-17). The agent's
+models come with it, and it is what lets sessions, Profiles and restore
+points travel between a person's machines, sealed under keys only they hold.
+So a Mac that is not signed in shows a way to sign in and nothing else:
+
+- **On a first run** the walkthrough opens on the account step
+  (`ACCOUNT_STEP`, `onboardingStepsFor`): create an account or sign in to
+  one, and this Mac is enrolled in the same pass. There is no skip. A new
+  account's enrollment mints its recovery code, shown exactly once, so the
+  step holds — "I've saved it — continue" — until the person says they have
+  it; joining an account that exists mints none and goes straight on. The
+  step list is fixed at mount, so enrolling does not take the step (and the
+  code) away.
+- **After the walkthrough**, a Mac that is signed out — it signed out in
+  Settings → Account, its enrollment was revoked, or it finished setup before
+  an account was required — shows the same step alone, in the browser's
+  place: the sign-in screen (`onboardingSignIn` in the shell's store). No
+  rail, no Back, no Esc; it leaves when this Mac is enrolled. Profiles, tabs
+  and settings are untouched behind it. Settings → Account's sign-out dialog
+  says that signing out closes the browser until someone signs in again.
+
+**Who decides.** Main does: `AccountState.required`, true on a desktop. The
+shell's rule is `accountGated` (`shell-ui/src/lib/account.ts`): required, and
+not enrolled — nobody signed in, an account made but this Mac not enrolled,
+or a revoked device. The store raises the screen at the first load and
+whenever the account leaves this Mac (`accountPatch`), and only
+`closeOnboarding` takes it down, so the recovery code is never taken off the
+screen by the enrollment that minted it. While it is up `onboardingOpen` is
+true, so everything that stands down for the walkthrough — shortcuts, the
+tab switcher, the update prompt — stands down for it. Before the first
+snapshot, `launchState().signedOut` gives the window the wizard's ground
+instead of a frame of chrome.
+
+**Where it is not required.** Where no account layer runs (`PISTACHIO_E2E`),
+on the web (the person signed in on the way to the page; no host there
+reports `required`), and in a development run on an anonymous account
+(`PISTACHIO_ANONYMOUS=1`, ignored in a packaged app —
+docs/anonymous-accounts.md). A Mac still holding an anonymous account from
+before is asked to sign in like any other, and what that account holds
+comes along: signing up upgrades it in place, signing in folds it into the
+account signed in to.
+
+**What it cannot get past.** Signing in seals keys with the system keychain;
+where that is unavailable the step says so and its button stays off. A Mac
+that has never signed in and cannot reach control cannot get in either —
+one already signed in opens offline as before.
 
 ## The steps
 
 | Step         | What it gathers                                                                                                                                                     |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account      | An email and a password, to create an account or sign in to one; this Mac is enrolled in the same pass. Required, and shown only where a sign-in is owed (above). |
 | About you    | A spoken (or typed) introduction. Speech is transcribed, then read for a name, a bio, and durable facts; every one is editable before it is written to memory.       |
 | Bring a browser | Which profiles to import from the browsers on this Mac — any number, across browsers, each shown with the account it is signed in to. Every ticked profile brings its signed-in sessions and bookmarks (whatever its browser supports). |
 | Favorites    | At least three apps from a catalog. Each tile lights up in the brand's own colours — all of Figma's, only YouTube's red.                                              |
@@ -38,12 +89,11 @@ Every step's copy, primary action, and skip live in
 
 Then the wizard fades over the finished browser.
 
-Nobody has to sign in for any of this, the spoken introduction included: a
-Mac nobody signed in on is given an anonymous account that the models run
-under (docs/anonymous-accounts.md), and the account made later in Settings →
-Account is that same one, upgraded.
+The account step comes first so that all of this happens signed in: the
+spoken introduction is a model call, and what the import step brings over
+lands in an account that can carry it to the person's other devices.
 
-On an enrolled desktop, finishing also saves the account's completion through
+Finishing also saves the account's completion through
 `POST /v1/me/onboarding/complete` before dismissing the wizard. A failed save
 leaves it open for retry. A desktop that finished setup before enrolling, or
 before account-backed onboarding existed, reconciles completion when its
@@ -125,13 +175,10 @@ are the desktop's; four things differ.
   `POST /v1/me/onboarding/complete` has saved the account's completion timestamp.
   A failed save keeps the wizard open for retry. Local storage and older synced
   settings cannot bypass this check.
-- **"Or sign in" is not offered.** On a Mac the about step carries a quiet
-  "Or sign in" under the introduction: it opens a sign-in form in the step's
-  own stage, enrolls the Mac in the same pass, and returns to the
-  introduction with the microphone available. The walkthrough never creates
-  an account — that is Settings → Account, which is also where a recovery
-  code is shown. In a tab the person just signed in, so the link is absent;
-  the steps are about, import, favorites, appearance either way.
+- **There is no account step.** On a Mac the walkthrough opens on it (see
+  "The account"). In a tab the person just signed in — no host there reports
+  an account as `required` — so the steps are about, import, favorites,
+  appearance, and "Step 1 of 4".
 - **Bring a browser is a variant.** Importing reads databases on a Mac, so
   the step keeps its place and says so: a Mac signed into this account
   brings its sessions and bookmarks here through sync, with a download link
@@ -160,3 +207,12 @@ are the desktop's; four things differ.
 - Under Playwright (`PISTACHIO_E2E=1`) the wizard is marked complete at
   startup so every other spec opens on the browser; `PISTACHIO_ONBOARDING=1`
   keeps it, which is what `e2e/tests/onboarding.spec.ts` sets.
+- No account is required under `PISTACHIO_E2E` either (no account layer is
+  built), so those specs never meet the account step or the sign-in screen.
+  `PISTACHIO_E2E_ACCOUNT=required` makes main report one owed, and the spec
+  answers the account channels with a double in main: the account step, the
+  recovery code, and sign-out → sign-in screen → sign-in are walked that way.
+  A second spec runs the real account layer (`PISTACHIO_E2E=0`, a mock
+  keychain, a control address nothing listens on) to show a signed-out Mac
+  opening on the sign-in screen. The rule itself is unit-tested in
+  `shell-ui/test/account-required.test.ts`.

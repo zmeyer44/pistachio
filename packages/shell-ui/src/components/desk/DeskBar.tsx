@@ -86,7 +86,7 @@ import { dictationSupported, spokenInsert, useDictation } from "../../lib/dictat
 import { DESK_GAP, NUB_CLOSE_R, NUB_DROP_R, NUB_IDLE, NUB_SWELL, nubClose, nubDrops, nubExtent, nubLaneFor, nubSide, type NotchShape, type Rect } from "../../lib/desk/geometry";
 import { readFloatSpot, writeFloatSpot } from "../../lib/desk/answer-float";
 import { beginCloudStart, cloudStartArrived, cloudStartContext, cloudStarting, cloudStartTaken, hearCloudStart, settleCloudStart, watchCloudStarts, type CloudStart } from "../../lib/desk/cloud-start";
-import { insertInSpace, keepSpaceChat, queueSpaceSend, spaceChat, stageInSpace, takeStagedFor, takeTextFor } from "../../lib/desk/space-chat";
+import { chatUpOnArrival, insertInSpace, keepSpaceChat, newSinceLeft, queueSpaceSend, spaceChat, stageInSpace, takeStagedFor, takeTextFor, type LeftChat } from "../../lib/desk/space-chat";
 import { isHomeSpace } from "../space-rail/rail-model";
 import { useChatInbox } from "../chat/chat-inbox";
 import { EvidenceReplay } from "../chat/EvidenceReplay";
@@ -100,6 +100,7 @@ import { agentIsActing, contextMeter, endTaskLabel, relativeTime, sortThreads } 
 import { useAppStore } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
+import { PlanLine } from "../chat/PlanLine";
 import { ApprovalCard, ClarificationCard, CompletionMeta, MessageActions, MessageRow, TaskNotes, TERMINAL, formatTime } from "../chat/parts";
 import { useReplyBegun } from "../chat/SmoothHeight";
 import { FailureTrace, TurnTrace } from "../chat/trace";
@@ -110,7 +111,7 @@ import { TakeoverCard } from "../TakeoverCard";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import type { DeskEngine, DeskView } from "./desk-engine";
-import { DeskNub, NubPillClose, NubPillSide, type NubTip } from "./DeskNub";
+import { DeskNub, NUB_BOX, nubDropletLabel, NubPillClose, NubPillSide, type NubTip } from "./DeskNub";
 import { DictationWave } from "./DictationWave";
 import { ExtensionMark } from "../extensions/LedgeIcon";
 import { sendRowPress, sendStatusAction, StatusPills, useStatusPills } from "../extensions/StatusPills";
@@ -442,8 +443,9 @@ export const DeskBar = memo(function DeskBar({
   const [fieldMenu, setFieldMenu] = useState<FieldMenuState | null>(null);
   // Whose place the chat stands in (answer-float.ts's spots): this space's own — and, for Home, Home's. Home's tabs
   // are each a space of their own under the hood (a loose tab's, a favorite's page's: docs/double-sidebar.md §1), but
-  // Home is one place to the person: the chat taken to the side there is at the side for every one of its tabs, as
-  // it shows each tab's own conversation.
+  // Home is one place to the person: the chat taken to the side beside one of its tabs comes up at the side beside
+  // any other. WHERE it stands is the place's; WHETHER it is up is each tab's own, as its conversation is
+  // (space-chat.ts's `chatUpOnArrival`): a change of tab never opens it.
   const place = useAppStore((state) => (isHomeSpace(group.id, state.snapshot) ? `home:${state.snapshot?.activeSpaceId ?? ""}` : group.id));
   const placeNow = useRef(place);
   placeNow.current = place;
@@ -460,9 +462,20 @@ export const DeskBar = memo(function DeskBar({
    * where the space itself changes place: below.)
    */
   const motionOwner = useRef<{ place: string } | null>(null);
-  const [answerOpen, setAnswerOpen] = useState(() => spaceChat(place).open || spotAtSide(place));
+  const [answerOpen, setAnswerOpen] = useState(() => chatUpOnArrival(group.id, place, readFloatSpot(place)));
   const [whole, setWhole] = useState(() => spaceChat(group.id).whole);
   const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * How the menu out now is drawn over a page (`toggleMenu`): `live`, the page under it its own — main's notch view
+   * draws the menu there, as it draws the nub — or `cover`, the page given way to its still and the menu the shell's,
+   * as it was for every menu until 2026-11-17. A cover still where the view could not stand in: opened from the keys
+   * (the keyboard is among the shell's droplets, and the ring round the one that has it is the shell's to draw), or
+   * with extensions' pills standing (out of the nub's lane, they stand by the pill's place for as long as the menu
+   * is out, and a page over them would hide them).
+   */
+  const [menuPath, setMenuPath] = useState<"live" | "cover">("live");
+  /** A droplet was pressed for the pill, which is not out yet (the page under its place still giving way): the menu holds until it is. */
+  const [morphing, setMorphing] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   // The desk passed to another group: what was out of the nub for this one goes back in.
   useEffect(() => {
@@ -487,9 +500,19 @@ export const DeskBar = memo(function DeskBar({
   useLayoutEffect(() => {
     cardWasUp.current = cardShown;
   });
+  // (Until 2026-11-17 the chat's place brought the card up by itself — `chat` true, `answerOpen` followed — so a chat
+  // at Home's side opened again with every change of tab, and its × lasted until the next one. Where it would stand
+  // is no word that it is up: whoever takes it to the side — the motion's snap, the side button — has it up already.)
+  // A chat at its space's side that the person closed stays closed there, the next time Pistachio opens too
+  // (FloatSpot.shut); asked for again, it is up there from then. (A tab of Home's stands in Home's place, which is
+  // every tab's: whether its chat is up is never kept past this run.)
   useEffect(() => {
-    if (chat) setAnswerOpen(true);
-  }, [chat]);
+    if (place !== group.id) return;
+    const spot = readFloatSpot(place);
+    if (spot === null || !spot.floating || spot.zone !== "chat" || (spot.shut === true) === !answerOpen) return;
+    const { shut: _shut, ...stands } = spot;
+    writeFloatSpot(place, answerOpen ? stands : { ...stands, shut: true });
+  }, [answerOpen, place, group.id]);
   const motionRef = useRef<AnswerMotion | null>(null);
   useLayoutEffect(() => {
     const card = cardRef.current;
@@ -622,14 +645,14 @@ export const DeskBar = memo(function DeskBar({
     if (!settled) return;
     const before = seen.current;
     seen.current = { runId: run?.runId ?? null, userMessages, asking };
-    left.current = run === null ? null : { runId: run.runId, messages: run.messages.length };
+    left.current = run === null ? null : { runId: run.runId, messages: run.messages.length, asking };
     // Back in a space: its chat is as it was left (above) — unless the agent went on meanwhile, in the background.
-    // More said since, or something asked of the person, and the card comes up to show it.
+    // More said since, or something newly asked of the person, and the card comes up to show it. (Asked already when
+    // they left, the card put away then, it is not brought up again by every return: space-chat.ts's `newSinceLeft`.)
     const arrival = arrived.current;
     arrived.current = null;
     if (arrival !== null && run !== null) {
-      const more = arrival.was !== null && arrival.was.runId === run.runId && run.messages.length > arrival.was.messages;
-      if (asking !== null || more) {
+      if (newSinceLeft(arrival.was, { runId: run.runId, messages: run.messages.length, asking })) {
         setAnswerOpen(true);
         raiseAnswer();
       }
@@ -677,17 +700,17 @@ export const DeskBar = memo(function DeskBar({
   const wanted = useRef(false);
   const [chatOf, setChatOf] = useState({ group: group.id, place });
   /** This space's conversation as main last said it was (which, and how much said), for when the person leaves. */
-  const left = useRef<{ runId: string; messages: number } | null | undefined>(undefined);
+  const left = useRef<LeftChat | null | undefined>(undefined);
   /** The desk has just passed here: how this space's conversation was left, until main's word of it now is in (`settled`). */
   // (The Bar come up anew for a space left earlier — back from another Profile — has arrived there too.)
-  const arrived = useRef<{ was: { runId: string; messages: number } | null } | null>(spaceChat(group.id).left === undefined ? null : { was: spaceChat(group.id).left ?? null });
+  const arrived = useRef<{ was: LeftChat | null } | null>(spaceChat(group.id).left === undefined ? null : { was: spaceChat(group.id).left ?? null });
   if (chatOf.group === group.id && chatOf.place !== place) {
     // The space in front changed place where it stands — a Home tab given a second tab is a space of its own from
     // here on (and one back to a single tab is Home's again): its chat stays exactly as it is, on screen and in the
     // conversation, and where it stands is its new place's from now.
     const stands = readFloatSpot(chatOf.place);
     if (stands !== null) writeFloatSpot(place, stands);
-    keepSpaceChat(place, { open: answerOpen });
+    // (Whether it is up is the space's own, and the space is the same one: nothing to keep.)
     // (The card's motion goes on as it is, and keeps its spot for the space's new place.)
     if (motionOwner.current !== null) motionOwner.current.place = place;
     setChatOf({ group: group.id, place });
@@ -695,21 +718,22 @@ export const DeskBar = memo(function DeskBar({
     // (This space's card and pill go, in this very commit, before the desk has passed — its effect runs after the
     // Bar's: the window they covered is not handed the keyboard on its way out. DeskEngine.leaving.)
     engine.leaving();
-    // (Whether the card is up goes with where it stands — the place: Home's, for all of Home's tabs — and the rest
-    // with the conversation's own space.)
-    keepSpaceChat(chatOf.place, { open: answerOpen });
-    keepSpaceChat(chatOf.group, { whole, staged: drop.staged, ...(left.current === undefined ? {} : { left: left.current }) });
+    // (All of it with the conversation's own space — whether the card is up too, since 2026-11-17: a tab of Home's
+    // is a space of its own here, and the chat up beside it is not up beside the next. Only where the card STANDS is
+    // the place's: Home's, for all of Home's tabs.)
+    keepSpaceChat(chatOf.group, { open: answerOpen, whole, staged: drop.staged, ...(left.current === undefined ? {} : { left: left.current }) });
     const next = spaceChat(group.id);
-    const up = spaceChat(place).open;
     const spot = readFloatSpot(place);
     const atSide = spot?.floating === true && spot.zone === "chat";
+    // As this space's chat was left: never opened by the desk's coming here (space-chat.ts).
+    const up = chatUpOnArrival(group.id, place, spot);
     arrived.current = { was: next.left ?? null };
     left.current = undefined;
     // (A floating card that was up is a window, and is up again though it has nothing to show yet.)
     cardWasUp.current = up;
     setChatOf({ group: group.id, place });
     if (chatOf.place !== place) setMotionKey((key) => key + 1);
-    setAnswerOpen(up || atSide);
+    setAnswerOpen(up);
     setWhole(next.whole);
     setFloating(spot?.floating === true);
     setChat(atSide);
@@ -728,13 +752,13 @@ export const DeskBar = memo(function DeskBar({
   // when the Bar next comes up for it (the state above starts from it; the staged files, useAttachmentDrop's `initial`).
   const keepOnLeave = useRef<() => void>(() => undefined);
   keepOnLeave.current = () => {
-    keepSpaceChat(place, { open: answerOpen });
-    keepSpaceChat(group.id, { whole, staged: drop.staged, ...(left.current === undefined ? {} : { left: left.current }) });
+    keepSpaceChat(group.id, { open: answerOpen, whole, staged: drop.staged, ...(left.current === undefined ? {} : { left: left.current }) });
   };
   useEffect(() => () => keepOnLeave.current(), []);
   // (Until 2026-10-09 everything below also stood down while the desk was leaving: it never is now.)
   // Floating and up, it is a window, and stays with no conversation to show (a new one, a space with none yet) — though
-  // it does not come up for none; in the chat's place it is always up, the message field in it.
+  // it does not come up for none; in the chat's place it shows with none too, the message field in it, for as long as
+  // the person has it up.
   useEffect(() => {
     if (focusWithin || !composerIdle) setAsked(false);
   }, [focusWithin, composerIdle]);
@@ -826,14 +850,29 @@ export const DeskBar = memo(function DeskBar({
     };
   }, [pointerHeld, pointerOnNub, leaveNub]);
 
-  // The menu, drawn once the pages under it have given way (or after NOTCH_WAIT_MS).
-  const menuWanted = menuOpen;
-  const menuOverdue = useOverdue(menuWanted, NOTCH_WAIT_MS);
-  const menuShown = menuWanted && (shownCover("bar") || menuOverdue);
-  // The nub's box — the droplets' column — and the pill's footprint are covers from the menu being asked for (the pill's
-  // too, so a droplet's pill opens at once) until they are back in. Not the pointer resting on the nub: the swell is the
-  // nub's own (over a live page, the notch view draws it), and a pointer passing the corner freezes no page.
-  const nubCovering = useLinger(menuShown || pickerOpen, NUB_CLOSE_MS, true) || menuWanted;
+  // The menu is out for as long as it is asked for — and, a droplet pressed for the pill, until the pill is out of it:
+  // the pill's place is a cover from that press, and the page under it takes a moment to give way; the droplet the
+  // pill grows out of waits there for it rather than running back into the nub first.
+  const menuWanted = menuOpen || (morphing && pillWanted && !pillOpen);
+  useEffect(() => {
+    if (morphing && (pillOpen || !pillWanted)) setMorphing(false);
+  }, [morphing, pillOpen, pillWanted]);
+  // Over a live page the menu is main's notch view's to draw (`menuPath`, above; NotchApp), so the page under it stays
+  // live and its own: no cover, nothing to wait for. (Until 2026-11-17 the menu was a cover wherever it opened: the
+  // page under it was its still for as long as the droplets were out — every filled page, since the pill's place along
+  // the foot was covered with them — and a press on that picture was a press on the window: dragged, it carried the
+  // window off, and one filling the desk let go of it.) As a cover (the keys' menu, the pills'), it is drawn once the
+  // pages under it have given way, or after NOTCH_WAIT_MS.
+  const menuCovers = menuPath === "cover";
+  const menuOverdue = useOverdue(menuWanted && menuCovers, NOTCH_WAIT_MS);
+  const menuShown = menuWanted && (!menuCovers || shownCover("bar") || menuOverdue);
+  /** Out with the page under it live: the notch view's, where there is one (below). */
+  const menuLive = menuShown && !menuCovers;
+  // A cover's: the nub's box — the droplets' fan — and the pill's footprint, from the menu being asked for (the pill's
+  // too, so a droplet's pill opens at once) until they are back in. The conversations' always: they stand in the nub's
+  // box. Not the pointer resting on the nub: the swell is the nub's own (over a live page, the notch view draws it),
+  // and a pointer passing the corner freezes no page.
+  const nubCovering = useLinger((menuShown && menuCovers) || pickerOpen, NUB_CLOSE_MS, true) || (menuWanted && menuCovers);
   useCover(engine, "bar", nubRef, nubCovering);
 
   // The extensions' live pills (docs/extensions.md §5, `ui.setStatus`): in the nub's lane — the nub drawn out along the
@@ -855,7 +894,7 @@ export const DeskBar = memo(function DeskBar({
     },
     [raisedWidth],
   );
-  const pillCovering = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted || menuWanted;
+  const pillCovering = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted || (menuWanted && menuCovers);
   useCover(engine, "pill", barRef, pillCovering, pillShape);
   const laneTarget = useSteadyLane(statusPills.length > 0 && !statusRaised ? nubLaneFor(pillsWidth) : 0);
   // The pill's close above the nub, while the pill is out (not while the menu is: it would stand among its droplets).
@@ -871,7 +910,7 @@ export const DeskBar = memo(function DeskBar({
   // down as the pill goes in (2026-11-05: until then a page that reached the foot was its still under the pill, dead
   // to the pointer, for as long as the pill was out). The pill lies on the ground the band leaves. Held through the
   // pill's way back into the nub, as its cover is, so nothing comes down under it while it is still drawn. (Not for
-  // the menu, whose droplets are a cover of a moment; nor in the card, where the field is the card's.)
+  // the menu, which lies over the pages as the nub does — main's notch view draws it; nor in the card, where the field is the card's.)
   const bandWanted = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted;
   useLayoutEffect(() => {
     const el = barRef.current;
@@ -946,10 +985,15 @@ export const DeskBar = memo(function DeskBar({
   const buttonsOut = useLinger(closeUp, NUB_CLOSE_MS, true);
   const sideOut = useLinger(sideUp, NUB_CLOSE_MS, true);
   const buttonsReach = buttonsOut ? Math.ceil(-(sideOut ? nubSide() : nubClose()).y + NUB_CLOSE_R + BUTTON_SHADOW) : 0;
-  const notchH = Math.max(NUB_VIEW, buttonsReach);
+  // And, its menu out with the pages under it live, the box its droplets fan out in (the nub's own box, NUB_BOX): the
+  // view draws them there, so the engine counts a live page anywhere under the fan as under the nub — held while they
+  // run back into it.
+  const menuBox = useLinger(menuLive, NUB_CLOSE_MS, true);
+  const notchW = Math.max(NUB_VIEW + laneHeld, menuBox ? NUB_BOX.w : 0);
+  const notchH = Math.max(NUB_VIEW, buttonsReach, menuBox ? NUB_BOX.h : 0);
   useLayoutEffect(() => {
-    engine.setNotch({ w: NUB_VIEW + laneHeld, h: notchH });
-  }, [engine, laneHeld, notchH]);
+    engine.setNotch({ w: notchW, h: notchH });
+  }, [engine, notchW, notchH]);
   useEffect(() => () => engine.setNotch(null), [engine]);
 
   // Swelled while the pointer rests on it and while its droplets are out; the pill out of its droplet (or the nub),
@@ -971,6 +1015,11 @@ export const DeskBar = memo(function DeskBar({
   }, [pillOpen]);
   /** The menu opened from the keys: its first droplet has them once it is out. */
   const keysToMenu = useRef(false);
+  /** The live menu out or in, and since when (wall-clock ms): the notch view moves its own from this word (DeskNotchFrame's `menu`). */
+  const [menuWay, setMenuWay] = useState({ open: false, at: 0 });
+  useLayoutEffect(() => {
+    setMenuWay((way) => (way.open === menuLive ? way : { open: menuLive, at: Date.now() }));
+  }, [menuLive]);
   useLayoutEffect(() => {
     const motion = nubMotion.current;
     if (motion === null) return;
@@ -1209,10 +1258,14 @@ export const DeskBar = memo(function DeskBar({
   /** The nub pressed (or the notch view over a page): its menu out, or back in — opened from the keys, the keys go to its first droplet. */
   const menuNow = useRef(menuOpen);
   menuNow.current = menuOpen;
+  const pillsNow = useRef(statusPills.length);
+  pillsNow.current = statusPills.length;
   const toggleMenu = useCallback(
     (keyboard: boolean) => {
       const opening = !menuNow.current;
       keysToMenu.current = keyboard && opening;
+      // How it is drawn over a page is settled as it opens (`menuPath`), and kept until it is in again.
+      if (opening) setMenuPath(keyboard || pillsNow.current > 0 ? "cover" : "live");
       setPickerOpen(false);
       setMenuOpen(opening);
       // The pill and the menu are one or the other, never both: let out, the menu puts the pill away first (what is in
@@ -1224,6 +1277,7 @@ export const DeskBar = memo(function DeskBar({
   );
   const choosePrompt = (): void => {
     if (!pillOpen) pillSource.current = "prompt";
+    if (!pillOpen) setMorphing(true);
     setStowed(false);
     setAsked(true);
     setMenuOpen(false);
@@ -1233,6 +1287,7 @@ export const DeskBar = memo(function DeskBar({
   };
   const chooseMic = (): void => {
     if (!pillOpen) pillSource.current = "mic";
+    if (!pillOpen) setMorphing(true);
     setStowed(false);
     setAsked(true);
     setMenuOpen(false);
@@ -1240,6 +1295,10 @@ export const DeskBar = memo(function DeskBar({
     if (inCard) callAnswer();
     dictateRef.current?.();
   };
+
+  /** The menu's droplets as the notch view's copies of them are pressed (below): the shell's own, as they are now. */
+  const dropletActs = useRef({ prompt: choosePrompt, mic: chooseMic, chats: (): void => setPickerOpen((open) => !open) });
+  dropletActs.current = { prompt: choosePrompt, mic: chooseMic, chats: (): void => setPickerOpen((open) => !open) };
 
   // The pointer on the notch view, and a press there: the nub's, as if they were on it. The view's word that the
   // pointer came is checked against the OS's pointer: hidden under the pointer (as it is once what the nub opens has
@@ -1252,11 +1311,17 @@ export const DeskBar = memo(function DeskBar({
         // (An action of an extension's pill in the nub's lane, pressed in the view: the pill's own. One of the pill's
         // buttons above the nub, as the view draws them: the Bar's, as if the shell's own were pressed — and the pointer
         // onto one, for its tooltip.)
+        // (And the menu as the view draws it over a live page: a droplet pressed there is the shell's own pressed, and a
+        // press in the view's box beside them is a press elsewhere, which puts the menu away as one on the page does.)
         if (typeof input === "object") {
           if ("status" in input) sendStatusAction(input.status.id, input.status.action);
           else if ("row" in input) sendRowPress(input.row);
           else if ("bar" in input) (input.bar === "close" ? stowPill : toSide)();
+          else if ("menu" in input) dropletActs.current[input.menu]();
           else setViewButtonHover(input.hover);
+        } else if (input === "away") {
+          setPickerOpen(false);
+          setMenuOpen(false);
         } else if (input === "enter") {
           if (armed.current) return;
           void pointerOnNub().then((on) => {
@@ -1297,7 +1362,7 @@ export const DeskBar = memo(function DeskBar({
       const bottom = Math.round(stage.bottom);
       // The nub's own box in the corner (what the pointer on it is checked against), and the lane drawn out left of it.
       notchBox.current = { x: right - NUB_VIEW, y: bottom - NUB_VIEW, width: NUB_VIEW, height: NUB_VIEW };
-      const bounds = { x: right - NUB_VIEW - laneHeld, y: bottom - notchH, width: NUB_VIEW + laneHeld, height: notchH };
+      const bounds = { x: right - notchW, y: bottom - notchH, width: notchW, height: notchH };
       api.setDeskNotch({
         bounds,
         label: `Ask about ${group.title}`,
@@ -1315,6 +1380,7 @@ export const DeskBar = memo(function DeskBar({
         pillsWidth: lanePills.length === 0 ? 0 : Math.min(2048, pillsWidth),
         nub: NUB_VIEW,
         buttons: { close: closeUp, side: sideUp },
+        menu: menuWay,
       });
     };
     send();
@@ -1326,7 +1392,7 @@ export const DeskBar = memo(function DeskBar({
       observer.disconnect();
       window.removeEventListener("resize", send);
     };
-  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut, laneWay, laneHeld, lanePills, pillsWidth, notchH, closeUp, sideUp]);
+  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut, laneWay, laneHeld, lanePills, pillsWidth, notchW, notchH, closeUp, sideUp, menuWay]);
   useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
 
   // A button's tooltip is open: the band it appears in — above the pill, or beside the nub — is a cover, and stays
@@ -1394,15 +1460,18 @@ export const DeskBar = memo(function DeskBar({
   useEffect(() => {
     if (!overPage) setViewButtonHover(null);
   }, [overPage]);
+  // (And for the menu's droplets as the view draws them: each says what it is beside the shell's own, in its place.)
   useEffect(() => {
-    if (viewButtonHover === null || !closeUp) return;
-    const label = viewButtonHover === "close" ? "Close" : "Chat at the side";
+    if (viewButtonHover === null) return;
+    const ofPill = viewButtonHover === "close" || viewButtonHover === "side";
+    if (ofPill ? !closeUp : !menuLive) return;
+    const label = viewButtonHover === "close" ? "Close" : viewButtonHover === "side" ? "Chat at the side" : nubDropletLabel(viewButtonHover);
     const timer = window.setTimeout(() => setTip({ label, where: "nub" }), TIP_DELAY_MS);
     return () => {
       window.clearTimeout(timer);
       setTip((current) => (current?.label === label && current.where === "nub" ? null : current));
     };
-  }, [viewButtonHover, closeUp]);
+  }, [viewButtonHover, closeUp, menuLive]);
 
   // The conversations stand where past chats' droplet rests, growing up and left from it.
   const chats = nubDrops()[2]!;
@@ -1541,6 +1610,8 @@ export const DeskBar = memo(function DeskBar({
           hovered={hovered}
           faceTip={faceTip}
           tip={nubTip}
+          // Over a live page the notch view draws the menu (veiled here: in place for the droplets' tooltips, unseen).
+          veiled={overPage && menuBox}
           onFaceEnter={enterNub}
           onFaceLeave={leaveNub}
           onFace={toggleMenu}
@@ -1587,7 +1658,7 @@ function keepStagedFor(groupId: string, attachment: ComposerAttachment): void {
   stageInSpace(groupId, attachment);
 }
 
-/** A place's chat stands at its desk's trailing side (the chat's place): up whenever a space of that place is in front. */
+/** A place's chat stands at its desk's trailing side (the chat's place): where it comes up, when it is up (never a word that it is — space-chat.ts's `chatUpOnArrival`). */
 function spotAtSide(place: string): boolean {
   const spot = readFloatSpot(place);
   return spot?.floating === true && spot.zone === "chat";
@@ -2214,6 +2285,8 @@ function BarComposer({
           </button>
         </div>
       )}
+      {/* Whose plan the next turn runs on, when it is the person's own (docs/ai-plans.md §5). */}
+      <PlanLine className="mx-3 mt-2" />
       {staged.length === 0 ? null : (
         <div className="desk-bar-staged mx-2.5 mt-2 flex flex-wrap items-end gap-1.5" data-testid="desk-bar-staged">
           {staged.map((file) => (

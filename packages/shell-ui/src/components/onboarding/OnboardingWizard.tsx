@@ -4,15 +4,17 @@ import type {
   BrowserImportResult,
   InstalledBrowser,
 } from "@pistachio/shell-contracts/browser-import";
+import type { AccountState } from "@pistachio/shell-contracts/ipc";
 import {
-  ONBOARDING_STEPS,
+  ACCOUNT_STEP,
+  onboardingStepsFor,
   spaceNameFor,
   SUGGESTED_FAVORITES,
   type OnboardingFavoritePick,
   type OnboardingIntake,
   type OnboardingStep,
 } from "@pistachio/shell-contracts/onboarding";
-import { accountStep } from "../../lib/account";
+import { accountGated, accountStep, type AccountStep as AccountStage } from "../../lib/account";
 import { cn } from "../../lib/cn";
 import { aboutCopy, appearanceCopy, IMPORT_ON_THE_WEB, importPrimary, importSkipLabel } from "../../lib/onboarding-steps";
 import { useSurface } from "../../surface";
@@ -22,8 +24,8 @@ import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
 import { StepRail } from "./parts";
 import { SidebarPreview } from "./SidebarPreview";
-import { SignInPanel, type SignInDraft } from "./SignInPanel";
 import { AboutStep } from "./steps/AboutStep";
+import { AccountStep, type AccountDraft } from "./steps/AccountStep";
 import { AppearanceStep } from "./steps/AppearanceStep";
 import { FavoritesStep } from "./steps/FavoritesStep";
 import {
@@ -32,8 +34,6 @@ import {
   type ProfilePick,
 } from "./steps/ImportStep";
 import { nativeApi } from "../../api";
-
-const EMPTY_SIGN_IN: SignInDraft = { email: "", password: "" };
 
 const EMPTY_INTAKE: OnboardingIntake = {
   transcript: "",
@@ -54,7 +54,8 @@ interface Copy {
   aside: string | null;
 }
 
-const COPY: Record<OnboardingStep, Copy> = {
+/** The four steps' columns. The account step's depends on where the person is in it: `accountCopy`. */
+const COPY: Record<Exclude<OnboardingStep, typeof ACCOUNT_STEP>, Copy> = {
   about: {
     title: (
       <>
@@ -82,7 +83,7 @@ const COPY: Record<OnboardingStep, Copy> = {
       "Bring your signed-in sessions and bookmarks over from the browser you use today, so your first Profile already knows where you go and who you are there.",
     skip: "Start fresh instead",
     aside:
-      "Read from this Mac and written to this Mac. With an account, what lands here converges with your other devices end-to-end encrypted; without one it stays here.",
+      "Read from this Mac and written to this Mac. From here, what lands in your Profile converges with your other devices end-to-end encrypted.",
   },
   favorites: {
     title: (
@@ -111,24 +112,96 @@ const COPY: Record<OnboardingStep, Copy> = {
   },
 };
 
+/** A password seals the keys, so the one thing a new account has to be told before it is made. */
+const PASSWORD_ASIDE =
+  "Your password derives the key that seals every Profile, so Pistachio cannot reset it for you. The recovery code shown next is the only other way in.";
+
 /**
- * The about step while its sign-in form is open. Not a step — the rail does
- * not move and Back returns to the introduction — but the column still has
- * to say what the form on the stage is for.
+ * The account step's column. Unlike the other steps' its words depend on
+ * where the person is in it — making an account or signing in to one,
+ * waiting on this Mac's keys, or holding a recovery code that is shown once
+ * — and on whether this is the walkthrough's first step or the sign-in
+ * screen of a Mac that already finished it (`signInOnly`), which has to say
+ * why a browser that was working is asking. Never skippable: Pistachio is
+ * not used without an account (docs/onboarding.md, "The account").
  */
-const SIGN_IN_COPY: Copy = {
-  title: (
+function accountCopy(input: {
+  stage: AccountStage;
+  creating: boolean;
+  signInOnly: boolean;
+  account: AccountState;
+  recoveryCode: string | null;
+}): Copy {
+  const { stage, creating, signInOnly, account, recoveryCode } = input;
+  if (stage === "done") {
+    return recoveryCode === null
+      ? {
+          title: (
+            <>
+              You&rsquo;re
+              <br />
+              signed in.
+            </>
+          ),
+          blurb: "This Mac is enrolled in your account. Its keys were made here and stay here.",
+          skip: null,
+          aside: null,
+        }
+      : {
+          title: (
+            <>
+              Save your
+              <br />
+              recovery code.
+            </>
+          ),
+          blurb:
+            "Your account is made and this Mac is enrolled. The code beside this is the only other way into your synced sessions if you forget your password, and this is the one time it is shown.",
+          skip: null,
+          aside: "Write it down, or keep it in a password manager. Settings → Account can mint a new one later, which retires this one.",
+        };
+  }
+  // Signed in with only this Mac's keys missing reads as signing in, whichever form got there.
+  const making = creating && stage === "sign-in";
+  const title = making ? (
+    <>
+      Create your
+      <br />
+      account.
+    </>
+  ) : signInOnly ? (
+    <>
+      Sign in to
+      <br />
+      Pistachio.
+    </>
+  ) : (
     <>
       Sign in to
       <br />
       your account.
     </>
-  ),
-  blurb:
-    "Pistachio's agent already works on this Mac, within a monthly allowance. Signing in lifts that, and lets your Macs, and the cloud browser if you use it, share the sessions you are signed into, sealed under keys derived on your machines. What this Mac has done so far comes with you.",
-  skip: null,
-  aside: "No account yet? Carry on without one — the browser and its agent work on this Mac alone, and you can create one later in Settings → Account.",
-};
+  );
+  if (!signInOnly) {
+    return {
+      title,
+      blurb:
+        "Pistachio runs on an account. The models its agent works with come with it — nothing to paste, no provider to sign up with — and it lets your Macs, and the cloud browser if you use it, share the sessions you are signed into, sealed under keys derived on your machines.",
+      skip: null,
+      aside: making ? PASSWORD_ASIDE : "What this account already holds arrives on this Mac as it syncs.",
+    };
+  }
+  return {
+    title,
+    blurb: account.revoked
+      ? "This Mac's enrollment was revoked, so it has to sign in again before Pistachio can be used here. Your Profiles, tabs, and the sessions already on this Mac were left alone."
+      : account.state === "anonymous"
+        ? "Pistachio now runs on an account, and this Mac has none yet. Create one and it is this Mac's own, upgraded: your Profiles, tabs, and settings stay where they are, and what the agent has done here comes with it."
+        : "Pistachio runs on an account, and nobody is signed in on this Mac. Your Profiles, tabs, and settings are still here: sign in and the browser opens where you left it.",
+    skip: null,
+    aside: making ? PASSWORD_ASIDE : null,
+  };
+}
 
 type Phase = "idle" | "finishing" | "leaving";
 
@@ -149,11 +222,19 @@ type Phase = "idle" | "finishing" | "leaving";
  *
  * `onboardingReplay` (Settings → About) lets it be dismissed with Esc or
  * the close button; the first run has no way out but through, though
- * every step that can be skipped says so.
+ * every step that can be skipped says so. The account step, where there is
+ * one, cannot be: it stands first, and the rest waits on it.
+ *
+ * `onboardingSignIn` is the wizard as the sign-in screen: that one step and
+ * nothing after it, on a Mac that finished the walkthrough and is signed
+ * out. It gathers nothing for main and completes nothing — it leaves, over
+ * the browser that was there all along, once this Mac is enrolled.
  */
 export function OnboardingWizard() {
   const replay = useAppStore((state) => state.onboardingReplay);
+  const signInOnly = useAppStore((state) => state.onboardingSignIn);
   const account = useAppStore((state) => state.account);
+  const signUp = useAppStore((state) => state.signUp);
   const signIn = useAppStore((state) => state.signIn);
   const enrollDevice = useAppStore((state) => state.enrollDevice);
   const closeOnboarding = useAppStore((state) => state.closeOnboarding);
@@ -169,27 +250,36 @@ export function OnboardingWizard() {
   const [notice, setNotice] = useState<string | null>(null);
   const [intake, setIntake] = useState<OnboardingIntake>(EMPTY_INTAKE);
   const [aboutBusy, setAboutBusy] = useState(false);
-  // Signing in is offered from the about step, never asked for (the browser
-  // needs no account), and only where it could work. Not in a browser tab:
-  // the person signed in on the way to this page (§14), and there is no
-  // keychain here to seal anything with. Not where main reports no keychain
-  // either: sign-in seals this Mac's key material with it and is refused
-  // without it (§10.1, D20), and a form nothing can submit is worse than no
-  // offer at all.
+  /**
+   * Whether the walkthrough opens on the account — decided ONCE, at mount.
+   *
+   * It does wherever a sign-in is owed: main says an account is required and
+   * this Mac is not enrolled in one (`accountGated`). Never in a browser tab,
+   * where the person signed in on the way to this page (§14), and never on a
+   * replay, which only a signed-in Mac can start.
+   *
+   * It is frozen because it is a fact about the STEP LIST: re-deriving it
+   * would delete the step from under the person the instant enrollment
+   * succeeded — taking the recovery code, shown exactly once, with it. The
+   * account is loaded before the wizard can mount (the shell renders it only
+   * once the first snapshot has landed), so one read is enough.
+   */
+  const [askAccount] = useState(() => signInOnly || accountGated(account));
+  // What the account step still has to ask for: credentials, the enrollment
+  // alone (signed in, this Mac's keys missing), or nothing.
   const accountStage = accountStep(account);
-  const [signInOpen, setSignInOpen] = useState(false);
-  const [signInDraft, setSignInDraft] = useState<SignInDraft>(EMPTY_SIGN_IN);
-  const [signInBusy, setSignInBusy] = useState(false);
-  const [signInError, setSignInError] = useState<string | null>(null);
-  // Set once this form's own sign-in went through. An account that arrives
-  // here already signed up and not enrolled was MADE on this Mac (a replay,
-  // from Settings → Account), and enrolling it mints the recovery code that
-  // is shown exactly once: that has to happen in Settings, where it is shown.
-  const [signedInHere, setSignedInHere] = useState(false);
-  const canSignIn =
-    surface === "native" &&
-    account.encryptionAvailable &&
-    (accountStage === "sign-in" || (accountStage === "enroll" && signedInHere));
+  const [accountDraft, setAccountDraft] = useState<AccountDraft>(() => ({
+    // A first run is most often someone new. The sign-in screen is most
+    // often someone coming back — unless this Mac holds an anonymous account
+    // from before one was required, which proves it never had a real one.
+    mode: signInOnly && account.state !== "anonymous" ? "sign-in" : "sign-up",
+    email: account.email ?? "",
+    password: "",
+    confirm: "",
+  }));
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [browsers, setBrowsers] = useState<InstalledBrowser[] | null>(null);
   const [importChoice, setImportChoice] = useState<ImportChoice | null>(null);
   const [importResult, setImportResult] = useState<
@@ -203,17 +293,20 @@ export function OnboardingWizard() {
   const favorites = useMemo(() => picks.flatMap((pick) => (pick.kind === "app" ? [pick.id] : [])), [picks]);
   const customFavorites = useMemo(() => picks.flatMap((pick) => (pick.kind === "site" ? [{ url: pick.url, title: pick.title }] : [])), [picks]);
 
-  const steps = ONBOARDING_STEPS;
+  const steps = useMemo<readonly OnboardingStep[]>(
+    () => (signInOnly ? [ACCOUNT_STEP] : onboardingStepsFor(askAccount)),
+    [signInOnly, askAccount],
+  );
   const step = steps[index] ?? "about";
-  const signingIn = step === "about" && signInOpen && accountStage !== "done";
+  const creating = accountDraft.mode === "sign-up";
   // Three steps say where what you just gave GOES, and that answer is about
   // the machine, so the surface rewrites them (§14). Import is rewritten
   // whole — there is nothing on a stream surface to import — while about and
   // appearance keep their step but swap the claim about storage: the two
   // helpers hold both wordings and `COPY` above holds the native one.
   const copy: Copy =
-    signingIn
-      ? SIGN_IN_COPY
+    step === ACCOUNT_STEP
+      ? accountCopy({ stage: accountStage, creating, signInOnly, account, recoveryCode })
       : step === "import" && surface === "stream"
       ? { ...COPY.import, blurb: IMPORT_ON_THE_WEB.blurb, aside: IMPORT_ON_THE_WEB.aside }
       : step === "about"
@@ -222,60 +315,74 @@ export function OnboardingWizard() {
           ? { ...COPY.appearance, aside: appearanceCopy(surface).aside }
           : COPY[step];
   const skipLabel = step === "import" ? importSkipLabel(surface) : copy.skip;
-  const closeSignIn = () => {
-    // Leaving the form leaves nothing behind: the typed password is dropped
-    // rather than kept in a view nobody is looking at.
-    setSignInOpen(false);
-    setSignInDraft(EMPTY_SIGN_IN);
-    setSignInError(null);
-  };
   const last = index === steps.length - 1;
   const busy = phase !== "idle";
 
   const next = () =>
     setIndex((current) => Math.min(steps.length - 1, current + 1));
-  const back = () => {
-    if (signingIn) closeSignIn();
-    else setIndex((current) => Math.max(0, current - 1));
+  const back = () => setIndex((current) => Math.max(0, current - 1));
+
+  /** The sign-in screen's way out: nothing to hand main, only the browser to give back. */
+  const leave = () => {
+    setPhase("leaving");
+    window.setTimeout(closeOnboarding, LEAVE_MS);
   };
 
   /**
-   * Sign in and enroll this Mac in one go: an account that has not enrolled
-   * a device syncs nothing and brings no models, so stopping halfway would
-   * leave the form's promise unkept.
+   * Sign in (or sign up) and enroll this Mac in one go: an account that has
+   * not enrolled a device brings no models and syncs nothing, so stopping
+   * halfway would leave this Mac no nearer to being usable.
    *
-   * When only the enrollment failed the sign-in already stands, so this runs
-   * the enrollment alone: asking for the password a second time would make a
-   * retry look like a mistake the person made.
+   * When only the enrollment failed the account already stands, so this runs
+   * the enrollment alone: signing up again for the address that was just
+   * created is refused by control, and asking for the password a second time
+   * would make a retry look like a mistake the person made.
+   *
+   * A new account's enrollment mints the recovery code, shown exactly once:
+   * the step stays where it is until the person says they have it. Joining
+   * an account that exists mints none, so there is nothing to wait for and
+   * the wizard goes straight on — to the introduction, or out.
    */
-  const submitSignIn = async () => {
+  const saveAccount = async () => {
     const enrollOnly = accountStage === "enroll";
-    const email = signInDraft.email.trim();
-    if (!enrollOnly && !email.includes("@")) {
-      setSignInError("Enter the email address for the account.");
-      return;
-    }
-    setSignInBusy(true);
-    setSignInError(null);
+    const email = accountDraft.email.trim();
     if (!enrollOnly) {
-      const authenticated = await signIn(email, signInDraft.password);
-      if (!authenticated.ok) {
-        setSignInBusy(false);
-        setSignInError(authenticated.error);
+      if (!email.includes("@")) {
+        setAccountError("Enter the email address for the account.");
         return;
       }
-      setSignedInHere(true);
+      if (creating && accountDraft.password.length < 8) {
+        setAccountError("Choose a password of at least 8 characters.");
+        return;
+      }
+      if (creating && accountDraft.confirm !== accountDraft.password) {
+        setAccountError("The two passwords do not match. This one seals your Profile keys, so it cannot be recovered later.");
+        return;
+      }
+    }
+    setAccountBusy(true);
+    setAccountError(null);
+    if (!enrollOnly) {
+      const authenticated = creating
+        ? await signUp(email, accountDraft.password)
+        : await signIn(email, accountDraft.password);
+      if (!authenticated.ok) {
+        setAccountBusy(false);
+        setAccountError(authenticated.error);
+        return;
+      }
     }
     const enrolled = await enrollDevice();
-    setSignInBusy(false);
-    setSignInDraft({ ...signInDraft, password: "" });
+    setAccountBusy(false);
+    // The password is not kept in a view once it has done its work.
+    setAccountDraft((current) => ({ ...current, password: "", confirm: "" }));
     if (!enrolled.ok) {
-      setSignInError(`Signed in, but this Mac could not enroll: ${enrolled.error}. Try again, or finish it in Settings → Account.`);
+      setAccountError(`Signed in, but this Mac could not enroll: ${enrolled.error}. Try again.`);
       return;
     }
-    // Back to the introduction, which remounts and finds the models there:
-    // the microphone is offered where the "type instead" notice was.
-    closeSignIn();
+    if (enrolled.value.recoveryCode !== null) setRecoveryCode(enrolled.value.recoveryCode);
+    else if (signInOnly) leave();
+    else next();
   };
 
   const finish = async () => {
@@ -334,22 +441,38 @@ export function OnboardingWizard() {
     loading: boolean;
     run: () => void;
   } =
-    signingIn
-      ? accountStage === "enroll"
+    step === ACCOUNT_STEP
+      ? accountStage === "done"
         ? {
-            // Signed in; only this Mac's keys are missing, so the button
-            // asks for that and nothing else.
-            label: signInBusy ? "Setting up your keys…" : "Enroll this Mac",
-            disabled: signInBusy,
-            loading: signInBusy,
-            run: () => void submitSignIn(),
+            // Enrolled. With a recovery code on the stage the button is also
+            // the person saying they have it: it is not shown again.
+            label: recoveryCode !== null ? "I’ve saved it — continue" : signInOnly ? "Open Pistachio" : "Continue",
+            disabled: busy,
+            loading: false,
+            run: signInOnly ? leave : next,
           }
-        : {
-            label: signInBusy ? "Setting up your keys…" : "Sign in",
-            disabled: signInBusy || signInDraft.email.trim() === "" || signInDraft.password === "",
-            loading: signInBusy,
-            run: () => void submitSignIn(),
-          }
+        : accountStage === "enroll"
+          ? {
+              // Signed in; only this Mac's keys are missing, so the button
+              // asks for that and nothing else.
+              label: accountBusy ? "Setting up your keys…" : "Enroll this Mac",
+              disabled: accountBusy,
+              loading: accountBusy,
+              run: () => void saveAccount(),
+            }
+          : {
+              label: accountBusy ? "Setting up your keys…" : creating ? "Create account" : "Sign in",
+              // Nothing to submit without the keychain the keys are sealed
+              // with (the stage says so), or with a field still empty.
+              disabled:
+                accountBusy ||
+                !account.encryptionAvailable ||
+                accountDraft.email.trim() === "" ||
+                accountDraft.password === "" ||
+                (creating && accountDraft.confirm === ""),
+              loading: accountBusy,
+              run: () => void saveAccount(),
+            }
       : step === "about"
         ? { label: "Continue", disabled: aboutBusy, loading: false, run: next }
       : step === "import"
@@ -410,9 +533,16 @@ export function OnboardingWizard() {
         event.key !== "Enter" ||
         event.metaKey ||
         event.ctrlKey ||
-        event.altKey
+        event.altKey ||
+        // A held key is one press: the Enter that submitted a step must not
+        // also run whatever the next one offers.
+        event.repeat
       )
         return;
+      // The recovery code is shown once, and the button under it is the
+      // person saying they have it. That takes a deliberate click, not the
+      // key that was under the finger when the code appeared.
+      if (step === ACCOUNT_STEP && accountStage === "done" && recoveryCode !== null) return;
       const target = event.target as HTMLElement | null;
       if (
         target !== null &&
@@ -441,9 +571,10 @@ export function OnboardingWizard() {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Welcome to Pistachio"
+      aria-label={signInOnly ? "Sign in to Pistachio" : "Welcome to Pistachio"}
       data-testid="onboarding"
       data-step={step}
+      data-sign-in={signInOnly ? "" : undefined}
       // A replay fades in over the chrome the person was using; a first run
       // is opaque from its first frame, so the chrome never shows through
       // (shell.css, "First-run wizard").
@@ -459,7 +590,8 @@ export function OnboardingWizard() {
 
       <section className="no-drag relative flex w-[42%] max-w-[560px] min-w-[400px] shrink-0 flex-col px-12 pt-[66px] pb-10">
         <div className="flex h-8 items-center justify-between">
-          <StepRail count={steps.length} index={index} />
+          {/* One step is not a walk: the sign-in screen has no rail to move along. */}
+          {signInOnly ? <span /> : <StepRail count={steps.length} index={index} />}
           <span className="flex items-center gap-2 text-label-12 text-gray-700">
             <PistachioMark size={24} />
             Pistachio
@@ -467,15 +599,15 @@ export function OnboardingWizard() {
         </div>
 
         <div
-          key={signingIn ? "sign-in" : step}
+          key={step}
           className="onboarding-step flex min-h-0 flex-1 flex-col"
         >
           <div className="mt-9 h-7">
-            {index > 0 || signingIn ? (
+            {index > 0 ? (
               <button
                 type="button"
                 onClick={back}
-                disabled={busy || importBusy || signInBusy}
+                disabled={busy || importBusy}
                 data-testid="onboarding-back"
                 className="flex cursor-pointer items-center gap-1.5 rounded-sm px-1.5 py-1 text-label-13 font-medium text-(--theme-accent) [color:color-mix(in_oklch,var(--theme-accent)_65%,var(--color-gray-1000))] hover:bg-alpha-100 disabled:cursor-default disabled:opacity-50"
               >
@@ -537,7 +669,7 @@ export function OnboardingWizard() {
               >
                 {skipLabel}
               </button>
-            ) : last ? (
+            ) : last && step !== ACCOUNT_STEP ? (
               <span className="flex items-center gap-1.5 text-label-12 text-gray-700">
                 <Kbd>⏎</Kbd> to open
               </span>
@@ -576,30 +708,29 @@ export function OnboardingWizard() {
           </Button>
         ) : null}
         <div
-          key={signingIn ? "sign-in" : step}
+          key={step}
           className={cn(
             "no-drag relative flex w-full items-center justify-center",
             step === "favorites" ? "h-full" : "max-h-full",
           )}
         >
-          {signingIn ? (
-            <SignInPanel
-              draft={signInDraft}
+          {step === ACCOUNT_STEP ? (
+            <AccountStep
+              draft={accountDraft}
               onDraft={(next) => {
-                setSignInDraft(next);
-                setSignInError(null);
+                setAccountDraft(next);
+                setAccountError(null);
               }}
               account={account}
-              error={signInError}
-              busy={signInBusy}
+              recoveryCode={recoveryCode}
+              error={accountError}
+              busy={accountBusy}
             />
           ) : step === "about" ? (
             <AboutStep
               intake={intake}
               onIntake={setIntake}
               onBusy={onAboutBusy}
-              onSignIn={canSignIn ? () => setSignInOpen(true) : undefined}
-              signedInAs={surface === "native" && accountStage === "done" ? account.email : null}
               modelsKey={account.state}
             />
           ) : step === "import" ? (

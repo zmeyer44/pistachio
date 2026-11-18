@@ -77,7 +77,7 @@ describe("what the Mac app says", () => {
       "What a Profile carries to your other devices, and what never leaves this one.",
     );
     expect(native.privacy.sessions).toBe(
-      "With an account, a Profile's sign-ins converge across your enrolled devices, sealed under a key derived for that Profile alone — the hub stores ciphertext. Without an account, nothing leaves this Mac. Settings → Sync says which sites take part.",
+      "A Profile's sign-ins converge across your enrolled devices, sealed under a key derived for that Profile alone — the hub stores ciphertext. Settings → Sync says which sites take part.",
     );
     expect(native.privacy.preferencesLabel).toBe("Preferences stay on this Mac");
     expect(native.privacy.preferences).toBe(
@@ -192,12 +192,13 @@ const NATIVE_ONLY: Record<string, string> = {
   // The confirm dialog those sections raise, and the account state they read.
   "components/settings/dialogs.tsx": "only opened from the account and devices sections",
   "lib/account.ts": "the account pages' own view model",
-  // The walkthrough. Its sign-in form is not offered on a stream surface
-  // (`canSignIn` is false there), the import step is replaced whole by
+  // The walkthrough. Its account step is not shown on a stream surface (no
+  // host there says an account is `required`: the person signed in on the
+  // way to the page), the import step is replaced whole by
   // `IMPORT_ON_THE_WEB`, and the two steps that differ in one sentence read
   // it from `lib/onboarding-steps.ts`.
-  "components/onboarding/OnboardingWizard.tsx": "the sign-in form is never offered on a stream surface",
-  "components/onboarding/SignInPanel.tsx": "the sign-in form is never offered on a stream surface",
+  "components/onboarding/OnboardingWizard.tsx": "the account step is never shown on a stream surface",
+  "components/onboarding/steps/AccountStep.tsx": "the account step is never shown on a stream surface",
   "components/onboarding/steps/ImportStep.tsx": "the native import view; a tab renders ImportOnTheWeb",
   "lib/onboarding-steps.ts": "the walkthrough's own surface-aware copy (§14)",
   // The console's "run in the cloud" control renders only where the host
@@ -222,6 +223,9 @@ const NATIVE_ONLY: Record<string, string> = {
   // ContentArea's one line), and the host refuses Settings → Extensions whole, so its body renders Unavailable.
   "components/extensions/ExtensionsPage.tsx": "drawn on the desk alone; a tab shows ContentArea's line instead",
   "components/settings/sections/extensions.tsx": "the host refuses extensions whole; renders Unavailable",
+  // A person's own AI plan is the desktop's too (docs/ai-plans.md): its sign-in is kept in the Mac's keychain, the
+  // host refuses `aiPlans` whole, and Settings → AI plan renders Unavailable with the host's reason.
+  "components/settings/sections/ai-plan.tsx": "the host refuses the AI plan whole; renders Unavailable",
   // The address bar's tray of local apps (docs/local-apps.md) mounts only with
   // apps to show, which come from `localApps()`, a NativeSurfaceApi member no
   // tab has: useLocalApps answers a stream surface with none.

@@ -1,6 +1,6 @@
 {
   "name": "@pistachio/desktop",
-  "version": "0.0.53",
+  "version": "0.0.54",
   "productName": "Pistachio",
   "private": true,
   "type": "module",
@@ -20,6 +20,7 @@
     "dist:mac": "pnpm build && node scripts/dist-mac.mjs"
   },
   "dependencies": {
+    "@ai-sdk/openai": "4.0.72",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@ghostery/adblocker": "^2.18.2",

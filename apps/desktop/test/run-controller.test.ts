@@ -13,13 +13,14 @@ import { simulateReadableStream, type ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { verifyEvidenceEntries } from "@pistachio/evidence";
 import { NotificationRouter, type NotificationAdapter, type NotificationMessage } from "@pistachio/notifications";
-import { extensionToolName, PAGE_IN_VIEW_HEADER, TURN_CUT_SHORT, USE_BROWSER_TOOL, type TurnRouteRequest } from "@pistachio/agent-runtime";
+import { extensionToolName, PAGE_IN_VIEW_HEADER, TURN_CUT_SHORT, USE_BROWSER_TOOL, type PistachioToolHost, type TurnRouteRequest } from "@pistachio/agent-runtime";
 import type { RunSummary, TaskStatus } from "@pistachio/protocol";
 import { agentDrivenTabId } from "@pistachio/shell-contracts/agent-glow";
 import { applyNoteEdit, noteUrl, searchNotes, summaryOf, type Note } from "@pistachio/shell-contracts/notes";
 import type { BrowserController } from "../src/main/browser-controller";
 import { ArtifactStore } from "../src/main/artifact-store";
-import { type CloudRunCommands, type NoteRecordStore, type RunExtensions, type TurnRouter } from "../src/main/run-controller";
+import { type CloudRunCommands, type NoteRecordStore, type OwnModelTurn, type RunExtensions, type TurnRouter } from "../src/main/run-controller";
+import { PlanError } from "../src/main/ai-plans/plan-request";
 import { RunHub } from "../src/main/run-hub";
 import { ThreadStore, type ThreadRecord } from "../src/main/thread-store";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
@@ -280,6 +281,10 @@ function build(options: {
   observe?: (controller: RunHub) => void;
   /** The person's extensions' tools and the author turn's drafts (docs/extensions.md §6.2, §8). */
   extensions?: RunExtensions;
+  /** Pistachio itself as the agent reaches it (docs/agent-pistachio.md). */
+  pistachio?: PistachioToolHost;
+  /** The person's own AI plan, asked as each turn begins (docs/ai-plans.md §3). */
+  ownModel?: () => OwnModelTurn | null;
 }) {
   const dir = options.dir ?? scratch();
   const threads = options.threads ?? new ThreadStore(dir);
@@ -301,6 +306,8 @@ function build(options: {
     ...(options.onRunEnded === undefined ? {} : { onRunEnded: options.onRunEnded }),
     ...(options.router === undefined ? {} : { router: options.router }),
     ...(options.extensions === undefined ? {} : { extensions: options.extensions }),
+    ...(options.pistachio === undefined ? {} : { pistachio: options.pistachio }),
+    ...(options.ownModel === undefined ? {} : { ownModel: options.ownModel }),
     model: () => options.model,
     ...(options.stream === undefined ? {} : { stream: options.stream }),
     summarize: options.summarize ?? (async () => "SUMMARY: earlier steps"),
@@ -2072,5 +2079,249 @@ describe("extensions in a turn (docs/extensions.md §6.2, §8)", () => {
     expect(extensions.call).toHaveBeenCalledWith("dev.local.word-counter", "word_count", { text: "one two three" }, expect.objectContaining({ runId: run.runId, profileId: "work" }));
     expect(run.toolCalls.map((tool) => [tool.name, tool.label, tool.status])).toEqual([["ext.call", "Word counter", "completed"]]);
     expect(lastAssistant(run)).toBe("Three words.");
+  });
+});
+
+/* ------------------------------ Pistachio itself ------------------------------ */
+
+describe("Pistachio itself in a turn (docs/agent-pistachio.md)", () => {
+  const TOOLS = ["extension_build", "extensions_list", "pistachio_open", "settings_change", "settings_read"];
+
+  function pistachioStub() {
+    const written: Array<[string, string]> = [];
+    const drafting: Array<[string, boolean]> = [];
+    const changed: Array<{ changes: unknown; readUntrusted: boolean }> = [];
+    const opened: string[] = [];
+    const host: PistachioToolHost = {
+      settings: {
+        sections: () => [{ id: "appearance", title: "Appearance", about: "How the window looks." }],
+        read: () => ({ id: "appearance", title: "Appearance", about: "How the window looks.", settings: [{ key: "appearance.scheme", what: "Light, dark, or the Mac's.", value: "system", accepts: "one of: system, light, dark" }] }),
+        change: (changes, context) => {
+          changed.push({ changes, readUntrusted: context.readUntrusted });
+          return changes.map((change) => ({ key: change.key, what: "Light, dark, or the Mac's.", before: "system", after: change.value }));
+        },
+      },
+      pages: () => [{ id: "settings/appearance", what: "Settings → Appearance" }],
+      open: async (page) => {
+        opened.push(page);
+        return "Settings → Appearance";
+      },
+      extensions: {
+        list: () => [],
+        builder: {
+          open: async () => ({ slug: "night-desk", created: true }),
+          author: {
+            write: async (_slug, path, content) => {
+              written.push([path, content]);
+              return { path, bytes: content.length };
+            },
+            read: async () => ({ path: null, files: [] }),
+            status: async () => JSON.stringify({ state: "needs-approval", manifestErrors: [], runtimeErrors: [] }),
+          },
+          guide: () => "# Writing a Pistachio extension\nThe guide.",
+          drafting: (slug, on) => void drafting.push([slug, on]),
+          outcome: async (slug) => ({ id: "dev.local.night-desk", title: "Night desk", slug, waiting: true, adds: [], asks: ["Changes the backdrop and accent colour of your spaces."], runs: [], errors: [] }),
+        },
+      },
+    };
+    return { host, written, drafting, changed, opened };
+  }
+
+  it("gives a turn the guide and the tools, and a change is a step that says what changed", async () => {
+    const { model } = scriptedModel([
+      calls({ name: "settings_read", input: { section: "appearance" } }),
+      calls({ name: "settings_change", input: { changes: [{ key: "appearance.scheme", value: "dark" }] } }),
+      answer("It's dark now — say the word and I'll put it back."),
+    ]);
+    const { host, changed } = pistachioStub();
+    const { controller } = build({ model, pistachio: host });
+
+    await controller.start("make Pistachio dark");
+
+    const first = model.doGenerateCalls[0]!;
+    const names = (first.tools ?? []).map((tool) => tool.name);
+    for (const name of TOOLS) expect(names).toContain(name);
+    expect(systemText(first.prompt)).toContain("Pistachio itself:");
+    expect(changed).toEqual([{ changes: [{ key: "appearance.scheme", value: "dark" }], readUntrusted: false }]);
+    const run = controller.snapshot()!;
+    expect(run.toolCalls.map((tool) => [tool.name, tool.label, tool.detail, tool.status])).toEqual([
+      ["settings.read", "Read settings", "Appearance: 1 setting", "completed"],
+      ["settings.change", "Change settings", "appearance.scheme: system → dark", "completed"],
+    ]);
+    expect(lastAssistant(run)).toBe("It's dark now — say the word and I'll put it back.");
+  });
+
+  it("a controller without it gives a turn none of it", async () => {
+    const { model } = scriptedModel([answer("Hello.")]);
+    const { controller } = build({ model });
+    await controller.start("make Pistachio dark");
+    const first = model.doGenerateCalls[0]!;
+    for (const name of TOOLS) expect((first.tools ?? []).map((tool) => tool.name)).not.toContain(name);
+    expect(systemText(first.prompt)).not.toContain("Pistachio itself:");
+  });
+
+  it("a turn a reminder started has none of it: a change to the browser is made while the person is there to ask", async () => {
+    const { model } = scriptedModel([answer("Digest: nothing new.")]);
+    const { host } = pistachioStub();
+    const { controller } = build({ model, pistachio: host });
+    const outcome = await controller.startScheduled({ reminderId: "r1", occurrenceId: "o1", title: "Morning check", prompt: "Make Pistachio dark", scheduledFor: "2026-08-29T09:00:00.000Z", onStarted: vi.fn() });
+    expect(outcome).toMatchObject({ status: "completed" });
+    const first = model.doGenerateCalls[0]!;
+    for (const name of TOOLS) expect((first.tools ?? []).map((tool) => tool.name)).not.toContain(name);
+    expect(systemText(first.prompt)).not.toContain("Pistachio itself:");
+  });
+
+  it("tells the router the app is the assistant's to explain and change, so such a request is a reply and not a search", async () => {
+    const asked: TurnRouteRequest[] = [];
+    const router: TurnRouter = async (request) => {
+      asked.push(request);
+      return { routes: { answer: 0.9, page: 0, browse: 0.1 }, confidence: 0.9, latencyMs: 10 };
+    };
+    const { model } = scriptedModel([answer("I can help with that — what should we change?")]);
+    const { host } = pistachioStub();
+    const { controller } = build({ model, pistachio: host, router });
+
+    await controller.start("How can I customize the appearance of Pistachio?");
+
+    expect(asked[0]?.tools).toContain("explain how this browser, Pistachio, works, and change its settings, its look, its keyboard shortcuts and its extensions");
+    // The quick path: the reply prompt, with the guide and the tools, and no browser's.
+    const first = model.doGenerateCalls[0]!;
+    const names = (first.tools ?? []).map((tool) => tool.name);
+    expect(names).toContain("settings_change");
+    expect(names).toContain("extension_build");
+    expect(names).not.toContain("tabs_list");
+    expect(systemText(first.prompt)).toContain("Pistachio itself:");
+    expect(lastAssistant(controller.snapshot()!)).toBe("I can help with that — what should we change?");
+  });
+
+  it("a build's steps join the turn's trace, its card rides on the build, and nothing of the builder is the thread's", async () => {
+    const { model } = scriptedModel([
+      calls({ name: "extension_build", input: { name: "Night desk", brief: "Give every space a deep green gradient backdrop, #0b3d2e to #145c43.", extension: null } }),
+      // The builder.
+      calls({ name: "extension_draft_write", input: { slug: "night-desk", path: "pistachio.json", content: "{}" } }),
+      calls({ name: "extension_status", input: { slug: "night-desk" } }),
+      answer("It sets a green backdrop behind every space."),
+      // The conversation's agent, with the outcome.
+      answer("Night desk is ready — turn it on from the card below."),
+    ]);
+    const { host, written, drafting } = pistachioStub();
+    const { controller, threads } = build({ model, pistachio: host });
+
+    await controller.start("give my desk a deep green backdrop");
+
+    const run = controller.snapshot()!;
+    expect(written).toEqual([["pistachio.json", "{}"]]);
+    expect(drafting).toEqual([["night-desk", true], ["night-desk", false]]);
+    expect(run.toolCalls.map((tool) => [tool.name, tool.label, tool.status])).toEqual([
+      ["ext.build", "Build an extension", "completed"],
+      ["ext.draft.write", "Write a file", "completed"],
+      ["ext.status", "Check the extension", "completed"],
+    ]);
+    // The card under the reply: the extension, new, waiting on the person.
+    expect(run.toolCalls[0]?.output).toEqual({ kind: "extension", action: "created", id: "dev.local.night-desk", title: "Night desk", waiting: true });
+    expect(run.toolCalls[0]?.detail).toBe("Night desk is ready, waiting to be turned on");
+    expect(lastAssistant(run)).toBe("Night desk is ready — turn it on from the card below.");
+    // The builder read the brief and nothing of the conversation; the thread's saved history has none of its calls.
+    expect(userTexts(model.doGenerateCalls[1]!.prompt)).toEqual(["Give every space a deep green gradient backdrop, #0b3d2e to #145c43."]);
+    controller.flush();
+    expect(historyToolCalls(threads.get(run.runId)?.model ?? [])).toEqual(["extension_build"]);
+    // Two steps of the conversation's own: the builder's are not counted as the thread's.
+    expect(run.context.steps).toBe(2);
+  });
+});
+
+/* ------------------------------ the person's own plan ------------------------------ */
+
+describe("the person's own plan in a turn (docs/ai-plans.md §3)", () => {
+  const onPlan = (model: MockLanguageModelV4): OwnModelTurn => ({ model, name: "chatgpt-plan/gpt-5.6-terra", source: "chatgpt" });
+
+  it("runs the turn on the plan's model and not on Pistachio's, and the thread remembers whose history it is", async () => {
+    const pistachio = scriptedModel([answer("from Pistachio")]);
+    const plan = scriptedModel([answer("from the plan")]);
+    const { controller, threads } = build({ model: pistachio.model, ownModel: () => onPlan(plan.model) });
+
+    await controller.start("hello");
+
+    const run = controller.snapshot()!;
+    expect(run.status).toBe("completed");
+    expect(run.messages.at(-1)?.content).toBe("from the plan");
+    expect(plan.model.doGenerateCalls).toHaveLength(1);
+    expect(pistachio.model.doGenerateCalls).toHaveLength(0);
+    // The turn's record says which model finished it.
+    expect(run.activity.some((entry) => entry.detail === "Finished with chatgpt-plan/gpt-5.6-terra")).toBe(true);
+    expect(threads.get(run.runId)?.source).toBe("chatgpt");
+  });
+
+  it("stops on the plan's own sentence when the plan cannot serve the turn — and never runs it on Pistachio's models instead", async () => {
+    const pistachio = scriptedModel([answer("from Pistachio")]);
+    const router = vi.fn(async () => null);
+    const { controller } = build({
+      model: pistachio.model,
+      router,
+      ownModel: () => ({ blocked: new PlanError("limit", "Requests on your ChatGPT plan are paused: its usage limit was reached.") }),
+    });
+
+    await controller.start("hello");
+
+    const run = controller.snapshot()!;
+    expect(run.status).toBe("failed");
+    // The sentence as the plan says it: no "I stopped because something failed" around it.
+    expect(run.messages.at(-1)).toMatchObject({ role: "assistant", content: "Requests on your ChatGPT plan are paused: its usage limit was reached." });
+    expect(pistachio.model.doGenerateCalls).toHaveLength(0);
+    // Stopped before anything was spent on it: the router was not asked either.
+    expect(router).not.toHaveBeenCalled();
+  });
+
+  it("says the plan's sentence when the provider library wrapped it on the way", async () => {
+    const wrapped = new Error("Failed to process successful response", { cause: new PlanError("limit", "Your ChatGPT plan's usage limit was reached.") });
+    const plan = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw wrapped;
+      },
+    });
+    const { controller } = build({ model: scriptedModel([]).model, ownModel: () => onPlan(plan) });
+
+    await controller.start("hello");
+
+    expect(controller.snapshot()!.messages.at(-1)?.content).toBe("Your ChatGPT plan's usage limit was reached.");
+  });
+
+  it("carries neither reasoning nor item ids across when a thread changes hands, and what was said stays", async () => {
+    // A turn on Pistachio's models that thought before it answered, as a provider reports it.
+    const thoughtful: Step = ({ prompt }) => ({
+      content: [
+        { type: "reasoning", text: "They said hello.", providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: "sealed-for-pistachio" } } },
+        { type: "text", text: "Hello!", providerMetadata: { openai: { itemId: "msg_1" } } },
+      ],
+      finishReason: { unified: "stop", raw: "end_turn" },
+      usage: usageFor(prompt),
+      warnings: [],
+    });
+    const pistachio = scriptedModel([thoughtful, answer("back on Pistachio")]);
+    const plan = scriptedModel([answer("from the plan")]);
+    let chosen = false;
+    const { controller, threads } = build({ model: pistachio.model, ownModel: () => (chosen ? onPlan(plan.model) : null) });
+
+    await controller.start("hello");
+    const runId = controller.snapshot()!.runId;
+    // On Pistachio's models the history is kept whole, and the thread says nothing of a source.
+    expect(JSON.stringify(threads.get(runId)?.model)).toContain("sealed-for-pistachio");
+    expect(threads.get(runId)?.source).toBeUndefined();
+
+    // The person connects their plan; the same thread goes on.
+    chosen = true;
+    await controller.message("and again");
+    const sent = JSON.stringify(plan.model.doGenerateCalls[0]!.prompt);
+    expect(sent).not.toContain("sealed-for-pistachio");
+    expect(sent).not.toContain("rs_1");
+    expect(sent).not.toContain("msg_1");
+    expect(sent).toContain("Hello!");
+    expect(threads.get(runId)?.source).toBe("chatgpt");
+
+    // And back: the plan's turn is not Pistachio's to read either, and the thread is Pistachio's again.
+    chosen = false;
+    await controller.message("once more");
+    expect(controller.snapshot()!.messages.at(-1)?.content).toBe("back on Pistachio");
+    expect(threads.get(runId)?.source).toBeUndefined();
   });
 });

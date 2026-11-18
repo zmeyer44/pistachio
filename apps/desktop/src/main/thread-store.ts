@@ -35,6 +35,11 @@ export interface ThreadRecord {
   /** How many of `run.messages` the memory learner has read. */
   learnedThrough?: number;
   /**
+   * Whose models wrote `model` last: absent for Pistachio's own, the plan's name when the chat was on the person's
+   * (docs/ai-plans.md §3). A turn on another source first makes the history portable (ai-plans/history.ts).
+   */
+  source?: string;
+  /**
    * The evidence chain's signing key (PEM), so the chain continues when the
    * thread is reopened. A local demo key: production keys live in a KMS
    * and never in a file (docs/architecture.md, Evidence).
@@ -139,12 +144,14 @@ export function sanitizeThreadRecord(value: unknown): ThreadRecord | null {
   const learnedThrough = typeof value["learnedThrough"] === "number" && value["learnedThrough"] >= 0 ? Math.floor(value["learnedThrough"]) : 0;
   const signingKey = typeof value["signingKey"] === "string" && value["signingKey"].includes("PRIVATE KEY") ? value["signingKey"] : undefined;
   const spaceId = typeof value["spaceId"] === "string" ? value["spaceId"] : undefined;
+  const source = typeof value["source"] === "string" && value["source"] !== "" ? value["source"] : undefined;
   return {
     version: 1,
     run: repaired,
     model,
     evidence,
     learnedThrough,
+    ...(source === undefined ? {} : { source }),
     ...(spaceId === undefined ? {} : { spaceId }),
     ...(signingKey === undefined ? {} : { signingKey }),
   };

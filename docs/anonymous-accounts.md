@@ -2,7 +2,19 @@
 
 (Until 2026-10-09 the UI called a space a "tab group", and a Profile a "Space"; identifiers keep the old words.)
 
-Pistachio works without signing in, and until now "without signing in" also
+> **Status (2026-11-17): off by default on the desktop.** An account is now
+> required to use Pistachio (docs/onboarding.md, "The account"): a Mac nobody
+> has signed in on shows the sign-in screen, and is not given an anonymous
+> account. What is described here remains in two places. A development run
+> can ask for it — `PISTACHIO_ANONYMOUS=1`, ignored in a packaged app — and
+> then behaves as below, with no sign-in owed; the `@share` and `@live` specs
+> run that way. And a Mac that still holds an anonymous account from before
+> keeps it only to bring it along: its token no longer reaches the models
+> (`modelsAvailable`), signing up upgrades it in place and signing in links
+> it, exactly as below. Control is unchanged: the routes, the allow-list and
+> the bounds all stand, for older builds and for those runs.
+
+Pistachio worked without signing in, and before this "without signing in" also
 meant "without models": every model call goes through control's `/v1/ai/*`
 under a device token (docs/cloud-sync-design.md §7.2), and a Mac nobody signed
 in on had none. So the agent, memory, the address bar's intent model, Tidy, the
@@ -33,7 +45,8 @@ credential row to find.
 
 There is no anonymous account on the web — the web app has no signed-out
 state — and none under `PISTACHIO_E2E`, where the account layer is never
-built (D22). `PISTACHIO_ANONYMOUS=0` turns it off on a desktop.
+built (D22). On a desktop it is off unless `PISTACHIO_ANONYMOUS=1` asks for it
+(see Status).
 
 ## What it can do
 

@@ -314,6 +314,13 @@ export interface FloatSpot {
   cw?: number;
   /** Out of a tile by a resize: in the desk's frame, flush where it stood (AnswerMotion's #inStage) — kept so it comes back there, not moved in to the lane's corner (2026-10-10). */
   inStage?: boolean;
+  /**
+   * In the chat's place, and closed there by the person (2026-11-17): its place is kept for when it is asked for
+   * again, and it does not come up by itself meanwhile — not as the desk comes back to its space, nor the next time
+   * Pistachio opens (space-chat.ts's `chatUpOnArrival`). Until then a chat at the side was up whenever its space
+   * was in front, and its × lasted only until the space was left.
+   */
+  shut?: boolean;
 }
 
 /** Until 2026-11-16: one place, every space's. */
@@ -329,13 +336,15 @@ const MAX_SPOTS = 200;
 
 function spotFrom(raw: unknown): FloatSpot | null {
   if (typeof raw !== "object" || raw === null) return null;
-  const { floating, fx, fy, w, h, zone, cw, inStage } = raw as Record<string, unknown>;
+  const { floating, fx, fy, w, h, zone, cw, inStage, shut } = raw as Record<string, unknown>;
   if (typeof floating !== "boolean") return null;
   for (const n of [fx, fy, w, h]) if (typeof n !== "number" || !Number.isFinite(n)) return null;
   const spot: FloatSpot = { floating, fx: fx as number, fy: fy as number, w: w as number, h: h as number };
   if (typeof zone === "string" && ZONES.has(zone)) spot.zone = zone as AnswerZone;
   if (typeof cw === "number" && Number.isFinite(cw) && cw > 0) spot.cw = cw;
   if (inStage === true && spot.zone === undefined) spot.inStage = true;
+  // (Only a chat at the side is shut: anywhere else whether it is up is this run's, never the next launch's.)
+  if (shut === true && floating && spot.zone === "chat") spot.shut = true;
   return spot;
 }
 

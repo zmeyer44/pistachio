@@ -15,6 +15,7 @@ import {
   paletteOf,
 } from "../src/brand-colors.js";
 import {
+  ACCOUNT_STEP,
   FAVORITE_APPS,
   favoriteApp,
   heuristicIntake,
@@ -23,6 +24,7 @@ import {
   customFavoriteFrom,
   SUGGESTED_FAVORITES,
   ONBOARDING_STEPS,
+  onboardingStepsFor,
   sanitizeOnboardingCompletion,
   sanitizeOnboardingIntake,
   spaceNameFor,
@@ -66,6 +68,18 @@ describe("welcome tabs", () => {
       "favorites",
       "appearance",
     ]);
+  });
+
+  it("puts the account ahead of them where a sign-in is owed, and nowhere else", () => {
+    // The wizard asks for it where an account is required and this Mac is
+    // not signed in to one; a replay or a browser tab walks the four alone.
+    expect(onboardingStepsFor(false)).toEqual(ONBOARDING_STEPS);
+    expect(onboardingStepsFor(true)).toEqual([ACCOUNT_STEP, "about", "import", "favorites", "appearance"]);
+  });
+
+  it("never mutates the shared step list", () => {
+    onboardingStepsFor(true);
+    expect(ONBOARDING_STEPS).toEqual(["about", "import", "favorites", "appearance"]);
   });
 });
 

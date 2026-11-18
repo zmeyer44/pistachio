@@ -48,11 +48,14 @@ async function pageFit(app: ElectronApplication, tabUrlPrefix: string): Promise<
 
 async function launch(general: Record<string, unknown> = {}): Promise<{ app: ElectronApplication; shell: Page }> {
   // Not under PISTACHIO_E2E: that flag keeps the account services — and with
-  // them every model — off.
+  // them every model — off. PISTACHIO_ANONYMOUS: a scratch profile has no
+  // account to sign in to, so it asks for an anonymous one — a development
+  // run's switch (docs/anonymous-accounts.md), without which the app would
+  // open on its sign-in screen.
   const { app } = await launchApp({
     name: "background-tabs",
     settings: { layout: { sidebar: "pinned" }, general, onboarding: { completed: true, completedAt: new Date().toISOString() } },
-    env: { PISTACHIO_E2E: undefined, PISTACHIO_AGENT_LIVE: "1" },
+    env: { PISTACHIO_E2E: undefined, PISTACHIO_AGENT_LIVE: "1", PISTACHIO_ANONYMOUS: "1" },
   });
   const shell = await shellPage(app);
   await shell.waitForLoadState("domcontentloaded");

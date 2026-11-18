@@ -19,6 +19,17 @@ describe("toolOutputOf", () => {
     });
   });
 
+  it("names the extension a build made or changed, and whether it waits on the person", () => {
+    const built = { id: "dev.local.night-desk", title: "Night desk", slug: "night-desk", waiting: true, created: true, adds: [], asks: [], runs: [], errors: [], report: "It sets a backdrop." };
+    expect(toolOutputOf("ext.build", built)).toEqual({ kind: "extension", action: "created", id: "dev.local.night-desk", title: "Night desk", waiting: true });
+    expect(toolOutputOf("ext.build", { ...built, created: false, waiting: false })).toEqual({ kind: "extension", action: "updated", id: "dev.local.night-desk", title: "Night desk", waiting: false });
+    // One that never loaded has no id: there is no sheet for a card to open.
+    expect(toolOutputOf("ext.build", { ...built, id: null })).toBeNull();
+    // The author's own steps, and the list, leave nothing to open.
+    expect(toolOutputOf("ext.draft.write", { id: "x", title: "pistachio.json" })).toBeNull();
+    expect(toolOutputOf("ext.list", { id: "x", title: "y" })).toBeNull();
+  });
+
   it("gives nothing for reads, deletes, and malformed results", () => {
     expect(toolOutputOf("note.read", { id: "n-1", title: "x" })).toBeNull();
     expect(toolOutputOf("note.delete", { id: "n-1", title: "x" })).toBeNull();

@@ -212,6 +212,22 @@ describe("the answer's spot, kept on this device for each space", () => {
     expect(readFloatSpot("g2")?.floating).toBe(true);
   });
 
+  it("keeps that a chat at the side was closed there by the person — and only there", () => {
+    const side = { floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat" as const, cw: 420 };
+    writeFloatSpot("g1", { ...side, shut: true });
+    expect(readFloatSpot("g1")).toEqual({ ...side, shut: true });
+    // Up again: kept without it.
+    writeFloatSpot("g1", side);
+    expect(readFloatSpot("g1")?.shut).toBeUndefined();
+    // Anywhere but the chat's place there is nothing to keep shut: docked, floating free, or in a tile.
+    writeFloatSpot("g2", { floating: false, fx: 0, fy: 0, w: 440, h: 0, shut: true });
+    expect(readFloatSpot("g2")?.shut).toBeUndefined();
+    writeFloatSpot("g3", { floating: true, fx: 0.2, fy: 0.2, w: 400, h: 300, shut: true });
+    expect(readFloatSpot("g3")?.shut).toBeUndefined();
+    writeFloatSpot("g4", { floating: true, fx: 0, fy: 0, w: 400, h: 300, zone: "left", shut: true });
+    expect(readFloatSpot("g4")?.shut).toBeUndefined();
+  });
+
   it("gives the one place there was before to the first space that asks, and to no other", () => {
     store.set(LEGACY, JSON.stringify({ floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 }));
     expect(readFloatSpot("g1")).toEqual({ floating: true, fx: 0.5, fy: 0, w: 440, h: 360, zone: "chat", cw: 420 });

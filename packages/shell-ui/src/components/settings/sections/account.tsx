@@ -28,6 +28,7 @@ import {
   usageLine,
 } from "../../../lib/account";
 import { useAsyncAction } from "../../../lib/action";
+import { connectPlan, useAiPlan } from "../../../lib/ai-plans/use-ai-plans";
 import { useAppStore } from "../../../store";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -36,6 +37,7 @@ import { Note } from "../../ui/note";
 import { ConfirmDialog } from "../dialogs";
 import { Block, Group, LoadFailed, OneTimeSecret, Page, Row, Unavailable, useLoadFailure, useUnavailable } from "../parts";
 import { shellApi } from "../../../api";
+import { ContinueWithChatGpt } from "./ai-plan";
 
 export function AccountPage() {
   // W12, the guard this page never got: `getAccount` IS probed by the
@@ -333,6 +335,7 @@ function Enrolled() {
 
       {enrolled ? null : <EnrollCard onEnrolled={setEnrollCode} />}
       {enrolled ? <ModelUsageCard /> : null}
+      {enrolled ? <PlanInvite /> : null}
       {enrolled ? <IMessageCard /> : null}
       {enrollCode === null ? null : (
         <Group
@@ -373,6 +376,37 @@ function imessageError(error: unknown): string {
     default:
       return "iMessage could not be updated. Check your connection and try again.";
   }
+}
+
+/**
+ * Beside the meter, the other way to pay for the chat (docs/ai-plans.md §5): an invitation to use a ChatGPT plan
+ * while none is connected, and where the chat stands once one is. Nothing on a host that keeps no plan sign-in.
+ */
+function PlanInvite() {
+  const plan = useAiPlan("chatgpt");
+  const openSettings = useAppStore((s) => s.openSettings);
+  if (plan === null) return null;
+  if (plan.status === "off" || plan.status === "connecting") {
+    return (
+      <Group>
+        <Row label="Use your ChatGPT plan in Pistachio" note="Run the agent's chat on the plan you already pay for, instead of the usage above.">
+          <ContinueWithChatGpt testId="account-plan-connect" onClick={() => connectPlan("chatgpt")} />
+        </Row>
+      </Group>
+    );
+  }
+  return (
+    <Group>
+      <Row
+        label={plan.inUse ? "The chat is using your ChatGPT plan" : plan.chosen ? "Your ChatGPT plan needs attention" : "Your ChatGPT plan is connected"}
+        note={plan.inUse ? "The agent's turns are not counted above. The small things around them still are." : plan.chosen ? "The chat is stopped until it is sorted out, or switched to Pistachio's models." : "The chat is on Pistachio's models, counted above."}
+      >
+        <Button variant="secondary" size="sm" data-testid="account-plan-open" onClick={() => openSettings("plan")}>
+          AI plan
+        </Button>
+      </Row>
+    </Group>
+  );
 }
 
 /**
@@ -856,6 +890,10 @@ function ChangePasswordCard() {
 
 function SignOutCard() {
   const signOut = useAppStore((state) => state.signOut);
+  // Where an account is required, signing out is also leaving the browser:
+  // the sign-in screen comes up in its place (docs/onboarding.md, "The
+  // account"), and the dialog has to say so before it is confirmed.
+  const required = useAppStore((state) => state.account.required);
   const [open, setOpen] = useState(false);
   const { busy, error, setError, run } = useAsyncAction();
 
@@ -868,7 +906,11 @@ function SignOutCard() {
       <Group
         title="Sign out of this Mac"
         note="Forgets the account here: keys, tokens, and every Profile's cookie jar. Your Profiles, tabs, and settings stay."
-        footer="The account and your other devices are untouched."
+        footer={
+          required
+            ? "The account and your other devices are untouched. Pistachio asks you to sign in again before it can be used on this Mac."
+            : "The account and your other devices are untouched."
+        }
         footerAction={
           <Button variant="error" size="sm" prefix={<LogOut aria-hidden="true" />} onClick={() => setOpen(true)} data-testid="account-sign-out">
             Sign out…
@@ -886,6 +928,7 @@ function SignOutCard() {
             "Deletes this Mac's account keys, device token, and Profile secrets.",
             "Clears every Profile's cookies, storage, and cache, then reloads its tabs.",
             "Stops sync; nothing more is published or pulled from this machine.",
+            ...(required ? ["Closes the browser on this Mac until you sign in again: Pistachio runs on an account."] : []),
           ]}
           doesNot={[
             "Does not delete your account, your Profiles, your tabs, or your settings.",

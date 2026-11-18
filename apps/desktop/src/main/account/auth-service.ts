@@ -16,12 +16,16 @@
  * device signs, and the cloud device's identity is pinned on first use so a
  * later substitution by control is refused until a person confirms it (D6).
  *
- * A Mac nobody has signed in on is not accountless (docs/anonymous-
- * accounts.md): `ensureAnonymous` has control make an anonymous account with
- * this Mac as its one device, so the models work — metered and bounded — from
- * the first launch. That account holds no keys and syncs nothing. Signing UP
- * upgrades it in place (same user, same device token); signing IN to an
- * existing account folds it into that one, device included. Either way
+ * An account is required to use Pistachio (docs/onboarding.md, "The
+ * account"), so a Mac nobody has signed in on holds nothing and is asked to
+ * sign in. Anonymous accounts (docs/anonymous-accounts.md) are what stood
+ * there before, and remain for a development run that asks for them
+ * (`anonymousAccounts`): `ensureAnonymous` has control make an account with
+ * this Mac as its one device, so the models work — metered and bounded —
+ * signed out. That account holds no keys and syncs nothing. A Mac that still
+ * holds one, from then or from such a run, keeps it only to bring it along:
+ * signing UP upgrades it in place (same user, same device token); signing IN
+ * to an existing account folds it into that one, device included. Either way
  * `enroll` finds the device token already here and only has keys left to do.
  *
  * Nothing here touches the network under PISTACHIO_E2E: index.ts never
@@ -110,8 +114,9 @@ export interface AuthServiceDeps {
   kdfIterations?: number;
   /**
    * Make an anonymous account whenever nobody is signed in
-   * (docs/anonymous-accounts.md). Off unless asked for, so a service built
-   * for a test makes no call the test did not script.
+   * (docs/anonymous-accounts.md), and let the models run under it. Off
+   * unless asked for — a development run's switch — and with it off this Mac
+   * has to be signed in (`AccountState.required`).
    */
   anonymousAccounts?: boolean;
   /** The clock behind the anonymous retry backoff; tests inject it. */
@@ -220,12 +225,17 @@ export class AuthService {
 
   /**
    * Whether the models can be reached: this Mac holds a device token, a
-   * signed-in account's or an anonymous one's. Everything else an account
-   * brings (sync, the vault, the cloud browser) still asks `enrolled()`.
+   * signed-in account's or — where anonymous accounts are on — an anonymous
+   * one's. Everything else an account brings (sync, the vault, the cloud
+   * browser) still asks `enrolled()`.
    */
   modelsAvailable(): boolean {
     const enrollment = this.#deps.store.enrollment();
-    return enrollment.state !== "unenrolled" && enrollment.token !== null && !this.#revoked;
+    if (enrollment.state === "unenrolled" || enrollment.token === null || this.#revoked) return false;
+    // With anonymous accounts off an account is required, and a token left
+    // from before it was is not a way round that: it is kept only to be
+    // upgraded or folded into the account that signs in (`#anonymous`).
+    return enrollment.state !== "anonymous" || this.#deps.anonymousAccounts === true;
   }
 
   /**
@@ -326,6 +336,7 @@ export class AuthService {
     const pin = store.cloudDevicePin();
     return {
       state: enrollment.state,
+      required: this.#deps.anonymousAccounts !== true,
       email: enrollment.email,
       userId: enrollment.userId,
       deviceId: store.encryptionAvailable ? store.deviceId : null,
@@ -705,8 +716,10 @@ export class AuthService {
 
   /* -------------------------------- internals -------------------------------- */
 
+  /** This Mac holds an anonymous account's token, whether or not the models still run under it: one to upgrade or fold in. */
   #anonymous(): boolean {
-    return this.#deps.store.enrollment().state === "anonymous" && this.modelsAvailable();
+    const enrollment = this.#deps.store.enrollment();
+    return enrollment.state === "anonymous" && enrollment.token !== null && !this.#revoked;
   }
 
   async #anonymousOnce(retryOnConflict: boolean): Promise<{ userId: string; token: string }> {

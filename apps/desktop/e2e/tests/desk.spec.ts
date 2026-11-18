@@ -559,19 +559,21 @@ test.describe.serial("a space's desk, from its first window on", { tag: ["@desk"
     await expect(nub).toHaveAttribute("data-hovered", "");
     expect(await notchView(app)).not.toBeNull();
     await expectLiveIn(app, shell, live[bottomId]!, bottomId);
-    // A press there lets out the menu: the page under it gives way, and the view goes.
+    // A press there lets out the menu, which the view draws too (2026-11-17: until then the page under it gave way,
+    // and the view went): the page stays live under it, the view over it — its box now the droplets' fan.
     await notchMouse(app, "mouseDown", onNub.x, onNub.y);
     await notchMouse(app, "mouseUp", onNub.x, onNub.y);
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
-    await expect.poll(() => notchView(app)).toBeNull();
-    // (The pointer is over the shell's nub now, where the view was; then it goes, and Escape puts the menu back.)
-    await shell.mouse.move(overPage.x + onNub.x, overPage.y + onNub.y);
+    await expect.poll(async () => (await notchView(app))?.height ?? 0).toBeGreaterThanOrEqual(132);
+    await expectLiveIn(app, shell, live[bottomId]!, bottomId);
+    // (The pointer goes from it, and Escape puts the menu back.)
+    await notchMouse(app, "mouseLeave", -1, -1);
     await awayFromDock();
     await shell.keyboard.press("Escape");
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
     await expect(nub).not.toHaveAttribute("data-hovered", "");
-    // Settled over the live page again, the view is back over it.
-    await expect.poll(() => notchView(app), { timeout: 5_000 }).not.toBeNull();
+    // Its droplets back in it, the view is the nub's own box again, over the page that was live throughout.
+    await expect.poll(async () => (await notchView(app))?.height ?? null, { timeout: 5_000 }).toBe(overPage.height);
     // (The pointer that came onto the view leaves it, as a person's does: a view that never heard it go would
     // still have it when it next shows, and swell the nub.)
     await notchMouse(app, "mouseLeave", -1, -1);

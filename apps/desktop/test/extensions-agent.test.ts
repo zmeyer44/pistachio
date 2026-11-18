@@ -17,7 +17,8 @@ import { buildPistachio, type PistachioWire } from "@pistachio/extension-api/run
 import type { ExtEventMessage } from "@pistachio/extension-api/wire";
 import type { ExtensionInfo } from "@pistachio/shell-contracts/extensions";
 import { extensionToolName } from "@pistachio/agent-runtime";
-import { agentToolSpecs, callAgentTool, DraftFolders, parseAuthorMarker, type AgentExtensionView } from "../src/main/extensions/agent";
+import { agentToolSpecs, callAgentTool, DraftFolders, draftRuntimeRefusal, parseAuthorMarker, type AgentExtensionView } from "../src/main/extensions/agent";
+import { buildOutcome, extensionListView } from "../src/main/pistachio-agent";
 import { ExtensionScope } from "../src/main/extensions/scope";
 import { Ledger, type LedgerLine } from "../src/main/extensions/ledger";
 import { EXTENSION_ID, manifestOf, recordOf } from "./extensions-harness";
@@ -461,5 +462,100 @@ describe("an author turn in the service", () => {
     expect(infoOf(service, WORD_COUNTER.id)?.pending).toBeNull();
     expect(service.agentTools("profile-a")).toHaveLength(1);
     // (Four seconds of a real folder watcher's waits on a quiet machine: more than the default five under a full run.)
+  }, 20_000);
+});
+
+/* ------------------------------ a build commissioned in a conversation ------------------------------ */
+
+const NIGHT_DESK = {
+  api: 1,
+  id: "dev.local.night-desk",
+  name: "Night desk",
+  version: "1.0.0",
+  description: "A deep green backdrop behind every space.",
+  permissions: ["theme"],
+  worker: { type: "web", main: "worker.js" },
+};
+const NIGHT_WORKER = (accent: string): string =>
+  `await pistachio.runtime.ready;\npistachio.runtime.onInstalled(() => pistachio.theme.set({ backdrop: { color: "#0b3d2e" }, colors: { accent: "${accent}" } }));\n`;
+
+describe("a draft a build writes (docs/agent-pistachio.md §4)", () => {
+  it("is main's to hand its own builder: taken at once, with no token to carry", async () => {
+    const folder = join(mkdtempSync(join(tmpdir(), "pistachio-ext-build-")), "night-desk");
+    mkdirSync(folder, { recursive: true });
+    const drafts = new DraftFolders({ settleMs: 0 });
+    // One the Bar made waits for the turn that carries its token; one main adopts does not.
+    const made = drafts.add(folder);
+    expect(drafts.folderOf(made.slug)).toBeNull();
+    await expect(drafts.write(made.slug, "pistachio.json", "{}")).rejects.toThrow("is not a draft folder this turn may write");
+    expect(drafts.adopt(folder)).toBe("night-desk");
+    expect(drafts.folderOf("night-desk")).toBe(folder);
+    await expect(drafts.write("night-desk", "pistachio.json", JSON.stringify(NIGHT_DESK))).resolves.toMatchObject({ path: "pistachio.json" });
+    // …and the token it was first given claims nothing any more.
+    expect(drafts.claim(made.slug, made.token)).toBeNull();
+    expect(drafts.folderOf("elsewhere")).toBeNull();
+  });
+
+  it("refuses at the save an accent that theme.set would reject once the person had turned it on", async () => {
+    expect(draftRuntimeRefusal("worker.js", NIGHT_WORKER("#79b8ff"))).toContain("the accent #79b8ff is too light: 2.0:1 against Pistachio's light ground");
+    expect(draftRuntimeRefusal("worker.js", NIGHT_WORKER("#101112"))).toContain("is too dark");
+    expect(draftRuntimeRefusal("worker.js", NIGHT_WORKER("#5b8def"))).toBeNull();
+    expect(draftRuntimeRefusal("src/theme.ts", 'const theme = { colors: { "accent": \'#ffffff\' } };')).toContain("too light");
+    // Only where an accent is written out, and only in code: a picture's fill and a note about colours are not one.
+    expect(draftRuntimeRefusal("field.svg", '<rect fill="#ffffff" accent="#ffffff"/>')).toBeNull();
+    expect(draftRuntimeRefusal("worker.js", 'const paper = "#ffffff";')).toBeNull();
+    const { drafts, slug, token, folder } = draftOf();
+    drafts.claim(slug, token);
+    await expect(drafts.write(slug, "worker.js", NIGHT_WORKER("#79b8ff"))).rejects.toThrow("theme.set would reject it once the extension runs");
+    expect(readdirSync(folder)).not.toContain("worker.js");
+    await expect(drafts.write(slug, "worker.js", NIGHT_WORKER("#5b8def"))).resolves.toMatchObject({ path: "worker.js" });
+  });
+});
+
+describe("a build in the service", () => {
+  it("makes a folder main's builder writes, which lands waiting; lists it with its slug; changes it later, paused", async () => {
+    const { service, devFolder, settings } = makeService();
+    expect(service.agentExtensions()).toEqual([]);
+
+    // A new one: a folder of the dev folder (Developer mode on from now), the builder's to write at once.
+    const made = service.agentDraft({ name: "Night desk", extension: null });
+    expect(made).toEqual({ slug: "night-desk", created: true });
+    expect(settings.developerMode).toBe(true);
+    expect(statSync(join(devFolder, "night-desk")).isDirectory()).toBe(true);
+    // Nothing written yet: nothing that loads, said so.
+    expect(buildOutcome(await service.agentOutcome("night-desk")).errors).toEqual(["Nothing that loads was written: there is no pistachio.json Pistachio could read."]);
+
+    const host = service.authorHost;
+    service.setBuilding("night-desk", true);
+    await host.write("night-desk", "pistachio.json", JSON.stringify(NIGHT_DESK, null, 2));
+    await host.write("night-desk", "worker.js", NIGHT_WORKER("#1f8a4c"));
+    await vi.waitFor(() => expect(infoOf(service, NIGHT_DESK.id)?.status).toBe("needs-approval"), { timeout: 5_000 });
+    expect(infoOf(service, NIGHT_DESK.id)?.drafting).toBe(true);
+    service.setBuilding("night-desk", false);
+    expect(infoOf(service, NIGHT_DESK.id)?.drafting).toBeUndefined();
+
+    // What the build came to: it loads and waits, with the sheet's own lines — never on by itself.
+    const outcome = buildOutcome(await service.agentOutcome("night-desk"));
+    expect(outcome).toMatchObject({ id: NIGHT_DESK.id, title: "Night desk", slug: "night-desk", waiting: true, errors: [] });
+    expect(outcome.asks).toEqual(["Changes the backdrop and accent colour of your spaces."]);
+    expect(infoOf(service, NIGHT_DESK.id)?.enabled).toBe(false);
+
+    // Listed for the agent with the slug a later build takes.
+    const listed = service.agentExtensions().map(({ info, slug }) => extensionListView(info, slug));
+    expect(listed).toEqual([expect.objectContaining({ id: NIGHT_DESK.id, name: "Night desk", state: "waiting for the person to turn it on", slug: "night-desk" })]);
+
+    // The person turns it on; a later build — by its slug, or its id — writes to the same folder, and it lands paused.
+    await approve(service, NIGHT_DESK.id);
+    expect(infoOf(service, NIGHT_DESK.id)?.pending).toBeNull();
+    expect(service.agentDraft({ name: "Night desk", extension: NIGHT_DESK.id })).toEqual({ slug: "night-desk", created: false });
+    expect(service.agentDraft({ name: "Night desk", extension: "night-desk" })).toEqual({ slug: "night-desk", created: false });
+    await host.write("night-desk", "worker.js", NIGHT_WORKER("#2a9d5c"));
+    expect(infoOf(service, NIGHT_DESK.id)).toMatchObject({ status: "paused", pending: { changedByAgent: true } });
+    const changed = buildOutcome(await service.agentOutcome("night-desk"));
+    expect(changed).toMatchObject({ id: NIGHT_DESK.id, waiting: true, errors: [] });
+    expect(extensionListView(infoOf(service, NIGHT_DESK.id)!, "night-desk").state).toBe("paused: waiting for the person to approve what you changed");
+
+    // One that is not there, or not a build's to change, is refused in a sentence.
+    expect(() => service.agentDraft({ name: "Dark reader", extension: "dark-reader" })).toThrow('There is no extension "dark-reader" that a build can change.');
   }, 20_000);
 });

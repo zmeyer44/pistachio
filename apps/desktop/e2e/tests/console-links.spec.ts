@@ -7,7 +7,7 @@ import type { PistachioApi } from "@pistachio/shell-contracts/ipc";
 import { shellReady } from "./windows";
 import { launchApp } from "./app";
 import { captureShell, pageAt } from "./agent-harness";
-import { pressNubButton, settled } from "./desk-harness";
+import { pressNubButton, selectTab, settled, snapshot } from "./desk-harness";
 
 /**
  * The chat around a conversation, on one launch — the desk's, the desktop's
@@ -250,6 +250,14 @@ test.describe.serial("the chat's feedback and links", { tag: ["@glance", "@agent
     await expect.poll(() => tabUrls(shell)).toEqual([OWNER_URL, PREVIEW_URL]);
     await expect(page).toHaveCount(0);
     await expect(shell.getByTestId("glance-overlay")).toHaveCount(0);
+
+    // (The tab that link opened is another of Home's, and no chat was ever opened beside it: the chat stayed with the
+    // tab it is up beside — since 2026-11-17 a change of tab opens no chat. Back to that tab, it is as it was left.)
+    await expect(link).toHaveCount(0);
+    const owner = (await snapshot(shell)).tabs.find((tab) => tab.url === OWNER_URL)!.id;
+    await selectTab(shell, owner);
+    await settled(shell, app);
+    await expect(link).toBeVisible();
 
     // ⌘-click asks for a real tab, as anywhere else in a browser.
     await link.click({ modifiers: ["Meta"] });

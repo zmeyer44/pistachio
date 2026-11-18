@@ -547,7 +547,9 @@ export type ShellCommand =
    * An extension's toast (`pistachio.ui.toast`) in the notice stack; with an action, its button is an
    * `extensions({ type: "statusAction", id, action, source: "toast" })`.
    */
-  | { type: "extensionToast"; id: string; message: string; action: { id: string; title: string } | null };
+  | { type: "extensionToast"; id: string; message: string; action: { id: string; title: string } | null }
+  /** The extensions page (`pistachio://extensions/`): the tab showing it, or a new one — the agent's `pistachio_open` (docs/agent-pistachio.md §3). */
+  | { type: "openExtensions" };
 
 /** A command's optional space (tab group) id: absent, or a string of a sane length. */
 function optionalGroupId(value: unknown): boolean {
@@ -587,6 +589,7 @@ export function isShellCommand(value: unknown): value is ShellCommand {
     case "closeLiveView":
     case "showUpdate":
     case "openLiveCard":
+    case "openExtensions":
       return true;
     case "openLiveView": {
       const runId = (value as { runId?: unknown }).runId;

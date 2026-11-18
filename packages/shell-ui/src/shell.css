@@ -6868,6 +6868,14 @@ button.extension-section-body:focus-visible {
   animation: desk-bar-in 300ms cubic-bezier(0.22, 1, 0.36, 1) 120ms backwards;
   transition: opacity 200ms ease;
 }
+/* Over a live page main's notch view draws the nub's menu (NotchApp, 2026-11-17): the shell's stands in place unseen —
+   for its droplets' tooltips, and the keys — since what it paints would show through the view's droplets once a tooltip
+   had made the page under them a still. (Opacity, not visibility: it keeps the pointer and the keyboard as it was.) */
+.desk-nub[data-veiled] > .desk-nub-paint,
+.desk-nub[data-veiled] > .desk-nub-face,
+.desk-nub[data-veiled] > .desk-nub-menu {
+  opacity: 0;
+}
 /* What is painted of it (DeskNub's NubPaint): the nub's own outline, filled while its droplets are out, and the goo
    they pinch off from — clipped to the desk's corner, so neither the fill nor its shadow reaches the gutter. */
 .desk-nub-paint {
@@ -7230,8 +7238,7 @@ body[data-chrome-view="notch-picture"] {
   display: none;
 }
 /* The view's box in the corner is the nub's (the clip takes the pointer only within its outline) — the rest, drawn
-   out along the foot, its lane, where the extensions' pills lie; its face sits where the shell's does, moved with the
-   swell. */
+   out along the foot, its lane, where the extensions' pills lie. */
 .desk-notch-view-hit {
   position: absolute;
   inset: 0 0 0 auto;
@@ -7243,17 +7250,45 @@ body[data-chrome-view="notch-picture"] {
   cursor: pointer;
   outline: none;
 }
-.desk-notch-view-face {
-  position: absolute;
-  display: grid;
-  width: 36px;
-  height: 36px;
-  margin: -18px 0 0 -18px;
-  place-items: center;
+/* The nub itself in the view, as the shell draws its own (NotchApp's DeskNub, moved by its own nub-motion): its face
+   and mark where the shell's are, and — its menu out — the nub out of the corner and its droplets fanned over the
+   page, past the ground's cut. Its box is the nub's own, its bottom-right corner the view's (the shell's stands 8px
+   past its lane's gutter to reach the desk's corner; here the view's corner is the desk's). It does not come in as
+   the shell's does: the view comes and goes with the pages under it. */
+.desk-notch-view-nub {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
   pointer-events: none;
 }
-.desk-notch-view-face > .desk-nub-mark {
-  margin: 0;
+.desk-notch-view-nub > .desk-nub,
+.desk-notch-view[data-picture] > .desk-nub {
+  right: 0;
+  animation: none;
+}
+/* In the corner the pointer is the ground's (.desk-notch-view-hit: the whole of the nub's outline, not its mark's
+   circle alone); out of it for the menu, the nub is a button of its own — the menu's close. */
+.desk-notch-view-nub .desk-nub-face {
+  pointer-events: none;
+}
+.desk-notch-view-nub .desk-nub-face[aria-expanded="true"] {
+  pointer-events: auto;
+}
+/* The nub's picture (the glass's, offscreen) is what of the nub lies in the corner: its droplets' buttons are the
+   view's own page's, beside the glass. */
+.desk-notch-view[data-picture] .desk-nub-menu {
+  display: none;
+}
+/* The view's box beside the droplets while they are out — the fan's own square, over the page: a press there is a press
+   elsewhere (NotchApp's `away`), which puts the menu away as one on the page does. Under the nub and its droplets. */
+.desk-notch-view-away {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+.desk-notch-view-away[data-open] {
+  pointer-events: auto;
 }
 /* The parked windows over a live page (ShelfApp, main's "shelf" view): each as the shell draws it at rest in the
    shelf — its card, its title bar dimmed as a window not in use's, the picture of its page — cut off by the view's

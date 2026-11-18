@@ -51,6 +51,9 @@ import { Screenshots, screenshotFolder } from "./screenshots";
 import { LocalApps } from "./local-apps";
 import { installIpcGate, type GateIpc } from "./ipc-gate";
 import { ExtensionService } from "./extensions/service";
+import { AiPlanService } from "./ai-plans/service";
+import { AI_PLANS_FILE, AiPlanStore, type PlanCipher } from "./ai-plans/store";
+import { parseAiPlanRequest } from "@pistachio/shell-contracts/ai-plans";
 import { calendarAnswer, type CalendarAnswer, type SignalSources } from "./extensions/signals";
 import { extensionBrowserHost } from "./extensions/browser-host";
 import { EXTENSION_SCHEME_PRIVILEGES } from "./extensions/protocol";
@@ -74,6 +77,8 @@ import { SHIELDS_COSMETICS_CHANNEL, SHIELDS_FRAME_CHANNEL, type ShieldsDomFeatur
 import { watchtowerRequestSchema } from "@pistachio/shell-contracts/watchtower";
 import { ReaderStore } from "./reader-store";
 import type { RunExtensions } from "./run-controller";
+import type { PistachioToolHost } from "@pistachio/agent-runtime";
+import { buildOutcome, extensionListView, pageCommand, PISTACHIO_PAGES, planSettingsChange, readSettings, settingsSections } from "./pistachio-agent";
 import { RunHub } from "./run-hub";
 import { createMemoryEmbedder } from "./memory-engine";
 import { aiProviderStatus, configuredBriefModel, configuredIntentModel, configuredTidyModel, setAiSession, workspaceEnvironmentKeys } from "./model-provider";
@@ -109,7 +114,7 @@ import { SidebarController } from "@pistachio/shell-contracts/sidebar-controller
 import { SidebarStore } from "./sidebar-store";
 import { SpaceStore } from "./space-store";
 import { TabSessionStore } from "./tab-session-store";
-import { DeviceStore } from "./account/device-store";
+import { DeviceStore, safeStorageCipher } from "./account/device-store";
 import { AuthService } from "./account/auth-service";
 import {
   resolveControlUrl,
@@ -124,6 +129,7 @@ import { featureHandlers, installFeatureHandlers } from "./feature-handlers";
 import { WorkspaceRecords } from "./sync/records";
 import { DeskBridge } from "./desk-bridge";
 import { DeskGlass } from "./desk-glass";
+import { modifierKeysFrom, osModifierKeys, type ModifierKeys } from "./os-keys";
 import { DeskPipPress } from "./desk-pip-press";
 import { liveBrowser } from "./live/live-browser";
 import { liveControl, LiveUnavailableError } from "./live/live-control";
@@ -553,6 +559,13 @@ let touchIdConfigured = false;
  * no account.json, no control, no hub, no gateway, no proxy.
  */
 const featureEnabled = process.env["PISTACHIO_E2E"] !== "1";
+/**
+ * A spec's stand-in for "an account is required" (docs/onboarding.md, "The account"): under PISTACHIO_E2E no account
+ * layer is built, so nothing would ask for one and every spec opens on the browser. With PISTACHIO_E2E_ACCOUNT=required
+ * the state main reports says a sign-in is owed and could work, and the spec answers the account channels itself
+ * (e2e/tests/onboarding.spec.ts).
+ */
+const e2eAccountRequired = !featureEnabled && process.env["PISTACHIO_E2E_ACCOUNT"] === "required";
 let deviceStore: DeviceStore | null = null;
 let auth: AuthService | null = null;
 let egress: EgressService | null = null;
@@ -577,6 +590,106 @@ let liveShare: LiveShareService | null = null;
 let liveHost: LiveHostWindow | null = null;
 /** Pistachio extensions (docs/extensions.md): the registry, their views, the dev folder — app-wide; the window attaches. */
 let extensions: ExtensionService | null = null;
+/** The person's own AI plan, used for the chat (docs/ai-plans.md): the sign-in, its state, the model a turn is handed. */
+let aiPlans: AiPlanService | null = null;
+
+/**
+ * A spec's stand-in for OpenAI (e2e/tests/ai-plan.spec.ts): under PISTACHIO_E2E, `PISTACHIO_E2E_AI_PLAN` is the
+ * origin of a local server that plays the sign-in service and the Responses API. Never read outside a test run.
+ */
+function e2eAiPlanOrigin(): string | null {
+  if (process.env["PISTACHIO_E2E"] !== "1") return null;
+  const origin = process.env["PISTACHIO_E2E_AI_PLAN"]?.trim();
+  return origin === undefined || origin === "" ? null : origin.replace(/\/+$/, "");
+}
+
+/** What a test run opened "in the person's browser" instead of opening one: read by a spec through `app.evaluate`. */
+const e2eOpenedExternally: string[] = [];
+(globalThis as { __pistachioE2EOpened?: string[] }).__pistachioE2EOpened = e2eOpenedExternally;
+
+function startAiPlans(): AiPlanService {
+  const testing = process.env["PISTACHIO_E2E"] === "1";
+  const origin = e2eAiPlanOrigin();
+  // (A test run seals nothing in the Mac's keychain, and asks it for nothing.)
+  const plain: PlanCipher = { available: () => true, encrypt: (text) => Buffer.from(text, "utf8").toString("base64"), decrypt: (sealed) => Buffer.from(sealed, "base64").toString("utf8") };
+  const service = new AiPlanService({
+    store: new AiPlanStore(join(app.getPath("userData"), AI_PLANS_FILE), testing ? plain : safeStorageCipher()),
+    onChange: (snapshot) => {
+      if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.aiPlansChanged, snapshot);
+    },
+    openExternal: async (url) => {
+      if (!testing) {
+        await shell.openExternal(url);
+        return;
+      }
+      // A test run opens no browser: the address is kept for the spec, and a sign-in is walked the way a browser
+      // would walk it — the stand-in's authorize page answers with the redirect to the loopback callback.
+      e2eOpenedExternally.push(url);
+      if (origin !== null && url.startsWith(`${origin}/`)) {
+        const page = await fetch(url, { redirect: "manual" });
+        const next = page.headers.get("location");
+        if (next !== null) void fetch(next).catch(() => undefined);
+      }
+    },
+    focus: () => {
+      if (shellWindow === null || shellWindow.isDestroyed()) return;
+      if (shellWindow.isMinimized()) shellWindow.restore();
+      shellWindow.show();
+      app.focus({ steal: true });
+    },
+    ...(origin === null
+      ? {}
+      : {
+          endpoints: { issuer: origin, authorize: `${origin}/api/accounts/authorize`, token: `${origin}/api/accounts/oauth/token`, api: `${origin}/v1` },
+          discoveryUrl: `${origin}/.well-known/openid-configuration`,
+        }),
+  });
+  service.start();
+  return service;
+}
+
+/**
+ * Pistachio itself as the agent reaches it (docs/agent-pistachio.md; the rules are ./pistachio-agent.ts): the
+ * settings file read and — what the catalog leaves the agent — changed through the store, so every view hears it as
+ * it hears the Settings page; the app's own pages, shown by the shell; and the extensions, listed from the snapshot
+ * and built into a draft folder the service hands out.
+ */
+function pistachioForRuns(): PistachioToolHost {
+  const service = extensions;
+  return {
+    settings: {
+      sections: () => settingsSections(),
+      read: (section) => readSettings(requireSettings().get(), section),
+      change: (changes, context) => {
+        const plan = planSettingsChange(requireSettings().get(), changes, context);
+        if (plan.changed.length > 0) requireSettings().update(plan.patch);
+        return plan.changed;
+      },
+    },
+    pages: () => [...PISTACHIO_PAGES],
+    open: async (page) => {
+      const target = pageCommand(page);
+      if (target === null) throw new Error(`There is no page "${page}".`);
+      if (shellWindow === null || shellWindow.isDestroyed()) throw new Error("Pistachio's window is not open.");
+      sendShellCommand(target.command);
+      return target.opened;
+    },
+    ...(service === null
+      ? {}
+      : {
+          extensions: {
+            list: () => service.agentExtensions().map(({ info, slug }) => extensionListView(info, slug)),
+            builder: {
+              open: async (input) => service.agentDraft(input),
+              author: service.authorHost,
+              guide: () => service.authorGuide(),
+              drafting: (slug, on) => service.setBuilding(slug, on),
+              outcome: async (slug) => buildOutcome(await service.agentOutcome(slug)),
+            },
+          },
+        }),
+  };
+}
 
 /** The extension service as the agent reaches it (docs/extensions.md §6.2 "Agent tools", §8): tools, and the author turn's drafts. */
 function extensionsForRuns(service: ExtensionService): RunExtensions {
@@ -1522,6 +1635,26 @@ function macSignals(): SignalSources {
 }
 
 /**
+ * The modifier keys as the OS has them now, for the desk's grab key and snap key (main/os-keys.ts): what the keyboard
+ * last said of them is only believed while the OS agrees. Under PISTACHIO_E2E a spec's keys are Playwright's — sent to
+ * a page, never pressed — so the OS would say none is ever down: it is not asked there. A spec that is about the two
+ * disagreeing names a file (PISTACHIO_E2E_MODIFIERS) holding what the OS is to be taken to say, `{"shift": false, …}`;
+ * until the file is there, nothing is known (null), and the key events stand.
+ */
+const deskModifiersNow: (() => ModifierKeys | null) | null = (() => {
+  if (process.env["PISTACHIO_E2E"] !== "1") return osModifierKeys();
+  const file = process.env["PISTACHIO_E2E_MODIFIERS"];
+  if (file === undefined || file === "") return null;
+  return () => {
+    try {
+      return modifierKeysFrom(JSON.parse(readFileSync(file, "utf8")));
+    } catch {
+      return null;
+    }
+  };
+})();
+
+/**
  * A spec's signals (docs/primitives.md §3.6): under PISTACHIO_E2E, the file PISTACHIO_E2E_SIGNALS names holds what
  * main reads — `{ battery, online, displays, idleSeconds, locked, calendar }`, `calendar` the events (`{ title, start, end }`
  * in ms; every Profile's the same) or left out for a calendar that is not connected — read afresh at every look.
@@ -1645,12 +1778,14 @@ function accountState(): AccountState {
   return (
     auth?.state() ?? {
       state: "unenrolled",
+      // An account is owed even where its services could not start: the sign-in screen says why it cannot be given.
+      required: featureEnabled || e2eAccountRequired,
       email: null,
       userId: null,
       deviceId: null,
       deviceName: "",
       controlUrl: "",
-      encryptionAvailable: false,
+      encryptionAvailable: e2eAccountRequired,
       cloudDevicePin: null,
       cloudDeviceChanged: null,
       revoked: false,
@@ -1659,6 +1794,15 @@ function accountState(): AccountState {
       error: featureEnabled && deviceStore === null ? "Account features could not start on this Mac." : null,
     }
   );
+}
+
+/**
+ * Whether the sign-in screen stands first (the shell's `accountGated`, lib/account.ts): an account is required and
+ * this Mac is not signed in to one — nobody signed in, an account made but this Mac not enrolled, or a revoked device.
+ */
+function signInOwed(): boolean {
+  const state = accountState();
+  return state.required && (state.revoked || state.state !== "enrolled");
 }
 
 function egressStatus(): EgressStatus {
@@ -1946,8 +2090,10 @@ async function initializeAccountServices(): Promise<void> {
     spaces: requireSpaces(),
     controlUrl: resolveControlUrl(process.env, app.isPackaged),
     hubUrlPin: process.env["PISTACHIO_HUB_URL"] ?? null,
-    // `PISTACHIO_ANONYMOUS=0` keeps a signed-out Mac accountless, as before.
-    anonymousAccounts: process.env["PISTACHIO_ANONYMOUS"] !== "0",
+    // An account is required (docs/onboarding.md, "The account"), so nobody is given an anonymous one. A development
+    // run can still ask for it (`PISTACHIO_ANONYMOUS=1`, never in a packaged app): the models then work signed out and
+    // no sign-in is owed, which is what the specs that host a live share run on.
+    anonymousAccounts: !app.isPackaged && process.env["PISTACHIO_ANONYMOUS"] === "1",
     publish: publishAccount,
     publishDevices,
     onEnrolled: () => {
@@ -1991,8 +2137,8 @@ async function initializeAccountServices(): Promise<void> {
   auth = authService;
   // Every model call the agent, memory, and read-aloud make goes to control
   // under this Mac's device token; there is no key on the device to set.
-  // Signed in or not: a Mac nobody signed in on holds an anonymous account's
-  // token (docs/anonymous-accounts.md), good for the models and nothing else.
+  // That is the signed-in account's — or, in a development run that asked
+  // for one, an anonymous account's (docs/anonymous-accounts.md).
   setAiSession({
     controlUrl: authService.controlClient().url,
     enrolled: () => authService.modelsAvailable(),
@@ -2753,6 +2899,7 @@ async function createWindow(): Promise<void> {
       onDeskShift: (held) => {
         if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskShift, held);
       },
+      ...(deskModifiersNow === null ? {} : { deskModifiersNow }),
       onDeskPageInput: (input) => {
         if (shellWindow !== null && !shellWindow.isDestroyed()) shellWindow.webContents.send(IPC.deskPageInput, input);
       },
@@ -2912,6 +3059,10 @@ async function createWindow(): Promise<void> {
     integrations: { hostsFor: (spaceId) => integrationService?.hostsFor(spaceId) ?? Promise.resolve([]) },
     // The person's extensions' tools in a turn, and the author turn's draft folders (docs/extensions.md §6.2, §8).
     ...(extensions === null ? {} : { extensions: extensionsForRuns(extensions) }),
+    // Pistachio itself: its settings, its own pages, its extensions listed and built (docs/agent-pistachio.md).
+    pistachio: pistachioForRuns(),
+    // The person's own AI plan, when the chat is on it (docs/ai-plans.md): asked as each turn begins.
+    ownModel: () => aiPlans?.turn() ?? null,
     // The agent's space tools (docs/primitives.md §2): the rail's spaces, and the away service's two verbs — read as each
     // is called, since the service starts once the session is restored, after this controller is made.
     spaces: {
@@ -4348,8 +4499,9 @@ function installIpc(): void {
     if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchInput(input)) return;
     if (shellWindow === null || shellWindow.isDestroyed()) return;
     // A press puts the keyboard in the Bar's field, which is the shell's — and one of the pill's buttons pressed, as the
-    // view draws them over a live page, leaves the keys the shell's, not this view's.
-    if (input === "press" || (typeof input === "object" && "bar" in input)) shellWindow.webContents.focus();
+    // view draws them over a live page, leaves the keys the shell's, not this view's. A droplet of the nub's menu
+    // pressed there too: the prompt's and the microphone's bring out the field, the keyboard in it.
+    if (input === "press" || (typeof input === "object" && ("bar" in input || "menu" in input))) shellWindow.webContents.focus();
     shellWindow.webContents.send(IPC.deskNotchInput, input);
   });
   ipcMain.on(IPC.deskShelfSet, (event, frame: unknown) => {
@@ -4748,6 +4900,15 @@ function installIpc(): void {
     if (extensions === null) throw new Error("Extensions are starting.");
     return extensions.request(request);
   });
+  // ── The person's own AI plan (docs/ai-plans.md) ───────────────────────────
+  // The shell's alone: a page never learns whether a plan is connected, nor starts a sign-in.
+  ipcMain.handle(IPC.aiPlans, (event, request: unknown) => {
+    shellOnly(event, "the AI plan");
+    if (aiPlans === null) throw new Error("The AI plan is starting.");
+    const parsed = parseAiPlanRequest(request);
+    if (parsed === null) throw new Error("That is not a request about the AI plan.");
+    return aiPlans.request(parsed);
+  });
   ipcMain.on(IPC.extensionPanelBounds, (event, bounds: unknown) => {
     if (!isShell(event.sender) || (bounds !== null && !isBounds(bounds))) return;
     extensions?.setPanelBounds(bounds as ContentBounds | null);
@@ -4858,12 +5019,14 @@ function installIpc(): void {
   // for a sender that is not the shell or a store that is not ready.
   ipcMain.on(IPC.launchState, (event) => {
     let firstRun = false;
+    let signedOut = false;
     try {
       firstRun = isShell(event.sender) && !requireSettings().get().onboarding.completed;
+      signedOut = isShell(event.sender) && signInOwed();
     } catch (error) {
       console.error("[onboarding] could not read launch state", error);
     }
-    event.returnValue = { firstRun } satisfies ShellLaunchState;
+    event.returnValue = { firstRun, signedOut } satisfies ShellLaunchState;
   });
   ipcMain.handle(IPC.onboardingComplete, async (event, input: unknown) => {
     if (!isShell(event.sender)) throw new Error("onboarding is shell-only");
@@ -5622,6 +5785,7 @@ app.whenReady().then(async () => {
     themeChanged: () => sendSettings?.(requireSettings().get()),
   });
   extensions.start();
+  aiPlans = startAiPlans();
   groupContexts = new GroupContextStore(app.getPath("userData"), { convert: macDocumentConverter() });
   deskConversations = new DeskConversationStore(app.getPath("userData"));
   // A context's file no context names any more is kept a day, as a note's picture is.

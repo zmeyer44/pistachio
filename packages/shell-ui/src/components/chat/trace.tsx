@@ -33,6 +33,7 @@ import {
   Puzzle,
   RotateCw,
   ScanText,
+  SlidersHorizontal,
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
@@ -116,6 +117,8 @@ function toolIcon(name: AgentToolCall["name"] | null): LucideIcon {
   if (name.startsWith("context.")) return Paperclip;
   // An extension's tool (its label is the extension's name) and the author turn's drafting (docs/extensions.md §6.2, §8).
   if (name.startsWith("ext.")) return Puzzle;
+  // Pistachio itself (docs/agent-pistachio.md): a setting read or changed, one of its own pages shown.
+  if (name.startsWith("settings.") || name.startsWith("app.")) return SlidersHorizontal;
   return Plug;
 }
 

@@ -119,9 +119,10 @@ test("a new web account walks the first run and lands in a furnished Space", { t
     await expect(wizard).toContainText("sealed under this account's keys and synced to your devices");
     await expect(wizard).toContainText("Settings → Memory");
     await expect(wizard).not.toContainText("this Mac");
-    // Four steps, and no "Or sign in" under the introduction: the person
-    // signed in on the way to this page (§14).
-    await expect(page.getByTestId("onboarding-sign-in")).toHaveCount(0);
+    // Four steps, not five: the account step a Mac opens on is never shown
+    // here, because the person signed in on the way to this page (§14).
+    await expect(wizard).toHaveAttribute("data-step", "about");
+    await expect(page.getByTestId("onboarding-account")).toHaveCount(0);
     await expect(page.getByTestId("onboarding-rail")).toContainText("Step 1 of 4");
     // Nothing native to raise the chrome over, so the reveal is honest at once.
     await expect(page.getByTestId("onboarding-ready")).toHaveAttribute("data-ready", "");

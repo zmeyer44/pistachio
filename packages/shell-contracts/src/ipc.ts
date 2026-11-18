@@ -91,6 +91,7 @@ import type {
 import type { SidebarCommand, SidebarState } from "./sidebar.js";
 import type { UpdateSnooze, UpdateState } from "./updates.js";
 import type { ExtensionRequest, ExtensionResponse, ExtensionsSnapshot } from "./extensions.js";
+import type { AiPlanRequest, AiPlanResponse, AiPlansSnapshot } from "./ai-plans.js";
 import type {
   ForkSpaceRequest,
   ForkSpaceResult,
@@ -493,9 +494,9 @@ export interface CloudDevicePin {
 
 /**
  * Whether a model can be reached. Every call goes through control's
- * `/v1/ai/*` under this Mac's device token, so this is "holds one": a
- * signed-in account's, or the anonymous account's a Mac nobody signed in on
- * is given (docs/anonymous-accounts.md). No key is involved.
+ * `/v1/ai/*` under this Mac's device token, so this is "holds one": the
+ * signed-in account's (or, in a development run that asked for one, an
+ * anonymous account's — docs/anonymous-accounts.md). No key is involved.
  */
 export interface AiProviderStatus {
   available: boolean;
@@ -506,13 +507,21 @@ export interface AiProviderStatus {
 /** Where this Mac stands with the account (§10.1). Published on `account:changed`. */
 export interface AccountState {
   /**
-   * `anonymous`: nobody is signed in, and control has made this Mac an
-   * anonymous account (docs/anonymous-accounts.md) so the models work —
-   * within a monthly allowance — without one. Everything an account brings
-   * beyond the models still waits on `enrolled`. Signing up from here keeps
-   * what the anonymous account has; it is the same account, upgraded.
+   * `anonymous`: nobody is signed in, and this Mac holds an anonymous
+   * account (docs/anonymous-accounts.md) — made in a development run that
+   * asked for one, or left from before an account was required. Signing up
+   * from here keeps what the anonymous account has; it is the same account,
+   * upgraded.
    */
   state: "unenrolled" | "anonymous" | "signed-up" | "enrolled";
+  /**
+   * Whether this Mac has to be signed in before the browser can be used
+   * (docs/onboarding.md, "The account"): until it is, the shell shows the
+   * sign-in screen and nothing else. True on a desktop. False where no
+   * account layer runs to sign in with (PISTACHIO_E2E), and in a development
+   * run on an anonymous account (PISTACHIO_ANONYMOUS=1).
+   */
+  required: boolean;
   email: string | null;
   userId: string | null;
   /** This device's one id (D24), or null before its keys could be kept. */
@@ -1289,6 +1298,12 @@ export interface ShellApi {
    */
   extensions(request: ExtensionRequest): Promise<ExtensionResponse>;
   onExtensions(listener: (snapshot: ExtensionsSnapshot) => void): () => void;
+  /**
+   * The person's own AI plan, used for the chat (./ai-plans.ts, docs/ai-plans.md): one request union and one
+   * snapshot, as extensions. The sign-in and its tokens are this Mac's; a host without them refuses the member.
+   */
+  aiPlans(request: AiPlanRequest): Promise<AiPlanResponse>;
+  onAiPlans(listener: (snapshot: AiPlansSnapshot) => void): () => void;
   onNotes(listener: (snapshot: NoteSnapshot) => void): () => void;
   /**
    * Rename a tab from the page drawn inside it: a note's title is known to
@@ -1601,6 +1616,12 @@ export interface NativeSurfaceApi {
 export interface ShellLaunchState {
   /** `!settings.onboarding.completed` as of this load: the wizard stands first. */
   firstRun: boolean;
+  /**
+   * An account is required and this Mac is not signed in to one
+   * (`AccountState.required`): the sign-in screen stands first, on the
+   * wizard's own ground.
+   */
+  signedOut: boolean;
 }
 
 /** The whole bridge the desktop preload exposes on the renderer global. */
@@ -2044,6 +2065,8 @@ export const IPC = {
   notesChanged: "pistachio:notes-changed",
   extensions: "pistachio:extensions",
   extensionsChanged: "pistachio:extensions-changed",
+  aiPlans: "pistachio:ai-plans",
+  aiPlansChanged: "pistachio:ai-plans-changed",
   extensionPanelBounds: "pistachio:extension-panel-bounds",
   /**
    * A tab preload's frame → main: what only the page knows of an extension's input subscription (the pressed
@@ -2243,6 +2266,7 @@ export const SHELL_METHOD_NAMES = allMethods([  "getSnapshot",
   "reports",
   "notes",
   "extensions",
+  "aiPlans",
   "setTabTitle",
 ]);
 
@@ -2270,6 +2294,7 @@ export const SHELL_EVENT_CHANNELS = allEvents([
   { member: "onBookmarks", channel: IPC.bookmarksChanged },
   { member: "onNotes", channel: IPC.notesChanged },
   { member: "onExtensions", channel: IPC.extensionsChanged },
+  { member: "onAiPlans", channel: IPC.aiPlansChanged },
   { member: "onBookmarkToast", channel: IPC.bookmarkToastChanged },
   { member: "onAccount", channel: IPC.accountChanged },
   { member: "onDevices", channel: IPC.devicesUpdated },

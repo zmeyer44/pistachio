@@ -42,6 +42,7 @@ import {
   NotebookPen,
   PanelTop,
   Puzzle,
+  Settings2,
   ShieldCheck,
   Square,
   X,
@@ -550,6 +551,7 @@ const FAMILY_ICON: Record<ToolFamily, typeof PanelTop> = {
   notes: NotebookPen,
   integration: Plug,
   extension: Puzzle,
+  app: Settings2,
 };
 
 /* ---------------------------------- folds --------------------------------- */

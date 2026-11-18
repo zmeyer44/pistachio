@@ -28,11 +28,13 @@ import { integrationOfToolName, isTerminalStatus, type AgentSubagent, type Agent
  * per-run scratchpad. Two families, because "Planning" and "Writing" are not
  * the same thing to watch.
  */
-export type ToolFamily = "browser" | "memory" | "reminder" | "bookmark" | "watchtower" | "note" | "notes" | "integration" | "extension";
+export type ToolFamily = "browser" | "memory" | "reminder" | "bookmark" | "watchtower" | "note" | "notes" | "integration" | "extension" | "app";
 
 export function toolFamily(name: AgentToolCall["name"]): ToolFamily {
   // An extension's tool, or the author turn's drafting (docs/extensions.md §6.2, §8): never a page.
   if (name.startsWith("ext.")) return "extension";
+  // Pistachio itself (docs/agent-pistachio.md): a setting read or changed, one of its own pages shown.
+  if (name.startsWith("settings.") || name.startsWith("app.")) return "app";
   if (name.startsWith("memory.")) return "memory";
   if (name.startsWith("reminder.")) return "reminder";
   if (name.startsWith("watchtower.")) return "watchtower";
@@ -66,8 +68,8 @@ export function currentFamily(run: Pick<RunSummary, "toolCalls">): ToolFamily | 
   return latest === undefined ? null : toolFamily(latest.name);
 }
 
-const FAMILY_NOUN: Record<ToolFamily, string> = { browser: "browser", memory: "memory", reminder: "reminders", bookmark: "bookmarks", watchtower: "saved pages", note: "notes", notes: "its own notes", integration: "connected apps", extension: "extensions" };
-const FAMILY_ACTION: Record<ToolFamily, string> = { browser: "browser action", memory: "memory update", reminder: "reminder change", bookmark: "bookmark change", watchtower: "archive lookup", note: "note change", notes: "notes update", integration: "connected-app call", extension: "extension call" };
+const FAMILY_NOUN: Record<ToolFamily, string> = { browser: "browser", memory: "memory", reminder: "reminders", bookmark: "bookmarks", watchtower: "saved pages", note: "notes", notes: "its own notes", integration: "connected apps", extension: "extensions", app: "Pistachio" };
+const FAMILY_ACTION: Record<ToolFamily, string> = { browser: "browser action", memory: "memory update", reminder: "reminder change", bookmark: "bookmark change", watchtower: "archive lookup", note: "note change", notes: "notes update", integration: "connected-app call", extension: "extension call", app: "Pistachio change" };
 
 function list(families: ToolFamily[]): string {
   const nouns = families.map((family) => FAMILY_NOUN[family]);
@@ -90,6 +92,7 @@ export function runHeadline(run: Pick<RunSummary, "toolCalls" | "status">): stri
       case "note": return "Writing";
       case "notes": return "Planning";
       case "integration": return "Working in your connected apps";
+      case "app": return "Changing Pistachio";
     }
   }
   return `Working with ${list(families)}`;
@@ -115,6 +118,7 @@ export function traceLabel(run: Pick<RunSummary, "toolCalls">): string {
       case "notes": return "Notes activity";
       case "integration": return "Connected-app activity";
       case "extension": return "Extension activity";
+      case "app": return "Pistachio activity";
     }
   }
   return "Activity";
@@ -132,6 +136,7 @@ export function workingText(run: Pick<RunSummary, "toolCalls">): string {
     case "notes": return "Updating notes…";
     case "integration": return "Working in your connected apps…";
     case "extension": return "Working with your extensions…";
+    case "app": return "Changing Pistachio…";
     case null: return "Thinking…";
   }
 }

@@ -7,11 +7,24 @@
  * is under it (DeskBar → main); the view is the box the nub may fill, its
  * bottom-right corner the desk's, cut to the nub's outline. The pointer on it
  * and a press go back to the shell's Bar, which swells the nub and opens its
- * menu as if the pointer were on it — and once what it opens has made the
- * page under it a still, this view goes.
+ * menu as if the pointer were on it.
+ *
+ * The menu is drawn here too (2026-11-17; DeskNotchFrame.menu): the nub let
+ * go of the corner, a button of its own, and its three droplets, over the
+ * page — which stays live and its own under them. Until then the menu was a
+ * cover: the page under it gave way to its still, this view went, and a press
+ * on that picture was a press on the window (dragged, it carried the window
+ * off). It is the shell's own nub drawn again (DeskNub, with its own
+ * NubMotion) in the view's box, which the shell grows to the droplets' fan
+ * while they are out: a droplet pressed here is the shell's pressed
+ * (`{ menu }`), the pointer onto one opens the shell's tooltip beside it
+ * (`{ hover }`), and a press in the box beside them is a press elsewhere
+ * (`away`), which puts the menu away as one on the page does. What the menu
+ * opens — the pill, the conversations — is a cover still, and once it has
+ * made the page under it a still, this view goes.
  *
  * The swell is drawn here too, read off the same clock as the shell's own
- * (DeskNotchFrame.swelling, nub-motion's swellAt): the view's box holds the
+ * (DeskNotchFrame.swelling, NubMotion's `follow`): the view's box holds the
  * nub swelled, so it only changes its outline as it swells, never its box.
  *
  * Elsewhere the nub is a hole down to the shell's ground; here a page lies
@@ -37,24 +50,36 @@
  * gives way to them: they are the notch's, not a cover.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DeskNotchFrame, DeskNotchInput } from "@pistachio/shell-contracts/desk";
 import { nativeApi } from "./api";
-import { DeskNubMark, NUB_BOX, NubPillClose, NubPillSide } from "./components/desk/DeskNub";
-import { laneAt, swellAt, swellDone } from "./components/desk/nub-motion";
+import { DeskNub, NUB_BOX, NubPillClose, NubPillSide } from "./components/desk/DeskNub";
+import type { NubMotion } from "./components/desk/nub-motion";
 import { StatusPillRow } from "./components/extensions/StatusPillRow";
-import { NUB_LANE_FOOT, NUB_LANE_INSET, nubBetween, nubFace, nubOutline } from "./lib/desk/geometry";
+import { NUB_LANE_FOOT, NUB_LANE_INSET, nubOutline, type NotchShape } from "./lib/desk/geometry";
 
 /** The pointer moving on the view says it is there at most this often. */
 const ENTER_REPEAT_MS = 100;
+/**
+ * A word about the menu older than this (ms) is where the menu already is: longer than its droplets take out of the
+ * nub or back into it. The view come up over a menu that has been out a while draws it out, at once.
+ */
+const MENU_SETTLED_MS = 600;
+
+/** The view has no pill: nothing for the nub's motion to grow one out of. */
+const NO_PILL = (): null => null;
 
 export function NotchApp({ picture = false }: { picture?: boolean }) {
   const [frame, setFrame] = useState<DeskNotchFrame | null>(null);
   const saidEnter = useRef(Number.NEGATIVE_INFINITY);
   const rootRef = useRef<HTMLDivElement>(null);
-  const faceRef = useRef<HTMLSpanElement>(null);
-  const markRef = useRef<HTMLSpanElement>(null);
   const maskRef = useRef<HTMLDivElement>(null);
+  const nubRef = useRef<HTMLDivElement>(null);
+  const faceRef = useRef<HTMLButtonElement>(null);
+  const motionRef = useRef<NubMotion | null>(null);
+  /** The frame as it is now, for what the nub's motion asks as it moves: the box its outline is drawn in, the desk's corner. */
+  const now = useRef(frame);
+  now.current = frame;
 
   useEffect(() => {
     const api = nativeApi();
@@ -75,33 +100,40 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
     };
   }, []);
 
-  // The nub as it swells or settles: its outline and its face, every frame until it is still.
-  useLayoutEffect(() => {
+  // What of the nub is in the corner, as its motion draws it (swelling, settling, letting go of the corner for its
+  // menu and coming back): the view's ground is cut to it — and the picture's outline, the glass's cut, in the same
+  // frame. None of it there (the nub stands free, its menu out), nothing of the ground is left.
+  const cut = useCallback((corner: NotchShape | null, lane: number): void => {
+    const at = now.current;
     const root = rootRef.current;
-    const face = faceRef.current;
-    const mark = markRef.current;
-    if (frame === null || root === null || face === null || mark === null) return;
-    const mask = maskRef.current;
-    const { bounds, swelling, lane } = frame;
-    // (The nub's own box is the view's bottom-right corner: the lane runs left of it, the pill's buttons stand above it.)
-    const nub = frame.nub;
-    let raf = 0;
-    const draw = (): void => {
-      const s = swellAt(swelling);
-      const shape = nubBetween(frame.idle, frame.swell, s);
-      const clip = `path("${nubOutline(shape, bounds.width, bounds.height, frame.corner, 0, 0, laneAt(lane))}")`;
-      root.style.clipPath = clip;
-      // (The picture's: the glass's cut, in the same frame as the nub.)
-      if (mask !== null) mask.style.clipPath = clip;
-      const at = nubFace(shape);
-      face.style.left = `${(nub + at.x).toFixed(2)}px`;
-      face.style.top = `${(bounds.height + at.y).toFixed(2)}px`;
-      mark.style.transform = `scale(${(1 + 0.08 * s).toFixed(4)})`;
-      if (!swellDone(swelling) || !swellDone(lane)) raf = requestAnimationFrame(draw);
-    };
-    draw();
-    return () => cancelAnimationFrame(raf);
+    if (at === null || root === null) return;
+    const clip = corner === null ? "inset(100%)" : `path("${nubOutline(corner, at.bounds.width, at.bounds.height, at.corner, 0, 0, lane)}")`;
+    root.style.clipPath = clip;
+    if (maskRef.current !== null) maskRef.current.style.clipPath = clip;
+  }, []);
+  const corner = useCallback((): number => now.current?.corner ?? 0, []);
+
+  // The nub as the shell has it: its swell and its lane read off the shell's clock, and drawn again as the view's box
+  // or the desk's corner changes (the outline is drawn from the box's corner).
+  useLayoutEffect(() => {
+    const motion = motionRef.current;
+    if (frame === null || motion === null) return;
+    motion.follow(frame.swelling, frame.lane);
+    motion.refresh();
   }, [frame]);
+  // Its menu out or in, on the view's own clock from the shell's word — one older than the menu's motion is where the
+  // menu already is (the view come up over a menu that was out, or the picture's, which keeps its last word while the
+  // view is away).
+  const up = frame !== null;
+  const menuOpen = frame?.menu.open ?? false;
+  const menuAt = frame?.menu.at ?? 0;
+  useLayoutEffect(() => {
+    const motion = motionRef.current;
+    if (!up || motion === null) return;
+    const settled = Date.now() - menuAt > MENU_SETTLED_MS;
+    if (menuOpen) motion.openMenu(settled);
+    else motion.closeMenu(settled);
+  }, [up, menuOpen, menuAt]);
 
   if (frame === null) return null;
   const send = (input: DeskNotchInput): void => nativeApi()?.sendDeskNotchInput(input);
@@ -110,17 +142,42 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
   // checks the OS's pointer), and a real one, onto a button its page thinks is under the pointer already, would go
   // unsaid. So a move on it says so too.
   const enter = (): void => {
-    const now = performance.now();
-    if (now - saidEnter.current < ENTER_REPEAT_MS) return;
-    saidEnter.current = now;
+    const at = performance.now();
+    if (at - saidEnter.current < ENTER_REPEAT_MS) return;
+    saidEnter.current = at;
     send("enter");
+  };
+  const leave = (): void => {
+    saidEnter.current = Number.NEGATIVE_INFINITY;
+    send("leave");
   };
   const { bounds, ground } = frame;
   const px = (value: number): string => `${value.toFixed(1)}px`;
-  const face = (
-    <span ref={faceRef} className="desk-notch-view-face">
-      <DeskNubMark ref={markRef} acting={frame.acting} floating={frame.floating} />
-    </span>
+  // The nub itself, as the shell draws its own (DeskNub): its face and mark, moved with the swell; its menu, let out
+  // of it. No tooltips here — none could reach past the view's box: the pointer onto a droplet is said, and the
+  // shell's own says what it is.
+  const nub = (
+    <DeskNub
+      nubRef={nubRef}
+      faceRef={faceRef}
+      motionRef={motionRef}
+      pill={NO_PILL}
+      onShape={cut}
+      corner={corner}
+      label={{ text: frame.label, shortcut: frame.shortcut }}
+      acting={frame.acting}
+      floating={frame.floating}
+      menuOpen={menuOpen}
+      chatsOpen={false}
+      hovered={false}
+      onItemHover={picture ? undefined : (droplet) => send({ hover: droplet })}
+      onFaceEnter={enter}
+      onFaceLeave={leave}
+      onFace={() => send("press")}
+      onPrompt={() => send({ menu: "prompt" })}
+      onMic={() => send({ menu: "mic" })}
+      onChats={() => send({ menu: "chats" })}
+    />
   );
   // The extensions' pills in the lane, where the shell lays them, at the width it measured; an action pressed is the
   // shell's to send on.
@@ -134,54 +191,43 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
         style={{ right: NUB_LANE_INSET, bottom: NUB_LANE_FOOT, width: frame.pillsWidth }}
       />
     );
-  const nub = (
-    <div
-      ref={rootRef}
-      className="desk-notch-view tab-group-tone"
-      data-group-color={frame.color}
-      data-picture={picture ? "" : undefined}
-      style={
-        {
-          // The shell's ground box, where it lies from this view's corner.
-          "--desk-notch-ground-x": px(ground.x - bounds.x),
-          "--desk-notch-ground-y": px(ground.y - bounds.y),
-          "--desk-notch-ground-w": px(ground.width),
-          "--desk-notch-ground-h": px(ground.height),
-          // The nub's own box, in the corner: the rest is its lane, and the column above it.
-          "--desk-notch-nub": px(frame.nub),
-        } as React.CSSProperties
-      }
-    >
-      {picture ? (
-        <span className="desk-notch-view-hit">{face}</span>
-      ) : (
-        <button
-          type="button"
-          className="desk-notch-view-hit"
-          data-testid="desk-notch-view"
-          aria-label={frame.shortcut === null ? frame.label : `${frame.label} (${frame.shortcut})`}
-          onPointerEnter={enter}
-          onPointerMove={enter}
-          onPointerLeave={() => {
-            saidEnter.current = Number.NEGATIVE_INFINITY;
-            send("leave");
-          }}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => send("press")}
-        >
-          {face}
-        </button>
-      )}
-      {pills}
-    </div>
-  );
+  const groundStyle = {
+    // The shell's ground box, where it lies from this view's corner.
+    "--desk-notch-ground-x": px(ground.x - bounds.x),
+    "--desk-notch-ground-y": px(ground.y - bounds.y),
+    "--desk-notch-ground-w": px(ground.width),
+    "--desk-notch-ground-h": px(ground.height),
+    // The nub's own box, in the corner: the rest is its lane, the column above it, and its droplets' fan.
+    "--desk-notch-nub": px(frame.nub),
+    // The desk's corner, which what the nub paints is clipped to (.desk-nub-paint).
+    "--desk-window-radius": px(frame.corner),
+  } as React.CSSProperties;
   if (!picture) {
-    // The pill's buttons above the nub, where the shell lays them (the nub's box, its corner the view's): drawn here
-    // over a live page, as the nub is; a press is the shell's, and the pointer onto one opens the shell's tooltip.
     const { close, side } = frame.buttons;
     return (
       <>
-        {nub}
+        {/* The view's box beside the droplets, while they are out: a press there is a press elsewhere. */}
+        <div className="desk-notch-view-away" data-testid="desk-notch-away" data-open={menuOpen ? "" : undefined} onPointerDown={() => send("away")} />
+        <div ref={rootRef} className="desk-notch-view tab-group-tone" data-group-color={frame.color} style={groundStyle}>
+          <button
+            type="button"
+            className="desk-notch-view-hit"
+            data-testid="desk-notch-view"
+            aria-label={frame.shortcut === null ? frame.label : `${frame.label} (${frame.shortcut})`}
+            onPointerEnter={enter}
+            onPointerMove={enter}
+            onPointerLeave={leave}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => send("press")}
+          />
+          {pills}
+        </div>
+        {/* Over the ground, not in it: the nub out of the corner and its droplets are past the ground's cut. */}
+        <div className="desk-notch-view-nub tab-group-tone" data-group-color={frame.color} style={{ width: NUB_BOX.w, height: NUB_BOX.h, ...groundStyle }}>
+          {nub}
+        </div>
+        {/* The pill's buttons above the nub, where the shell lays them (the nub's box, its corner the view's): drawn here
+            over a live page, as the nub is; a press is the shell's, and the pointer onto one opens the shell's tooltip. */}
         <div className="desk-notch-view-buttons" style={{ width: NUB_BOX.w, height: NUB_BOX.h }}>
           <NubPillClose shown={close} onClose={() => send({ bar: "close" })} onHover={(on) => send({ hover: on ? "close" : null })} />
           <NubPillSide shown={side} onSide={() => send({ bar: "side" })} onHover={(on) => send({ hover: on ? "side" : null })} />
@@ -189,10 +235,15 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
       </>
     );
   }
-  // Offscreen, twice the view's height: the nub over its outline (main/desk-glass.ts splits them).
+  // Offscreen, twice the view's height: the nub over its outline (main/desk-glass.ts splits them). The nub is in the
+  // ground here, cut with it: what of it is in the corner is what lies on the glass — its mark, and the fill that comes
+  // in over it as it lets go for its menu — and the rest of it is the view's own page's, beside the glass.
   return (
     <div className="desk-notch-picture" style={{ "--desk-notch-w": px(bounds.width), "--desk-notch-h": px(bounds.height) } as React.CSSProperties}>
-      {nub}
+      <div ref={rootRef} className="desk-notch-view tab-group-tone" data-group-color={frame.color} data-picture="" style={groundStyle}>
+        {nub}
+        {pills}
+      </div>
       <div ref={maskRef} className="desk-notch-view-mask" data-testid="desk-notch-picture-mask" />
     </div>
   );

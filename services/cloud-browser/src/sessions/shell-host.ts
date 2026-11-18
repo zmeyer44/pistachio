@@ -328,6 +328,7 @@ export const UNSUPPORTED = {
   integrationDisconnect: MANAGED_IN_WEB,
   integrationCalendarEvents: MANAGED_IN_WEB,
   extensions: "Extensions run in Pistachio on your Mac; the web browser has none.",
+  aiPlans: "A ChatGPT plan is connected in Pistachio on your Mac, where its sign-in is kept; the web browser uses Pistachio's models.",
 } as const satisfies Partial<Record<ShellMethodName, string>>;
 
 export type UnsupportedShellMethod = keyof typeof UNSUPPORTED;
@@ -3140,6 +3141,15 @@ export class ShellHost implements ShellApi, StreamShellApi {
 
   onExtensions(): () => void {
     // No extensions here (docs/extensions.md): the shell draws an empty Ledge.
+    return () => undefined;
+  }
+
+  async aiPlans(): Promise<never> {
+    return unsupported("aiPlans");
+  }
+
+  onAiPlans(): () => void {
+    // No plan of the person's own here (docs/ai-plans.md): the chat says nothing of one.
     return () => undefined;
   }
 

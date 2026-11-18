@@ -13,6 +13,7 @@
 
 import { expect, test } from "@playwright/test";
 import { api, box, chatSpot, chooseSpace, createGroup, INVOICES, launchDesk, openTabs, pressNubButton, railSpace, reachBar, selectSpace, selectTab, settled, snapshot, tabGroupCommand, VENDOR, windowSelector } from "./desk-harness";
+import { shellReady } from "./windows";
 
 /** The first space's turn lingers on its first step (the model is slow to answer) while the person is elsewhere. */
 const LINGER_MS = 9_000;
@@ -148,14 +149,21 @@ test("a chat stays in its space: at the side in one, working in the background, 
     const wholeAgain = await box(shell, windowSelector(invoice));
     near(wholeAgain.x, whole.x);
     near(wholeAgain.width, whole.width);
-    // (Where it was is kept for when it comes up again: this space's, at the side.)
-    expect((await chatSpot(shell, "space-invoices"))?.zone).toBe("chat");
+    // (Where it was is kept for when it comes up again: this space's, at the side — and that the person closed it there.)
+    await expect.poll(() => chatSpot(shell, "space-invoices").then((spot) => [spot?.zone, spot?.shut])).toEqual(["chat", true]);
     expect((await chatSpot(shell, "space-vendors"))?.floating ?? false).toBe(false);
+    // Closed, it stays closed: the desk gone to another space and back does not bring it up again.
+    await chooseSpace(shell, "space-vendors");
+    await settled(shell, app);
+    await chooseSpace(shell, "space-invoices");
+    await settled(shell, app);
+    await expect(answer).toHaveCount(0);
+    near((await box(shell, windowSelector(invoice))).width, whole.width);
   } finally {
     await app.close();
   }
 
-  // ── 7. The next launch: each space's chat stands where it stood ─
+  // ── 7. The next launch: each space's chat stands where it stood — and one closed is closed still ─
   const second = await launchDesk({ name: "space-chats", userData: first.userData, env: { PISTACHIO_AGENT_SCRIPT: JSON.stringify({ steps: [] }) } });
   app = second.app;
   shell = second.shell;
@@ -163,9 +171,14 @@ test("a chat stays in its space: at the side in one, working in the background, 
     await selectSpace(shell, "space-invoices");
     await settled(shell, app);
     const answer = shell.getByTestId("desk-answer");
-    // The invoice space's chat is at the side — its place — with its conversation; the vendor space's is in its nub.
+    // The invoice space's chat was closed before Pistachio quit: it does not come up by itself. Asked for, it is at
+    // the side — its place — with its conversation; the vendor space's is in its nub.
+    await expect(answer).toHaveCount(0);
+    await reachBar(shell);
+    await shell.getByTestId("desk-bar-answer").click();
     await expect(answer).toHaveAttribute("data-zone", "chat");
     await expect(answer).toContainText("Done in the invoice space.");
+    await expect.poll(() => chatSpot(shell, "space-invoices").then((spot) => spot?.shut)).toBeUndefined();
     await chooseSpace(shell, "space-vendors");
     await settled(shell, app);
     await expect(answer).toHaveCount(0);
@@ -174,12 +187,22 @@ test("a chat stays in its space: at the side in one, working in the background, 
     await shell.getByTestId("desk-bar-answer").click();
     await expect(answer).toHaveAttribute("data-mode", "docked");
     await expect(answer).toContainText("For the vendor space.");
+    // Left up at the side, the invoice space's chat is up there when the person is back — and when Pistachio next
+    // opens: a chat a space keeps beside its windows stays until it is closed.
+    await chooseSpace(shell, "space-invoices");
+    await settled(shell, app);
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await shell.reload();
+    await shellReady(app);
+    await settled(shell, app);
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await expect(answer).toContainText("Done in the invoice space.");
   } finally {
     await app.close();
   }
 });
 
-test("Home is one place for its chat: at the side for each of its tabs, every tab its own conversation; a space of its own has its own", { tag: ["@desk", "@agent"] }, async () => {
+test("a tab of Home's has its own chat: a change of tab never opens it, one closed stays closed, and it comes up at Home's side where it is asked for; a space of its own has its own", { tag: ["@desk", "@agent"] }, async () => {
   test.setTimeout(90_000);
   const { app, shell } = await launchDesk({ name: "space-chats-home", env: { PISTACHIO_AGENT_SCRIPT: JSON.stringify({ steps: [{ text: "About the invoices." }] }) } });
   try {
@@ -190,8 +213,9 @@ test("Home is one place for its chat: at the side for each of its tabs, every ta
     await settled(shell, app);
     const answer = shell.getByTestId("desk-answer");
     const profile = (await snapshot(shell)).activeSpaceId;
+    const whole = await box(shell, windowSelector(invoice));
 
-    // Asked on the invoice tab, the chat taken to the side.
+    // Asked on the invoice tab, the chat taken to the side: the page gives way to it.
     await reachBar(shell);
     await shell.getByTestId("desk-bar-input").fill("What is this page?");
     await shell.getByTestId("desk-bar-input").press("Enter");
@@ -200,25 +224,47 @@ test("Home is one place for its chat: at the side for each of its tabs, every ta
     await expect(answer).toHaveAttribute("data-zone", "chat");
     await settled(shell, app);
     const invoices = (await snapshot(shell)).run!.runId;
-    // Kept as Home's place, not the tab's.
+    const beside = await box(shell, windowSelector(invoice));
+    expect(beside.width).toBeLessThan(whole.width - 200);
+    // Where it stands is kept as Home's place, not the tab's.
     await expect.poll(() => chatSpot(shell, `home:${profile}`).then((spot) => spot?.zone)).toBe("chat");
 
-    // The other Home tab: the chat is at the side there too — Home's — with that tab's own conversation: none yet.
+    // The other Home tab: no chat comes up beside it — it was never opened there — and its page has the whole desk.
+    // (Until 2026-11-17 the chat at Home's side opened beside every tab of Home, with every change of tab.)
     await selectTab(shell, vendor);
     await expect(shell.locator(windowSelector(vendor))).toHaveCount(1);
     await settled(shell, app);
-    await expect(answer).toHaveAttribute("data-zone", "chat");
-    await expect(answer.getByTestId("desk-answer-empty")).toBeVisible();
-    await expect(answer).not.toContainText("About the invoices.");
+    await expect(answer).toHaveCount(0);
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
     await expect.poll(async () => (await snapshot(shell)).run).toBeNull();
-    // And back: the invoice tab's conversation, in the same place.
+    near((await box(shell, windowSelector(vendor))).width, whole.width);
+    // And back: the invoice tab's chat as it was left — up, at the side, with its conversation.
     await selectTab(shell, invoice);
     await settled(shell, app);
     await expect(answer).toHaveAttribute("data-zone", "chat");
     await expect(answer).toContainText("About the invoices.");
     expect((await snapshot(shell)).run?.runId).toBe(invoices);
 
-    // A space of its own is its own place: its chat is in its nub, though Home's is at the side.
+    // Closed beside the invoice tab, it stays closed there: to the other tab and back, nothing opens.
+    await shell.getByTestId("desk-answer-dismiss").click();
+    await expect(answer).toHaveCount(0);
+    await selectTab(shell, vendor);
+    await settled(shell, app);
+    await expect(answer).toHaveCount(0);
+    await selectTab(shell, invoice);
+    await settled(shell, app);
+    await expect(answer).toHaveCount(0);
+    near((await box(shell, windowSelector(invoice))).width, whole.width);
+    // (Home's place is every tab's: whether a tab's chat is up is never written into it.)
+    expect((await chatSpot(shell, `home:${profile}`))?.shut).toBeUndefined();
+    // Asked for again, it comes up where Home's chat stands — at the side — with this tab's conversation.
+    await reachBar(shell);
+    await shell.getByTestId("desk-bar-answer").click();
+    await expect(answer).toHaveAttribute("data-zone", "chat");
+    await expect(answer).toContainText("About the invoices.");
+    await settled(shell, app);
+
+    // A space of its own is its own place: its chat is in its nub, though Home's stands at the side.
     await createGroup(shell, "space-vendors", [vendor], "Vendors", "blue");
     await selectSpace(shell, "space-vendors");
     await settled(shell, app);
@@ -244,13 +290,18 @@ test("Home is one place for its chat: at the side for each of its tabs, every ta
     await expect(answer).toHaveAttribute("data-zone", "chat");
     await expect(answer).toContainText("About the invoices.");
     await expect.poll(() => chatSpot(shell, own).then((spot) => spot?.zone)).toBe("chat");
-    // Straight to a Home tab: Home's chat, at the side as Home's was left. Sent back to its pill there, it is Home's
-    // place that is docked from now — the space that broke away keeps its own, at the side. (2026-11-17: the card
-    // went on keeping its place for the space it had left with, and Home's was never written.)
+    // Straight to a Home tab never asked in: no chat. Asked for there, it is at the side, where Home's stands; sent
+    // back to its pill there, it is Home's place that is docked from now — the space that broke away keeps its own,
+    // at the side. (2026-11-17: the card went on keeping its place for the space it had left with, and Home's was
+    // never written.)
     await selectTab(shell, auth);
     await expect(shell.locator(windowSelector(auth))).toHaveCount(1);
     await settled(shell, app);
+    await expect(answer).toHaveCount(0);
+    await reachBar(shell);
+    await pressNubButton(app, shell, "desk-answer-side");
     await expect(answer).toHaveAttribute("data-zone", "chat");
+    await expect(answer.getByTestId("desk-answer-empty")).toBeVisible();
     await shell.getByTestId("desk-answer-dock").click();
     await expect.poll(() => chatSpot(shell, `home:${profile}`).then((spot) => spot?.floating)).toBe(false);
     expect((await chatSpot(shell, own))?.zone).toBe("chat");

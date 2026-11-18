@@ -218,7 +218,12 @@ export interface AgentToolCall {
     | "ext.call"
     | "ext.draft.write"
     | "ext.draft.read"
-    | "ext.status";
+    | "ext.status"
+    | "ext.list"
+    | "ext.build"
+    | "settings.read"
+    | "settings.change"
+    | "app.open";
   label: string;
   detail: string;
   status: "running" | "completed" | "paused" | "failed";
@@ -248,7 +253,12 @@ export interface AgentToolCall {
  */
 export type AgentToolOutput =
   | { kind: "note"; action: "created" | "updated"; id: string; title: string }
-  | { kind: "artifact"; action: "created" | "updated"; id: string; title: string; url: string };
+  | { kind: "artifact"; action: "created" | "updated"; id: string; title: string; url: string }
+  /**
+   * An extension the agent built or changed in the conversation (docs/agent-pistachio.md §4): `id` is the
+   * extension's, `waiting` whether it waits on the person's approval — the card's press is the way to its sheet.
+   */
+  | { kind: "extension"; action: "created" | "updated"; id: string; title: string; waiting: boolean };
 
 /**
  * Keys page.press can strike. Single keys only: enough to submit a search,
@@ -432,7 +442,18 @@ export type ExtensionAuthorToolRequest =
   | { name: "ext.draft.read"; slug: string; path: string | null }
   | { name: "ext.status"; slug: string };
 
-/** Anything the agent can call — browser, memory, reminders, artifacts, bookmarks, notes, integrations, extensions, or its scratchpad — for the run's tool trace. */
+/**
+ * The agent's reach to Pistachio itself (docs/agent-pistachio.md): its settings read and changed, one of its own
+ * pages shown to the person, the installed extensions listed, and one built — or changed — in the conversation.
+ */
+export type PistachioToolRequest =
+  | { name: "settings.read"; section: string | null }
+  | { name: "settings.change"; summary: string }
+  | { name: "app.open"; page: string }
+  | { name: "ext.list" }
+  | { name: "ext.build"; title: string };
+
+/** Anything the agent can call — browser, memory, reminders, artifacts, bookmarks, notes, integrations, extensions, Pistachio itself, or its scratchpad — for the run's tool trace. */
 export type AgentToolRequest =
   | BrowserAgentToolRequest
   | MemoryToolRequest
@@ -447,7 +468,8 @@ export type AgentToolRequest =
   | DeskToolRequest
   | SpaceToolRequest
   | ExtensionToolRequest
-  | ExtensionAuthorToolRequest;
+  | ExtensionAuthorToolRequest
+  | PistachioToolRequest;
 
 /**
  * A reminder the person or the agent scheduled earlier, firing as a turn of

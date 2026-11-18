@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, type RefObject } from "react";
 import { History, Keyboard, Mic, PanelRight, X } from "lucide-react";
+import type { DeskNotchDroplet } from "@pistachio/shell-contracts/desk";
 import { NUB_CLOSE_R, NUB_DROP_R, nubClose, nubDrops, nubSide, type NotchShape } from "../../lib/desk/geometry";
 import { PistachioGlyph } from "../PistachioMark";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
@@ -121,10 +122,15 @@ export function NubPillSide({ onSide, ...button }: NubPillButton & { onSide: () 
 
 /** What each droplet is, round the fan from the foot up: the prompt, the microphone, past chats — each saying so away from the nub. */
 const ITEMS = [
-  { testId: "desk-nub-prompt", label: "Write to Pistachio", icon: Keyboard, side: "left" },
-  { testId: "desk-nub-mic", label: "Dictate", icon: Mic, side: "left" },
-  { testId: "desk-nub-chats", label: "Past chats", icon: History, side: "top" },
-] as const;
+  { id: "prompt", testId: "desk-nub-prompt", label: "Write to Pistachio", icon: Keyboard, side: "left" },
+  { id: "mic", testId: "desk-nub-mic", label: "Dictate", icon: Mic, side: "left" },
+  { id: "chats", testId: "desk-nub-chats", label: "Past chats", icon: History, side: "top" },
+] as const satisfies ReadonlyArray<{ id: DeskNotchDroplet; testId: string; label: string; icon: unknown; side: "left" | "top" }>;
+
+/** What a droplet says it is (its tooltip, its name): the shell's, for the notch view's copy of it too. */
+export function nubDropletLabel(droplet: DeskNotchDroplet): string {
+  return ITEMS.find((item) => item.id === droplet)!.label;
+}
 
 /**
  * The Bar's nub (docs/desk-agent.md §1): a droplet of the shell's ground in
@@ -137,6 +143,14 @@ const ITEMS = [
  * fill while the droplets are out, its circle and the droplets, blurred and
  * thresholded so they melt together where they meet. nub-motion.ts moves all
  * of it; this draws its parts once.
+ *
+ * Over a live page nothing the shell draws shows, so main's notch view draws
+ * the nub there (NotchApp) — and its menu too, with this same component and
+ * its own motion: with no tooltips (`faceTip` and `tip` left out), since
+ * none could reach past the view's box; the pointer onto a droplet is said
+ * instead (`onItemHover`), and the shell opens its own droplet's tooltip,
+ * where it stands `veiled` under the view's (in place, unseen: what it paints
+ * would show through the view's once a tooltip had made the page a still).
  */
 export function DeskNub({
   nubRef,
@@ -153,6 +167,8 @@ export function DeskNub({
   hovered,
   faceTip,
   tip,
+  veiled = false,
+  onItemHover,
   onFaceEnter,
   onFaceLeave,
   onFace,
@@ -176,8 +192,13 @@ export function DeskNub({
   /** The conversations grown out of the past-chats droplet. */
   chatsOpen: boolean;
   hovered: boolean;
-  faceTip: NubTip;
-  tip: (label: string) => NubTip;
+  /** The shell's tooltips; left out in main's notch view, which has none (`onItemHover` instead). */
+  faceTip?: NubTip;
+  tip?: (label: string) => NubTip;
+  /** The notch view draws it over a live page: unseen here, in place. */
+  veiled?: boolean;
+  /** The pointer onto a droplet, or off them (the notch view's word, for the shell's tooltip). */
+  onItemHover?: (droplet: DeskNotchDroplet | null) => void;
   onFaceEnter: () => void;
   onFaceLeave: () => void;
   /** A click (or Enter) on the nub: `keyboard`, from the keys — the first droplet then has them. */
@@ -242,8 +263,27 @@ export function DeskNub({
   /** A droplet run back into the nub while the conversations stand where past chats' was (nub-motion's take). */
   const away = (i: number): boolean => chatsOpen && i !== 2;
   const { w, h } = NUB_BOX;
+  const faceProps = {
+    ref: faceRef,
+    type: "button" as const,
+    className: "desk-nub-face",
+    "data-testid": "desk-nub",
+    "data-hovered": hovered ? "" : undefined,
+    "data-acting": acting ? "" : undefined,
+    "data-floating": floating ? "" : undefined,
+    "aria-label": label.text,
+    "aria-haspopup": "menu" as const,
+    "aria-expanded": menuOpen,
+    "aria-controls": `${gooId}-menu`,
+    // A press leaves the keyboard where it was.
+    onMouseDown: (event: React.MouseEvent) => event.preventDefault(),
+    onPointerEnter: onFaceEnter,
+    onPointerLeave: onFaceLeave,
+    onClick: (event: React.MouseEvent) => onFace(event.detail === 0),
+  };
+  const mark = <DeskNubMark ref={markRef} acting={acting} floating={floating} />;
   return (
-    <div ref={nubRef} className="desk-nub" data-testid="desk-nub-box" data-open={menuOpen ? "" : undefined} style={{ width: w, height: h }}>
+    <div ref={nubRef} className="desk-nub" data-testid="desk-nub-box" data-open={menuOpen ? "" : undefined} data-veiled={veiled ? "" : undefined} style={{ width: w, height: h }}>
       {/* The goo: in the corner's own coordinates (its viewBox drawn from the corner), clipped to the desk's curve. */}
       <div className="desk-nub-paint" aria-hidden="true">
         <svg ref={paintRef} viewBox={`${String(-w)} ${String(-h)} ${String(w)} ${String(h)}`}>
@@ -282,32 +322,17 @@ export function DeskNub({
           </g>
         </svg>
       </div>
-      <Tooltip open={faceTip.open} onOpenChange={faceTip.onOpenChange}>
-        <TooltipTrigger
-          ref={faceRef}
-          type="button"
-          className="desk-nub-face"
-          data-testid="desk-nub"
-          data-hovered={hovered ? "" : undefined}
-          data-acting={acting ? "" : undefined}
-          data-floating={floating ? "" : undefined}
-          aria-label={label.text}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          aria-controls={`${gooId}-menu`}
-          // A press leaves the keyboard where it was.
-          onMouseDown={(event) => event.preventDefault()}
-          onPointerEnter={onFaceEnter}
-          onPointerLeave={onFaceLeave}
-          onClick={(event) => onFace(event.detail === 0)}
-        >
-          <DeskNubMark ref={markRef} acting={acting} floating={floating} />
-        </TooltipTrigger>
-        <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={faceTip.shown ? "" : undefined} className={faceTip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
-          {label.text}
-          {label.shortcut === null ? null : <span className="ml-1 text-background-100/60">{label.shortcut}</span>}
-        </TooltipContent>
-      </Tooltip>
+      {faceTip === undefined ? (
+        <button {...faceProps}>{mark}</button>
+      ) : (
+        <Tooltip open={faceTip.open} onOpenChange={faceTip.onOpenChange}>
+          <TooltipTrigger {...faceProps}>{mark}</TooltipTrigger>
+          <TooltipContent side="left" sideOffset={10} data-testid="desk-bar-tip" data-shown={faceTip.shown ? "" : undefined} className={faceTip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>
+            {label.text}
+            {label.shortcut === null ? null : <span className="ml-1 text-background-100/60">{label.shortcut}</span>}
+          </TooltipContent>
+        </Tooltip>
+      )}
       <div
         id={`${gooId}-menu`}
         role="menu"
@@ -342,26 +367,36 @@ export function DeskNub({
         {ITEMS.map((item, i) => {
           const rest = rests[i]!;
           const Icon = item.icon;
-          const itemTip = tip(item.label);
           const onClick = i === 0 ? onPrompt : i === 1 ? onMic : onChats;
+          const itemProps = {
+            ref: (el: HTMLButtonElement | null) => {
+              itemRefs.current[i] = el;
+            },
+            type: "button" as const,
+            role: "menuitem" as const,
+            className: "desk-nub-item",
+            "data-testid": item.testId,
+            "aria-label": item.label,
+            // Run back into the nub out of the conversations' way, it is out of the keys' and the pointer's reach.
+            inert: away(i),
+            "aria-expanded": i === 2 ? chatsOpen : undefined,
+            style: { left: w + rest.x, top: h + rest.y, width: NUB_DROP_R * 2, height: NUB_DROP_R * 2 },
+            onMouseDown: (event: React.MouseEvent) => event.preventDefault(),
+            onClick,
+            onPointerEnter: onItemHover === undefined ? undefined : () => onItemHover(item.id),
+            onPointerLeave: onItemHover === undefined ? undefined : () => onItemHover(null),
+          };
+          if (tip === undefined) {
+            return (
+              <button key={item.testId} {...itemProps}>
+                <Icon aria-hidden="true" />
+              </button>
+            );
+          }
+          const itemTip = tip(item.label);
           return (
             <Tooltip key={item.testId} open={itemTip.open} onOpenChange={itemTip.onOpenChange}>
-              <TooltipTrigger
-                ref={(el: HTMLButtonElement | null) => {
-                  itemRefs.current[i] = el;
-                }}
-                type="button"
-                role="menuitem"
-                className="desk-nub-item"
-                data-testid={item.testId}
-                aria-label={item.label}
-                // Run back into the nub out of the conversations' way, it is out of the keys' and the pointer's reach.
-                inert={away(i)}
-                aria-expanded={i === 2 ? chatsOpen : undefined}
-                style={{ left: w + rest.x, top: h + rest.y, width: NUB_DROP_R * 2, height: NUB_DROP_R * 2 }}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={onClick}
-              >
+              <TooltipTrigger {...itemProps}>
                 <Icon aria-hidden="true" />
               </TooltipTrigger>
               <TooltipContent side={item.side} sideOffset={10} data-testid="desk-bar-tip" data-shown={itemTip.shown ? "" : undefined} className={itemTip.shown ? "whitespace-nowrap" : "whitespace-nowrap opacity-0"}>

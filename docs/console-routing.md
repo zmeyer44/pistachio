@@ -70,8 +70,11 @@ reads literally and is poor with negation):
   attachments or general knowledge already answers; writing, code, a plan,
   advice; small talk. When the host has them, the sentence goes on to name
   the quick path's own abilities — "set reminders", "search, read and write
-  the person's notes", "read the person's Google Calendar" — so those are
-  replies too, and never named when the host lacks them.
+  the person's notes", "read the person's Google Calendar", and, on the
+  desktop, "explain how this browser, Pistachio, works, and change its
+  settings, its look, its keyboard shortcuts and its extensions"
+  (docs/agent-pistachio.md §6) — so those are replies too, and never named
+  when the host lacks them.
 - **page** — offered only when a web page is in view (`currentPage` is
   null for the home page and other non-web tabs, and then this option is
   not sent at all): "this page", "this article", "what is on screen" —
@@ -297,8 +300,9 @@ space's card, the reply's footer, a follow-up on the same conversation, web
 work done with tool steps, and a question about the page in the window in
 use answered by reading it — and that none of them took a quick path. (The
 port was made without a live run: the timings below are the console's, from
-before.) The profile gets an anonymous account from whatever control
-`PISTACHIO_CONTROL_URL` names, so run control locally first (the root
+before.) The profile asks for an anonymous account (`PISTACHIO_ANONYMOUS=1`,
+a development run's switch: the desktop otherwise requires a sign-in) from
+whatever control `PISTACHIO_CONTROL_URL` names, so run control locally first (the root
 `.env` has the gateway key; never let a dev boot touch the remote DB):
 
 ```

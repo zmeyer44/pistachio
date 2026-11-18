@@ -678,16 +678,26 @@ test("the desk's agent: the Bar, the Stack, a turn that arranges the windows, it
     await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
     await settled(shell, app);
     near((await box(shell, windowSelector(invoice))).width, beforeSide.width, 1);
-    // The browser opened again: the chat comes up in its place still, and the windows give way to it as before — the
-    // desk was saved with no room kept, and is read so (2026-10-10: read against the desk short of the room, a window
-    // the room had squeezed to its least width came back wider once the chat docked).
+    // Closed by the person, it stays closed: its place is kept (shut), and the browser opened again does not bring it
+    // up by itself — the windows have the whole desk still. (Until 2026-11-17 a chat at the side came up again
+    // whenever its space was in front, whatever its × had said.)
+    await expect.poll(() => chatSpot(shell).then((spot) => [spot?.zone, spot?.shut])).toEqual(["chat", true]);
     await shell.reload();
     await shellReady(app);
+    await settled(shell, app);
+    await expect(shell.getByTestId("desk-answer")).toHaveCount(0);
+    near((await box(shell, windowSelector(invoice))).width, beforeSide.width, 1);
+    // Asked for, it comes up in its place, and the windows give way to it as before — the desk was saved with no
+    // room kept, and is read so (2026-10-10: read against the desk short of the room, a window the room had squeezed
+    // to its least width came back wider once the chat docked).
+    await reachBar(shell);
+    await pressNubButton(app, shell, "desk-answer-side");
     await expect(shell.locator('[data-testid="desk-answer"][data-shown]')).toHaveCount(1);
     await expect(answer).toHaveAttribute("data-zone", "chat");
     await settled(shell, app);
     near((await box(shell, windowSelector(invoice))).width, invoiceSide.width, 1);
     await expect(shell.getByTestId("desk-answer-dismiss")).toBeVisible();
+    await expect.poll(() => chatSpot(shell).then((spot) => spot?.shut)).toBeUndefined();
     // The browser opened again with the chat at the side: the desk's room for it is kept from the first, so the
     // windows come back as they were — a minimized one too, which keeps the box it grows back to (2026-10-10: read
     // against the whole desk, it grew back wider).

@@ -117,7 +117,7 @@ const NEUTRAL_BROWSER_CONTROLS: BrowserControlsSnapshot = {
 };
 import type { ForkSpaceRequest, ForkSpaceResult, SpaceEgressPolicy } from "@pistachio/shell-contracts/spaces";
 import type { OnboardingCompletion } from "@pistachio/shell-contracts/onboarding";
-import { DEFAULT_ACCOUNT } from "./lib/account";
+import { accountGated, DEFAULT_ACCOUNT } from "./lib/account";
 import {
   DEFAULT_CLOUD_STATUS,
   DEFAULT_EGRESS_STATUS,
@@ -423,6 +423,14 @@ export interface AppState {
    */
   onboardingOpen: boolean;
   onboardingReplay: boolean;
+  /**
+   * The wizard is up as the sign-in screen and nothing more: its account
+   * step alone, on a Mac that finished the walkthrough and is not signed in
+   * to the account it has to have (`accountGated`, docs/onboarding.md "The
+   * account"). There is no way round it, and it leaves when the person is
+   * through it.
+   */
+  onboardingSignIn: boolean;
   /** Where the app stands with respect to a newer release (main owns it). */
   update: UpdateState;
   /** The version whose corner card the person waved away; it stays in Settings → About. */
@@ -908,6 +916,32 @@ function mergeRun(current: ShellSnapshot, run: ShellRunSnapshot): ShellSnapshot 
 type SetState = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void;
 
 /**
+ * The account as main last reported it, and with it whether the sign-in
+ * screen has to come up: a Mac that must be signed in and is not shows
+ * nothing else (docs/onboarding.md, "The account").
+ *
+ * The screen is only ever RAISED here. It comes down when the person is
+ * through it (`closeOnboarding`), not when the account turns enrolled: the
+ * recovery code a new account is shown exactly once is on that screen, and
+ * the enrollment that minted it must not take it away. A walkthrough that is
+ * already up is left alone — a first run asks for the account itself, and
+ * `closeOnboarding` looks again when it ends — but a replay gives way, since
+ * the browser it was started from is no longer the person's to use.
+ */
+function accountPatch(state: AppState, account: AccountState): Partial<AppState> {
+  if (!accountGated(account) || (state.onboardingOpen && !state.onboardingReplay)) return { account };
+  return {
+    account,
+    onboardingOpen: true,
+    onboardingReplay: false,
+    onboardingSignIn: true,
+    overlay: "none",
+    urlBarTabId: null,
+    urlBarNew: false,
+  };
+}
+
+/**
  * Read everything the shell holds that is not pushed to it, and record how
  * each member answered.
  *
@@ -988,6 +1022,10 @@ async function load(set: SetState, get: () => AppState, first: boolean): Promise
     spare("getCloudStatus", () => shellApi().getCloudStatus(), DEFAULT_CLOUD_STATUS),
     spare("listChannels", () => shellApi().listChannels(), [] as ChannelInfo[]),
   ]);
+  // What stands in front of the browser when it opens: the walkthrough on a
+  // fresh install (which asks for the account as its first step), or the
+  // sign-in screen alone on a Mac that finished it and is signed out.
+  const walkthrough = !settings.onboarding.completed;
   set({
     unavailable,
     failed,
@@ -1018,10 +1056,11 @@ async function load(set: SetState, get: () => AppState, first: boolean): Promise
       ? {
           consoleOpen: settings.general.consoleOpenOnLaunch,
           recents: recordSnapshot(get().recents, snapshot, null, settings),
-          onboardingOpen: !settings.onboarding.completed,
+          onboardingOpen: walkthrough || accountGated(account),
           onboardingReplay: false,
+          onboardingSignIn: !walkthrough && accountGated(account),
         }
-      : { recents: recordSnapshot(get().recents, snapshot, get().snapshot, settings) }),
+      : { recents: recordSnapshot(get().recents, snapshot, get().snapshot, settings), ...accountPatch(get(), account) }),
   });
 }
 
@@ -1078,6 +1117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   bookmarkToast: null,
   onboardingOpen: false,
   onboardingReplay: false,
+  onboardingSignIn: false,
   update: { status: "idle", checkedAt: null },
   updateDismissed: null,
   updateRestartPending: false,
@@ -1148,7 +1188,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     );
     const offMedia = shellApi().onMediaChanged((next) => set({ media: next }));
     const offReadAloud = shellApi().onReadAloudChanged((next) => set({ readAloud: next }));
-    const offAccount = shellApi().onAccount((next) => set({ account: next }));
+    const offAccount = shellApi().onAccount((next) => set((state) => accountPatch(state, next)));
     const offDevices = shellApi().onDevices((next) => set({ devices: next }));
     const offSyncStatus = shellApi().onSyncStatus((next) => set({ syncStatus: next }));
     const offWorkspaceSync = shellApi().onWorkspaceSync((next) => set({ workspaceSync: next }));
@@ -1189,8 +1229,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       offCloud();
     };
   },
-  openOnboarding: () => set({ onboardingOpen: true, onboardingReplay: true, overlay: "none", urlBarTabId: null, urlBarNew: false }),
-  closeOnboarding: () => set({ onboardingOpen: false, onboardingReplay: false }),
+  openOnboarding: () =>
+    set({ onboardingOpen: true, onboardingReplay: true, onboardingSignIn: false, overlay: "none", urlBarTabId: null, urlBarNew: false }),
+  closeOnboarding: () =>
+    set((state) =>
+      // A sign-in still owed — the account left this Mac while the
+      // walkthrough was up — is asked for in its place: the wizard never
+      // leaves a browser that has to be signed in standing open.
+      accountGated(state.account)
+        ? { onboardingOpen: true, onboardingReplay: false, onboardingSignIn: true }
+        : { onboardingOpen: false, onboardingReplay: false, onboardingSignIn: false },
+    ),
   completeOnboarding: (input) => attempt(() => shellApi().completeOnboarding(input)),
   checkForUpdates: async () => {
     set({ update: await shellApi().checkForUpdates() });
@@ -1832,17 +1881,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   // trip through the subscription.
   async signUp(email, password) {
     const result = await attemptValue(() => shellApi().signUp(email, password));
-    if (result.ok) set({ account: result.value });
+    if (result.ok) set((state) => accountPatch(state, result.value));
     return result;
   },
   async signIn(email, password) {
     const result = await attemptValue(() => shellApi().signIn(email, password));
-    if (result.ok) set({ account: result.value });
+    if (result.ok) set((state) => accountPatch(state, result.value));
     return result;
   },
   async enrollDevice() {
     const result = await attemptValue(() => shellApi().enroll());
-    if (result.ok) set({ account: result.value.state });
+    if (result.ok) set((state) => accountPatch(state, result.value.state));
     return result;
   },
   async signOut() {
@@ -1851,12 +1900,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     // `refreshChannels` only ever sets the list when the answer arrives, so a
     // list kept here would still be on screen — and, if the next account's
     // listing fails, would stay there under someone else's name.
-    if (result.ok) set({ account: result.value, devices: [], channels: [] });
+    // Where an account is required this also puts the sign-in screen up
+    // (`accountPatch`): signed out, there is no browser to go back to.
+    if (result.ok) set((state) => ({ ...accountPatch(state, result.value), devices: [], channels: [] }));
     return result.ok ? null : result.error;
   },
   async changePassword(currentPassword, newPassword) {
     const result = await attemptValue(() => shellApi().changePassword(currentPassword, newPassword));
-    if (result.ok) set({ account: result.value });
+    if (result.ok) set((state) => accountPatch(state, result.value));
     return result.ok ? null : result.error;
   },
   generateRecoveryCode: () => attemptValue(() => shellApi().recoveryCode()),
@@ -1872,7 +1923,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   async confirmCloudDevice() {
     const result = await attemptValue(() => shellApi().confirmCloudDevice());
-    if (result.ok) set({ account: result.value });
+    if (result.ok) set((state) => accountPatch(state, result.value));
     return result.ok ? null : result.error;
   },
 

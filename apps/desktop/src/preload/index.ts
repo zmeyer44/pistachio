@@ -130,6 +130,7 @@ import {
 import type { ArtifactListing } from "@pistachio/shell-contracts/artifacts";
 import type { NoteResponse, NoteSnapshot } from "@pistachio/shell-contracts/notes";
 import type { ExtensionResponse, ExtensionsSnapshot } from "@pistachio/shell-contracts/extensions";
+import type { AiPlanResponse, AiPlansSnapshot } from "@pistachio/shell-contracts/ai-plans";
 import type { ReportResponse } from "@pistachio/shell-contracts/reports";
 import type { TerminalEvent, TerminalRequest } from "@pistachio/shell-contracts/terminal";
 import type { LiveCommand, LiveDeskReport, LiveGuest, LiveHostConfig, LiveHostEvent, LiveHostReport, LiveShareState, LiveTerminalInput } from "@pistachio/shell-contracts/live-share";
@@ -930,6 +931,12 @@ const api: PistachioApi = {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: ExtensionsSnapshot): void => listener(snapshot);
     ipcRenderer.on(IPC.extensionsChanged, handler);
     return () => ipcRenderer.removeListener(IPC.extensionsChanged, handler);
+  },
+  aiPlans: (request) => ipcRenderer.invoke(IPC.aiPlans, request) as Promise<AiPlanResponse>,
+  onAiPlans(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, snapshot: AiPlansSnapshot): void => listener(snapshot);
+    ipcRenderer.on(IPC.aiPlansChanged, handler);
+    return () => ipcRenderer.removeListener(IPC.aiPlansChanged, handler);
   },
   onNotes(listener) {
     const handler = (

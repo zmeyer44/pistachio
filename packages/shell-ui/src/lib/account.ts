@@ -15,6 +15,9 @@ import { relativeTime } from "./run";
 /** No account, no keys, and no keychain until main says otherwise. */
 export const DEFAULT_ACCOUNT: AccountState = {
   state: "unenrolled",
+  // Nothing is asked for until main says an account is owed: a host that
+  // never answers (a cloud host, §11) must not put a sign-in screen up.
+  required: false,
   email: null,
   userId: null,
   deviceId: null,
@@ -65,6 +68,15 @@ export function accountStep(account: AccountState): AccountStep {
   // signing up from it upgrades it in place, signing in folds it in.
   if (account.revoked || account.state === "unenrolled" || account.state === "anonymous") return "sign-in";
   return account.state === "enrolled" ? "done" : "enroll";
+}
+
+/**
+ * Whether the sign-in screen stands in front of the browser: this Mac has to
+ * be signed in (`AccountState.required`) and is not — nobody signed in, an
+ * account made but this Mac not enrolled, or an enrollment control revoked.
+ */
+export function accountGated(account: AccountState): boolean {
+  return account.required && accountStep(account) !== "done";
 }
 
 /**

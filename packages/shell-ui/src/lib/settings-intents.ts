@@ -2,7 +2,7 @@
  * The things a person can CHANGE in settings, each pointing at the page that
  * changes it (docs/smart-suggestions.md §5).
  *
- * `SETTINGS_SECTIONS` names twenty-one pages, and a page name is a poor
+ * `SETTINGS_SECTIONS` names some two dozen pages, and a page name is a poor
  * answer to a sentence: "change theme color", "make the sidebar smaller" and
  * "stop the agent from remembering things" share no letters with
  * "Appearance", "General" or "Memory". This catalog is the vocabulary in
@@ -263,6 +263,15 @@ export const SETTINGS_INTENTS: readonly SettingsIntent[] = [
     title: "Agent isolation",
     description: "Read what bounds the agent's authority in your live tabs and in the cloud browser.",
     keywords: ["sandbox", "limits", "security", "what the agent cannot do", "partitions", "authority"],
+  },
+
+  // ── AI plan ──────────────────────────────────────────────────────────
+  {
+    id: "ai-plan",
+    section: "plan",
+    title: "ChatGPT plan",
+    description: "Connect your ChatGPT plan so the agent's chat uses it instead of Pistachio's models, see its connection status, and open ChatGPT's usage page.",
+    keywords: ["chatgpt", "openai", "codex", "subscription", "plus", "pro", "my own plan", "connect chatgpt", "sign in with chatgpt", "model", "usage limit", "manage usage"],
   },
 
   // ── Account ──────────────────────────────────────────────────────────

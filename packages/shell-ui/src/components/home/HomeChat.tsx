@@ -9,6 +9,7 @@ import { nativeApi } from "../../api";
 import { useAppStore, type HomeChat as HomeChatState } from "../../store";
 import { AttachmentDropVeil, useAttachmentDrop } from "../chat/attachment-drop";
 import { LiveReply } from "../chat/LiveReply";
+import { PlanLine } from "../chat/PlanLine";
 import { useReplyBegun } from "../chat/SmoothHeight";
 import { ApprovalCard, ClarificationCard, CompletionMeta, MessageRow, TERMINAL, TaskNotes, WorkTrace } from "../chat/parts";
 import { useThreadLayout } from "../chat/use-thread-layout";
@@ -351,6 +352,8 @@ const HomeComposer = memo(function HomeComposer({
           </button>
         </div>
       )}
+      {/* Whose plan the next turn runs on, when it is the person's own (docs/ai-plans.md §5). */}
+      <PlanLine className="mx-4 mt-3" />
       {staged.length === 0 ? null : (
         <div className="mx-4 mt-3 flex flex-wrap items-end gap-2" data-testid="home-staged-attachments">
           {staged.map((file) => (

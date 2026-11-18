@@ -21,6 +21,7 @@ describe("the desk's contract", () => {
       pillsWidth: 0,
       nub: 47,
       buttons: { close: false, side: false },
+      menu: { open: false, at: 0 },
     };
     expect(isDeskNotchFrame(frame)).toBe(true);
     expect(isDeskNotchFrame({ ...frame, ground: undefined })).toBe(false);
@@ -51,6 +52,7 @@ describe("the desk's contract", () => {
       pillsWidth: 280,
       nub: 52,
       buttons: { close: false, side: false },
+      menu: { open: false, at: 0 },
     };
     expect(isDeskNotchFrame(frame)).toBe(true);
     // (A box wider than the bare nub's, never taller.)
@@ -99,6 +101,7 @@ describe("the desk's contract", () => {
       pillsWidth: 0,
       nub: 52,
       buttons: { close: true, side: true },
+      menu: { open: false, at: 0 },
     };
     expect(isDeskNotchFrame(frame)).toBe(true);
     // (The view is as tall as the nub's box at least, and taller only over the buttons: never without a nub's box.)
@@ -113,6 +116,43 @@ describe("the desk's contract", () => {
     expect(isDeskNotchInput({ hover: null })).toBe(true);
     expect(isDeskNotchInput({ hover: "nub" })).toBe(false);
     expect(isDeskNotchInput({ bar: "close", hover: null })).toBe(false);
+  });
+
+  it("takes the nub's menu, which the view draws over a live page, a droplet pressed, the pointer on one, and a press beside them", () => {
+    const frame = {
+      bounds: { x: 1300, y: 768, width: 132, height: 132 },
+      label: "Ask about Research",
+      shortcut: null,
+      color: "blue",
+      idle: { radius: 18, sink: 20, fillet: 11 },
+      swell: { radius: 22, sink: 27, fillet: 6 },
+      corner: 12,
+      swelling: { from: 0, to: 1, at: 1_760_000_000_000, ms: 350 },
+      acting: false,
+      floating: false,
+      ground: { x: 0, y: 0, width: 1440, height: 900 },
+      lane: { from: 0, to: 0, at: 0, ms: 0 },
+      pills: [],
+      pillsWidth: 0,
+      nub: 52,
+      buttons: { close: false, side: false },
+      menu: { open: true, at: 1_760_000_000_000 },
+    };
+    expect(isDeskNotchFrame(frame)).toBe(true);
+    // Out or in, and since when: the view draws a word older than the menu's motion where the menu already is.
+    expect(isDeskNotchFrame({ ...frame, menu: undefined })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, menu: null })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, menu: { open: "yes", at: 0 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, menu: { open: true, at: Number.NaN } })).toBe(false);
+    // A droplet pressed in the view is the Bar's, as if the shell's own were.
+    for (const droplet of ["prompt", "mic", "chats"]) expect(isDeskNotchInput({ menu: droplet }), droplet).toBe(true);
+    expect(isDeskNotchInput({ menu: "close" })).toBe(false);
+    expect(isDeskNotchInput({ menu: "prompt", hover: null })).toBe(false);
+    // The pointer on one, for the shell's tooltip beside it — but a press names a droplet as the menu's, never as a button of the pill's.
+    expect(isDeskNotchInput({ hover: "mic" })).toBe(true);
+    expect(isDeskNotchInput({ bar: "mic" })).toBe(false);
+    // A press in the view's box beside the droplets is a press elsewhere.
+    expect(isDeskNotchInput("away")).toBe(true);
   });
 
   it("accepts a desk state and refuses anything else", () => {

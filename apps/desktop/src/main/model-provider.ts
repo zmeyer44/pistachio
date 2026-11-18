@@ -164,8 +164,8 @@ export function transcriptionModelName(): string {
 
 /**
  * Whether a model can be reached right now: this Mac holds a device token —
- * a signed-in account's, or the anonymous account's it is given when nobody
- * has signed in (docs/anonymous-accounts.md).
+ * the signed-in account's, or an anonymous account's in a development run
+ * that asked for one (docs/anonymous-accounts.md).
  */
 export function aiAvailable(): boolean {
   return session !== null && session.enrolled();
@@ -189,10 +189,7 @@ export function aiProviderStatus(): AiProviderStatus {
  */
 export const MODEL_REQUEST_TIMEOUT_MS = 180_000;
 
-/**
- * No device token here: control could not be reached to make this Mac's
- * anonymous account (or the keychain cannot keep one), and nobody signed in.
- */
+/** No device token here: nobody is signed in on this Mac (or its enrollment was revoked). */
 export const NOT_SIGNED_IN =
   "Pistachio's models can't be reached from this Mac yet. Check the connection and try again, or sign in under Settings → Account.";
 

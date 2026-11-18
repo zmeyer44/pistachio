@@ -34,7 +34,8 @@ export function toolSourceOf(name: AgentToolCall["name"], data: unknown): AgentS
 
 /**
  * The output a completed call's result names, read from the tool's own
- * result shape (the note and artifact tool views in @pistachio/agent-runtime).
+ * result shape (the note and artifact tool views in @pistachio/agent-runtime,
+ * and `extension_build`'s result).
  * Anything else — a listing, a read, a delete, a malformed result — is null.
  */
 export function toolOutputOf(name: AgentToolCall["name"], data: unknown): AgentToolOutput | null {
@@ -56,6 +57,11 @@ export function toolOutputOf(name: AgentToolCall["name"], data: unknown): AgentT
       const url = text("url");
       if (url === null) return null;
       return { kind: "artifact", action: name === "artifact.create" ? "created" : "updated", id, title, url };
+    }
+    case "ext.build": {
+      // (`title` is the extension's name; one that never loaded has no id, and so no card: there is no sheet to open.)
+      if (text("title") === null) return null;
+      return { kind: "extension", action: record["created"] === true ? "created" : "updated", id, title, waiting: record["waiting"] === true };
     }
     default:
       return null;

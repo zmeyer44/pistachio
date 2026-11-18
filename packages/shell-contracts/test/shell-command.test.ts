@@ -19,6 +19,13 @@ describe("shell command: notice", () => {
   });
 });
 
+describe("shell command: openExtensions", () => {
+  it("is the agent showing the person the extensions page, and carries nothing", () => {
+    expect(isShellCommand({ type: "openExtensions" })).toBe(true);
+    expect(isShellCommand({ type: "openExtension" })).toBe(false);
+  });
+});
+
 describe("shell command: toggleLibrary", () => {
   it("crosses from main as a bare command", () => {
     expect(isShellCommand({ type: "toggleLibrary" })).toBe(true);

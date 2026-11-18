@@ -14,11 +14,10 @@ import { nativeApi, shellApi } from "../../../api";
 type Phase = "idle" | "starting" | "recording" | "transcribing" | "thinking" | "done" | "failed";
 type Voice = "checking" | "ready" | "unavailable";
 
-// The models work without signing in (a Mac nobody signed in on is given an
-// anonymous account), so voice is missing only when control was unreachable —
-// or on the web, where there is no such thing as signed out.
+// The models come with the account, and the account step stands before this
+// one (on the web the person signed in on the way here), so voice is missing
+// only when control cannot be reached.
 const NO_VOICE = "Voice isn't available right now. Type your introduction below instead.";
-const NO_VOICE_SIGN_IN = "Voice isn't available right now. Type your introduction below, or sign in.";
 
 function clock(seconds: number): string {
   const whole = Math.floor(seconds);
@@ -31,28 +30,19 @@ function clock(seconds: number): string {
  * one editable before it becomes memory. Typing is always an option; it
  * is the only option when no model can transcribe, and the stage says so
  * instead of showing a mic that would fail.
- *
- * Under the introduction sits the walkthrough's one mention of an account:
- * a quiet "Or sign in" where the wizard says signing in could work
- * (`onSignIn`), and who is signed in once someone is (`signedInAs`).
  */
 export function AboutStep({
   intake,
   onIntake,
   onBusy,
-  onSignIn,
-  signedInAs = null,
   modelsKey = "",
 }: {
   intake: OnboardingIntake;
   onIntake: (next: OnboardingIntake) => void;
   onBusy: (busy: boolean) => void;
-  /** Opens the wizard's sign-in form; absent where no sign-in is on offer. */
-  onSignIn?: () => void;
-  signedInAs?: string | null;
   /**
-   * Changes when the models may have become reachable — the account state,
-   * since the anonymous account can land a moment after the wizard opens.
+   * Changes when the models may have become reachable — the account state:
+   * the step re-reads the model status when it does.
    */
   modelsKey?: string;
 }) {
@@ -180,7 +170,7 @@ export function AboutStep({
     <MockWindow testId="onboarding-about" className="max-h-full">
       <div className="scroll-thin flex max-h-[calc(100vh-200px)] flex-col gap-5 overflow-y-auto px-8 pb-8">
         {voice === "unavailable" ? (
-          <StageNotice tone="info">{onSignIn === undefined ? NO_VOICE : NO_VOICE_SIGN_IN}</StageNotice>
+          <StageNotice tone="info">{NO_VOICE}</StageNotice>
         ) : (
           <div className="flex flex-col items-center gap-3 py-2">
             <div className="relative grid size-32 place-items-center">
@@ -326,22 +316,6 @@ export function AboutStep({
               </div>
             ) : null}
           </div>
-        ) : null}
-
-        {signedInAs !== null ? (
-          <p className="text-center text-label-12 text-gray-700" data-testid="onboarding-signed-in">
-            Signed in as {signedInAs}
-          </p>
-        ) : onSignIn !== undefined ? (
-          <button
-            type="button"
-            data-testid="onboarding-sign-in"
-            disabled={busy}
-            onClick={onSignIn}
-            className="cursor-pointer self-center rounded-sm px-2 py-1 text-label-12 text-gray-900 underline-offset-2 hover:bg-alpha-100 hover:text-gray-1000 hover:underline disabled:cursor-default disabled:opacity-50"
-          >
-            Or sign in
-          </button>
         ) : null}
       </div>
     </MockWindow>

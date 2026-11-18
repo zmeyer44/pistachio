@@ -662,7 +662,12 @@ const mine = await pistachio.theme.get({ spaceId });        // what you set ther
 - **The accent** (`colors.accent`, `#rrggbb`) tints Pistachio's own surfaces and is its focus ring while
   your theme is in front. It must stand out at least **2:1 from both Pistachio's light ground and its
   dark one** — the person may be in either — or `set` rejects `INVALID_ARGUMENT` with the ratio and
-  which way to go ("too light … choose a deeper colour"). Mid-tones pass; near-white and near-black don't.
+  which way to go ("too light … choose a deeper colour"). Mid-tones pass; near-white and near-black don't —
+  and neither does a pastel: `#79b8ff` is 1.99:1 on the light ground and is refused, `#5b8def` passes. A "soft"
+  accent is a muted mid-tone, not a pale one. **Nothing checks this before the person turns the extension on**
+  (the status file only says whether it loads), and a rejected `set` shows nothing at all — so pick the accent
+  to pass, and set it in a way that keeps the backdrop if it does not:
+  `await pistachio.theme.set(theme).catch(() => pistachio.theme.set({ ...theme, colors: undefined }))`.
 - `INVALID_ARGUMENT` also for a picture that is missing, too large, or not a picture of its type.
 - **Making the picture.** You write text files, so a picture you make yourself is an **SVG** written
   into the folder (or use a gradient). Give it a `viewBox` and no `width`/`height`, draw with shapes

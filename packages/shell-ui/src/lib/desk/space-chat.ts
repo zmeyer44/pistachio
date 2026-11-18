@@ -1,4 +1,5 @@
 import type { ComposerAttachment } from "../chat-attachments";
+import type { FloatSpot } from "./answer-float";
 
 /**
  * A space's (tab group's) chat as the person left it, for this run of the
@@ -11,8 +12,15 @@ import type { ComposerAttachment } from "../chat-attachments";
  * answer-float.ts's spots.)
  */
 export interface SpaceChat {
-  /** The answer card was up. */
-  open: boolean;
+  /**
+   * The answer card was up when the person left. Absent for a space not left
+   * yet this run: `chatUpOnArrival` says what stands then. The space's own —
+   * a tab of Home's is a space of its own here, so the chat up beside one tab
+   * is not up beside the next (2026-11-17; until then it was kept with the
+   * place the card stands in, which every tab of Home shares, and a chat at
+   * Home's side came up again with every change of tab).
+   */
+  open?: boolean;
   /** "Whole conversation" was chosen in it. */
   whole: boolean;
   /** The message field's words, unsent. */
@@ -20,14 +28,22 @@ export interface SpaceChat {
   /** The files staged for the next message. */
   staged: ComposerAttachment[];
   /**
-   * Its conversation as it was when the person left: which, and how much had
-   * been said (null: none). Come back to with more said, or something asked,
-   * its card comes up to show it. Absent for a space not left yet.
+   * Its conversation as it was when the person left: which, how much had
+   * been said, and what stood asked of them (null: none). Come back to with
+   * more said, or something newly asked, its card comes up to show it.
+   * Absent for a space not left yet.
    */
-  left?: { runId: string; messages: number } | null;
+  left?: LeftChat | null;
 }
 
-const EMPTY: SpaceChat = { open: false, whole: false, draft: "", staged: [] };
+/** A conversation as its space was left with it. `asking`: the question, takeover or approval that stood open then, by its id. */
+export interface LeftChat {
+  runId: string;
+  messages: number;
+  asking?: string | null;
+}
+
+const EMPTY: SpaceChat = { whole: false, draft: "", staged: [] };
 
 const chats = new Map<string, SpaceChat>();
 
@@ -37,6 +53,39 @@ export function spaceChat(groupId: string): SpaceChat {
 
 export function keepSpaceChat(groupId: string, patch: Partial<SpaceChat>): void {
   chats.set(groupId, { ...spaceChat(groupId), ...patch });
+}
+
+/**
+ * Whether a space's chat is up as the desk comes to it (docs/desk-agent.md
+ * §1, "The chat is its space's"): as the person left it — up, or put away,
+ * and one they closed stays closed. A change of tab or of space never opens
+ * it by itself.
+ *
+ * Not left yet this run of the app, it is up only where it stood at its own
+ * space's side when Pistachio was last open and was not closed there
+ * (`FloatSpot.shut`): the chat a space keeps beside its windows. A tab of
+ * Home's stands in Home's place, not one of its own (`place` is not its id),
+ * and has no such word: where Home's chat stands says where one would come
+ * up, never that it does.
+ */
+export function chatUpOnArrival(groupId: string, place: string, spot: Pick<FloatSpot, "floating" | "zone" | "shut"> | null): boolean {
+  const left = chats.get(groupId)?.open;
+  if (left !== undefined) return left;
+  if (place !== groupId) return false;
+  return spot !== null && spot.floating && spot.zone === "chat" && spot.shut !== true;
+}
+
+/**
+ * Whether a conversation come back to has something new for the person
+ * (`SpaceChat.left`), and so brings its card up by itself: more said than
+ * when they left — the agent went on in the background — or something asked
+ * of them that was not asked then. A question that already stood open when
+ * they left, its card put away, is not asked again by every return.
+ */
+export function newSinceLeft(was: LeftChat | null, now: { runId: string; messages: number; asking: string | null }): boolean {
+  const same = was !== null && was.runId === now.runId;
+  if (same && now.messages > was.messages) return true;
+  return now.asking !== null && !(same && was.asking === now.asking);
 }
 
 const takers = new Map<string, (attachment: ComposerAttachment) => void>();

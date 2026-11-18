@@ -354,6 +354,8 @@ export interface ChatSpot {
   h: number;
   zone?: string;
   cw?: number;
+  /** At the side, and closed there by the person: it does not come up by itself (answer-float.ts). */
+  shut?: boolean;
 }
 
 /** The kept place of the chat of the space in front (or of `groupId`): null for one never taken off its Bar. */
@@ -378,7 +380,7 @@ export function keepChatSpot(shell: Page, spot: ChatSpot, groupId?: string): Pro
   );
 }
 
-/** The nub's menu let out, as a click on the nub lets it out: its droplets (the prompt, the microphone, past chats), drawn once the pages under them have given way. */
+/** The nub's menu let out, as a click on the nub lets it out: its droplets (the prompt, the microphone, past chats) — over a live page main's notch view draws them, the shell's own in place under it (veiled, and pressed here all the same). */
 export async function openNubMenu(shell: Page): Promise<void> {
   const nub = shell.getByTestId("desk-nub");
   if ((await nub.getAttribute("aria-expanded")) !== "true") {

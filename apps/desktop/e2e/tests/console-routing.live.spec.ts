@@ -82,12 +82,14 @@ test.describe.serial("the desk's chat answers each turn", { tag: ["@agent", "@de
   test.beforeAll(async () => {
     test.setTimeout(120_000);
     // Not under PISTACHIO_E2E: that flag keeps the account services — and with
-    // them every model — off. This is the app as installed, on a scratch
-    // profile that gets its own anonymous account.
+    // them every model — off. This is the app as built, on a scratch profile
+    // that asks for an anonymous account of its own (PISTACHIO_ANONYMOUS, a
+    // development run's switch): it has no account to sign in to, and
+    // without one the app would open on its sign-in screen.
     ({ app } = await launchApp({
       name: "console-routing",
       settings: { layout: { sidebar: "pinned" }, onboarding: { completed: true, completedAt: new Date().toISOString() } },
-      env: { PISTACHIO_E2E: undefined, PISTACHIO_AGENT_LIVE: "1" },
+      env: { PISTACHIO_E2E: undefined, PISTACHIO_AGENT_LIVE: "1", PISTACHIO_ANONYMOUS: "1" },
     }));
     shell = await shellPage(app);
     await shell.waitForLoadState("domcontentloaded");

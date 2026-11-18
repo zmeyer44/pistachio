@@ -378,13 +378,14 @@ export function isDeskPageInput(value: unknown): value is DeskPageInput {
 }
 
 /**
- * The desk's Bar, idle, drawn over the live pages under it (docs/desk.md,
+ * The desk's Bar's nub drawn over the live pages under it (docs/desk.md,
  * "The foot"): the "notch" chrome view, a utility view stacked above the tab
  * views (main/chrome-view.ts), since a live page paints over everything the
  * shell draws. The shell says where (the window's own coordinates: the box
- * in the desk's trailing foot corner the nub may fill, swelled) and what it
- * shows, while a live page is under it; null otherwise, when the nub is a
- * hole in what the shell draws instead.
+ * in the desk's trailing foot corner the nub may fill, swelled — and, its
+ * menu out, the box its droplets fan out in) and what it shows, while a live
+ * page is under it; null otherwise, when the nub is a hole in what the shell
+ * draws instead.
  */
 export interface DeskNotchFrame {
   /** The view's box: the desk's trailing foot corner is its own bottom-right corner. */
@@ -436,6 +437,16 @@ export interface DeskNotchFrame {
    * nub is, where the shell's own would be painted over. Each is up or not.
    */
   buttons: { close: boolean; side: boolean };
+  /**
+   * The nub's menu (DeskNub: the nub let go of the corner, a button of its
+   * own, and its three droplets): out or in since `at` (wall-clock ms). Over
+   * a live page the view draws it, as it draws the nub, so the page under it
+   * stays live and its own (2026-11-17: until then the menu was a cover, and
+   * the page under it a picture a press carried off). The view moves it on
+   * its own clock from the word it is given: one older than the menu's own
+   * motion is where the menu already is, drawn there at once.
+   */
+  menu: { open: boolean; at: number };
 }
 
 /**
@@ -580,7 +591,11 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
     typeof frame.buttons === "object" &&
     frame.buttons !== null &&
     typeof frame.buttons.close === "boolean" &&
-    typeof frame.buttons.side === "boolean"
+    typeof frame.buttons.side === "boolean" &&
+    typeof frame.menu === "object" &&
+    frame.menu !== null &&
+    typeof frame.menu.open === "boolean" &&
+    finite(frame.menu.at)
   );
 }
 
@@ -793,16 +808,22 @@ export function isDeskPipInput(value: unknown): value is DeskPipInput {
  * pill in the nub's lane (`status`): the shell's to send on as the pill's own.
  * Or, the pill's buttons above the nub drawn by the view (DeskNotchFrame's
  * `buttons`): one pressed (`bar`), and the pointer onto one or off them
- * (`hover`), for the shell's own tooltip beside it.
+ * (`hover`), for the shell's own tooltip beside it. Or, the nub's menu drawn
+ * by the view (DeskNotchFrame's `menu`): a droplet pressed (`menu`), the
+ * pointer onto one (`hover`, as for the buttons), and a press in the view's
+ * box beside them (`away`) — a press elsewhere, which puts the menu away as
+ * one on the page does.
  */
 export type DeskNotchInput =
   | "enter"
   | "leave"
   | "press"
+  | "away"
+  | { menu: DeskNotchDroplet }
   | { status: { id: string; action: string } }
   /** A band's chip in the lane was pressed (`button` null), one of its buttons, or — `remove` — its ×. */
   | { row: DeskNotchRowPress }
-  | { bar: DeskNotchButton }
+  | { bar: "close" | "side" }
   | { hover: DeskNotchButton | null };
 
 export interface DeskNotchRowPress {
@@ -814,14 +835,23 @@ export interface DeskNotchRowPress {
   remove: boolean;
 }
 
-export type DeskNotchButton = "close" | "side";
+/** The nub's droplets (DeskNub's ITEMS, round the fan from the foot up): the prompt, the microphone, past chats. */
+export type DeskNotchDroplet = "prompt" | "mic" | "chats";
 
-const DESK_NOTCH_BUTTONS: readonly string[] = ["close", "side"];
+export const DESK_NOTCH_DROPLETS: readonly DeskNotchDroplet[] = ["prompt", "mic", "chats"];
+
+/** What of the Bar's the view draws that the pointer may rest on, for the shell's tooltip beside it: one of the pill's buttons, or one of the menu's droplets. */
+export type DeskNotchButton = "close" | "side" | DeskNotchDroplet;
+
+const DESK_NOTCH_BUTTONS: readonly string[] = ["close", "side", ...DESK_NOTCH_DROPLETS];
+/** What a press may name (`bar`): the pill's buttons alone — a droplet pressed is `menu`. */
+const DESK_NOTCH_BAR: readonly string[] = ["close", "side"];
 
 export function isDeskNotchInput(value: unknown): value is DeskNotchInput {
-  if (value === "enter" || value === "leave" || value === "press") return true;
+  if (value === "enter" || value === "leave" || value === "press" || value === "away") return true;
   if (typeof value !== "object" || value === null) return false;
-  if ("bar" in value) return Object.keys(value).length === 1 && typeof value.bar === "string" && DESK_NOTCH_BUTTONS.includes(value.bar);
+  if ("menu" in value) return Object.keys(value).length === 1 && typeof value.menu === "string" && (DESK_NOTCH_DROPLETS as readonly string[]).includes(value.menu);
+  if ("bar" in value) return Object.keys(value).length === 1 && typeof value.bar === "string" && DESK_NOTCH_BAR.includes(value.bar);
   if ("hover" in value) return Object.keys(value).length === 1 && (value.hover === null || (typeof value.hover === "string" && DESK_NOTCH_BUTTONS.includes(value.hover)));
   if ("row" in value) {
     const press = value.row as Partial<DeskNotchRowPress> | null;

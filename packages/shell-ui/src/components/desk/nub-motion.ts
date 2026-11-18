@@ -274,28 +274,50 @@ export class NubMotion {
     return this.#lane;
   }
 
-  /** The nub out of the corner, a button of its own, and its droplets out of it. */
-  openMenu(): void {
+  /**
+   * The swell and the lane as the shell has them (DeskNotchFrame's `swelling` and `lane`), for main's notch view: read
+   * off the same wall clock there as here, so the view's nub and the shell's own swell and are drawn out as one — the
+   * view never starts a swell of its own a frame behind.
+   */
+  follow(swelling: Swelling, lane: Swelling): void {
+    this.#swelling = swelling;
+    this.#lane = lane;
+    this.#kick();
+  }
+
+  /**
+   * The nub out of the corner, a button of its own, and its droplets out of it. `settled`: out already — the notch
+   * view come up over a menu that has been out a while (DeskNotchFrame's `menu`) — and drawn there at once.
+   */
+  openMenu(settled = false): void {
     if (this.#menuOpen) return;
     this.#menuOpen = true;
     const now = performance.now();
     const scale = nubTimeScale();
-    const calm = reduced();
+    const calm = reduced() || settled;
     this.#free = { from: calm ? 1 : trackAt(this.#free, now), to: 1, at: now, delay: FREE_DELAY_MS, spring: FREE_OPEN, scale };
     this.#drops = this.#drops.map((track, i) => {
       this.#hidden[i] = this.#taken[i] === true;
       const from = calm ? 1 : trackAt(track, now);
       return { from, to: 1, at: now, delay: DROP_OPEN_STAGGER_MS[i] ?? 0, spring: DROP_OPEN, scale };
     });
+    if (settled) this.#paint = { from: 1, to: 1, at: now, ms: 0 };
     this.#kick();
   }
 
-  /** The droplets back into it, and it back into the corner. */
-  closeMenu(): void {
+  /** The droplets back into it, and it back into the corner. `settled`: in already (as `openMenu`'s), and drawn there at once. */
+  closeMenu(settled = false): void {
     if (!this.#menuOpen) return;
     this.#menuOpen = false;
     const now = performance.now();
     const scale = nubTimeScale();
+    if (settled) {
+      this.#free = { ...this.#free, from: 0, to: 0 };
+      this.#drops = this.#drops.map((track) => ({ ...track, from: 0, to: 0 }));
+      this.#paint = { from: 0, to: 0, at: now, ms: 0 };
+      this.#shapeKey = "";
+      return this.#kick();
+    }
     // (Reduced motion: they stay where they are while the fill fades, then are gone.)
     if (reduced()) return this.#kick();
     this.#free = { from: trackAt(this.#free, now), to: 0, at: now, delay: 0, spring: FREE_CLOSE, scale };

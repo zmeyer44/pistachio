@@ -37,8 +37,9 @@ export const AREAS = [
       `${UI}/{NotchApp,ShelfApp,PipApp,DragApp}.tsx`,
       `${UI}/lib/{dictation,recorder,pane-drag}.ts`,
       `${C}/desk*.ts`,
-      `${M}/{desk-bridge,desk-conversations,desk-glass,desk-layout,desk-scope,group-context-store,document-convert,chrome-view,spaces,page-health}.ts`,
-      // The window's glass under the notch view (main/desk-glass.ts): the desktop's own native module.
+      `${M}/{desk-bridge,desk-conversations,desk-glass,os-keys,desk-layout,desk-scope,group-context-store,document-convert,chrome-view,spaces,page-health}.ts`,
+      // The window's glass under the notch view (main/desk-glass.ts), and the OS's modifier keys (main/os-keys.ts): the
+      // desktop's own native modules.
       "apps/desktop/native/**",
       "apps/desktop/scripts/build-native.mjs",
       "packages/documents/**",
@@ -140,8 +141,13 @@ export const AREAS = [
       `${UI}/components/chat/**`,
       `${UI}/lib/{chat-attachments,chat-sources,chat-trace,run,linkify,markdown,smooth-text,panel,share}.ts`,
       `${C}/{chat-insert,run-fold,agent-glow,memory,artifacts,read-aloud}.ts`,
-      `${M}/{run-controller,run-hub,run-scope,model-provider,scripted-agent-model,agent-browser-tools,thread-store,memory-engine,memory-store,artifact-builder,artifact-store,chat-attach,feedback,read-aloud,capsule-broker,demo-page}.ts`,
+      `${M}/{run-controller,run-hub,run-scope,model-provider,scripted-agent-model,agent-browser-tools,pistachio-agent,thread-store,memory-engine,memory-store,artifact-builder,artifact-store,chat-attach,feedback,read-aloud,capsule-broker,demo-page}.ts`,
       "packages/{agent-runtime,protocol,runtime,evidence,adapters,run-view}/**",
+      // The person's own AI plan (docs/ai-plans.md): the sign-in, the plan's model, the line by the composer.
+      `${M}/ai-plans/**`,
+      `${UI}/lib/ai-plans/**`,
+      `${C}/ai-plans.ts`,
+      "apps/desktop/test/support/openai-standin.ts",
     ],
   },
   {

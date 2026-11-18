@@ -97,6 +97,7 @@ import { focusEmulationAttached, setFocusEmulation } from "./forced-focus";
 import { holdDebugger, releaseDebugger } from "./debugger-hold";
 import { freshenStills, glanceMoves } from "./glance-scope";
 import { CrashReloads, crashKind, DragWatch, pageSite, readPageDragReport, type PageDrag, type PageHealthEvent } from "./page-health";
+import { MODIFIER_KEYS, type ModifierKeys } from "./os-keys";
 import { APP_ICON_SCRIPT, APP_ICON_WORLD, pickAppIcon } from "./app-icon";
 import { PAGE_CORNERS_WORLD, pageCorners, pageCornersScript } from "./page-corners";
 import { ReaderStore, type ReaderActions } from "./reader-store";
@@ -629,6 +630,13 @@ export interface BrowserControllerHooks {
    */
   onDeskShift?: (held: boolean) => void;
   /**
+   * The modifier keys as the OS has them now (main/os-keys.ts), or null where
+   * that cannot be read. What the keyboard last said of them is only
+   * believed while the OS agrees (#syncDeskKeys): a key let go where this
+   * window never hears it would otherwise be held for good.
+   */
+  deskModifiersNow?: () => ModifierKeys | null;
+  /**
    * A desk page took a press, or Escape was struck in any view, while a desk
    * is up: the shell never hears a page's own input, and closes what it has
    * open over the desk (@pistachio/shell-contracts/desk DeskPageInput).
@@ -932,6 +940,8 @@ const SYNTHETIC_DRAG_HOLDER = "synthetic-drags";
 const DESK_STILL_SIZE_TRIES = 8;
 /** A capture of a desk page handed to the shell is granted if it is asked for this soon (Chromium's own ids last ten seconds). */
 const DESK_LIVE_GRANT_MS = 10_000;
+/** While a modifier key is believed down, how often the OS is asked whether it still is (#syncDeskKeys). */
+const DESK_KEY_WATCH_MS = 250;
 const DESK_MASK_BINDING = "__pistachioDeskMaskScroll";
 const DESK_MASK_SCRIPT = `(() => {
   if (window !== window.top) return [0, 0];
@@ -1293,6 +1303,8 @@ export class BrowserController {
   #deskKeyHeld = false;
   /** Shift is down, as the keyboard last said (the desk's snap key; onDeskShift). */
   #deskShiftHeld = false;
+  /** Asking the OS, now and then, whether the keys believed down still are (#watchDeskKeys); null while none is. */
+  #deskKeyWatch: ReturnType<typeof setInterval> | null = null;
   /** The desk's masked pages (DeskMaskState), by tab. */
   readonly #deskMasks = new Map<string, DeskMaskState>();
   /** The desk's zoomed pages (DeskZoomState), by tab. */
@@ -10139,7 +10151,11 @@ export class BrowserController {
     }
     if (desk === null && this.#deskGrab !== null) this.#endDeskGrab("cancel");
     // The next desk starts from the keys as they are then, and hears of them afresh.
-    if (desk === null) this.#deskShiftHeld = false;
+    if (desk === null) {
+      this.#deskShiftHeld = false;
+      this.#deskModifiers = [];
+      this.#watchDeskKeys();
+    }
     if (desk !== null && !this.#deskBlurWatch) {
       this.#deskBlurWatch = true;
       // Keys released outside the app are never seen: a window that loses
@@ -10147,6 +10163,9 @@ export class BrowserController {
       this.#window.on("blur", () => {
         this.#deskKeyHeld = false;
         this.#noteDeskShift(false);
+        // (None believed down: back in this window, the OS's word for them is taken afresh — #syncDeskKeys.)
+        this.#deskModifiers = [];
+        this.#watchDeskKeys();
         if (this.#deskGrab !== null) this.#endDeskGrab("cancel");
         for (const tabId of [...this.#deskCursors.keys()]) {
           const tab = this.#tabs.get(tabId);
@@ -10742,17 +10761,25 @@ export class BrowserController {
   noteDeskKey(input: Electron.Input, quiet = false): void {
     const desk = this.#desk;
     if (desk === null || (input.type !== "keyDown" && input.type !== "keyUp")) return;
-    this.#noteDeskShift(input.shift);
-    this.#deskModifiers = [
-      ...(input.shift ? (["shift"] as const) : []),
-      ...(input.control ? (["control"] as const) : []),
-      ...(input.alt ? (["alt"] as const) : []),
-      ...(input.meta ? (["meta"] as const) : []),
-    ];
+    this.#setDeskKeys(input);
     // (Quiet: the keys are followed, but no press is the desk's — the screenshot selector has them.)
     if (!quiet && input.type === "keyDown" && input.key === "Escape") this.#hooks.onDeskPageInput?.("escape");
+    this.#watchDeskKeys();
+  }
+
+  /**
+   * The modifier keys held down, as a key event's own flags say — or as the
+   * OS does (#syncDeskKeys): Shift passed on to the shell as it changes, the
+   * keys put back on the mouse events main sends on (#deskModifiers), and the
+   * grab key, which every desk page shows the open hand for.
+   */
+  #setDeskKeys(keys: ModifierKeys): void {
+    const desk = this.#desk;
+    if (desk === null) return;
+    this.#noteDeskShift(keys.shift);
+    this.#deskModifiers = MODIFIER_KEYS.filter((key) => keys[key]);
     if (desk.grab === null) return;
-    const held = desk.grab === "shift" ? input.shift : desk.grab === "alt" ? input.alt : input.meta;
+    const held = desk.grab === "shift" ? keys.shift : desk.grab === "alt" ? keys.alt : keys.meta;
     if (held === this.#deskKeyHeld) return;
     this.#deskKeyHeld = held;
     for (const tabId of desk.tabIds) {
@@ -10760,6 +10787,44 @@ export class BrowserController {
       if (tab === undefined || this.#deskGrab?.tabId === tabId) continue;
       this.#setDeskCursor(tab, held ? "grab" : null);
     }
+  }
+
+  /**
+   * The keys the keyboard last said are down, checked against the OS
+   * (hooks.deskModifiersNow). The key events are the keyboard's last word to
+   * this window, not the keyboard: a key let go where the window never hears
+   * it — ⌘⇧4 takes the keys for its crosshair, and Shift goes up there; a
+   * key released into another app's sheet — stayed down as far as the desk
+   * knew. Shift being the grab key and the snap key, every press on a page
+   * then grabbed its window, and every window moved snapped, until some key
+   * was pressed again (2026-11-17: "as if I'm holding down the shift key").
+   * So a key is believed down only while the OS agrees — and one the OS says
+   * is down, which no view was sent, is down. Asked as a press lands on a
+   * page and as the pointer comes onto one, and now and then for as long as
+   * any key is believed down (#watchDeskKeys). Where the OS cannot be asked
+   * (null), the key events stand, as they did.
+   */
+  #syncDeskKeys(): void {
+    if (this.#desk === null) return;
+    const real = this.#hooks.deskModifiersNow?.() ?? null;
+    if (real === null) return;
+    if (MODIFIER_KEYS.some((key) => real[key] !== this.#deskModifiers.includes(key))) this.#setDeskKeys(real);
+  }
+
+  /** The OS asked now and then while any modifier key is believed down, and no longer once none is (or it cannot be asked). */
+  #watchDeskKeys(): void {
+    const wanted = this.#desk !== null && this.#hooks.deskModifiersNow !== undefined && (this.#deskModifiers.length > 0 || this.#deskKeyHeld || this.#deskShiftHeld);
+    if (!wanted) {
+      if (this.#deskKeyWatch !== null) clearInterval(this.#deskKeyWatch);
+      this.#deskKeyWatch = null;
+      return;
+    }
+    if (this.#deskKeyWatch !== null) return;
+    this.#deskKeyWatch = setInterval(() => {
+      this.#syncDeskKeys();
+      this.#watchDeskKeys();
+    }, DESK_KEY_WATCH_MS);
+    this.#deskKeyWatch.unref?.();
   }
 
   /**
@@ -10848,6 +10913,12 @@ export class BrowserController {
     }
     const desk = this.#desk;
     if (desk === null || !desk.tabIds.includes(tabId)) return;
+    // What the keyboard last said of the grab key is only believed while the OS agrees: asked as a press lands, and as
+    // the pointer comes onto the page (the open hand, or none).
+    if (mouse.type === "mouseDown" || mouse.type === "mouseEnter") {
+      this.#syncDeskKeys();
+      this.#watchDeskKeys();
+    }
     const armed = desk.grab !== null && (this.#deskKeyHeld || holdsDeskModifier(mouse.modifiers, desk.grab));
     switch (mouse.type) {
       case "mouseMove":

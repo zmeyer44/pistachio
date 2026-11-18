@@ -13,18 +13,20 @@ import type { ShellRunSnapshot, ShellSnapshot, ShellTabsSnapshot } from "@pistac
 import type { RunSummary } from "@pistachio/protocol";
 import { setShellApi, type ShellApiBridge } from "../src/api";
 import { beginCloudStart, CLOUD_ARRIVAL_MS, cloudStartArrived, cloudStartContext, cloudStarting, cloudStartTaken, hearCloudStart, resetCloudStarts, settleCloudStart, watchCloudStarts, type CloudStart } from "../src/lib/desk/cloud-start";
-import { insertInSpace, keepSpaceChat, queueSpaceSend, resetSpaceChats, spaceChat, stageInSpace, takeStagedFor, takeTextFor } from "../src/lib/desk/space-chat";
+import { chatUpOnArrival, insertInSpace, keepSpaceChat, newSinceLeft, queueSpaceSend, resetSpaceChats, spaceChat, stageInSpace, takeStagedFor, takeTextFor } from "../src/lib/desk/space-chat";
 import { chatInsertElsewhere, selectRunIsOfTab, selectRunSettled, selectSpaceRun, useAppStore } from "../src/store";
 
 describe("a space's chat, as it was left", () => {
   afterEach(resetSpaceChats);
 
   it("is nothing for a space never left, and each space's own once kept", () => {
-    expect(spaceChat("g1")).toEqual({ open: false, whole: false, draft: "", staged: [] });
+    // (Whether its card was up is not said for a space never left: neither up nor put away.)
+    expect(spaceChat("g1")).toEqual({ whole: false, draft: "", staged: [] });
+    expect(spaceChat("g1").open).toBeUndefined();
     keepSpaceChat("g1", { open: true, draft: "half a thought" });
     keepSpaceChat("g2", { whole: true });
     expect(spaceChat("g1")).toEqual({ open: true, whole: false, draft: "half a thought", staged: [] });
-    expect(spaceChat("g2")).toEqual({ open: false, whole: true, draft: "", staged: [] });
+    expect(spaceChat("g2")).toEqual({ whole: true, draft: "", staged: [] });
     // Kept again in part: the rest stays as it was.
     keepSpaceChat("g1", { draft: "" });
     expect(spaceChat("g1").open).toBe(true);
@@ -38,6 +40,73 @@ describe("a space's chat, as it was left", () => {
     // (No conversation there when it was left: said so, not forgotten.)
     keepSpaceChat("g1", { left: null });
     expect(spaceChat("g1").left).toBeNull();
+  });
+});
+
+describe("whether a space's chat is up as the desk comes to it", () => {
+  afterEach(resetSpaceChats);
+
+  const SIDE = { floating: true, zone: "chat" as const };
+  const HOME = "home:profile-1";
+
+  it("is as the person left it, this run: up, or put away — and one they closed stays closed, wherever it stands", () => {
+    keepSpaceChat("g1", { open: true });
+    expect(chatUpOnArrival("g1", "g1", null)).toBe(true);
+    expect(chatUpOnArrival("g1", "g1", { ...SIDE, shut: true })).toBe(true);
+    // Closed at the side: the side is where it would come up, not a word that it does.
+    keepSpaceChat("g1", { open: false });
+    expect(chatUpOnArrival("g1", "g1", SIDE)).toBe(false);
+  });
+
+  it("not left yet this run, is up only at its own space's side, where it stood when Pistachio was last open", () => {
+    expect(chatUpOnArrival("g1", "g1", SIDE)).toBe(true);
+    // Closed there by the person before: it waits to be asked for.
+    expect(chatUpOnArrival("g1", "g1", { ...SIDE, shut: true })).toBe(false);
+    // Docked, floating free, in a tile, or never taken off its Bar: nothing brings it up.
+    expect(chatUpOnArrival("g1", "g1", { floating: false })).toBe(false);
+    expect(chatUpOnArrival("g1", "g1", { floating: true })).toBe(false);
+    expect(chatUpOnArrival("g1", "g1", { floating: true, zone: "left" })).toBe(false);
+    expect(chatUpOnArrival("g1", "g1", null)).toBe(false);
+    // (Something staged for it from a page meanwhile is no word about its card.)
+    keepSpaceChat("g2", { staged: [] });
+    expect(chatUpOnArrival("g2", "g2", SIDE)).toBe(true);
+  });
+
+  it("a tab of Home's never has its chat brought up by where Home's stands: a change of tab opens nothing", () => {
+    // Home's chat stands at the side (taken there beside another tab): this tab's was never opened.
+    expect(chatUpOnArrival("tab-b", HOME, SIDE)).toBe(false);
+    // The tab it is up beside keeps it, there and back; the next tab still has none.
+    keepSpaceChat("tab-a", { open: true });
+    expect(chatUpOnArrival("tab-a", HOME, SIDE)).toBe(true);
+    expect(chatUpOnArrival("tab-b", HOME, SIDE)).toBe(false);
+    // Closed beside that tab, it is closed there when the person is back.
+    keepSpaceChat("tab-a", { open: false });
+    expect(chatUpOnArrival("tab-a", HOME, SIDE)).toBe(false);
+  });
+});
+
+describe("a conversation come back to", () => {
+  const was = { runId: "run-1", messages: 4, asking: null };
+
+  it("brings its card up for more said since, or something newly asked", () => {
+    expect(newSinceLeft(was, { runId: "run-1", messages: 4, asking: null })).toBe(false);
+    expect(newSinceLeft(was, { runId: "run-1", messages: 6, asking: null })).toBe(true);
+    expect(newSinceLeft(was, { runId: "run-1", messages: 4, asking: "q-1" })).toBe(true);
+    // Another conversation is this space's now, with something asked: new to the person.
+    expect(newSinceLeft(was, { runId: "run-2", messages: 2, asking: "q-9" })).toBe(true);
+    expect(newSinceLeft(was, { runId: "run-2", messages: 9, asking: null })).toBe(false);
+    // A space with no conversation when it was left, or never left.
+    expect(newSinceLeft(null, { runId: "run-1", messages: 4, asking: null })).toBe(false);
+    expect(newSinceLeft(null, { runId: "run-1", messages: 4, asking: "q-1" })).toBe(true);
+  });
+
+  it("does not ask again, by every return, what already stood asked when the person left", () => {
+    const asked = { runId: "run-1", messages: 4, asking: "q-1" };
+    expect(newSinceLeft(asked, { runId: "run-1", messages: 4, asking: "q-1" })).toBe(false);
+    // Another question since is new.
+    expect(newSinceLeft(asked, { runId: "run-1", messages: 4, asking: "q-2" })).toBe(true);
+    // (Kept before the question was part of what is kept: asked as before.)
+    expect(newSinceLeft({ runId: "run-1", messages: 4 }, { runId: "run-1", messages: 4, asking: "q-1" })).toBe(true);
   });
 });
 

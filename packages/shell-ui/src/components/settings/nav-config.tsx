@@ -36,6 +36,7 @@ import {
   Settings,
   ShieldBan,
   ShieldCheck,
+  Sparkles,
   Layers,
 } from "lucide-react";
 import { SETTINGS_SECTIONS, type SettingsSection } from "@pistachio/shell-contracts/settings";
@@ -144,6 +145,7 @@ export const SETTINGS_NAV: NavSection[] = [
       { key: "bookmarks", icon: Bookmark, section: "bookmarks", note: "Saving pages, and what the model reads" },
       { key: "watchtower", icon: FileClock, section: "watchtower", note: "Saving what you read, and forgetting it" },
       { key: "integrations", icon: Plug, section: "integrations", note: "Gmail, Google Calendar, and other apps the agent may use" },
+      { key: "plan", icon: Sparkles, section: "plan", note: "Run the chat on your ChatGPT plan" },
     ],
   },
   {

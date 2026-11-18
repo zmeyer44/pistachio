@@ -889,6 +889,7 @@ export const SETTINGS_SECTIONS = {
   tabs: "Tabs",
   watchtower: "Watchtower",
   integrations: "Integrations",
+  plan: "AI plan",
   approvals: "Approvals & notifications",
   evidence: "Evidence",
   privacy: "Site data",

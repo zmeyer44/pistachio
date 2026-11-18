@@ -1093,6 +1093,7 @@ export class DemoShellHost {
   async getAccount(): Promise<AccountState> {
     return {
       state: "unenrolled",
+      required: false,
       email: null,
       userId: null,
       deviceId: null,

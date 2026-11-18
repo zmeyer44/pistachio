@@ -2,7 +2,7 @@
 
 A space shared live: the person on the Mac makes a link for one space, sends it, and whoever opens it in an ordinary browser sees that space's desk as it is this moment — its windows where they stand, their pages moving, the host's pointer — and is in it with them: their own cursor, a pen to draw over it, their face and voice, and, where the host allows it, their hands on a window. The bar is Tuple's: pairing that feels like sitting at one desk, not like watching a video of one.
 
-Desktop hosts, browsers join. Builds on `docs/desk.md` (windows, the stage, stills), `docs/spaces.md` (a space is a tab group in code), `docs/anonymous-accounts.md` (a signed-out Mac has an account). This is not `docs/shared-browser.md`: that moves one person's browsing between their devices; this puts several people in one desk at once.
+Desktop hosts, browsers join. Builds on `docs/desk.md` (windows, the stage, stills), `docs/spaces.md` (a space is a tab group in code), `docs/anonymous-accounts.md` (the account the specs host on; the desktop itself requires a sign-in since 2026-11-17). This is not `docs/shared-browser.md`: that moves one person's browsing between their devices; this puts several people in one desk at once.
 
 Normative: where code and this document disagree, one of them is a bug.
 
@@ -152,7 +152,7 @@ interface LiveWindow {
 
 All under `/v1/live`, in `services/control/src/live/` (routes registered on `v1` by `registerLiveRoutes`, schema in `src/db/schema.ts` + `src/db/migrate.ts` + `test/schema-parity.test.ts`), configured by `livekitFromEnv` (§11). Unconfigured, every route answers 503 `live_unavailable`.
 
-**Host routes** (device bearer; on the anonymous allow-list too — a signed-out Mac can host):
+**Host routes** (device bearer; on the anonymous allow-list too — a development run on an anonymous account can host, which is what the `@share` specs do):
 
 | Route | |
 | --- | --- |

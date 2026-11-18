@@ -8,6 +8,7 @@ import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { PistachioMark } from "./components/PistachioMark";
 import { ScreenshotOverlay } from "./components/ScreenshotOverlay";
 import { startExtensions } from "./lib/extensions/use-extensions";
+import { startAiPlans } from "./lib/ai-plans/use-ai-plans";
 import { updatePromptWaiting } from "./lib/update-prompt";
 import { useAppStore } from "./store";
 
@@ -29,20 +30,28 @@ export function App() {
   // it renders from, so a title tick does not re-render from the root.
   const ready = useAppStore((state) => state.snapshot !== null);
   const error = useAppStore((state) => state.error);
-  // Whether the walkthrough is coming, known BEFORE main's first answer: a
-  // native window states it synchronously (NativeSurfaceApi.launchState),
-  // so the frames before the snapshot can already wear the wizard's ground
-  // rather than the chrome. Read once, at the first render — the store
-  // itself is created while the entry's imports evaluate, before the entry
-  // has set the bridge. A stream surface has no such fact and waits as it
-  // did. The settings that arrive with the snapshot remain the authority.
-  const [firstRun] = useState(() => nativeApi()?.launchState().firstRun ?? false);
+  // Whether the wizard is coming — the walkthrough of a first run, or the
+  // sign-in screen of a Mac that is signed out — known BEFORE main's first
+  // answer: a native window states it synchronously
+  // (NativeSurfaceApi.launchState), so the frames before the snapshot can
+  // already wear the wizard's ground rather than the chrome. Read once, at
+  // the first render — the store itself is created while the entry's imports
+  // evaluate, before the entry has set the bridge. A stream surface has no
+  // such fact and waits as it did. The settings and the account that arrive
+  // with the snapshot remain the authority.
+  const [firstRun] = useState(() => {
+    const launch = nativeApi()?.launchState();
+    return launch !== undefined && (launch.firstRun || launch.signedOut);
+  });
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     // Extensions (docs/extensions.md): main publishes their snapshot rather than being asked for it, so the window
     // listens from the start (lib/extensions/use-extensions.ts).
     startExtensions();
+    // The person's own AI plan (docs/ai-plans.md): the same way, so a limit reached or a sign-in that lapsed is said
+    // wherever they are (lib/ai-plans/use-ai-plans.ts).
+    startAiPlans();
     void initialize().then((cleanup) => {
       unsubscribe = cleanup;
     });
@@ -79,6 +88,7 @@ export function App() {
   const downloadsOpen = useAppStore((state) => state.overlay === "downloads");
   const screenshotOpen = useAppStore((state) => state.screenshotSelecting);
   const onboardingOpen = useAppStore((state) => state.onboardingOpen);
+  const onboardingSignIn = useAppStore((state) => state.onboardingSignIn);
   const reportOverlayActive = useAppStore((state) => state.reportOverlayActive);
   useEffect(() => {
     void reportOverlayActive(shellOverlayActive);
@@ -143,7 +153,9 @@ export function App() {
           {/* Mounted over the live chrome, not instead of it: the theme step's
               changes show through as the wizard fades, and the layout under it
               is already reported and laid out when the browser is revealed. */}
-          {onboardingOpen ? <OnboardingWizard /> : null}
+          {/* Keyed by what it is up for: the sign-in screen taking a walkthrough's
+              place is another wizard, not the same one a step further on. */}
+          {onboardingOpen ? <OnboardingWizard key={onboardingSignIn ? "sign-in" : "walkthrough"} /> : null}
           {error === null ? null : (
             <div
               role="alert"

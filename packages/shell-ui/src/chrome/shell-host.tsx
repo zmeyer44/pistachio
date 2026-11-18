@@ -14,6 +14,7 @@ import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
 import { announceAway, announceClosed } from "../lib/away-actions";
 import { askDesk, deskAvailable, newTabAsChosen } from "../lib/desk/open";
+import { openExtensionsPage } from "../lib/extensions/actions";
 import { extensionsRequest } from "../lib/extensions/use-extensions";
 import { openLiveCard } from "../lib/live/actions";
 import {
@@ -316,6 +317,10 @@ export function runShellCommand(command: ShellCommand): void {
       break;
     case "notice":
       s.showNotice(command.message, command.tone === undefined ? {} : { tone: command.tone });
+      break;
+    case "openExtensions":
+      // The agent showed the person the extensions page (docs/agent-pistachio.md §3).
+      openExtensionsPage();
       break;
     case "askDesk":
       // An extension's ask (docs/extensions.md §5 `agent.ask`): the Bar holds it for the person to send, or not.

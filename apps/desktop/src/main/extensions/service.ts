@@ -123,7 +123,7 @@ import { RUNAWAY_COUNT, TriggerRunner, attendedInvocation, staysInHand, staysWok
 import { CompleteCalls } from "./complete";
 import { triggerNext, triggerState, triggerStatus, type TriggerWorld } from "./triggers";
 import { ExtensionScope, isPrivateAddress } from "./scope";
-import { StatusWriter, type LogLine } from "./status";
+import { StatusWriter, type LogLine, type StatusFile } from "./status";
 import { ExtensionStorage } from "./storage";
 import { pageNameOf, PanelHost, ViewRegistry, extensionOrigin, type ViewIdentity } from "./views";
 import { WorkerHost } from "./web-worker";
@@ -429,6 +429,8 @@ export class ExtensionService {
   readonly #toolProgress = new Map<string, (text: string) => void>();
   /** When an author turn last wrote into a folder, and when each extension was last read from its folder (by id). */
   readonly #agentWrittenAt = new Map<string, number>();
+  /** What each commissioned build was asked to call its extension, by the draft's slug (`agentDraft`): its name until the folder says one. */
+  readonly #buildNames = new Map<string, string>();
   readonly #loadedAt = new Map<string, number>();
   /** Whether the Mac's keychain seals secrets here (safeStorage): without it a secret setting is refused, never written in the clear. */
   #secretsKept = false;
@@ -1490,6 +1492,86 @@ export class ExtensionService {
       this.#log(entry, { at: Date.now(), context: "main", level: "warn", message: "paused: Pistachio's agent changed it; it runs again once the person approves" });
     }
     this.#publish();
+  }
+
+  /* ---------------------- built in a conversation (docs/agent-pistachio.md §4) ---------------------- */
+
+  /**
+   * The installed extensions as the agent's `extensions_list` reads them: the rows the extensions page draws, each
+   * with — for one of the person's own in the dev folder, the only kind a build may change — its folder's name.
+   */
+  agentExtensions(): Array<{ info: ExtensionInfo; slug: string | null }> {
+    return this.#registry.list().map((record) => ({ info: this.#info(record), slug: this.#buildable(record) }));
+  }
+
+  /** The slug `extension_build` takes for `record`: its folder's name, when it is a Pistachio extension in the dev folder. */
+  #buildable(record: ExtensionRecord): string | null {
+    if (record.kind !== "pistachio" || record.source.type !== "dev") return null;
+    const parent = this.#devFolder();
+    return record.source.path !== parent && isWithin(parent, record.source.path) ? basename(record.source.path) : null;
+  }
+
+  /**
+   * The folder a commissioned build writes (`extension_build`): a new, empty one named for `name` — or the one
+   * `extension` names, a slug or an id from `agentExtensions`, or a draft of this session's that never loaded. Taken
+   * at once (`DraftFolders.adopt`): main starts the builder itself, with no message between. Throws with a sentence
+   * for an extension that is not there, or not a build's to change (Chrome's, Pistachio's own, one loaded from
+   * elsewhere). What is written lands as any draft does: waiting on the person, an approved one paused first.
+   */
+  agentDraft(input: { name: string; extension: string | null }): { slug: string; created: boolean } {
+    if (input.extension === null) {
+      const wasOn = this.#options.settings().developerMode;
+      const folder = this.#emptyDraft(input.name);
+      // (Nothing turns itself on quietly: the folder a build writes to is watched from now.)
+      if (!wasOn) this.#window?.notice("Developer mode is on: Pistachio is writing an extension for you to review.");
+      const slug = this.#drafts.adopt(folder);
+      this.#buildNames.set(slug, input.name);
+      return { slug, created: true };
+    }
+    const wanted = input.extension;
+    const held = this.#drafts.folderOf(wanted);
+    if (held !== null && existsSync(held)) {
+      this.#buildNames.set(wanted, input.name);
+      return { slug: wanted, created: false };
+    }
+    const record = this.#registry.list().find((candidate) => {
+      const slug = this.#buildable(candidate);
+      return slug !== null && (slug === wanted || candidate.id === wanted);
+    });
+    if (record === undefined || record.source.type !== "dev") {
+      throw new Error(`There is no extension "${wanted}" that a build can change. extensions_list gives a slug for each one that can be; a Chrome extension, one of Pistachio's own and one loaded from another folder cannot.`);
+    }
+    this.#requireDevFolder();
+    const slug = this.#drafts.adopt(record.source.path);
+    this.#buildNames.set(slug, input.name);
+    return { slug, created: false };
+  }
+
+  /**
+   * What a build's folder came to, once the builder stopped: the status Pistachio wrote after the last save (the
+   * watcher and the reload given their moment, as `extension_status` gives them), and the extension's row when it
+   * loads. `name`: what the build was asked to call it, for a folder that names nothing yet.
+   */
+  async agentOutcome(slug: string): Promise<{ slug: string; name: string; status: StatusFile | null; info: ExtensionInfo | null }> {
+    const name = this.#buildNames.get(slug) ?? slug;
+    const folder = this.#drafts.folderOf(slug);
+    if (folder === null) return { slug, name, status: null, info: null };
+    let status: StatusFile | null = null;
+    try {
+      const read = JSON.parse(await this.#drafts.status(slug)) as Partial<StatusFile>;
+      // (The placeholder for a folder with no status yet has none of these.)
+      if (Array.isArray(read.manifestErrors) && Array.isArray(read.runtimeErrors)) status = read as StatusFile;
+    } catch {
+      status = null;
+    }
+    const record = this.#registry.findByPath(folder);
+    return { slug, name, status, info: record === null ? null : this.#info(record) };
+  }
+
+  /** A build started or stopped writing the draft `slug` names (the Ledge's shimmer). */
+  setBuilding(slug: string, on: boolean): void {
+    const folder = this.#drafts.folderOf(slug);
+    if (folder !== null) this.setDrafting(folder, on);
   }
 
   /** Before an author turn writes into `folder`: an approved extension there is paused first, so the reload keeps it so. */
@@ -3533,13 +3615,19 @@ export class ExtensionService {
 
   /** The agent's draft (docs/extensions.md §8): an empty folder in the dev folder; what lands there waits on approval. */
   #draftFolder(name: string): ExtensionResponse {
+    const folder = this.#emptyDraft(name);
+    // The author turn that writes it carries this token (the Bar's prompt says it), and no other turn can.
+    return { type: "folder", path: folder, author: this.#drafts.add(folder) };
+  }
+
+  /** An empty folder of the dev folder named for `name` (Developer mode on, if it was not): a draft's place. */
+  #emptyDraft(name: string): string {
     const parent = this.#requireDevFolder();
     const slug = folderSlug(name);
     let folder = join(parent, slug);
     for (let n = 2; existsSync(folder) && readdirSync(folder).length > 0; n += 1) folder = join(parent, `${slug}-${String(n)}`);
     mkdirSync(folder, { recursive: true });
-    // The author turn that writes it carries this token (the Bar's prompt says it), and no other turn can.
-    return { type: "folder", path: folder, author: this.#drafts.add(folder) };
+    return folder;
   }
 }
 

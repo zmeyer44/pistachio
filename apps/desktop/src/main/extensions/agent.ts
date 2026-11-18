@@ -15,7 +15,8 @@
  *   (`draftFolder`), each claimed once with the token the shell was handed,
  *   and the three things the author tools do in one: write a file (≤ 256 KB,
  *   a relative path, never `..`, never `.pistachio/**`, never through a
- *   symlink, never a manifest naming `<all_urls>`), read a file or the
+ *   symlink, never a manifest naming `<all_urls>`, never an accent colour
+ *   `theme.set` would reject once it ran), read a file or the
  *   listing, and read the status file once the watcher has reloaded.
  */
 
@@ -25,6 +26,7 @@ import { basename, dirname, join, relative, sep } from "node:path";
 import { ExtError, type ExtInvokeMap, type Json } from "@pistachio/extension-api";
 import { isEverySite, type Capability } from "@pistachio/extension-api/capabilities";
 import type { PistachioManifest } from "@pistachio/extension-api/manifest";
+import { accentRefusal } from "@pistachio/extension-api/theme";
 import type { ExtensionDraftReading, ExtensionToolSpec } from "@pistachio/agent-runtime";
 import { LEDGER_TOOL_INPUT_CHARS, type LedgerLine } from "./ledger";
 import { STATUS_DIR } from "./status";
@@ -190,6 +192,22 @@ export function manifestAsksAllUrls(text: string): boolean {
   }
 }
 
+/**
+ * Why a file's text would be refused once it runs, where that can be read off the file: an accent colour written
+ * out in it (`accent: "#79b8ff"`) that `theme.set` would reject (docs/primitives.md §4: 2:1 against both grounds).
+ * A draft is only checked for what stops it LOADING, and a theme is set when the person turns the extension on —
+ * so an accent a shade too pale would load, be approved, and then show nothing. Said at the save instead, in
+ * `theme.set`'s own words, while the author can still pick another. Null when nothing in it would be.
+ */
+export function draftRuntimeRefusal(path: string, content: string): string | null {
+  if (!/\.(?:[cm]?[jt]s|json)$/i.test(path)) return null;
+  for (const match of content.matchAll(/\baccent["']?\s*:\s*["'](#[0-9a-fA-F]{6})["']/g)) {
+    const refusal = accentRefusal(match[1]!);
+    if (refusal !== null) return `${path}: ${refusal}. theme.set would reject it once the extension runs, and nothing would show: fix the colour and save again`;
+  }
+  return null;
+}
+
 export interface DraftFoldersDeps {
   /** Before a file is written: the service pauses an approved extension in that folder (`markAgentChanged`). */
   beforeWrite?(folder: string): void;
@@ -217,6 +235,23 @@ export class DraftFolders {
     const token = randomBytes(16).toString("hex");
     this.#drafts.set(slug, { folder, token, claimed: false });
     return { slug, token };
+  }
+
+  /**
+   * A folder main itself is having written — `extension_build`'s builder (docs/agent-pistachio.md §4), which the
+   * conversation's agent commissioned and main started: taken at once, with no token to carry, since no message
+   * stands between the folder's making and the turn that writes it. Its slug (the folder's name).
+   */
+  adopt(folder: string): string {
+    const slug = basename(folder);
+    this.#drafts.set(slug, { folder, token: randomBytes(16).toString("hex"), claimed: true });
+    return slug;
+  }
+
+  /** The folder a taken draft is, by its slug; null for one this session does not hold, or not yet taken. */
+  folderOf(slug: string): string | null {
+    const draft = this.#drafts.get(slug);
+    return draft === undefined || !draft.claimed ? null : draft.folder;
   }
 
   /** Whether `folder` is one of this session's drafts. */
@@ -282,6 +317,9 @@ export class DraftFolders {
     if (parts.length === 1 && (parts[0] as string).toLowerCase() === "pistachio.json" && manifestAsksAllUrls(content)) {
       refuse('pistachio.json may not ask for "<all_urls>": name the sites it needs in "hosts", or use a gesture grant (the guide, §4)');
     }
+    // (What would only fail once the person had turned it on, said now: draftRuntimeRefusal.)
+    const later = draftRuntimeRefusal(parts.join("/"), content);
+    if (later !== null) refuse(later);
     const target = this.#resolve(folder, parts, true);
     this.#deps.beforeWrite?.(folder);
     // A temp file renamed over the target: the watcher sees the whole file at once, and a link put there meanwhile is

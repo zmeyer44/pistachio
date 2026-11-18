@@ -1,7 +1,9 @@
 /**
  * The Bar's nub over a live page is main's notch view, and the pointer on
  * it swells the nub (docs/desk.md, "The foot") and asks the page under what
- * the nub opens to give way. The view goes from under the pointer once the
+ * the nub opens to give way (its menu is the view's to draw over the page,
+ * since 2026-11-17; what the menu opens — the conversations, the pill — is a
+ * cover still). The view goes from under the pointer once the
  * page is a still, so it never hears the pointer go, and shown again — a
  * window brought down under the nub, one filling the desk — its page has
  * the pointer there still: the coming it then reported was no one's. The
@@ -145,21 +147,42 @@ test("the notch view's word that the pointer came is the OS pointer's to confirm
     // (Before its tooltip's delay: the band the tooltip appears in is a cover, below.)
     await expect(win).not.toHaveAttribute("data-drawn", "");
     expect(await notchView(app)).not.toBeNull();
-    // A press there lets out the menu: the page under it gives way, and the view goes from under the pointer.
+    // A press there lets out the menu, which the view draws too (2026-11-17): the page under it stays live, and the
+    // view stays over it, its box now the droplets' fan.
     await pressOnNotch(app, onNub.x + 2, onNub.y);
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await expect.poll(async () => (await notchView(app))?.height ?? 0).toBeGreaterThanOrEqual(132);
+    await expect(win).not.toHaveAttribute("data-drawn", "");
+    // What the menu opens is a cover still. Past chats pressed in the view: the conversations stand in the nub's box,
+    // the page under them gives way, and the view goes from under the pointer.
+    const chats = await app.evaluate(async ({ webContents }) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"))!;
+      const read = `(() => { const el = document.querySelector('.desk-nub-menu[data-open] [data-testid="desk-nub-chats"]'); if (!el || getComputedStyle(el).pointerEvents === "none") return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+      // (Once it has come to rest out of the nub: on its way it takes no pointer.)
+      for (let tries = 0; tries < 60; tries++) {
+        const at = (await contents.executeJavaScript(read)) as { x: number; y: number } | null;
+        if (at !== null) return at;
+        await new Promise((done) => setTimeout(done, 50));
+      }
+      throw new Error("the view's past-chats droplet never came out");
+    });
+    await moveOnNotch(app, chats.x, chats.y);
+    await pressOnNotch(app, chats.x, chats.y);
+    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
     await expect(win).toHaveAttribute("data-drawn", "");
     await expect.poll(() => notchView(app)).toBeNull();
 
     // Off up the page with nothing the shell hears (the view is gone from under it, the window under the nub a picture
-    // the pointer never crossed): the nub lets go of it all the same; the menu put back, the window is its live page
-    // again, and the view is back over it.
+    // the pointer never crossed): the nub lets go of it all the same; the conversations and the menu put back, the
+    // window is its live page again, and the view is back over it, the nub's own box.
     await pointerAt(app, stage.x + stage.width / 2, stage.y + 200);
     await expect(nub).not.toHaveAttribute("data-hovered", "", { timeout: 3_000 });
     await shell.keyboard.press("Escape");
+    await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(0);
+    await shell.keyboard.press("Escape");
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
     await expect(win).not.toHaveAttribute("data-drawn", "");
-    await expect.poll(() => notchView(app)).not.toBeNull();
+    await expect.poll(async () => (await notchView(app))?.height ?? null).toBe(notch.height);
     await expect(nub).not.toHaveAttribute("data-hovered", "");
 
     // What the nub is for, which its mark alone does not say: resting on the view, the nub's tooltip opens as it does
@@ -253,7 +276,7 @@ test("over a live page the nub is the window's own glass with the nub painted on
       expect(await nub.evaluate((el) => getComputedStyle(el).backgroundImage)).toBe(gutter.image);
 
       // A paint of it: at the nub's face, the nub over its outline, which is opaque; at the box's far corner, neither.
-      const face = await nub.locator(".desk-notch-view-face").evaluate((el) => {
+      const face = await nub.locator(".desk-nub-face").evaluate((el) => {
         const box = el.getBoundingClientRect();
         return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
       });

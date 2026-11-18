@@ -271,6 +271,12 @@ export interface ExtensionAuthorInput {
   host: ExtensionAuthorHost;
   slug: string;
   guide: string;
+  /**
+   * The author is a builder the conversation's agent commissioned with `extension_build`
+   * (docs/agent-pistachio.md §4), not the `/extension` thread's own turn: nobody is there to ask, so it has the
+   * three draft tools alone, and its reply is a report to the agent that asked, who tells the person.
+   */
+  commissioned?: boolean;
 }
 
 /** The largest file an author turn writes. */
@@ -344,20 +350,28 @@ export function extensionAuthorTools(author: Pick<ExtensionAuthorInput, "host" |
 }
 
 /** The author turn's prompt: what to do, the folder, and the guide every coding agent reads (`AGENTS.md`). */
-export function authorInstructions(author: Pick<ExtensionAuthorInput, "slug" | "guide">, now: Date): string {
+export function authorInstructions(author: Pick<ExtensionAuthorInput, "slug" | "guide" | "commissioned">, now: Date): string {
   const today = now.toISOString().slice(0, 10);
   const id = `dev.local.${author.slug.replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "extension"}`;
+  const commissioned = author.commissioned === true;
+  // Who is there: the person, in the `/extension` thread — or, for a builder, only the agent that commissioned it.
+  const asking = commissioned
+    ? "- You have no browser, pages, mail, notes or memory in this turn, and need none: write from the guide below. Nobody is there to ask: the message you were given is the whole of the wish. Where it leaves a choice open, make the plain one and say in your report what you chose."
+    : "- You have no browser, pages, mail, notes or memory in this turn, and need none: write from the guide below. Ask the person with ask_user or ask_user_text only when a choice materially changes what you write.";
+  const replying = commissioned
+    ? "- When it loads cleanly, reply with a short report for the agent that asked for this, who will tell the person: what it does, how the person uses it (its / command, its menu item, its panel or page, or that it applies by itself once it is on), what it asks to be allowed, the schedule in the status's own words if it has one, and every choice you made that the message did not. If you could not make it load, say which errors remain. Do not paste the code."
+    : "- When it loads cleanly, reply in a few sentences: what it does, how to use it (its / command, its tool for you, its panel or page), and what it asks for — then say the person turns it on from the approval sheet in Pistachio (the amber dot on the Ledge). Do not paste the code.";
   return `You are Pistachio, writing a Pistachio extension for the person in their browser, Pistachio. Today is ${today}.
 
-Pistachio made a draft folder for it in the person's extensions folder: its slug is "${author.slug}", and every tool takes that slug. Write the extension into the draft folder; read the status after each save; stop when the status shows no errors and tell the person what it does and what it asks for — the person approves it in Pistachio.
+Pistachio made a draft folder for it in the person's extensions folder: its slug is "${author.slug}", and every tool takes that slug. Write the extension into the draft folder; read the status after each save; stop when the status shows no errors and ${commissioned ? "report what it does and what it asks for" : "tell the person what it does and what it asks for"} — the person approves it in Pistachio.
 
 How this turn works:
 - Write pistachio.json first with extension_draft_write, then every file it names, one file a call. Use the id "${id}" unless the person named one.
 - After each save, call extension_status: it is .pistachio/status.json, which Pistachio rewrites when it reloads the folder. Fix every entry of manifestErrors and runtimeErrors, save again, and read the status again. Its state is "needs-approval" (or "paused") when it loads cleanly: that is the person's step, never yours.
 - Ask for the fewest capabilities the extension needs, and never "<all_urls>": prefer a gesture grant to "pages:read" and hosts, as the guide says. Pistachio refuses a manifest that names "<all_urls>".
 - A wish with a time in it ("only on Sundays", "every weekday at nine") is a trigger declared in pistachio.json, never a timer in the worker: Pistachio keeps the clock and wakes the worker (the guide, "Running by itself"). After saving, read the status's "triggers": "says" is the line the person will be shown, and "next" lists every change of the next seven days. If that is not the schedule they asked for, fix the manifest. In your reply, say the schedule in those words.
-- You have no browser, pages, mail, notes or memory in this turn, and need none: write from the guide below. Ask the person with ask_user or ask_user_text only when a choice materially changes what you write.
-- When it loads cleanly, reply in a few sentences: what it does, how to use it (its / command, its tool for you, its panel or page), and what it asks for — then say the person turns it on from the approval sheet in Pistachio (the amber dot on the Ledge). Do not paste the code.
+${asking}
+${replying}
 - Write in Markdown, lightly.
 
 The guide to writing a Pistachio extension (AGENTS.md). Where it says to read .pistachio/status.json, call extension_status; where it says to write files in the folder, call extension_draft_write.

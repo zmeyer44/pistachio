@@ -52,6 +52,100 @@ function pressThrough(app: ElectronApplication, x: number, y: number): Promise<s
   );
 }
 
+/**
+ * A press dragged through the window from one point of its content box to another, as the OS would land it: on the
+ * topmost view at the first point, else the shell. Which page took it.
+ */
+function dragThrough(app: ElectronApplication, from: { x: number; y: number }, to: { x: number; y: number }): Promise<string> {
+  return app.evaluate(
+    async ({ BrowserWindow }, { from, to }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (window === undefined) throw new Error("Pistachio window is unavailable");
+      let target = window.webContents;
+      let origin = { x: 0, y: 0 };
+      const views = window.contentView.children;
+      for (let i = views.length - 1; i >= 0; i--) {
+        const view = views[i]!;
+        if (!("webContents" in view) || !view.getVisible()) continue;
+        const bounds = view.getBounds();
+        if (from.x < bounds.x || from.y < bounds.y || from.x >= bounds.x + bounds.width || from.y >= bounds.y + bounds.height) continue;
+        target = (view as WebContentsView).webContents;
+        origin = { x: bounds.x, y: bounds.y };
+        break;
+      }
+      const at = (point: { x: number; y: number }): { x: number; y: number } => ({ x: Math.round(point.x - origin.x), y: Math.round(point.y - origin.y) });
+      const pause = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+      target.sendInputEvent({ type: "mouseMove", ...at(from) });
+      await pause(20);
+      target.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...at(from) });
+      for (let step = 1; step <= 8; step++) {
+        await pause(16);
+        target.sendInputEvent({ type: "mouseMove", button: "left", x: at(from).x + ((at(to).x - at(from).x) * step) / 8, y: at(from).y + ((at(to).y - at(from).y) * step) / 8 });
+      }
+      await pause(30);
+      target.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...at(to) });
+      await pause(60);
+      return target.getURL();
+    },
+    { from, to },
+  );
+}
+
+/** Where something main's notch view draws is, in the view's own box (its centre), once it has come to rest there; null if it draws none. */
+async function notchSpot(app: ElectronApplication, selector: string): Promise<{ x: number; y: number }> {
+  const read = (): Promise<{ x: number; y: number } | null> =>
+    app.evaluate(async ({ BrowserWindow }, query) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      const view = window?.contentView.children.find(
+        (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#notch") && child.getVisible(),
+      ) as WebContentsView | undefined;
+      if (view === undefined) return null;
+      return (await view.webContents.executeJavaScript(
+        `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+      )) as { x: number; y: number } | null;
+    }, selector);
+  let last: { x: number; y: number } | null = null;
+  await expect
+    .poll(
+      async () => {
+        const now = await read();
+        const still = now !== null && last !== null && Math.abs(now.x - last.x) < 0.5 && Math.abs(now.y - last.y) < 0.5;
+        last = now;
+        return still;
+      },
+      { intervals: [80], timeout: 5_000 },
+    )
+    .toBe(true);
+  return last!;
+}
+
+/** A press in main's notch view at a point of its own box, as its page hears one. */
+function pressNotch(app: ElectronApplication, at: { x: number; y: number }, press = true): Promise<void> {
+  return app.evaluate(
+    async ({ webContents }, { x, y, press }) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"));
+      if (contents === undefined) throw new Error("no notch view");
+      contents.sendInputEvent({ type: "mouseMove", x, y });
+      await new Promise((done) => setTimeout(done, 30));
+      if (!press) return;
+      contents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, x, y });
+      await new Promise((done) => setTimeout(done, 40));
+      contents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, x, y });
+      await new Promise((done) => setTimeout(done, 60));
+    },
+    { x: Math.round(at.x), y: Math.round(at.y), press },
+  );
+}
+
+/** What main's notch view says of its own page, read there. */
+function inNotch<T>(app: ElectronApplication, script: string): Promise<T> {
+  return app.evaluate(async ({ webContents }, source) => {
+    const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"));
+    if (contents === undefined) throw new Error("no notch view");
+    return (await contents.executeJavaScript(source)) as never;
+  }, script) as Promise<T>;
+}
+
 /** The notch view on screen: its box in the window, or null. */
 function notchBounds(app: ElectronApplication): Promise<Box | null> {
   return app.evaluate(({ BrowserWindow }) => {
@@ -138,6 +232,121 @@ test("the pill out, the page under it stays live and takes a click; the pill's b
     await reachBar(shell);
     await expect(shell.getByTestId("desk-bar-input")).toHaveValue("A question to keep");
     await capture(app, shell, "03-back-at-the-foot.png");
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * The nub's menu out, the page under it stays live (2026-11-17). Until then the menu was a cover wherever it opened:
+ * the nub's box and the pill's place along the foot, so every page that reached the foot — every filled one — was its
+ * still for as long as the three droplets were out, and a press on that picture was a press on the window: dragged, it
+ * carried the window off (one filling the desk let go of it and shrank). Now the menu over a live page is main's notch
+ * view's to draw, as the nub is: the page under it is its own, a press on it the page's — and puts the menu away, as a
+ * press elsewhere always has — and a droplet pressed in the view is the Bar's.
+ */
+test("the nub's menu out, the page under it stays live: a drag on it is the page's and carries no window off; the droplets over it are the notch view's", { tag: ["@desk"] }, async () => {
+  test.setTimeout(90_000);
+  const { app, shell } = await launchDesk({ name: "nub-menu-live" });
+  try {
+    const [invoice] = (await openTabs(shell, [INVOICES])) as [string];
+    await createGroup(shell, "nub-menu-live", [invoice], "Northstar", "green");
+    await selectTab(shell, invoice);
+    await selectSpace(shell, "nub-menu-live");
+    await settled(shell, app);
+    const stage = await box(shell, ".desk-stage");
+    const win = shell.locator(windowSelector(invoice));
+    await expect(win).toHaveCount(1);
+    const menu = shell.locator('[data-testid="desk-nub-menu"][data-open]');
+    const filled = await box(shell, windowSelector(invoice));
+    const page = await pageAt(app, INVOICES);
+    await page.evaluate(() => {
+      const state = window as unknown as { __heard: string[] };
+      state.__heard = [];
+      for (const type of ["mousedown", "mouseup", "click"]) document.addEventListener(type, () => state.__heard.push(type), true);
+    });
+    const heard = (): Promise<string[]> => page.evaluate(() => (window as unknown as { __heard: string[] }).__heard);
+
+    // The page fills the desk, live, so the idle nub over it is the notch view: pressed there, its menu comes out.
+    const idle = await notchBounds(app);
+    expect(idle).not.toBeNull();
+    await pressNotch(app, { x: idle!.width - 21, y: idle!.height - 21 });
+    await expect(menu).toHaveCount(1);
+    await settled(shell, app);
+
+    // The page did not give way: no still, its view on screen down to the foot. The menu is the view's — its box the
+    // droplets' fan, in the desk's corner, its three droplets out in it — and the shell's own stands veiled under it.
+    await expect(win).not.toHaveAttribute("data-drawn", "");
+    const live = (await liveViews(app)).find((view) => view.url === INVOICES);
+    expect(live, "the page's view is on screen with the menu out").toBeDefined();
+    expect(live!.bounds.y + live!.bounds.height).toBeGreaterThan(stage.y + stage.height - 4);
+    const fan = await notchBounds(app);
+    expect(fan).not.toBeNull();
+    expect(fan!.width).toBeGreaterThanOrEqual(132);
+    expect(fan!.height).toBeGreaterThanOrEqual(132);
+    expect(Math.abs(fan!.x + fan!.width - (stage.x + stage.width))).toBeLessThanOrEqual(1);
+    expect(Math.abs(fan!.y + fan!.height - (stage.y + stage.height))).toBeLessThanOrEqual(1);
+    await expect
+      .poll(() =>
+        inNotch<number[]>(app, `[...document.querySelectorAll('.desk-nub-menu[data-open] .desk-nub-item')].map((el) => Number(getComputedStyle(el).opacity))`),
+      )
+      .toEqual([1, 1, 1]);
+    expect(await inNotch<string>(app, `document.querySelector('[data-testid="desk-nub"]').getAttribute("aria-expanded")`)).toBe("true");
+    await expect(shell.getByTestId("desk-nub-box")).toHaveAttribute("data-veiled", "");
+    await capture(app, shell, "04-menu-out-page-live.png", 400, undefined);
+
+    // The pointer resting on a droplet in the view: the shell's own says what it is, beside it.
+    const mic = await notchSpot(app, '[data-testid="desk-nub-mic"]');
+    await pressNotch(app, mic, false);
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveText("Dictate");
+    await capture(app, shell, "05-droplet-tooltip.png", 400, undefined);
+    await pressNotch(app, { x: 2, y: 2 }, false);
+    await expect(shell.locator('[data-testid="desk-bar-tip"][data-shown]')).toHaveCount(0);
+    await settled(shell, app);
+    await expect(win).not.toHaveAttribute("data-drawn", "");
+
+    // A drag on the page is the page's. The window stays where it is, filling the desk — over its still, the same drag
+    // carried it off and it let go of the desk — and the press, a press elsewhere, puts the menu away.
+    const from = { x: live!.bounds.x + live!.bounds.width * 0.4, y: live!.bounds.y + live!.bounds.height * 0.4 };
+    expect(await dragThrough(app, from, { x: from.x + 160, y: from.y + 90 })).toBe(INVOICES);
+    // (Down and up on the same element of the page are its click too.)
+    await expect.poll(heard).toEqual(["mousedown", "mouseup", "click"]);
+    await expect(menu).toHaveCount(0);
+    await settled(shell, app);
+    const after = await box(shell, windowSelector(invoice));
+    for (const side of ["x", "y", "width", "height"] as const) expect(Math.abs(after[side] - filled[side]), side).toBeLessThanOrEqual(1);
+    await expect(win).not.toHaveAttribute("data-drawn", "");
+    // The droplets back in the nub, the view is the nub's own small box again.
+    await expect.poll(async () => (await notchBounds(app))?.height ?? 0).toBeLessThan(100);
+
+    // Out again, a droplet pressed in the view is the Bar's: the prompt's brings out the pill, the keyboard in its field.
+    const again = await notchBounds(app);
+    await pressNotch(app, { x: again!.width - 21, y: again!.height - 21 });
+    await expect(menu).toHaveCount(1);
+    await pressNotch(app, await notchSpot(app, '.desk-nub-menu[data-open] [data-testid="desk-nub-prompt"]'));
+    await expect(shell.getByTestId("desk-bar")).not.toHaveAttribute("data-compact", "");
+    await expect(shell.getByTestId("desk-bar-input")).toBeFocused();
+    await expect(menu).toHaveCount(0);
+    await shell.keyboard.press("Escape");
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    await settled(shell, app);
+
+    // And a press in the view's box beside the droplets is a press elsewhere: the menu goes in, and the page hears nothing.
+    const third = await notchBounds(app);
+    await pressNotch(app, { x: third!.width - 21, y: third!.height - 21 });
+    await expect(menu).toHaveCount(1);
+    await notchSpot(app, '.desk-nub-menu[data-open] [data-testid="desk-nub-chats"]');
+    await pressNotch(app, { x: 3, y: 3 });
+    await expect(menu).toHaveCount(0);
+    expect(await heard()).toEqual(["mousedown", "mouseup", "click"]);
+    // The nub's own button, out of the corner, is the menu's close.
+    await settled(shell, app);
+    const fourth = await notchBounds(app);
+    await pressNotch(app, { x: fourth!.width - 21, y: fourth!.height - 21 });
+    await expect(menu).toHaveCount(1);
+    await notchSpot(app, '.desk-nub-menu[data-open] [data-testid="desk-nub-chats"]');
+    await pressNotch(app, await notchSpot(app, '[data-testid="desk-nub"]'));
+    await expect(menu).toHaveCount(0);
   } finally {
     await app.close();
   }

@@ -8,12 +8,12 @@
  * they use today (@pistachio/shell-contracts/browser-import), which apps to keep as
  * favorites (FAVORITE_APPS, or a site of their own — SUGGESTED_FAVORITES is
  * a suggestion, none is fine), and how the window
- * should look. There is no account step: a Mac nobody signed in on is given
- * an anonymous account the models run under (docs/anonymous-accounts.md),
- * so the about step only offers a quiet "Or sign in" for someone who already
- * has an account, and making one is Settings → Account's job once the wizard
- * is done — it is the anonymous one, upgraded. The browser is entirely usable
- * without either. Completion is one IPC call
+ * should look. Ahead of them, where an account is required and this Mac is
+ * not signed in to one (`AccountState.required`), stands ACCOUNT_STEP: sign
+ * in, or create an account, and enroll this Mac in the same pass. It cannot
+ * be skipped — Pistachio is not used without an account — and it is the
+ * same step, alone, that a Mac which finished the walkthrough shows whenever
+ * it is signed out. Completion is one IPC call
  * (`OnboardingCompletion`): main writes the memories, names the first
  * Space, fills the shelf, marks `settings.onboarding.completed`, and opens
  * the welcome tabs (WELCOME_TABS — pages Pistachio serves itself,
@@ -30,7 +30,26 @@ import { withScheme } from "./url.js";
 
 export const ONBOARDING_STEPS = ["about", "import", "favorites", "appearance"] as const;
 
-export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
+/**
+ * The account step, ahead of the four. An account is what Pistachio runs
+ * on: the agent's models come with it, and it is what lets sessions,
+ * Profiles and restore points travel between a person's machines, sealed
+ * under keys only they hold. So the step is required wherever it is shown,
+ * and it is shown wherever a sign-in is owed (the wizard passes `account`).
+ */
+export const ACCOUNT_STEP = "account" as const;
+
+export type OnboardingStep = typeof ACCOUNT_STEP | (typeof ONBOARDING_STEPS)[number];
+
+/**
+ * The wizard's step list: the account first, so the introduction right
+ * after it can be spoken (transcription is a model call) and what the
+ * import step brings over lands in an account that can carry it. A Mac
+ * already signed in — a replay, a browser tab — walks the four alone.
+ */
+export function onboardingStepsFor(account: boolean): readonly OnboardingStep[] {
+  return account ? [ACCOUNT_STEP, ...ONBOARDING_STEPS] : [...ONBOARDING_STEPS];
+}
 
 /** How many favorites the step suggests. A recommendation: the step can be left with fewer, or none. */
 export const SUGGESTED_FAVORITES = 3;
