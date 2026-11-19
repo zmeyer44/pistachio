@@ -54,6 +54,12 @@ interface ExtensionsState {
   error: string | null;
   /** The approval sheet up, and what for. */
   sheet: ExtensionSheetSubject | null;
+  /**
+   * Extensions whose approval the person answered *Not now* in a conversation's card (components/OutputCard.tsx),
+   * each by the manifest it was said of: the card folds to a row until they look again. Forgotten once what was
+   * declined is no longer what waits (`stillNotNow`), and with the window.
+   */
+  notNow: Readonly<Record<string, string>>;
   /** The Ledge icon a panel was asked for from, in window coordinates: the panel card stands level with it. */
   panelAnchor: ContentBounds | null;
   /** Settings → Extensions opens on this one (an icon's *Options*), its logs or its removal asked for. */
@@ -73,6 +79,7 @@ export const useExtensions = create<ExtensionsState>(() => ({
   unsupported: null,
   error: null,
   sheet: null,
+  notNow: {},
   panelAnchor: null,
   settingsFocus: null,
 }));
@@ -129,6 +136,8 @@ export function foldExtensions(next: ExtensionsSnapshot): void {
   if (install !== null && previous.pendingInstall?.cwsId !== install.cwsId) patch.sheet = { kind: "install", cwsId: install.cwsId };
   else if (state.sheet !== null && !sheetStands(state.sheet, snapshot)) patch.sheet = null;
   if (patch.sheet !== undefined) syncSheetOverlay(patch.sheet);
+  const notNow = stillNotNow(state.notNow, snapshot.extensions);
+  if (notNow !== state.notNow) patch.notNow = notNow;
   // A panel closed by main (its own ⎋, the extension's closePanel) forgets where it was asked from.
   if (snapshot.openPanel === null && state.panelAnchor !== null) patch.panelAnchor = null;
   useExtensions.setState(patch);
@@ -165,6 +174,37 @@ export function openExtensionSheet(sheet: ExtensionSheetSubject): void {
   if (!sheetStands(sheet, useExtensions.getState().snapshot)) return;
   useExtensions.setState({ sheet });
   syncSheetOverlay(sheet);
+}
+
+/**
+ * What is left of the *Not now*s once a snapshot is in: one stands only while the extension still waits on the very
+ * manifest it was said of, and Pistachio is not writing to its folder — an approval, a removal, a manifest that asks
+ * differently, or the agent changing it again (its code may change under the same manifest) is a new question, and
+ * the card asks it again. Answers the same object when nothing lapsed.
+ */
+export function stillNotNow(notNow: Readonly<Record<string, string>>, extensions: readonly ExtensionInfo[]): Readonly<Record<string, string>> {
+  const kept = Object.entries(notNow).filter(([id, manifestHash]) => {
+    const extension = extensions.find((candidate) => candidate.id === id);
+    return extension !== undefined && extension.pending?.manifestHash === manifestHash && extension.drafting !== true;
+  });
+  return kept.length === Object.keys(notNow).length ? notNow : Object.fromEntries(kept);
+}
+
+/** *Not now*, said in a conversation's card: the extension goes on waiting, and its card folds to a row. */
+export function putOffExtension(id: string): void {
+  const state = useExtensions.getState();
+  const pending = state.snapshot.extensions.find((extension) => extension.id === id)?.pending ?? null;
+  if (pending === null) return;
+  useExtensions.setState({ notNow: { ...state.notNow, [id]: pending.manifestHash } });
+  // (Main is told as the sheet tells it: nothing changes there, and it publishes where things stand.)
+  void extensionsRequest({ type: "deny", id }, { quiet: true });
+}
+
+/** The folded card's *Review*: the approval is asked in the card again. */
+export function reviewExtension(id: string): void {
+  const { notNow } = useExtensions.getState();
+  if (!(id in notNow)) return;
+  useExtensions.setState({ notNow: Object.fromEntries(Object.entries(notNow).filter(([answered]) => answered !== id)) });
 }
 
 /** How long a library entry turned on is watched for its sheet (main loads it and publishes it waiting on the person). */

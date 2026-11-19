@@ -108,7 +108,7 @@ Ask for the fewest. Each has a fixed sentence on the person's approval sheet, br
 | --- | --- |
 | None needed | declared surfaces (commands, menus, keys, pages, panel), `storage`, `settings`, `ui`, file dialogs |
 | Low | `notifications`, `clipboard:write`, `power`, `spaces:mark`, `tabs:mark` |
-| Medium | `tabs:read`, `tabs:write`, `spaces:write`, `spaces:close`, `theme`, `desk`, `files:data`, `notes:read`, `hosts` (each site named) |
+| Medium | `tabs:read`, `tabs:write`, `spaces:write`, `spaces:close`, `spaces:create`, `theme`, `desk`, `files:data`, `notes:read`, `hosts` (each site named) |
 | High | `pages:read`, `capture:tab`, `input:events`, `notes:write`, `agent:tools`, `agent:ask`, `ai`, `spaces:all`, `clipboard:read` |
 | Critical | `"hosts": ["<all_urls>"]`, or any pattern naming every site (`*://*/*`, `https://*/*`) — don't |
 
@@ -121,6 +121,11 @@ Ask for the fewest. Each has a fixed sentence on the person's approval sheet, br
   `ctx.spaceId` — or the one whose menu they chose your `space` item from (`info.spaceId`). That grant
   is kept for good, so keep the id in `storage.local` and act on it later. A tool call or a message
   grants nothing.
+- **A space you made is yours too.** `spaces:create` lets you make a space — named, with the pages it
+  opens in it — from a command or **from a trigger's handler, with nobody there**. The space
+  `spaces.create` hands back is yours exactly as one the person ran you in: close it (`spaces:close`),
+  send it away (`spaces:write`), mark it, give it a backdrop. "Every weekday at 5:30 open a space with
+  chess.com, and close it at six" is `spaces:create` and `spaces:close`, nothing else (§9, *Chess time*).
 - **`spaces:all` is the exception, and it is High.** With it every drawn space of the Profiles you are
   on in counts as given — for whatever your *other* capabilities let you do to a space (`spaces:write`
   to send away, `spaces:close` to close, `spaces:mark`, `theme`). Ask for it only when the wish is about
@@ -219,6 +224,18 @@ Every call returns a Promise; every `onX(fn)` returns a function that unsubscrib
     space in front, one playing and one with a terminal. (Like `sendAway` too, the space in front *does*
     go when the screen is locked or the handler is an `idle` or `screen` signal's: if "tidy up" must
     never take the space the person left in front, skip `spaces.current()` yourself.)
+  - `create({ name, tabs?, show? })` *(spaces:create)* — **make a space**: `name` is what it is called on
+    the rail (up to 40 characters); `tabs` are the pages opened in it, http(s) addresses in order (twelve
+    at most; none makes an empty space). It resolves with the space — `{ id, name, … }` — and **that
+    space is yours from then on** (§4): keep `id` in `storage.local`. Run by the person it comes in front
+    unless `show: false`. **It works in a trigger's handler**, and there it is made *behind* what is in
+    front whatever `show` says: a notice tells the person *New space “Chess time” · 1 tab · <you>* with
+    **Show**, and the journal lists it with Undo. Four spaces an hour at most with nobody there.
+    **Every call makes another space** — it is not safe to repeat — so make one only when you hold none:
+    check the id you stored first. `UNAVAILABLE` when the Profile has no room for another space.
+    A space you made, closed by you from a trigger's handler, **closes even while the person is in it**
+    (the desk passes on; the notice has Undo): "close it at six" means six. A space they *gave* you is
+    never taken from under them — that still waits until they leave it.
   - `setMark(spaceId, { glyph?, tone?, label } | null)` — a small mark on that space's tile, or `null`
     to take yours off *(spaces:mark)*. §10.
 - **triggers** — `on(id, (state) => …)` in the worker, `get(id)`, `list()`. A state is
@@ -489,9 +506,9 @@ Nobody is there, so only what can be undone, and what tells the person:
 | Your own state | `storage.local`, `files.data.*`, `runtime.sendMessage`, `runtime.log` |
 | Telling the person | `ui.toast`, `ui.setBadge`, `ui.setStatus`, `notifications.show` |
 | The network | `net.fetch` to your `hosts` |
-| Spaces | `spaces.sendAway` / `bringBack` / `close` of a space the person gave you (§4) |
+| Spaces | `spaces.sendAway` / `bringBack` / `close` of a space the person gave you or you made (§4); `spaces.create` — a new space with its pages, **behind** what is in front, four an hour at most |
 | A model | `ai.complete`, twelve an hour |
-| A tab, behind | `tabs.create` — a page of the web (never one of your own pages), in the space in front or a space on the rail you name (never `"new"`, never a Home tab's space); it opens **behind** what is in front whatever `show` says, twelve an hour at most |
+| A tab, behind | `tabs.create` — a page of the web (never one of your own pages), in the space in front or a space on the rail you name (never `"new"`, never a Home tab's space: a new space is `spaces.create`); it opens **behind** what is in front whatever `show` says, twelve an hour at most. It resolves as the tab is opened, its page still loading (so does `spaces.create`): do not read the tab's `title` there |
 | What Pistachio draws for you | `theme.set` / `clear` / `get`, `spaces.setMark`, `tabs.setMark` (§10); `ui.band` and `ui.sidebar` `set` / `clear` / `get` (§11) |
 
 **Everything else rejects `PERMISSION_DENIED`** inside a trigger's handler: `tabs.navigate`,
@@ -504,11 +521,12 @@ that is **playing** something, and one with a **terminal** open. Let the error o
 The space in front *does* go when Pistachio can see that nobody is at the Mac: its screen is locked,
 or the handler in hand is an `idle` or `screen` signal's (or an interval's that runs `while` one) and
 that signal holds. "Send Work away when I have been gone ten minutes" is `{ "idle": { "minutes": 10 } }`
-and `sendAway` in its handler — no other trigger gets that leave.
+and `sendAway` in its handler — no other trigger gets that leave. One more thing goes from in front:
+a space **you made** (`spaces.create`), when you `close` it — whoever is there.
 
-Every send, return and close a trigger makes, every theme it sets and every tab it opens is written in
-a journal the person sees on the extensions page, with **Undo** (the space is back, restored from the
-archive; the tab is closed), **Pause** for your triggers and **Pause all**. A mark, rows
+Every send, return and close a trigger makes, every space it makes, every theme it sets and every tab
+it opens is written in a journal the person sees on the extensions page, with **Undo** (the space is
+back, restored from the archive; the made space is closed; the tab is closed), **Pause** for your triggers and **Pause all**. A mark, rows
 and a `clear` are not written there: each says whose it is where it is drawn, and the person takes it
 off in one press. Paused, you still run when they run you.
 
@@ -560,6 +578,45 @@ async function apply({ holds }) {
 ```
 
 No timer, no catch-up after sleep, no time zone, no "was it already away": those are Pistachio's.
+
+### Chess time: a space made at half past five and closed at six
+
+"Every weekday at 5:30 PM make a space called Chess time with one tab on chess.com, and close it at
+6:00 PM." Something that is there *for a stretch* is a **window** (`during`), not two instants: asked
+again after a closed lid, it is right whenever the Mac wakes — opened at 5:45 the space is made then,
+opened at 7:00 nothing is.
+
+```json
+{ "api": 1, "id": "dev.me.chess-time", "name": "Chess time", "version": "1.0.0",
+  "description": "Opens a Chess time space with chess.com at 5:30 PM on weekdays and closes it at 6:00 PM.",
+  "permissions": ["spaces:create", "spaces:close"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [{ "id": "chess", "during": { "days": ["mon", "tue", "wed", "thu", "fri"], "from": "17:30", "to": "18:00" } }] }
+```
+
+```js
+pistachio.triggers.on("chess", async ({ holds }) => {
+  const { space } = await pistachio.storage.local.get("space");
+  if (holds && !space) {                                   // make one only when none is held: create is not safe to repeat
+    const made = await pistachio.spaces.create({ name: "Chess time", tabs: ["https://www.chess.com/"] });
+    await pistachio.storage.local.set({ space: made.id }); // it is yours from here on
+  }
+  if (!holds && space) {
+    try { await pistachio.spaces.close(space); }           // goes even from in front: you made it
+    catch (error) { if (error?.code !== "NOT_FOUND") throw error; }   // the person closed it already: done. Anything else: tried again
+    await pistachio.storage.local.remove("space");
+  }
+});
+```
+
+- No command, no menu item, nothing for the person to run: it applies by itself once it is on. Say so.
+- The space is made **behind** what is in front; the person is told, with *Show*. Nothing you can call
+  from a trigger moves them into it — do not promise that it "opens in front".
+- At six it closes **even if they are playing**: say that in your reply, so it is not a surprise. It
+  is filed in the archive (restorable), and the notice has Undo. If the wish was softer ("…unless I am
+  still using it"), check `spaces.current()` (`tabs:read`) and `throw` to be run again later instead.
+- A new space each day, not one kept away in between: for "the *same* space, with whatever I left in
+  it", make it once and use `sendAway` / `bringBack` (`spaces:write`) as *Game day* does.
 
 ### Stand-up: a space that comes back when the meeting starts
 

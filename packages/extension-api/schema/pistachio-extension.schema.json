@@ -45,6 +45,7 @@
           "tabs:mark",
           "spaces:write",
           "spaces:close",
+          "spaces:create",
           "spaces:all",
           "spaces:mark",
           "theme",

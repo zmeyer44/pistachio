@@ -48,12 +48,12 @@ export function extensionBrowserHost(browser: BrowserController, window: Browser
     createTab: async (url, options) => {
       if (options.space === "new") {
         // A space of its own: a Home tab, grown into a space (ownSpace) — as Make it a space of its own does.
-        const tabId = await browser.createTab(url, { spaceId: options.profileId, group: "loose", activate: options.activate });
+        const tabId = await browser.createTab(url, { spaceId: options.profileId, group: "loose", activate: options.activate, ...(options.awaitLoad === false ? { awaitLoad: false } : {}) });
         const group = browser.looseTabGroups(options.profileId).find((candidate) => candidate.tabIds.includes(tabId));
         if (group !== undefined) browser.ownSpace(group.id);
         return tabId;
       }
-      return browser.createTab(url, { spaceId: options.profileId, group: options.space, activate: options.activate });
+      return browser.createTab(url, { spaceId: options.profileId, group: options.space, activate: options.activate, ...(options.awaitLoad === false ? { awaitLoad: false } : {}) });
     },
     navigate: (tabId, url) => browser.navigate(tabId, url),
     showTab: (tabId) => browser.selectTab(tabId),

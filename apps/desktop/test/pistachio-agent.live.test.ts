@@ -218,4 +218,41 @@ describe.skipIf(!live || key === undefined)("the agent knows Pistachio and chang
     // It says the step that is the person's: nothing is on yet.
     expect(built.result.text).toMatch(/turn (it )?on|approv|review/iu);
   });
+
+  // The wish that asked for `spaces.create` (docs/primitives.md §2.7), in the person's own words. Before it, the
+  // builder wrote an extension that changed nothing and the agent said Pistachio could not do this.
+  it("builds a space that is made at half past five on weekdays and closed at six", { timeout: 300_000 }, async () => {
+    const app = pistachio();
+    const built = await turn(
+      app,
+      [],
+      'I want to create an automation where every day at 5:30pm we get a new space created called "Chess time" with a single tab open to chess.com, then this should automatically close at 6:00pm. This should repeat every week day',
+    );
+    expect(usedBrowser(built.names)).toEqual([]);
+    expect(built.names).toContain("ext.build");
+    const request = built.called.find((call) => call.name === "ext.build");
+    const slug = (request as { title: string }).title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const loaded = app.load(slug);
+    const files = existsSync(app.folderOf(slug)) ? readdirSync(app.folderOf(slug)).filter((name) => /\.(?:[cm]?[jt]s|json)$/i.test(name)) : [];
+    for (const name of files) console.log(`── ${name}\n${readFileSync(join(app.folderOf(slug), name), "utf8")}`);
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    // What it asks for is what the wish needs: a space made, and closed.
+    expect(loaded.manifest.permissions ?? []).toEqual(expect.arrayContaining(["spaces:create", "spaces:close"]));
+    expect(loaded.manifest.permissions ?? []).not.toContain("spaces:all");
+    // The schedule, in the words the person will be shown.
+    console.log(`runs: ${JSON.stringify(loaded.sheet.runs)}`);
+    expect(loaded.sheet.runs.join(" · ")).toMatch(/Weekdays/u);
+    expect(loaded.sheet.runs.join(" · ")).toMatch(/5:30 PM/u);
+    expect(loaded.sheet.runs.join(" · ")).toMatch(/6:00 PM/u);
+    // And the code does it: the space by its name, the page, made and closed.
+    const code = files.filter((name) => !name.endsWith(".json")).map((name) => readFileSync(join(app.folderOf(slug), name), "utf8")).join("\n");
+    expect(code).toContain("spaces.create");
+    expect(code).toContain("spaces.close");
+    expect(code).toContain("Chess time");
+    expect(code).toMatch(/chess\.com/u);
+    // It does not say Pistachio cannot, and it says the step that is the person's.
+    expect(built.result.text).not.toMatch(/cannot|can't|does not (currently )?allow|not (currently )?(possible|supported)/iu);
+    expect(built.result.text).toMatch(/turn (it )?on|approv|review/iu);
+  });
 });

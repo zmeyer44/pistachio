@@ -90,6 +90,9 @@ import { TabArchiveStore } from "./tab-archive-store";
 import { AwayStore } from "./away-store";
 import { AwaySpaces } from "./away-spaces";
 import { SpaceClosing } from "./space-closing";
+import { SpaceMaking } from "./space-making";
+import { DeskBarView } from "./desk-bar-view";
+import { promptViewEnabled } from "./prompt-view-enabled";
 import { CLOCK_MOMENTS, MainClock } from "./main-clock";
 import { HeldNotices } from "./held-notices";
 import { completeWith, scriptedComplete } from "./extensions/complete";
@@ -259,7 +262,7 @@ import { HTML_BLOCK_FRAME_CSP, renderNoteHtml } from "@pistachio/notes";
 import { DoubleTap } from "@pistachio/shell-contracts/double-shift";
 import { isScreenshotRequest } from "@pistachio/shell-contracts/screenshot";
 import { idleLiveShare, isLiveCommand, isLiveDeskReport, isLiveHostReport } from "@pistachio/shell-contracts/live-share";
-import { deskPipSlot, isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
+import { deskPipSlot, isDeskBarViewPlace, isDeskNotchFrame, isDeskNotchInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, isDeskState, type DeskNotchFrame, type DeskPipFrame, type DeskShelfFrame } from "@pistachio/shell-contracts/desk";
 import {
   isDeskConversationCommand,
   isGroupContextCommand,
@@ -407,6 +410,8 @@ let noticeLayer: NoticeLayer | null = null;
  */
 let notchLayer: ChromeOverlayView | null = null;
 let deskNotch: DeskNotchFrame | null = null;
+/** The desk's prompt over a live page (./desk-bar-view.ts): the shell's own view, placed by the shell. */
+let deskBarView: DeskBarView | null = null;
 /** The window's own glass under the notch view, the nub laid on it again (main/desk-glass.ts). */
 let deskGlass: DeskGlass | null = null;
 /** Whether a view stacked over the notch view lies over it (notchCovered): the glass steps aside meanwhile. */
@@ -550,6 +555,7 @@ let awaySpaces: AwaySpaces | null = null;
 const mainClock = new MainClock({ onError: (name, error) => console.error(`[clock] ${name}`, error) });
 /** The one verb that closes a space into the archive (./space-closing.ts): the window's, like the away spaces. */
 let spaceClosing: SpaceClosing | null = null;
+let spaceMaking: SpaceMaking | null = null;
 let sidebarController: SidebarController | null = null;
 let spaces: SpaceStore | null = null;
 let tabSessions: TabSessionStore | null = null;
@@ -1559,6 +1565,22 @@ function startSpaceClosing(controller: BrowserController): void {
     heldNotices.hold(`closed:${closed.groupId}`, () => sendShellCommand({ type: "spaceClosed", title: closed.title, tabCount: closed.tabCount, entryId, by }), () => entryId === null || service.filed(entryId));
   });
   spaceClosing = service;
+}
+
+/**
+ * Making a space, for this window's tabs (docs/primitives.md §2.7): an extension's `pistachio.spaces.create`, at a
+ * time main's clock keeps. One made behind what is in front is said from here — who made it, and Show — held, like
+ * the others, until somebody is there to read it, and only while the space still stands.
+ */
+function startSpaceMaking(controller: BrowserController): void {
+  const service = new SpaceMaking({ host: controller });
+  service.onChange((made) => {
+    // (Brought in front as it was made — the person ran the extension — it needs no saying: they are looking at it.)
+    if (made.by.kind === "person" || made.shown) return;
+    const by = made.by.kind === "extension" ? made.by.name : "Pistachio";
+    heldNotices.hold(`made:${made.groupId}`, () => sendShellCommand({ type: "spaceMade", groupId: made.groupId, title: made.title, tabCount: made.tabIds.length, by }), () => controller.hasTabGroup(made.groupId));
+  });
+  spaceMaking = service;
 }
 
 /**
@@ -2836,6 +2858,7 @@ async function createWindow(): Promise<void> {
       if (bookmarkView.shown) bookmarkView.raise();
       if (noticeView.shown) noticeView.raise();
       if (notchView.shown) notchView.raise();
+      if (deskBarView?.shown === true) deskBarView.raise();
       if (shelfView.shown) shelfView.raise();
       if (pipView.shown) pipView.raise();
       // Last, so a drag in progress keeps the pointer over a tab view that
@@ -3192,7 +3215,31 @@ async function createWindow(): Promise<void> {
   window.webContents.on("did-finish-load", () => setDragCapture(null));
   dragView.webContents.on("render-process-gone", () => setDragCapture(null));
 
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // The shell opens one window of its own: the desk's prompt, which main makes a view over the pages (./desk-bar-view.ts).
+  const barView = new DeskBarView(window, {
+    released: () => {
+      if (!window.isDestroyed()) window.webContents.focus();
+    },
+    // What lies over the prompt (the order every tab's view is answered with, below it): the parked windows' view,
+    // the floating video's, and the drag layer, which has the pointer for the whole window while a drag is on.
+    restack: () => {
+      if (shelfView.shown) shelfView.raise();
+      if (pipView.shown) pipView.raise();
+      dragView.raise();
+    },
+    adopted: (contents) => {
+      // Its keys are the window's as any view's are: main's own gestures, then the configured bindings, which go to
+      // the shell as a tab's ⌘ keys do — and the keyboard with them, so ⌘L or ⌘T struck in the prompt types into the
+      // shell's field, not the prompt's. (The shell's own shortcut handler hears its own window's keys, and the
+      // prompt's document is another's: without this a shortcut struck while writing in the prompt reached nothing.)
+      contents.on("before-input-event", (event, input) => relayExtensionPanelKeys(event, input, contents));
+      contents.on("input-event", (_event, input) => {
+        if (input.type === "mouseDown" || input.type === "mouseWheel") disarmTabSwitcher();
+      });
+    },
+  });
+  deskBarView = barView;
+  window.webContents.setWindowOpenHandler((details) => (promptViewEnabled(process.env) ? barView.opening(details) : null) ?? { action: "deny" });
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   // The shell installs the React shortcut handler. The two utility views do
   // not, so main relays a configured binding caught there to the shell.
@@ -3216,6 +3263,7 @@ async function createWindow(): Promise<void> {
   await browser.initialize();
   startAwaySpaces(browser);
   startSpaceClosing(browser);
+  startSpaceMaking(browser);
   // (This window's shell is loaded and can hear: what waited for somebody at a window since closed is this one's to say.)
   heldNotices.windowChanged();
   startTabTidy(browser);
@@ -3260,6 +3308,8 @@ async function createWindow(): Promise<void> {
     noticeView.destroy();
     noticeLayer = null;
     notchView.destroy();
+    barView.destroy();
+    if (deskBarView === barView) deskBarView = null;
     notchLayer = null;
     deskNotch = null;
     screen.off("display-metrics-changed", syncDeskGlass);
@@ -3287,6 +3337,8 @@ async function createWindow(): Promise<void> {
     awaySpaces = null;
     spaceClosing?.stop();
     spaceClosing = null;
+    spaceMaking?.stop();
+    spaceMaking = null;
     browser = null;
     // The controller goes with the window; the thread it held is written
     // and marked paused so the next window restores exactly that.
@@ -4236,6 +4288,7 @@ function installIpc(): void {
     syncSidebarEntryWatch();
     if (findLayer !== null) findLayer.setVeiled(state.veiled);
     notchLayer?.setVeiled(state.veiled);
+    deskBarView?.setVeiled(state.veiled);
     shelfLayer?.setVeiled(state.veiled);
     pipLayer?.setVeiled(state.veiled);
     // An extension's panel is never over the shell's sheets, ⌘L or Settings (its veil).
@@ -4487,6 +4540,10 @@ function installIpc(): void {
   ipcMain.on(IPC.noticeViewFootprint, (event, footprint: unknown) => {
     if (chromeViewOf(event.sender) !== "notice" || (footprint !== null && !isNoticeFootprint(footprint))) return;
     noticeLayer?.footprint(footprint);
+  });
+  ipcMain.on(IPC.deskBarViewSet, (event, place: unknown) => {
+    if (!isShell(event.sender) || (place !== null && !isDeskBarViewPlace(place))) return;
+    deskBarView?.place(place);
   });
   ipcMain.on(IPC.deskNotchSet, (event, frame: unknown) => {
     if (!isShell(event.sender) || (frame !== null && !isDeskNotchFrame(frame))) return;
@@ -5778,6 +5835,8 @@ app.whenReady().then(async () => {
     away: () => awaySpaces,
     // So does the verb that closes a space into the archive (startSpaceClosing), and the account's model for one question.
     closing: () => spaceClosing,
+    // And the one that makes a space (startSpaceMaking): named, with its pages, behind what is in front.
+    making: () => spaceMaking,
     complete: extensionComplete,
     ...(e2eTriggerClock() ?? {}),
     signals: extensionSignals(),

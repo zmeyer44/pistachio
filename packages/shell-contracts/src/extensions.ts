@@ -129,7 +129,7 @@ export interface ExtensionTriggerInfo {
 }
 
 /** What an extension may do with nobody there that main writes down, each with its way back (the journal's Undo). */
-export const EXTENSION_JOURNAL_VERBS = ["sendAway", "bringBack", "setTheme", "openTab", "closeSpace"] as const;
+export const EXTENSION_JOURNAL_VERBS = ["sendAway", "bringBack", "setTheme", "openTab", "closeSpace", "makeSpace"] as const;
 
 /**
  * One thing an extension did with nobody there (docs/primitives.md §3, rule 7): main's record, never the
@@ -142,7 +142,11 @@ export interface ExtensionJournalEntry {
   /** The trigger that woke it, by id; null when none was in hand. */
   trigger: string | null;
   verb: (typeof EXTENSION_JOURNAL_VERBS)[number];
-  /** The space (tab group), by id, and its name then; `*` for every space (a theme set for all of them). For a tab opened: the space it opened in, and `title` its address, cut short. */
+  /**
+   * The space (tab group), by id, and its name then; `*` for every space (a theme set for all of them). For a tab
+   * opened: the space it opened in, and `title` its address, cut short. For a space made (`makeSpace`): the new
+   * space — Undo closes it into the archive.
+   */
   spaceId: string;
   title: string;
   /** A tab opened (`openTab`): which, so Undo can close it. */

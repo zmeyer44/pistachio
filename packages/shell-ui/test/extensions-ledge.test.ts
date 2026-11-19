@@ -2,8 +2,10 @@
  * What the shell says about extensions (docs/extensions.md §2), pure: which
  * stand on the Ledge and in what order, how many fit before ⋯, the dot an
  * icon carries, the monogram, where one came from, the sheet's lines, what
- * the extensions page's field finds, where a carried icon lands; and how the
- * window folds main's snapshot in (lib/extensions/use-extensions.ts).
+ * the extensions page's field finds, where a carried icon lands; how the
+ * window folds main's snapshot in (lib/extensions/use-extensions.ts); and
+ * where a conversation's card for an extension stands — whether the approval
+ * is asked in it (components/OutputCard.tsx).
  */
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,10 +28,22 @@ import {
   whereItRuns,
 } from "../src/lib/extensions/ledge";
 import { setShellApi, type ShellApiBridge } from "../src/api";
-import { closeExtensionSheet, dismissExtensionSheet, foldExtensions, openExtensionSheet, turnOnFromLibrary, useExtensions } from "../src/lib/extensions/use-extensions";
+import {
+  closeExtensionSheet,
+  dismissExtensionSheet,
+  foldExtensions,
+  openExtensionSheet,
+  putOffExtension,
+  reviewExtension,
+  stillNotNow,
+  turnOnFromLibrary,
+  useExtensions,
+} from "../src/lib/extensions/use-extensions";
 import { useAppStore } from "../src/store";
 import { hasLivePill } from "../src/components/extensions/StatusPills";
-import { agentDefault } from "../src/components/extensions/ApprovalSheet";
+import { agentDefault, extensionSubject } from "../src/components/extensions/approval";
+import { extensionCardStanding } from "../src/components/OutputCard";
+import { threadOutputs } from "../src/components/chat/use-thread-layout";
 import { panelWidthOf } from "../src/components/extensions/ExtensionPanelCard";
 
 function extension(overrides: Partial<ExtensionInfo> & { id: string }): ExtensionInfo {
@@ -189,7 +203,7 @@ describe("main's snapshot, folded in", () => {
 
   afterEach(() => {
     closeExtensionSheet();
-    useExtensions.setState({ snapshot: EMPTY_EXTENSIONS_SNAPSHOT, loaded: false, sheet: null, panelAnchor: null });
+    useExtensions.setState({ snapshot: EMPTY_EXTENSIONS_SNAPSHOT, loaded: false, sheet: null, notNow: {}, panelAnchor: null });
     useAppStore.setState({ notices: [], overlay: "none" });
   });
 
@@ -262,6 +276,90 @@ describe("main's snapshot, folded in", () => {
     foldExtensions(snapshot([extension({ id: "a" })]));
     openExtensionSheet({ kind: "extension", id: "a" });
     expect(useExtensions.getState().sheet).toBeNull();
+  });
+});
+
+describe("an approval asked in the conversation that built the extension", () => {
+  const snapshot = (extensions: ExtensionInfo[]): ExtensionsSnapshot => ({ ...EMPTY_EXTENSIONS_SNAPSHOT, extensions });
+  const waiting = (overrides: Partial<ExtensionInfo> = {}): ExtensionInfo => extension({ id: "night", name: "Night desk", enabled: false, status: "needs-approval", pending: SHEET, ...overrides });
+
+  afterEach(() => {
+    closeExtensionSheet();
+    useExtensions.setState({ snapshot: EMPTY_EXTENSIONS_SNAPSHOT, loaded: false, sheet: null, notNow: {}, panelAnchor: null });
+    useAppStore.setState({ notices: [], overlay: "none" });
+  });
+
+  it("is asked in the card while the extension waits — and nowhere once it does not", () => {
+    expect(extensionCardStanding({}, waiting(), {})).toBe("asks");
+    expect(extensionCardStanding({}, extension({ id: "night" }), {})).toBe("open");
+    // No snapshot of it (the web; a window that has not heard from main): nothing to answer here.
+    expect(extensionCardStanding({}, null, {})).toBe("open");
+  });
+
+  it("is asked once in a thread: a card a later turn's build overtook sends to the sheet instead", () => {
+    expect(extensionCardStanding({ earlier: true }, waiting(), {})).toBe("sheet");
+    // A Chrome extension's verdict is the sheet's to explain.
+    expect(extensionCardStanding({}, waiting({ kind: "chrome" }), {})).toBe("sheet");
+  });
+
+  it("names the manifest its lines describe, and the agent's access as the sheet would", async () => {
+    const asked: unknown[] = [];
+    setShellApi({ extensions: (request: unknown) => (asked.push(request), Promise.resolve({ type: "ok" })) } as unknown as ShellApiBridge);
+    const tool = { name: "count", description: "Counts words.", effect: "read" as const };
+    const subject = extensionSubject(waiting({ tools: [tool] }));
+    expect(subject).toMatchObject({ key: "extension:night:abc", name: "Night desk", source: "Yours · ~/Pistachio/Extensions/night", tools: true, first: true });
+    expect(await subject?.approve(true)).toBe(true);
+    expect(await extensionSubject(waiting())?.approve(true)).toBe(true);
+    expect(asked).toEqual([
+      { type: "approve", id: "night", manifestHash: "abc", agentAllowed: true },
+      { type: "approve", id: "night", manifestHash: "abc" },
+    ]);
+    expect(extensionSubject(extension({ id: "night" }))).toBeNull();
+    expect(extensionSubject(null)).toBeNull();
+  });
+
+  it("folds to a row on Not now, the extension still waiting, and asks again on Review", () => {
+    const asked: unknown[] = [];
+    setShellApi({ extensions: (request: unknown) => (asked.push(request), Promise.resolve({ type: "ok" })) } as unknown as ShellApiBridge);
+    foldExtensions(snapshot([waiting()]));
+    putOffExtension("night");
+    expect(asked).toEqual([{ type: "deny", id: "night" }]);
+    expect(extensionCardStanding({}, waiting(), useExtensions.getState().notNow)).toBe("folded");
+    // The same snapshot again (main publishes after every answer): still folded.
+    foldExtensions(snapshot([waiting()]));
+    expect(extensionCardStanding({}, waiting(), useExtensions.getState().notNow)).toBe("folded");
+    reviewExtension("night");
+    expect(useExtensions.getState().notNow).toEqual({});
+    expect(extensionCardStanding({}, waiting(), useExtensions.getState().notNow)).toBe("asks");
+    // Nothing waiting: nothing to put off.
+    putOffExtension("gone");
+    expect(useExtensions.getState().notNow).toEqual({});
+  });
+
+  it("forgets a Not now once what waits is not what was declined", () => {
+    const notNow = { night: "abc" };
+    // Unchanged: the very same object, so nothing that reads it renders.
+    expect(stillNotNow(notNow, [waiting()])).toBe(notNow);
+    // A manifest that asks differently; the agent writing to it again (its code may change under the same manifest);
+    // turned on; removed.
+    expect(stillNotNow(notNow, [waiting({ pending: { ...SHEET, manifestHash: "def" } })])).toEqual({});
+    expect(stillNotNow(notNow, [waiting({ drafting: true })])).toEqual({});
+    expect(stillNotNow(notNow, [extension({ id: "night" })])).toEqual({});
+    expect(stillNotNow(notNow, [])).toEqual({});
+    // Through the fold: Pistachio changes it again, and the card asks again.
+    foldExtensions(snapshot([waiting()]));
+    useExtensions.setState({ notNow });
+    foldExtensions(snapshot([waiting({ drafting: true })]));
+    expect(useExtensions.getState().notNow).toEqual({});
+  });
+
+  it("marks an extension's earlier cards in a thread, and nothing else", () => {
+    const built = (id: string, action: "created" | "updated") => ({ kind: "extension" as const, action, id, title: id, waiting: true });
+    const note = { kind: "note" as const, action: "created" as const, id: "n-1", title: "Notes" };
+    const turns = [[built("night", "created"), note], [], [built("night", "updated"), built("stars", "created")], [note]];
+    expect(threadOutputs(turns)).toEqual([[{ ...built("night", "created"), earlier: true }, note], [], [built("night", "updated"), built("stars", "created")], [note]]);
+    // Untouched outputs are the same objects: a card nobody overtook keeps its identity.
+    expect(threadOutputs(turns)[2]?.[0]).toBe(turns[2]?.[0]);
   });
 });
 

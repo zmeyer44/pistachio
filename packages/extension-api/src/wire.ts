@@ -52,6 +52,7 @@ export const EXT_METHOD_NAMES = [
   "spaces.sendAway",
   "spaces.bringBack",
   "spaces.close",
+  "spaces.create",
   "spaces.away",
   "spaces.setMark",
   // the theme (docs/primitives.md §4): a backdrop and an accent the shell draws, for every space or one
@@ -153,7 +154,7 @@ export const EXT_ATTENDED_KINDS: readonly ExtInvokeKind[] = ["tool", "bar", "men
 /**
  * What a worker may call **unattended** — while a trigger's handler runs and nobody's hand is on the extension
  * (docs/primitives.md §3): it may read, keep its own state, tell the person, talk to its hosts, send away or bring
- * back a space it was given, and open a tab behind what is in front — the writes main can undo. Everything else waits for the person: a toast
+ * back a space it was given, make a space behind what is in front, and open a tab there — the writes main can undo. Everything else waits for the person: a toast
  * with an action is how a trigger asks for them. A method not listed here is refused then, so a method added later
  * is closed until someone decides it is safe with nobody there.
  */
@@ -182,6 +183,8 @@ export const EXT_UNATTENDED_METHODS: readonly ExtMethod[] = [
   "spaces.bringBack",
   // (Close space, as the person's menu does it: filed in the archive, written in the journal — Undo restores it.)
   "spaces.close",
+  // (A space made behind what is in front — never shown, a few an hour at most — and written in the journal: Undo closes it.)
+  "spaces.create",
   "spaces.away",
   // (What the shell draws for it: kept by main, named as its own, removed by the person in one press — and a theme set
   // with nobody there is in the journal with its Undo.)
@@ -236,6 +239,7 @@ export const EXT_RATE_LIMITS: Partial<Record<ExtMethod, number>> = {
   "spaces.sendAway": 20,
   "spaces.bringBack": 20,
   "spaces.close": 20,
+  "spaces.create": 10,
   "ai.complete": 10,
   "spaces.setMark": 60,
   "tabs.setMark": 240,
@@ -247,6 +251,11 @@ export const EXT_RATE_LIMITS: Partial<Record<ExtMethod, number>> = {
   "notes.create": 30,
   "notes.update": 60,
 };
+
+/** `spaces.create`'s bounds (docs/primitives.md §2.7): how many pages a space is made with at most. */
+export const SPACE_TABS_MAX = 12;
+/** How many spaces an extension may make with nobody there, in any hour. */
+export const SPACES_UNATTENDED_PER_HOUR = 4;
 
 /** `ai.complete`'s bounds (docs/primitives.md §3.8): how much may be asked, and how long an answer may run. */
 export const AI_PROMPT_MAX = 24_000;

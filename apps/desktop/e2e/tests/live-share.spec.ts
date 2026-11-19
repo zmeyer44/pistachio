@@ -6,7 +6,7 @@ import { hostNameFrom } from "@pistachio/live-share";
 import { IPC, type PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { LiveDeskReport, LiveShareState } from "@pistachio/shell-contracts/live-share";
 import { captureEnabled } from "./app";
-import { chooseSpace, createGroup, createTab, launchDesk, railSpace, reachBar, selectSpace, settled, showFrame, snapshot, tabGroupCommand, windowSelector } from "./desk-harness";
+import { barField, chooseSpace, createGroup, createTab, launchDesk, railSpace, reachBar, selectSpace, settled, showFrame, snapshot, tabGroupCommand, windowSelector } from "./desk-harness";
 import { linkToken } from "./live-host-harness";
 import { BOARD_MARK, captureHost, NOTES_MARK, serveSharedPages, type SharedPages } from "./live-share-stack";
 import { startLiveKit, type LiveKitServer } from "./livekit-harness";
@@ -579,8 +579,10 @@ test.describe.serial("live share end to end: the Mac hosts a space, a browser jo
 
     // The host's pen, from /draw in the Bar, drawn over the desk in the live-host window.
     await reachBar(shell);
-    await shell.getByTestId("desk-bar-input").fill("/draw");
-    await shell.getByTestId("desk-bar-input").press("Enter");
+    // (Launched as the app is, the pill is the prompt view's: its field is found there — barField.)
+    const field = await barField(shell);
+    await field.fill("/draw");
+    await field.press("Enter");
     await expect(host.getByTestId("live-host")).toHaveAttribute("data-drawing", "pen");
     desk = await settledDesk(app!);
     const stage = desk.stageInWindow;

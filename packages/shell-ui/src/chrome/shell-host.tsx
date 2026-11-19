@@ -12,7 +12,7 @@ import { RUN_SHORTCUT_EVENT } from "@pistachio/shell-contracts/shortcuts";
 import { liveCloudThreads } from "../lib/cloud";
 import { prepareBrief, useBriefStore } from "../components/reports/use-brief";
 import { localDayOf } from "../lib/reports";
-import { announceAway, announceClosed } from "../lib/away-actions";
+import { announceAway, announceClosed, announceMade } from "../lib/away-actions";
 import { askDesk, deskAvailable, newTabAsChosen } from "../lib/desk/open";
 import { openExtensionsPage } from "../lib/extensions/actions";
 import { extensionsRequest } from "../lib/extensions/use-extensions";
@@ -234,6 +234,10 @@ export function runShellCommand(command: ShellCommand): void {
     case "spaceClosed":
       // A space an extension closed into the archive (§2.6): said with who did it, and Undo.
       announceClosed(command.title, command.tabCount, command.entryId, command.by);
+      break;
+    case "spaceMade":
+      // A space an extension made behind what is in front (§2.7): said with who made it, and Show.
+      announceMade(command.groupId, command.title, command.tabCount, command.by);
       break;
     case "openBookmarks":
       s.openBookmarks(command.bookmarkId);

@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { ExtensionJournalEntry } from "@pistachio/shell-contracts/extensions";
-import { closedNoticeText } from "../src/lib/away-actions";
+import { closedNoticeText, madeNoticeText } from "../src/lib/away-actions";
 import { awayNoticeText } from "../src/lib/away-spaces";
 import { anyTriggers, formatWhen, hasRunsBlock, hasTriggers, journalLine, journalNewestFirst, journalVerbLine, triggerStateLine } from "../src/lib/extensions/triggers";
 
@@ -102,6 +102,17 @@ describe("a space an extension closed", () => {
     expect(closedNoticeText("Trip", 1, "Pistachio")).toBe("Closed “Trip” · 1 tab · Pistachio");
     // (An empty space the person kept things in is filed too: no count to say.)
     expect(closedNoticeText("Notes", 0, "Idle spaces")).toBe("Closed “Notes” · Idle spaces");
+  });
+});
+
+describe("a space an extension made", () => {
+  it("is said in the journal by its name, and in the notice with its tabs and who made it", () => {
+    expect(journalVerbLine(entry({ verb: "makeSpace", title: "Chess time" }))).toBe("Made “Chess time”");
+    expect(journalVerbLine(entry({ verb: "makeSpace", title: "" }))).toBe("Made a space");
+    expect(madeNoticeText("Chess time", 1, "Chess time")).toBe("New space “Chess time” · 1 tab · Chess time");
+    expect(madeNoticeText("Morning", 3, "Work day")).toBe("New space “Morning” · 3 tabs · Work day");
+    // (Made with no pages: no count to say.)
+    expect(madeNoticeText("Later", 0, "Work day")).toBe("New space “Later” · Work day");
   });
 });
 

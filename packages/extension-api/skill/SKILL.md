@@ -75,6 +75,10 @@ stays away until `spaces.bringBack(spaceId)`. The space must be one the person r
 the handler's `ctx.spaceId` (and keep it in `storage.local`); any other space is `PERMISSION_DENIED`.
 Both are safe to repeat: one already away, or already here, resolves and changes nothing.
 
+`pistachio.spaces.create({ name, tabs })` (`spaces:create`) makes a space — named, with its pages — and it is
+the extension's own from then on; it works from a trigger's handler, behind what is in front ("every weekday
+at 5:30 a Chess time space with chess.com, closed at six": AGENTS.md §9, *Chess time*).
+
 `pistachio.spaces.close(spaceId)` (`spaces:close`) is the person's own *Close space*: filed in the archive
 as one entry, restored from there as itself. **Away is for "later", close is for "done".** A space is
 `{ id, name, color, tabIds, lastActiveAt, byPerson }` — leave `byPerson` spaces alone unless the person said

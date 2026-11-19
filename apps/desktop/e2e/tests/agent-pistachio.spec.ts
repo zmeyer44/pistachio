@@ -13,8 +13,9 @@
  * 4. "A deep green backdrop behind every space": `extension_build` makes a
  *    draft folder and runs the builder, whose draft tools write it; it lands
  *    waiting — a card under the reply, an amber dot on the Ledge, nothing on.
- *    The card opens the approval sheet; turned on by the person, the worker
- *    sets its theme and the backdrop is in the desk's well.
+ *    The card is where the person answers — what it may do, *Not now*, *Turn
+ *    it on* — with no sheet to open first; turned on there, the worker sets
+ *    its theme and the backdrop is in the desk's well.
  *
  * What the runner and main decide by themselves — the guide, the catalog, a
  * change's checks, the builder's isolation, what a turn that read a page may
@@ -60,7 +61,7 @@ const OFFER = "I can help with that — what should we change?";
 const DARK = "Done — Pistachio is dark now, with a purple and pink wash. Say the word and I'll put it back.";
 const SHOWN = "Appearance is open.";
 const REPORT = "Night desk puts a deep green gradient behind every space and sets a green accent. It asks to change the backdrop and accent.";
-const BUILT = "Night desk is ready. It waits for you: open the card below to turn it on.";
+const BUILT = "Night desk is ready. It waits for you: turn it on from the card below.";
 const BRIEF = "Give every space a deep green gradient backdrop, #0b3d2e at the top to #145c43 at the bottom, and the accent #1f8a4c. It applies by itself as soon as it is turned on.";
 
 const SCRIPT = {
@@ -197,23 +198,32 @@ test.describe.serial("the agent and Pistachio itself: asked how to change its lo
     await expect(icon).toHaveAttribute("data-dot", "amber", { timeout: 10_000 });
     await expect(shell.getByTestId("desk-backdrop")).toHaveCount(0);
 
-    // The card under the reply says where it stands, and is the way to the step that is the person's.
+    // The card under the reply is where the step that is the person's is taken: what the extension may do, in
+    // main's words, and the two answers — with no sheet to open first.
     const card = answer().locator('[data-testid="output-card"][data-kind="extension"]');
+    const turnOn = card.getByTestId("output-card-turn-on");
     await expect(card).toHaveAttribute("data-waiting", "");
     await expect(card).toContainText("Night desk");
     await expect(card).toContainText("Waiting for you to turn it on");
-    await expect(card).toContainText("Review");
+    await expect(card).toContainText("Changes the backdrop and accent colour of your spaces.");
+    await expect(turnOn).toBeVisible();
     await capture(app, shell, "04-built.png");
+
+    // Not now: the card folds to a row and the extension goes on waiting; Review asks again, in the card.
+    await card.getByTestId("output-card-not-now").click();
+    await expect(turnOn).toHaveCount(0);
+    await expect(card).toContainText("Review");
+    await expect(icon).toHaveAttribute("data-dot", "amber");
+    await expect(shell.getByTestId("desk-backdrop")).toHaveCount(0);
+    await capture(app, shell, "05-not-now.png");
     await card.click();
-    const sheet = shell.getByTestId("extension-sheet");
-    await expect(sheet).toBeVisible();
-    await expect(sheet.getByTestId("extension-sheet-name")).toHaveText("Night desk");
-    await expect(sheet).toContainText("Changes the backdrop and accent colour of your spaces.");
-    await capture(app, shell, "05-sheet.png");
+    await expect(turnOn).toBeVisible();
 
     // The person's click, and only theirs: on, the worker sets its theme and the backdrop is in the well.
-    await sheet.getByTestId("extension-sheet-turn-on").click();
-    await expect(sheet).toHaveCount(0);
+    await turnOn.click();
+    await expect(shell.getByTestId("extension-sheet")).toHaveCount(0);
+    await expect(turnOn).toHaveCount(0);
+    await expect(card).toContainText("Extension · On");
     const backdrop = shell.getByTestId("desk-backdrop");
     await expect(backdrop).toHaveCount(1, { timeout: 20_000 });
     await expect(backdrop).toHaveAttribute("data-kind", "gradient");

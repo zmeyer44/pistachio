@@ -7,7 +7,7 @@ import { vi } from "vitest";
 import type { BrowserTabInfo } from "@pistachio/shell-contracts/ipc";
 import type { TabGroupInfo } from "@pistachio/shell-contracts/tab-groups";
 import { validateManifest, type PistachioManifest } from "@pistachio/extension-api/manifest";
-import { withSpaceGrant, type ExtensionAwayHost, type ExtensionClosingHost } from "../src/main/extensions/away";
+import { withSpaceGrant, type ExtensionAwayHost, type ExtensionClosingHost, type ExtensionMakingHost } from "../src/main/extensions/away";
 import { DataFiles } from "../src/main/extensions/data-files";
 import { Ledger } from "../src/main/extensions/ledger";
 import type { CallContext, ExtensionNotesHost, ExtensionRuntime } from "../src/main/extensions/methods";
@@ -105,7 +105,7 @@ export interface Harness {
   browser: ReturnType<typeof fakeBrowser>;
   dataRoot: string;
   /** What the scope wrote to the journal: a space sent away or brought back, a theme set, a tab opened — with nobody there. */
-  journal: { trigger: string | null; verb: "sendAway" | "bringBack" | "setTheme" | "openTab" | "closeSpace"; spaceId: string; title: string; tabId?: string; entryId?: string; until?: number }[];
+  journal: { trigger: string | null; verb: "sendAway" | "bringBack" | "setTheme" | "openTab" | "closeSpace" | "makeSpace"; spaceId: string; title: string; tabId?: string; entryId?: string; until?: number }[];
 }
 
 export function harness(
@@ -116,6 +116,7 @@ export function harness(
     stored?: Record<string, unknown>;
     away?: ExtensionAwayHost;
     closing?: ExtensionClosingHost;
+    making?: ExtensionMakingHost;
     shown?: ShownHost;
     absent?: (triggers: readonly string[]) => boolean;
     /** Whether the worker running was started by a trigger, with nothing of the person's run in it since. */
@@ -137,9 +138,13 @@ export function harness(
     browser: () => browser,
     away: () => options.away ?? null,
     closing: () => options.closing ?? null,
+    making: () => options.making ?? null,
     // (As the service keeps it: on the record, ./away withSpaceGrant.)
     rememberSpace: (spaceId) => {
       record.spaces = withSpaceGrant(record.spaces ?? [], spaceId);
+    },
+    rememberMade: (spaceId) => {
+      record.made = withSpaceGrant(record.made ?? [], spaceId);
     },
     journal: (line) => journal.push(line),
     ...(options.absent === undefined ? {} : { absent: options.absent }),

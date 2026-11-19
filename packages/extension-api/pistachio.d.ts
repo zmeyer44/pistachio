@@ -362,16 +362,42 @@ declare namespace Pistachio {
      * its tabs, its Stack and conversation), until the archive lets it lapse (30 days unless the person changed it).
      * For "out of the way, back later" use `sendAway`, which never lapses; `close` is for "done with this".
      *
-     * Only a space the person gave this extension — or, with `spaces:all`, any drawn space. Rejects
+     * Only a space the person gave this extension, one it made (`create`) — or, with `spaces:all`, any drawn space. Rejects
      * `PERMISSION_DENIED` otherwise, `NOT_FOUND` for one that is not here, `UNAVAILABLE` while it is busy (shared
      * live, recorded, the agent at work in it).
      *
      * Allowed in a trigger's handler: then it also rejects `UNAVAILABLE` for the space in front, one playing
      * something and one with a terminal (let it out; Pistachio tries again), and it is written in the journal — the
      * person's Undo restores the space. (As for `sendAway`, the space in front does go when Pistachio can see nobody
-     * is at the Mac: its screen is locked, or the handler is an `idle` or `screen` signal's and that signal holds.)
+     * is at the Mac: its screen is locked, or the handler is an `idle` or `screen` signal's and that signal holds —
+     * and so does one this extension made itself with `create`, whoever is there.)
      */
     close(spaceId: string): Promise<void>;
+    /**
+     * @capability spaces:create — make a new space: named (`name`, up to 40 characters), with a page of the web
+     * opened in it for each address of `tabs` (http or https, twelve at most; none makes an empty space). It stands
+     * at the end of the rail, in the Profile the person ran the extension in (the one in front, for a trigger).
+     *
+     * **The space is this extension's from then on**, exactly as one the person ran it in: keep `space.id` in
+     * `storage.local` and `close` it (`spaces:close`), `sendAway` it (`spaces:write`), mark it or give it a
+     * backdrop later. Nothing else is needed to act on it — no command run in it, no `spaces:all`.
+     *
+     * `show` (true when left out) brings it in front — only when the person ran the extension (a command, a menu
+     * item, a key, its icon, a press in its panel). **Allowed in a trigger's handler**, and then it is made
+     * **behind** what is in front whatever `show` says: a notice tells the person it is there, with *Show*; it is
+     * written in the journal, and Undo closes it. Four spaces an hour at most with nobody there, and their pages
+     * count among the twelve tabs an hour.
+     *
+     * It resolves as soon as its tabs stand in it — their pages are still loading, so a tab's `title` is not the
+     * page's yet. Not safe to repeat: every call makes another space. Keep the id you were handed, and make one only when you
+     * hold none (see AGENTS.md §9, *Chess time*). Rejects `UNAVAILABLE` when the Profile has no room for another
+     * space (it holds fifty), `INVALID_ARGUMENT` for an empty name or an address that is not a page of the web.
+     *
+     * A space this extension made, closed by it from a trigger's handler, **closes even while it is in front** (the
+     * desk passes on, a notice says so with Undo): "close it at six" means six. A space the person gave it is
+     * never taken from under them that way.
+     */
+    create(options: { name: string; tabs?: string[]; show?: boolean }): Promise<Space>;
     /** @capability tabs:read — the spaces that are away, oldest first, whoever sent them. */
     away(): Promise<AwaySpace[]>;
     /** @capability tabs:read — a space went away, or came back (asked for, or by the clock). */

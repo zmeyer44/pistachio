@@ -112,8 +112,10 @@ import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import type { DeskEngine, DeskView } from "./desk-engine";
 import { DeskNub, NUB_BOX, nubDropletLabel, NubPillClose, NubPillSide, type NubTip } from "./DeskNub";
+import { elementOf, focusField, focusedWithin, listenInBoth, placePromptView, promptView } from "../../lib/desk/prompt-view";
 import { DictationWave } from "./DictationWave";
 import { ExtensionMark } from "../extensions/LedgeIcon";
+import { StatusPillRow } from "../extensions/StatusPillRow";
 import { sendRowPress, sendStatusAction, StatusPills, useStatusPills } from "../extensions/StatusPills";
 import { FileGlyph, fileKindLabel } from "./files/FileGlyph";
 import { nubTimeScale, type NubMotion, type PillParts, type PillSource, type Swelling } from "./nub-motion";
@@ -173,6 +175,17 @@ const TIP_SIDE_W = 200;
 const PILL_SHADOW = 16;
 /** The room above the pill's box its footprint takes (its shadow reaches a few px up): the band the desk keeps clear for it ends there. */
 const PILL_ABOVE = DESK_GAP;
+/**
+ * The prompt's view over a live page (lib/desk/prompt-view.ts): the room its box keeps around the pill for the pill's
+ * shadow — beside it, above it, and below it down to the desk's foot (shell.css .desk-prompt-view pads by the same).
+ */
+const OVER_SIDE = 16;
+const OVER_ABOVE = 10;
+const OVER_BELOW = 16;
+/** The gap between the pill and a list standing on it (shell.css .desk-mentions: `bottom: calc(100% + 8px)`). */
+const OVER_LIST_GAP = 8;
+/** A tooltip that never opens: the pill's buttons in the view have none (their band would be the shell's, under the page). */
+const NO_TIP: NubTip = { open: false, shown: false, onOpenChange: () => undefined };
 /** How far one of the pill's buttons above the nub reaches past its circle (its shadow), for the notch view's box over them. */
 const BUTTON_SHADOW = 8;
 /** The view over a live page holds the nub swelled (and a little past, as the swell overshoots), its corner the desk's (NotchApp). */
@@ -402,7 +415,27 @@ export const DeskBar = memo(function DeskBar({
   /** The composer's own: starts dictation (the microphone's droplet), and drops a recording (the pill put away). */
   const dictateRef = useRef<(() => void) | null>(null);
   const undictateRef = useRef<(() => void) | null>(null);
-  const focusInput = useCallback(() => inputRef.current?.focus({ preventScroll: true }), []);
+  // The prompt's view over the live pages, where there is one (the desktop): the pill is drawn in it, so no window
+  // gives way to the pill and no page under it is a still (lib/desk/prompt-view.ts; docs/desk.md, "The foot").
+  const [over] = useState(promptView);
+  /** The pill as the view draws it, and the row's place in it. */
+  const overPillRef = useRef<HTMLDivElement>(null);
+  const overBodyRef = useRef<HTMLDivElement>(null);
+  /** Whether the pill is the view's now (read where it is decided, below). */
+  const overViewNow = useRef(false);
+  /** The keys are wanted in the field once it is where it is typed in: the view placed, main hands them over. */
+  const focusWanted = useRef(false);
+  const [focusTick, setFocusTick] = useState(0);
+  const focusInput = useCallback(() => {
+    // In the view the field has the keys only once the view has them, which is main's to give as it places it: the
+    // pill is asked for, and the view placed again with the keyboard.
+    if (overViewNow.current) {
+      focusWanted.current = true;
+      setAsked(true);
+      setFocusTick((tick) => tick + 1);
+    }
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
   // A Word or Excel file dropped on the Bar goes into the group's context, and the message mentions it.
   const groupRef = useRef(group);
   groupRef.current = group;
@@ -607,12 +640,16 @@ export const DeskBar = memo(function DeskBar({
   const inCardNow = useRef(inCard);
   inCardNow.current = inCard;
   useLayoutEffect(() => {
-    const home = inCard ? footRef.current : bodyRef.current;
+    // (Over a live page the pill is the prompt view's: the row lies in it there, for as long as the view draws it.)
+    const home = inCard ? footRef.current : overUp ? overBodyRef.current : bodyRef.current;
     if (home === null || composerBox.parentElement === home) return;
-    const active = document.activeElement;
-    const typing = active instanceof HTMLElement && composerBox.contains(active) ? active : null;
+    const typing = focusedWithin(composerBox);
+    const crossing = home.ownerDocument !== composerBox.ownerDocument;
     home.appendChild(composerBox);
     typing?.focus({ preventScroll: true });
+    // (Into the view's document the keys go with the field: main hands them over as the view is placed — the effect
+    // that places it runs after this one, in the same pass, since the row moves there as the view comes up.)
+    if (typing !== null && crossing && home.ownerDocument !== document) focusWanted.current = true;
   });
 
   // The conversations stay a moment once put away, going back into their droplet.
@@ -776,15 +813,26 @@ export const DeskBar = memo(function DeskBar({
   // menu is out: the two are one or the other.)
   // (The answer floating, the message field is the card's: the pill stays in.)
   const pillWanted = !inCard && !stowed && !menuOpen && (asked || !composerIdle || focusWithin || dockedAnswer || cardHeld || fieldMenu !== null || fileDrag || drop.dragging);
-  // Out, it is a cover (its whole footprint), from the pointer coming to the nub until it is back in.
+  // The extensions' live pills (docs/extensions.md §5, `ui.setStatus`; and the rows of extensions' bands for this
+  // space — docs/primitives.md §4.5): where they lie is below, with the nub's lane.
+  const statusPills = useStatusPills(group.id);
+  // Over the live pages the pill is the prompt view's (2026-11-18): drawn above them, so no window moves or changes
+  // size for it and no page under it is a still. Not in the card, where the field is the card's. (Extensions' live
+  // pills at the foot stand beside it in the view: the pill takes them with it there, as it took them into its cover.)
+  const overView = over !== null && !inCard;
+  overViewNow.current = overView;
+  // Out, it is the view's at once — or, the shell's own, a cover (its whole footprint), from the pointer coming to the
+  // nub until it is back in.
   const pillOverdue = useOverdue(pillWanted, NOTCH_WAIT_MS);
-  const pillOpen = pillWanted && (shownCover("pill") || pillOverdue);
+  const pillOpen = pillWanted && (overView || shownCover("pill") || pillOverdue);
   // (The @ list is the field's, shown while the pill is out — or in the card, over the field there: put away with what
   // was typed in it, the list goes too. A cover of its own in the card as well: a long list stands up past a short
   // card, over a window that would otherwise stay live and paint over it — 2026-10-10.)
   const fieldMenuUp = fieldMenu !== null && (pillOpen || inCard);
   // (Read again as the list turns from the @ list to the commands, or back, too: each is an element of its own.)
-  useCover(engine, "field-menu", fieldMenuRef, fieldMenuUp, undefined, `${inCard ? "card" : "pill"}:${fieldMenu?.kind ?? ""}`);
+  // (Over the live pages the list is the prompt view's, with the pill: it lies on the page, and is no cover.)
+  const listOver = overView && !inCard;
+  useCover(engine, "field-menu", fieldMenuRef, fieldMenuUp && !listOver, undefined, `${inCard ? "card" : listOver ? "view" : "pill"}:${fieldMenu?.kind ?? ""}`);
   const compact = !pillOpen;
 
   // The nub: the pointer resting on it swells it.
@@ -881,7 +929,6 @@ export const DeskBar = memo(function DeskBar({
   // recorded under them froze into its still for the whole recording. While the Bar's pill or menu is out, the foot is
   // the Bar's: the lane closes and they stand left of the pill, in its cover (its footprint reaches over them).
   // (And the rows of extensions' bands for this space — docs/primitives.md §4.5 — chips in the same lane.)
-  const statusPills = useStatusPills(group.id);
   const [pillsWidth, setPillsWidth] = useState(0);
   const statusRaised = statusPills.length > 0 && (pillWanted || menuWanted);
   const raisedWidth = useLinger(statusRaised, NOTCH_CLOSE_MS, true) && statusPills.length > 0 ? pillsWidth : 0;
@@ -894,7 +941,9 @@ export const DeskBar = memo(function DeskBar({
     },
     [raisedWidth],
   );
-  const pillCovering = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted || (menuWanted && menuCovers);
+  const pillLingers = useLinger(pillOpen, NOTCH_CLOSE_MS, true);
+  // (The view's pill is no cover: it lies over the pages. The keys' menu still covers the pill's place with its own.)
+  const pillCovering = (!overView && (pillLingers || pillWanted)) || (menuWanted && menuCovers);
   useCover(engine, "pill", barRef, pillCovering, pillShape);
   const laneTarget = useSteadyLane(statusPills.length > 0 && !statusRaised ? nubLaneFor(pillsWidth) : 0);
   // The pill's close above the nub, while the pill is out (not while the menu is: it would stand among its droplets).
@@ -911,7 +960,10 @@ export const DeskBar = memo(function DeskBar({
   // to the pointer, for as long as the pill was out). The pill lies on the ground the band leaves. Held through the
   // pill's way back into the nub, as its cover is, so nothing comes down under it while it is still drawn. (Not for
   // the menu, which lies over the pages as the nub does — main's notch view draws it; nor in the card, where the field is the card's.)
-  const bandWanted = useLinger(pillOpen, NOTCH_CLOSE_MS, true) || pillWanted;
+  // (Since 2026-11-18 only where the pill is the shell's own: over the live pages it is the prompt view's, which lies
+  // on them, and no window moves or changes size for it.)
+  const bandLingers = useLinger(pillOpen, NOTCH_CLOSE_MS, true);
+  const bandWanted = !overView && (bandLingers || pillWanted);
   useLayoutEffect(() => {
     const el = barRef.current;
     const stage = el?.closest(".desk-stage") ?? null;
@@ -944,6 +996,78 @@ export const DeskBar = memo(function DeskBar({
   // A screenshot of the desk is the windows without the Bar: neither it nor its hole is drawn while one is taken.
   const capturing = useDeskStore((state) => state.capturing);
   const holeOff = capturing;
+
+  // The prompt's view: over the pages for as long as the pill is out (and through its way back in), where the shell's
+  // own pill rests — that box, and the room its shadow takes. The shell's pill stays laid out under it, unseen, at the
+  // view's pill's height, so what stands on it (the answer docked, the mentions, the commands) stands as it did. The
+  // keys go to the view as main places it, when they were asked for. (Not while a screenshot of the desk is taken:
+  // the desk is its windows without the Bar.)
+  const overUp = overView && !capturing && (pillLingers || pillWanted);
+  const [overHeight, setOverHeight] = useState(0);
+  /** The pill's width in the view: the shell's pill's, whatever else the view's box holds beside it. */
+  const [overWidth, setOverWidth] = useState(0);
+  // Extensions' live pills, while the Bar's pill is out, stand left of it — in the view, whose box reaches left over
+  // them (their row's width as the shell measures it in its own lane, and the gap between it and the pill).
+  const overPills = overUp && statusPills.length > 0;
+  const pillsRoom = overPills && pillsWidth > 0 ? pillsWidth + STATUS_RAISED_GAP : 0;
+  /** The list standing on the view's pill, by its kind (each is an element of its own), or null. */
+  const overList = overUp && fieldMenuUp && fieldMenu !== null ? fieldMenu.kind : null;
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    const pill = overPillRef.current;
+    const stage = bar?.closest(".desk-stage") ?? null;
+    if (over === null) return;
+    if (!overUp || bar === null || pill === null || stage === null) {
+      placePromptView(null);
+      return;
+    }
+    const place = (): void => {
+      setOverHeight(pill.offsetHeight);
+      const box = stageBox(bar);
+      if (box === null) return;
+      setOverWidth(box.w);
+      const at = stage.getBoundingClientRect();
+      const focus = focusWanted.current;
+      focusWanted.current = false;
+      // (And up over a list standing on the pill — the @ list, the commands — which is the view's too.)
+      const list = fieldMenuRef.current;
+      const room = list !== null && list.ownerDocument !== document ? list.offsetHeight + OVER_LIST_GAP : 0;
+      placePromptView({
+        bounds: { x: at.left + box.x - OVER_SIDE - pillsRoom, y: at.top + box.y - OVER_ABOVE - room, width: box.w + OVER_SIDE * 2 + pillsRoom, height: box.h + OVER_ABOVE + OVER_BELOW + room },
+        ...(focus ? { focus: true } : {}),
+      });
+      if (focus) inputRef.current?.focus({ preventScroll: true });
+    };
+    place();
+    // (The pill grows with what it holds — lines, files — and the desk resized moves it: placed again. The view's own
+    // pill, and a list on it, are its document's to watch.)
+    const observer = new ResizeObserver(place);
+    observer.observe(bar);
+    observer.observe(stage);
+    const Watcher = (over.window as Window & typeof globalThis).ResizeObserver;
+    const inView = new Watcher(place);
+    inView.observe(pill);
+    const list = fieldMenuRef.current;
+    if (list !== null && list.ownerDocument !== document) inView.observe(list);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      inView.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [over, overUp, focusTick, overList, pillsRoom]);
+  // A list in the view comes in a frame after it is made, so it fades in as the shell's does (and the view has been
+  // placed with room for it by then).
+  const [overListIn, setOverListIn] = useState(false);
+  useEffect(() => {
+    if (overList === null) {
+      setOverListIn(false);
+      return;
+    }
+    const frame = requestAnimationFrame(() => setOverListIn(true));
+    return () => cancelAnimationFrame(frame);
+  }, [overList]);
+  useEffect(() => () => placePromptView(null), []);
   const hole = useRef<{ shape: NotchShape | null; lane: number; off: boolean }>({ shape: NUB_IDLE, lane: 0, off: holeOff });
   hole.current.off = holeOff;
   // (None while it stands free of the corner for its menu. Drawn out along the foot, its lane, while the extensions'
@@ -1037,6 +1161,14 @@ export const DeskBar = memo(function DeskBar({
   const answerCloses = cardShown && !floating;
   const unwind = useRef({ pickerOpen, menuOpen, answerCloses, pillOpen, composerIdle });
   unwind.current = { pickerOpen, menuOpen, answerCloses, pillOpen, composerIdle };
+  /**
+   * The pill's field lets go of the keyboard, wherever its row lies — the shell's document, or the prompt view's over
+   * a live page. (Not the card's: floating, the field is the card's own.)
+   */
+  const blurPillField = useCallback(() => {
+    if (inCardNow.current) return;
+    focusedWithin(composerBox)?.blur();
+  }, [composerBox]);
 
   /**
    * The pill's close: the pill back into the nub whatever it holds — what was typed and staged kept for when it comes
@@ -1047,9 +1179,8 @@ export const DeskBar = memo(function DeskBar({
     setAsked(false);
     setStowed(true);
     if (unwind.current.answerCloses) setAnswerOpen(false);
-    const field = document.activeElement;
-    if (field instanceof HTMLElement && barRef.current?.contains(field) === true) field.blur();
-  }, []);
+    blurPillField();
+  }, [blurPillField]);
   /**
    * The side button above the close (2026-10-09): the chat into its place at the desk's side — the card docked on the
    * pill torn off and sprung there, as a drag would leave it; no card out, it comes out there (the motion snaps it as
@@ -1067,14 +1198,16 @@ export const DeskBar = memo(function DeskBar({
   }, []);
   useEffect(() => {
     // Escape in a document's window is the document's (its editor, its sheet).
-    const theirs = (event: KeyboardEvent): boolean => event.key !== "Escape" || (event.target instanceof Element && event.target.closest(".desk-window") !== null);
+    const theirs = (event: KeyboardEvent): boolean => event.key !== "Escape" || elementOf(event.target)?.closest(".desk-window") != null;
     // What is out of the nub hears it first: a tooltip open over a droplet (Base UI's) would take it otherwise. Only
     // where the keys are the nub's — on it or its droplets, in the pill, or nowhere — though: an overlay in front of
     // the desk with the keyboard in it (the address bar, a dialog) has its own Escape first.
     const onNubKey = (event: KeyboardEvent): void => {
       if (theirs(event) || event.defaultPrevented) return;
-      const target = event.target instanceof Element && event.target !== document.body ? event.target : null;
-      if (target !== null && nubRef.current?.contains(target) !== true && barRef.current?.contains(target) !== true) return;
+      // (In the pill is in the row too, wherever the row lies: the prompt view's document, over a live page.)
+      const at = elementOf(event.target);
+      const target = at !== null && at !== at.ownerDocument.body ? at : null;
+      if (target !== null && nubRef.current?.contains(target) !== true && barRef.current?.contains(target) !== true && !composerBox.contains(target)) return;
       const now = unwind.current;
       const inMenu = target !== null && nubRef.current?.contains(target) === true;
       if (now.pickerOpen) {
@@ -1096,17 +1229,17 @@ export const DeskBar = memo(function DeskBar({
       else if (now.answerCloses) setAnswerOpen(false);
       else if (now.pillOpen && now.composerIdle) {
         setAsked(false);
-        const field = document.activeElement;
-        if (field instanceof HTMLElement && barRef.current?.contains(field) === true) field.blur();
+        blurPillField();
       }
     };
-    window.addEventListener("keydown", onNubKey, true);
-    window.addEventListener("keydown", onKey);
+    // (In the prompt's view too: Escape struck in the field over a live page is struck in the view's document.)
+    const offNub = listenInBoth("keydown", onNubKey, true);
+    const offKey = listenInBoth("keydown", onKey);
     return () => {
-      window.removeEventListener("keydown", onNubKey, true);
-      window.removeEventListener("keydown", onKey);
+      offNub();
+      offKey();
     };
-  }, []);
+  }, [blurPillField, composerBox]);
 
   // The menu and the conversations go on a press anywhere else — a live page's too, which the shell never hears
   // itself (main relays it) — or Escape in a page. The nub's own click toggles them itself.
@@ -1174,13 +1307,12 @@ export const DeskBar = memo(function DeskBar({
   // of it at once: out over the windows while it held it, it would keep that page a still for good.
   useEffect(() => {
     const onDown = (event: PointerEvent): void => {
-      const field = document.activeElement;
       if (!(event.target instanceof Element) || event.target.closest(".desk-window") === null || event.target.closest("button") !== null) return;
-      if (field instanceof HTMLElement && barRef.current?.contains(field) === true) field.blur();
+      blurPillField();
     };
     window.addEventListener("pointerdown", onDown, true);
     return () => window.removeEventListener("pointerdown", onDown, true);
-  }, []);
+  }, [blurPillField]);
 
   // ⌘I: the keyboard in the field, the pill out of the nub — and what was out of the nub back in, as the prompt's
   // droplet puts it.
@@ -1438,7 +1570,8 @@ export const DeskBar = memo(function DeskBar({
     shown: shownCover(where === "pill" ? "bar-tip" : "nub-tip"),
     onOpenChange: (open) => setTip((current) => (open ? { label, where } : current?.label === label && current.where === where ? null : current)),
   });
-  const barTip = (label: string): BarTip => someTip(label, "pill");
+  // (In the prompt's view the pill's buttons have none: a tooltip's band is the shell's, which lies under the page.)
+  const barTip = (label: string): BarTip => (overView ? NO_TIP : someTip(label, "pill"));
   const nubTip = (label: string): BarTip => someTip(label, "nub");
   const faceLabel = `Ask about ${group.title}`;
   // (Not while the nub's menu is out: its droplets say what they are.)
@@ -1529,7 +1662,8 @@ export const DeskBar = memo(function DeskBar({
           />
         ) : null}
         <div ref={anchorRef} className="desk-bar-anchor">
-          {!inCard && fieldMenuUp && fieldMenu !== null ? <FieldMenu ref={fieldMenuRef} menu={fieldMenu} shown={shownCover("field-menu")} /> : null}
+          {/* (Over the live pages the list stands on the view's pill, in the field's own document: below.) */}
+          {!inCard && !overUp && fieldMenuUp && fieldMenu !== null ? <FieldMenu ref={fieldMenuRef} menu={fieldMenu} shown={shownCover("field-menu")} /> : null}
           {/* The pill: its box always where it rests; its glass and row what the nub's motion morphs. */}
           <div
             ref={barRef}
@@ -1540,14 +1674,50 @@ export const DeskBar = memo(function DeskBar({
             data-acting={acting ? "" : undefined}
             data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
             data-compact={compact ? "" : undefined}
+            // The pill is the prompt view's, over the pages: this one keeps its box, unseen (shell.css).
+            data-over={overUp ? "" : undefined}
             className="desk-bar"
+            style={overUp && overHeight > 0 ? { minHeight: overHeight } : undefined}
             onFocus={() => setFocusWithin(true)}
             onBlur={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false);
+              // (Within the row counts wherever the row lies: in the card, or in the prompt view's document.)
+              const next = event.relatedTarget as Node | null;
+              if (!event.currentTarget.contains(next) && !(next !== null && composerBox.contains(next))) setFocusWithin(false);
             }}
           >
+            {/* Over the live pages, the pill itself: drawn in the prompt's view, the row's box in it (composerBox). */}
+            {over !== null && overUp
+              ? createPortal(
+                  // (No drop handlers of its own: it is drawn through a portal from inside the shell's pill, whose
+                  // handlers hear a file dragged or dropped here by React's tree — once.)
+                  <div className="desk-prompt-view-anchor" style={overWidth > 0 ? { width: overWidth } : undefined}>
+                  {/* Extensions' live pills, beside the pill while it is out (the shell's own row stands unseen under
+                      the page meanwhile, measured for the room these take). */}
+                  {overPills ? <StatusPillRow pills={statusPills} onAction={sendStatusAction} onRow={sendRowPress} className="desk-prompt-view-pills" shown={pillOpen} raised /> : null}
+                  {/* The @ list and the commands stand on the pill here, in the field's own document: the field names
+                      them (aria-controls, aria-activedescendant), which only an element of its document answers to;
+                      a row pressed leaves the keyboard in the field; and the page under them is itself, not a still. */}
+                  {fieldMenuUp && fieldMenu !== null ? <FieldMenu ref={fieldMenuRef} menu={fieldMenu} shown={overListIn} /> : null}
+                  <div
+                    ref={overPillRef}
+                    role="region"
+                    aria-label="Ask Pistachio about this space"
+                    data-testid="desk-bar-over"
+                    data-shown={pillOpen ? "" : undefined}
+                    data-acting={acting ? "" : undefined}
+                    data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
+                    className="desk-bar desk-bar-over"
+                  >
+                    <div className="desk-bar-frame" aria-hidden="true" />
+                    {drop.dragging ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-[16px]" /> : null}
+                    <div ref={overBodyRef} className="desk-bar-body" />
+                  </div>
+                  </div>,
+                  over.host,
+                )
+              : null}
             <div ref={frameRef} className="desk-bar-frame" aria-hidden="true" />
-            {drop.dragging && !inCard ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-[16px]" /> : null}
+            {drop.dragging && !inCard && !overUp ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-[16px]" /> : null}
             {/* The row's place: the message field's box lies here, or in the card while it floats (composerBox). */}
             <div ref={bodyRef} className="desk-bar-body" />
             {createPortal(
@@ -1776,9 +1946,11 @@ function BarComposer({
     (caretAt?: number) => {
       requestAnimationFrame(() => {
         const el = inputRef.current;
-        const active = document.activeElement;
-        if (el === null || (active !== null && active !== document.body && el.closest(".desk-bar")?.contains(active) !== true)) return;
-        el.focus({ preventScroll: true });
+        if (el === null) return;
+        // (The field's own document: the shell's, or the prompt view's over a live page.)
+        const active = el.ownerDocument.activeElement;
+        if (active !== null && active !== el.ownerDocument.body && el.closest(".desk-bar")?.contains(active) !== true) return;
+        focusField(el);
         if (caretAt !== undefined) el.setSelectionRange(caretAt, caretAt);
       });
     },
@@ -1823,8 +1995,9 @@ function BarComposer({
     // Listening, the keyboard is on Done: Enter or Space finishes, Escape discards. (From the nub's too — its
     // microphone droplet clicked with the keyboard on the nub, which would otherwise hear Enter and Escape itself.)
     if (listening) {
-      const active = document.activeElement;
-      if (active === null || active === document.body || active.closest(".desk-bar, .desk-nub") !== null) doneRef.current?.focus({ preventScroll: true });
+      const own = doneRef.current?.ownerDocument ?? document;
+      const active = own.activeElement ?? document.activeElement;
+      if (active === null || active === own.body || active === document.body || active.closest(".desk-bar, .desk-nub") !== null) focusField(doneRef.current);
     }
   }, [listening, onTipsGone]);
   useEffect(() => {
@@ -1832,17 +2005,18 @@ function BarComposer({
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || event.isComposing || (event.key !== "Escape" && event.key !== "Enter")) return;
       // A key in a document's window, or in a field elsewhere, is theirs; Enter on one of the Bar's buttons presses it.
-      const target = event.target instanceof Element && event.target !== document.body ? event.target : null;
+      const at = elementOf(event.target);
+      const target = at !== null && at !== at.ownerDocument.body ? at : null;
       if (target !== null && target.closest(".desk-bar") === null) return;
-      if (event.key === "Enter" && (target instanceof HTMLButtonElement || event.shiftKey || event.metaKey || event.altKey || event.ctrlKey)) return;
+      if (event.key === "Enter" && (target?.tagName === "BUTTON" || event.shiftKey || event.metaKey || event.altKey || event.ctrlKey)) return;
       event.preventDefault();
       event.stopPropagation();
       if (event.key === "Escape") discardDictation();
       else voice.finish();
     };
-    // Capturing, so the Bar's own Escape (closing the answer) waits for it.
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    // Capturing, so the Bar's own Escape (closing the answer) waits for it. (In the prompt's view too, where the keys
+    // are while the pill lies over a live page.)
+    return listenInBoth("keydown", onKey, true);
   });
 
   // The group's files that can be mentioned: those whose bytes are on this Mac.
@@ -1898,7 +2072,7 @@ function BarComposer({
       const moved = at + text.length;
       setCaret(moved);
       requestAnimationFrame(() => {
-        el?.focus({ preventScroll: true });
+        focusField(el ?? null);
         el?.setSelectionRange(moved, moved);
       });
     },
@@ -1923,7 +2097,7 @@ function BarComposer({
       setCaret(next.caret);
       setMentionIndex(0);
       requestAnimationFrame(() => {
-        el?.focus({ preventScroll: true });
+        focusField(el ?? null);
         el?.setSelectionRange(next.caret, next.caret);
       });
     },
@@ -1936,7 +2110,7 @@ function BarComposer({
     setValue(text);
     setCaret(at);
     requestAnimationFrame(() => {
-      el?.focus({ preventScroll: true });
+      focusField(el ?? null);
       // Typed into before this frame (keys struck right after a command was chosen), the caret stays where the typing
       // left it: put back at `at`, the rest of the words would go in ahead of the first.
       if (el?.value === text) el.setSelectionRange(at, at);
@@ -1997,7 +2171,7 @@ function BarComposer({
       // answer docked on it — so the window in use is live again at once: `/record`'s page never stands frozen as its
       // still under the pill, the person's first click on it landing on the shell.)
       const field = inputRef.current;
-      if (field !== null && document.activeElement === field) field.blur();
+      if (field !== null && field.ownerDocument.activeElement === field) field.blur();
       return;
     }
     switch (chosen.id) {

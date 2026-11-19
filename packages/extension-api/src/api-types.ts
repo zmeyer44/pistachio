@@ -303,6 +303,12 @@ export interface ExtMethodMap {
   /** Put a mark on a space's tile, or (null) take this extension's off: a space the person gave it. */
   /** Close a space into the archive, whole (the person's own *Close space*): restored from there as itself. */
   "spaces.close": { args: { spaceId: string }; result: null };
+  /**
+   * Make a space (docs/primitives.md §2.7): named, with a page of the web for each of `tabs`, in the Profile the call
+   * acts in. It is the extension's from then on, as one the person gave it. `show`: brought in front — only when
+   * the person ran the extension; with nobody there it stands behind what is in front whatever was asked.
+   */
+  "spaces.create": { args: { name: string; tabs?: string[]; show?: boolean }; result: ExtSpace };
   "spaces.setMark": { args: { spaceId: string; mark: ExtSpaceMark | null }; result: null };
   /** A small mark on a tab's row, or — null — this extension's taken off: any tab it could see. */
   "tabs.setMark": { args: { tabId: string; mark: ExtSpaceMark | null }; result: null };

@@ -1,33 +1,15 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, FolderOpen, X } from "lucide-react";
-import type { ChromeVerdict, ExtensionSheet, ExtensionSheetLine } from "@pistachio/shell-contracts/extensions";
+import type { ExtensionSheetLine } from "@pistachio/shell-contracts/extensions";
 import { cn } from "../../lib/cn";
 import { revealExtensionFolder } from "../../lib/extensions/actions";
-import { sheetIsCritical, sheetLines, sourceLine } from "../../lib/extensions/ledge";
+import { sheetLines } from "../../lib/extensions/ledge";
 import { RUNS_HEADING, RUNS_LIMIT } from "../../lib/extensions/triggers";
 import { closeExtensionSheet, extensionsRequest, useExtensionsState, dismissExtensionSheet } from "../../lib/extensions/use-extensions";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
+import { SheetLine, extensionSubject, useApproval, type SheetSubject } from "./approval";
 import { ExtensionMark } from "./LedgeIcon";
-
-/** What the sheet is asked about, whichever kind: an extension's pending sheet, or a store install's. */
-interface SheetSubject {
-  key: string;
-  mark: { id: string; name: string; iconUrl: string | null };
-  name: string;
-  source: string;
-  sheet: ExtensionSheet;
-  verdict: ChromeVerdict | null;
-  /** Declares tools: the *Agent can use it* switch is offered. */
-  tools: boolean;
-  agentAllowed: boolean;
-  /** Its first approval (an install, a folder never turned on): the agent's access takes its default; later ones keep the person's choice. */
-  first: boolean;
-  /** One of the person's own folders: its id, for *Show* (`revealFolder`). */
-  revealId: string | null;
-  approve(agentAllowed: boolean): Promise<boolean>;
-  deny(): void;
-}
 
 /**
  * The approval sheet (docs/extensions.md §2, *Approve one*): every install,
@@ -47,27 +29,19 @@ interface SheetSubject {
  * so nothing an extension draws can cover it (§6.3). Raised by the store
  * (lib/extensions/use-extensions.ts) — a store install's by itself, any
  * other by the person (an amber icon, a row, a notice's *Review*).
+ *
+ * An extension the agent built in a conversation is approved without it: the
+ * card under the reply asks the same question in the sheet's compact form
+ * (OutputCard.tsx; both answer through ./approval.tsx), and this sheet is
+ * where *See everything it declares* there leads.
  */
-/** *Agent can use it* as the sheet opens: on for a first approval of an extension with tools; after that, as the person left it. */
-export function agentDefault(subject: { first: boolean; tools: boolean; agentAllowed: boolean }): boolean {
-  return subject.first ? subject.tools : subject.agentAllowed;
-}
-
 export function ApprovalSheet() {
   const subject = useSheetSubject();
-  const [agent, setAgent] = useState(true);
+  const { agent, setAgent, confirming, busy, turnOn: answer } = useApproval(subject);
   const [expanded, setExpanded] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
   const key = subject?.key ?? "";
-  useEffect(() => {
-    setAgent(subject === null ? true : agentDefault(subject));
-    setExpanded(false);
-    setConfirming(false);
-    setBusy(false);
-    // (A new subject, a new sheet: what was chosen on the last one is not this one's.)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  // (A new subject, a new sheet: what was open on the last one is not this one's.)
+  useEffect(() => setExpanded(false), [key]);
 
   // ⎋ puts it down without an answer (an install's is answered: *Not now*), and never the page under it too.
   useEffect(() => {
@@ -90,21 +64,12 @@ export function ApprovalSheet() {
 
   if (subject === null) return null;
   const { shown, more } = sheetLines(subject.sheet);
-  const critical = sheetIsCritical(subject.sheet);
   const wont = subject.verdict?.kind === "wont" ? subject.verdict : null;
   const partly = subject.verdict?.kind === "partly" ? subject.verdict : null;
   const hidden: ExtensionSheetLine[] = more > 0 ? sheetLines(subject.sheet, Number.POSITIVE_INFINITY).shown.slice(shown.length) : [];
 
   const turnOn = async (): Promise<void> => {
-    if (busy) return;
-    if (critical && !confirming) {
-      setConfirming(true);
-      return;
-    }
-    setBusy(true);
-    const ok = await subject.approve(subject.tools && agent);
-    setBusy(false);
-    if (ok) closeExtensionSheet();
+    if (await answer()) closeExtensionSheet();
   };
 
   return (
@@ -283,25 +248,6 @@ export function ApprovalSheet() {
   );
 }
 
-/** One *Can* line: its tier's dot, a filled one for a broad reach, Critical in red. */
-function SheetLine({ line }: { line: ExtensionSheetLine }) {
-  return (
-    <li className={cn("flex items-start gap-2.5 text-copy-14", line.tier === "critical" ? "text-red-900" : "text-gray-1000")} data-tier={line.tier}>
-      <span
-        aria-hidden="true"
-        className={cn(
-          "mt-[7px] size-2 shrink-0 rounded-full",
-          line.tier === "low" && "shadow-[inset_0_0_0_1.5px_var(--color-gray-600)]",
-          line.tier === "medium" && "bg-gray-700",
-          line.tier === "high" && "bg-amber-700",
-          line.tier === "critical" && "bg-red-700",
-        )}
-      />
-      <span className="min-w-0">{line.text}</span>
-    </li>
-  );
-}
-
 /** The sheet's subject from the store, as one shape whatever its kind; null when there is none (or it is gone). */
 function useSheetSubject(): SheetSubject | null {
   const sheet = useExtensionsState((state) => state.sheet);
@@ -326,22 +272,5 @@ function useSheetSubject(): SheetSubject | null {
       deny: () => void extensionsRequest({ type: "denyInstall", cwsId: pending.cwsId }, { quiet: true }),
     };
   }
-  const extension = extensions.find((candidate) => candidate.id === sheet.id) ?? null;
-  if (extension === null || extension.pending === null) return null;
-  const pending = extension.pending;
-  return {
-    key: `extension:${extension.id}:${pending.manifestHash}`,
-    mark: extension,
-    name: extension.name,
-    source: sourceLine(extension.source),
-    sheet: pending,
-    verdict: extension.verdict,
-    tools: extension.tools.length > 0,
-    agentAllowed: extension.agentAllowed,
-    first: extension.status === "needs-approval",
-    revealId: extension.source.type === "dev" || extension.source.type === "unpacked" ? extension.id : null,
-    approve: async (agentAllowed) =>
-      (await extensionsRequest({ type: "approve", id: extension.id, manifestHash: pending.manifestHash, ...(extension.tools.length > 0 ? { agentAllowed } : {}) })) !== null,
-    deny: () => void extensionsRequest({ type: "deny", id: extension.id }, { quiet: true }),
-  };
+  return extensionSubject(extensions.find((candidate) => candidate.id === sheet.id) ?? null);
 }

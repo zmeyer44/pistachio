@@ -1,0 +1,10 @@
+{
+  "api": 1,
+  "id": "dev.pistachio-e2e.chess-time",
+  "name": "Chess time",
+  "version": "1.0.0",
+  "description": "An e2e fixture: every weekday at 5:30 PM a space called Chess time is made with one tab on chess.com, and it is closed again at 6:00 PM.",
+  "permissions": ["spaces:create", "spaces:close"],
+  "worker": { "type": "web", "main": "worker.js" },
+  "triggers": [{ "id": "chess", "during": { "days": ["mon", "tue", "wed", "thu", "fri"], "from": "17:30", "to": "18:00" } }]
+}

@@ -55,10 +55,10 @@ import {
 import { accentRefusal } from "@pistachio/extension-api/theme";
 import { SITE_WORDS, siteViewIssues, type Site } from "@pistachio/extension-api/sites";
 import { EVERY_SPACE } from "@pistachio/shell-contracts/extensions";
-import { AI_UNATTENDED_PER_HOUR, EXT_ATTENDED_KINDS, EXT_HANDLER_TIMEOUTS, EXT_UNATTENDED_METHODS, type ExtInvokeKind } from "@pistachio/extension-api/wire";
+import { AI_UNATTENDED_PER_HOUR, EXT_ATTENDED_KINDS, EXT_HANDLER_TIMEOUTS, EXT_UNATTENDED_METHODS, SPACES_UNATTENDED_PER_HOUR, SPACE_TABS_MAX, type ExtInvokeKind } from "@pistachio/extension-api/wire";
 import type { Capability } from "@pistachio/extension-api/capabilities";
 import type { PistachioManifest } from "@pistachio/extension-api/manifest";
-import { awayError, closeError, extAwaySpace, heldBy, spaceNotGranted, type ExtensionAwayHost, type ExtensionClosingHost } from "./away";
+import { awayError, closeError, extAwaySpace, heldBy, makeError, spaceNotGranted, type ExtensionAwayHost, type ExtensionClosingHost, type ExtensionMakingHost } from "./away";
 import { matchesAnyHost, matchesHostPattern, originOf } from "./hosts";
 import type { Ledger } from "./ledger";
 import type { ExtensionRecord } from "./registry";
@@ -83,7 +83,8 @@ export interface ExtensionBrowserHost {
    */
   personsSpace?(spaceId: string): boolean;
   currentSpaceId(profileId: string): string | null;
-  createTab(url: string, options: { profileId: string; space: "current" | "new" | (string & {}); activate: boolean }): Promise<string>;
+  /** `awaitLoad: false`: answered once the tab stands in its space, its page still loading (a caller with nobody there cannot wait on a page). */
+  createTab(url: string, options: { profileId: string; space: "current" | "new" | (string & {}); activate: boolean; awaitLoad?: boolean }): Promise<string>;
   navigate(tabId: string, url: string): Promise<void>;
   showTab(tabId: string): Promise<void>;
   closeTab(tabId: string): Promise<void>;
@@ -102,10 +103,14 @@ export interface ScopeDeps {
   away?(): ExtensionAwayHost | null;
   /** Main's verb for closing a space into the archive (main/space-closing.ts), which goes with the window; absent or null, a space cannot be closed. */
   closing?(): ExtensionClosingHost | null;
+  /** Main's verb for making a space (main/space-making.ts), which goes with the window; absent or null, a space cannot be made. */
+  making?(): ExtensionMakingHost | null;
   /** Remember that the person gave the extension this space (ExtensionRecord.spaces; ./away withSpaceGrant). */
   rememberSpace?(spaceId: string): void;
-  /** Write down what was done with nobody there — a space sent away, brought back or closed, a theme set, a tab opened (./automation: the journal the person undoes from). */
-  journal?(entry: { trigger: string | null; verb: "sendAway" | "bringBack" | "setTheme" | "openTab" | "closeSpace"; spaceId: string; title: string; tabId?: string; entryId?: string; until?: number }): void;
+  /** Remember that the extension made this space itself (ExtensionRecord.made): its own, as one the person gave it — and its to close from in front. */
+  rememberMade?(spaceId: string): void;
+  /** Write down what was done with nobody there — a space sent away, brought back, closed or made, a theme set, a tab opened (./automation: the journal the person undoes from). */
+  journal?(entry: { trigger: string | null; verb: "sendAway" | "bringBack" | "setTheme" | "openTab" | "closeSpace" | "makeSpace"; spaceId: string; title: string; tabId?: string; entryId?: string; until?: number }): void;
   /**
    * Whether main can see that nobody is at the Mac (docs/primitives.md §3.6), given the triggers whose handlers are
    * in hand: its screen is locked, or one of them is a signal that says so (idle, the screen) and holds as read now.
@@ -170,6 +175,8 @@ export class ExtensionScope {
   #unattendedTabs: number[] = [];
   /** When it asked a model with nobody there, this past hour (AI_UNATTENDED_PER_HOUR). */
   #unattendedAsks: number[] = [];
+  /** When it made each space with nobody there, this past hour (SPACES_UNATTENDED_PER_HOUR). */
+  #unattendedSpaces: number[] = [];
 
   constructor(id: string, deps: ScopeDeps) {
     this.id = id;
@@ -297,7 +304,7 @@ export class ExtensionScope {
    */
   unattendedRefusal(method: ExtMethod, context: "worker" | "panel" | "page"): string | null {
     if (context !== "worker" || EXT_UNATTENDED_METHODS.includes(method) || !this.unattended()) return null;
-    return `${method} is not for a trigger's handler: with nobody there an extension may read, keep its own storage and files, tell the person (ui.toast, notifications.show, ui.setBadge, ui.setStatus), reach its hosts, change what Pistachio draws for it, open a tab behind what is in front (tabs.create), and send away or bring back a space the person gave it. For anything else, ask them — a toast with an action runs when they press it`;
+    return `${method} is not for a trigger's handler: with nobody there an extension may read, keep its own storage and files, tell the person (ui.toast, notifications.show, ui.setBadge, ui.setStatus), reach its hosts, change what Pistachio draws for it, open a tab behind what is in front (tabs.create), make a space behind it (spaces.create), and send away, bring back or close a space the person gave it or it made. For anything else, ask them — a toast with an action runs when they press it`;
   }
 
   /**
@@ -369,6 +376,11 @@ export class ExtensionScope {
     }
     const away = this.#deps.away?.()?.get(spaceId) ?? null;
     return away !== null && this.onIn(away.spaceId);
+  }
+
+  /** The extension made this space itself (`spaces.create`): its own, and its to close from in front (docs/primitives.md §2.7). */
+  madeSpace(spaceId: string): boolean {
+    return this.#deps.record()?.made?.includes(spaceId) === true;
   }
 
   /**
@@ -549,9 +561,9 @@ export class ExtensionScope {
         // With nobody there a tab is a page of the web, opened in a space that is there. Never a page of its own:
         // that is its code running in a view nothing holds to the unattended list — `ui.openPage` by another name.
         if (own) throw new ExtError("PERMISSION_DENIED", "tabs.create: a trigger's handler opens pages of the web, not this extension's own — show a toast with an action, and open it when the person presses");
-        // Nor a space of its own: one made with nobody there is a space on the rail the person never asked for, and
-        // closing its tab would leave it standing.
-        if (options.space === "new") throw new ExtError("PERMISSION_DENIED", 'tabs.create: a trigger\'s handler opens a tab in a space that is there — leave `space` out for the one in front, or name one; "new" is for when the person runs it');
+        // Nor a space grown around it: that is a space with no name, and one this extension could not close again.
+        // A space made with nobody there is `spaces.create`'s — named, the extension's own, on its own line of the sheet.
+        if (options.space === "new") throw new ExtError("PERMISSION_DENIED", 'tabs.create: a trigger\'s handler opens a tab in a space that is there — leave `space` out for the one in front, or name one. To make a space with nobody there, use spaces.create({ name, tabs }) with "spaces:create": it is named, yours to close later, and written down; "new" is for when the person runs it');
       }
       const profileId = this.callProfile(options.space);
       const space = this.#space(profileId, options.space);
@@ -570,8 +582,10 @@ export class ExtensionScope {
         throw new ExtError("UNAVAILABLE", "tabs.create: nothing is in use in the space in front, so a tab opened there with nobody there would be put in front of the person — let the handler fail (Pistachio runs the trigger again later), or name another space");
       }
       if (unattended && !this.#takeUnattendedTab()) throw new ExtError("RATE_LIMITED", `tabs.create: with nobody there an extension opens ${String(UNATTENDED_TABS_PER_HOUR)} tabs an hour at most`);
-      // With nobody there a tab opens behind what is in front, whatever was asked: nobody is moved by code.
-      const tabId = await browser.createTab(url, { profileId, space, activate: unattended ? false : options.show !== false });
+      // With nobody there a tab opens behind what is in front, whatever was asked: nobody is moved by code. And it is
+      // not waited on: the handler that asked has ten seconds, and a page slower than that would have main give up on
+      // it — its worker stopped, the trigger run again, the page opened a second time.
+      const tabId = await browser.createTab(url, { profileId, space, activate: unattended ? false : options.show !== false, ...(unattended ? { awaitLoad: false } : {}) });
       const tab = this.tabs.get(tabId);
       // Written down, with the way back: Undo closes it.
       if (unattended) this.#deps.journal?.({ trigger, verb: "openTab", spaceId: tab.spaceId ?? EVERY_SPACE, title: journalTabTitle(url), tabId });
@@ -617,6 +631,17 @@ export class ExtensionScope {
     this.#unattendedTabs = this.#unattendedTabs.filter((at) => now - at < HOUR_MS);
     if (this.#unattendedTabs.length >= UNATTENDED_TABS_PER_HOUR) return false;
     this.#unattendedTabs.push(now);
+    return true;
+  }
+
+  /** One more space made with nobody there, with `tabs` pages in it, if the hour has room for both. */
+  #takeUnattendedSpace(tabs: number): boolean {
+    const now = this.#now();
+    this.#unattendedSpaces = this.#unattendedSpaces.filter((at) => now - at < HOUR_MS);
+    this.#unattendedTabs = this.#unattendedTabs.filter((at) => now - at < HOUR_MS);
+    if (this.#unattendedSpaces.length >= SPACES_UNATTENDED_PER_HOUR || this.#unattendedTabs.length + tabs > UNATTENDED_TABS_PER_HOUR) return false;
+    this.#unattendedSpaces.push(now);
+    for (let index = 0; index < tabs; index += 1) this.#unattendedTabs.push(now);
     return true;
   }
 
@@ -712,7 +737,9 @@ export class ExtensionScope {
       // (Read before anything is awaited: who is there is a fact of the moment the call was made.)
       const unattended = this.unattended();
       const trigger = this.triggerInHand();
-      const absent = unattended && this.#deps.absent?.(this.triggersInHand()) === true;
+      // (In front of no one — nobody at the Mac — or its own: a space the extension made is its to close whoever is
+      // in it. "Chess time closes at six" means six; the desk passes on, and the notice has the way back.)
+      const absent = unattended && (this.madeSpace(spaceId) || this.#deps.absent?.(this.triggersInHand()) === true);
       const closing = this.#deps.closing?.() ?? null;
       if (closing === null) throw new ExtError("UNAVAILABLE", "the browser window is not open");
       // (Away, or of a Profile it is off in, it is not here to close: NOT_FOUND, as a tab there is.)
@@ -720,6 +747,45 @@ export class ExtensionScope {
       const outcome = await closing.close(spaceId, { by: this.#holder(), ...(unattended ? { unattended: true } : {}), ...(absent ? { absent: true } : {}) });
       if (!outcome.ok) throw closeError("spaces.close", outcome.refusal);
       if (unattended) this.#deps.journal?.({ trigger, verb: "closeSpace", spaceId, title: outcome.title, ...(outcome.entryId === null ? {} : { entryId: outcome.entryId }) });
+    },
+    /**
+     * Make a space (docs/primitives.md §2.7): named, a page of the web for each of `tabs`, in the Profile the call
+     * acts in — and the extension's from then on (rememberSpace, rememberMade), as one the person gave it. With the
+     * person behind the call it is brought in front unless `show` is false; with nobody there it is made behind what
+     * is in front whatever was asked, a few an hour at most, and written down: Undo closes it.
+     */
+    create: async (options: { name: string; tabs?: readonly string[]; show?: boolean }): Promise<ExtSpace> => {
+      // eslint-disable-next-line no-control-regex
+      const name = options.name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+      if (name === "") throw new ExtError("INVALID_ARGUMENT", "spaces.create: `name` is what the space is called on the rail, in a few words");
+      const urls = (options.tabs ?? []).map((url) => url.trim());
+      if (urls.length > SPACE_TABS_MAX) throw new ExtError("INVALID_ARGUMENT", `spaces.create: a space is made with ${String(SPACE_TABS_MAX)} pages at most`);
+      // (Pages of the web: never Pistachio's addresses, an extension's, a file. Its own pages open in it afterwards — ui.openPage's `space`.)
+      const notWeb = urls.find((url) => !/^https?:\/\//i.test(url));
+      if (notWeb !== undefined) throw new ExtError("INVALID_ARGUMENT", `spaces.create: \`tabs\` are http(s) addresses, and ${JSON.stringify(notWeb.slice(0, 80))} is not one`);
+      // (Read before anything is awaited: who is there is a fact of the moment the call was made.)
+      const unattended = this.unattended();
+      const trigger = this.triggerInHand();
+      const browser = this.#browser();
+      const profileId = this.callProfile();
+      const making = this.#deps.making?.() ?? null;
+      if (making === null) throw new ExtError("UNAVAILABLE", "the browser window is not open");
+      if (unattended && !this.#takeUnattendedSpace(urls.length)) {
+        throw new ExtError("RATE_LIMITED", `spaces.create: with nobody there an extension makes ${String(SPACES_UNATTENDED_PER_HOUR)} spaces an hour at most, and opens ${String(UNATTENDED_TABS_PER_HOUR)} tabs`);
+      }
+      // With nobody there it is made behind what is in front, whatever was asked: nobody is moved by code.
+      const outcome = await making.make({ profileId, title: name, urls, by: this.#holder(), ...(unattended || options.show === false ? {} : { show: true }) });
+      if (!outcome.ok) throw makeError("spaces.create", outcome.refusal);
+      // Its own from here on: to close, to send away, to mark — whatever its other capabilities let it do to a space.
+      this.#deps.rememberSpace?.(outcome.groupId);
+      this.#deps.rememberMade?.(outcome.groupId);
+      // Written down, with the way back: Undo closes it.
+      if (unattended) this.#deps.journal?.({ trigger, verb: "makeSpace", spaceId: outcome.groupId, title: outcome.title });
+      const group = browser.spaces(outcome.profileId).find((candidate) => candidate.id === outcome.groupId);
+      // (Gone already — closed in the moment since: what was made is still what is answered.)
+      return group === undefined
+        ? { id: outcome.groupId, name: outcome.title, color: null, tabIds: outcome.tabIds, lastActiveAt: 0, byPerson: true }
+        : this.#extSpace(group, browser);
     },
     /**
      * A mark on a space's tile (docs/primitives.md §4), or — null — this extension's taken off: a space the person

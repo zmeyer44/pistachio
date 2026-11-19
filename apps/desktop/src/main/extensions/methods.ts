@@ -35,7 +35,7 @@ import {
   type ExtTriggerState,
   type Json,
 } from "@pistachio/extension-api";
-import { AI_COMPLETE_MIN_MS, AI_COMPLETE_TIMEOUT_MS, AI_HANDLER_MARGIN_MS, AI_PROMPT_MAX, AI_SYSTEM_MAX, AI_TOKENS_DEFAULT, AI_TOKENS_MAX, AI_TOKENS_MIN, EXT_ERROR_CODES } from "@pistachio/extension-api/wire";
+import { AI_COMPLETE_MIN_MS, AI_COMPLETE_TIMEOUT_MS, AI_HANDLER_MARGIN_MS, AI_PROMPT_MAX, AI_SYSTEM_MAX, AI_TOKENS_DEFAULT, AI_TOKENS_MAX, AI_TOKENS_MIN, EXT_ERROR_CODES, SPACE_TABS_MAX } from "@pistachio/extension-api/wire";
 import type { Capability } from "@pistachio/extension-api/capabilities";
 import type { PistachioManifest } from "@pistachio/extension-api/manifest";
 import { markSchema, themeSchema } from "@pistachio/extension-api/theme";
@@ -424,6 +424,12 @@ export const EXT_METHODS = {
       await scope.spaces.close(args.spaceId);
       return null;
     },
+  },
+  // A space made (docs/primitives.md §2.7): named, with its pages, the extension's own from then on — its own capability.
+  "spaces.create": {
+    needs: "spaces:create",
+    input: z.object({ name: z.string().min(1).max(200), tabs: z.array(z.string().min(1).max(8192)).max(SPACE_TABS_MAX).optional(), show: z.boolean().optional() }),
+    run: (scope, _ctx, args) => scope.spaces.create(args),
   },
   "spaces.away": { needs: "tabs:read", input: empty, run: (scope) => scope.spaces.away() },
   // What the shell draws for it (docs/primitives.md §4): a mark on a space it was given, a theme for one or for all.

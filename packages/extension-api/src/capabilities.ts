@@ -12,6 +12,7 @@ export const CAPABILITIES = [
   "tabs:mark",
   "spaces:write",
   "spaces:close",
+  "spaces:create",
   "spaces:all",
   "spaces:mark",
   "theme",
@@ -54,6 +55,10 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
   // (Close space, as the person's own menu does it: filed in the archive whole, one Restore away. Its own line —
   // an extension approved to send spaces away was not approved to close them.)
   "spaces:close": { tier: "medium", line: "Closes spaces into the archive, where they can be restored." },
+  // (A space made by code — named, with the pages it opens in it — stands on the rail behind what is in front, and
+  // is the extension's from then on as one the person gave it would be. Made with nobody there it is written down,
+  // and Undo closes it. Docs/primitives.md §2.7.)
+  "spaces:create": { tier: "medium", line: "Makes new spaces and opens pages in them." },
   // (Rule 8's exception, said as one: every space is as if the person had run it there. What it may then DO to them
   // is the other lines'. Docs/primitives.md §2.6.)
   "spaces:all": { tier: "high", line: "Acts on any of your spaces, not only the ones you ran it in." },

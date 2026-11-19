@@ -7,7 +7,7 @@ import { expect, test, type ElectronApplication, type Locator, type Page } from 
 import { IPC, type PistachioApi } from "@pistachio/shell-contracts/ipc";
 import type { LiveDeskReport, LiveHostReport, LiveShareState } from "@pistachio/shell-contracts/live-share";
 import { captureEnabled } from "./app";
-import { createGroup, createTab, fromFrameMenu, launchDesk, railHome, railSpace, reachBar, selectSpace, settled, snapshot, windowSelector } from "./desk-harness";
+import { barField, createGroup, createTab, fromFrameMenu, launchDesk, railHome, railSpace, reachBar, selectSpace, settled, snapshot, windowSelector } from "./desk-harness";
 import { noticePage } from "./windows";
 
 /**
@@ -349,8 +349,9 @@ test.describe.serial("live share in the shell: the Live card, its ways in, the m
   });
 
   test("/share in the Bar shows the shared space's card; /draw draws over the desk and gives it back", async () => {
-    const input = shell.getByTestId("desk-bar-input");
+    // (Launched as the app is, the pill is the prompt view's, over the pages: its field is found there — barField.)
     await reachBar(shell);
+    let input = await barField(shell);
     await input.fill("/share");
     await input.press("Enter");
     await expect(card()).toHaveAttribute("data-status", "live");
@@ -358,6 +359,7 @@ test.describe.serial("live share in the shell: the Live card, its ways in, the m
     await shell.keyboard.press("Escape");
     await expect(card()).toHaveCount(0);
     await reachBar(shell);
+    input = await barField(shell);
     await input.fill("/draw");
     await input.press("Enter");
     await expect.poll(async () => (await liveShare(shell)).drawing).toEqual({ tool: "pen", color: "#3E63DD" });

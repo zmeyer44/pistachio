@@ -80,6 +80,12 @@ export interface ExtensionRecord {
    * Absent: none.
    */
   spaces?: string[];
+  /**
+   * The spaces a Pistachio extension made itself (`pistachio.spaces.create`, docs/primitives.md §2.7), each among
+   * `spaces` too: its own — the ones it may close from in front, since "it closes at six" was the wish. Bounded as
+   * `spaces` is, and gone with the record. Absent: none.
+   */
+  made?: string[];
 }
 
 interface RegistryDocument {
@@ -376,6 +382,7 @@ function sanitizeRecord(value: unknown): ExtensionRecord | null {
     updatedAt: finite(raw["updatedAt"], 0),
     ...(kind === "chrome" ? { verdict: sanitizeVerdict(raw["verdict"]) } : {}),
     ...(kind === "pistachio" && sanitizeSpaceGrants(raw["spaces"]).length > 0 ? { spaces: sanitizeSpaceGrants(raw["spaces"]) } : {}),
+    ...(kind === "pistachio" && sanitizeSpaceGrants(raw["made"]).length > 0 ? { made: sanitizeSpaceGrants(raw["made"]) } : {}),
   };
 }
 

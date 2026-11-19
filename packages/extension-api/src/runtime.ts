@@ -940,6 +940,9 @@ export function buildPistachio(options: BuildPistachioOptions) {
     close: async (spaceId: string): Promise<void> => {
       await call("spaces.close", { spaceId });
     },
+    // A new space, named, with a page for each of `tabs`: this extension's from then on.
+    create: (options: { name: string; tabs?: string[]; show?: boolean }): Promise<ExtSpace> =>
+      call("spaces.create", defined({ name: options?.name, tabs: options?.tabs, show: options?.show })),
     away: (): Promise<ExtAwaySpace[]> => call("spaces.away", {}),
     onAwayChanged: (fn: (change: { event: "sent" | "returned"; space: ExtAwaySpace }) => void): Unsubscribe => on("spaces.awayChanged", (v) => fn({ event: v.event, space: v.space })),
     // A mark on a space's tile, or (null) this extension's taken off: a value main keeps and the shell draws.

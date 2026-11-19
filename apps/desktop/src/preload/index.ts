@@ -3,7 +3,7 @@ import type { ShieldsStatus } from "@pistachio/shell-contracts/shields";
 import type { TabArchiveResponse } from "@pistachio/shell-contracts/tab-archive";
 import type { TabGroupCommandResult } from "@pistachio/shell-contracts/tab-groups";
 import type { TidyResponse } from "@pistachio/shell-contracts/tidy";
-import { isDeskHover, isDeskNotchFrame, isDeskNotchInput, isDeskPageInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, type DeskGrab, type DeskHover, type DeskNotchFrame, type DeskNotchInput, type DeskPageInput, type DeskPipFrame, type DeskPipInput, type DeskShelfFrame, type DeskShelfInput, type DeskState } from "@pistachio/shell-contracts/desk";
+import { isDeskHover, isDeskNotchFrame, isDeskNotchInput, isDeskPageInput, isDeskPipFrame, isDeskPipInput, isDeskShelfFrame, isDeskShelfInput, type DeskGrab, type DeskHover, type DeskBarViewPlace, type DeskNotchFrame, type DeskNotchInput, type DeskPageInput, type DeskPipFrame, type DeskPipInput, type DeskShelfFrame, type DeskShelfInput, type DeskState } from "@pistachio/shell-contracts/desk";
 import type { DeskLayoutEvaluation } from "@pistachio/shell-contracts/desk-layout";
 import type {
   DeskRequest,
@@ -361,6 +361,8 @@ const api: PistachioApi = {
   },
   // The desk's idle Bar over the live pages under it: the notch view (docs/desk.md, "The foot").
   setDeskNotch: (frame: DeskNotchFrame | null) => ipcRenderer.send(IPC.deskNotchSet, frame),
+  // The desk's prompt over a live page: a view of the shell's own, placed by the shell.
+  setDeskBarView: (place: DeskBarViewPlace | null) => ipcRenderer.send(IPC.deskBarViewSet, place),
   getDeskNotch: async () => {
     const frame: unknown = await ipcRenderer.invoke(IPC.deskNotchGet);
     return isDeskNotchFrame(frame) ? frame : null;

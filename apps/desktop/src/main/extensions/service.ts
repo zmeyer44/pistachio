@@ -114,7 +114,7 @@ import { dispatch, settingValues, type CallContext, type ExtensionNotesHost, typ
 import { extensionDataDir } from "./paths";
 import { serveExtensionRequest, serveIconRequest, type ExtensionFolders } from "./protocol";
 import { ExtensionRegistry, RESERVED_ID_PREFIX, type ExtensionPending, type ExtensionRecord, onInAnyProfile } from "./registry";
-import { returnStranded, strandedOnSend, withSpaceGrant, type ExtensionAwayHost, type ExtensionClosingHost } from "./away";
+import { returnStranded, strandedOnSend, withSpaceGrant, type ExtensionAwayHost, type ExtensionClosingHost, type ExtensionMakingHost } from "./away";
 import { AutomationStore, JOURNAL_MAX, undoOfBringBack, undoOfOpenTab } from "./automation";
 import { adoptThemeImage, backdropValue, offersPress, serveThemeRequest, shownRow, ShownStore, siteDetail, themeDetail, type ShownHost, type StoredTheme } from "./shown";
 import { CalendarKeeper, NO_READINGS, signalHolds, signalNeeds, signalSaysNobody, type BrowserReading, type SignalReadings, type SignalSources } from "./signals";
@@ -197,6 +197,8 @@ export interface ExtensionServiceOptions {
   away?(): ExtensionAwayHost | null;
   /** Main's verb for closing a space into the archive (main/space-closing.ts; docs/primitives.md §2.6): the window's too. */
   closing?(): ExtensionClosingHost | null;
+  /** Main's verb for making a space (main/space-making.ts; docs/primitives.md §2.7): the window's too. */
+  making?(): ExtensionMakingHost | null;
   /**
    * One question to the account's fast model, for `ai.complete` (docs/primitives.md §3.8): the answer's text, or null
    * when no model can be asked — signed out, offline, switched off. Never throws. Left out, no extension can ask.
@@ -1394,6 +1396,18 @@ export class ExtensionService {
         const outcome = await closing.reopen(line.entryId);
         if (!outcome.ok) throw new Error(outcome.reason ?? "That could not be restored.");
       }
+    } else if (line.verb === "makeSpace") {
+      // The space it made is closed, as the person's own Close space does it — into the archive, a Restore away —
+      // if it is still here (closed since, by anyone, there is nothing left to undo). Away, it is not here to close.
+      if (isAway) throw new Error("That space is away. Bring it back, then undo this.");
+      const closing = this.#options.closing?.() ?? null;
+      if (closing === null) throw new Error("Open a window first.");
+      const browser = this.#window?.browser;
+      const here = browser !== undefined && browser.profileIds().some((profileId) => browser.spaces(profileId).some((group) => group.id === line.spaceId));
+      if (here) {
+        const outcome = await closing.close(line.spaceId, { by: { kind: "person" } });
+        if (!outcome.ok && outcome.refusal !== "unknown") throw new Error(outcome.reason);
+      }
     } else if (line.verb === "openTab") {
       // The tab it opened is closed, if it is still here (closed by the person since, there is nothing left to undo).
       const browser = this.#window?.browser;
@@ -2031,10 +2045,16 @@ export class ExtensionService {
         browser: () => this.#window?.browser ?? null,
         away: () => this.#options.away?.() ?? null,
         closing: () => this.#options.closing?.() ?? null,
+        making: () => this.#options.making?.() ?? null,
         // The person ran it in a space: that space is its to send away, for good (./away) — on its record, so it goes with it.
         rememberSpace: (spaceId) => {
           const record = this.#registry.get(id);
           if (record !== null) this.#registry.update(id, { spaces: withSpaceGrant(record.spaces ?? [], spaceId) });
+        },
+        // A space it made itself (spaces.create): its own, kept the same way.
+        rememberMade: (spaceId) => {
+          const record = this.#registry.get(id);
+          if (record !== null) this.#registry.update(id, { made: withSpaceGrant(record.made ?? [], spaceId) });
         },
         // What it did with nobody there, written down as it happens: main's record, with the way back (#undoJournal).
         journal: (line) => {

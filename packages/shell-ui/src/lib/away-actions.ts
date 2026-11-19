@@ -49,6 +49,19 @@ export function announceClosed(title: string, tabCount: number, entryId: string 
   useAppStore.getState().showNotice(closedNoticeText(title, tabCount, by), entryId === null ? {} : { action: { label: "Undo", run: () => void shellApi().tabArchive({ type: "restore", entryId }) } });
 }
 
+/** What a notice says of a space something other than the person made: `New space “Chess time” · 1 tab · Chess time`. */
+export function madeNoticeText(title: string, tabCount: number, by: string): string {
+  return [`New space “${title}”`, ...(tabCount === 0 ? [] : [`${String(tabCount)} ${tabCount === 1 ? "tab" : "tabs"}`]), by].join(" · ");
+}
+
+/**
+ * A space an extension made (docs/primitives.md §2.7): it stands on the rail behind what is in front — nobody is
+ * moved by code — so it is said, with who made it and the way to it: Show.
+ */
+export function announceMade(groupId: string, title: string, tabCount: number, by: string): void {
+  useAppStore.getState().showNotice(madeNoticeText(title, tabCount, by), { tone: "success", action: { label: "Show", run: () => selectSpace(groupId) } });
+}
+
 export function announceAway(event: "sent" | "returned", space: AwaySpaceInfo, broughtBy?: string): void {
   const message = awayNoticeText(event, space, Date.now(), broughtBy === undefined ? {} : { broughtBy });
   const groupId = space.id;

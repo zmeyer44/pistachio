@@ -57,7 +57,7 @@ import type {
 import type { ScreenshotReplies, ScreenshotRequest } from "./screenshot.js";
 import type { LocalApp } from "./local-apps.js";
 import type { DesktopSettings, SettingsPatch } from "./settings.js";
-import type { DeskGrab, DeskHover, DeskNotchFrame, DeskNotchInput, DeskPageInput, DeskPipFrame, DeskPipInput, DeskShelfFrame, DeskShelfInput, DeskState } from "./desk.js";
+import type { DeskBarViewPlace, DeskGrab, DeskHover, DeskNotchFrame, DeskNotchInput, DeskPageInput, DeskPipFrame, DeskPipInput, DeskShelfFrame, DeskShelfInput, DeskState } from "./desk.js";
 import type { DeskLayoutEvaluation, DeskLayoutRequest } from "./desk-layout.js";
 import type {
   DeskConversationCommand,
@@ -1382,6 +1382,8 @@ export interface NativeSurfaceApi {
   onDeskHover(listener: (hover: DeskHover) => void): () => void;
   /** Shell → main: the desk's idle Bar to draw over the live pages under it (the notch view), or null. */
   setDeskNotch(frame: DeskNotchFrame | null): void;
+  /** Shell → main: where the desk's prompt view lies over the live pages (DeskBarViewPlace), or null to take it away. */
+  setDeskBarView(place: DeskBarViewPlace | null): void;
   /** Notch view only: the notch as it stands, for a view that loaded after it was set. */
   getDeskNotch(): Promise<DeskNotchFrame | null>;
   /** Notch view only: every change to it. */
@@ -1652,6 +1654,7 @@ export const NATIVE_SURFACE_MEMBERS = {
   onDeskPageInput: "Fires from main's mouse hook on native page views and its relay of their keys.",
   onDeskHover: "Fires from main's mouse hook on native page views.",
   setDeskNotch: "Places the native notch view over the live desk pages under the Bar.",
+  setDeskBarView: "Places the native prompt view over the live desk pages.",
   getDeskNotch: "The native notch view's own read of the notch.",
   onDeskNotch: "The native notch view's own subscription to the notch.",
   sendDeskNotchInput: "Relays the pointer and presses out of the native notch view.",
@@ -1843,6 +1846,7 @@ export const IPC = {
   deskPageInput: "pistachio:desk-page-input",
   deskHover: "pistachio:desk-hover",
   deskNotchSet: "pistachio:desk-notch-set",
+  deskBarViewSet: "pistachio:desk-bar-view-set",
   deskNotchGet: "pistachio:desk-notch-get",
   deskNotchChanged: "pistachio:desk-notch-changed",
   deskNotchInput: "pistachio:desk-notch-input",

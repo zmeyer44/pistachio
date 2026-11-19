@@ -596,7 +596,9 @@ describe("a tab opened with nobody there", () => {
     const { h, call } = setup();
     h.scope.beginInvocation(1, "profile-a", "trigger", "nine");
     expect(await call("tabs.create", { url: "https://docs.google.com/document/d/1?usp=sharing", show: true })).toMatchObject({ ok: true });
-    expect(h.browser.createTab).toHaveBeenCalledWith("https://docs.google.com/document/d/1?usp=sharing", { profileId: "profile-a", space: "current", activate: false });
+    // (And not waited on: the handler that opened it has ten seconds, and a slow page must not outlast it — given up
+    // on, it is run again, and opens the page a second time.)
+    expect(h.browser.createTab).toHaveBeenCalledWith("https://docs.google.com/document/d/1?usp=sharing", { profileId: "profile-a", space: "current", activate: false, awaitLoad: false });
     expect(h.journal).toEqual([{ trigger: "nine", verb: "openTab", spaceId: SPACE, title: "docs.google.com/document/d/1", tabId: "new-tab" }]);
   });
 
@@ -686,7 +688,7 @@ describe("a tab opened with nobody there", () => {
     expect(await call("tabs.close", { id: "t1" })).toMatchObject({ ok: false, code: "PERMISSION_DENIED" });
     expect(await call("runtime.keepAlive", { reason: "stay" })).toMatchObject({ ok: false, code: "PERMISSION_DENIED" });
     expect(await call("tabs.create", { url: "https://docs.google.com/document/d/1", show: true })).toMatchObject({ ok: true });
-    expect(h.browser.createTab).toHaveBeenCalledWith("https://docs.google.com/document/d/1", { profileId: "profile-a", space: "current", activate: false });
+    expect(h.browser.createTab).toHaveBeenCalledWith("https://docs.google.com/document/d/1", { profileId: "profile-a", space: "current", activate: false, awaitLoad: false });
     await call("spaces.sendAway", { spaceId: SPACE });
     expect(away.sent[0]?.unattended).toBe(true);
     // Written down, though no trigger is in hand to name.

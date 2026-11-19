@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DESK_PIP_OUTSET, deskMaskKey, deskPipSlot, holdsDeskModifier, inDeskBox, isDeskCycleKey, isDeskGrab, isDeskMask, isDeskNotchFrame, isDeskNotchInput, isDeskPageInput, isDeskPipInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
+import { DESK_BAR_VIEW_FRAME, DESK_PIP_OUTSET, deskMaskKey, deskPipSlot, holdsDeskModifier, inDeskBox, isDeskBarViewPlace, isDeskCycleKey, isDeskGrab, isDeskMask, isDeskNotchFrame, isDeskNotchInput, isDeskPageInput, isDeskPipInput, isDeskState, isDockCloseKey, MAX_DESK_WINDOWS } from "../src/desk.js";
 import { isDragCursor, isDragSample } from "../src/chrome.js";
 
 describe("the desk's contract", () => {
@@ -285,5 +285,28 @@ describe("the desk's contract", () => {
   it("lets the drag layer hold the resize cursors a window's corners need", () => {
     for (const cursor of ["nwse-resize", "nesw-resize", "ew-resize", "ns-resize", "grabbing", "col-resize"]) expect(isDragCursor(cursor)).toBe(true);
     expect(isDragCursor("pointer")).toBe(false);
+  });
+});
+
+describe("the desk's prompt view, as the shell places it", () => {
+  it("takes a box in the window, with or without the keyboard", () => {
+    expect(isDeskBarViewPlace({ bounds: { x: 900, y: 820, width: 512, height: 78 } })).toBe(true);
+    expect(isDeskBarViewPlace({ bounds: { x: 900, y: 820, width: 512, height: 78 }, focus: true })).toBe(true);
+    // (A box that begins left of the window, or above it, is main's to clip.)
+    expect(isDeskBarViewPlace({ bounds: { x: -8, y: -4, width: 512, height: 78 } })).toBe(true);
+  });
+
+  it("refuses what is no box: nothing, an empty one, one past any window, a number that is not one", () => {
+    expect(isDeskBarViewPlace(null)).toBe(false);
+    expect(isDeskBarViewPlace({})).toBe(false);
+    expect(isDeskBarViewPlace({ bounds: { x: 0, y: 0, width: 0, height: 78 } })).toBe(false);
+    expect(isDeskBarViewPlace({ bounds: { x: 0, y: 0, width: 512, height: 0 } })).toBe(false);
+    expect(isDeskBarViewPlace({ bounds: { x: 0, y: 0, width: 5000, height: 78 } })).toBe(false);
+    expect(isDeskBarViewPlace({ bounds: { x: Number.NaN, y: 0, width: 512, height: 78 } })).toBe(false);
+    expect(isDeskBarViewPlace({ bounds: { x: 0, y: 0, width: 512, height: 78 }, focus: "yes" })).toBe(false);
+  });
+
+  it("is opened under one name, which main alone makes a view of", () => {
+    expect(DESK_BAR_VIEW_FRAME).toBe("pistachio-desk-prompt");
   });
 });

@@ -16,6 +16,7 @@
 import { AWAY_REFUSALS, type AwayHolder, type AwayOutcome, type AwayRefusal, type AwaySpaceInfo } from "@pistachio/shell-contracts/away";
 import { ExtError, type ExtAwaySpace, type ExtErrorCode } from "@pistachio/extension-api";
 import { CLOSE_REFUSALS, type CloseOutcome, type CloseRefusal } from "../space-closing";
+import { MAKE_REFUSALS, type MakeOutcome, type MakeRefusal } from "../space-making";
 
 /** Main's away spaces (main/away-spaces.ts AwaySpaces), as much of them as extensions reach. */
 export interface ExtensionAwayHost {
@@ -40,6 +41,22 @@ export interface ExtensionClosingHost {
   reopen(entryId: string): Promise<{ ok: boolean; reason?: string }>;
   /** Whether the archive still holds that entry (not restored, removed or lapsed since). */
   filed?(entryId: string): boolean;
+}
+
+/** Main's verb for making a space (main/space-making.ts SpaceMaking), as much of it as extensions reach. */
+export interface ExtensionMakingHost {
+  make(options: { profileId: string; title: string; urls: readonly string[]; by: AwayHolder; show?: boolean }): Promise<MakeOutcome>;
+}
+
+const MAKE_FIXES: Record<MakeRefusal, string> = {
+  full: "nothing was made, and trying again changes nothing until the person has closed a space: tell them, with ui.toast",
+  noPages: "nothing was made; from a trigger's handler let the error out, and Pistachio runs the trigger again later",
+  failed: "nothing was made; from a trigger's handler let the error out, and Pistachio runs the trigger again later",
+};
+
+/** A refusal of the making verb as the wire says it: the verb's own sentence, and the fix. */
+export function makeError(method: string, refusal: MakeRefusal): ExtError {
+  return new ExtError("UNAVAILABLE", `${method}: ${MAKE_REFUSALS[refusal]} (${MAKE_FIXES[refusal]})`);
 }
 
 const CLOSE_CODES: Record<CloseRefusal, ExtErrorCode> = {
@@ -100,7 +117,7 @@ export function withSpaceGrant(spaces: readonly string[], spaceId: string): stri
 export function spaceNotGranted(method: string, spaceId: string): ExtError {
   return new ExtError(
     "PERMISSION_DENIED",
-    `${method}: the person has not given this extension the space ${spaceId}. A space is the extension's — to send away, to mark, to give a backdrop or rows of its own — once the person runs one of its commands IN that space: a Bar command (pistachio.json → bar), an item in the space's own menu (contextMenus with the "space" context), a key, or its icon. The handler's ctx.spaceId (a menu item's info.spaceId) is that space: pass it, and keep it in storage for later`,
+    `${method}: the person has not given this extension the space ${spaceId}. A space is the extension's — to send away, to close, to mark, to give a backdrop or rows of its own — once the person runs one of its commands IN that space: a Bar command (pistachio.json → bar), an item in the space's own menu (contextMenus with the "space" context), a key, or its icon. The handler's ctx.spaceId (a menu item's info.spaceId) is that space: pass it, and keep it in storage for later. A space the extension made itself (spaces.create, with "spaces:create") is its own too: keep the id it was handed`,
   );
 }
 

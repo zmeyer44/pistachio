@@ -181,4 +181,13 @@ describe("the two commands at the IPC boundary", () => {
     expect(isShellCommand({ type: "spaceAway", event: "gone", space })).toBe(false);
     expect(isShellCommand({ type: "spaceAway", event: "sent", space: { id: "football" } })).toBe(false);
   });
+
+  it("lets main tell the shell a space was made by something other than the person (docs/primitives.md §2.7)", () => {
+    expect(isShellCommand({ type: "spaceMade", groupId: "made-1", title: "Chess time", tabCount: 1, by: "Chess time" })).toBe(true);
+    expect(isShellCommand({ type: "spaceMade", groupId: "made-1", title: "Later", tabCount: 0, by: "Work day" })).toBe(true);
+    expect(isShellCommand({ type: "spaceMade", groupId: "", title: "Chess time", tabCount: 1, by: "Chess time" })).toBe(false);
+    expect(isShellCommand({ type: "spaceMade", groupId: "made-1", title: "Chess time", tabCount: 1.5, by: "Chess time" })).toBe(false);
+    expect(isShellCommand({ type: "spaceMade", groupId: "made-1", title: "Chess time", tabCount: 1, by: "" })).toBe(false);
+    expect(isShellCommand({ type: "spaceMade", groupId: "made-1", title: "Chess time", tabCount: 1 })).toBe(false);
+  });
 });

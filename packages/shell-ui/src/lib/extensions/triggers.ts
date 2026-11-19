@@ -75,11 +75,12 @@ export function triggerStateLine(
   return trigger.holds === false ? "Off now" : null;
 }
 
-/** What a journal entry says was done: `Sent “Football” away`, `Brought “Football” back`, `Set a backdrop on “Football”` (or `… on every space`), `Opened docs.google.com/document`. */
+/** What a journal entry says was done: `Sent “Football” away`, `Brought “Football” back`, `Made “Chess time”`, `Set a backdrop on “Football”` (or `… on every space`), `Opened docs.google.com/document`. */
 export function journalVerbLine(entry: Pick<ExtensionJournalEntry, "verb" | "title"> & Partial<Pick<ExtensionJournalEntry, "spaceId">>): string {
   if (entry.verb === "setTheme") return themeJournalLine({ spaceId: entry.spaceId ?? "", title: entry.title });
   if (entry.verb === "openTab") return entry.title.trim() === "" ? "Opened a tab" : `Opened ${entry.title}`;
   if (entry.verb === "closeSpace") return entry.title.trim() === "" ? "Closed a space" : `Closed “${entry.title}”`;
+  if (entry.verb === "makeSpace") return entry.title.trim() === "" ? "Made a space" : `Made “${entry.title}”`;
   const name = entry.title.trim() === "" ? "a space" : `“${entry.title}”`;
   return entry.verb === "sendAway" ? `Sent ${name} away` : `Brought ${name} back`;
 }

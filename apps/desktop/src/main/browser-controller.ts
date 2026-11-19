@@ -4361,6 +4361,15 @@ export class BrowserController {
        * tab is only ever sent to a file by the person.
        */
       file?: boolean;
+      /**
+       * `false`: answered once the tab stands in its space, its page still
+       * on its way — for a caller that must itself answer before a slow page
+       * would let it (an extension's trigger, which has ten seconds:
+       * main/space-making.ts, the scope's `tabs.create` with nobody there).
+       * A page that then fails to load shows the tab's own error page, as
+       * any does; nobody is left to be told.
+       */
+      awaitLoad?: boolean;
     } = {},
   ): Promise<string> {
     const spaceId = options.spaceId ?? this.activeSpaceId();
@@ -4378,6 +4387,7 @@ export class BrowserController {
       group: options.group ?? "loose",
       ...(options.beside === undefined ? {} : { beside: options.beside }),
       ...(options.file === true ? { file: true } : {}),
+      ...(options.awaitLoad === false ? { awaitLoad: false } : {}),
     });
   }
 
@@ -4582,9 +4592,11 @@ export class BrowserController {
      */
     history?: TabHistory | null;
     /**
-     * Resolve once the view exists rather than once its page has loaded.
-     * Only a restored tab may opt out: its failure is absorbed into the
-     * saved title either way, while a fresh tab's failure must reach the
+     * `false`: resolve once the view exists rather than once its page has
+     * loaded. A restored tab opts out — its failure is absorbed into the
+     * saved title either way — and so may a fresh one opened for a caller
+     * that cannot wait on a page (createTab's `awaitLoad`): its failure is
+     * the tab's own error page. Any other fresh tab's failure must reach the
      * caller, which needs the awaited load to happen.
      */
     awaitLoad?: boolean;
@@ -4799,7 +4811,7 @@ export class BrowserController {
     if (this.#desk?.zoomed?.some((page) => page.tabId === id) === true) this.#syncDeskZooms(this.#desk.zoomed);
     const restored = options.restoredInfo;
     if (
-      (restored !== undefined && options.awaitLoad === false) ||
+      options.awaitLoad === false ||
       (extensionId === null && this.#gate.isHydrating(info.spaceId))
     ) {
       // The view exists and is laid out at once; the page fills in when it

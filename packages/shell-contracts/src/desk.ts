@@ -515,6 +515,39 @@ function isDeskNotchRow(value: unknown): value is DeskNotchRow {
   );
 }
 
+/**
+ * The desk's prompt over a live page (docs/desk.md, "The foot"): a view of the shell's own that main lays over the
+ * pages, so the prompt lies on a page as the nub does and no window gives way to it. The shell opens it — a child
+ * window of this name, which main makes a view of the window's rather than a window — draws into it itself, and says
+ * where it lies.
+ */
+export const DESK_BAR_VIEW_FRAME = "pistachio-desk-prompt";
+
+/** Where the prompt's view lies, in the window's content box; `focus`: the keyboard goes to it now. */
+export interface DeskBarViewPlace {
+  bounds: { x: number; y: number; width: number; height: number };
+  focus?: boolean;
+}
+
+export function isDeskBarViewPlace(value: unknown): value is DeskBarViewPlace {
+  if (typeof value !== "object" || value === null) return false;
+  const { bounds, focus } = value as Partial<DeskBarViewPlace>;
+  const finite = (n: unknown): boolean => typeof n === "number" && Number.isFinite(n);
+  return (
+    typeof bounds === "object" &&
+    bounds !== null &&
+    finite(bounds.x) &&
+    finite(bounds.y) &&
+    finite(bounds.width) &&
+    finite(bounds.height) &&
+    bounds.width > 0 &&
+    bounds.height > 0 &&
+    bounds.width <= 4096 &&
+    bounds.height <= 2048 &&
+    (focus === undefined || typeof focus === "boolean")
+  );
+}
+
 export interface DeskNubShape {
   radius: number;
   sink: number;

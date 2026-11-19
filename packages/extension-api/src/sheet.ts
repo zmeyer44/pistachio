@@ -43,6 +43,7 @@ export function runsLimit(manifest: Pick<PistachioManifest, "permissions" | "hos
   const which = asks.has("spaces:all") ? "your spaces" : "spaces you gave it";
   // What main writes down as it happens, each with its way back.
   const listed: string[] = [];
+  if (asks.has("spaces:create")) listed.push("make new spaces");
   if (asks.has("spaces:write") && asks.has("spaces:close")) listed.push(`send away, close and bring back ${which}`);
   else if (asks.has("spaces:write")) listed.push(`send away and bring back ${which}`);
   else if (asks.has("spaces:close")) listed.push(`close ${which} into the archive`);
@@ -57,7 +58,11 @@ export function runsLimit(manifest: Pick<PistachioManifest, "permissions" | "hos
   if (may.length === 0) return "With nobody there it changes nothing of yours: it can only look, keep its own notes and tell you things.";
   const list = may.length === 1 ? (may[0] as string) : `${may.slice(0, -1).join(", ")} and ${may[may.length - 1] as string}`;
   const sentence = `With nobody there it can only ${list}.`;
-  return listed.length === 0 ? sentence : `${sentence} What it does to your spaces and tabs is listed, and can be undone.`;
+  // (A space it made is its own, as one the person gave it — and, closed by it, goes even from in front: said here,
+  // where the person reads what it does alone. Docs/primitives.md §2.7.)
+  const acts = asks.has("spaces:write") || asks.has("spaces:close");
+  const made = !asks.has("spaces:create") || !acts ? "" : ` A space it made counts as one you gave it${asks.has("spaces:close") ? ", and can be closed while you are in it" : ""}.`;
+  return listed.length === 0 ? sentence : `${sentence}${made} What it does to your spaces and tabs is listed, and can be undone.`;
 }
 
 /**

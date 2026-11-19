@@ -400,6 +400,20 @@ export async function reachBar(shell: Page): Promise<void> {
   await expect(bar).not.toHaveAttribute("data-compact", "");
 }
 
+/**
+ * The Bar's field, wherever the pill is drawn — asked once the pill is out (reachBar). In the app the pill lies over
+ * the pages in a view of the shell's own (main/desk-bar-view.ts), and its field is in that view's document: a page
+ * of its own to Playwright, opened blank. Where the view is refused — most specs: main refuses it under Playwright
+ * unless asked — the field is the shell's own. A spec launched as the app is (PISTACHIO_E2E "0") finds it in the view.
+ */
+export async function barField(shell: Page): Promise<Locator> {
+  for (const page of shell.context().pages()) {
+    if (page.url() !== "about:blank") continue;
+    if ((await page.getByTestId("desk-bar-input").count()) > 0) return page.getByTestId("desk-bar-input");
+  }
+  return shell.getByTestId("desk-bar-input");
+}
+
 /** The conversations, grown out of the nub's past-chats droplet. */
 export async function openChats(shell: Page): Promise<void> {
   await openNubMenu(shell);

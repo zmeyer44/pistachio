@@ -92,7 +92,8 @@ export function liveViews(app: ElectronApplication): Promise<Array<{ url: string
     return window.contentView.children.flatMap((child) => {
       if (!("webContents" in child) || !("getVisible" in child) || !child.getVisible()) return [];
       const url = (child as WebContentsView).webContents.getURL();
-      return Object.values(hashes).some((hash) => url.endsWith(hash)) ? [] : [{ url, bounds: (child as WebContentsView).getBounds() }];
+      // (Nor the desk's prompt view, which the shell opens blank and draws into itself: main/desk-bar-view.ts.)
+      return url === "about:blank" || Object.values(hashes).some((hash) => url.endsWith(hash)) ? [] : [{ url, bounds: (child as WebContentsView).getBounds() }];
     });
   }, CHROME_VIEW_HASHES);
 }

@@ -37,7 +37,7 @@ export const AREAS = [
       `${UI}/{NotchApp,ShelfApp,PipApp,DragApp}.tsx`,
       `${UI}/lib/{dictation,recorder,pane-drag}.ts`,
       `${C}/desk*.ts`,
-      `${M}/{desk-bridge,desk-conversations,desk-glass,os-keys,desk-layout,desk-scope,group-context-store,document-convert,chrome-view,spaces,page-health}.ts`,
+      `${M}/{desk-bridge,desk-conversations,desk-glass,desk-bar-view,prompt-view-enabled,os-keys,desk-layout,desk-scope,group-context-store,document-convert,chrome-view,spaces,page-health}.ts`,
       // The window's glass under the notch view (main/desk-glass.ts), and the OS's modifier keys (main/os-keys.ts): the
       // desktop's own native modules.
       "apps/desktop/native/**",
@@ -121,6 +121,8 @@ export const AREAS = [
       `${UI}/components/settings/sections/extensions.tsx`,
       `${C}/extensions.ts`,
       `${M}/extensions/**`,
+      // (Making a space is an extension's verb alone: the person's own New space is the shell's.)
+      `${M}/space-making.ts`,
       `${M}/ipc-gate.ts`,
       "apps/desktop/src/preload/extension.ts",
       "apps/desktop/extensions/**",

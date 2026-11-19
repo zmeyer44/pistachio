@@ -495,6 +495,12 @@ export type ShellCommand =
    * the archive's entry (`entryId`; null when there was nothing worth filing).
    */
   | { type: "spaceClosed"; title: string; tabCount: number; entryId: string | null; by: string }
+  /**
+   * A space was made by something other than the person's own press — an extension, by its name on the sheet (`by`;
+   * docs/primitives.md §2.7) — and stands on the rail behind what is in front. The shell says so in a notice that
+   * carries the way to it: Show.
+   */
+  | { type: "spaceMade"; groupId: string; title: string; tabCount: number; by: string }
   /** The downloads list (components/DownloadsPopover.tsx), a popover under its chip. */
   | { type: "openDownloads" }
   | { type: "toggleDownloads" }
@@ -665,6 +671,15 @@ export function isShellCommand(value: unknown): value is ShellCommand {
         typeof title === "string" && title.length <= 240 &&
         typeof tabCount === "number" && Number.isInteger(tabCount) && tabCount >= 0 &&
         (entryId === null || (typeof entryId === "string" && entryId.length > 0 && entryId.length <= 128)) &&
+        typeof by === "string" && by.length > 0 && by.length <= 80
+      );
+    }
+    case "spaceMade": {
+      const { groupId, title, tabCount, by } = value as { groupId?: unknown; title?: unknown; tabCount?: unknown; by?: unknown };
+      return (
+        typeof groupId === "string" && groupId.length > 0 && groupId.length <= 200 &&
+        typeof title === "string" && title.length <= 240 &&
+        typeof tabCount === "number" && Number.isInteger(tabCount) && tabCount >= 0 &&
         typeof by === "string" && by.length > 0 && by.length <= 80
       );
     }
