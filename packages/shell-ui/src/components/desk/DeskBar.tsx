@@ -448,6 +448,12 @@ export const DeskBar = memo(function DeskBar({
       focusWanted.current = true;
       setAsked(true);
       setFocusTick((tick) => tick + 1);
+      // And the field takes them there, not here. Still in the shell's own pill (the pill in the nub), it is not where
+      // it is typed in: given the keyboard here first, it lost it as it was moved into the view (a field taken out of
+      // its document is told the keyboard left it), a moment before main handed the view the keys — and in that moment
+      // nothing held the pill out (2026-11-20: the nub's keyboard droplet, and ⌘I, brought nothing out in the app; the
+      // microphone's did, a recording holding the pill whoever has the keyboard). Placed, the view's field takes it.
+      if (inputRef.current?.ownerDocument === document) return;
     }
     inputRef.current?.focus({ preventScroll: true });
   }, []);
@@ -861,8 +867,11 @@ export const DeskBar = memo(function DeskBar({
   // it does not come up for none; in the chat's place it shows with none too, the message field in it, for as long as
   // the person has it up.
   useEffect(() => {
-    if (focusWithin || !composerIdle) setAsked(false);
-  }, [focusWithin, composerIdle]);
+    // (The keyboard in the field while the field is still the shell's own, the pill the view's to draw: on its way
+    // there, where it has yet to be handed the keys — the droplet's word holds the pill until it has them there.)
+    const onItsWay = overViewNow.current && composerBox.ownerDocument === document;
+    if ((focusWithin && !onItsWay) || !composerIdle) setAsked(false);
+  }, [focusWithin, composerIdle, composerBox]);
   const dockedAnswer = cardShown && !floating;
   useEffect(() => {
     if (!(focusWithin || fileDrag || drop.dragging || dockedAnswer)) return;

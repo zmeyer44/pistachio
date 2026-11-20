@@ -760,8 +760,9 @@ test.describe.serial("the desk's prompt comes out of the nub", { tag: ["@desk"] 
  * No other spec starts on the home page with the prompt's view — and none
  * could have seen it: main only acts for the key window, which the window is
  * not while the screen is locked, and Playwright's pages are never told the
- * keyboard left them. Here the window is taken for the key window, and who has
- * the keyboard is read from main.
+ * keyboard left them. Here the window is taken for the key window, each page
+ * is told the truth of the keyboard (Playwright's emulation off, as in the
+ * spec below), and who has it is read as the views themselves hear it.
  */
 test("on the home page, the keyboard stays in the prompt: main's keeping of the keyboard for the shell does not take it back from the shell's own view", { tag: ["@desk"] }, async () => {
   test.setTimeout(90_000);
@@ -780,9 +781,19 @@ test("on the home page, the keyboard stays in the prompt: main's keeping of the 
     expect(now.tabs.find((tab) => tab.id === now.activeTabId)?.url).toMatch(/^pistachio:\/\/home/);
     await expect.poll(() => app.windows().some((page) => page.url() === "about:blank")).toBe(true);
     const prompt = app.windows().find((page) => page.url() === "about:blank")!;
-    // (The key window, whatever is in front on this machine: main asks before it hands the keyboard about.)
+    // (The key window, whatever is in front on this machine: main asks before it hands the keyboard about. And who has
+    // the keyboard as the views themselves hear it come and go: asked of a window that is not the key window — the
+    // screen locked — a view answers that it has not, whichever of them would be typed in.)
     await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]!.isFocused = () => true;
+      const window = BrowserWindow.getAllWindows()[0]!;
+      window.isFocused = () => true;
+      const view = window.contentView.children.find((child) => "webContents" in child && (child as WebContentsView).webContents.getURL() === "about:blank") as WebContentsView;
+      for (const contents of [window.webContents, view.webContents]) {
+        let has = contents.isFocused();
+        contents.on("focus", () => (has = true));
+        contents.on("blur", () => (has = false));
+        contents.isFocused = () => has;
+      }
     });
     const keyboard = (): Promise<{ prompt: boolean; shell: boolean }> =>
       app.evaluate(({ BrowserWindow }) => {
@@ -791,11 +802,21 @@ test("on the home page, the keyboard stays in the prompt: main's keeping of the 
         return { prompt: view.getVisible() && view.webContents.isFocused(), shell: window.webContents.isFocused() };
       });
 
+    // (And each page told the truth of it, as in the app: Playwright's own word to every page is that it has the
+    // keyboard, always. The shell has it here, as it does once the person has pressed anything of the shell's.)
+    for (const page of app.windows()) {
+      const cdp = await app.context().newCDPSession(page);
+      await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false });
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.focus());
+    await expect.poll(() => shell.evaluate(() => document.hasFocus())).toBe(true);
+
     // The nub's keyboard droplet: the pill out, the keyboard in its field.
     await openNubMenu(shell);
     await shell.getByTestId("desk-nub-prompt").click();
     await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
     await expect.poll(keyboard).toEqual({ prompt: true, shell: false });
+    await expect.poll(() => prompt.evaluate(() => document.hasFocus() && document.activeElement?.getAttribute("data-testid") === "desk-bar-input")).toBe(true);
 
     // The window comes to the front: main's check of who has the keyboard runs (as it does after every layout of the
     // views), on a page where the keyboard is the shell's.
@@ -811,6 +832,128 @@ test("on the home page, the keyboard stays in the prompt: main's keeping of the 
     await prompt.getByTestId("desk-bar-input").press("Escape");
     await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
     await expect.poll(keyboard).toEqual({ prompt: false, shell: true });
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * The keyboard as the app has it: one view at a time. Playwright tells every
+ * page it has the keyboard, always (its focus emulation), so a field given
+ * the keyboard in the shell's document and one given it in the prompt's both
+ * hear they have it, and neither ever hears it go. In the app a page hears
+ * the truth — and until 2026-11-20 the nub's keyboard droplet (and ⌘I)
+ * brought nothing out there: the field took the keyboard in the shell's own
+ * pill first, lost it as it was moved into the view (a field taken out of
+ * its document is told so), and in the moment before main handed the view
+ * the keys nothing held the pill out — the view was shown and hidden in one
+ * turn. (The microphone's droplet worked: a recording holds the pill whoever
+ * has the keyboard.) No spec could see it; this one turns the emulation off,
+ * and lands each press as the OS does: on the topmost view at the point,
+ * which becomes the one with the keyboard as the button goes down.
+ */
+test("with the keyboard as the app has it, the nub's keyboard droplet brings the pill out with the keyboard in its field — and so does the shortcut", { tag: ["@desk"] }, async () => {
+  test.setTimeout(120_000);
+  const { app, shell } = await launchDesk({ name: "desk-prompt-view-keys", env: { PISTACHIO_E2E_PROMPT_VIEW: "1" } });
+  try {
+    await settled(shell, app);
+    await expect.poll(() => app.windows().some((page) => page.url() === "about:blank")).toBe(true);
+    const prompt = app.windows().find((page) => page.url() === "about:blank")!;
+    for (const page of app.windows()) {
+      const cdp = await app.context().newCDPSession(page);
+      await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false });
+    }
+    /** A press as the OS lands it: the topmost view at the point takes the keyboard as the button goes down. Which page took it. */
+    const press = (x: number, y: number): Promise<string> =>
+      app.evaluate(
+        async ({ BrowserWindow }, at) => {
+          const window = BrowserWindow.getAllWindows()[0]!;
+          let target = window.webContents;
+          let local = { x: at.x, y: at.y };
+          const views = window.contentView.children;
+          for (let i = views.length - 1; i >= 0; i--) {
+            const view = views[i]!;
+            if (!("webContents" in view) || !view.getVisible()) continue;
+            const bounds = view.getBounds();
+            if (at.x < bounds.x || at.y < bounds.y || at.x >= bounds.x + bounds.width || at.y >= bounds.y + bounds.height) continue;
+            target = (view as WebContentsView).webContents;
+            local = { x: at.x - bounds.x, y: at.y - bounds.y };
+            break;
+          }
+          const px = Math.round(local.x);
+          const py = Math.round(local.y);
+          target.sendInputEvent({ type: "mouseMove", x: px, y: py });
+          await new Promise((done) => setTimeout(done, 30));
+          target.focus();
+          target.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, x: px, y: py });
+          await new Promise((done) => setTimeout(done, 80));
+          target.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, x: px, y: py });
+          return target.getURL();
+        },
+        { x, y },
+      );
+    const centre = async (testId: string): Promise<{ x: number; y: number }> => {
+      const rect = (await shell.getByTestId(testId).boundingBox())!;
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    };
+    /** Whether the view's page has the keyboard, in its field. */
+    const typedIn = (): Promise<boolean> => prompt.evaluate(() => document.hasFocus() && document.activeElement?.getAttribute("data-testid") === "desk-bar-input");
+    const fanUp = (): Promise<boolean> =>
+      app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0]!.contentView.children.some((child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#notch-fan") && child.getVisible()),
+      );
+    const pageHasKeys = (): Promise<boolean> =>
+      app.evaluate(({ webContents }) => webContents.getAllWebContents().find((contents) => contents.getURL().includes("invoices"))!.executeJavaScript("document.hasFocus()") as Promise<boolean>);
+
+    // The person has been reading the page: it has the keyboard.
+    const stage = (await shell.locator(".desk-stage").boundingBox())!;
+    const onPage = { x: stage.x + stage.width / 2, y: stage.y + stage.height / 3 };
+    expect(await press(onPage.x, onPage.y)).toContain("invoices");
+    await expect.poll(pageHasKeys).toBe(true);
+
+    // The nub, then its keyboard droplet — each pressed in main's views over the page, as the pointer presses them.
+    const nub = await centre("desk-nub");
+    expect(await press(nub.x, nub.y)).toMatch(/#notch$/);
+    await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
+    await expect.poll(fanUp).toBe(true);
+    // (Once the droplet has run out to its place — the shell's own, veiled under the view's, moves as the view's does:
+    // pressed on its way there, the press is one beside it.)
+    let last = { x: Number.NaN, y: Number.NaN };
+    await expect
+      .poll(async () => {
+        const at = await centre("desk-nub-prompt");
+        const steady = Math.hypot(at.x - last.x, at.y - last.y) < 0.5 && Math.hypot(at.x - nub.x, at.y - nub.y) > 40;
+        last = at;
+        return steady;
+      })
+      .toBe(true);
+    const droplet = await centre("desk-nub-prompt");
+    expect(await press(droplet.x, droplet.y)).toMatch(/#notch-fan$/);
+
+    // The pill is out, the keyboard in its field — and still, once the menu's view has run back into the nub.
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+    await expect.poll(typedIn).toBe(true);
+    await expect.poll(fanUp).toBe(false);
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+    expect(await typedIn()).toBe(true);
+    await expect.poll(async () => (await promptView(app))?.visible).toBe(true);
+
+    // A press on the page takes the keyboard there, and the pill, empty, goes back into the nub.
+    await press(onPage.x, onPage.y);
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    await expect.poll(async () => (await promptView(app))?.visible).toBe(false);
+    await expect.poll(pageHasKeys).toBe(true);
+
+    // The shortcut, struck in the page: the same way out, the keyboard in the field — what is typed next is typed there.
+    await app.evaluate(({ webContents }) => {
+      const page = webContents.getAllWebContents().find((contents) => contents.getURL().includes("invoices"))!;
+      page.sendInputEvent({ type: "keyDown", keyCode: "I", modifiers: ["meta"] });
+      page.sendInputEvent({ type: "keyUp", keyCode: "I", modifiers: ["meta"] });
+    });
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+    await expect.poll(typedIn).toBe(true);
+    await prompt.keyboard.type("which invoice is overdue");
+    await expect(prompt.getByTestId("desk-bar-input")).toHaveValue("which invoice is overdue");
   } finally {
     await app.close();
   }
