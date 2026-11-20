@@ -617,6 +617,14 @@ export interface BrowserControllerHooks {
    */
   focusShell?: () => void;
   /**
+   * Whether a view of the shell's own that is typed in — the desk's prompt
+   * over the pages (main/desk-bar-view.ts) — has the keyboard now. The shell
+   * draws it and holds its state: the keyboard there is the shell's already,
+   * and is not taken back to the shell's document as one nobody has
+   * (#handKeyboardToShell).
+   */
+  shellViewHoldsKeyboard?: () => boolean;
+  /**
    * The desk's grab key was held as a desk page was pressed
    * (@pistachio/shell-contracts/desk): the shell runs the move from here, and
    * `onDeskSample` carries the rest of that press to it.
@@ -11818,6 +11826,17 @@ export class BrowserController {
    * view can drop its focus on the floor instead, leaving nobody with the
    * keyboard; the shell takes it then too. A hidden view never rightly keeps
    * the keyboard, whatever is showing.
+   *
+   * Not from the shell's own prompt, though (`shellViewHoldsKeyboard`): the
+   * desk's pill over the pages is a view of its own, and the keyboard in its
+   * field is the shell's already. Until 2026-11-20 it counted as nobody's:
+   * on the home page, the brief, or a space with nothing in use, the next
+   * layout of the views, or the window coming to the front, took the
+   * keyboard out of the field, and the pill, empty, went back into the nub
+   * (a recording holds it out whoever has the keyboard, so the microphone's
+   * droplet showed nothing of it). Specs never saw it: the window is not the
+   * key window while the screen is locked, and Playwright's pages are never
+   * told they lost the keyboard.
    */
   #handKeyboardToShell(): void {
     const active = this.#activeTabId === null ? undefined : this.#tabs.get(this.#activeTabId);
@@ -11833,7 +11852,8 @@ export class BrowserController {
       shellOwns &&
       this.#window.isFocused() &&
       !this.#window.webContents.isDestroyed() &&
-      !this.#window.webContents.isFocused()
+      !this.#window.webContents.isFocused() &&
+      this.#hooks.shellViewHoldsKeyboard?.() !== true
     )
       this.#hooks.focusShell?.();
   }

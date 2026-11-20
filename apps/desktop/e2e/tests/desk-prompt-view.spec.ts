@@ -27,7 +27,8 @@ import { expect, test, type ElectronApplication, type Page } from "@playwright/t
 import type { WebContentsView } from "electron";
 import type { ExtensionsSnapshot } from "@pistachio/shell-contracts/extensions";
 import { box, createGroup, launchDesk, openNubMenu, openTabs, reachBar, screenshots, selectSpace, selectTab, settled, snapshot, VENDOR } from "./desk-harness";
-import { liveViews } from "./windows";
+import { launchApp } from "./app";
+import { liveViews, shellPage } from "./windows";
 
 const capture = screenshots("desk-prompt-view", ["notch"]);
 
@@ -743,4 +744,74 @@ test.describe.serial("the desk's prompt comes out of the nub", { tag: ["@desk"] 
     expect((await viewOf("notch"))!.bounds).toEqual(nub.bounds);
     await putAway();
   });
+});
+
+/**
+ * On a page the shell draws itself — the home page, the brief — or in a space
+ * with nothing in use, the keyboard is the shell's, and main keeps it so: after
+ * every layout of its views, and as the window comes to the front, a keyboard
+ * that is not in the shell's document is put back there
+ * (BrowserController's #handKeyboardToShell). The prompt's view is the shell's
+ * own, and the keyboard in its field is where the shell put it. Until
+ * 2026-11-20 it was taken back as nobody's: the pill out of the nub's keyboard
+ * droplet lost the keyboard a moment later and, empty, went back in (the
+ * microphone's holds the pill out by its recording, so it showed nothing).
+ *
+ * No other spec starts on the home page with the prompt's view — and none
+ * could have seen it: main only acts for the key window, which the window is
+ * not while the screen is locked, and Playwright's pages are never told the
+ * keyboard left them. Here the window is taken for the key window, and who has
+ * the keyboard is read from main.
+ */
+test("on the home page, the keyboard stays in the prompt: main's keeping of the keyboard for the shell does not take it back from the shell's own view", { tag: ["@desk"] }, async () => {
+  test.setTimeout(90_000);
+  const { app } = await launchApp({
+    name: "desk-prompt-view-home",
+    size: { width: 1440, height: 900 },
+    sidebar: "whole",
+    settings: { onboarding: { completed: true, completedAt: null } },
+    env: { PISTACHIO_E2E_PROMPT_VIEW: "1" },
+  });
+  try {
+    const shell = await shellPage(app);
+    await expect(shell.getByTestId("desk-nub")).toBeVisible({ timeout: 30_000 });
+    await settled(shell, app);
+    const now = await snapshot(shell);
+    expect(now.tabs.find((tab) => tab.id === now.activeTabId)?.url).toMatch(/^pistachio:\/\/home/);
+    await expect.poll(() => app.windows().some((page) => page.url() === "about:blank")).toBe(true);
+    const prompt = app.windows().find((page) => page.url() === "about:blank")!;
+    // (The key window, whatever is in front on this machine: main asks before it hands the keyboard about.)
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]!.isFocused = () => true;
+    });
+    const keyboard = (): Promise<{ prompt: boolean; shell: boolean }> =>
+      app.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0]!;
+        const view = window.contentView.children.find((child) => "webContents" in child && (child as WebContentsView).webContents.getURL() === "about:blank") as WebContentsView;
+        return { prompt: view.getVisible() && view.webContents.isFocused(), shell: window.webContents.isFocused() };
+      });
+
+    // The nub's keyboard droplet: the pill out, the keyboard in its field.
+    await openNubMenu(shell);
+    await shell.getByTestId("desk-nub-prompt").click();
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+    await expect.poll(keyboard).toEqual({ prompt: true, shell: false });
+
+    // The window comes to the front: main's check of who has the keyboard runs (as it does after every layout of the
+    // views), on a page where the keyboard is the shell's.
+    await app.evaluate(async ({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]!.emit("focus");
+      await new Promise<void>((done) => setImmediate(() => setImmediate(done)));
+    });
+    expect(await keyboard()).toEqual({ prompt: true, shell: false });
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+
+    // Put away, the view goes and the keyboard is the shell's again — then nobody's view holds it, and main's check
+    // leaves it there.
+    await prompt.getByTestId("desk-bar-input").press("Escape");
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    await expect.poll(keyboard).toEqual({ prompt: false, shell: true });
+  } finally {
+    await app.close();
+  }
 });

@@ -3062,6 +3062,11 @@ async function createWindow(): Promise<void> {
           if (layer !== null && layer.shown && !layer.webContents.isDestroyed() && layer.webContents.isFocused()) return;
         shellWindow.webContents.focus();
       },
+      // The desk's prompt over the pages, typed in: the keyboard there is the shell's own (./desk-bar-view.ts).
+      shellViewHoldsKeyboard: () => {
+        const contents = deskBarView?.shown === true ? deskBarView.webContents : null;
+        return contents !== null && !contents.isDestroyed() && contents.isFocused();
+      },
     },
   );
   browser.onDownloadsChange = (downloads) => {
