@@ -89,15 +89,18 @@ async function fling(shell: Page, from: { x: number; y: number }, by: { x: numbe
   await shell.mouse.up();
 }
 
-/** The desk's notch view (main's "notch" chrome view) on screen, and its box; null while it is not. */
-function notchView(app: ElectronApplication): Promise<Box | null> {
-  return app.evaluate(({ BrowserWindow }) => {
+/**
+ * The desk's notch view (main's "notch" chrome view) on screen, and its box; null while it is not. The nub's menu is a
+ * view of its own over it ("#notch-fan", the droplets' fan): the notch view is one box whatever comes out of the nub.
+ */
+function notchView(app: ElectronApplication, hash: "#notch" | "#notch-fan" = "#notch"): Promise<Box | null> {
+  return app.evaluate(({ BrowserWindow }, hash) => {
     const window = BrowserWindow.getAllWindows()[0];
     const view = window?.contentView.children.find(
-      (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#notch") && (child as WebContentsView).getVisible(),
+      (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith(hash) && (child as WebContentsView).getVisible(),
     ) as WebContentsView | undefined;
     return view === undefined ? null : view.getBounds();
-  });
+  }, hash);
 }
 
 /** A mouse event on the notch view, as the person's pointer would reach it. */
@@ -559,12 +562,14 @@ test.describe.serial("a space's desk, from its first window on", { tag: ["@desk"
     await expect(nub).toHaveAttribute("data-hovered", "");
     expect(await notchView(app)).not.toBeNull();
     await expectLiveIn(app, shell, live[bottomId]!, bottomId);
-    // A press there lets out the menu, which the view draws too (2026-11-17: until then the page under it gave way,
-    // and the view went): the page stays live under it, the view over it — its box now the droplets' fan.
+    // A press there lets out the menu, which main draws too (2026-11-17: until then the page under it gave way, and
+    // the view went): the page stays live under it, the nub's view over it as it was — and the menu's own over that,
+    // its box the droplets' fan.
     await notchMouse(app, "mouseDown", onNub.x, onNub.y);
     await notchMouse(app, "mouseUp", onNub.x, onNub.y);
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
-    await expect.poll(async () => (await notchView(app))?.height ?? 0).toBeGreaterThanOrEqual(132);
+    await expect.poll(async () => (await notchView(app, "#notch-fan"))?.height ?? 0).toBeGreaterThanOrEqual(132);
+    expect(await notchView(app)).toEqual(overPage);
     await expectLiveIn(app, shell, live[bottomId]!, bottomId);
     // (The pointer goes from it, and Escape puts the menu back.)
     await notchMouse(app, "mouseLeave", -1, -1);
@@ -572,8 +577,10 @@ test.describe.serial("a space's desk, from its first window on", { tag: ["@desk"
     await shell.keyboard.press("Escape");
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(0);
     await expect(nub).not.toHaveAttribute("data-hovered", "");
-    // Its droplets back in it, the view is the nub's own box again, over the page that was live throughout.
-    await expect.poll(async () => (await notchView(app))?.height ?? null, { timeout: 5_000 }).toBe(overPage.height);
+    // Its droplets back in it, the menu's view is gone, and the nub's own is the box it was, over the page that was
+    // live throughout.
+    await expect.poll(() => notchView(app, "#notch-fan"), { timeout: 5_000 }).toBeNull();
+    expect(await notchView(app)).toEqual(overPage);
     // (The pointer that came onto the view leaves it, as a person's does: a view that never heard it go would
     // still have it when it next shows, and swell the nub.)
     await notchMouse(app, "mouseLeave", -1, -1);

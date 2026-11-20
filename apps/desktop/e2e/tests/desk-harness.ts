@@ -590,9 +590,10 @@ export function screenshots(folder: string, also: readonly ChromeViewId[] = []):
 
 /**
  * One of the pill's buttons above the nub, pressed: the shell's own where
- * it is drawn, or, over a live page, the notch view's copy of it (the
- * shell's stands veiled under it: DeskNub's NubPillClose and NubPillSide,
- * NotchApp) — pressed as its page would hear a press, once it has risen.
+ * it is drawn, or, over a live page, main's copy of it in the buttons' own
+ * view beside the notch's (the shell's stands veiled under it: DeskNub's
+ * NubPillClose and NubPillSide, NotchApp's `buttons`; main's
+ * "notch-buttons") — pressed as its page would hear a press, once it has risen.
  */
 export async function pressNubButton(app: ElectronApplication, shell: Page, testId: "desk-bar-close" | "desk-answer-side"): Promise<void> {
   const button = shell.getByTestId(testId);
@@ -608,7 +609,7 @@ export async function pressNubButton(app: ElectronApplication, shell: Page, test
     app.evaluate(async ({ BrowserWindow }, id) => {
       const window = BrowserWindow.getAllWindows()[0];
       const view = window?.contentView.children.find(
-        (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#notch") && child.getVisible(),
+        (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#notch-buttons") && child.getVisible(),
       ) as WebContentsView | undefined;
       if (view === undefined) return null;
       return (await view.webContents.executeJavaScript(
@@ -631,8 +632,8 @@ export async function pressNubButton(app: ElectronApplication, shell: Page, test
   const at = last!;
   await app.evaluate(
     async ({ webContents }, { x, y }) => {
-      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"));
-      if (contents === undefined) throw new Error("no notch view");
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch-buttons"));
+      if (contents === undefined) throw new Error("no view of the pill's buttons");
       contents.sendInputEvent({ type: "mouseMove", x, y });
       await new Promise((done) => setTimeout(done, 30));
       contents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, x, y });

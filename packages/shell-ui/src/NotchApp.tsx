@@ -69,7 +69,7 @@ const MENU_SETTLED_MS = 600;
 /** The view has no pill: nothing for the nub's motion to grow one out of. */
 const NO_PILL = (): null => null;
 
-export function NotchApp({ picture = false }: { picture?: boolean }) {
+export function NotchApp({ picture = false, buttons = false, fan = false }: { picture?: boolean; buttons?: boolean; fan?: boolean }) {
   const [frame, setFrame] = useState<DeskNotchFrame | null>(null);
   const saidEnter = useRef(Number.NEGATIVE_INFINITY);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -134,6 +134,18 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
     if (menuOpen) motion.openMenu(settled);
     else motion.closeMenu(settled);
   }, [up, menuOpen, menuAt]);
+  // The Bar's pill on its way out of this nub, drawn by the prompt's view beside this one (DeskNotchFrame's `pill`):
+  // this nub's side of it — the droplet it came out of gone from the fan, the bridge to its end — on the view's own
+  // clock from the shell's word, as the menu is. (After the menu's, so a menu just let out does not bring that droplet back.)
+  const pillWay = frame?.pill ?? null;
+  const pillAt = pillWay?.at ?? 0;
+  const pillNow = useRef(pillWay);
+  pillNow.current = pillWay;
+  useLayoutEffect(() => {
+    const motion = motionRef.current;
+    if (!up || motion === null) return;
+    motion.mirrorPill(pillNow.current);
+  }, [up, pillAt]);
 
   if (frame === null) return null;
   const send = (input: DeskNotchInput): void => nativeApi()?.sendDeskNotchInput(input);
@@ -153,6 +165,21 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
   };
   const { bounds, ground } = frame;
   const px = (value: number): string => `${value.toFixed(1)}px`;
+  // The pill's buttons above the nub, in the view of their own (main's "notch-buttons"; DeskNotchFrame's `column`):
+  // where the shell lays them — the nub's box, its corner the desk's, which lies below this view's foot by as far as
+  // the view stops short of it. A press is the shell's, and the pointer onto one opens the shell's tooltip.
+  if (buttons) {
+    const column = frame.column ?? null;
+    if (column === null) return null;
+    const { close, side } = frame.buttons;
+    const foot = bounds.y + bounds.height - (column.y + column.height);
+    return (
+      <div className="desk-notch-view-buttons" data-testid="desk-notch-buttons" style={{ width: NUB_BOX.w, height: NUB_BOX.h, bottom: -foot }}>
+        <NubPillClose shown={close} onClose={() => send({ bar: "close" })} onHover={(on) => send({ hover: on ? "close" : null })} />
+        <NubPillSide shown={side} onSide={() => send({ bar: "side" })} onHover={(on) => send({ hover: on ? "side" : null })} />
+      </div>
+    );
+  }
   // The nub itself, as the shell draws its own (DeskNub): its face and mark, moved with the swell; its menu, let out
   // of it. No tooltips here — none could reach past the view's box: the pointer onto a droplet is said, and the
   // shell's own says what it is.
@@ -203,12 +230,14 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
     "--desk-window-radius": px(frame.corner),
   } as React.CSSProperties;
   if (!picture) {
-    const { close, side } = frame.buttons;
+    // The nub's own view while the menu's view has the nub (DeskNotchFrame's `fanDraws`): it draws none of it — the
+    // menu's view lies over this one and draws the same nub, and two of them would lay its shadow twice in this box.
+    const away = !fan && frame.fanDraws === true ? ({ opacity: 0 } as const) : null;
     return (
       <>
         {/* The view's box beside the droplets, while they are out: a press there is a press elsewhere. */}
         <div className="desk-notch-view-away" data-testid="desk-notch-away" data-open={menuOpen ? "" : undefined} onPointerDown={() => send("away")} />
-        <div ref={rootRef} className="desk-notch-view tab-group-tone" data-group-color={frame.color} style={groundStyle}>
+        <div ref={rootRef} className="desk-notch-view tab-group-tone" data-group-color={frame.color} data-away={away === null ? undefined : ""} style={{ ...groundStyle, ...away }}>
           <button
             type="button"
             className="desk-notch-view-hit"
@@ -223,15 +252,10 @@ export function NotchApp({ picture = false }: { picture?: boolean }) {
           {pills}
         </div>
         {/* Over the ground, not in it: the nub out of the corner and its droplets are past the ground's cut. */}
-        <div className="desk-notch-view-nub tab-group-tone" data-group-color={frame.color} style={{ width: NUB_BOX.w, height: NUB_BOX.h, ...groundStyle }}>
+        <div className="desk-notch-view-nub tab-group-tone" data-group-color={frame.color} style={{ width: NUB_BOX.w, height: NUB_BOX.h, ...groundStyle, ...away }}>
           {nub}
         </div>
-        {/* The pill's buttons above the nub, where the shell lays them (the nub's box, its corner the view's): drawn here
-            over a live page, as the nub is; a press is the shell's, and the pointer onto one opens the shell's tooltip. */}
-        <div className="desk-notch-view-buttons" style={{ width: NUB_BOX.w, height: NUB_BOX.h }}>
-          <NubPillClose shown={close} onClose={() => send({ bar: "close" })} onHover={(on) => send({ hover: on ? "close" : null })} />
-          <NubPillSide shown={side} onSide={() => send({ bar: "side" })} onHover={(on) => send({ hover: on ? "side" : null })} />
-        </div>
+        {/* (The pill's buttons above the nub are a view of their own: `buttons`, above.) */}
       </>
     );
   }

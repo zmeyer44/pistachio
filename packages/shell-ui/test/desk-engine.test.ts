@@ -2492,6 +2492,259 @@ describe("passing the desk to another space, its windows dismissed where they st
   });
 });
 
+describe("the desk passing between spaces whose chats keep different room (the chat at one's side, not at the other's)", () => {
+  // (The poses run on the engine's clock: the frames'.)
+  let restoreNow: () => void = () => undefined;
+  beforeEach(() => {
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    restoreNow = () => spy.mockRestore();
+  });
+  afterEach(() => restoreNow());
+
+  const ROOM = 488;
+  const bloom = { spaceSwitch: () => ({ exit: "bloom" as const, arrival: "matched" as const }) };
+  /** A rider that keeps every pose it is drawn with. */
+  function rider(rect: Rect) {
+    const poses: Array<{ opacity: number; transform: string; origin: Point } | null> = [];
+    let done = 0;
+    return { poses, done: () => done, rider: { rect, pose: (drawn: { opacity: number; transform: string; origin: Point } | null) => void poses.push(drawn), done: () => void (done += 1) } };
+  }
+
+  it("the window left goes as it stands, never given the room its chat is handing back; the chosen tab's comes in filling the desk", () => {
+    native();
+    // (Live pages: the window left waits for its still before it is dismissed — the wait it used to spend growing.)
+    const desk = engine({ ...bloom, hasLivePage: () => true });
+    // A Home tab's page fills the desk, its chat at the side.
+    desk.start([], "a-0", ["a-0"], null, "A", 0, true);
+    const going = element();
+    desk.attachWindow("a-0", going as unknown as HTMLElement);
+    desk.setReserve(ROOM);
+    settle();
+    const beside = rectOf(going);
+    expect(beside.x + beside.w).toBeLessThanOrEqual(1600 - ROOM);
+    // The next tab's chat is not up: the Bar says the desk is passing, hands the room back, and the desk passes.
+    desk.leaving();
+    desk.setReserve(0);
+    expectRect(rectOf(going), beside);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [], entry: "b-0", tabbed: true });
+    const coming = element();
+    desk.attachWindow("b-0", coming as unknown as HTMLElement);
+    step(1);
+    const whole = rectOf(coming);
+    expect(whole.x + whole.w).toBeGreaterThan(1600 - ROOM);
+    for (let frame = 0; frame < 12; frame += 1) {
+      step(1);
+      // (Until 2026-11-19 it was on its way to the whole desk by now, its page laid out again every frame.)
+      if (desk.windowTabIds().includes("a-0")) expectRect(rectOf(going), beside);
+      expectRect(rectOf(coming), whole);
+    }
+    settle();
+    expect(desk.windowTabIds()).toEqual(["b-0"]);
+    expectRect(rectOf(coming), whole);
+    desk.destroy();
+  });
+
+  it("the window left for a tab with its chat at the side is not squeezed on its way out, and the chosen tab's lands in the room left", () => {
+    native();
+    const desk = engine({ ...bloom, hasLivePage: () => true });
+    desk.start([], "a-0", ["a-0"], null, "A", 0, true);
+    const going = element();
+    desk.attachWindow("a-0", going as unknown as HTMLElement);
+    settle();
+    const whole = rectOf(going);
+    desk.leaving();
+    desk.setReserve(ROOM);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [], entry: "b-0", tabbed: true });
+    const coming = element();
+    desk.attachWindow("b-0", coming as unknown as HTMLElement);
+    step(1);
+    const beside = rectOf(coming);
+    expect(beside.x + beside.w).toBeLessThanOrEqual(1600 - ROOM);
+    for (let frame = 0; frame < 12; frame += 1) {
+      step(1);
+      if (desk.windowTabIds().includes("a-0")) expectRect(rectOf(going), whole);
+      expectRect(rectOf(coming), beside);
+    }
+    settle();
+    expectRect(rectOf(coming), beside);
+    desk.destroy();
+  });
+
+  it("a space of windows is saved in the room it had, and one saved in other room than is kept now lands where this room leaves it, from its first frame", () => {
+    native();
+    const saves: Array<{ windows: SavedDeskWindow[]; reserve: number }> = [];
+    const desk = engine({ ...bloom, save: (windows, reserve) => saves.push({ windows, reserve }) });
+    const all: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    desk.start([{ tabId: "a-0", rect: normalizeRect({ x: 100, y: 100, w: 900, h: 600 }, all) }], "a-0", ["a-0"], null, "A");
+    const going = element();
+    desk.attachWindow("a-0", going as unknown as HTMLElement);
+    settle();
+    desk.setReserve(ROOM);
+    settle();
+    const beside = rectOf(going);
+    saves.length = 0;
+    desk.leaving();
+    desk.setReserve(0);
+    // B was left with no room kept, its window 900 wide at the desk's trailing side.
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [{ tabId: "b-0", rect: normalizeRect({ x: 600, y: 100, w: 900, h: 600 }, all) }], reserve: 0, entry: "b-0" });
+    // A's desk as it was left: beside its chat, in the room the chat kept (where its window comes back to, below).
+    expect(saves[0]!.reserve).toBe(ROOM);
+    const coming = element();
+    desk.attachWindow("b-0", coming as unknown as HTMLElement);
+    step(1);
+    const landed = rectOf(coming);
+    expect(landed.w).toBeCloseTo(900, 0);
+    settle();
+    expectRect(rectOf(coming), landed);
+    // And back: A's chat is at its side again, and A's window comes in where it stood beside it — at once, not gliding there.
+    desk.leaving();
+    desk.setReserve(ROOM);
+    desk.switchGroup({ from: "B", groupId: "A", tabIds: ["a-0"], saved: saves[0]!.windows, reserve: saves[0]!.reserve, entry: "a-0" });
+    const back = element();
+    desk.attachWindow("a-0", back as unknown as HTMLElement);
+    step(1);
+    expectRect(rectOf(back), beside, 1);
+    settle();
+    expectRect(rectOf(back), beside, 1);
+    desk.destroy();
+  });
+
+  it("a window saved with no room kept comes in at the box the room kept now leaves it, not at its old one gliding over", () => {
+    native();
+    const desk = engine(bloom);
+    const all: Rect = { x: 0, y: 0, w: 1600, h: 1000 };
+    desk.start([], "a-0", ["a-0"], null, "A");
+    desk.attachWindow("a-0", element() as unknown as HTMLElement);
+    settle();
+    desk.leaving();
+    desk.setReserve(ROOM);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [{ tabId: "b-0", rect: normalizeRect({ x: 400, y: 100, w: 1100, h: 600 }, all) }], reserve: 0, entry: "b-0" });
+    const coming = element();
+    desk.attachWindow("b-0", coming as unknown as HTMLElement);
+    step(1);
+    const first = rectOf(coming);
+    expect(first.x + first.w).toBeLessThanOrEqual(1600 - ROOM);
+    settle();
+    expectRect(rectOf(coming), first);
+    desk.destroy();
+  });
+
+  it("with no passing after all, the room asked for is given as ever: the windows stay, and give way", async () => {
+    native();
+    const desk = engine(bloom);
+    desk.start([], "a-0", ["a-0"], null, "A", 0, true);
+    const win = element();
+    desk.attachWindow("a-0", win as unknown as HTMLElement);
+    settle();
+    const whole = rectOf(win);
+    // The space changed under the tab in use (regroup): its window stays, beside the chat the new space has at its side.
+    desk.leaving();
+    desk.setReserve(ROOM);
+    desk.regroup(["a-0"], null, "G", true);
+    settle();
+    const beside = rectOf(win);
+    expect(beside.x + beside.w).toBeLessThanOrEqual(1600 - ROOM);
+    // And nothing coming of the Bar's word at all: by the end of the commit the room is the windows'.
+    desk.leaving();
+    desk.setReserve(0);
+    expectRect(rectOf(win), beside);
+    await Promise.resolve();
+    settle();
+    expectRect(rectOf(win), whole);
+    desk.destroy();
+  });
+
+  it("the chat's card goes with the windows of the space left, and the chosen space's comes with its own", () => {
+    native({ stills: true });
+    // (A live page: its window waits for its still before it is dismissed.)
+    const desk = engine({ ...bloom, hasLivePage: () => true });
+    desk.start([], "a-0", ["a-0"], null, "A", 0, true);
+    const going = element();
+    desk.attachWindow("a-0", going as unknown as HTMLElement);
+    desk.setReserve(ROOM);
+    settle();
+    const out = rider({ x: 1600 - ROOM, y: 8, w: 480, h: 984 });
+    const into = rider({ x: 1600 - ROOM, y: 8, w: 480, h: 984 });
+    desk.leaving();
+    desk.sendOff(out.rider);
+    desk.bringIn(into.rider);
+    // The card coming is unseen from the first; the one going has not been touched: it stands as it stood.
+    expect(into.poses.at(-1)?.opacity).toBe(0);
+    expect(out.poses).toEqual([]);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [], entry: "b-0", tabbed: true });
+    desk.attachWindow("b-0", element() as unknown as HTMLElement);
+    // Until the window left is dismissed (its still up), the card left stands whole beside it.
+    expect(going.dataset["switching"]).toBeUndefined();
+    expect(out.poses.every((pose) => pose !== null && pose.opacity === 1)).toBe(true);
+    expect(into.poses.every((pose) => pose !== null && pose.opacity === 0)).toBe(true);
+    settle();
+    // Gone on the windows' exit, about its own centre (Bloom's anchor), and come on their entrance; nothing left on the card that came.
+    expect(out.done()).toBe(1);
+    expect(out.poses.some((pose) => pose !== null && pose.opacity > 0 && pose.opacity < 1 && /scale\(1\.0[1-6]/.test(pose.transform))).toBe(true);
+    expect(out.poses.at(-1)).not.toBeNull();
+    expect(out.poses.find((pose) => pose !== null)?.origin).toEqual({ x: 240, y: 492 });
+    expect(into.poses.some((pose) => pose !== null && pose.opacity > 0 && pose.opacity < 1)).toBe(true);
+    expect(into.poses.at(-1)).toBeNull();
+    expect(into.done()).toBe(1);
+    desk.destroy();
+  });
+
+  it("the space left chosen again before its card is gone: the card carries on from where it had got to, as its windows do", () => {
+    native();
+    const desk = engine(bloom);
+    desk.start([], "a-0", ["a-0"], null, "A", 0, true);
+    desk.attachWindow("a-0", element() as unknown as HTMLElement);
+    desk.setReserve(ROOM);
+    settle();
+    const out = rider({ x: 1600 - ROOM, y: 8, w: 480, h: 984 });
+    desk.leaving();
+    desk.sendOff(out.rider);
+    desk.setReserve(0);
+    desk.switchGroup({ from: "A", groupId: "B", tabIds: ["b-0"], saved: [], entry: "b-0", tabbed: true });
+    desk.attachWindow("b-0", element() as unknown as HTMLElement);
+    step(6);
+    const faded = out.poses.at(-1)!.opacity;
+    expect(faded).toBeGreaterThan(0);
+    expect(faded).toBeLessThan(1);
+    // Back to A: its card is up again — the copy going is gone at once, and the card itself sets out from that pose.
+    const back = rider({ x: 1600 - ROOM, y: 8, w: 480, h: 984 });
+    desk.leaving();
+    desk.bringIn(back.rider);
+    desk.setReserve(ROOM);
+    desk.switchGroup({ from: "B", groupId: "A", tabIds: ["a-0"], saved: [], entry: "a-0", tabbed: true });
+    expect(out.done()).toBe(1);
+    step(1);
+    expect(Math.abs(back.poses.at(-1)!.opacity - faded)).toBeLessThan(0.25);
+    settle();
+    expect(back.poses.at(-1)).toBeNull();
+    expect(back.done()).toBe(1);
+    desk.destroy();
+  });
+
+  it("a card handed over with no passing on its way fades where it stands; one let go of is left as it is", () => {
+    native();
+    const desk = engine(bloom);
+    desk.start([], "a-0", ["a-0"], null, "A", 0, true);
+    desk.attachWindow("a-0", element() as unknown as HTMLElement);
+    settle();
+    const out = rider({ x: 1100, y: 8, w: 480, h: 984 });
+    const into = rider({ x: 1100, y: 8, w: 480, h: 984 });
+    desk.sendOff(out.rider);
+    const letGo = desk.bringIn(into.rider);
+    step(3);
+    expect(out.poses.at(-1)!.opacity).toBeLessThan(1);
+    expect(out.poses.at(-1)!.transform).toContain("scale(1.0000)");
+    letGo();
+    expect(into.poses.at(-1)).toBeNull();
+    const drawn = into.poses.length;
+    settle();
+    expect(out.done()).toBe(1);
+    expect(into.poses.length).toBe(drawn);
+    expect(into.done()).toBe(0);
+    desk.destroy();
+  });
+});
+
 describe("a window in flight as the stage changes size (⌘S, a window resize)", () => {
   it("lands inside the new stage: its target follows the desk, as the windows out do", () => {
     native();

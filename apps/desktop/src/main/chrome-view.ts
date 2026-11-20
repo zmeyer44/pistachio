@@ -76,12 +76,25 @@ export class ChromeOverlayView {
     return loadChromePage(this.#view.webContents, this.id, rendererUrl, file);
   }
 
-  /** Re-add to the window: a child added later would otherwise stack above this view. */
-  raise(): void {
+  /**
+   * Re-add to the window: a child added later would otherwise stack above this view. With `under` — another view of
+   * the window, on screen — it goes just below that one instead, which is left where and as it is (a view re-added
+   * under the pointer loses it).
+   */
+  raise(under?: ChromeOverlayView): void {
     if (this.#window.isDestroyed()) return;
-    this.#window.contentView.addChildView(this.#view);
+    const parent = this.#window.contentView;
+    const children = parent.children;
+    const at = under === undefined || !under.onScreen ? -1 : children.indexOf(under.#view);
+    if (at < 0) parent.addChildView(this.#view);
+    else {
+      const own = children.indexOf(this.#view);
+      // (Below it, up to just under; above it, down to where it stands — which puts that view one higher.)
+      if (own !== at - 1) parent.addChildView(this.#view, own >= 0 && own < at ? at - 1 : at);
+    }
     this.#placed();
   }
+
 
   /** The window-relative box this view occupies while shown. */
   setSlot(slot: ContentBounds | null): void {

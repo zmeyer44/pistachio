@@ -144,6 +144,30 @@ describe("the desk's contract", () => {
     expect(isDeskNotchFrame({ ...frame, menu: null })).toBe(false);
     expect(isDeskNotchFrame({ ...frame, menu: { open: "yes", at: 0 } })).toBe(false);
     expect(isDeskNotchFrame({ ...frame, menu: { open: true, at: Number.NaN } })).toBe(false);
+    // The pill on its way out of the nub, drawn by the prompt's view beside this one: the view draws its own side of
+    // it (the droplet it came out of gone, the bridge to its end). None, or left out, is no pill on its way.
+    const way = { at: 1_760_000_000_000, from: { x: -118, y: -48, w: 40, h: 40 }, home: { x: -534, y: -60, w: 480, h: 52 }, drop: 0 };
+    expect(isDeskNotchFrame({ ...frame, pill: way })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, pill: { ...way, drop: null } })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, pill: null })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, pill: { ...way, drop: 3 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, pill: { ...way, at: Number.NaN } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, pill: { ...way, home: { x: 0, y: 0, w: -1, h: 52 } } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, pill: { ...way, from: null } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, pill: "out" })).toBe(false);
+    // The pill's buttons above the nub stand in a box of their own (a view of one size, beside the nub's).
+    expect(isDeskNotchFrame({ ...frame, column: { x: 1380, y: 755, width: 52, height: 85 } })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, column: null })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, column: { x: 1380, y: 755, width: 0, height: 85 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, column: { x: 1380, y: 755, width: 52, height: 4096 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, column: { x: Number.NaN, y: 755, width: 52, height: 85 } })).toBe(false);
+    // And the menu is drawn in a view of its own over the nub's: its box.
+    expect(isDeskNotchFrame({ ...frame, fan: { x: 1300, y: 760, width: 132, height: 132 } })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, fan: null })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, fan: { x: 1300, y: 760, width: 132, height: 0 } })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, fan: "out" })).toBe(false);
+    expect(isDeskNotchFrame({ ...frame, fan: { x: 1300, y: 760, width: 132, height: 132 }, fanDraws: true })).toBe(true);
+    expect(isDeskNotchFrame({ ...frame, fanDraws: "yes" })).toBe(false);
     // A droplet pressed in the view is the Bar's, as if the shell's own were.
     for (const droplet of ["prompt", "mic", "chats"]) expect(isDeskNotchInput({ menu: droplet }), droplet).toBe(true);
     expect(isDeskNotchInput({ menu: "close" })).toBe(false);

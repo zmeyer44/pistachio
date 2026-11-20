@@ -31,6 +31,8 @@ export class DeskBarView {
   #view: WebContentsView | null = null;
   #shown = false;
   #veiled = false;
+  /** Where it was last laid, as said to the view: laid there again, it is not moved. */
+  #laid: { x: number; y: number; width: number; height: number } | null = null;
 
   constructor(window: BrowserWindow, options: DeskBarViewOptions = {}) {
     this.#window = window;
@@ -84,7 +86,14 @@ export class DeskBarView {
       return;
     }
     const { x, y, width, height } = place.bounds;
-    view.setBounds({ x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)), width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) });
+    const lay = { x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)), width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
+    const laid = this.#laid;
+    // (Not laid again where it lies: to its page a box set is a box changed, and it is drawn again for it — while the
+    // pill in it is on its way out of the nub.)
+    if (laid === null || laid.x !== lay.x || laid.y !== lay.y || laid.width !== lay.width || laid.height !== lay.height) {
+      this.#laid = lay;
+      view.setBounds(lay);
+    }
     if (!this.#shown) {
       this.#shown = true;
       view.setVisible(!this.#veiled);
@@ -94,10 +103,19 @@ export class DeskBarView {
     this.#options.placed?.();
   }
 
-  /** Re-add to the window: a child added later (a tab's view) would otherwise stack above it. */
+  /**
+   * Over the window's other views: a child added later (a tab's view) would otherwise stack above it. (Over the nub's
+   * views too — the nub's menu runs back into the nub under the pill, and the pill's end is the pointer's from the
+   * moment it is out. It lies beside the nub, its box reaching a few px into the nub's for the pill's shadow: main's
+   * notchCovered does not count it as a view lying over the nub.)
+   */
   raise(): void {
-    if (this.#view === null || this.#window.isDestroyed()) return;
-    this.#window.contentView.addChildView(this.#view);
+    const view = this.#view;
+    if (view === null || this.#window.isDestroyed()) return;
+    const parent = this.#window.contentView;
+    const children = parent.children;
+    // (On top already, it is left where it is: a view re-added is taken out and put back.)
+    if (children[children.length - 1] !== view) parent.addChildView(view);
   }
 
   destroy(): void {
@@ -133,6 +151,7 @@ export class DeskBarView {
     this.#window.contentView.addChildView(view);
     this.#view = view;
     this.#shown = false;
+    this.#laid = null;
     this.#options.adopted?.(view.webContents);
     return view.webContents;
   }

@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { WebContentsView } from "electron";
 import type { ExtensionsSnapshot } from "@pistachio/shell-contracts/extensions";
-import { box, createGroup, launchDesk, openTabs, reachBar, screenshots, selectSpace, selectTab, settled, snapshot, VENDOR } from "./desk-harness";
+import { box, createGroup, launchDesk, openNubMenu, openTabs, reachBar, screenshots, selectSpace, selectTab, settled, snapshot, VENDOR } from "./desk-harness";
 import { liveViews } from "./windows";
 
 const capture = screenshots("desk-prompt-view", ["notch"]);
@@ -501,5 +501,246 @@ test.describe.serial("the desk's prompt: no window gives way to it", { tag: ["@d
     await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
     await settled(shell, app);
     expect(await frame()).toEqual(before);
+  });
+});
+
+/**
+ * The user's report (2026-11-19): "Make sure the animation for the text input appearing is still buttery smooth and
+ * native feeling. It is a bit jittery now". Since the pill moved into a view of its own (the day before) it had no
+ * way out of the nub at all: it was made already shown, so it was there, whole, in the first frame the view drew —
+ * while, in that same moment, the nub's view was made taller for the pill's buttons (and wider for the nub's menu):
+ * a view's page is drawn again for a new box a frame or two after the box is laid, its last picture pinned to the
+ * box's top-left corner meanwhile, so the nub showed a second time above itself. And the prompt's view, stacked over
+ * the nub's and reaching a few px into its box, counted as a view lying over the nub, whose glass stepped aside.
+ *
+ * Now: the pill is let out only once the view draws where it was placed, and its glass and row are morphed by the
+ * nub's own motion — out of the droplet pressed, or from beside the nub — on the view's own frames; the view is laid
+ * once; and the nub's view is one box whatever comes out of the nub, its menu and the pill's buttons in views of
+ * their own, each of one size, shown and hidden.
+ */
+test.describe.serial("the desk's prompt comes out of the nub", { tag: ["@desk"] }, () => {
+  let app: ElectronApplication;
+  let shell: Page;
+  let prompt: Page;
+
+  interface Sample {
+    compact: boolean;
+    width: number;
+    left: number;
+    right: number;
+    pill: { left: number; right: number; width: number };
+    opacity: number;
+    view: number;
+  }
+
+  /** Every frame the prompt's view draws from now on: the pill's glass in it, and the view's own width as that frame is drawn. */
+  const watchGlass = (): Promise<void> =>
+    prompt.evaluate(() => {
+      const store = window as unknown as { __samples: unknown[]; __watching?: boolean };
+      store.__samples = [];
+      if (store.__watching === true) return;
+      store.__watching = true;
+      const tick = (): void => {
+        const pill = document.querySelector('[data-testid="desk-bar-over"]');
+        const glass = pill?.querySelector(".desk-bar-frame") ?? null;
+        if (pill !== null && glass !== null) {
+          const at = glass.getBoundingClientRect();
+          const home = pill.getBoundingClientRect();
+          store.__samples.push({
+            compact: pill.hasAttribute("data-compact"),
+            width: at.width,
+            left: at.left,
+            right: at.right,
+            pill: { left: home.left, right: home.right, width: home.width },
+            opacity: Number(getComputedStyle(glass).opacity),
+            view: window.innerWidth,
+          });
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  const samples = (): Promise<Sample[]> => prompt.evaluate(() => (window as unknown as { __samples: Sample[] }).__samples);
+
+  /** The nub's views, the prompt's and the page's, as the window stacks them (lowest first), each with its box and whether it is on screen. */
+  const stack = (): Promise<Array<{ name: string; visible: boolean; bounds: Bounds }>> =>
+    app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]!;
+      return window.contentView.children
+        .filter((child) => "webContents" in child)
+        .map((child) => {
+          const view = child as WebContentsView;
+          const url = view.webContents.getURL();
+          const hash = /#([a-z-]+)$/.exec(url)?.[1];
+          return { name: url === "about:blank" ? "prompt" : (hash ?? "page"), visible: view.getVisible(), bounds: view.getBounds() };
+        });
+    });
+  const viewOf = async (name: string): Promise<{ visible: boolean; bounds: Bounds; at: number } | null> => {
+    const views = await stack();
+    const at = views.findIndex((view) => view.name === name);
+    return at < 0 ? null : { visible: views[at]!.visible, bounds: views[at]!.bounds, at };
+  };
+
+  /** From now on, every box the prompt's view is laid in (main's own word of it). */
+  const watchPlacing = (): Promise<void> =>
+    app.evaluate(({ BrowserWindow }) => {
+      const store = globalThis as unknown as { __placed?: Bounds[]; __placing?: boolean };
+      store.__placed = [];
+      if (store.__placing === true) return;
+      store.__placing = true;
+      const window = BrowserWindow.getAllWindows()[0]!;
+      const view = window.contentView.children.find((child) => "webContents" in child && (child as WebContentsView).webContents.getURL() === "about:blank") as WebContentsView;
+      const lay = view.setBounds.bind(view);
+      view.setBounds = (bounds) => {
+        store.__placed!.push(bounds);
+        lay(bounds);
+      };
+    });
+  const placed = (): Promise<Bounds[]> => app.evaluate(() => (globalThis as unknown as { __placed: Bounds[] }).__placed);
+
+  const nubPages = (): Page[] => app.windows().filter((page) => /#notch(-fan)?$/.test(page.url()));
+  /** The nub's clock, slowed so its motion can be read on the way (the shell's moves the pill; the nub's views', their own nubs). */
+  const slow = async (scale: number): Promise<void> => {
+    for (const page of [shell, ...nubPages()]) await page.evaluate((value) => document.documentElement.style.setProperty("--desk-nub-time-scale", String(value)), scale);
+  };
+  const askKey = (): Promise<void> =>
+    app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0]!.webContents;
+      contents.sendInputEvent({ type: "keyDown", keyCode: "I", modifiers: ["meta"] });
+      contents.sendInputEvent({ type: "keyUp", keyCode: "I", modifiers: ["meta"] });
+    });
+  const putAway = async (): Promise<void> => {
+    await prompt.getByTestId("desk-bar-input").press("Escape");
+    await expect(shell.getByTestId("desk-bar")).toHaveAttribute("data-compact", "");
+    await expect.poll(async () => (await viewOf("prompt"))?.visible).toBe(false);
+  };
+
+  test.beforeAll(async () => {
+    test.setTimeout(120_000);
+    ({ app, shell } = await launchDesk({ name: "desk-prompt-view-motion", env: { PISTACHIO_E2E_PROMPT_VIEW: "1" } }));
+    await settled(shell, app);
+    await expect.poll(() => app.windows().some((page) => page.url() === "about:blank")).toBe(true);
+    prompt = app.windows().find((page) => page.url() === "about:blank")!;
+    await expect.poll(() => nubPages().length).toBe(2);
+  });
+
+  test.afterAll(async () => {
+    await app?.close();
+  });
+
+  test("⌘I: the view is laid once, the pill let out only once it draws there — its glass from beside the nub, growing to the pill's own box", async () => {
+    test.setTimeout(60_000);
+    await watchPlacing();
+    await watchGlass();
+    await slow(6);
+    await askKey();
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+    await expect.poll(async () => (await samples()).filter((sample) => !sample.compact).length).toBeGreaterThan(12);
+    const drawn = await samples();
+    const laid = await placed();
+    // Laid once (or not at all: where it lay the last time it was out) — not again as the pill comes out in it.
+    expect(laid.length).toBeLessThanOrEqual(1);
+    const width = (await viewOf("prompt"))!.bounds.width;
+    const out = drawn.filter((sample) => !sample.compact);
+    // Let out only in a view drawing at the size it was laid: before that the pill is in it unseen (until 2026-11-19
+    // it was simply there, whole, in the first frame the view drew — the first time, in a view with no size at all).
+    expect(out.every((sample) => sample.view === width)).toBe(true);
+    expect(drawn.filter((sample) => sample.compact).every((sample) => sample.opacity === 0)).toBe(true);
+    // Its first frame out is its first: a glass no wider than the nub's face, not yet seen, at the view's trailing
+    // edge — beside the nub, past where the pill's own end rests.
+    const first = out[0]!;
+    expect(first.width).toBeLessThan(60);
+    expect(first.opacity).toBeLessThan(0.2);
+    expect(first.right).toBeGreaterThan(first.pill.right);
+    expect(first.right).toBeLessThanOrEqual(width);
+    // And from there it grows, frame by frame, toward the pill's box: never narrower than the frame before, and no
+    // frame of it whole before it has grown there.
+    for (let i = 1; i < out.length; i++) expect(out[i]!.width, `frame ${String(i)}`).toBeGreaterThanOrEqual(out[i - 1]!.width - 0.5);
+    expect(out[4]!.width).toBeLessThan(first.pill.width * 0.9);
+    // It comes to rest as the pill: its glass the pill's box, nothing of the morph left on it.
+    await expect
+      .poll(
+        async () => {
+          const last = (await samples()).at(-1)!;
+          return Math.abs(last.width - last.pill.width) < 0.5 && Math.abs(last.left - last.pill.left) < 0.5 && last.opacity === 1;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+    await expect.poll(() => prompt.evaluate(() => (document.querySelector('[data-testid="desk-bar-over"] .desk-bar-frame') as HTMLElement).style.inset)).toBe("");
+    await slow(1);
+    await capture(app, shell, "20-out-of-the-nub.png");
+    await putAway();
+  });
+
+  test("the nub's own view is one box through it all: the pill's buttons stand in a view of their own above it, under the prompt's", async () => {
+    const nub = await viewOf("notch");
+    expect(nub?.visible).toBe(true);
+    // (The pill put away a moment ago, its buttons are a beat going back into the nub.)
+    await expect.poll(async () => (await viewOf("notch-buttons"))?.visible).toBe(false);
+    await askKey();
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+    await expect.poll(async () => (await viewOf("notch-buttons"))?.visible).toBe(true);
+    const buttons = (await viewOf("notch-buttons"))!;
+    const out = (await viewOf("notch"))!;
+    // Not made taller for them: where and as large as it was — a view grown upward shows its last picture that much
+    // too high until its page is drawn again (the nub, a second time, above itself).
+    expect(out.bounds).toEqual(nub!.bounds);
+    // Theirs is the nub's column, from above the nub down behind it (they come up out of it): under the nub's view.
+    expect(buttons.bounds.x).toBe(out.bounds.x);
+    expect(buttons.bounds.width).toBe(out.bounds.width);
+    expect(buttons.bounds.y).toBeLessThan(out.bounds.y);
+    expect(buttons.bounds.y + buttons.bounds.height).toBeGreaterThan(out.bounds.y);
+    expect(buttons.at).toBeLessThan(out.at);
+    // The prompt's lies over the nub's: the pill's end is the pointer's from the moment it is out.
+    expect((await viewOf("prompt"))!.at).toBeGreaterThan(out.at);
+    const close = app.windows().find((page) => page.url().endsWith("#notch-buttons"))!.getByTestId("desk-bar-close");
+    await expect(close).toHaveAttribute("data-shown", "");
+    await putAway();
+    // Back in the nub, their view is gone from over the page; the nub's never changed.
+    await expect.poll(async () => (await viewOf("notch-buttons"))?.visible).toBe(false);
+    expect((await viewOf("notch"))!.bounds).toEqual(nub!.bounds);
+  });
+
+  test("out of the prompt's droplet: the nub's menu is a view of its own over the nub's, and the droplet pressed is the pill's glass from its first frame", async () => {
+    test.setTimeout(60_000);
+    const nub = (await viewOf("notch"))!;
+    await openNubMenu(shell);
+    await expect.poll(async () => (await viewOf("notch-fan"))?.visible).toBe(true);
+    const fan = (await viewOf("notch-fan"))!;
+    // The droplets' fan, in the desk's corner, over the nub's own view — which is the box it was.
+    expect(fan.bounds.width).toBeGreaterThanOrEqual(132);
+    expect(fan.bounds.x + fan.bounds.width).toBe(nub.bounds.x + nub.bounds.width);
+    expect(fan.bounds.y + fan.bounds.height).toBe(nub.bounds.y + nub.bounds.height);
+    expect(fan.at).toBeGreaterThan(nub.at);
+    expect((await viewOf("notch"))!.bounds).toEqual(nub.bounds);
+    const menu = app.windows().find((page) => page.url().endsWith("#notch-fan"))!;
+    const drops = (): Promise<number[]> => menu.evaluate(() => [...document.querySelectorAll<HTMLElement>(".desk-nub-menu .desk-nub-item")].map((el) => Number(el.style.opacity === "" ? 1 : el.style.opacity)));
+    await expect.poll(drops).toEqual([1, 1, 1]);
+    const droplet = (await menu.getByTestId("desk-nub-prompt").boundingBox())!;
+
+    await watchGlass();
+    await slow(6);
+    await shell.getByTestId("desk-nub-prompt").click();
+    await expect(prompt.getByTestId("desk-bar-over")).toHaveAttribute("data-shown", "");
+    // The droplet is the pill now: gone from the fan at once, while the others are still on their way back in.
+    await expect.poll(async () => (await drops())[0]).toBe(0);
+    expect((await drops())[1]).toBeGreaterThan(0);
+    await expect.poll(async () => (await samples()).filter((sample) => !sample.compact).length).toBeGreaterThan(4);
+    const out = (await samples()).filter((sample) => !sample.compact);
+    // Its glass is there from the first frame (a droplet does not fade in), the droplet's size, where the droplet was:
+    // the prompt's view lies where the pill rests, the menu's in the desk's corner.
+    const first = out[0]!;
+    expect(first.opacity).toBe(1);
+    expect(first.width).toBeLessThan(droplet.width + 12);
+    const promptBox = (await viewOf("prompt"))!.bounds;
+    expect(Math.abs(promptBox.x + first.left - (fan.bounds.x + droplet.x))).toBeLessThanOrEqual(8);
+    // The prompt's lies over the menu's: the droplets run back into the nub under the pill.
+    expect((await viewOf("prompt"))!.at).toBeGreaterThan((await viewOf("notch-fan"))!.at);
+    await slow(1);
+    // The menu back in the nub, its view goes; the nub's own is the box it always was.
+    await expect.poll(async () => (await viewOf("notch-fan"))?.visible, { timeout: 15_000 }).toBe(false);
+    expect((await viewOf("notch"))!.bounds).toEqual(nub.bounds);
+    await putAway();
   });
 });

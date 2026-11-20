@@ -433,10 +433,43 @@ export interface DeskNotchFrame {
   nub: number;
   /**
    * The pill's buttons above the nub while the pill is out (DeskNub's
-   * NubPillClose and NubPillSide): drawn by the view over a live page, as the
-   * nub is, where the shell's own would be painted over. Each is up or not.
+   * NubPillClose and NubPillSide): drawn over a live page, as the nub is,
+   * where the shell's own would be painted over. Each is up or not. They are
+   * drawn in a view of their own (`column`), not in the nub's.
    */
   buttons: { close: boolean; side: boolean };
+  /**
+   * The box the pill's buttons stand in above the nub (the window's
+   * coordinates), while they are up and through their way back in; none
+   * otherwise. A view of their own, of one size, shown and hidden — not
+   * the nub's view made taller: a view's page is drawn again for a new box
+   * a frame or two after main lays the box, and until then its last
+   * picture stays pinned to the box's top-left corner, so a view grown
+   * upward shows what it held that much too high (the nub, a second time,
+   * above itself) and one made shorter shows the wrong part of itself.
+   * Until 2026-11-19 the nub's view grew by these as the pill came out.
+   */
+  column?: { x: number; y: number; width: number; height: number } | null;
+  /**
+   * The box the nub's menu is drawn in (the window's coordinates: the nub's
+   * own box, its droplets' fan, the desk's corner its bottom-right corner),
+   * while the menu is out and through its way back in; none otherwise. A
+   * view of its own over the nub's, of one size, shown and hidden — for
+   * `column`'s reason: until 2026-11-19 the nub's view grew to this box as
+   * the menu came out, and showed the nub up and left of the corner, and
+   * nothing in the corner, until its page was drawn again. It is the same
+   * page as the nub's view, given this box as its `bounds`.
+   */
+  fan?: { x: number; y: number; width: number; height: number } | null;
+  /**
+   * The nub is the menu's view's to draw (`fan`), and the nub's own view
+   * draws none of it: from a moment after the menu's view comes up — until
+   * then both draw the nub, at rest in the corner, so it is there in every
+   * frame — until the menu is back in the nub, a moment before the menu's
+   * view goes. Both drawing it while it is out would lay its shadow twice
+   * where their boxes overlap.
+   */
+  fanDraws?: boolean;
   /**
    * The nub's menu (DeskNub: the nub let go of the corner, a button of its
    * own, and its three droplets): out or in since `at` (wall-clock ms). Over
@@ -447,6 +480,54 @@ export interface DeskNotchFrame {
    * motion is where the menu already is, drawn there at once.
    */
   menu: { open: boolean; at: number };
+  /**
+   * The Bar's pill on its way out of the nub, where it is drawn by a view
+   * of its own beside this one (the prompt's view, DESK_BAR_VIEW_FRAME): the
+   * view draws its own side of that — the droplet the pill came out of gone
+   * from the fan (it is the pill now), and the goo's bridge from the nub to
+   * the pill's end until it lets go — read off the clock from `at`
+   * (wall-clock ms), as the menu is. None while no pill is on its way out.
+   */
+  pill?: DeskNotchPillWay | null;
+}
+
+/** A box in the desk's trailing foot corner's coordinates: the corner is (0, 0), up and left negative. */
+export interface DeskCornerBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * The pill's way out of the nub (the shell's nub-motion's PillWay): when it
+ * left, the box it left from, the box it rests in, and the droplet it came
+ * out of (0 the prompt's, 1 the microphone's), or none: out of the nub itself.
+ */
+export interface DeskNotchPillWay {
+  at: number;
+  from: DeskCornerBox;
+  home: DeskCornerBox;
+  drop: number | null;
+}
+
+function isDeskCornerBox(value: unknown): value is DeskCornerBox {
+  if (typeof value !== "object" || value === null) return false;
+  const { x, y, w, h } = value as Partial<DeskCornerBox>;
+  const within = (n: unknown, low: number): boolean => typeof n === "number" && Number.isFinite(n) && n >= low && n <= 16384;
+  return within(x, -16384) && within(y, -16384) && within(w, 0) && within(h, 0);
+}
+
+export function isDeskNotchPillWay(value: unknown): value is DeskNotchPillWay {
+  if (typeof value !== "object" || value === null) return false;
+  const way = value as Partial<DeskNotchPillWay>;
+  return (
+    typeof way.at === "number" &&
+    Number.isFinite(way.at) &&
+    isDeskCornerBox(way.from) &&
+    isDeskCornerBox(way.home) &&
+    (way.drop === null || (typeof way.drop === "number" && Number.isInteger(way.drop) && way.drop >= 0 && way.drop <= 2))
+  );
 }
 
 /**
@@ -557,6 +638,13 @@ export interface DeskNubShape {
 export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
   if (typeof value !== "object" || value === null) return false;
   const frame = value as Partial<DeskNotchFrame>;
+  /** A box of a view beside the nub's (`column`, `fan`): none, or a small one. */
+  const aside = (box: unknown): boolean => {
+    if (box === undefined || box === null) return true;
+    if (typeof box !== "object") return false;
+    const { x, y, width, height } = box as Partial<{ x: number; y: number; width: number; height: number }>;
+    return [x, y, width, height].every((n) => typeof n === "number" && Number.isFinite(n)) && (width as number) > 0 && (height as number) > 0 && (width as number) <= 512 && (height as number) <= 512;
+  };
   const bounds = frame.bounds;
   const ground = frame.ground;
   const swelling = frame.swelling;
@@ -628,7 +716,11 @@ export function isDeskNotchFrame(value: unknown): value is DeskNotchFrame {
     typeof frame.menu === "object" &&
     frame.menu !== null &&
     typeof frame.menu.open === "boolean" &&
-    finite(frame.menu.at)
+    finite(frame.menu.at) &&
+    (frame.pill === undefined || frame.pill === null || isDeskNotchPillWay(frame.pill)) &&
+    aside(frame.column) &&
+    aside(frame.fan) &&
+    (frame.fanDraws === undefined || typeof frame.fanDraws === "boolean")
   );
 }
 

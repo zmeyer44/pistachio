@@ -410,6 +410,29 @@ let noticeLayer: NoticeLayer | null = null;
  */
 let notchLayer: ChromeOverlayView | null = null;
 let deskNotch: DeskNotchFrame | null = null;
+/**
+ * The pill's buttons above the nub, over a live page: a view of their own beside the notch's (DeskNotchFrame's
+ * `column`), of one size, shown and hidden — so the notch view is not made taller for them as the pill comes out. A
+ * view's page is drawn again for a new box a frame or two after the box is laid, its last picture pinned to the box's
+ * top-left corner meanwhile: grown upward, the notch view showed its nub a second time, above itself, in the moment
+ * the prompt appeared.
+ */
+let notchButtonsLayer: ChromeOverlayView | null = null;
+/**
+ * The nub's menu over a live page: a view of its own over the notch's (DeskNotchFrame's `fan`), for the same reason —
+ * the notch view grown to the droplets' fan showed the nub up and left of the corner, and none in the corner, until
+ * its page was drawn again. The same page as the notch view's, told this box as its own; and the box it was last
+ * shown in, which it is still told while it is away, so what it shows as it comes up next is the nub as it is.
+ */
+let notchFanLayer: ChromeOverlayView | null = null;
+let notchFanBox: DeskNotchFrame["bounds"] | null = null;
+
+/** The nub as one of its views is told it: the menu's view has a box of its own. */
+function deskNotchFor(id: ChromeViewId | null): DeskNotchFrame | null {
+  if (deskNotch === null || id !== "notch-fan") return deskNotch;
+  const box = deskNotch.fan ?? notchFanBox;
+  return box === null ? deskNotch : { ...deskNotch, bounds: box };
+}
 /** The desk's prompt over a live page (./desk-bar-view.ts): the shell's own view, placed by the shell. */
 let deskBarView: DeskBarView | null = null;
 /** The window's own glass under the notch view, the nub laid on it again (main/desk-glass.ts). */
@@ -481,6 +504,42 @@ function applyDeskNotch(): void {
   layer.setVeiled(shellState.veiled);
   layer.setShown(deskNotch !== null);
   if (rising) raiseDeskLayer(layer);
+  // The pill's buttons above the nub: their own view, where the shell says they stand — just under the nub's, which
+  // it reaches down behind (they come up out of the nub), so the nub's keeps the pointer over its own box.
+  const buttons = notchButtonsLayer;
+  const column = deskNotch?.column ?? null;
+  const buttonsComing = buttons !== null && column !== null && !buttons.onScreen;
+  if (buttons !== null) {
+    buttons.setSlot(column);
+    buttons.setVeiled(shellState.veiled);
+    buttons.setShown(column !== null);
+    if (column !== null && (buttonsComing || rising)) buttons.raise(layer);
+    if (!buttons.webContents.isDestroyed()) buttons.webContents.send(IPC.deskNotchChanged, deskNotch);
+  }
+  // The nub's menu: its own view over the nub's, the droplets' fan — and the prompt's back over that, where it is
+  // out (the two are one or the other, but one goes as the other comes: the droplets run back in under the pill).
+  const fan = notchFanLayer;
+  const fanBox = deskNotch?.fan ?? null;
+  const fanComing = fan !== null && fanBox !== null && !fan.onScreen;
+  if (fanBox !== null) notchFanBox = fanBox;
+  if (fan !== null) {
+    fan.setSlot(fanBox);
+    fan.setVeiled(shellState.veiled);
+    fan.setShown(fanBox !== null);
+    if (fanBox !== null && (fanComing || rising)) {
+      fan.raise();
+      if (deskBarView?.shown === true) deskBarView.raise();
+    }
+    if (!fan.webContents.isDestroyed()) fan.webContents.send(IPC.deskNotchChanged, deskNotchFor("notch-fan"));
+  }
+  // What lies over the nub's views and the prompt's is put back over them: the parked windows' view, the floating
+  // video's (not while a press on it moves it: re-adding a view takes it out from under the press it holds), and the
+  // drag layer.
+  if (buttonsComing || fanComing) {
+    if (shelfLayer?.shown === true) shelfLayer.raise();
+    if (pipLayer?.shown === true && !deskPipPress.grabbed) pipLayer.raise();
+    dragLayer?.raise();
+  }
   // The glass lies over every view's page (they are all one layer, under all their NSViews), so where a view stacked
   // over this one lies over it — the drag layer as a drag goes, a toast — the glass would hide that view's page: it
   // steps aside, and this view's stand-in shows meanwhile, as the views are stacked (checkNotchCover).
@@ -512,6 +571,13 @@ function notchCovered(): boolean {
     at >= 0 &&
     children.slice(at + 1).some((child) => {
       if (!child.getVisible()) return false;
+      // (Not the nub's own menu, in the view over it. Nor the prompt's view, which lies beside the nub: its box
+      // reaches a few px into the nub's for the pill's shadow and holds nothing there — counted, the glass stepped
+      // aside for as long as the pill was out, and the nub changed from its glass to its stand-in and back.)
+      if ("webContents" in child) {
+        const contents = (child as WebContentsView).webContents;
+        if (contents === notchFanLayer?.webContents || contents === deskBarView?.webContents) return false;
+      }
       const over = child.getBounds();
       return over.x < box.x + box.width && box.x < over.x + over.width && over.y < box.y + box.height && box.y < over.y + over.height;
     })
@@ -2754,6 +2820,19 @@ async function createWindow(): Promise<void> {
     placed: checkNotchCover,
   });
   notchLayer = notchView;
+  const notchButtonsView = new ChromeOverlayView(window, {
+    id: "notch-buttons",
+    preload,
+    placed: checkNotchCover,
+  });
+  notchButtonsLayer = notchButtonsView;
+  const notchFanView = new ChromeOverlayView(window, {
+    id: "notch-fan",
+    preload,
+    placed: checkNotchCover,
+  });
+  notchFanLayer = notchFanView;
+  notchFanBox = null;
   deskGlass = new DeskGlass(window, {
     // The nub painted offscreen, as the notch view paints it, for the glass over that view.
     picture: (scale) => {
@@ -2831,6 +2910,8 @@ async function createWindow(): Promise<void> {
     bookmarkView.webContents,
     noticeView.webContents,
     notchView.webContents,
+    notchButtonsView.webContents,
+    notchFanView.webContents,
     shelfView.webContents,
     pipView.webContents,
   ]) {
@@ -2858,6 +2939,9 @@ async function createWindow(): Promise<void> {
       if (bookmarkView.shown) bookmarkView.raise();
       if (noticeView.shown) noticeView.raise();
       if (notchView.shown) notchView.raise();
+      // (The pill's buttons just under the nub's view, the nub's menu over it, and the prompt over them all.)
+      if (notchButtonsView.shown) notchButtonsView.raise(notchView);
+      if (notchFanView.shown) notchFanView.raise();
       if (deskBarView?.shown === true) deskBarView.raise();
       if (shelfView.shown) shelfView.raise();
       if (pipView.shown) pipView.raise();
@@ -3179,7 +3263,7 @@ async function createWindow(): Promise<void> {
     if (window.isDestroyed()) return;
     const shown = shownSettings(next);
     window.webContents.send(IPC.settingsChanged, shown);
-    for (const view of [dragView, findView, bookmarkView, noticeView, notchView, shelfView, pipView])
+    for (const view of [dragView, findView, bookmarkView, noticeView, notchView, notchButtonsView, notchFanView, shelfView, pipView])
       if (!view.webContents.isDestroyed()) view.webContents.send(IPC.settingsChanged, shown);
     deskGlass?.picture?.send(IPC.settingsChanged, shown);
   };
@@ -3281,6 +3365,8 @@ async function createWindow(): Promise<void> {
   void noticeView.load(rendererUrl, rendererFile).then(() => notices.loaded());
   // The desk's notch, once a desk puts its Bar over a live page.
   void notchView.load(rendererUrl, rendererFile).then(applyDeskNotch);
+  void notchButtonsView.load(rendererUrl, rendererFile).then(applyDeskNotch);
+  void notchFanView.load(rendererUrl, rendererFile).then(applyDeskNotch);
   void shelfView.load(rendererUrl, rendererFile).then(applyDeskShelf);
   void pipView.load(rendererUrl, rendererFile).then(applyDeskPip);
   window.on("closed", () => {
@@ -3308,9 +3394,13 @@ async function createWindow(): Promise<void> {
     noticeView.destroy();
     noticeLayer = null;
     notchView.destroy();
+    notchButtonsView.destroy();
+    notchFanView.destroy();
     barView.destroy();
     if (deskBarView === barView) deskBarView = null;
     notchLayer = null;
+    notchButtonsLayer = null;
+    notchFanLayer = null;
     deskNotch = null;
     screen.off("display-metrics-changed", syncDeskGlass);
     screen.off("display-removed", syncDeskGlass);
@@ -3640,7 +3730,7 @@ const screenshots = new Screenshots({
     }
   },
   // (The notch view is the Bar's nub over a live page: no screenshot has the Bar in it — screenshot.ts takes it down.)
-  leftOut: (contents) => chromeViewOf(contents) === "notice" || chromeViewOf(contents) === "notch",
+  leftOut: (contents) => chromeViewOf(contents) === "notice" || chromeViewOf(contents) === "notch" || chromeViewOf(contents) === "notch-buttons" || chromeViewOf(contents) === "notch-fan",
 });
 
 /** The web apps on this Mac's ports, for the address bar's chips (docs/local-apps.md). */
@@ -4288,6 +4378,8 @@ function installIpc(): void {
     syncSidebarEntryWatch();
     if (findLayer !== null) findLayer.setVeiled(state.veiled);
     notchLayer?.setVeiled(state.veiled);
+    notchButtonsLayer?.setVeiled(state.veiled);
+    notchFanLayer?.setVeiled(state.veiled);
     deskBarView?.setVeiled(state.veiled);
     shelfLayer?.setVeiled(state.veiled);
     pipLayer?.setVeiled(state.veiled);
@@ -4551,9 +4643,10 @@ function installIpc(): void {
     applyDeskNotch();
   });
   // (The nub's picture reads the nub it paints, which it keeps while the view is away.)
-  ipcMain.handle(IPC.deskNotchGet, (event) => (deskGlass !== null && event.sender.id === deskGlass.picture?.id ? deskGlass.frame : deskNotch));
+  ipcMain.handle(IPC.deskNotchGet, (event) => (deskGlass !== null && event.sender.id === deskGlass.picture?.id ? deskGlass.frame : deskNotchFor(chromeViewOf(event.sender))));
   ipcMain.on(IPC.deskNotchInput, (event, input: unknown) => {
-    if (chromeViewOf(event.sender) !== "notch" || !isDeskNotchInput(input)) return;
+    const from = chromeViewOf(event.sender);
+    if ((from !== "notch" && from !== "notch-buttons" && from !== "notch-fan") || !isDeskNotchInput(input)) return;
     if (shellWindow === null || shellWindow.isDestroyed()) return;
     // A press puts the keyboard in the Bar's field, which is the shell's — and one of the pill's buttons pressed, as the
     // view draws them over a live page, leaves the keys the shell's, not this view's. A droplet of the nub's menu
@@ -5311,6 +5404,10 @@ function chromeViewOf(sender: Electron.WebContents): ChromeViewId | null {
     return noticeLayer.view.id;
   if (notchLayer !== null && sender.id === notchLayer.webContents.id)
     return notchLayer.id;
+  if (notchButtonsLayer !== null && sender.id === notchButtonsLayer.webContents.id)
+    return notchButtonsLayer.id;
+  if (notchFanLayer !== null && sender.id === notchFanLayer.webContents.id)
+    return notchFanLayer.id;
   if (shelfLayer !== null && sender.id === shelfLayer.webContents.id)
     return shelfLayer.id;
   if (pipLayer !== null && sender.id === pipLayer.webContents.id)

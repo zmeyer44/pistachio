@@ -30,15 +30,18 @@ const SWELL_IN_MS = 350;
 /** Whether native/desk-glass is built here (scripts/build-native.mjs skips it where it cannot be: the nub keeps its stand-in). */
 const NATIVE_GLASS = process.platform === "darwin" && existsSync(new URL("../../native/desk-glass/build/desk_glass.node", import.meta.url));
 
-/** The desk's notch view on screen, and its box in the window; null while it is not. */
-function notchView(app: ElectronApplication) {
-  return app.evaluate(({ BrowserWindow }) => {
+/**
+ * The desk's notch view on screen, and its box in the window; null while it is not. Its menu is a view of its own
+ * over it ("#notch-fan"), the droplets' fan: the nub's own view is one box, whatever comes out of the nub.
+ */
+function notchView(app: ElectronApplication, hash: "#notch" | "#notch-fan" = "#notch") {
+  return app.evaluate(({ BrowserWindow }, hash) => {
     const window = BrowserWindow.getAllWindows()[0];
     const view = window?.contentView.children.find(
-      (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith("#notch") && (child as WebContentsView).getVisible(),
+      (child) => "webContents" in child && (child as WebContentsView).webContents.getURL().endsWith(hash) && (child as WebContentsView).getVisible(),
     ) as WebContentsView | undefined;
     return view === undefined ? null : view.getBounds();
-  });
+  }, hash);
 }
 
 /** From now on, whether the notch view ever leaves the screen (main looks every few ms): notchLeft. */
@@ -63,31 +66,31 @@ function notchLeft(app: ElectronApplication): Promise<boolean> {
   });
 }
 
-/** A move on the notch view, as its page would hear one (its own coordinates). */
-function moveOnNotch(app: ElectronApplication, x: number, y: number): Promise<void> {
+/** A move on the notch view (or its menu's), as its page would hear one (its own coordinates). */
+function moveOnNotch(app: ElectronApplication, x: number, y: number, hash: "#notch" | "#notch-fan" = "#notch"): Promise<void> {
   return app.evaluate(
-    async ({ webContents }, { x, y }) => {
-      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"));
+    async ({ webContents }, { x, y, hash }) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith(hash));
       if (contents === undefined) throw new Error("no notch view");
       contents.sendInputEvent({ type: "mouseMove", x: Math.round(x), y: Math.round(y) });
       await new Promise((done) => setTimeout(done, 60));
     },
-    { x, y },
+    { x, y, hash },
   );
 }
 
-/** A press on the notch view, as its page would hear one. */
-function pressOnNotch(app: ElectronApplication, x: number, y: number): Promise<void> {
+/** A press on the notch view (or its menu's), as its page would hear one. */
+function pressOnNotch(app: ElectronApplication, x: number, y: number, hash: "#notch" | "#notch-fan" = "#notch"): Promise<void> {
   return app.evaluate(
-    async ({ webContents }, { x, y }) => {
-      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"));
+    async ({ webContents }, { x, y, hash }) => {
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith(hash));
       if (contents === undefined) throw new Error("no notch view");
       contents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, x: Math.round(x), y: Math.round(y) });
       await new Promise((done) => setTimeout(done, 40));
       contents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, x: Math.round(x), y: Math.round(y) });
       await new Promise((done) => setTimeout(done, 60));
     },
-    { x, y },
+    { x, y, hash },
   );
 }
 
@@ -147,16 +150,17 @@ test("the notch view's word that the pointer came is the OS pointer's to confirm
     // (Before its tooltip's delay: the band the tooltip appears in is a cover, below.)
     await expect(win).not.toHaveAttribute("data-drawn", "");
     expect(await notchView(app)).not.toBeNull();
-    // A press there lets out the menu, which the view draws too (2026-11-17): the page under it stays live, and the
-    // view stays over it, its box now the droplets' fan.
+    // A press there lets out the menu, which main draws too (2026-11-17): the page under it stays live, the nub's view
+    // stays over it as it is, and the menu's own comes up over that, its box the droplets' fan.
     await pressOnNotch(app, onNub.x + 2, onNub.y);
     await expect(shell.locator('[data-testid="desk-nub-menu"][data-open]')).toHaveCount(1);
-    await expect.poll(async () => (await notchView(app))?.height ?? 0).toBeGreaterThanOrEqual(132);
+    await expect.poll(async () => (await notchView(app, "#notch-fan"))?.height ?? 0).toBeGreaterThanOrEqual(132);
+    expect(await notchView(app)).toEqual(notch);
     await expect(win).not.toHaveAttribute("data-drawn", "");
     // What the menu opens is a cover still. Past chats pressed in the view: the conversations stand in the nub's box,
     // the page under them gives way, and the view goes from under the pointer.
     const chats = await app.evaluate(async ({ webContents }) => {
-      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch"))!;
+      const contents = webContents.getAllWebContents().find((candidate) => candidate.getURL().endsWith("#notch-fan"))!;
       const read = `(() => { const el = document.querySelector('.desk-nub-menu[data-open] [data-testid="desk-nub-chats"]'); if (!el || getComputedStyle(el).pointerEvents === "none") return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
       // (Once it has come to rest out of the nub: on its way it takes no pointer.)
       for (let tries = 0; tries < 60; tries++) {
@@ -166,8 +170,8 @@ test("the notch view's word that the pointer came is the OS pointer's to confirm
       }
       throw new Error("the view's past-chats droplet never came out");
     });
-    await moveOnNotch(app, chats.x, chats.y);
-    await pressOnNotch(app, chats.x, chats.y);
+    await moveOnNotch(app, chats.x, chats.y, "#notch-fan");
+    await pressOnNotch(app, chats.x, chats.y, "#notch-fan");
     await expect(shell.locator('[data-testid="desk-conversations"][data-shown]')).toHaveCount(1);
     await expect(win).toHaveAttribute("data-drawn", "");
     await expect.poll(() => notchView(app)).toBeNull();

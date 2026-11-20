@@ -67,8 +67,12 @@ function Root({ view }: { view: ChromeViewId | null }) {
       return <NoticeApp />;
     case "notch":
       return <NotchApp />;
+    case "notch-fan":
+      return <NotchApp fan />;
     case "notch-picture":
       return <NotchApp picture />;
+    case "notch-buttons":
+      return <NotchApp buttons />;
     case "shelf":
       return <ShelfApp />;
     case "pip":

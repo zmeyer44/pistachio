@@ -47,6 +47,7 @@ import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigg
 import { Markdown } from "./Markdown";
 import { useElapsedSeconds } from "./ReasoningBlock";
 import { SmoothHeight } from "./SmoothHeight";
+import { StepsWindow } from "./StepsWindow";
 
 /**
  * The agent's side of a turn as Trace lines (AI Elements' Reasoning, Chain
@@ -196,7 +197,9 @@ function ReasoningTail({ text }: { text: string }) {
  * was and how many steps it took — how many failed, if any did. Each step
  * is a line of its own with its tool's mark; one that finished with
  * something to say opens to it, and the page it read links out; one that
- * failed is red, says so, and opens to its error.
+ * failed is red, says so, and opens to its error. The steps stand in a
+ * window of a few lines (StepsWindow): a long turn's scroll in it, kept on
+ * the newest while it works, rather than growing the thread by a line each.
  *
  * `live` is the turn still at work (the run's latest, its reply not yet
  * begun); `awaitingApproval` opens the latest turn on the step held for
@@ -223,11 +226,14 @@ export const TurnTrace = memo(function TurnTrace({ turn, live, latest, awaitingA
           </TraceLine>
         </TraceCollapsibleTrigger>
         <TraceCollapsibleContent keepMounted>
-          <Trace>
-            {steps.map((step) => (
-              <StepLine key={step.id} step={step} />
-            ))}
-          </Trace>
+          {/* (In a window of a few lines, kept on the newest while the turn works: a long turn's steps scroll in it.) */}
+          <StepsWindow follow={running}>
+            <Trace>
+              {steps.map((step) => (
+                <StepLine key={step.id} step={step} />
+              ))}
+            </Trace>
+          </StepsWindow>
         </TraceCollapsibleContent>
       </TraceCollapsible>
     </Trace>

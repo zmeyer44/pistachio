@@ -188,6 +188,45 @@ export interface PillParts {
   bar: HTMLElement;
   frame: HTMLElement;
   body: HTMLElement;
+  /**
+   * Drawn in a view of its own over the pages (the prompt's view, lib/desk/prompt-view.ts): how far past the pill's
+   * box that view reaches, px. Nothing of the glass is drawn past it, so what the glass comes out of and goes back
+   * into — a droplet, the nub — is brought that far inside: it leaves the nub's side rather than the nub's middle.
+   */
+  reach?: { side: number; above: number; below: number };
+  /**
+   * The window whose frames draw the glass, where it is not the nub's own (the prompt view's): the glass is moved on
+   * that window's frames, so each one it presents is the glass where it is at that moment — moved on the nub's, a
+   * frame of the view's would show the pose of whichever of the nub's frames came last before it, some twice and
+   * some never.
+   */
+  frames?: Window;
+}
+
+/**
+ * The pill on its way out, for whoever draws the nub somewhere else (main's notch view over a live page —
+ * DeskNotchFrame's `pill`): when it left (wall-clock ms), the box it left from and the one it rests in (the corner's
+ * coordinates), and the droplet it came out of, if one.
+ */
+export interface PillWay {
+  at: number;
+  from: Rect;
+  home: Rect;
+  drop: number | null;
+}
+
+/** A way older than this (ms) has been gone for good by the time it is heard: nothing of it is drawn. */
+const PILL_WAY_STALE_MS = 1200;
+
+/** `rect` brought inside what a view reaching `reach` past `home` can draw (its size kept). */
+export function within(rect: Rect, home: Rect, reach: PillParts["reach"]): Rect {
+  if (reach === undefined) return rect;
+  // (A hair inside the view's edge at the side, so the glass's ring is drawn whole.)
+  const left = home.x - reach.side + 2;
+  const right = home.x + home.w + reach.side - 2 - rect.w;
+  const top = home.y - reach.above + 2;
+  const bottom = home.y + home.h + reach.below - 2 - rect.h;
+  return { x: clamp(rect.x, left, Math.max(left, right)), y: clamp(rect.y, top, Math.max(top, bottom)), w: rect.w, h: rect.h };
 }
 
 export interface NubMotionHost {
@@ -217,6 +256,19 @@ interface PillMorph {
   fades: boolean;
   /** Where it is drawn now. */
   now: Rect;
+  /** Where it rests, as someone else said it (`mirrorPill`): the pill is not this document's to measure. */
+  home?: Rect;
+}
+
+/** The pill at one moment of its morph. */
+interface PillPose {
+  morph: PillMorph;
+  parts: PillParts | null;
+  home: Rect;
+  box: Rect;
+  /** How far along its spring it is (past 1 a moment, as it overshoots). */
+  m: number;
+  done: boolean;
 }
 
 export class NubMotion {
@@ -237,6 +289,9 @@ export class NubMotion {
   #menuOpen = false;
   #paint: Tween = { from: 0, to: 0, at: 0, ms: 0 };
   #pill: PillMorph | null = null;
+  /** The window whose frames move the pill's glass, while it is not this one (PillParts' `frames`), and the frame asked of it. */
+  #pillWindow: Window | null = null;
+  #pillRaf = 0;
   #shapeKey = "";
   #raf = 0;
   #destroyed = false;
@@ -250,6 +305,7 @@ export class NubMotion {
     this.#destroyed = true;
     if (this.#raf !== 0) cancelAnimationFrame(this.#raf);
     this.#raf = 0;
+    this.#stopPillFrames();
     this.#clearPill();
   }
 
@@ -348,31 +404,41 @@ export class NubMotion {
     this.#kick();
   }
 
-  /** The pill out of a droplet (or the nub): its glass from the droplet's box to its own, the bridge between it and the nub. */
-  openPill(source: PillSource): void {
+  /**
+   * The pill out of a droplet (or the nub): its glass from the droplet's box to its own, the bridge between it and the
+   * nub. Answers its way, for whoever draws the nub elsewhere (`mirrorPill`): none where nothing moves (no pill, or
+   * reduced motion).
+   */
+  openPill(source: PillSource): PillWay | null {
     const parts = this.#host.pill();
-    if (parts === null) return;
+    if (parts === null) return null;
     if (reduced()) {
+      this.#stopPillFrames();
       this.#clearPill();
       this.#pill = null;
-      return;
+      return null;
     }
     const now = performance.now();
     // Out of its droplet if that is out (the menu may already be on its way back in), else out of the nub.
     const drop = source === "prompt" ? 0 : source === "mic" ? 1 : -1;
     const track = this.#drops[drop];
     const fromDrop = track !== undefined && this.#hidden[drop] !== true && trackAt(track, now) > 0.5;
-    const from = fromDrop ? this.#dropBox(drop) : this.#faceBox();
+    const home = this.#pillBox(parts);
+    const from = within(fromDrop ? this.#dropBox(drop) : this.#faceBox(), home, parts.reach);
     if (fromDrop) this.#hidden[drop] = true;
     this.#pill = { open: true, at: now, scale: nubTimeScale(), from, bridged: fromDrop, fades: !fromDrop, now: from };
+    this.#startPillFrames(parts);
+    this.#paintPillAt(now);
     this.#render(now, Date.now());
     this.#kick();
+    return { at: Date.now(), from, home, drop: fromDrop ? drop : null };
   }
 
   /** The pill back into the nub. */
   closePill(): void {
     const parts = this.#host.pill();
     if (parts === null || reduced()) {
+      this.#stopPillFrames();
       this.#clearPill();
       this.#pill = null;
       return;
@@ -380,7 +446,27 @@ export class NubMotion {
     const from = this.#pill?.now ?? this.#pillBox(parts);
     const now = performance.now();
     this.#pill = { open: false, at: now, scale: nubTimeScale(), from, bridged: false, fades: true, now: from };
+    this.#startPillFrames(parts);
+    this.#paintPillAt(now);
     this.#render(now, Date.now());
+    this.#kick();
+  }
+
+  /**
+   * The pill on its way out somewhere else (the shell's word of it, DeskNotchFrame's `pill`): this nub draws its own
+   * side of it — the droplet the pill came out of is gone from the fan (it is the pill now), and the bridge runs from
+   * the nub to the pill's end until it lets go. None, or one long gone: nothing.
+   */
+  mirrorPill(way: PillWay | null): void {
+    const age = way === null ? Infinity : Date.now() - way.at;
+    if (way === null || reduced() || Math.abs(age) > PILL_WAY_STALE_MS) {
+      if (this.#pill === null) return;
+      this.#pill = null;
+      this.#kick();
+      return;
+    }
+    if (way.drop !== null) this.#hidden[way.drop] = true;
+    this.#pill = { open: true, at: performance.now() - Math.max(0, age), scale: nubTimeScale(), from: way.from, bridged: way.drop !== null, fades: way.drop === null, now: way.from, home: way.home };
     this.#kick();
   }
 
@@ -500,22 +586,11 @@ export class NubMotion {
 
     // The pill's glass and row as it morphs, and the bridge that ties it to the nub.
     let bridged = false;
-    const morph = this.#pill;
-    const pill = this.#host.pill();
-    if (morph !== null && pill !== null) {
-      const t = (now - morph.at) / 1000 / morph.scale;
-      const spring = morph.open ? PILL_OPEN : PILL_CLOSE;
-      const m = springAt(t, spring);
-      const home = this.#pillBox(pill);
-      const box = morph.open ? lerpRect(morph.from, home, m) : lerpRect(morph.from, this.#faceBox(), m);
-      morph.now = box;
-      const inset = `${(box.y - home.y).toFixed(2)}px ${(home.x + home.w - box.x - box.w).toFixed(2)}px ${(home.y + home.h - box.y - box.h).toFixed(2)}px ${(box.x - home.x).toFixed(2)}px`;
-      pill.frame.style.inset = inset;
-      pill.frame.style.opacity = (morph.open ? (morph.fades ? smooth(0, 0.3, m) : 1) : 1 - smooth(0.5, 1, m)).toFixed(3);
-      const row = morph.open ? smooth(0.4, 0.9, m) : 1 - smooth(0, 0.35, m);
-      pill.body.style.opacity = row.toFixed(3);
-      pill.body.style.filter = row > 0.99 ? "" : `blur(${(2 * (1 - row)).toFixed(2)}px)`;
-      pill.body.style.clipPath = `inset(${inset} round 26px)`;
+    const pose = this.#pillPose(now);
+    if (pose !== null) {
+      const { morph, box, m } = pose;
+      // (Its glass moved on another window's frames is drawn there, in step with them: #pillFrame.)
+      if (this.#pillWindow === null) this.#paintPill(pose);
       if (morph.open && morph.bridged && m < BRIDGE_SNAP) {
         bridged = true;
         const end = { x: box.x + box.w - box.h / 2, y: box.y + box.h / 2 };
@@ -524,13 +599,15 @@ export class NubMotion {
         parts.bridge.setAttribute("x2", end.x.toFixed(2));
         parts.bridge.setAttribute("y2", end.y.toFixed(2));
         parts.bridge.setAttribute("stroke-width", (BRIDGE_W * (1 - m / BRIDGE_SNAP) ** 0.7).toFixed(2));
-        // (Inside the glass, so only the bridge shows past it.)
+        // (Inside the glass, so only the bridge shows past it — mirrored too: the glass is then another view's, over
+        // this one.)
         parts.bridgeEnd.setAttribute("cx", end.x.toFixed(2));
         parts.bridgeEnd.setAttribute("cy", end.y.toFixed(2));
         parts.bridgeEnd.setAttribute("r", Math.max(0, box.h / 2 - 3).toFixed(2));
       }
-      if (springDone(t, spring)) {
+      if (pose.done) {
         this.#pill = null;
+        this.#stopPillFrames();
         this.#clearPill();
       } else moving = true;
     }
@@ -579,6 +656,73 @@ export class NubMotion {
     const box = parts.bar.getBoundingClientRect();
     return { x: box.left - root.right, y: box.top - root.bottom, w: box.width, h: box.height };
   }
+
+  /** The pill at `now` on its morph's clock: where its glass is, and how far along; null while none is on its way. */
+  #pillPose(now: number): PillPose | null {
+    const morph = this.#pill;
+    if (morph === null) return null;
+    const parts = this.#host.pill();
+    const home = morph.home ?? (parts === null ? null : this.#pillBox(parts));
+    if (home === null) return null;
+    const t = (now - morph.at) / 1000 / morph.scale;
+    const spring = morph.open ? PILL_OPEN : PILL_CLOSE;
+    const m = springAt(t, spring);
+    const box = lerpRect(morph.from, morph.open ? home : within(this.#faceBox(), home, parts?.reach), m);
+    morph.now = box;
+    return { morph, parts, home, box, m, done: springDone(t, spring) };
+  }
+
+  /** The pill's glass and row drawn as `pose` has them. */
+  #paintPill(pose: PillPose): void {
+    const { morph, parts, home, box, m } = pose;
+    if (parts === null) return;
+    const inset = `${(box.y - home.y).toFixed(2)}px ${(home.x + home.w - box.x - box.w).toFixed(2)}px ${(home.y + home.h - box.y - box.h).toFixed(2)}px ${(box.x - home.x).toFixed(2)}px`;
+    parts.frame.style.inset = inset;
+    parts.frame.style.opacity = (morph.open ? (morph.fades ? smooth(0, 0.3, m) : 1) : 1 - smooth(0.5, 1, m)).toFixed(3);
+    const row = morph.open ? smooth(0.4, 0.9, m) : 1 - smooth(0, 0.35, m);
+    parts.body.style.opacity = row.toFixed(3);
+    parts.body.style.filter = row > 0.99 ? "" : `blur(${(2 * (1 - row)).toFixed(2)}px)`;
+    parts.body.style.clipPath = `inset(${inset} round 26px)`;
+  }
+
+  #paintPillAt(now: number): void {
+    const pose = this.#pillPose(now);
+    if (pose !== null) this.#paintPill(pose);
+  }
+
+  /** The glass moved on `parts.frames`' frames from here on, where that is another window than this one. */
+  #startPillFrames(parts: PillParts): void {
+    const frames = parts.frames ?? null;
+    if (frames === this.#pillWindow && (frames === null || this.#pillRaf !== 0)) return;
+    this.#stopPillFrames();
+    this.#pillWindow = frames;
+    if (frames !== null) this.#pillRaf = frames.requestAnimationFrame(this.#pillFrame);
+  }
+
+  #stopPillFrames(): void {
+    const frames = this.#pillWindow;
+    if (frames !== null && this.#pillRaf !== 0) {
+      try {
+        frames.cancelAnimationFrame(this.#pillRaf);
+      } catch {
+        // (A window gone under us has no frame left to call off.)
+      }
+    }
+    this.#pillRaf = 0;
+    this.#pillWindow = null;
+  }
+
+  /** One frame of the window the pill is drawn in: the glass where it is now, on this module's clock. */
+  #pillFrame = (): void => {
+    this.#pillRaf = 0;
+    const frames = this.#pillWindow;
+    if (this.#destroyed || frames === null) return;
+    const pose = this.#pillPose(performance.now());
+    // (None: the morph came to rest, and the nub's own loop has put the glass back as it lies.)
+    if (pose === null) return;
+    this.#paintPill(pose);
+    if (!pose.done) this.#pillRaf = frames.requestAnimationFrame(this.#pillFrame);
+  };
 
   #clearPill(): void {
     const parts = this.#host.pill();

@@ -46,11 +46,13 @@ import type { AwaySpaceInfo } from "./away.js";
  * after a capture (renderer/src/BookmarkToastApp.tsx), and the notice stack
  * (./notice.ts, renderer/src/NoticeApp.tsx). "notch-picture" is no view: the
  * notch view's nub painted offscreen, for main to lay over the window's glass
- * under that view (main/desk-glass.ts). Nor is "live-host": the live share's
+ * under that view (main/desk-glass.ts). "notch-buttons" is the pill's buttons
+ * above the nub, in a view of their own beside the notch's (DeskNotchFrame's
+ * `column`), and "notch-fan" the nub's menu, in one over it (`fan`). Nor is "live-host": the live share's
  * room, in a transparent child window of its own over the browser's window
  * (main/live/live-host-window.ts, docs/live-share.md §6.1).
  */
-export type ChromeViewId = "drag" | "find" | "bookmark" | "notice" | "notch" | "notch-picture" | "shelf" | "pip" | "live-host";
+export type ChromeViewId = "drag" | "find" | "bookmark" | "notice" | "notch" | "notch-picture" | "notch-buttons" | "notch-fan" | "shelf" | "pip" | "live-host";
 
 /** The URL hash each chrome view loads the renderer bundle with. */
 export const CHROME_VIEW_HASHES: Record<ChromeViewId, `#${ChromeViewId}`> = {
@@ -60,6 +62,8 @@ export const CHROME_VIEW_HASHES: Record<ChromeViewId, `#${ChromeViewId}`> = {
   notice: "#notice",
   notch: "#notch",
   "notch-picture": "#notch-picture",
+  "notch-buttons": "#notch-buttons",
+  "notch-fan": "#notch-fan",
   shelf: "#shelf",
   pip: "#pip",
   "live-host": "#live-host",

@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { MessageScroller } from "@shadcn/react/message-scroller";
 import {
   AlarmClock,
@@ -111,14 +111,15 @@ import { TakeoverCard } from "../TakeoverCard";
 import { Textarea } from "../ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import type { DeskEngine, DeskView } from "./desk-engine";
+import { copyCard, drawPose, type CardCopy } from "./card-pass";
 import { DeskNub, NUB_BOX, nubDropletLabel, NubPillClose, NubPillSide, type NubTip } from "./DeskNub";
-import { elementOf, focusField, focusedWithin, listenInBoth, placePromptView, promptView } from "../../lib/desk/prompt-view";
+import { elementOf, focusField, focusedWithin, listenInBoth, placePromptView, promptView, whenPromptViewDrawn } from "../../lib/desk/prompt-view";
 import { DictationWave } from "./DictationWave";
 import { ExtensionMark } from "../extensions/LedgeIcon";
 import { StatusPillRow } from "../extensions/StatusPillRow";
 import { sendRowPress, sendStatusAction, StatusPills, useStatusPills } from "../extensions/StatusPills";
 import { FileGlyph, fileKindLabel } from "./files/FileGlyph";
-import { nubTimeScale, type NubMotion, type PillParts, type PillSource, type Swelling } from "./nub-motion";
+import { nubTimeScale, type NubMotion, type PillParts, type PillSource, type PillWay, type Swelling } from "./nub-motion";
 
 /** A file of the group's context the Bar can mention: its bytes are on this Mac. */
 type MentionFile = GroupContextFile & { here: boolean };
@@ -184,10 +185,16 @@ const OVER_ABOVE = 10;
 const OVER_BELOW = 16;
 /** The gap between the pill and a list standing on it (shell.css .desk-mentions: `bottom: calc(100% + 8px)`). */
 const OVER_LIST_GAP = 8;
+/** The view's room round the pill, as the nub's motion is told it (PillParts' `reach`): what the pill's glass comes out of is brought inside it. */
+const OVER_REACH = { side: OVER_SIDE, above: OVER_ABOVE, below: OVER_BELOW };
 /** A tooltip that never opens: the pill's buttons in the view have none (their band would be the shell's, under the page). */
 const NO_TIP: NubTip = { open: false, shown: false, onOpenChange: () => undefined };
 /** How far one of the pill's buttons above the nub reaches past its circle (its shadow), for the notch view's box over them. */
 const BUTTON_SHADOW = 8;
+/** How long the nub's own view and its menu's view both draw the nub, as one takes over from the other (ms): a few frames of either. */
+const FAN_HANDOVER_MS = 80;
+/** How far up from the desk's foot the pill's buttons reach, both up (the side button above the close): their view's box is always this tall. */
+const COLUMN_REACH = Math.ceil(-nubSide().y + NUB_CLOSE_R + BUTTON_SHADOW);
 /** The view over a live page holds the nub swelled (and a little past, as the swell overshoots), its corner the desk's (NotchApp). */
 const NUB_VIEW = Math.ceil(nubExtent(NUB_SWELL)) + 3;
 /**
@@ -418,9 +425,17 @@ export const DeskBar = memo(function DeskBar({
   // The prompt's view over the live pages, where there is one (the desktop): the pill is drawn in it, so no window
   // gives way to the pill and no page under it is a still (lib/desk/prompt-view.ts; docs/desk.md, "The foot").
   const [over] = useState(promptView);
-  /** The pill as the view draws it, and the row's place in it. */
+  /** The pill as the view draws it: its box, its glass, and the row's place in it. */
   const overPillRef = useRef<HTMLDivElement>(null);
+  const overFrameRef = useRef<HTMLDivElement>(null);
   const overBodyRef = useRef<HTMLDivElement>(null);
+  /**
+   * The view is drawing where the pill was placed in it (whenPromptViewDrawn): from then the pill is out. Until then
+   * it is laid out there unseen — placed, the view is main's to lay and show, a moment later in another process, and
+   * a pill let out before that would be on its way before a frame of it could be seen (until 2026-11-19 it was simply
+   * there, whole, in the first frame the view drew: no way out of the nub at all).
+   */
+  const [overReady, setOverReady] = useState(false);
   /** Whether the pill is the view's now (read where it is decided, below). */
   const overViewNow = useRef(false);
   /** The keys are wanted in the field once it is where it is typed in: the view placed, main hands them over. */
@@ -611,6 +626,51 @@ export const DeskBar = memo(function DeskBar({
     },
     [engine],
   );
+  // The desk passed to another space (card-pass.ts): the card that stood here goes with that space's windows — its
+  // still copy, made as the Bar was drawn for the next space (below), stands where it stood until they are dismissed
+  // and goes on their exit — and this space's card, if it has one up, comes with its own windows on their entrance.
+  // (Until 2026-11-19 the card left was simply gone in the commit, the page it stood beside left alone on the desk
+  // for as long as its still took; and the next space's was up at once, over the page still going.) After the card's
+  // motion above has put the card where it stands, and before the desk's own passing (DeskSurface's effect, the
+  // parent's, which runs after this one): the engine has both by then.
+  const leavingRef = useRef<HTMLDivElement>(null);
+  const leavingCard = useRef<CardCopy | null>(null);
+  const passedTo = useRef(group.id);
+  const arriving = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => {
+    if (passedTo.current === group.id) return;
+    passedTo.current = group.id;
+    const copy = leavingCard.current;
+    leavingCard.current = null;
+    const layer = leavingRef.current;
+    if (copy !== null && layer !== null) {
+      layer.appendChild(copy.el);
+      copy.settle();
+      engine.sendOff({ rect: copy.rect, pose: (drawn) => (drawn === null ? undefined : drawPose(copy.el, drawn)), done: () => copy.el.remove() });
+    }
+    // (A card still on its way in from the passing before this one is this passing's now, or gone.)
+    arriving.current?.();
+    arriving.current = null;
+    const card = cardRef.current;
+    const vis = card?.querySelector<HTMLElement>(".desk-answer-vis") ?? null;
+    const box = card === null ? null : stageBox(card);
+    if (vis === null || box === null) return;
+    const letGo = engine.bringIn({
+      rect: box,
+      pose: (drawn) => drawPose(vis, drawn),
+      done: () => {
+        if (arriving.current === letGo) arriving.current = null;
+      },
+    });
+    arriving.current = letGo;
+  }, [group.id, engine]);
+  useEffect(
+    () => () => {
+      arriving.current?.();
+      arriving.current = null;
+    },
+    [],
+  );
   const raiseAnswer = useCallback(() => engine.raiseCover("answer"), [engine]);
   /** Floating, the field is the card's: asked for (the nub's prompt or microphone, ⌘I), the card comes in front of the windows and calls out where it is. */
   const callAnswer = useCallback(() => {
@@ -755,6 +815,10 @@ export const DeskBar = memo(function DeskBar({
     // (This space's card and pill go, in this very commit, before the desk has passed — its effect runs after the
     // Bar's: the window they covered is not handed the keyboard on its way out. DeskEngine.leaving.)
     engine.leaving();
+    // Its card, up, goes with its windows: copied as it stands now — the document is still this space's, the commit
+    // not yet made — for the passing to send off (the effect above).
+    const standing = cardRef.current;
+    leavingCard.current = standing !== null && laneRef.current !== null && standing.dataset["shown"] !== undefined ? copyCard(standing, laneRef.current) : null;
     // (All of it with the conversation's own space — whether the card is up too, since 2026-11-17: a tab of Home's
     // is a space of its own here, and the chat up beside it is not up beside the next. Only where the card STANDS is
     // the place's: Home's, for all of Home's tabs.)
@@ -821,10 +885,10 @@ export const DeskBar = memo(function DeskBar({
   // pills at the foot stand beside it in the view: the pill takes them with it there, as it took them into its cover.)
   const overView = over !== null && !inCard;
   overViewNow.current = overView;
-  // Out, it is the view's at once — or, the shell's own, a cover (its whole footprint), from the pointer coming to the
-  // nub until it is back in.
+  // Out, it is the view's as soon as the view draws where it lies (`overReady`: a frame or two) — or, the shell's own,
+  // a cover (its whole footprint), from the pointer coming to the nub until it is back in.
   const pillOverdue = useOverdue(pillWanted, NOTCH_WAIT_MS);
-  const pillOpen = pillWanted && (overView || shownCover("pill") || pillOverdue);
+  const pillOpen = pillWanted && ((overView && overReady) || shownCover("pill") || pillOverdue);
   // (The @ list is the field's, shown while the pill is out — or in the card, over the field there: put away with what
   // was typed in it, the list goes too. A cover of its own in the card as well: a long list stands up past a short
   // card, over a window that would otherwise stay live and paint over it — 2026-10-10.)
@@ -988,10 +1052,17 @@ export const DeskBar = memo(function DeskBar({
 
   const pillParts = useCallback((): PillParts | null => {
     const bar = barRef.current;
+    if (bar === null) return null;
+    // Over the live pages the glass and the row are the prompt view's (there for as long as the view draws the pill):
+    // the nub's motion morphs those, in that view's own frames, by the box the shell's pill keeps under them — the
+    // same way out of a droplet, or the nub, and back, as the shell's own pill has.
+    const overFrame = overFrameRef.current;
+    const overBody = overBodyRef.current;
+    if (over !== null && overFrame !== null && overBody !== null) return { bar, frame: overFrame, body: overBody, reach: OVER_REACH, frames: over.window };
     const frame = frameRef.current;
     const body = bodyRef.current;
-    return bar === null || frame === null || body === null ? null : { bar, frame, body };
-  }, []);
+    return frame === null || body === null ? null : { bar, frame, body };
+  }, [over]);
   // The nub as it is drawn now, swelling and settling: the engine cuts it through the well and the windows under it.
   // A screenshot of the desk is the windows without the Bar: neither it nor its hole is drawn while one is taken.
   const capturing = useDeskStore((state) => state.capturing);
@@ -1056,6 +1127,16 @@ export const DeskBar = memo(function DeskBar({
       window.removeEventListener("resize", place);
     };
   }, [over, overUp, focusTick, overList, pillsRoom]);
+  // The view drawing where it was just placed (above: this runs after it): the pill is let out of the nub in that very
+  // frame of the view's, so the first frame of its way out is the first one seen. Unseen again, it waits again.
+  useLayoutEffect(() => {
+    if (!overUp) {
+      setOverReady(false);
+      return;
+    }
+    if (overReady) return;
+    return whenPromptViewDrawn(() => flushSync(() => setOverReady(true)));
+  }, [overUp, overReady]);
   // A list in the view comes in a frame after it is made, so it fades in as the shell's does (and the view has been
   // placed with room for it by then).
   const [overListIn, setOverListIn] = useState(false);
@@ -1109,15 +1190,57 @@ export const DeskBar = memo(function DeskBar({
   const buttonsOut = useLinger(closeUp, NUB_CLOSE_MS, true);
   const sideOut = useLinger(sideUp, NUB_CLOSE_MS, true);
   const buttonsReach = buttonsOut ? Math.ceil(-(sideOut ? nubSide() : nubClose()).y + NUB_CLOSE_R + BUTTON_SHADOW) : 0;
+  // (Over a live page they are drawn by a view of their own, of one size, beside the notch's — DeskNotchFrame's
+  // `column`, below: the notch view's own box does not grow for them.)
   // And, its menu out with the pages under it live, the box its droplets fan out in (the nub's own box, NUB_BOX): the
   // view draws them there, so the engine counts a live page anywhere under the fan as under the nub — held while they
   // run back into it.
   const menuBox = useLinger(menuLive, NUB_CLOSE_MS, true);
-  const notchW = Math.max(NUB_VIEW + laneHeld, menuBox ? NUB_BOX.w : 0);
-  const notchH = Math.max(NUB_VIEW, buttonsReach, menuBox ? NUB_BOX.h : 0);
+  // The notch view's own box is the nub's, and its lane's: the menu's fan and the pill's buttons are views of their
+  // own beside it (DeskNotchFrame's `fan` and `column`), each of one size, so the nub's view is never laid out again
+  // for them with the nub in it. What the engine counts as under the nub still reaches over both.
+  const notchW = NUB_VIEW + laneHeld;
+  const notchH = NUB_VIEW;
+  // The menu's view is up a moment longer than the menu's own box, and has the nub to itself only in between: as it
+  // comes up, and before it goes, the nub's own view draws the nub too (at rest in the corner then, in both), so no
+  // frame is without it while one of the two is not yet, or no longer, drawing.
+  const fanUp = useLinger(menuLive, NUB_CLOSE_MS + FAN_HANDOVER_MS, true);
+  const fanIn = useOverdue(menuLive, FAN_HANDOVER_MS);
+  const fanDraws = fanIn || (menuBox && !menuLive);
+  // The menu's view gone from over the nub's: the pointer may be resting on the nub still (the menu put away by its
+  // own button, or from the keys), in a view that heard it leave when the menu's came up over it and hears nothing
+  // more until it moves. The OS's pointer says — as it has the last word on every coming the views report — so the
+  // nub is swelled under a pointer that never left it, as it was while the nub and its menu were one view.
+  const fanWas = useRef(false);
+  useEffect(() => {
+    if (fanWas.current === fanUp) return;
+    fanWas.current = fanUp;
+    if (fanUp) return;
+    let stopped = false;
+    void (async () => {
+      let point: { x: number; y: number } | null = null;
+      try {
+        point = (await nativeApi()?.getCursorPoint()) ?? null;
+      } catch {
+        point = null;
+      }
+      const box = notchBox.current;
+      if (stopped || point === null || box === null || armed.current) return;
+      // (On the nub itself, not merely in its view's box: nothing will say it has gone from a corner of that.)
+      const centre = { x: box.x + box.width - NUB_IDLE.sink, y: box.y + box.height - NUB_IDLE.sink };
+      if (Math.hypot(point.x - centre.x, point.y - centre.y) > NUB_IDLE.radius + 2) return;
+      enterNub();
+      setViewHover(true);
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [fanUp, enterNub]);
+  const reachW = Math.max(notchW, menuBox ? NUB_BOX.w : 0);
+  const reachH = Math.max(notchH, buttonsReach, menuBox ? NUB_BOX.h : 0);
   useLayoutEffect(() => {
-    engine.setNotch({ w: notchW, h: notchH });
-  }, [engine, notchW, notchH]);
+    engine.setNotch({ w: reachW, h: reachH });
+  }, [engine, reachW, reachH]);
   useEffect(() => () => engine.setNotch(null), [engine]);
 
   // Swelled while the pointer rests on it and while its droplets are out; the pill out of its droplet (or the nub),
@@ -1129,12 +1252,17 @@ export const DeskBar = memo(function DeskBar({
     if (motion !== null) setSwelling(motion.swell(swellTo));
   }, [swellTo]);
   const pillWas = useRef(false);
+  /** The pill's way out as the nub's motion began it, for the notch view's nub (DeskNotchFrame's `pill`); none once it goes back in. */
+  const [pillWay, setPillWay] = useState<PillWay | null>(null);
   useLayoutEffect(() => {
     const motion = nubMotion.current;
     if (motion === null || pillOpen === pillWas.current) return;
     pillWas.current = pillOpen;
-    if (pillOpen) motion.openPill(pillSource.current);
-    else motion.closePill();
+    if (pillOpen) setPillWay(motion.openPill(pillSource.current));
+    else {
+      motion.closePill();
+      setPillWay(null);
+    }
     pillSource.current = "nub";
   }, [pillOpen]);
   /** The menu opened from the keys: its first droplet has them once it is out. */
@@ -1512,7 +1640,14 @@ export const DeskBar = memo(function DeskBar({
         pillsWidth: lanePills.length === 0 ? 0 : Math.min(2048, pillsWidth),
         nub: NUB_VIEW,
         buttons: { close: closeUp, side: sideUp },
+        // Their own view's box, while they are up and on their way back in: from the top of the higher one's reach
+        // down behind the nub (to its middle — they come up out of it), always that size.
+        column: buttonsOut ? { x: right - NUB_VIEW, y: bottom - COLUMN_REACH, width: NUB_VIEW, height: COLUMN_REACH - NUB_IDLE.sink } : null,
+        // The menu's own view's box, while it is out and on its way back in: the nub's box and its droplets' fan.
+        fan: fanUp ? { x: right - NUB_BOX.w, y: bottom - NUB_BOX.h, width: NUB_BOX.w, height: NUB_BOX.h } : null,
+        fanDraws,
         menu: menuWay,
+        pill: pillWay,
       });
     };
     send();
@@ -1524,7 +1659,7 @@ export const DeskBar = memo(function DeskBar({
       observer.disconnect();
       window.removeEventListener("resize", send);
     };
-  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut, laneWay, laneHeld, lanePills, pillsWidth, notchW, notchH, closeUp, sideUp, menuWay]);
+  }, [overPage, group.title, group.color, askKey, swelling, acting, floatingOut, laneWay, laneHeld, lanePills, pillsWidth, notchW, notchH, closeUp, sideUp, buttonsOut, fanUp, fanDraws, menuWay, pillWay]);
   useEffect(() => () => nativeApi()?.setDeskNotch(null), []);
 
   // A button's tooltip is open: the band it appears in — above the pill, or beside the nub — is a cover, and stays
@@ -1633,6 +1768,8 @@ export const DeskBar = memo(function DeskBar({
       <StatusPills pills={statusPills} raised={statusRaised} shown={!statusRaised || shownCover("pill")} onWidth={setPillsWidth} />
       {/* One column, the pill's width: the answer rests on the pill, however tall the pill grows. */}
       <div className="desk-bar-column">
+        {/* The card of the space the desk just passed from, on its way out with that space's windows (card-pass.ts). */}
+        <div ref={leavingRef} className="desk-answer-leaving" aria-hidden="true" />
         {cardShown ? (
           <AnswerCard
             ref={cardRef}
@@ -1704,11 +1841,14 @@ export const DeskBar = memo(function DeskBar({
                     aria-label="Ask Pistachio about this space"
                     data-testid="desk-bar-over"
                     data-shown={pillOpen ? "" : undefined}
+                    // (Shut, nothing of it is drawn or reached — as the shell's own: its glass and row are what the
+                    // nub's motion morphs out of a droplet and back into the nub.)
+                    data-compact={compact ? "" : undefined}
                     data-acting={acting ? "" : undefined}
                     data-drop-target={fileDrag && !drop.dragging ? "" : undefined}
                     className="desk-bar desk-bar-over"
                   >
-                    <div className="desk-bar-frame" aria-hidden="true" />
+                    <div ref={overFrameRef} className="desk-bar-frame" aria-hidden="true" />
                     {drop.dragging ? <AttachmentDropVeil data-testid="desk-bar-drop-veil" className="inset-1 rounded-[16px]" /> : null}
                     <div ref={overBodyRef} className="desk-bar-body" />
                   </div>

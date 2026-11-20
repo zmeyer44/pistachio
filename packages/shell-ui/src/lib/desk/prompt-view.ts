@@ -125,11 +125,77 @@ export function promptView(): PromptView | null {
   return opened;
 }
 
-/** Where the view lies (the window's content box), or null to take it from over the pages. */
+/**
+ * Where the view lies (the window's content box), or null to take it from over the pages. Said to main only when it
+ * says something new: the Bar places the view again whenever anything it is measured from is laid out again, and a
+ * view moved to where it already lies is still a view moved — in the middle of the pill coming out of the nub.
+ */
 export function placePromptView(place: DeskBarViewPlace | null): void {
   if (place !== null && opened !== null && opened !== undefined) prepare(opened);
-  placed = place === null ? null : { bounds: place.bounds };
-  nativeApi()?.setDeskBarView?.(place);
+  const before = placed;
+  // (Whole pixels, as main lays it: what the view's own window is then measured against — whenPromptViewDrawn.)
+  const bounds = place === null ? null : { x: Math.round(place.bounds.x), y: Math.round(place.bounds.y), width: Math.round(place.bounds.width), height: Math.round(place.bounds.height) };
+  placed = bounds === null ? null : { bounds };
+  const same =
+    (before === null && bounds === null) ||
+    (before !== null && bounds !== null && before.bounds.x === bounds.x && before.bounds.y === bounds.y && before.bounds.width === bounds.width && before.bounds.height === bounds.height);
+  if (same && place?.focus !== true) return;
+  nativeApi()?.setDeskBarView?.(bounds === null ? null : { bounds, ...(place?.focus === true ? { focus: true } : {}) });
+}
+
+/** A view that has not drawn within this long (ms) is not waited for: hidden with its window, it draws no frame at all. */
+const DRAWN_WAIT_MS = 240;
+
+/**
+ * Call back once the view is drawing where it was last placed: a frame of its own window's, at that size. Placed, it
+ * is main's to lay and show — a moment later, in another process — and its document is laid out for its new box a
+ * frame after that; what the Bar draws in it before then is never seen, or is seen where it was not meant (the first
+ * time it comes up its window has no size at all). The pill's way out of the nub starts from this, so its first
+ * frame is its first. Answers a way to call it off.
+ */
+export function whenPromptViewDrawn(done: () => void): () => void {
+  const view = opened ?? null;
+  if (view === null) {
+    // (None to wait for. Still not answered in the caller's own turn: it asks from an effect.)
+    const soon = window.setTimeout(done, 0);
+    return () => window.clearTimeout(soon);
+  }
+  let frame = 0;
+  let over = false;
+  const finish = (): void => {
+    if (over) return;
+    over = true;
+    window.clearTimeout(timer);
+    done();
+  };
+  const check = (): void => {
+    frame = 0;
+    if (over) return;
+    const at = placed;
+    let fits = false;
+    try {
+      fits = at !== null && Math.abs(view.window.innerWidth - at.bounds.width) <= 1 && Math.abs(view.window.innerHeight - at.bounds.height) <= 1;
+    } catch {
+      fits = true;
+    }
+    if (fits) finish();
+    else frame = view.window.requestAnimationFrame(check);
+  };
+  const timer = window.setTimeout(finish, DRAWN_WAIT_MS);
+  try {
+    frame = view.window.requestAnimationFrame(check);
+  } catch {
+    finish();
+  }
+  return () => {
+    over = true;
+    window.clearTimeout(timer);
+    try {
+      if (frame !== 0) view.window.cancelAnimationFrame(frame);
+    } catch {
+      // (A window gone under us has no frame left to call off.)
+    }
+  };
 }
 
 /**

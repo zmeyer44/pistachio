@@ -29,6 +29,7 @@ import { MessageText } from "../MessageText";
 import { Markdown } from "./Markdown";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { SmoothHeight } from "./SmoothHeight";
+import { StepsWindow } from "./StepsWindow";
 import { ReasoningTrace } from "./trace";
 import { StepMark, type StepState } from "./StepMark";
 import { ThinkingStatus } from "./ThinkingStatus";
@@ -454,11 +455,14 @@ export const WorkTrace = memo(function WorkTrace({
         </span>
         <ChevronRight className="agent-steps-chevron size-3.5 shrink-0 text-gray-700" aria-hidden="true" />
       </summary>
-      <ol className="agent-steps-list">
-        {steps.map((step) => (
-          <StepRow key={step.id} label={step.label} detail={step.detail} state={step.state} />
-        ))}
-      </ol>
+      {/* (In a window of a few lines, kept on the newest while the turn works: a long turn's steps scroll in it.) */}
+      <StepsWindow follow={state === "running"}>
+        <ol className="agent-steps-list">
+          {steps.map((step) => (
+            <StepRow key={step.id} label={step.label} detail={step.detail} state={step.state} />
+          ))}
+        </ol>
+      </StepsWindow>
     </details>
     </SmoothHeight>
   );

@@ -318,6 +318,8 @@ const EASED_SPRING: SpringConfig = { response: 0.25, damping: 1 };
 
 /** Passing to another group: a live window waits at most this long for the still it flies home as. */
 const SWITCH_STILL_WAIT_MS = 400;
+/** A rider waits this long for its cue (the windows it goes with dismissed, or cued in) before it sets out by itself. */
+const RIDER_WAIT_MS = SWITCH_STILL_WAIT_MS + 200;
 
 /** A Glance taken in (receiveGlance): where it landed waits this long for its tab to join the group. */
 const GLANCE_LANDING_MS = 3_000;
@@ -653,6 +655,46 @@ export interface DeskLiveGeometry {
 type Size = { w: number; h: number };
 /** Room kept for the shell's own on the desk: at its trailing side for the chat's place (setReserve), at its foot for the pill (setBand), px. */
 type DeskRoom = { reserve: number; band: number };
+
+/**
+ * Something of the shell's that stands on the desk as its space's own — the chat's card (DeskBar) — and so goes and
+ * comes with the space's windows when the desk passes: dismissed with them, on their exit (DeskEngine.sendOff), or
+ * coming in with the chosen space's, on their entrance (bringIn). The engine only says how it is drawn on top of
+ * where it stands; the thing itself is its owner's.
+ */
+export interface DeskRider {
+  /** Its box on the stage, where it stands. */
+  rect: Rect;
+  /** How it is drawn this frame, on top of where it stands — or null, the motion over: as it is, nothing left on it. */
+  pose(drawn: RiderPose | null): void;
+  /** Its motion has run out (an exit's: it is gone). */
+  done?(): void;
+}
+
+/** A rider's pose as styles: a transform about `origin` (px from its own corner), an opacity, a blur in px. */
+export interface RiderPose {
+  transform: string;
+  origin: Point;
+  opacity: number;
+  blur: number;
+}
+
+/**
+ * A rider on its way: waiting for the passing it goes with (`motion` null), for its cue — its space's windows
+ * dismissed, `groupId`, or the chosen space's cued in — (`start` null), or under way.
+ */
+interface Riding {
+  rider: DeskRider;
+  way: "out" | "in";
+  groupId: string | null;
+  motion: SwitchMotion | null;
+  start: number | null;
+  delay: number;
+  /** The pose it sets out from, when not its motion's first: the one the card going had got to, its space chosen again. */
+  from: Pose | null;
+  /** When it was handed over: one whose cue never comes sets out all the same (RIDER_WAIT_MS). */
+  since: number;
+}
 
 /** A saved window laid out for the desk coming up: its box, picture and minimized state, and its boxes with no room kept (SavedDeskWindow's `own`). */
 type LaidOut = { tabId: string; rect: Rect; mask: DeskMask | null; mini: Minimized | null; own?: Rect; miniOwn?: Rect; fresh?: true };
@@ -1125,6 +1167,18 @@ export class DeskEngine {
   /** Room kept at the desk's foot for the Bar's pill while it is out (setBand): the windows keep out of it the same way. */
   #band = 0;
   /**
+   * The desk is about to pass (leaving): the room as the space being left had it, held from the Bar's word that the
+   * desk is passing until the passing itself (switchGroup; regroup, the windows staying). The room the Bar asks for
+   * meanwhile is the NEXT space's — its chat's place, or none — and no window of the space being left gives way to
+   * it or takes it up: they go as they stand, and the chosen space's land in the room theirs. (Until 2026-11-19 the
+   * room was given at once, a commit before the passing: a page beside the chat grew to the whole desk on its way
+   * out, relaid out live, and one leaving for a tab with the chat at its side was squeezed — and hidden so, its
+   * page at the wrong width the next time it came.) Null: no passing on its way.
+   */
+  #handover: DeskRoom | null = null;
+  /** What goes and comes with the windows of a passing (sendOff, bringIn): the chat's card. */
+  readonly #riders = new Set<Riding>();
+  /**
    * While room is kept: each window's box as it was with none — fractions of
    * the whole desk — and the box the room last gave it. The room going, a
    * window goes back to its own box exactly, so long as nothing else moved
@@ -1490,6 +1544,168 @@ export class DeskEngine {
    */
   leaving(): void {
     this.#pendingFocus = null;
+    // The room is the space left's until the passing (#handover). (Said again before it — a render run twice — the
+    // room first held stands.)
+    if (this.#handover !== null || this.#destroyed) return;
+    this.#handover = { reserve: this.#reserve, band: this.#band };
+    // No passing came of it by the end of this commit: the room asked for meanwhile is given as it always was.
+    queueMicrotask(() => this.#settleHandover());
+  }
+
+  /**
+   * The room held for a passing (#handover) with no passing to take it — the windows stayed (regroup), or nothing
+   * came of the Bar's word: every window is given the room kept now, gliding, as setReserve and setBand give it; and
+   * what was to go or come with the passing's windows (#riders) does so by itself.
+   */
+  #settleHandover(): void {
+    const from = this.#handover;
+    if (from === null) return;
+    this.#handover = null;
+    if (this.#destroyed) return;
+    this.#cueRiders(performance.now(), null);
+    const to = { reserve: this.#reserve, band: this.#band };
+    if (from.reserve === to.reserve && from.band === to.band) return;
+    if (this.#stageBox.width > 0) {
+      this.#reroom([...this.#wins.values()], from, to, false);
+      this.#layShelf();
+      if (from.reserve !== to.reserve) this.#save();
+    }
+    if (to.reserve === 0 && to.band === 0) this.#unreserved.clear();
+    this.#dirtyView = true;
+    this.#render();
+    this.#kick();
+  }
+
+  /**
+   * Something of the shell's that was the space's own on the desk — the chat's card, as a still copy of itself —
+   * goes with that space's windows as the desk passes: where it stands until they are dismissed, then on their exit
+   * (lib/desk/space-switch.ts), about the same anchor, and `done` once it is gone. Handed over between the Bar's
+   * word that the desk is passing (leaving) and the passing; with no passing on its way, or windows that fly into
+   * their tile rather than being dismissed, it fades where it stands.
+   */
+  sendOff(rider: DeskRider): void {
+    if (this.#destroyed) {
+      rider.done?.();
+      return;
+    }
+    this.#riders.add({ rider, way: "out", groupId: null, motion: null, start: null, delay: 0, from: null, since: performance.now() });
+    if (this.#handover === null) this.#cueRiders(performance.now(), null);
+    this.#kick();
+  }
+
+  /**
+   * Something of the shell's that is the chosen space's own on the desk — its chat's card — comes with that space's
+   * windows: unseen until they are cued in, then on their entrance, and as it is from there. Returns its letting go
+   * (the thing went meanwhile). With no passing on its way, it fades in where it stands.
+   */
+  bringIn(rider: DeskRider): () => void {
+    if (this.#destroyed) return () => undefined;
+    const riding: Riding = { rider, way: "in", groupId: null, motion: null, start: null, delay: 0, from: null, since: performance.now() };
+    this.#riders.add(riding);
+    // (Unseen from this very frame: what is under it has not gone yet.)
+    rider.pose({ transform: "", origin: { x: rider.rect.w / 2, y: rider.rect.h / 2 }, opacity: 0, blur: 0 });
+    if (this.#handover === null) this.#cueRiders(performance.now(), null);
+    this.#kick();
+    return () => {
+      if (!this.#riders.delete(riding)) return;
+      rider.pose(null);
+    };
+  }
+
+  /**
+   * The passing's riders take its motions (`passing`), or — no passing — a plain fade, at once. A card going waits
+   * for its space's windows to be dismissed (`following`: some are waiting for their stills) and one coming for the
+   * chosen space's to be cued in, its handoff after; with nothing to wait for, each sets out now. The desk passing
+   * back `to` a space whose card is still on its way out — chosen again before it was gone, as its windows turn
+   * round from the pose they had got to (#turnBack) — that card is gone at once, and the one coming, the same card
+   * to the eye, carries on from where it had got to, back to rest.
+   */
+  #cueRiders(now: number, passing: { from: string; to: string; exit: SwitchMotion | null; entrance: SwitchMotion | null; following: boolean } | null): void {
+    const reduced = reducedMotion();
+    let back: Pose | null = null;
+    // (Only with a card coming to take over from it: with none, the one going goes on as it was.)
+    const taken = [...this.#riders].some((riding) => riding.way === "in" && riding.motion === null);
+    for (const riding of [...this.#riders]) {
+      if (passing === null || !taken || riding.way !== "out" || riding.motion === null || riding.groupId !== passing.to) continue;
+      back = riding.start === null ? REST_POSE : poseAt(riding.motion, Math.min(1, Math.max(0, (now - riding.start - riding.delay) / Math.max(1, riding.motion.ms))), riding.from);
+      this.#riders.delete(riding);
+      riding.rider.done?.();
+    }
+    for (const riding of this.#riders) {
+      if (riding.motion !== null) {
+        // One of a passing before this one, never cued: the windows it waited for turned back, or went another way.
+        if (riding.start === null) riding.start = now;
+        continue;
+      }
+      if (riding.way === "out") {
+        riding.motion = passing?.exit ?? plainFade("out", reduced);
+        riding.groupId = passing?.from ?? null;
+        riding.start = passing !== null && passing.exit !== null && passing.following ? null : now;
+        continue;
+      }
+      if (back !== null) {
+        riding.motion = returnMotion("own");
+        riding.from = back;
+        riding.start = now;
+        riding.delay = 0;
+        // (Drawn so at once: the copy it takes over from is gone in this same commit, and no frame has neither.)
+        riding.rider.pose(this.#riderPose(riding.rider.rect, riding.motion, back));
+        continue;
+      }
+      riding.motion = passing?.entrance ?? plainFade("in", reduced);
+      const waits = passing !== null && passing.following;
+      riding.start = waits ? null : now;
+      riding.delay = waits ? riding.motion.handoff : 0;
+    }
+    this.#kick();
+  }
+
+  /** A space's windows are dismissed (#dismiss): what goes with them goes now, and what comes after them is cued. */
+  #ridersFollow(groupId: string, now: number): void {
+    for (const riding of this.#riders) {
+      if (riding.motion === null || riding.start !== null) continue;
+      if (riding.way === "in" || riding.groupId === groupId) riding.start = now;
+    }
+  }
+
+  /** Each rider's pose this frame. True while any is under way. */
+  #stepRiders(now: number): boolean {
+    let active = false;
+    for (const riding of [...this.#riders]) {
+      // (Its cue never came: it sets out all the same, rather than standing there — or staying unseen — for good.)
+      if (riding.start === null && now - riding.since >= RIDER_WAIT_MS) {
+        riding.motion ??= plainFade(riding.way, reducedMotion());
+        riding.start = now;
+        riding.delay = 0;
+      }
+      const motion = riding.motion;
+      if (motion === null || riding.start === null) {
+        active = true;
+        continue;
+      }
+      const t = motion.ms <= 0 ? 1 : (now - riding.start - riding.delay) / motion.ms;
+      if (t < 1) {
+        riding.rider.pose(this.#riderPose(riding.rider.rect, motion, poseAt(motion, Math.max(0, t), riding.from)));
+        active = true;
+        continue;
+      }
+      this.#riders.delete(riding);
+      // (Gone, an exit leaves it as its last frame had it — unseen — for its owner to take away; come, nothing is left on it.)
+      if (riding.way === "in") riding.rider.pose(null);
+      riding.rider.done?.();
+    }
+    return active;
+  }
+
+  /** A rider's pose as it is drawn: what #write does to a window's still, less the box (the rider stands where its owner put it). */
+  #riderPose(rect: Rect, motion: SwitchMotion, posed: Pose): RiderPose {
+    const { width, height } = this.#stageBox;
+    const anchor = motion.anchor;
+    const origin = anchor === "own" ? { x: rect.w / 2, y: rect.h / 2 } : { x: width / 2 - rect.x, y: anchor === "desk" ? height / 2 - rect.y : anchor === "foot" ? height - rect.y : -rect.y };
+    const dx = (width / 2 - (rect.x + rect.w / 2)) * posed.toward;
+    const dy = (height / 2 - (rect.y + rect.h / 2)) * posed.toward + posed.drop;
+    const tilt = Math.abs(posed.tilt) < 0.001 ? "" : ` perspective(1200px) rotateX(${posed.tilt.toFixed(3)}deg)`;
+    return { transform: `translate3d(${dx.toFixed(2)}px, ${dy.toFixed(2)}px, 0)${tilt} scale(${posed.scale.toFixed(4)})`, origin, opacity: posed.opacity, blur: posed.blur };
   }
 
   /**
@@ -1532,13 +1748,16 @@ export class DeskEngine {
     if (next === this.#reserve) return;
     const prev = this.#reserve;
     this.#reserve = next;
-    if (this.#stageBox.width > 0) {
-      this.#reroom([...this.#wins.values()], { reserve: prev, band: this.#band }, { reserve: next, band: this.#band }, false);
-      this.#layShelf();
-      // (Saved as the room leaves it, each window's own box with it: a relaunch with the chat in its place comes back so.)
-      this.#save();
+    // (The desk about to pass, the room is the next space's: given by the passing, to the windows that come — #handover.)
+    if (this.#handover === null) {
+      if (this.#stageBox.width > 0) {
+        this.#reroom([...this.#wins.values()], { reserve: prev, band: this.#band }, { reserve: next, band: this.#band }, false);
+        this.#layShelf();
+        // (Saved as the room leaves it, each window's own box with it: a relaunch with the chat in its place comes back so.)
+        this.#save();
+      }
+      if (next === 0 && this.#band === 0) this.#unreserved.clear();
     }
-    if (next === 0 && this.#band === 0) this.#unreserved.clear();
     this.#dirtyView = true;
     this.#render();
     this.#kick();
@@ -1561,11 +1780,14 @@ export class DeskEngine {
     if (next === this.#band) return;
     const prev = this.#band;
     this.#band = next;
-    if (this.#stageBox.width > 0) {
-      this.#reroom([...this.#wins.values()], { reserve: this.#reserve, band: prev }, { reserve: this.#reserve, band: next }, false);
-      this.#layShelf();
+    // (The desk about to pass: as setReserve.)
+    if (this.#handover === null) {
+      if (this.#stageBox.width > 0) {
+        this.#reroom([...this.#wins.values()], { reserve: this.#reserve, band: prev }, { reserve: this.#reserve, band: next }, false);
+        this.#layShelf();
+      }
+      if (next === 0 && this.#reserve === 0) this.#unreserved.clear();
     }
-    if (next === 0 && this.#reserve === 0) this.#unreserved.clear();
     this.#dirtyView = true;
     this.#render();
     this.#kick();
@@ -2058,6 +2280,8 @@ export class DeskEngine {
     nativeApi()?.setDesk(null);
     this.#listeners.clear();
     this.#renderedListeners.clear();
+    this.#handover = null;
+    this.#riders.clear();
   }
 
   // ── Starting, and passing ──────────────────────────────────────────────
@@ -2162,8 +2386,19 @@ export class DeskEngine {
     this.#dropPreview();
     this.#selecting = null;
     this.#editing = null;
-    // (Saved as the space left had it — not at all, one of tabs — before the desk is the next one's.)
-    this.#save();
+    // (Saved as the space left had it — not at all, one of tabs — before the desk is the next one's: in the room it
+    // had, should the Bar have asked for the next space's already — #handover.)
+    const left = this.#handover;
+    this.#handover = null;
+    if (left === null) this.#save();
+    else {
+      const next_ = { reserve: this.#reserve, band: this.#band };
+      this.#reserve = left.reserve;
+      this.#band = left.band;
+      this.#save();
+      this.#reserve = next_.reserve;
+      this.#band = next_.band;
+    }
     this.#tabbed = next.tabbed === true;
     this.#pendingSpread = null;
     const now = performance.now();
@@ -2212,9 +2447,26 @@ export class DeskEngine {
       this.#order.push(window.tabId);
       coming.push(win);
     });
+    // What goes and comes with the windows (the chat's card): out with this space's as they are dismissed, in with
+    // the chosen one's as they are cued — before those are (#awaitEntrance cues at once with nothing to follow).
+    const following = [...this.#departing.values()].some((departing) => isPosedExit(departing.exit));
+    this.#cueRiders(now, { from: next.from, to: next.groupId, exit: isPosedExit(exit) ? exitMotion(exit, reducedMotion()) : null, entrance, following });
     if (entrance !== null && coming.length > 0) this.#awaitEntrance(coming, entry, entrance, now);
-    // (Saved with other room kept for the chat's place than is kept now: where each lands is where the room now leaves it.)
-    if (reserve !== this.#reserve) this.#reroom(windows.filter((window) => window.fresh !== true).map((window) => this.#wins.get(window.tabId)!), { reserve, band: this.#band }, { reserve: this.#reserve, band: this.#band }, false);
+    // (Saved with other room kept for the chat's place than is kept now: where each lands is where the room now leaves
+    // it. One coming in at its place stands there from its first frame — until 2026-11-19 it came in at the box the
+    // old room gave it and glided to this one as it arrived; one flying in, or turned round, is on its way there.)
+    if (reserve !== this.#reserve) {
+      const roomed = windows.filter((window) => window.fresh !== true).map((window) => this.#wins.get(window.tabId)!);
+      const landing = (win: Win): boolean => entrance !== null && coming.includes(win);
+      const room: [DeskRoom, DeskRoom] = [{ reserve, band: this.#band }, { reserve: this.#reserve, band: this.#band }];
+      this.#reroom(roomed.filter(landing), room[0], room[1], true);
+      this.#reroom(roomed.filter((win) => !landing(win)), room[0], room[1], false);
+    }
+    // (The room changed under the passing, the shelf is laid out in it: #handover.)
+    if (left !== null && (left.reserve !== this.#reserve || left.band !== this.#band)) {
+      this.#layShelf();
+      if (this.#reserve === 0 && this.#band === 0) for (const tabId of [...this.#unreserved.keys()]) if (!windows.some((window) => window.tabId === tabId)) this.#unreserved.delete(tabId);
+    }
     this.#stackShelf();
     // Nothing is flying into its icon now: it is the desk's group again, with no icon in the dock.
     this.#folding.delete(next.groupId);
@@ -2245,6 +2497,8 @@ export class DeskEngine {
    * flew on into the row and was gone, its tab the desk's all the same.
    */
   regroup(tabIds: readonly string[], shellIds: readonly string[] | null, groupId: string | null = this.#groupId, tabbed: boolean = this.#tabbed): void {
+    // (The windows stay: the room the Bar asked for as the space changed is theirs to give way to — #handover.)
+    this.#settleHandover();
     this.#dropPreview();
     this.#groupTabIds = tabIds;
     this.#shellIds = shellIds;
@@ -2583,6 +2837,7 @@ export class DeskEngine {
       };
     });
     this.#cueEntrances(now);
+    this.#ridersFollow(groupId, now);
     this.#dirtyView = true;
   }
 
@@ -4856,6 +5111,7 @@ export class DeskEngine {
     this.#last = now;
     let active = this.#gesture !== null;
     for (const win of [...this.#wins.values()]) if (this.#step(win, dt, now)) active = true;
+    const riding = this.#stepRiders(now);
     if (this.#phase === "entering" && !active) {
       this.#phase = "open";
       this.#dirtyView = true;
@@ -4870,7 +5126,7 @@ export class DeskEngine {
       }
     }
     this.#render();
-    if (this.#maskFade !== null) active = true;
+    if (this.#maskFade !== null || riding) active = true;
     // (A render may have asked for the next frame itself.)
     if (active && this.#raf === 0) this.#raf = requestAnimationFrame(this.#tick);
   };
@@ -6759,6 +7015,12 @@ function cornerRadiusOf(el: HTMLElement): number {
   } catch {
     return 0;
   }
+}
+
+/** A rider with no passing's motion to go by: a quick fade where it stands (reduced motion's own, lib/desk/space-switch.ts). */
+function plainFade(way: "out" | "in", reduced: boolean): SwitchMotion {
+  // (Any posed exit's reduced motion is the same plain fade.)
+  return way === "out" ? exitMotion("bloom", true) : { ...entranceMotion("bloom", true), ms: reduced ? 150 : 180 };
 }
 
 function reducedMotion(): boolean {
